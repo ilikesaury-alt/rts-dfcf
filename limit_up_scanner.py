@@ -11,8 +11,16 @@ import sys
 import time
 import json
 import os
+import re
 import sqlite3
+import sys
+import time
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from typing import Any
+
 import requests
+import wcwidth
 from datetime import datetime, date, timedelta, time as dtime
 from dataclasses import dataclass, field
 from typing import Any
@@ -25,6 +33,13 @@ REFRESH_INTERVAL = 180
 REQUEST_TIMEOUT = 15
 TOP_N = 40                     # 只看前40名
 NEW_FACE_LOOKBACK_DAYS = 3     # 几天内没出现过算新面孔
+
+# ── 小而美策略 ──
+# 过滤大市值高股价，聚焦小盘低价股
+YI = 100_000_000                                 # 1亿
+MAX_MARKET_CAP = 500 * YI                        # 最大总市值（超过则过滤）
+MAX_STOCK_PRICE = 100.0                           # 最高股价（超过则过滤）
+
 
 # 飞书机器人推送（环境变量或直接填入）
 FEISHU_WEBHOOK = os.environ.get("FEISHU_WEBHOOK",
@@ -400,6 +415,9 @@ class Candidate:
     first_seen: str = ""
     last_seen: str = ""
     history_pct: list[float] = field(default_factory=list)
+    market_cap: float = 0.0       # 总市值（元）
+    circ_market_cap: float = 0.0  # 流通市值（元）
+
 
 
 # ── Analysis ──
@@ -793,6 +811,75 @@ def fetch_biaosheng(session: requests.Session, size: int = 100) -> list[dict]:
     return resp.json().get("data", {}).get("items", [])
 
 
+# ── 小而美: 批量获取市值 ──
+
+# 市值数据缓存（避免重复请求）
+_market_cap_cache: dict[str, dict] = {}
+_market_cap_cache_time: float = 0
+
+
+def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> dict[str, dict]:
+    """批量获取股票市值数据（先试批量API，失败则逐只回退）"""
+    global _market_cap_cache, _market_cap_cache_time
+
+    now = time.time()
+    if _market_cap_cache and now - _market_cap_cache_time < 30:
+        return _market_cap_cache
+
+    if not symbols:
+        return {}
+
+    result: dict[str, dict] = {}
+
+    # 方案1: 批量quote API
+    try:
+        for i in range(0, len(symbols), 50):
+            batch = symbols[i:i + 50]
+            sym_str = ",".join(batch)
+            url = (f"https://stock.xueqiu.com/v5/stock/batch/quote.json"
+                   f"?symbol={sym_str}&extend=market_cap")
+            resp = session.get(url, timeout=REQUEST_TIMEOUT)
+            resp.raise_for_status()
+            items = resp.json().get("data", {}).get("items", [])
+            for item in items:
+                q = item.get("quote") if isinstance(item, dict) else {}
+                if not q or not q.get("symbol"):
+                    q = item if isinstance(item, dict) else {}
+                sym = q.get("symbol", "")
+                if sym:
+                    mc = q.get("market_capital") or q.get("total_market_capital") or 0
+                    cmc = q.get("circ_market_capital") or 0
+                    result[sym] = {"market_cap": mc, "circ_market_cap": cmc}
+    except Exception:
+        pass
+
+    if result:
+        _market_cap_cache = result
+        _market_cap_cache_time = now
+        return result
+
+    # 方案2: 逐只quote API（回退）
+    try:
+        for sym in symbols:
+            url = f"https://stock.xueqiu.com/v5/stock/quote.json?symbol={sym}&extend=market_cap"
+            resp = session.get(url, timeout=REQUEST_TIMEOUT)
+            q = resp.json().get("data", {}).get("quote", {})
+            if q.get("symbol"):
+                result[sym] = {
+                    "market_cap": q.get("market_capital", 0) or 0,
+                    "circ_market_cap": q.get("circ_market_capital", 0) or 0,
+                }
+    except Exception:
+        pass
+
+    if result:
+        _market_cap_cache = result
+        _market_cap_cache_time = now
+    elif not _market_cap_cache:
+        print(f"\n  [!] 警告: 市值数据获取失败，小而美规则暂不生效")
+
+    return result or _market_cap_cache
+
 # ── Main scan ──
 
 def scan(conn: sqlite3.Connection, session: requests.Session):
@@ -831,25 +918,27 @@ def scan(conn: sqlite3.Connection, session: requests.Session):
         for s in gem_top
     ])
 
-    # 4. 区分新旧面孔
-    new_faces: list[Candidate] = []
-    old_faces: list[Candidate] = []
+    # 4. 先出候选（不含市值过滤），后续再对候选股拉市值
+    raw_new_faces: list[Candidate] = []
+    raw_old_faces: list[Candidate] = []
 
     for stock in gem_top:
+        # 股价硬过滤（不需要API，直接用）
+        if stock.current > 0 and stock.current > MAX_STOCK_PRICE:
+            continue
+
         app_history = get_symbol_appearances(conn, stock.symbol, NEW_FACE_LOOKBACK_DAYS)
-        # 是否今天之前出现过
         previous_dates = [a["date"] for a in app_history if a["date"] < today]
         is_new = len(previous_dates) == 0
         first_date = previous_dates[0] if previous_dates else today
 
-        # 获取K线
         kline = ensure_kline(conn, session, stock.symbol)
         kline_summary = None
 
         if is_new:
             kline_summary = analyze_new_face(stock, kline)
             if kline_summary and kline_summary.score >= 20:
-                new_faces.append(Candidate(
+                raw_new_faces.append(Candidate(
                     stock=stock, category="new_face", score=kline_summary.score,
                     reason=kline_summary.trend, kline=kline_summary,
                     first_seen=first_date,
@@ -858,12 +947,41 @@ def scan(conn: sqlite3.Connection, session: requests.Session):
         else:
             kline_summary = analyze_old_face(stock, kline)
             if kline_summary and kline_summary.score >= 10:
-                old_faces.append(Candidate(
+                raw_old_faces.append(Candidate(
                     stock=stock, category="old_face", score=kline_summary.score,
                     reason=kline_summary.trend, kline=kline_summary,
                     first_seen=first_date,
                     history_pct=[k["percent"] for k in kline] if kline else [],
                 ))
+
+    # 5. 对候选股拉市值，做小而美过滤 + 加分
+    all_raw = raw_new_faces + raw_old_faces
+    if all_raw:
+        cand_symbols = list(set(c.stock.symbol for c in all_raw))
+        market_caps = fetch_market_caps_batch(session, cand_symbols)
+    else:
+        market_caps = {}
+
+    new_faces: list[Candidate] = []
+    old_faces: list[Candidate] = []
+    filtered_large_cap = 0
+
+    for c in all_raw:
+        cap_data = market_caps.get(c.stock.symbol, {})
+        market_cap = cap_data.get("market_cap", 0)
+
+        # 市值过滤
+        if market_cap > 0 and market_cap > MAX_MARKET_CAP:
+            filtered_large_cap += 1
+            continue
+
+        c.market_cap = market_cap
+        c.circ_market_cap = cap_data.get("circ_market_cap", 0)
+
+        if c.category == "new_face":
+            new_faces.append(c)
+        else:
+            old_faces.append(c)
 
     # 5. 行业集群 + 排名趋势 + 分时强度 额外加分
     clusters = get_sector_clusters(gem_top)
@@ -893,7 +1011,9 @@ def scan(conn: sqlite3.Connection, session: requests.Session):
 
     new_faces.sort(key=lambda c: c.score, reverse=True)
     old_faces.sort(key=lambda c: c.score, reverse=True)
-    return new_faces, old_faces, gem_stocks
+    new_faces.sort(key=lambda c: c.stock.rank)
+    old_faces.sort(key=lambda c: c.stock.rank)
+    return new_faces, old_faces, gem_stocks, filtered_large_cap
 
 
 # ── Display ──
@@ -918,6 +1038,17 @@ def _rank_delta_str(symbol: str, current_rank: int) -> tuple[str, str]:
     if diff < 0:
         return f"↓{-diff}", ANSI["GREEN"] if -diff >= 5 else ""
     return "  —", ""
+
+
+def _vis_len(s: str) -> int:
+    """终端视觉宽度（CJK双宽）"""
+    return sum(wcwidth.wcwidth(c) or 1 for c in s)
+
+
+def _pad(s: str, width: int, align: str = "l") -> str:
+    """按视觉宽度填充字符串"""
+    pad = max(0, width - _vis_len(s))
+    return f"{' ' * pad}{s}" if align == "r" else f"{s}{' ' * pad}"
 
 
 def clear_screen():
@@ -953,14 +1084,25 @@ def _bonus_tag(c: Candidate) -> str:
     return " ".join(parts) if parts else ""
 
 
-def display(new_faces: list[Candidate], old_faces: list[Candidate], gem_total: int, interval: int):
+def _fmt_market_cap(cap: float) -> str:
+    """格式化市值显示（亿）"""
+    if cap <= 0:
+        return ""
+    cap_yi = cap / YI
+    if cap_yi < 10:
+        return f"{cap_yi:.1f}亿"
+    return f"{cap_yi:.0f}亿"
+
+
+def display(new_faces: list[Candidate], old_faces: list[Candidate], gem_total: int, interval: int,
+            filtered_large_cap: int = 0):
     clear_screen()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     print(f"{'='*96}")
     print(f"  创业板飙升榜监控  ({now})")
 
-    # 行业集群提示
+    # 行业集群提示 + 小而美过滤
     all_c = new_faces + old_faces
     sec_counts: dict[str, int] = {}
     for c_ in all_c:
@@ -968,13 +1110,19 @@ def display(new_faces: list[Candidate], old_faces: list[Candidate], gem_total: i
             sec_counts[c_.sector] = sec_counts.get(c_.sector, 0) + 1
     hot_secs = [f"{s}{c}" for s, c in sorted(sec_counts.items(), key=lambda x: -x[1])[:3]]
     sec_line = f"  {' '.join(hot_secs)}" if hot_secs else ""
-    print(f"  创业板共 {gem_total} 只 | 前{TOP_N}: 新{len(new_faces)}旧{len(old_faces)} | {sec_line} | 每{interval}s刷新")
+    filter_info = f" | 过滤{filtered_large_cap}只" if filtered_large_cap else ""
+    # 检查是否有市值数据
+    cap_count = sum(1 for c in all_c if c.market_cap > 0)
+    cap_status = f"市值数据{cap_count}/{len(all_c)}" if all_c else "暂无候选"
+    print(f"  创业板共 {gem_total} 只 | 前{TOP_N}: 新{len(new_faces)}旧{len(old_faces)}{filter_info} | {sec_line} | {cap_status} | 每{interval}s刷新")
+    print(f"  小而美: 市值≤{int(MAX_MARKET_CAP/YI)}亿 股价≤{MAX_STOCK_PRICE}元")
     print(f"{'='*96}")
 
     # ── 新面孔 ──
     print(f"\n{ANSI['GREEN']}◆ 新面孔 — 底部异动 / 刚启动{ANSI['RESET']}  (找: 今日小涨+日线底部放量)")
-    print(f"  {'排名':>4} {'变化':>6} {'名称':<10} {'代码':<12} {'现价':>7} {'涨幅':>8} {'趋势':<14} {'5日累计':>8} {'量比':>6} {'评分':>4} {'增强':<12}")
-    print(f"  {'-'*100}")
+    hdr = f"  {_pad('排名',4,'r')} {_pad('变化',6,'r')} {_pad('名称',10)} {_pad('代码',12)} {_pad('现价',7,'r')} {_pad('涨幅',8,'r')} {_pad('趋势',14)} {_pad('5日累计',8,'r')} {_pad('量比',6,'r')} {_pad('评分',4,'r')} {_pad('增强',16)} {_pad('市值',8,'r')}"
+    print(hdr)
+    print(f"  {'-'*108}")
     if new_faces:
         for c in new_faces:
             s = c.stock
@@ -983,19 +1131,21 @@ def display(new_faces: list[Candidate], old_faces: list[Candidate], gem_total: i
             acc = f"{k.accumulated_pct:+.2f}%" if k else "N/A"
             vr = f"{k.volume_ratio:.1f}x" if k else "N/A"
             score_visible = str(c.score)
-            score_tag = f"{ANSI['BOLD']}{score_visible:>4}{ANSI['RESET']}" if c.score >= 20 else f"{score_visible:>4}"
+            score_tag = f"{ANSI['BOLD']}{_pad(score_visible,4,'r')}{ANSI['RESET']}" if c.score >= 20 else _pad(score_visible,4,'r')
             trend_tag = k.trend if k else "N/A"
             delta_text, delta_color = _rank_delta_str(s.symbol, s.rank)
-            delta_display = f"{delta_color}{delta_text:>6}{ANSI['RESET']}" if delta_color else f"{delta_text:>6}"
+            delta_display = f"{delta_color}{_pad(delta_text,6,'r')}{ANSI['RESET']}" if delta_color else _pad(delta_text,6,'r')
             bonus_str = _bonus_tag(c)
-            print(f"  {s.rank:>4} {delta_display} {s.name:<10} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {trend_tag:<14} {acc:>8} {vr:>6} {score_tag} {bonus_str:<12}")
+            cap_str = _fmt_market_cap(c.market_cap)
+            print(f"  {s.rank:>4} {delta_display} {_pad(s.name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} {_pad(bonus_str,16)} {cap_str:>8}")
     else:
         print(f"  {ANSI['YELLOW']}暂无新面孔{ANSI['RESET']}")
 
     # ── 旧面孔 ──
     print(f"\n{ANSI['CYAN']}◆ 旧面孔 — 盘整 / 回调低吸{ANSI['RESET']}  (找: 前期热点+今日回调)")
-    print(f"  {'排名':>4} {'变化':>6} {'名称':<10} {'代码':<12} {'现价':>7} {'涨幅':>8} {'趋势':<14} {'5日累计':>8} {'量比':>6} {'评分':>4} {'增强':<12} {'热度':>6}")
-    print(f"  {'-'*108}")
+    hdr = f"  {_pad('排名',4,'r')} {_pad('变化',6,'r')} {_pad('名称',10)} {_pad('代码',12)} {_pad('现价',7,'r')} {_pad('涨幅',8,'r')} {_pad('趋势',14)} {_pad('5日累计',8,'r')} {_pad('量比',6,'r')} {_pad('评分',4,'r')} {_pad('增强',16)} {_pad('市值',8,'r')} {_pad('热度',6,'r')}"
+    print(hdr)
+    print(f"  {'-'*116}")
     if old_faces:
         for c in old_faces:
             s = c.stock
@@ -1004,13 +1154,14 @@ def display(new_faces: list[Candidate], old_faces: list[Candidate], gem_total: i
             acc = f"{k.accumulated_pct:+.2f}%" if k else "N/A"
             vr = f"{k.volume_ratio:.1f}x" if k else "N/A"
             score_visible = str(c.score)
-            score_tag = f"{ANSI['BOLD']}{score_visible:>4}{ANSI['RESET']}" if c.score >= 20 else f"{score_visible:>4}"
+            score_tag = f"{ANSI['BOLD']}{_pad(score_visible,4,'r')}{ANSI['RESET']}" if c.score >= 20 else _pad(score_visible,4,'r')
             trend_tag = k.trend if k else "N/A"
             val_str = f"{s.value:.0f}" if s.value else "N/A"
             delta_text, delta_color = _rank_delta_str(s.symbol, s.rank)
-            delta_display = f"{delta_color}{delta_text:>6}{ANSI['RESET']}" if delta_color else f"{delta_text:>6}"
+            delta_display = f"{delta_color}{_pad(delta_text,6,'r')}{ANSI['RESET']}" if delta_color else _pad(delta_text,6,'r')
             bonus_str = _bonus_tag(c)
-            print(f"  {s.rank:>4} {delta_display} {s.name:<10} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {trend_tag:<14} {acc:>8} {vr:>6} {score_tag} {bonus_str:<12} {val_str:>6}")
+            cap_str = _fmt_market_cap(c.market_cap)
+            print(f"  {s.rank:>4} {delta_display} {_pad(s.name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} {_pad(bonus_str,16)} {cap_str:>8} {val_str:>6}")
     else:
         print(f"  {ANSI['YELLOW']}暂无旧面孔{ANSI['RESET']}")
 
@@ -1024,63 +1175,34 @@ def display(new_faces: list[Candidate], old_faces: list[Candidate], gem_total: i
 # ── Feishu Push ──
 
 def push_feishu(new_faces: list[Candidate], old_faces: list[Candidate], gem_total: int, conn: sqlite3.Connection | None = None):
-    """推送精简版扫描结果到飞书"""
+    """推送极简版扫描结果到飞书"""
     if not FEISHU_WEBHOOK:
         return
 
     now = datetime.now().strftime("%H:%M")
+    all_c = new_faces + old_faces
 
-    # 统计行业集群
-    all_candidates = new_faces + old_faces
-    sector_count: dict[str, int] = {}
-    for c in all_candidates:
+    # 行业热度（最多2个）
+    sec_cnt: dict[str, int] = {}
+    for c in all_c:
         if c.sector:
-            sector_count[c.sector] = sector_count.get(c.sector, 0) + 1
-    sector_hot = [f"{sec}x{n}" for sec, n in sorted(sector_count.items(), key=lambda x: -x[1]) if n >= 2]
+            sec_cnt[c.sector] = sec_cnt.get(c.sector, 0) + 1
+    sec_hot = " ".join(f"{s}{n}" for s, n in sorted(sec_cnt.items(), key=lambda x: -x[1])[:2])
 
     lines = [f"{FEISHU_KEYWORD}",
-             f"创业板扫描 {now} | 共{gem_total}只 | 新{len(new_faces)}旧{len(old_faces)}"]
-    if sector_hot:
-        lines.append(f"板块: {' '.join(sector_hot)}")
+             f"{now} 新{len(new_faces)}旧{len(old_faces)}" + (f" | {sec_hot}" if sec_hot else "")]
 
-    # ── 新面孔 ──
     if new_faces:
-        lines.append("")
-        lines.append("▎新面孔")
-        for c in new_faces[:5]:
+        lines.append(f"▎新")
+        for c in new_faces:
             s = c.stock
-            k = c.kline
-            pct = f"+{s.percent:.2f}%" if s.percent >= 0 else f"{s.percent:.2f}%"
-            trend = k.trend if k and k.trend else ""
-            sector_tag = f" [{c.sector}]" if c.sector else ""
-            lines.append(f"  #{s.rank} {s.name}{sector_tag} {pct} {trend}  {c.score}分")
+            lines.append(f" {s.rank} {s.name} {s.percent:+.1f}% {c.score}分")
 
-    # ── 旧面孔 ──
     if old_faces:
-        lines.append("")
-        lines.append("▎旧面孔")
-        for c in old_faces[:8]:
+        lines.append(f"▎旧")
+        for c in old_faces:
             s = c.stock
-            k = c.kline
-            pct = f"+{s.percent:.2f}%" if s.percent >= 0 else f"{s.percent:.2f}%"
-            trend = k.trend if k and k.trend else ""
-            vr = f" {k.volume_ratio:.1f}x" if k else ""
-            sector_tag = f" [{c.sector}]" if c.sector else ""
-            lines.append(f"  #{s.rank} {s.name}{sector_tag} {pct} {trend}{vr}  {c.score}分")
-
-    # ── 昨日回顾 ──
-    if conn:
-        track = get_tracking_summary(conn)
-        if track:
-            lines.append(track)
-
-    # ── 首选推荐 ──
-    if new_faces:
-        top = new_faces[0]
-        lines.append(f"\n▶ 新面孔首选: {top.stock.name} ({top.stock.percent:+.2f}%)")
-    if old_faces:
-        top = old_faces[0]
-        lines.append(f"▶ 旧面孔首选: {top.stock.name} ({top.stock.percent:+.2f}%)")
+            lines.append(f" {s.rank} {s.name} {s.percent:+.1f}% {c.score}分")
 
     text = "\n".join(lines)
 
@@ -1148,10 +1270,11 @@ def main():
             # 更新昨日推荐跟踪（每天一次，数据存在才非空）
             update_recommendation_results(conn)
 
-            new_faces, old_faces, all_gem = scan(conn, session)
+            new_faces, old_faces, all_gem, filtered_large_cap = scan(conn, session)
 
             # ── 展示 ──
-            display(new_faces, old_faces, len(all_gem), interval)
+            display(new_faces, old_faces, len(all_gem), interval,
+                    filtered_large_cap=filtered_large_cap)
             log_results(new_faces, old_faces)
 
             # 更新排名记录，用于下次对比
@@ -1160,7 +1283,7 @@ def main():
                 _last_ranks[s.symbol] = s.rank
 
             # 底部摘要 + 昨日回顾
-            track_msg = get_tracking_summary(conn)
+            # track_msg = get_tracking_summary(conn)
             if new_faces:
                 top = new_faces[0]
                 print(f"  ▶ 新面孔首选: {top.stock.name}({top.stock.symbol}) "
@@ -1171,8 +1294,8 @@ def main():
                 top_o = old_faces[0]
                 print(f"  ▶ 旧面孔首选: {top_o.stock.name}({top_o.stock.symbol}) "
                       f"{top_o.stock.percent:+.2f}% | {top_o.kline.trend if top_o.kline else ''}")
-            if track_msg:
-                print(track_msg)
+            # if track_msg:
+            #     print(track_msg)
 
             # 保存推荐 & 推送飞书
             save_recommendations(conn, new_faces, old_faces)
@@ -1183,12 +1306,13 @@ def main():
         except Exception as e:
             print(f"\n  [!] 错误: {type(e).__name__}: {e}")
 
-        # 倒计时（每次醒来都重新检查交易时间）
-        for remaining in range(interval, 0, -60):
+        # 倒计时（每秒刷新，实时检查交易时间）
+        for remaining in range(interval, 0, -1):
             if not is_trading_time():
-                break  # 收盘了，提前结束倒计时
-            print(f"\r  ⏳ 下次刷新还有 {remaining}s ...", end="", flush=True)
-            time.sleep(min(60, remaining))
+                break
+            if remaining % 10 == 0 or remaining <= 10:
+                print(f"\r  ⏳ 下次刷新还有 {remaining}s ...", end="", flush=True)
+            time.sleep(1)
         print()
 
 
