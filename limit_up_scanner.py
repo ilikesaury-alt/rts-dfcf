@@ -46,6 +46,19 @@ FEISHU_WEBHOOK = os.environ.get("FEISHU_WEBHOOK",
     "https://open.feishu.cn/open-apis/bot/v2/hook/d0caf1dd-54b6-4b86-b83d-861e4c79afda")
 FEISHU_KEYWORD = "lichun"      # 自定义关键词校验
 
+# ── 请求限流 ──
+_last_api_call: float = 0
+
+
+def _throttle(min_interval: float = 0.15):
+    """确保两次API调用之间至少间隔 min_interval 秒"""
+    global _last_api_call
+    elapsed = time.time() - _last_api_call
+    if elapsed < min_interval:
+        time.sleep(min_interval - elapsed)
+    _last_api_call = time.time()
+
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -274,6 +287,7 @@ def make_session() -> requests.Session:
 
 def fetch_kline(session: requests.Session, symbol: str, days: int = 25) -> list[dict] | None:
     """从雪球获取日K线数据"""
+    _throttle()
     now_ms = int(time.time() * 1000)
     begin_ms = now_ms - days * 86400 * 1000
     url = (
@@ -448,11 +462,13 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     today_vol = volumes[-1] if volumes else 0
     vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
 
-    # 底部判断
+    # 底部判断：近3日无大跌 + 放量 + 接近20日低点
+    closes = [k["close"] for k in kline]
     recent_3_pcts = pcts[-3:] if len(pcts) >= 3 else pcts
     no_heavy_loss = all(p > -3 for p in recent_3_pcts)
     volume_surge = vol_ratio > 1.3
-    bottom_confirmed = no_heavy_loss and volume_surge
+    near_20d_low = (closes[-1] - min(closes[-20:])) / max(min(closes[-20:]), 0.01) < 0.05 if len(closes) >= 20 else True
+    bottom_confirmed = no_heavy_loss and volume_surge and near_20d_low
 
     if bottom_confirmed:
         trend = "⚡底部启动"
@@ -475,16 +491,16 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
         score += 5   # 偏高但可接受
 
     # --- 累计涨幅评分 ---
-    if accumulated < 10 and accumulated > -5:
+    if accumulated < 15 and accumulated > -5:
         score += 15
-    elif accumulated >= 10:
-        score -= 15
-    if accumulated >= 20:
+    elif accumulated >= 15:
+        score -= 10
+    if accumulated >= 25:
         score -= 10  # 累计涨幅过高，追高风险大
 
     # --- K线形态 ---
     if bottom_confirmed:
-        score += 25
+        score += 15
     if volume_surge:
         score += 10
 
@@ -527,9 +543,9 @@ def analyze_old_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
 
     is_pullback = today_pct < 2
 
-    # 是否破位
-    recent_3_closes = closes[-3:] if len(closes) >= 3 else closes
-    not_broken = recent_3_closes[-1] >= min(recent_3_closes)
+    # 是否破位（10日支撑位）
+    recent_10_closes = closes[-10:] if len(closes) >= 10 else closes
+    not_broken = recent_10_closes[-1] >= min(recent_10_closes)
 
     # 成交量
     volumes = [k["volume"] for k in kline]
@@ -674,6 +690,7 @@ def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
         return _INTRADAY_CACHE[symbol]
 
     try:
+        _throttle()
         ts = int(time.time() * 1000)
         url = f"https://stock.xueqiu.com/v5/stock/chart/minute.json?symbol={symbol}&period=1d&_={ts}"
         resp = session.get(url, timeout=15)
@@ -735,9 +752,17 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, old_faces: l
     conn.commit()
 
 
+def _last_trading_day() -> date:
+    """往前推到最近一个交易日"""
+    d = date.today() - timedelta(days=1)
+    while not is_trading_day(d):
+        d -= timedelta(days=1)
+    return d
+
+
 def update_recommendation_results(conn: sqlite3.Connection):
-    """更新昨日推荐股票今日表现（对比当前K线数据）"""
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    """更新昨日（最近交易日）推荐股票今日表现"""
+    yesterday = _last_trading_day().isoformat()
     # 只更新尚未填写 next_day_pct 的记录
     cur = conn.execute(
         "SELECT DISTINCT symbol FROM recommendations WHERE date = ? AND next_day_pct IS NULL",
@@ -932,6 +957,12 @@ def scan(conn: sqlite3.Connection, session: requests.Session):
         is_new = len(previous_dates) == 0
         first_date = previous_dates[0] if previous_dates else today
 
+        # 旧面孔必须有前置涨幅（近3天至少有一天涨幅≥5%），否则不算热点股
+        if not is_new:
+            has_strong_prev = any(a["percent"] >= 5 for a in app_history if a["date"] < today)
+            if not has_strong_prev:
+                continue
+
         kline = ensure_kline(conn, session, stock.symbol)
         kline_summary = None
 
@@ -983,9 +1014,8 @@ def scan(conn: sqlite3.Connection, session: requests.Session):
         else:
             old_faces.append(c)
 
-    # 5. 行业集群 + 排名趋势 + 分时强度 额外加分
+    # 6. 行业集群 + 排名趋势 + 分时强度 额外加分
     clusters = get_sector_clusters(gem_top)
-    _INTRADAY_CACHE.clear()
 
     for c in new_faces + old_faces:
         # 排名趋势加分（连续上榜/排名上升）
