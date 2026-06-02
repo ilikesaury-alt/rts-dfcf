@@ -18,7 +18,7 @@ def fetch_biaosheng(page=1, size=100):
     }
     session = requests.Session()
     session.headers.update(headers)
-    session.get('https://xueqiu.com/', timeout=15)
+    session.get('https://xueqiu.com/hq', timeout=15)
 
     ts = int(time.time() * 1000)
     url = (f'https://stock.xueqiu.com/v5/stock/hot_stock/new_list.json'

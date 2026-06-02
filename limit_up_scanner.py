@@ -281,7 +281,7 @@ def make_session() -> requests.Session:
     s = requests.Session()
     s.trust_env = False  # 避开系统代理
     s.headers.update(HEADERS)
-    s.get("https://xueqiu.com/", timeout=REQUEST_TIMEOUT)
+    s.get("https://xueqiu.com/hq", timeout=REQUEST_TIMEOUT)
     return s
 
 
