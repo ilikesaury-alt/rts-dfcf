@@ -1329,7 +1329,7 @@ def main():
 
             # 保存推荐 & 推送飞书
             save_recommendations(conn, new_faces, old_faces)
-            push_feishu(new_faces, old_faces, len(all_gem), conn)
+            # push_feishu(new_faces, old_faces, len(all_gem), conn)
 
         except requests.RequestException as e:
             print(f"\n  [!] 网络错误: {e}")
