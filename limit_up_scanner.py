@@ -681,23 +681,30 @@ def rank_streak_score(symbol: str) -> int:
 
 # ── Intraday strength ──
 
-_INTRADAY_CACHE: dict[str, float | None] = {}
+_INTRADAY_CACHE: dict[str, tuple[float | None, float]] = {}
+_INTRADAY_CACHE_TTL = 300   # 正常缓存5分钟
+_INTRADAY_CACHE_FAIL_TTL = 60  # 失败后1分钟重试
 
 
 def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
     """获取分时数据，计算盘中强度，返回 -3~+3 的分数"""
+    now = time.time()
     if symbol in _INTRADAY_CACHE:
-        return _INTRADAY_CACHE[symbol]
+        val, ts = _INTRADAY_CACHE[symbol]
+        if val is not None and now - ts < _INTRADAY_CACHE_TTL:
+            return val
+        if val is None and now - ts < _INTRADAY_CACHE_FAIL_TTL:
+            return None
 
     try:
         _throttle()
-        ts = int(time.time() * 1000)
-        url = f"https://stock.xueqiu.com/v5/stock/chart/minute.json?symbol={symbol}&period=1d&_={ts}"
+        ts_ms = int(time.time() * 1000)
+        url = f"https://stock.xueqiu.com/v5/stock/chart/minute.json?symbol={symbol}&period=1d&_={ts_ms}"
         resp = session.get(url, timeout=15)
         d = resp.json()
         items = d.get("data", {}).get("items", [])
         if not items or len(items) < 10:
-            _INTRADAY_CACHE[symbol] = None
+            _INTRADAY_CACHE[symbol] = (None, now)
             return None
 
         first_px = items[0]["current"]
@@ -726,10 +733,10 @@ def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
             score -= 1.5
 
         score = max(-3.0, min(3.0, score))
-        _INTRADAY_CACHE[symbol] = score
+        _INTRADAY_CACHE[symbol] = (score, now)
         return score
     except Exception:
-        _INTRADAY_CACHE[symbol] = None
+        _INTRADAY_CACHE[symbol] = (None, now)
         return None
 
 
