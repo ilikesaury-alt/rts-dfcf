@@ -453,10 +453,10 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
 
     pcts = [k["percent"] for k in kline]
 
-    # 日线质量：近5日多数下跌+今日涨幅偏弱 → 下降通道反弹，不推荐
+    # 日线质量：近5日多数下跌+累计偏弱+今日涨幅偏弱 → 下降通道反弹，不推荐
     recent_5_pcts = pcts[-5:] if len(pcts) >= 5 else pcts
     down_days = sum(1 for p in recent_5_pcts if p < 0)
-    if down_days >= 3 and today_pct < 5:
+    if down_days >= 3 and sum(recent_5_pcts) < 5 and today_pct < 5:
         return None
 
     # 近5日累计涨幅（不含今日更能看清启动前状态）
@@ -546,8 +546,12 @@ def analyze_old_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     pcts = [k["percent"] for k in kline]
     closes = [k["close"] for k in kline]
 
-    # 近5日累计涨幅
+    # 日线质量：近5日多数下跌+累计偏弱+今日涨幅偏弱 → 下降通道反弹，不推荐
     recent_5 = pcts[-5:] if len(pcts) >= 5 else pcts
+    if sum(1 for p in recent_5 if p < 0) >= 3 and sum(recent_5) < 5 and today_pct < 5:
+        return None
+
+    # 近5日累计涨幅
     accumulated = sum(recent_5)
 
     is_pullback = today_pct < 2
