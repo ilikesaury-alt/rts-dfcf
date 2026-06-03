@@ -32,7 +32,10 @@ if sys.platform == "win32":
 REFRESH_INTERVAL = 180
 REQUEST_TIMEOUT = 15
 TOP_N = 40                     # 只看前40名
-NEW_FACE_LOOKBACK_DAYS = 3     # 几天内没出现过算新面孔
+NEW_FACE_LOOKBACK_DAYS = 3         # 几天内没出现过算新面孔
+OLD_FACE_STRONG_PREV_LOOKBACK = 5  # 旧面孔前置涨幅回查窗口(天)
+
+MOMENTUM_MIN_SCORE = 15    # 动量延续最低门槛
 
 # ── 小而美策略 ──
 # 过滤大市值高股价，聚焦小盘低价股
@@ -450,6 +453,12 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
 
     pcts = [k["percent"] for k in kline]
 
+    # 日线质量：近5日多数下跌+今日涨幅偏弱 → 下降通道反弹，不推荐
+    recent_5_pcts = pcts[-5:] if len(pcts) >= 5 else pcts
+    down_days = sum(1 for p in recent_5_pcts if p < 0)
+    if down_days >= 3 and today_pct < 5:
+        return None
+
     # 近5日累计涨幅（不含今日更能看清启动前状态）
     recent_5 = pcts[-6:-1] if len(pcts) >= 6 else pcts[:-1]
     recent_5 = recent_5 if recent_5 else [0]
@@ -593,6 +602,85 @@ def analyze_old_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
                         volume_ratio=round(vol_ratio, 2), bottom_confirmed=not_broken and is_pullback, score=score)
 
 
+def analyze_momentum(stock: StockInfo, kline: list[dict] | None) -> KlineSummary | None:
+    """动量延续：已启动的票今日温和上攻，仍有空间"""
+    if not kline or len(kline) < 5:
+        return None
+
+    today_pct = stock.percent
+    if today_pct <= 0:
+        return None
+
+    pcts = [k["percent"] for k in kline]
+    recent_5 = pcts[-6:-1] if len(pcts) >= 6 else pcts[:-1]
+    recent_5 = recent_5 if recent_5 else [0]
+    accumulated = sum(recent_5)
+
+    # 核心：必须有足够的累计涨幅才叫动量
+    if accumulated < 10:
+        return None
+
+    volumes = [k["volume"] for k in kline]
+    vol_window = volumes[-11:-1] if len(volumes) >= 11 else volumes[:-1]
+    avg_vol = sum(vol_window) / max(len(vol_window), 1)
+    today_vol = volumes[-1] if volumes else 0
+    vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
+
+    score = 0
+
+    # --- 涨幅评分 ---
+    if 2 <= today_pct <= 8:
+        score += 20
+    elif today_pct < 2:
+        score += 5   # 涨幅偏弱，但不算差
+    elif today_pct > 8:
+        return None  # 大涨日不追动量
+
+    # --- 累计涨幅：只惩罚极端值 ---
+    if accumulated >= 30:
+        score -= 15
+        trend = "累计过高⚠️"
+    elif accumulated >= 20:
+        score += 5
+        trend = "动量延续"
+    elif accumulated >= 15:
+        score += 10
+        trend = "动量启动"
+    else:
+        score += 15
+        trend = "加速启动"
+
+    # --- 成交量：温和放量最好 ---
+    if 0.7 < vol_ratio < 2.0:
+        score += 10
+    elif vol_ratio >= 2.0:
+        score -= 8   # 爆量可能出货
+    elif vol_ratio < 0.7:
+        score -= 5   # 缩量动能不足
+
+    # --- 近2日未修复的大跌检查 ---
+    if len(pcts) >= 2:
+        recent_2_return = pcts[-2] + pcts[-1]
+        no_crash = recent_2_return > -3
+    else:
+        no_crash = True
+    if no_crash:
+        score += 15
+
+    # --- 飙升榜信号 ---
+    if stock.rank_change >= 2000:
+        score += 12
+    elif stock.rank_change >= 1000:
+        score += 6
+    if stock.value >= 10000:
+        score += 5
+    elif stock.value >= 5000:
+        score += 2
+
+    return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
+                        volume_ratio=round(vol_ratio, 2), bottom_confirmed=no_crash, score=score)
+
+
 # ── Sector classifier ──
 
 # 行业关键词映射（从股票名称识别行业）
@@ -687,7 +775,15 @@ _INTRADAY_CACHE_FAIL_TTL = 60  # 失败后1分钟重试
 
 
 def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
-    """获取分时数据，计算盘中强度，返回 -3~+3 的分数"""
+    """获取分时数据，计算盘中强度（进攻性），返回 -3~+3 的分数
+
+    评分维度：
+      - 早盘贡献过半 +1.5 / 尾盘偷袭 -1.0
+      - 特大单净流入>5% +1.5 / 净流出>5% -1.5
+      - 多波攻击(≥4段上涨) +1.5 / 温和攻击(2-3段) +0.5
+      - 价格高位运行(上30%) +0.5 / 低位运行(下30%) -0.5
+      - 后半段持续新高 +0.5 / 冲高回落 -0.5
+    """
     now = time.time()
     if symbol in _INTRADAY_CACHE:
         val, ts = _INTRADAY_CACHE[symbol]
@@ -721,16 +817,49 @@ def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
         xlarge = capital.get("xlarge", 0) if capital else 0
 
         score = 0.0
-        # 早盘拉升后横盘（强势） vs 尾盘拉升（弱势）
+        # 1. 早盘拉升后横盘（强势） vs 尾盘拉升（弱势）
         if total_chg > 0 and morning_chg > total_chg * 0.5:
-            score += 1.5  # 早盘拉升，强势整固
+            score += 1.5
         elif total_chg > 0 and morning_chg < total_chg * 0.3:
-            score -= 1.0  # 尾盘偷袭，弱势
-        # 资金面：大单主力流入
+            score -= 1.0
+
+        # 2. 资金面：大单主力流入
         if xlarge > 5:
             score += 1.5
         elif xlarge < -5:
             score -= 1.5
+
+        # 3. 攻击波检测：将分时切N段，统计上涨段数
+        segments = 10
+        seg_size = len(items) // segments
+        if seg_size > 0:
+            seg_prices = [items[min(i * seg_size, len(items) - 1)]["current"] for i in range(segments + 1)]
+            seg_changes = [(seg_prices[i + 1] - seg_prices[i]) / seg_prices[i] * 100 for i in range(segments)]
+            attack_waves = sum(1 for c in seg_changes if c > 0.2)
+            if attack_waves >= 4:
+                score += 1.5
+            elif attack_waves >= 2:
+                score += 0.5
+
+        # 4. 价格运行区间：当前价在日内高低点的位置
+        high = max(item["current"] for item in items)
+        low = min(item["current"] for item in items)
+        if high > low:
+            position = (last_px - low) / (high - low)
+            if position > 0.7:
+                score += 0.5
+            elif position < 0.3 and total_chg < 3:
+                score -= 0.5
+
+        # 5. 走势一致性：后半段 vs 前半段
+        mid = len(items) // 2
+        mid_px = items[mid]["current"]
+        first_half_chg = (mid_px - first_px) / first_px * 100
+        second_half_chg = (last_px - mid_px) / mid_px * 100 if last_px != mid_px else 0
+        if first_half_chg > 0 and second_half_chg > first_half_chg * 0.3:
+            score += 0.5
+        elif first_half_chg > 0 and second_half_chg < -first_half_chg * 0.3:
+            score -= 0.5
 
         score = max(-3.0, min(3.0, score))
         _INTRADAY_CACHE[symbol] = (score, now)
@@ -742,11 +871,11 @@ def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
 
 # ── Recommendation tracking ──
 
-def save_recommendations(conn: sqlite3.Connection, new_faces: list, old_faces: list):
+def save_recommendations(conn: sqlite3.Connection, new_faces: list, old_faces: list, momentum: list):
     """保存本次推荐记录到DB"""
     today = date.today().isoformat()
     now = datetime.now().strftime("%H:%M:%S")
-    for c in new_faces + old_faces:
+    for c in new_faces + old_faces + momentum:
         try:
             conn.execute(
                 "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, trend) "
@@ -810,7 +939,7 @@ def get_tracking_summary(conn: sqlite3.Connection) -> str:
     lines = ["", "▎昨日回顾"]
     wins, losses = 0, 0
     for name, cat, score, pct, trend, nd_pct in rows:
-        tag = "新" if cat == "new_face" else "旧"
+        tag = {"new_face": "新", "momentum": "动量", "old_face": "旧"}.get(cat, "?")
         pct_str = f"{pct:+.2f}%" if pct else "N/A"
         if nd_pct is not None:
             nd = f"{nd_pct:+.2f}%"
@@ -953,6 +1082,7 @@ def scan(conn: sqlite3.Connection, session: requests.Session):
     # 4. 先出候选（不含市值过滤），后续再对候选股拉市值
     raw_new_faces: list[Candidate] = []
     raw_old_faces: list[Candidate] = []
+    raw_momentum: list[Candidate] = []
 
     for stock in gem_top:
         # 股价硬过滤（不需要API，直接用）
@@ -964,9 +1094,10 @@ def scan(conn: sqlite3.Connection, session: requests.Session):
         is_new = len(previous_dates) == 0
         first_date = previous_dates[0] if previous_dates else today
 
-        # 旧面孔必须有前置涨幅（近3天至少有一天涨幅≥5%），否则不算热点股
+        # 旧面孔必须有前置涨幅（近N天至少有一天涨幅≥5%），否则不算热点股
         if not is_new:
-            has_strong_prev = any(a["percent"] >= 5 for a in app_history if a["date"] < today)
+            strong_history = get_symbol_appearances(conn, stock.symbol, OLD_FACE_STRONG_PREV_LOOKBACK)
+            has_strong_prev = any(a["percent"] >= 5 for a in strong_history if a["date"] < today)
             if not has_strong_prev:
                 continue
 
@@ -982,6 +1113,16 @@ def scan(conn: sqlite3.Connection, session: requests.Session):
                     first_seen=first_date,
                     history_pct=[k["percent"] for k in kline] if kline else [],
                 ))
+            else:
+                # 新面孔失败 → 尝试动量延续（已有累计涨幅的票）
+                momentum = analyze_momentum(stock, kline)
+                if momentum and momentum.score >= MOMENTUM_MIN_SCORE:
+                    raw_momentum.append(Candidate(
+                        stock=stock, category="momentum", score=momentum.score,
+                        reason=momentum.trend, kline=momentum,
+                        first_seen=first_date,
+                        history_pct=[k["percent"] for k in kline] if kline else [],
+                    ))
         else:
             kline_summary = analyze_old_face(stock, kline)
             if kline_summary and kline_summary.score >= 10:
@@ -1002,6 +1143,7 @@ def scan(conn: sqlite3.Connection, session: requests.Session):
 
     new_faces: list[Candidate] = []
     old_faces: list[Candidate] = []
+    momentum: list[Candidate] = []
     filtered_large_cap = 0
 
     for c in all_raw:
@@ -1018,13 +1160,15 @@ def scan(conn: sqlite3.Connection, session: requests.Session):
 
         if c.category == "new_face":
             new_faces.append(c)
+        elif c.category == "momentum":
+            momentum.append(c)
         else:
             old_faces.append(c)
 
     # 6. 行业集群 + 排名趋势 + 分时强度 额外加分
     clusters = get_sector_clusters(gem_top)
 
-    for c in new_faces + old_faces:
+    for c in new_faces + old_faces + momentum:
         # 排名趋势加分（连续上榜/排名上升）
         c.rank_trend_bonus = rank_streak_score(c.stock.symbol)
         # 行业集群加分（同行业多只上榜说明板块效应，仅限真实行业）
@@ -1043,14 +1187,22 @@ def scan(conn: sqlite3.Connection, session: requests.Session):
         # 加到总分
         c.score += c.rank_trend_bonus + c.sector_bonus + int(c.intraday_score)
 
+    # 分时强度过滤：弱势分时走势(-1以下)直接剔除，不参与排名
+    new_faces = [c for c in new_faces if c.intraday_score > -1]
+    old_faces = [c for c in old_faces if c.intraday_score > -1]
+    momentum = [c for c in momentum if c.intraday_score > -1]
+
     # 更新排名历史（用于趋势跟踪）
-    update_rank_history({c.stock.symbol: c.stock.rank for c in new_faces + old_faces})
+    all_cats = new_faces + old_faces + momentum
+    update_rank_history({c.stock.symbol: c.stock.rank for c in all_cats})
 
     new_faces.sort(key=lambda c: c.score, reverse=True)
     old_faces.sort(key=lambda c: c.score, reverse=True)
+    momentum.sort(key=lambda c: c.score, reverse=True)
     new_faces.sort(key=lambda c: c.stock.rank)
     old_faces.sort(key=lambda c: c.stock.rank)
-    return new_faces, old_faces, gem_stocks, filtered_large_cap
+    momentum.sort(key=lambda c: c.stock.rank)
+    return new_faces, old_faces, momentum, gem_stocks, filtered_large_cap
 
 
 # ── Display ──
@@ -1131,8 +1283,8 @@ def _fmt_market_cap(cap: float) -> str:
     return f"{cap_yi:.0f}亿"
 
 
-def display(new_faces: list[Candidate], old_faces: list[Candidate], gem_total: int, interval: int,
-            filtered_large_cap: int = 0):
+def display(new_faces: list[Candidate], old_faces: list[Candidate], momentum: list[Candidate],
+            gem_total: int, interval: int, filtered_large_cap: int = 0):
     clear_screen()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -1140,7 +1292,7 @@ def display(new_faces: list[Candidate], old_faces: list[Candidate], gem_total: i
     print(f"  创业板飙升榜监控  ({now})")
 
     # 行业集群提示 + 小而美过滤
-    all_c = new_faces + old_faces
+    all_c = new_faces + old_faces + momentum
     sec_counts: dict[str, int] = {}
     for c_ in all_c:
         if c_.sector:
@@ -1151,73 +1303,77 @@ def display(new_faces: list[Candidate], old_faces: list[Candidate], gem_total: i
     # 检查是否有市值数据
     cap_count = sum(1 for c in all_c if c.market_cap > 0)
     cap_status = f"市值数据{cap_count}/{len(all_c)}" if all_c else "暂无候选"
-    print(f"  创业板共 {gem_total} 只 | 前{TOP_N}: 新{len(new_faces)}旧{len(old_faces)}{filter_info} | {sec_line} | {cap_status} | 每{interval}s刷新")
+    print(f"  创业板共 {gem_total} 只 | 前{TOP_N}: 新{len(new_faces)}动{len(momentum)}旧{len(old_faces)}{filter_info} | {sec_line} | {cap_status} | 每{interval}s刷新")
     print(f"  小而美: 市值≤{int(MAX_MARKET_CAP/YI)}亿 股价≤{MAX_STOCK_PRICE}元")
     print(f"{'='*96}")
 
+    def _print_row(c: Candidate, show_val: bool = False):
+        s = c.stock
+        k = c.kline
+        cur = f"{s.current:.2f}" if s.current else "N/A"
+        acc = f"{k.accumulated_pct:+.2f}%" if k else "N/A"
+        vr = f"{k.volume_ratio:.1f}x" if k else "N/A"
+        score_visible = str(c.score)
+        score_tag = f"{ANSI['BOLD']}{_pad(score_visible,4,'r')}{ANSI['RESET']}" if c.score >= 15 else _pad(score_visible,4,'r')
+        trend_tag = k.trend if k else "N/A"
+        delta_text, delta_color = _rank_delta_str(s.symbol, s.rank)
+        delta_display = f"{delta_color}{_pad(delta_text,6,'r')}{ANSI['RESET']}" if delta_color else _pad(delta_text,6,'r')
+        bonus_str = _bonus_tag(c)
+        cap_str = _fmt_market_cap(c.market_cap)
+        val_str = f"{s.value:.0f}" if s.value else "N/A"
+        if show_val:
+            print(f"  {s.rank:>4} {delta_display} {_pad(s.name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} {_pad(bonus_str,16)} {cap_str:>8} {val_str:>6}")
+        else:
+            print(f"  {s.rank:>4} {delta_display} {_pad(s.name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} {_pad(bonus_str,16)} {cap_str:>8}")
+
+    hdr = f"  {_pad('排名',4,'r')} {_pad('变化',6,'r')} {_pad('名称',10)} {_pad('代码',12)} {_pad('现价',7,'r')} {_pad('涨幅',8,'r')} {_pad('趋势',14)} {_pad('5日累计',8,'r')} {_pad('量比',6,'r')} {_pad('评分',4,'r')} {_pad('增强',16)} {_pad('市值',8,'r')}"
+
     # ── 新面孔 ──
     print(f"\n{ANSI['GREEN']}◆ 新面孔 — 底部异动 / 刚启动{ANSI['RESET']}  (找: 今日小涨+日线底部放量)")
-    hdr = f"  {_pad('排名',4,'r')} {_pad('变化',6,'r')} {_pad('名称',10)} {_pad('代码',12)} {_pad('现价',7,'r')} {_pad('涨幅',8,'r')} {_pad('趋势',14)} {_pad('5日累计',8,'r')} {_pad('量比',6,'r')} {_pad('评分',4,'r')} {_pad('增强',16)} {_pad('市值',8,'r')}"
     print(hdr)
     print(f"  {'-'*108}")
     if new_faces:
         for c in new_faces:
-            s = c.stock
-            k = c.kline
-            cur = f"{s.current:.2f}" if s.current else "N/A"
-            acc = f"{k.accumulated_pct:+.2f}%" if k else "N/A"
-            vr = f"{k.volume_ratio:.1f}x" if k else "N/A"
-            score_visible = str(c.score)
-            score_tag = f"{ANSI['BOLD']}{_pad(score_visible,4,'r')}{ANSI['RESET']}" if c.score >= 20 else _pad(score_visible,4,'r')
-            trend_tag = k.trend if k else "N/A"
-            delta_text, delta_color = _rank_delta_str(s.symbol, s.rank)
-            delta_display = f"{delta_color}{_pad(delta_text,6,'r')}{ANSI['RESET']}" if delta_color else _pad(delta_text,6,'r')
-            bonus_str = _bonus_tag(c)
-            cap_str = _fmt_market_cap(c.market_cap)
-            print(f"  {s.rank:>4} {delta_display} {_pad(s.name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} {_pad(bonus_str,16)} {cap_str:>8}")
+            _print_row(c)
     else:
         print(f"  {ANSI['YELLOW']}暂无新面孔{ANSI['RESET']}")
 
+    # ── 动量延续 ──
+    if momentum:
+        print(f"\n{ANSI['YELLOW']}◆ 动量延续 — 已启动 / 温和上攻{ANSI['RESET']}  (找: 累计涨幅已起+今日温和放量)")
+        print(hdr)
+        print(f"  {'-'*108}")
+        for c in momentum:
+            _print_row(c)
+
     # ── 旧面孔 ──
+    hdr_val = f"{hdr} {_pad('热度',6,'r')}"
     print(f"\n{ANSI['CYAN']}◆ 旧面孔 — 盘整 / 回调低吸{ANSI['RESET']}  (找: 前期热点+今日回调)")
-    hdr = f"  {_pad('排名',4,'r')} {_pad('变化',6,'r')} {_pad('名称',10)} {_pad('代码',12)} {_pad('现价',7,'r')} {_pad('涨幅',8,'r')} {_pad('趋势',14)} {_pad('5日累计',8,'r')} {_pad('量比',6,'r')} {_pad('评分',4,'r')} {_pad('增强',16)} {_pad('市值',8,'r')} {_pad('热度',6,'r')}"
-    print(hdr)
+    print(hdr_val)
     print(f"  {'-'*116}")
     if old_faces:
         for c in old_faces:
-            s = c.stock
-            k = c.kline
-            cur = f"{s.current:.2f}" if s.current else "N/A"
-            acc = f"{k.accumulated_pct:+.2f}%" if k else "N/A"
-            vr = f"{k.volume_ratio:.1f}x" if k else "N/A"
-            score_visible = str(c.score)
-            score_tag = f"{ANSI['BOLD']}{_pad(score_visible,4,'r')}{ANSI['RESET']}" if c.score >= 20 else _pad(score_visible,4,'r')
-            trend_tag = k.trend if k else "N/A"
-            val_str = f"{s.value:.0f}" if s.value else "N/A"
-            delta_text, delta_color = _rank_delta_str(s.symbol, s.rank)
-            delta_display = f"{delta_color}{_pad(delta_text,6,'r')}{ANSI['RESET']}" if delta_color else _pad(delta_text,6,'r')
-            bonus_str = _bonus_tag(c)
-            cap_str = _fmt_market_cap(c.market_cap)
-            print(f"  {s.rank:>4} {delta_display} {_pad(s.name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} {_pad(bonus_str,16)} {cap_str:>8} {val_str:>6}")
+            _print_row(c, show_val=True)
     else:
         print(f"  {ANSI['YELLOW']}暂无旧面孔{ANSI['RESET']}")
 
     # ── 策略 ──
     print(f"\n{'-'*96}")
-    print(f"  {ANSI['GREEN']}新面孔策略{ANSI['RESET']}: 底部放量启动+涨幅2-6% → 买入")
-    print(f"  {ANSI['CYAN']}旧面孔策略{ANSI['RESET']}: 缩量回调+未破位+高热度 → 逢低买入等2波")
+    print(f"  {ANSI['GREEN']}新面孔{ANSI['RESET']}: 底部放量启动+涨幅2-6%")
+    print(f"  {ANSI['YELLOW']}动量延续{ANSI['RESET']}: 累计涨幅10%+今日温和上攻")
+    print(f"  {ANSI['CYAN']}旧面孔{ANSI['RESET']}: 缩量回调+未破位+高热度")
     print()
 
 
 # ── Feishu Push ──
 
-def push_feishu(new_faces: list[Candidate], old_faces: list[Candidate], gem_total: int, conn: sqlite3.Connection | None = None):
+def push_feishu(new_faces: list[Candidate], old_faces: list[Candidate], momentum: list[Candidate], gem_total: int, conn: sqlite3.Connection | None = None):
     """推送极简版扫描结果到飞书"""
     if not FEISHU_WEBHOOK:
         return
 
     now = datetime.now().strftime("%H:%M")
-    all_c = new_faces + old_faces
+    all_c = new_faces + old_faces + momentum
 
     # 行业热度（最多2个）
     sec_cnt: dict[str, int] = {}
@@ -1227,11 +1383,17 @@ def push_feishu(new_faces: list[Candidate], old_faces: list[Candidate], gem_tota
     sec_hot = " ".join(f"{s}{n}" for s, n in sorted(sec_cnt.items(), key=lambda x: -x[1])[:2])
 
     lines = [f"{FEISHU_KEYWORD}",
-             f"{now} 新{len(new_faces)}旧{len(old_faces)}" + (f" | {sec_hot}" if sec_hot else "")]
+             f"{now} 新{len(new_faces)}动{len(momentum)}旧{len(old_faces)}" + (f" | {sec_hot}" if sec_hot else "")]
 
     if new_faces:
         lines.append(f"▎新")
         for c in new_faces:
+            s = c.stock
+            lines.append(f" {s.rank} {s.name} {s.percent:+.1f}% {c.score}分")
+
+    if momentum:
+        lines.append(f"▎动量")
+        for c in momentum:
             s = c.stock
             lines.append(f" {s.rank} {s.name} {s.percent:+.1f}% {c.score}分")
 
@@ -1255,7 +1417,7 @@ def push_feishu(new_faces: list[Candidate], old_faces: list[Candidate], gem_tota
         print(f"\n  [!] 推送异常: {e}")
 
 
-def log_results(new_faces: list[Candidate], old_faces: list[Candidate]):
+def log_results(new_faces: list[Candidate], old_faces: list[Candidate], momentum: list[Candidate]):
     os.makedirs(LOG_DIR, exist_ok=True)
     today = date.today().isoformat()
     log_file = os.path.join(LOG_DIR, f"scan_{today}.csv")
@@ -1264,9 +1426,9 @@ def log_results(new_faces: list[Candidate], old_faces: list[Candidate]):
         if is_new:
             f.write("时间,分类,名称,代码,现价,涨幅,趋势,5日累计,量比,评分\n")
         now = datetime.now().strftime("%H:%M:%S")
-        for c in (new_faces[:5] + old_faces[:5]):
+        for c in (new_faces[:5] + momentum[:5] + old_faces[:5]):
             k = c.kline
-            tag = "新" if c.category == "new_face" else "旧"
+            tag = {"new_face": "新", "momentum": "动量", "old_face": "旧"}.get(c.category, "?")
             f.write(f"{now},{tag},{c.stock.name},{c.stock.symbol},{c.stock.current:.2f},{c.stock.percent:+.2f}%,{k.trend if k else ''},{k.accumulated_pct if k else ''},{k.volume_ratio if k else ''},{c.score}\n")
 
 
@@ -1307,12 +1469,12 @@ def main():
             # 更新昨日推荐跟踪（每天一次，数据存在才非空）
             update_recommendation_results(conn)
 
-            new_faces, old_faces, all_gem, filtered_large_cap = scan(conn, session)
+            new_faces, old_faces, momentum, all_gem, filtered_large_cap = scan(conn, session)
 
             # ── 展示 ──
-            display(new_faces, old_faces, len(all_gem), interval,
+            display(new_faces, old_faces, momentum, len(all_gem), interval,
                     filtered_large_cap=filtered_large_cap)
-            log_results(new_faces, old_faces)
+            log_results(new_faces, old_faces, momentum)
 
             # 更新排名记录，用于下次对比
             _last_ranks.clear()
@@ -1327,6 +1489,10 @@ def main():
                       f"{top.stock.percent:+.2f}% | {top.kline.trend if top.kline else ''}")
                 if top.score >= 20:
                     print(f"  ⚠️  底部异动信号! {top.stock.name} 评分{top.score}")
+            if momentum:
+                top_m = momentum[0]
+                print(f"  ▶ 动量延续首选: {top_m.stock.name}({top_m.stock.symbol}) "
+                      f"{top_m.stock.percent:+.2f}% | {top_m.kline.trend if top_m.kline else ''}")
             if old_faces:
                 top_o = old_faces[0]
                 print(f"  ▶ 旧面孔首选: {top_o.stock.name}({top_o.stock.symbol}) "
@@ -1335,8 +1501,8 @@ def main():
             #     print(track_msg)
 
             # 保存推荐 & 推送飞书
-            save_recommendations(conn, new_faces, old_faces)
-            # push_feishu(new_faces, old_faces, len(all_gem), conn)
+            save_recommendations(conn, new_faces, old_faces, momentum)
+            # push_feishu(new_faces, old_faces, momentum, len(all_gem), conn)
 
         except requests.RequestException as e:
             print(f"\n  [!] 网络错误: {e}")
