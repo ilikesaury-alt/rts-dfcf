@@ -539,8 +539,8 @@ def analyze_old_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     # ⚡ 今日涨跌幅用飙升榜实时数据
     today_pct = stock.percent
 
-    # 涨停/大涨的票不推荐低吸
-    if today_pct > 8:
+    # 涨停/大涨的票不推荐低吸，大跌也不推荐（可能有利空）
+    if today_pct > 8 or today_pct < -8:
         return None
 
     pcts = [k["percent"] for k in kline]
@@ -1085,8 +1085,11 @@ def scan(conn: sqlite3.Connection, session: requests.Session):
     raw_momentum: list[Candidate] = []
 
     for stock in gem_top:
-        # 股价硬过滤（不需要API，直接用）
+        # 股价硬过滤
         if stock.current > 0 and stock.current > MAX_STOCK_PRICE:
+            continue
+        # 涨幅过高跳过（封板或已无介入空间）
+        if stock.percent > 8:
             continue
 
         app_history = get_symbol_appearances(conn, stock.symbol, NEW_FACE_LOOKBACK_DAYS)
