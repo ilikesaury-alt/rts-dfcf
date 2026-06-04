@@ -12,13 +12,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 An A-share stock momentum scanner that monitors Xueqiu's (雪球) "飙升榜" (surge ranking) API in real-time during trading hours. It scores and recommends ChiNext (创业板, 300xxx) stocks using two strategies:
 
-- **New Face** (bottom breakout): First-time appearance in top 40 within 3 days — looks for early-stage capital inflows with volume confirmation
+- **New Face** (bottom breakout): First-time appearance in surge list within 3 days — looks for early-stage capital inflows with volume confirmation
 - **Old Face** (consolidation/2nd wave): Recurring appearances — looks for pullback/consolidation entries on previous hot stocks
 
 ## Architecture
 
 ```
-雪球API → fetch_biaosheng() → filter GEM/ST → top 40
+雪球API → fetch_biaosheng() → filter GEM/ST
   → batch quote API (market cap)
   → DB lookup (new vs old face)
   → fetch K-line (DB cache or Xueqiu API)
@@ -41,14 +41,14 @@ An A-share stock momentum scanner that monitors Xueqiu's (雪球) "飙升榜" (s
 
 | Table | Purpose |
 |-------|---------|
-| `appearances` | Daily top-40 snapshots per stock (detect new/old face) |
+| `appearances` | Daily snapshots per stock (detect new/old face) |
 | `daily_kline` | Cached K-line data (avoid redundant API calls) |
 | `recommendations` | Scan recommendations with next-day % tracking |
 | `sector_cache` | Stock-to-sector mapping |
 
 ### Key Thresholds
 
-- Top N: 40, New face lookback: 3 days
+- No limit (all GEM stocks from surge list), New face lookback: 3 days
 - New face min score: 20, Old face min score: 10
 - 小而美: Max market cap 100亿, Max price 50元
 - Scoring: bottom confirmation +25, pullback +20, sector cluster up to +8, rank trend up to +6, 小而美 up to +16

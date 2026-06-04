@@ -1073,7 +1073,7 @@ def scan(conn: sqlite3.Connection, session: requests.Session):
             rank=i,
         ))
 
-    gem_top = gem_stocks[:TOP_N]
+    gem_top = gem_stocks
 
     # 3. 先查历史记录（今天之前的），再记录今天的
     recent_symbols = get_recent_symbols(conn, NEW_FACE_LOOKBACK_DAYS)
@@ -1310,7 +1310,7 @@ def display(new_faces: list[Candidate], old_faces: list[Candidate], momentum: li
     # 检查是否有市值数据
     cap_count = sum(1 for c in all_c if c.market_cap > 0)
     cap_status = f"市值数据{cap_count}/{len(all_c)}" if all_c else "暂无候选"
-    print(f"  创业板共 {gem_total} 只 | 前{TOP_N}: 新{len(new_faces)}动{len(momentum)}旧{len(old_faces)}{filter_info} | {sec_line} | {cap_status} | 每{interval}s刷新")
+    print(f"  创业板共 {gem_total} 只 | 新{len(new_faces)}动{len(momentum)}旧{len(old_faces)}{filter_info} | {sec_line} | {cap_status} | 每{interval}s刷新")
     print(f"  小而美: 市值≤{int(MAX_MARKET_CAP/YI)}亿 股价≤{MAX_STOCK_PRICE}元")
     print(f"{'='*96}")
 
@@ -1485,7 +1485,7 @@ def main():
 
             # 更新排名记录，用于下次对比
             _last_ranks.clear()
-            for s in all_gem[:TOP_N]:
+            for s in all_gem:
                 _last_ranks[s.symbol] = s.rank
 
             # 底部摘要 + 昨日回顾
