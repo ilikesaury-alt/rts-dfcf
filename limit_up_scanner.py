@@ -81,7 +81,7 @@ LOG_DIR = os.path.join(BASE_DIR, "logs")
 
 # A股交易时段
 MORNING_START = dtime(9, 30)
-MORNING_END = dtime(11, 30)
+MORNING_END = dtime(11, 45)
 AFTERNOON_START = dtime(13, 0)
 AFTERNOON_END = dtime(15, 0)
 
@@ -354,6 +354,24 @@ def ensure_kline(conn: sqlite3.Connection, session: requests.Session, symbol: st
     """获取K线（先查缓存，没有再拉取）"""
     cached = get_cached_kline(conn, symbol)
     if cached:
+        max_date_str = max(k["date"] for k in cached)
+        max_date = date.fromisoformat(max_date_str)
+        today = date.today()
+        cursor = max_date + timedelta(days=1)
+        trading_days_missing = 0
+        while cursor < today:
+            if is_trading_day(cursor):
+                trading_days_missing += 1
+            cursor += timedelta(days=1)
+        if trading_days_missing <= 2:
+            return cached
+        try:
+            kline = fetch_kline(session, symbol)
+            if kline:
+                save_kline_to_db(conn, symbol, kline)
+                return kline
+        except Exception:
+            pass
         return cached
     try:
         kline = fetch_kline(session, symbol)
@@ -1076,8 +1094,6 @@ def scan(conn: sqlite3.Connection, session: requests.Session):
     gem_top = gem_stocks
 
     # 3. 先查历史记录（今天之前的），再记录今天的
-    recent_symbols = get_recent_symbols(conn, NEW_FACE_LOOKBACK_DAYS)
-
     record_appearances(conn, [
         {"symbol": s.symbol, "name": s.name, "percent": s.percent, "value": s.value}
         for s in gem_top
@@ -1141,7 +1157,7 @@ def scan(conn: sqlite3.Connection, session: requests.Session):
                 ))
 
     # 5. 对候选股拉市值，做小而美过滤 + 加分
-    all_raw = raw_new_faces + raw_old_faces
+    all_raw = raw_new_faces + raw_old_faces + raw_momentum
     if all_raw:
         cand_symbols = list(set(c.stock.symbol for c in all_raw))
         market_caps = fetch_market_caps_batch(session, cand_symbols)
@@ -1454,7 +1470,7 @@ def main():
 
     print(f"  创业板飙升扫描器  |  每{interval}s刷新  |  DB: {DB_PATH}")
     print(f"  新面孔: 过去{NEW_FACE_LOOKBACK_DAYS}天未出现 = 新 | 旧面孔: 出现过 = 旧")
-    print(f"  交易时段: 09:30-11:30 / 13:00-15:00  |  非交易时段自动休眠")
+    print(f"  交易时段: 09:30-11:45 / 13:00-15:00  |  非交易时段自动休眠")
     print(f"  {'='*60}\n")
 
     while True:
