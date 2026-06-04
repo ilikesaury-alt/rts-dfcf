@@ -608,7 +608,7 @@ def analyze_old_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     elif today_pct < 0:
         trend = "缩量回调" if shrinking_volume else "放量回调⚠️"
     elif today_pct < 2:
-        trend = "横盘整理"
+        trend = "横盘"
     else:
         trend = "再次拉升"
 
@@ -639,14 +639,14 @@ def analyze_old_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     # 累计涨幅过大 → 追高风险极大
     if accumulated >= 25:
         score -= 15
-        trend = "累计过高⚠️" + trend
+        trend = "涨多⚠️" + trend
 
     # 从20日最低点涨幅过大 → 暴涨后回调，风险极高
     low_20d = min(closes[-20:]) if len(closes) >= 20 else min(closes)
     pct_from_low = (closes[-1] - low_20d) / max(low_20d, 0.01) * 100
     if pct_from_low >= 50:
         score -= 20
-        trend = "已暴涨⚠️" + trend
+        trend = "暴涨⚠️" + trend
     elif pct_from_low >= 30:
         score -= 10
         trend = "涨幅已大⚠️" + trend
@@ -692,7 +692,7 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     # --- 累计涨幅：只惩罚极端值 ---
     if accumulated >= 30:
         score -= 15
-        trend = "累计过高⚠️"
+        trend = "涨多⚠️"
     elif accumulated >= 20:
         score += 5
         trend = "动量延续"
