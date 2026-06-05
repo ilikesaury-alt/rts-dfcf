@@ -141,56 +141,70 @@ def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
 
         first_px = items[0]["current"]
         last_px = items[-1]["current"]
-        total_chg = (last_px - first_px) / first_px * 100
 
-        split = len(items) // 3
-        morning_end = items[split]["current"]
-        morning_chg = (morning_end - first_px) / first_px * 100
-
-        capital = items[-1].get("capital", {})
-        xlarge = capital.get("xlarge", 0) if capital else 0
+        prices = [item["current"] for item in items]
+        high = max(prices)
+        low = min(prices)
 
         score = 0.0
-        if total_chg > 0 and morning_chg > total_chg * 0.5:
-            score += 1.5
-        elif total_chg > 0 and morning_chg < total_chg * 0.3:
-            score -= 1.0
 
-        if xlarge > 5:
-            score += 1.5
-        elif xlarge < -5:
-            score -= 1.5
+        # 1. 冲高回落检测：从日内最高点的回撤幅度
+        if high > low and high > first_px * 1.005:
+            fade_pct = (high - last_px) / high * 100
+            if fade_pct > 3:
+                score -= 5.0
+            elif fade_pct > 1.5:
+                score -= 3.0
+            elif fade_pct > 0.5:
+                score -= 1.0
 
+        # 2. 在日内区间的位置（收盘/当前价在高低点的位置）
+        if high > low:
+            position = (last_px - low) / (high - low)
+            if position > 0.7:
+                score += 2.5
+            elif position < 0.3:
+                score -= 2.5
+
+        # 3. 分时攻击波 vs 衰退波净胜
         segments = 10
         seg_size = len(items) // segments
         if seg_size > 0:
             seg_prices = [items[min(i * seg_size, len(items) - 1)]["current"] for i in range(segments + 1)]
             seg_changes = [(seg_prices[i + 1] - seg_prices[i]) / seg_prices[i] * 100 for i in range(segments)]
             attack_waves = sum(1 for c in seg_changes if c > 0.2)
-            if attack_waves >= 4:
-                score += 1.5
-            elif attack_waves >= 2:
-                score += 0.5
+            decline_waves = sum(1 for c in seg_changes if c < -0.2)
+            net_waves = attack_waves - decline_waves
+            if net_waves >= 3:
+                score += 3.0
+            elif net_waves >= 1:
+                score += 1.0
+            elif net_waves <= -3:
+                score -= 3.0
+            elif net_waves <= -1:
+                score -= 1.0
 
-        high = max(item["current"] for item in items)
-        low = min(item["current"] for item in items)
-        if high > low:
-            position = (last_px - low) / (high - low)
-            if position > 0.7:
-                score += 0.5
-            elif position < 0.3 and total_chg < 3:
-                score -= 0.5
+        # 4. 大单资金流向
+        capital = items[-1].get("capital", {})
+        xlarge = capital.get("xlarge", 0) if capital else 0
+        if xlarge > 5:
+            score += 2.0
+        elif xlarge < -5:
+            score -= 2.0
 
-        mid = len(items) // 2
-        mid_px = items[mid]["current"]
-        first_half_chg = (mid_px - first_px) / first_px * 100
-        second_half_chg = (last_px - mid_px) / mid_px * 100 if last_px != mid_px else 0
-        if first_half_chg > 0 and second_half_chg > first_half_chg * 0.3:
-            score += 0.5
-        elif first_half_chg > 0 and second_half_chg < -first_half_chg * 0.3:
-            score -= 0.5
+        # 5. 上午 vs 全天结构（前1/3段走势占全天比例）
+        split = len(items) // 3
+        morning_end = items[split]["current"]
+        morning_chg = (morning_end - first_px) / first_px * 100
+        total_chg = (last_px - first_px) / first_px * 100
+        if total_chg > 0 and morning_chg > total_chg * 0.5:
+            score += 1.5
+        elif total_chg > 0 and morning_chg < total_chg * 0.3:
+            score -= 1.5
+        elif total_chg < 0 and morning_chg < total_chg * 1.2:
+            score -= 1.0
 
-        score = max(-3.0, min(3.0, score))
+        score = max(-10.0, min(10.0, score))
         _INTRADAY_CACHE[symbol] = (score, now)
         return score
     except Exception:

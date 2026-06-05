@@ -61,7 +61,12 @@ def _bonus_tag(c: Candidate) -> str:
     if c.sector_bonus:
         parts.append(f"S{c.sector_bonus:+d}")
     if c.intraday_score:
-        parts.append(f"D{int(c.intraday_score):+d}")
+        d_tag = f"D{int(c.intraday_score):+d}"
+        if c.intraday_score < -2:
+            d_tag = f"{ANSI['RED']}{d_tag}{ANSI['RESET']}"
+        elif c.intraday_score > 2:
+            d_tag = f"{ANSI['GREEN']}{d_tag}{ANSI['RESET']}"
+        parts.append(d_tag)
     return " ".join(parts) if parts else ""
 
 

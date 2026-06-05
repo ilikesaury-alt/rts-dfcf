@@ -136,11 +136,15 @@ def scan(conn, session):
         intra = analyze_intraday(session, c.stock.symbol)
         if intra is not None:
             c.intraday_score = intra
-        c.score += c.rank_trend_bonus + c.sector_bonus + int(c.intraday_score)
+            factor = 1 + intra / 20
+            if c.category == "old_face" and intra < 0:
+                factor = max(0.3, factor - 0.1)
+            c.score = max(1, int(c.score * factor))
+        c.score += c.rank_trend_bonus + c.sector_bonus
 
-    new_faces = [c for c in new_faces if c.intraday_score > -1]
-    old_faces = [c for c in old_faces if c.intraday_score > -1]
-    momentum = [c for c in momentum if c.intraday_score > -1]
+    new_faces = [c for c in new_faces if c.intraday_score > -4]
+    old_faces = [c for c in old_faces if c.intraday_score > -4]
+    momentum = [c for c in momentum if c.intraday_score > -4]
 
     update_rank_history({s.symbol: s.rank for s in gem_stocks})
 
