@@ -87,10 +87,11 @@ def record_appearances(conn: sqlite3.Connection, symbols: list[dict]):
 
 
 def get_symbol_appearances(conn: sqlite3.Connection, symbol: str, days: int) -> list[dict]:
+    today = date.today().isoformat()
     lookback = (date.today() - timedelta(days=days)).isoformat()
     cur = conn.execute(
-        "SELECT date, rank, percent, value FROM appearances WHERE symbol = ? AND date >= ? ORDER BY date",
-        (symbol, lookback),
+        "SELECT date, rank, percent, value FROM appearances WHERE symbol = ? AND date >= ? AND date < ? ORDER BY date",
+        (symbol, lookback, today),
     )
     return [{"date": r[0], "rank": r[1], "percent": r[2], "value": r[3]} for r in cur.fetchall()]
 

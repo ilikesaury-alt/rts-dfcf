@@ -12,15 +12,13 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
 
     pcts = [k["percent"] for k in kline]
 
-    recent_5_pcts = pcts[-5:] if len(pcts) >= 5 else pcts
+    recent_5_pcts = pcts[-5:]
     down_days = sum(1 for p in recent_5_pcts if p < 0)
     has_crash_day = any(p <= -10 for p in recent_5_pcts)
-    if not has_crash_day and down_days >= 3 and sum(recent_5_pcts) < 5 and today_pct < 5:
+    if not has_crash_day and down_days >= 3 and sum(recent_5_pcts) < 5 and sum(recent_5_pcts) > -5 and today_pct < 5:
         return None
 
-    recent_5 = pcts[-6:-1] if len(pcts) >= 6 else pcts[:-1]
-    recent_5 = recent_5 if recent_5 else [0]
-    accumulated = sum(recent_5)
+    accumulated = sum(pcts[-5:])
 
     volumes = [k["volume"] for k in kline]
     vol_window = volumes[-11:-1] if len(volumes) >= 11 else volumes[:-1]
@@ -38,8 +36,7 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     v_shape_reversal = (
         accumulated < -8
         and volume_surge
-        and today_pct > 2
-        and pcts[-1] > 3
+        and today_pct > 3
     )
 
     if bottom_confirmed:
@@ -105,12 +102,11 @@ def analyze_old_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     pcts = [k["percent"] for k in kline]
     closes = [k["close"] for k in kline]
 
-    recent_5 = pcts[-6:-1] if len(pcts) >= 6 else pcts[:-1]
-    has_crash_day = any(p <= -10 for p in recent_5)
-    if not has_crash_day and sum(1 for p in recent_5 if p < 0) >= 3 and sum(recent_5) < 5 and today_pct < 5:
+    has_crash_day = any(p <= -10 for p in pcts[-5:])
+    if not has_crash_day and sum(1 for p in pcts[-5:] if p < 0) >= 3 and sum(pcts[-5:]) < 5 and sum(pcts[-5:]) > -5 and today_pct < 5:
         return None
 
-    accumulated = sum(recent_5)
+    accumulated = sum(pcts[-5:])
 
     is_pullback = today_pct < 2
 
@@ -183,9 +179,7 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
         return None
 
     pcts = [k["percent"] for k in kline]
-    recent_5 = pcts[-6:-1] if len(pcts) >= 6 else pcts[:-1]
-    recent_5 = recent_5 if recent_5 else [0]
-    accumulated = sum(recent_5)
+    accumulated = sum(pcts[-5:])
 
     if accumulated < 10:
         return None

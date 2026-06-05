@@ -76,7 +76,7 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
     global _market_cap_cache, _market_cap_cache_time
 
     now = time.time()
-    if _market_cap_cache and now - _market_cap_cache_time < 30:
+    if _market_cap_cache and now - _market_cap_cache_time < 300:
         return _market_cap_cache
 
     if not symbols:
@@ -84,12 +84,12 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
 
     result: dict[str, dict] = {}
 
-    try:
-        for i in range(0, len(symbols), 50):
-            batch = symbols[i:i + 50]
-            sym_str = ",".join(batch)
-            url = (f"https://stock.xueqiu.com/v5/stock/batch/quote.json"
-                   f"?symbol={sym_str}&extend=market_cap")
+    for i in range(0, len(symbols), 50):
+        batch = symbols[i:i + 50]
+        sym_str = ",".join(batch)
+        url = (f"https://stock.xueqiu.com/v5/stock/batch/quote.json"
+               f"?symbol={sym_str}&extend=market_cap")
+        try:
             resp = session.get(url, timeout=REQUEST_TIMEOUT)
             resp.raise_for_status()
             items = resp.json().get("data", {}).get("items", [])
@@ -102,26 +102,8 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
                     mc = q.get("market_capital") or q.get("total_market_capital") or 0
                     cmc = q.get("circ_market_capital") or 0
                     result[sym] = {"market_cap": mc, "circ_market_cap": cmc}
-    except Exception:
-        pass
-
-    if result:
-        _market_cap_cache = result
-        _market_cap_cache_time = now
-        return result
-
-    try:
-        for sym in symbols:
-            url = f"https://stock.xueqiu.com/v5/stock/quote.json?symbol={sym}&extend=market_cap"
-            resp = session.get(url, timeout=REQUEST_TIMEOUT)
-            q = resp.json().get("data", {}).get("quote", {})
-            if q.get("symbol"):
-                result[sym] = {
-                    "market_cap": q.get("market_capital", 0) or 0,
-                    "circ_market_cap": q.get("circ_market_capital", 0) or 0,
-                }
-    except Exception:
-        pass
+        except Exception:
+            continue
 
     if result:
         _market_cap_cache = result

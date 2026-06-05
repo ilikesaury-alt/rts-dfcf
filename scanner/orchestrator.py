@@ -51,13 +51,13 @@ def scan(conn, session):
             continue
 
         app_history = get_symbol_appearances(conn, stock.symbol, NEW_FACE_LOOKBACK_DAYS)
-        previous_dates = [a["date"] for a in app_history if a["date"] < today]
+        previous_dates = [a["date"] for a in app_history]
         is_new = len(previous_dates) == 0
         first_date = previous_dates[0] if previous_dates else today
 
         if not is_new:
             strong_history = get_symbol_appearances(conn, stock.symbol, OLD_FACE_STRONG_PREV_LOOKBACK)
-            has_strong_prev = any(a["percent"] >= 4 for a in strong_history if a["date"] < today)
+            has_strong_prev = any(a["percent"] >= 4 for a in strong_history)
             if not has_strong_prev:
                 continue
 
@@ -142,8 +142,7 @@ def scan(conn, session):
     old_faces = [c for c in old_faces if c.intraday_score > -1]
     momentum = [c for c in momentum if c.intraday_score > -1]
 
-    all_cats = new_faces + old_faces + momentum
-    update_rank_history({c.stock.symbol: c.stock.rank for c in all_cats})
+    update_rank_history({s.symbol: s.rank for s in gem_stocks})
 
     new_faces.sort(key=lambda c: c.stock.rank)
     old_faces.sort(key=lambda c: c.stock.rank)
