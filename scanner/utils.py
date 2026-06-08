@@ -10,6 +10,18 @@ def is_gem(code: str) -> bool:
     return _strip_exchange(code).startswith("30")
 
 
+def is_main_board(code: str) -> bool:
+    raw = _strip_exchange(code)
+    return raw.startswith(("00", "60"))
+
+
+def is_allowed_board(code: str) -> bool:
+    raw = _strip_exchange(code)
+    if raw.startswith(("30", "00", "60")):
+        return True
+    return False
+
+
 def is_hk_stock(symbol: str) -> bool:
     return symbol.isdigit()
 

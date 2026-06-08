@@ -80,7 +80,7 @@ def _fmt_market_cap(cap: float) -> str:
 
 
 def display(new_faces: list[Candidate], old_faces: list[Candidate], momentum: list[Candidate],
-            gem_total: int, interval: int, filtered_large_cap: int = 0,
+            stock_total: int, interval: int, filtered_large_cap: int = 0,
             last_ranks: dict[str, int] | None = None):
     if last_ranks is None:
         last_ranks = {}
@@ -88,7 +88,7 @@ def display(new_faces: list[Candidate], old_faces: list[Candidate], momentum: li
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     print(f"{'='*96}")
-    print(f"  创业板飙升榜监控  ({now})")
+    print(f"  A股飙升榜监控  ({now})")
 
     all_c = new_faces + old_faces + momentum
     sec_counts: dict[str, int] = {}
@@ -100,7 +100,7 @@ def display(new_faces: list[Candidate], old_faces: list[Candidate], momentum: li
     filter_info = f" | 过滤{filtered_large_cap}只" if filtered_large_cap else ""
     cap_count = sum(1 for c in all_c if c.market_cap > 0)
     cap_status = f"市值数据{cap_count}/{len(all_c)}" if all_c else "暂无候选"
-    print(f"  创业板共 {gem_total} 只 | 新{len(new_faces)}动{len(momentum)}旧{len(old_faces)}{filter_info} | {sec_line} | {cap_status} | 每{interval}s刷新")
+    print(f"  A股共 {stock_total} 只 | 新{len(new_faces)}动{len(momentum)}旧{len(old_faces)}{filter_info} | {sec_line} | {cap_status} | 每{interval}s刷新")
     print(f"  小而美: 市值≤{int(MAX_MARKET_CAP/YI)}亿 股价≤{MAX_STOCK_PRICE}元")
     print(f"{'='*96}")
 

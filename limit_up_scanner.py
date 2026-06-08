@@ -1,6 +1,6 @@
 """
-雪球飙升榜 → 创业板智能扫描
-策略: 只盯300xxx，区分"新面孔(底部异动)"和"旧面孔(盘整二波)"
+雪球飙升榜 → A股智能扫描
+策略: 盯创业板+主板，区分"新面孔(底部异动)"和"旧面孔(盘整二波)"
 """
 import sys
 import time
@@ -31,7 +31,7 @@ def main():
     conn = init_db()
     session = make_session()
 
-    print(f"  创业板飙升扫描器  |  每{interval}s刷新  |  DB: {DB_PATH}")
+    print(f"  A股飙升扫描器  |  每{interval}s刷新  |  DB: {DB_PATH}")
     print(f"  新面孔: 过去{NEW_FACE_LOOKBACK_DAYS}天未出现 = 新 | 旧面孔: 出现过 = 旧")
     print(f"  交易时段: 09:30-11:45 / 13:00-15:00  |  非交易时段自动休眠")
     print(f"  {'='*60}\n")
@@ -53,14 +53,14 @@ def main():
         try:
             update_recommendation_results(conn)
 
-            new_faces, old_faces, momentum, all_gem, filtered_large_cap = scan(conn, session)
+            new_faces, old_faces, momentum, all_stocks, filtered_large_cap = scan(conn, session)
 
-            display(new_faces, old_faces, momentum, len(all_gem), interval,
+            display(new_faces, old_faces, momentum, len(all_stocks), interval,
                     filtered_large_cap=filtered_large_cap, last_ranks=last_ranks)
             log_results(new_faces, old_faces, momentum)
 
             last_ranks.clear()
-            for s in all_gem:
+            for s in all_stocks:
                 last_ranks[s.symbol] = s.rank
 
             if new_faces:

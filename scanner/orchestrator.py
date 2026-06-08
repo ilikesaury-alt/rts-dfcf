@@ -7,7 +7,7 @@ from scanner.database import record_appearances, get_symbol_appearances, ensure_
 from scanner.models import StockInfo, Candidate
 from scanner.sector import get_sector_clusters, classify_sector
 from scanner.rank_trend import rank_streak_score, update_rank_history
-from scanner.utils import is_hk_stock, is_gem, is_st
+from scanner.utils import is_hk_stock, is_allowed_board, is_st
 
 
 def scan(conn, session):
@@ -15,14 +15,14 @@ def scan(conn, session):
 
     raw = fetch_biaosheng(session)
 
-    gem_stocks: list[StockInfo] = []
+    all_stocks: list[StockInfo] = []
     for i, item in enumerate(raw, 1):
         symbol = item.get("symbol", "")
         code = item.get("code", "")
         name = item.get("name", "")
-        if is_hk_stock(symbol) or not is_gem(code) or is_st(name):
+        if is_hk_stock(symbol) or not is_allowed_board(code) or is_st(name):
             continue
-        gem_stocks.append(StockInfo(
+        all_stocks.append(StockInfo(
             symbol=symbol,
             name=item.get("name", ""),
             code=code,
@@ -33,18 +33,18 @@ def scan(conn, session):
             rank=i,
         ))
 
-    gem_top = gem_stocks
+    filtered_stocks = all_stocks
 
     record_appearances(conn, [
         {"symbol": s.symbol, "name": s.name, "percent": s.percent, "value": s.value}
-        for s in gem_top
+        for s in filtered_stocks
     ])
 
     raw_new_faces: list[Candidate] = []
     raw_old_faces: list[Candidate] = []
     raw_momentum: list[Candidate] = []
 
-    for stock in gem_top:
+    for stock in filtered_stocks:
         if stock.current > 0 and stock.current > MAX_STOCK_PRICE:
             continue
         if stock.percent > 8:
@@ -121,7 +121,7 @@ def scan(conn, session):
         else:
             old_faces.append(c)
 
-    clusters = get_sector_clusters(gem_top)
+    clusters = get_sector_clusters(filtered_stocks)
 
     for c in new_faces + old_faces + momentum:
         c.rank_trend_bonus = rank_streak_score(c.stock.symbol)
@@ -146,9 +146,9 @@ def scan(conn, session):
     old_faces = [c for c in old_faces if c.intraday_score > -4]
     momentum = [c for c in momentum if c.intraday_score > -4]
 
-    update_rank_history({s.symbol: s.rank for s in gem_stocks})
+    update_rank_history({s.symbol: s.rank for s in all_stocks})
 
     new_faces.sort(key=lambda c: c.stock.rank)
     old_faces.sort(key=lambda c: c.stock.rank)
     momentum.sort(key=lambda c: c.stock.rank)
-    return new_faces, old_faces, momentum, gem_stocks, filtered_large_cap
+    return new_faces, old_faces, momentum, all_stocks, filtered_large_cap

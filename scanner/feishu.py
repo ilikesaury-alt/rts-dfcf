@@ -6,7 +6,7 @@ from scanner.config import FEISHU_WEBHOOK, FEISHU_KEYWORD
 from scanner.models import Candidate
 
 
-def push_feishu(new_faces: list[Candidate], old_faces: list[Candidate], momentum: list[Candidate], gem_total: int, conn=None):
+def push_feishu(new_faces: list[Candidate], old_faces: list[Candidate], momentum: list[Candidate], stock_total: int, conn=None):
     if not FEISHU_WEBHOOK:
         return
 
