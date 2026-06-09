@@ -13,6 +13,7 @@ from scanner.database import init_db, update_recommendation_results, save_recomm
 from scanner.api import make_session
 from scanner.orchestrator import scan
 from scanner.trading_session import is_trading_time, seconds_until_next_session, next_session_label
+from scanner.feishu import push_feishu
 from scanner.display import display
 from scanner.logging import log_results
 
@@ -21,17 +22,22 @@ if sys.platform == "win32":
 
 
 def main():
-    interval = REFRESH_INTERVAL
-    if len(sys.argv) > 1:
-        try:
-            interval = max(60, int(sys.argv[1]))
-        except ValueError:
-            pass
+    import argparse
+    parser = argparse.ArgumentParser(description="创业板飙升扫描器")
+    parser.add_argument("interval", nargs="?", type=int, default=REFRESH_INTERVAL,
+                        help="刷新间隔（秒）")
+    parser.add_argument("--ultra", action="store_true", help="超短模式：更高门槛、rank_change驱动")
+    args = parser.parse_args()
+
+    interval = max(60, args.interval)
+    ultra = args.ultra
 
     conn = init_db()
     session = make_session()
 
     print(f"  创业板飙升扫描器  |  每{interval}s刷新  |  DB: {DB_PATH}")
+    if ultra:
+        print(f"  🔥 超短模式 | rank_change驱动 | 高置信度过滤")
     print(f"  新面孔: 过去{NEW_FACE_LOOKBACK_DAYS}天未出现 = 新 | 旧面孔: 出现过 = 旧")
     print(f"  交易时段: 09:30-11:45 / 13:00-15:00  |  非交易时段自动休眠")
     print(f"  {'='*60}")
@@ -56,9 +62,9 @@ def main():
             continue
 
         try:
-            update_recommendation_results(conn)
+            update_recommendation_results(conn, session)
 
-            new_faces, old_faces, momentum, all_gem, filtered_large_cap = scan(conn, session)
+            new_faces, old_faces, momentum, all_gem, filtered_large_cap = scan(conn, session, ultra=ultra)
 
             display(new_faces, old_faces, momentum, len(all_gem), interval,
                     filtered_large_cap=filtered_large_cap, last_ranks=last_ranks)
@@ -84,6 +90,7 @@ def main():
                       f"{top_o.stock.percent:+.2f}% | {top_o.kline.trend if top_o.kline else ''}")
 
             save_recommendations(conn, new_faces, old_faces, momentum)
+            push_feishu(new_faces, old_faces, momentum, len(all_gem), conn)
 
         except requests.RequestException as e:
             print(f"\n  [!] 网络错误: {e}")

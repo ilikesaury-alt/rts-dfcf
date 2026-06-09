@@ -21,6 +21,7 @@ class KlineSummary:
     bottom_confirmed: bool
     score: int
     dimensions: dict = field(default_factory=dict)
+    avg_volume: float = 0.0
 
 
 @dataclass
@@ -33,6 +34,7 @@ class Candidate:
     sector: str = ""
     rank_trend_bonus: int = 0
     sector_bonus: int = 0
+    live_vol_bonus: int = 0
     intraday_score: float = 0.0
     first_seen: str = ""
     last_seen: str = ""

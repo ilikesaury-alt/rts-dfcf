@@ -119,6 +119,30 @@ _INTRADAY_CACHE_TTL = 300
 _INTRADAY_CACHE_FAIL_TTL = 60
 
 
+def estimate_live_volume(session: requests.Session, symbol: str) -> float | None:
+    """Estimate today's full-day volume from minute data.
+
+    Returns estimated daily volume (shares), or None if data insufficient.
+    Uses the same minute endpoint as analyze_intraday but focuses on volume.
+    """
+    try:
+        _throttle()
+        ts_ms = int(time.time() * 1000)
+        url = f"https://stock.xueqiu.com/v5/stock/chart/minute.json?symbol={symbol}&period=1d&_={ts_ms}"
+        resp = session.get(url, timeout=15)
+        d = resp.json()
+        items = d.get("data", {}).get("items", [])
+        if not items or len(items) < 10:
+            return None
+        total_vol = sum(item.get("volume", 0) for item in items)
+        minutes_elapsed = len(items)
+        trading_minutes_total = 240
+        estimated = total_vol * trading_minutes_total / max(minutes_elapsed, 1)
+        return estimated
+    except Exception:
+        return None
+
+
 def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
     now = time.time()
     if symbol in _INTRADAY_CACHE:

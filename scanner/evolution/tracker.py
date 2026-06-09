@@ -2,23 +2,59 @@ import sqlite3
 from datetime import date
 
 
-def backfill_outcomes(conn: sqlite3.Connection) -> dict:
+def backfill_outcomes(conn: sqlite3.Connection, session=None) -> dict:
     """Backfill all missing next_day_pct, fwd_3d, fwd_5d from daily_kline.
 
     Finds every recommendation whose entry close is known (via daily_kline on
     the rec date) and forward returns are not yet filled.  Queries up to 5
     future trading days from daily_kline and computes 1d/3d/5d returns.
 
+    If entry close is not cached (JOIN failure), optionally fetches K-line
+    from the API via session to fill the gap.
+
     Safe to call every scan cycle – already-filled rows are skipped.
     """
     today_str = date.today().isoformat()
 
+    # First pass: try JOIN (most common case)
     missing = conn.execute("""
         SELECT r.id, r.symbol, r.date, d.close AS entry_close
         FROM recommendations r
         JOIN daily_kline d ON r.symbol = d.symbol AND d.date = r.date
         WHERE r.next_day_pct IS NULL
     """).fetchall()
+
+    # Second pass: use API fallback for rows without cached entry close
+    if session is not None:
+        fallback_missing = conn.execute("""
+            SELECT r.id, r.symbol, r.date
+            FROM recommendations r
+            WHERE r.next_day_pct IS NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM daily_kline d
+                WHERE d.symbol = r.symbol AND d.date = r.date
+              )
+        """).fetchall()
+
+        for rec_id, symbol, rec_date in fallback_missing:
+            from scanner.api import fetch_kline
+            from scanner.database import save_kline_to_db
+
+            try:
+                kline = fetch_kline(session, symbol)
+                if kline:
+                    save_kline_to_db(conn, symbol, kline)
+                    entry_close = None
+                    for k in kline:
+                        if k["date"] == rec_date:
+                            entry_close = k["close"]
+                            break
+                    if entry_close is None and len(kline) > 0:
+                        entry_close = kline[-1]["close"]
+                    if entry_close:
+                        missing.append((rec_id, symbol, rec_date, entry_close))
+            except Exception:
+                continue
 
     if not missing:
         return {"total": 0, "filled": 0, "skipped": 0}

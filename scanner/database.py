@@ -179,9 +179,9 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, old_faces: l
     conn.commit()
 
 
-def update_recommendation_results(conn: sqlite3.Connection):
+def update_recommendation_results(conn: sqlite3.Connection, session=None):
     from scanner.evolution.tracker import backfill_outcomes
-    result = backfill_outcomes(conn)
+    result = backfill_outcomes(conn, session)
     if result["filled"] > 0:
         print(f"  [进化] 填补 {result['filled']}/{result['total']} 条推荐 outcome")
 
