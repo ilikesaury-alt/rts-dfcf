@@ -79,7 +79,7 @@ def _fmt_market_cap(cap: float) -> str:
     return f"{cap_yi:.0f}亿"
 
 
-def display(new_faces: list[Candidate], old_faces: list[Candidate], momentum: list[Candidate],
+def display(new_faces: list[Candidate], momentum: list[Candidate],
             gem_total: int, interval: int, filtered_large_cap: int = 0,
             last_ranks: dict[str, int] | None = None):
     if last_ranks is None:
@@ -90,7 +90,7 @@ def display(new_faces: list[Candidate], old_faces: list[Candidate], momentum: li
     print(f"{'='*96}")
     print(f"  创业板飙升榜监控  ({now})")
 
-    all_c = new_faces + old_faces + momentum
+    all_c = new_faces + momentum
     sec_counts: dict[str, int] = {}
     for c_ in all_c:
         if c_.sector:
@@ -100,7 +100,7 @@ def display(new_faces: list[Candidate], old_faces: list[Candidate], momentum: li
     filter_info = f" | 过滤{filtered_large_cap}只" if filtered_large_cap else ""
     cap_count = sum(1 for c in all_c if c.market_cap > 0)
     cap_status = f"市值数据{cap_count}/{len(all_c)}" if all_c else "暂无候选"
-    print(f"  创业板共 {gem_total} 只 | 新{len(new_faces)}动{len(momentum)}旧{len(old_faces)}{filter_info} | {sec_line} | {cap_status} | 每{interval}s刷新")
+    print(f"  创业板共 {gem_total} 只 | 新{len(new_faces)}动{len(momentum)}{filter_info} | {sec_line} | {cap_status} | 每{interval}s刷新")
     print(f"  小而美: 市值≤{int(MAX_MARKET_CAP/YI)}亿 股价≤{MAX_STOCK_PRICE}元")
     print(f"{'='*96}")
 
@@ -141,18 +141,7 @@ def display(new_faces: list[Candidate], old_faces: list[Candidate], momentum: li
         for c in momentum:
             _print_row(c)
 
-    hdr_val = f"{hdr} {_pad('热度',6,'r')}"
-    print(f"\n{ANSI['CYAN']}◆ 旧面孔 — 盘整 / 回调低吸{ANSI['RESET']}  (找: 前期热点+今日回调)")
-    print(hdr_val)
-    print(f"  {'-'*116}")
-    if old_faces:
-        for c in old_faces:
-            _print_row(c, show_val=True)
-    else:
-        print(f"  {ANSI['YELLOW']}暂无旧面孔{ANSI['RESET']}")
-
     print(f"\n{'-'*96}")
     print(f"  {ANSI['GREEN']}新面孔{ANSI['RESET']}: 底部放量启动+涨幅2-6%")
     print(f"  {ANSI['YELLOW']}动量延续{ANSI['RESET']}: 累计涨幅10%+今日温和上攻")
-    print(f"  {ANSI['CYAN']}旧面孔{ANSI['RESET']}: 缩量回调+未破位+高热度")
     print()

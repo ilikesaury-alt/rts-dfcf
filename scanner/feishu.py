@@ -6,12 +6,12 @@ from scanner.config import FEISHU_WEBHOOK, FEISHU_KEYWORD
 from scanner.models import Candidate
 
 
-def push_feishu(new_faces: list[Candidate], old_faces: list[Candidate], momentum: list[Candidate], gem_total: int, conn=None):
+def push_feishu(new_faces: list[Candidate], momentum: list[Candidate], gem_total: int, conn=None):
     if not FEISHU_WEBHOOK:
         return
 
     now = datetime.now().strftime("%H:%M")
-    all_c = new_faces + old_faces + momentum
+    all_c = new_faces + momentum
 
     sec_cnt: dict[str, int] = {}
     for c in all_c:
@@ -20,7 +20,7 @@ def push_feishu(new_faces: list[Candidate], old_faces: list[Candidate], momentum
     sec_hot = " ".join(f"{s}{n}" for s, n in sorted(sec_cnt.items(), key=lambda x: -x[1])[:2])
 
     lines = [f"{FEISHU_KEYWORD}",
-             f"{now} 新{len(new_faces)}动{len(momentum)}旧{len(old_faces)}" + (f" | {sec_hot}" if sec_hot else "")]
+             f"{now} 新{len(new_faces)}动{len(momentum)}" + (f" | {sec_hot}" if sec_hot else "")]
 
     if new_faces:
         lines.append(f"▎新")
@@ -31,12 +31,6 @@ def push_feishu(new_faces: list[Candidate], old_faces: list[Candidate], momentum
     if momentum:
         lines.append(f"▎动量")
         for c in momentum:
-            s = c.stock
-            lines.append(f" {s.rank} {s.name} {s.percent:+.1f}% {c.score}分")
-
-    if old_faces:
-        lines.append(f"▎旧")
-        for c in old_faces:
             s = c.stock
             lines.append(f" {s.rank} {s.name} {s.percent:+.1f}% {c.score}分")
 

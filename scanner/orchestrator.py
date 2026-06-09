@@ -1,13 +1,13 @@
 from datetime import date, datetime
 
 from scanner.api import fetch_biaosheng, fetch_market_caps_batch, analyze_intraday, estimate_live_volume
-from scanner.analysis import analyze_new_face, analyze_old_face, analyze_momentum
+from scanner.analysis import analyze_new_face, analyze_momentum
 from scanner.config import (
-    NEW_FACE_LOOKBACK_DAYS, OLD_FACE_STRONG_PREV_LOOKBACK,
-    NEW_FACE_MIN_SCORE, OLD_FACE_MIN_SCORE, MOMENTUM_MIN_SCORE,
-    ULTRA_NEW_FACE_MIN_SCORE, ULTRA_OLD_FACE_MIN_SCORE,
-    ULTRA_MOMENTUM_MIN_SCORE, ULTRA_MIN_INTRADAY_SCORE,
-    MIN_INTRADAY_SCORE, MAX_STOCK_PRICE, MAX_MARKET_CAP,
+    NEW_FACE_LOOKBACK_DAYS,
+    NEW_FACE_MIN_SCORE, MOMENTUM_MIN_SCORE,
+    ULTRA_NEW_FACE_MIN_SCORE, ULTRA_MOMENTUM_MIN_SCORE,
+    ULTRA_MIN_INTRADAY_SCORE, MIN_INTRADAY_SCORE,
+    MAX_STOCK_PRICE, MAX_MARKET_CAP,
 )
 from scanner.database import record_appearances, get_symbol_appearances, ensure_kline
 from scanner.models import StockInfo, Candidate
@@ -21,12 +21,10 @@ def scan(conn, session, ultra=False):
 
     if ultra:
         new_face_min = ULTRA_NEW_FACE_MIN_SCORE
-        old_face_min = ULTRA_OLD_FACE_MIN_SCORE
         momentum_min = ULTRA_MOMENTUM_MIN_SCORE
         intraday_min = ULTRA_MIN_INTRADAY_SCORE
     else:
         new_face_min = NEW_FACE_MIN_SCORE
-        old_face_min = OLD_FACE_MIN_SCORE
         momentum_min = MOMENTUM_MIN_SCORE
         intraday_min = MIN_INTRADAY_SCORE
 
@@ -58,7 +56,6 @@ def scan(conn, session, ultra=False):
     ])
 
     raw_new_faces: list[Candidate] = []
-    raw_old_faces: list[Candidate] = []
     raw_momentum: list[Candidate] = []
 
     for stock in gem_top:
@@ -69,12 +66,6 @@ def scan(conn, session, ultra=False):
         previous_dates = [a["date"] for a in app_history]
         is_new = len(previous_dates) == 0
         first_date = previous_dates[0] if previous_dates else today
-
-        if not is_new:
-            strong_history = get_symbol_appearances(conn, stock.symbol, OLD_FACE_STRONG_PREV_LOOKBACK)
-            has_strong_prev = any(a["percent"] >= 4 for a in strong_history)
-            if not has_strong_prev:
-                continue
 
         kline = ensure_kline(conn, session, stock.symbol)
 
@@ -97,16 +88,16 @@ def scan(conn, session, ultra=False):
                         history_pct=[k["percent"] for k in kline] if kline else [],
                     ))
         else:
-            kline_summary = analyze_old_face(stock, kline, ultra=ultra)
-            if kline_summary and kline_summary.score >= old_face_min:
-                raw_old_faces.append(Candidate(
-                    stock=stock, category="old_face", score=kline_summary.score,
-                    reason=kline_summary.trend, kline=kline_summary,
+            momentum_result = analyze_momentum(stock, kline, ultra=ultra)
+            if momentum_result and momentum_result.score >= momentum_min:
+                raw_momentum.append(Candidate(
+                    stock=stock, category="momentum", score=momentum_result.score,
+                    reason=momentum_result.trend, kline=momentum_result,
                     first_seen=first_date,
                     history_pct=[k["percent"] for k in kline] if kline else [],
                 ))
 
-    all_raw = raw_new_faces + raw_old_faces + raw_momentum
+    all_raw = raw_new_faces + raw_momentum
     if all_raw:
         cand_symbols = list(set(c.stock.symbol for c in all_raw))
         market_caps = fetch_market_caps_batch(session, cand_symbols)
@@ -114,7 +105,6 @@ def scan(conn, session, ultra=False):
         market_caps = {}
 
     new_faces: list[Candidate] = []
-    old_faces: list[Candidate] = []
     momentum: list[Candidate] = []
     filtered_large_cap = 0
 
@@ -131,14 +121,12 @@ def scan(conn, session, ultra=False):
 
         if c.category == "new_face":
             new_faces.append(c)
-        elif c.category == "momentum":
-            momentum.append(c)
         else:
-            old_faces.append(c)
+            momentum.append(c)
 
     clusters = get_sector_clusters(gem_top)
 
-    for c in new_faces + old_faces + momentum:
+    for c in new_faces + momentum:
         c.rank_trend_bonus = rank_streak_score(c.stock.symbol)
         sec = classify_sector(c.stock.name)
         c.sector = sec
@@ -152,8 +140,6 @@ def scan(conn, session, ultra=False):
         if intra is not None:
             c.intraday_score = intra
             factor = 1 + intra / 20
-            if c.category == "old_face" and intra < 0:
-                factor = max(0.3, factor - 0.1)
             c.score = max(1, int(c.score * factor))
 
         live_vol = estimate_live_volume(session, c.stock.symbol)
@@ -164,12 +150,10 @@ def scan(conn, session, ultra=False):
         c.score += c.rank_trend_bonus + c.sector_bonus + c.live_vol_bonus
 
     new_faces = [c for c in new_faces if c.intraday_score >= intraday_min]
-    old_faces = [c for c in old_faces if c.intraday_score >= intraday_min]
     momentum = [c for c in momentum if c.intraday_score >= intraday_min]
 
     update_rank_history({s.symbol: s.rank for s in gem_stocks})
 
     new_faces.sort(key=lambda c: c.stock.rank)
-    old_faces.sort(key=lambda c: c.stock.rank)
     momentum.sort(key=lambda c: c.stock.rank)
-    return new_faces, old_faces, momentum, gem_stocks, filtered_large_cap
+    return new_faces, momentum, gem_stocks, filtered_large_cap

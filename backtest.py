@@ -56,29 +56,6 @@ DEFAULT_PARAMS = {
             "max_today_pct": 5.0, "max_accumulated": 8.0, "score": 8,
         },
     },
-    "old_face": {
-        "min_score": 10,
-        "pullback_score": 20,
-        "support_score": 15,
-        "shrink_volume_score": 12,
-        "value": {
-            "high_threshold": 10000, "high_score": 10,
-            "medium_threshold": 5000, "medium_score": 5,
-        },
-        "mild_pullback": {
-            "min_pct": -3.0, "max_pct": 0.0, "score": 8,
-        },
-        "heavy_pullback": {
-            "threshold": -3.0, "penalty": -10,
-        },
-        "rank_change": {
-            "strong_threshold": 2000, "strong_score": 8,
-            "medium_threshold": 1000, "medium_score": 4,
-        },
-        "liquidity_danger": {
-            "vol_ratio_threshold": 0.4, "penalty": -8,
-        },
-    },
     "top_n": 40,
     "lookback_days": 3,
     "max_market_cap": 500 * YI,
@@ -142,51 +119,6 @@ def score_new_face(today_pct, accumulated, vol_ratio, recent_3_pcts, stock_rank,
     cb = p["combo"]
     if today_pct <= cb["max_today_pct"] and accumulated < cb["max_accumulated"]:
         score += cb["score"]
-
-    return score
-
-
-def score_old_face(today_pct, vol_ratio, accumulated, recent_10_closes, stock_rank, stock_value, params):
-    if today_pct > 8:
-        return None
-
-    p = params["old_face"]
-    score = 0
-    is_pullback = today_pct < 2
-
-    not_broken = recent_10_closes[-1] >= min(recent_10_closes) if recent_10_closes else True
-    shrinking_volume = vol_ratio < 1.1
-
-    if is_pullback:
-        score += p["pullback_score"]
-    if not_broken:
-        score += p["support_score"]
-    if shrinking_volume:
-        score += p["shrink_volume_score"]
-
-    v = p["value"]
-    if stock_value >= v["high_threshold"]:
-        score += v["high_score"]
-    elif stock_value >= v["medium_threshold"]:
-        score += v["medium_score"]
-
-    mp = p["mild_pullback"]
-    if mp["min_pct"] <= today_pct <= mp["max_pct"]:
-        score += mp["score"]
-    hp = p["heavy_pullback"]
-    if today_pct < hp["threshold"]:
-        score += hp["penalty"]
-
-    rc = p["rank_change"]
-    rc_val = _rank_to_rank_change(stock_rank, params["rank_proxy"])
-    if rc_val >= rc["strong_threshold"]:
-        score += rc["strong_score"]
-    elif rc_val >= rc["medium_threshold"]:
-        score += rc["medium_score"]
-
-    ld = p["liquidity_danger"]
-    if vol_ratio < ld["vol_ratio_threshold"]:
-        score += ld["penalty"]
 
     return score
 
@@ -416,17 +348,7 @@ def run_backtest(params=None, db_path="scanner.db", session=None, live=False):
                                   rank=stock_rank, percent=today_pct, value=value,
                                   category="new_face", score=score, entry_close=entry_close)
             else:
-                recent_10_closes = closes[-10:] if len(closes) >= 10 else closes
-                result = score_old_face(today_pct, vol_ratio, accumulated, recent_10_closes,
-                                        stock_rank, value, params)
-                if result is None:
-                    continue
-                score = result
-                if score < params["old_face"]["min_score"]:
-                    continue
-                rec = BacktestRec(date=current_date, symbol=symbol, name=name,
-                                  rank=stock_rank, percent=today_pct, value=value,
-                                  category="old_face", score=score, entry_close=entry_close)
+                continue
 
             # Forward returns (extend kline cache via API if live)
             fwd_kline = ensure_kline_full(symbol, kline_by_symbol, session, live)
@@ -446,22 +368,21 @@ def run_backtest(params=None, db_path="scanner.db", session=None, live=False):
                     break
 
     new_recs = [r for r in all_recs if r.category == "new_face"]
-    old_recs = [r for r in all_recs if r.category == "old_face"]
 
     if __name__ == "__main__":
-        report(new_recs, old_recs, params)
-    return new_recs, old_recs
+        report(new_recs, params)
+    return new_recs, []
 
 
-def report(new_recs, old_recs, params):
+def report(new_recs, params):
     print(f"\n{'='*60}")
     print(f"回测报告")
     print(f"{'='*60}")
-    print(f"新面孔阈值: {params['new_face']['min_score']}  旧面孔阈值: {params['old_face']['min_score']}")
-    print(f"回测天数: {len(set(r.date for r in new_recs + old_recs))}")
-    print(f"推荐总数: 新{len(new_recs)} + 旧{len(old_recs)} = {len(new_recs)+len(old_recs)}")
+    print(f"新面孔阈值: {params['new_face']['min_score']}")
+    print(f"回测天数: {len(set(r.date for r in new_recs))}")
+    print(f"推荐总数: {len(new_recs)}")
 
-    for label, recs in [("新面孔", new_recs), ("旧面孔", old_recs)]:
+    for label, recs in [("新面孔", new_recs)]:
         if not recs:
             print(f"\n{label}: 无推荐")
             continue

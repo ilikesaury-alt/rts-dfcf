@@ -1,6 +1,6 @@
 import pytest
 from scanner.models import StockInfo
-from scanner.analysis import analyze_new_face, analyze_old_face, analyze_momentum
+from scanner.analysis import analyze_new_face, analyze_momentum
 
 
 def _stock(percent=5.0, rank_change=1500, value=8000, current=15.0, rank=10):
@@ -91,12 +91,6 @@ class TestAnalyzeNewFace:
         if result:
             assert "new_face_bottom" in result.dimensions
 
-    def test_combo_bonus_when_low_pct_and_low_accumulated(self):
-        kline = _kline([1, 1, 1, 1, 2], volumes=[1.0]*5)
-        result = analyze_new_face(_stock(percent=3), kline)
-        if result:
-            assert result.dimensions.get("new_face_combo", 0) == 8
-
     def test_ma_bull_bonus_with_bull_arrangement(self):
         pcts = [0.5]*5 + [0.8]*5 + [1.2]*5 + [1.5]*5
         kline = _kline(pcts)
@@ -110,59 +104,6 @@ class TestAnalyzeNewFace:
         result = analyze_new_face(_stock(percent=3), kline)
         assert result is not None
         assert result.dimensions.get("new_face_candle", 0) >= 3
-
-
-class TestAnalyzeOldFace:
-
-    def test_golden_path_returns_scored_candidate(self):
-        kline = _kline([3, 4, 2, -1, -0.5], volumes=[1.5, 1.3, 0.8, 0.7, 0.6])
-        result = analyze_old_face(_stock(percent=-1, rank_change=500, value=12000), kline)
-        assert result is not None
-        assert result.score >= 10
-
-    def test_over_8_pct_returns_none(self):
-        kline = _kline([3, 2, 1, 2, 1])
-        assert analyze_old_face(_stock(percent=9), kline) is None
-        assert analyze_old_face(_stock(percent=-9), kline) is None
-
-    def test_short_kline_returns_none(self):
-        assert analyze_old_face(_stock(percent=1), _kline([1, 2])) is None
-
-    def test_none_kline_returns_none(self):
-        assert analyze_old_face(_stock(percent=1), None) is None
-
-    def test_pullback_score(self):
-        kline = _kline([3, 2, 4, 1, -0.5], volumes=[1.2, 1.1, 0.9, 0.8, 0.7])
-        result = analyze_old_face(_stock(percent=-0.5, value=6000), kline)
-        assert result is not None
-        assert result.dimensions.get("old_face_pullback", 0) == 20
-
-    def test_high_pos_penalty(self):
-        pcts = [15, 8, 8, 8, 8]
-        kline = _kline(pcts, volumes=[1.0]*5)
-        result = analyze_old_face(_stock(percent=-1), kline)
-        assert result is not None
-        assert "old_face_high_pos" in result.dimensions
-        assert result.dimensions["old_face_high_pos"] in (-10, -20)
-
-    def test_liquidity_penalty_for_very_low_volume(self):
-        kline = _kline([2, 1, 3, 1, -0.3], volumes=[1.0, 1.0, 1.0, 1.0, 0.3])
-        result = analyze_old_face(_stock(percent=-0.3), kline)
-        assert result is not None
-        assert result.dimensions.get("old_face_liquidity", 0) == -8
-
-    def test_ma_bull_bonus_in_old_face(self):
-        pcts = [0.5]*5 + [1.0]*5 + [1.5]*5 + [1.0, 0.5, -0.5, -0.3, -0.2]
-        kline = _kline(pcts)
-        result = analyze_old_face(_stock(percent=-0.2), kline)
-        if result:
-            assert "old_face_ma_bull" in result.dimensions
-
-    def test_candle_quality_in_old_face(self):
-        kline = _kline([1, -0.5, -0.3], body_ratio=0.8)
-        result = analyze_old_face(_stock(percent=-0.3), kline)
-        if result:
-            assert "old_face_candle" in result.dimensions
 
 
 class TestAnalyzeMomentum:

@@ -61,7 +61,8 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None, ultra: bool = F
     recent_5_pcts = pcts[-5:]
     down_days = sum(1 for p in recent_5_pcts if p < 0)
     has_crash_day = any(p <= -10 for p in recent_5_pcts)
-    if not has_crash_day and down_days >= 3 and sum(recent_5_pcts) < 5 and sum(recent_5_pcts) > -5 and today_pct < 5:
+    has_big_up_day = any(p >= 10 for p in recent_5_pcts)
+    if not has_crash_day and not has_big_up_day and down_days >= 3 and sum(recent_5_pcts) < 5 and sum(recent_5_pcts) > -5 and today_pct < 5:
         return None
 
     accumulated = sum(pcts[-5:])
@@ -120,14 +121,11 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None, ultra: bool = F
     if volume_surge:
         score += 10
 
-    score += _rank_change_score(stock.rank_change, ultra)
+    score += int(_rank_change_score(stock.rank_change, ultra) / 3)
     if stock.value >= 10000:
         score += 5
     elif stock.value >= 5000:
         score += 2
-
-    if today_pct <= 5 and accumulated < 8:
-        score += 8
 
     ma_bull = _ma_bull_score(closes)
     score += ma_bull
@@ -144,11 +142,10 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None, ultra: bool = F
     if accumulated >= 25: dims["new_face_accumulated"] = -20
     if bottom_confirmed: dims["new_face_bottom"] = 15
     if volume_surge: dims["new_face_volume"] = 10
-    rc_score = _rank_change_score(stock.rank_change, ultra)
+    rc_score = int(_rank_change_score(stock.rank_change, ultra) / 3)
     if rc_score: dims["new_face_rank_change"] = rc_score
     if stock.value >= 10000: dims["new_face_value"] = 5
     elif stock.value >= 5000: dims["new_face_value"] = 2
-    if td <= 5 and accumulated < 8: dims["new_face_combo"] = 8
     if ma_bull: dims["new_face_ma_bull"] = ma_bull
     if candle: dims["new_face_candle"] = candle
 
@@ -163,14 +160,17 @@ def analyze_old_face(stock: StockInfo, kline: list[dict] | None, ultra: bool = F
 
     today_pct = stock.percent
 
-    if not ultra and (today_pct > 8 or today_pct < -8):
+    max_today = ULTRA_OLD_FACE_MAX_TODAY_PCT if ultra else OLD_FACE_MAX_TODAY_PCT
+    if today_pct > max_today or today_pct < -8:
         return None
 
     pcts = [k["percent"] for k in kline]
     closes = [k["close"] for k in kline]
 
-    has_crash_day = any(p <= -10 for p in pcts[-5:])
-    if not has_crash_day and sum(1 for p in pcts[-5:] if p < 0) >= 3 and sum(pcts[-5:]) < 5 and sum(pcts[-5:]) > -5 and today_pct < 5:
+    recent_5_pcts = pcts[-5:]
+    has_crash_day = any(p <= -10 for p in recent_5_pcts)
+    has_big_up_day = any(p >= 10 for p in recent_5_pcts)
+    if not has_crash_day and not has_big_up_day and sum(1 for p in recent_5_pcts if p < 0) >= 3 and sum(recent_5_pcts) < 5 and sum(recent_5_pcts) > -5 and today_pct < 5:
         return None
 
     accumulated = sum(pcts[-5:])

@@ -80,7 +80,7 @@ def weekly_report(conn: sqlite3.Connection, week_start: str, week_end: str) -> s
     if all_total > 0:
         lines.append(f"  \u80dc\u7387: {all_wins}/{all_total} ({all_wins*100//all_total}%)")
 
-    for cat_label, cat_key in [("\u65b0\u9762\u5b54", "new_face"), ("\u52a8\u91cf\u5ef6\u7eed", "momentum"), ("\u65e7\u9762\u5b54", "old_face")]:
+    for cat_label, cat_key in [("\u65b0\u9762\u5b54", "new_face"), ("\u52a8\u91cf\u5ef6\u7eed", "momentum")]:
         r = [x for x in row if x[0] == cat_key]
         if not r:
             continue

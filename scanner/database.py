@@ -161,11 +161,11 @@ def ensure_kline(conn: sqlite3.Connection, session, symbol: str) -> list[dict] |
     return None
 
 
-def save_recommendations(conn: sqlite3.Connection, new_faces: list, old_faces: list, momentum: list):
+def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: list):
     import json
     today = date.today().isoformat()
     now = datetime.now().strftime("%H:%M:%S")
-    for c in new_faces + old_faces + momentum:
+    for c in new_faces + momentum:
         try:
             breakdown = json.dumps(c.kline.dimensions, ensure_ascii=False) if c.kline and c.kline.dimensions else None
             conn.execute(
@@ -198,11 +198,11 @@ def get_tracking_summary(conn: sqlite3.Connection) -> str:
         return f"{wins}/{total} ({wins*100//max(total,1)}%)" if total else "N/A"
 
     lines = ["", "▎胜率统计 (累计)"]
-    for cat in ("new_face", "old_face", "momentum", "all"):
+    for cat in ("new_face", "momentum", "all"):
         s = stats.get(cat)
         if not s or s["total"] == 0:
             continue
-        label = {"new_face": "新面孔", "old_face": "旧面孔", "momentum": "动量", "all": "合计"}.get(cat, cat)
+        label = {"new_face": "新面孔", "momentum": "动量", "all": "合计"}.get(cat, cat)
         w1 = fmt_wr(s["wins_1d"], s["total"])
         w3 = fmt_wr(s["wins_3d"], s["total"])
         w5 = fmt_wr(s["wins_5d"], s["total"])
@@ -220,7 +220,7 @@ def get_tracking_summary(conn: sqlite3.Connection) -> str:
         lines.append("")
         lines.append("▎昨日推荐明细")
         for name, cat, score, pct, trend, nd_pct, f3, f5 in rows:
-            tag = {"new_face": "新", "momentum": "动量", "old_face": "旧"}.get(cat, "?")
+            tag = {"new_face": "新", "momentum": "动量"}.get(cat, "?")
             parts = [f"  {tag} {name} 评分{score} 入{pct:+.1f}%"]
             if nd_pct is not None:
                 parts.append(f"+1d{nd_pct:+.1f}%{'✅' if nd_pct > 0 else '❌'}")

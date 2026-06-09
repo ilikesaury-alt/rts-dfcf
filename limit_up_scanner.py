@@ -64,11 +64,11 @@ def main():
         try:
             update_recommendation_results(conn, session)
 
-            new_faces, old_faces, momentum, all_gem, filtered_large_cap = scan(conn, session, ultra=ultra)
+            new_faces, momentum, all_gem, filtered_large_cap = scan(conn, session, ultra=ultra)
 
-            display(new_faces, old_faces, momentum, len(all_gem), interval,
+            display(new_faces, momentum, len(all_gem), interval,
                     filtered_large_cap=filtered_large_cap, last_ranks=last_ranks)
-            log_results(new_faces, old_faces, momentum)
+            log_results(new_faces, momentum)
 
             last_ranks.clear()
             for s in all_gem:
@@ -84,13 +84,8 @@ def main():
                 top_m = momentum[0]
                 print(f"  ▶ 动量延续首选: {top_m.stock.name}({top_m.stock.symbol}) "
                       f"{top_m.stock.percent:+.2f}% | {top_m.kline.trend if top_m.kline else ''}")
-            if old_faces:
-                top_o = old_faces[0]
-                print(f"  ▶ 旧面孔首选: {top_o.stock.name}({top_o.stock.symbol}) "
-                      f"{top_o.stock.percent:+.2f}% | {top_o.kline.trend if top_o.kline else ''}")
-
-            save_recommendations(conn, new_faces, old_faces, momentum)
-            # push_feishu(new_faces, old_faces, momentum, len(all_gem), conn)
+            save_recommendations(conn, new_faces, momentum)
+            # push_feishu(new_faces, momentum, len(all_gem), conn)
 
         except requests.RequestException as e:
             print(f"\n  [!] 网络错误: {e}")
