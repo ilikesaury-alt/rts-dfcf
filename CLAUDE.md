@@ -6,7 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **Run scanner**: `python limit_up_scanner.py` (default 180s interval) or `python limit_up_scanner.py 120` (custom seconds)
 - **Quick data check**: `python xueqiu_hot.py` (dump raw surge ranking)
+- **Self-evolution**: `python self_evolve.py` (performance report + IC dimension analysis)
+- **Backfill**: `python self_evolve.py --backfill` (fill missing outcome data)
+- **Weekly report**: `python self_evolve.py --report --week-start YYYY-MM-DD --week-end YYYY-MM-DD`
+- **Auto-apply**: `python self_evolve.py --apply` (apply IC-based weight adjustments)
 - **Kill all**: `taskkill /f /im python.exe` (Windows)
+
+> 自动进化已集成在 `limit_up_scanner.py` 启动时，无需手动执行。`self_evolve.py --apply` 仅在你想应用参数调整时才需要用。
 
 ## Project Overview
 
@@ -46,6 +52,13 @@ An A-share stock momentum scanner that monitors Xueqiu's (雪球) "飙升榜" (s
 | `recommendations` | Scan recommendations with next-day % tracking |
 | `sector_cache` | Stock-to-sector mapping |
 
+### Self-Evolution Loop (`evolution/`)
+
+1. **Tracker** (`tracker.py`): Every scan cycle backfills outcome data (1d/3d/5d forward returns) from cached K-line
+2. **Analytics** (`analytics.py`): Computes Information Coefficient (IC) per scoring dimension — which weights actually predict returns
+3. **Optimizer** (`optimizer.py`): Generates weekly tuning report with dimension IC analysis + weight adjustment suggestions
+4. **Apply** (`self_evolve.py --apply`): Auto-adjusts weights for dimensions with |IC| < 0.05 (neutral → halve) or IC < -0.1 (anti-predictive → reduce/flip)
+
 ### Key Thresholds
 
 - No limit (all GEM stocks from surge list), New face lookback: 3 days
@@ -57,6 +70,7 @@ An A-share stock momentum scanner that monitors Xueqiu's (雪球) "飙升榜" (s
 
 - `limit_up_scanner.py` — Main scanner (~1300 lines, all logic in one file)
 - `xueqiu_hot.py` — Standalone surge-ranking data fetcher
+- `self_evolve.py` — Self-evolution entry point (weekly tuning, backfill, IC analysis)
 - `STRATEGY.md` — Full strategy documentation with scoring tables
 - `REVIEW.md` — Iteration history and known issues
 

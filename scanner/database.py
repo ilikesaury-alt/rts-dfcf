@@ -44,7 +44,10 @@ def init_db() -> sqlite3.Connection:
             score INTEGER NOT NULL,
             percent REAL,
             trend TEXT,
-            next_day_pct REAL
+            next_day_pct REAL,
+            fwd_3d REAL,
+            fwd_5d REAL,
+            score_breakdown TEXT
         )
     """)
     conn.execute("""
@@ -159,82 +162,74 @@ def ensure_kline(conn: sqlite3.Connection, session, symbol: str) -> list[dict] |
 
 
 def save_recommendations(conn: sqlite3.Connection, new_faces: list, old_faces: list, momentum: list):
+    import json
     today = date.today().isoformat()
     now = datetime.now().strftime("%H:%M:%S")
     for c in new_faces + old_faces + momentum:
         try:
+            breakdown = json.dumps(c.kline.dimensions, ensure_ascii=False) if c.kline and c.kline.dimensions else None
             conn.execute(
-                "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, trend) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, trend, score_breakdown) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (today, now, c.stock.symbol, c.stock.name, c.category,
-                 c.score, c.stock.percent, c.kline.trend if c.kline else None),
+                 c.score, c.stock.percent, c.kline.trend if c.kline else None, breakdown),
             )
         except Exception:
             continue
     conn.commit()
 
 
-def _last_trading_day() -> date:
-    d = date.today() - timedelta(days=1)
-    while not is_trading_day(d):
-        d -= timedelta(days=1)
-    return d
-
-
 def update_recommendation_results(conn: sqlite3.Connection):
-    yesterday = _last_trading_day().isoformat()
-    cur = conn.execute(
-        "SELECT DISTINCT symbol FROM recommendations WHERE date = ? AND next_day_pct IS NULL",
-        (yesterday,),
-    )
-    symbols = [row[0] for row in cur.fetchall()]
-    if not symbols:
-        return
-
-    today_str = date.today().isoformat()
-    for sym in symbols:
-        cur = conn.execute(
-            "SELECT percent FROM daily_kline WHERE symbol = ? AND date = ?",
-            (sym, today_str),
-        )
-        row = cur.fetchone()
-        if row:
-            conn.execute(
-                "UPDATE recommendations SET next_day_pct = ? WHERE symbol = ? AND date = ? AND next_day_pct IS NULL",
-                (row[0], sym, yesterday),
-            )
-    conn.commit()
+    from scanner.evolution.tracker import backfill_outcomes
+    result = backfill_outcomes(conn)
+    if result["filled"] > 0:
+        print(f"  [进化] 填补 {result['filled']}/{result['total']} 条推荐 outcome")
 
 
 def get_tracking_summary(conn: sqlite3.Connection) -> str:
+    from scanner.evolution.tracker import tracking_stats
+
+    stats = tracking_stats(conn)
+    all_stats = stats.get("all")
+    if not all_stats:
+        return ""
+
+    def fmt_wr(wins, total):
+        return f"{wins}/{total} ({wins*100//max(total,1)}%)" if total else "N/A"
+
+    lines = ["", "▎胜率统计 (累计)"]
+    for cat in ("new_face", "old_face", "momentum", "all"):
+        s = stats.get(cat)
+        if not s or s["total"] == 0:
+            continue
+        label = {"new_face": "新面孔", "old_face": "旧面孔", "momentum": "动量", "all": "合计"}.get(cat, cat)
+        w1 = fmt_wr(s["wins_1d"], s["total"])
+        w3 = fmt_wr(s["wins_3d"], s["total"])
+        w5 = fmt_wr(s["wins_5d"], s["total"])
+        a1 = f"{s['avg_1d']:+.2f}%" if s["avg_1d"] is not None else "N/A"
+        lines.append(f"  {label}: {s['total']}次  +1d{w1}  +3d{w3}  +5d{w5}  均收益{a1}")
+
     yesterday = (date.today() - timedelta(days=1)).isoformat()
     cur = conn.execute(
-        "SELECT name, category, score, percent, trend, next_day_pct "
-        "FROM recommendations WHERE date = ? ORDER BY score DESC LIMIT 10",
+        "SELECT name, category, score, percent, trend, next_day_pct, fwd_3d, fwd_5d "
+        "FROM recommendations WHERE date = ? ORDER BY score DESC LIMIT 8",
         (yesterday,),
     )
     rows = cur.fetchall()
-    if not rows:
-        return ""
-
-    lines = ["", "▎昨日回顾"]
-    wins, losses = 0, 0
-    for name, cat, score, pct, trend, nd_pct in rows:
-        tag = {"new_face": "新", "momentum": "动量", "old_face": "旧"}.get(cat, "?")
-        pct_str = f"{pct:+.2f}%" if pct else "N/A"
-        if nd_pct is not None:
-            nd = f"{nd_pct:+.2f}%"
-            if nd_pct > 0:
-                wins += 1
-                nd += " ✅"
+    if rows:
+        lines.append("")
+        lines.append("▎昨日推荐明细")
+        for name, cat, score, pct, trend, nd_pct, f3, f5 in rows:
+            tag = {"new_face": "新", "momentum": "动量", "old_face": "旧"}.get(cat, "?")
+            parts = [f"  {tag} {name} 评分{score} 入{pct:+.1f}%"]
+            if nd_pct is not None:
+                parts.append(f"+1d{nd_pct:+.1f}%{'✅' if nd_pct > 0 else '❌'}")
             else:
-                losses += 1
-                nd += " ❌"
-        else:
-            nd = "待更新"
-        lines.append(f"  {tag} {name} {pct_str} → {nd}")
+                parts.append("+1d待更新")
+            if f3 is not None:
+                parts.append(f"+3d{f3:+.1f}%")
+            if f5 is not None:
+                parts.append(f"+5d{f5:+.1f}%")
+            lines.append(" ".join(parts))
 
-    total = wins + losses
-    if total > 0:
-        lines.append(f"  胜率: {wins}/{total} ({wins*100//total}%)")
     return "\n".join(lines)

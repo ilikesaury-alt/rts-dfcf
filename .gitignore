@@ -4,3 +4,4 @@
 /.claude
 /.opencode
 /scanner/__pycache__/*.pyc
+/scanner/evolution/__pycache__

@@ -9,7 +9,9 @@ from datetime import datetime
 import requests
 
 from scanner.config import REFRESH_INTERVAL, DB_PATH, NEW_FACE_LOOKBACK_DAYS
-from scanner.database import init_db, update_recommendation_results, save_recommendations
+from scanner.database import init_db, update_recommendation_results, save_recommendations, get_tracking_summary
+from scanner.evolution.tracker import tracking_stats
+from scanner.evolution.optimizer import generate_optimization_report
 from scanner.api import make_session
 from scanner.orchestrator import scan
 from scanner.trading_session import is_trading_time, seconds_until_next_session, next_session_label
@@ -34,7 +36,21 @@ def main():
     print(f"  创业板飙升扫描器  |  每{interval}s刷新  |  DB: {DB_PATH}")
     print(f"  新面孔: 过去{NEW_FACE_LOOKBACK_DAYS}天未出现 = 新 | 旧面孔: 出现过 = 旧")
     print(f"  交易时段: 09:30-11:45 / 13:00-15:00  |  非交易时段自动休眠")
-    print(f"  {'='*60}\n")
+    print(f"  {'='*50}")
+
+    # ── 自进化报告 ──
+    update_recommendation_results(conn)
+    summary = get_tracking_summary(conn)
+    if summary:
+        print(summary)
+
+    stats = tracking_stats(conn)
+    if stats.get("all") and stats["all"]["total"] >= 10:
+        print(f"\n  {'─'*50}")
+        report = generate_optimization_report(conn, window_days=60)
+        for line in report.split("\n"):
+            print(f"  {line.strip()}")
+    print()
 
     last_ranks: dict[str, int] = {}
 

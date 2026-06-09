@@ -20,6 +20,7 @@ class KlineSummary:
     volume_ratio: float
     bottom_confirmed: bool
     score: int
+    dimensions: dict = field(default_factory=dict)
 
 
 @dataclass

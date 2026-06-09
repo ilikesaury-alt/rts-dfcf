@@ -86,8 +86,25 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     if today_pct <= 5 and accumulated < 8:
         score += 8
 
+    dims = {}
+    td = stock.percent
+    if 2 <= td <= 6: dims["today_pct"] = 20
+    elif td < 2: dims["today_pct"] = 5
+    elif td > 8: dims["today_pct"] = -15
+    else: dims["today_pct"] = 5
+    dims["accumulated"] = 15 if -5 < accumulated < 15 else (-10 if accumulated >= 15 else 0)
+    if accumulated >= 25: dims["accumulated"] = -20
+    if bottom_confirmed: dims["bottom"] = 15
+    if volume_surge: dims["volume"] = 10
+    if stock.rank_change >= 2000: dims["rank_change"] = 12
+    elif stock.rank_change >= 1000: dims["rank_change"] = 6
+    if stock.value >= 10000: dims["value"] = 5
+    elif stock.value >= 5000: dims["value"] = 2
+    if td <= 5 and accumulated < 8: dims["combo"] = 8
+
     return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
-                        volume_ratio=round(vol_ratio, 2), bottom_confirmed=bottom_confirmed, score=score)
+                        volume_ratio=round(vol_ratio, 2), bottom_confirmed=bottom_confirmed,
+                        score=score, dimensions=dims)
 
 
 def analyze_old_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary | None:
@@ -166,8 +183,24 @@ def analyze_old_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
         score -= 10
         trend = "涨幅已大⚠️" + trend
 
+    dims = {}
+    if is_pullback: dims["pullback"] = 20
+    if not_broken: dims["support"] = 15
+    if shrinking_volume: dims["volume"] = 12
+    if stock.value >= 10000: dims["value"] = 10
+    elif stock.value >= 5000: dims["value"] = 5
+    if today_pct < 0 and today_pct >= -3: dims["mild_pullback"] = 8
+    elif today_pct < -3: dims["heavy_pullback"] = -10
+    if stock.rank_change >= 2000: dims["rank_change"] = 8
+    elif stock.rank_change >= 1000: dims["rank_change"] = 4
+    if vol_ratio < 0.4: dims["liquidity"] = -8
+    if accumulated >= 25: dims["accumulated"] = -15
+    if pct_from_low >= 50: dims["high_pos"] = -20
+    elif pct_from_low >= 30: dims["high_pos"] = -10
+
     return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
-                        volume_ratio=round(vol_ratio, 2), bottom_confirmed=not_broken and is_pullback, score=score)
+                        volume_ratio=round(vol_ratio, 2), bottom_confirmed=not_broken and is_pullback,
+                        score=score, dimensions=dims)
 
 
 def analyze_momentum(stock: StockInfo, kline: list[dict] | None) -> KlineSummary | None:
@@ -236,5 +269,23 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     elif stock.value >= 5000:
         score += 2
 
+    dims = {}
+    td = stock.percent
+    if 2 <= td <= 8: dims["today_pct"] = 20
+    elif td < 2: dims["today_pct"] = 5
+    if accumulated >= 30: dims["accumulated"] = -15
+    elif accumulated >= 20: dims["accumulated"] = 5
+    elif accumulated >= 15: dims["accumulated"] = 10
+    else: dims["accumulated"] = 15
+    if 0.7 < vol_ratio < 2.0: dims["volume"] = 10
+    elif vol_ratio >= 2.0: dims["volume"] = -8
+    elif vol_ratio < 0.7: dims["volume"] = -5
+    if no_crash: dims["no_crash"] = 15
+    if stock.rank_change >= 2000: dims["rank_change"] = 12
+    elif stock.rank_change >= 1000: dims["rank_change"] = 6
+    if stock.value >= 10000: dims["value"] = 5
+    elif stock.value >= 5000: dims["value"] = 2
+
     return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
-                        volume_ratio=round(vol_ratio, 2), bottom_confirmed=no_crash, score=score)
+                        volume_ratio=round(vol_ratio, 2), bottom_confirmed=no_crash,
+                        score=score, dimensions=dims)
