@@ -12,8 +12,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Auto-apply**: `python self_evolve.py --apply` (apply IC-based weight adjustments)
 - **Kill all**: `taskkill /f /im python.exe` (Windows)
 
-> 自动进化已集成在 `limit_up_scanner.py` 启动时，无需手动执行。`self_evolve.py --apply` 仅在你想应用参数调整时才需要用。
-
 ## Project Overview
 
 An A-share stock momentum scanner that monitors Xueqiu's (雪球) "飙升榜" (surge ranking) API in real-time during trading hours. It scores and recommends ChiNext (创业板, 300xxx) stocks using two strategies:
