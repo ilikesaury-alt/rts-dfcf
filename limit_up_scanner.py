@@ -90,7 +90,7 @@ def main():
                       f"{top_o.stock.percent:+.2f}% | {top_o.kline.trend if top_o.kline else ''}")
 
             save_recommendations(conn, new_faces, old_faces, momentum)
-            push_feishu(new_faces, old_faces, momentum, len(all_gem), conn)
+            # push_feishu(new_faces, old_faces, momentum, len(all_gem), conn)
 
         except requests.RequestException as e:
             print(f"\n  [!] 网络错误: {e}")
