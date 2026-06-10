@@ -179,6 +179,18 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: li
     conn.commit()
 
 
+def _last_trading_day(conn: sqlite3.Connection) -> str:
+    today = date.today()
+    cur = conn.execute(
+        "SELECT MAX(date) FROM appearances WHERE date < ?",
+        (today.isoformat(),),
+    )
+    row = cur.fetchone()
+    if row and row[0]:
+        return row[0]
+    return (date.today() - timedelta(days=1)).isoformat()
+
+
 def update_recommendation_results(conn: sqlite3.Connection, session=None):
     from scanner.evolution.tracker import backfill_outcomes
     result = backfill_outcomes(conn, session)
@@ -209,7 +221,7 @@ def get_tracking_summary(conn: sqlite3.Connection) -> str:
         a1 = f"{s['avg_1d']:+.2f}%" if s["avg_1d"] is not None else "N/A"
         lines.append(f"  {label}: {s['total']}次  +1d{w1}  +3d{w3}  +5d{w5}  均收益{a1}")
 
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    yesterday = _last_trading_day(conn)
     cur = conn.execute(
         "SELECT name, category, score, percent, trend, next_day_pct, fwd_3d, fwd_5d "
         "FROM recommendations WHERE date = ? ORDER BY score DESC LIMIT 8",

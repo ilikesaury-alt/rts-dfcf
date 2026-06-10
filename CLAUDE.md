@@ -18,8 +18,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 An A-share stock momentum scanner that monitors Xueqiu's (雪球) "飙升榜" (surge ranking) API in real-time during trading hours. It scores and recommends ChiNext (创业板, 300xxx) stocks using three strategies:
 
 - **New Face** (bottom breakout): First-time appearance in surge list within 3 days — looks for early-stage capital inflows with volume confirmation
-- **Old Face** (consolidation/2nd wave): Recurring appearances — looks for pullback/consolidation entries on previous hot stocks
-- **Momentum** (trend continuation): Stocks with 10%+ 5-day gain but still room to run — fills the gap between New Face and Old Face
+- **Momentum** (trend continuation): Stocks with 10%+ 5-day gain but still room to run — fills the gap between New Face and Old Face (Old Face was removed 2026-06-10)
 
 An optional **Ultra Mode** (`--ultra`) raises all thresholds, quadruples rank_change weighting, and removes today's percent hard-skips to serve ultra-short-term frequent traders.
 
@@ -28,7 +27,7 @@ An optional **Ultra Mode** (`--ultra`) raises all thresholds, quadruples rank_ch
 ```
 雪球API → fetch_biaosheng() → filter GEM/ST
   → batch quote API (market cap)
-  → DB lookup (new vs old face)
+  → DB lookup (check if new face)
   → fetch K-line (DB cache or Xueqiu API)
   → scoring (trend, volume, rank momentum, sector cluster, intraday strength, 小而美)
   → display + CSV log + Feishu push (optional)
@@ -37,12 +36,11 @@ An optional **Ultra Mode** (`--ultra`) raises all thresholds, quadruples rank_ch
 ### Data Flow (`limit_up_scanner.py`)
 
 1. **Fetch**: `fetch_biaosheng()` — GET Xueqiu hot stock list (rank_change sorted)
-2. **Filter**: Remove HK stocks, non-GEM, ST/*ST/退市; apply 小而美 (market cap ≤100亿, price ≤50元)
-3. **Classify**: `get_recent_symbols()` — check DB for appearances in last 3 days → new vs old face
+2. **Filter**: Remove HK stocks, non-GEM, ST/*ST/退市; apply 小而美 (market cap ≤300亿, price ≤100元)
+3. **Classify**: `get_recent_symbols()` — check DB for appearances in last 3 days → new vs known
 4. **Analyze**: `ensure_kline()` — 25-day K-line from cache or Xueqiu API, then:
    - `analyze_new_face()` — check bottom breakout signals (volume surge, accumulated gain, price range)
-   - `analyze_old_face()` — check pullback health (volume shrinkage, support level, trend intact)
-   - `analyze_momentum()` — check trend continuation (accumulated gain ≥10%, no crash days)
+   - `analyze_momentum()` — check trend continuation (accumulated gain ≥10%, no crash days); also used as fallback for non-new-face stocks
 5. **Enhance**: Add sector cluster bonus, rank trend bonus, intraday strength score, 小而美 bonus
 6. **Output**: Terminal table (color-coded), CSV log (`logs/scan_YYYY-MM-DD.csv`), Feishu push (currently commented out)
 
@@ -65,10 +63,10 @@ An optional **Ultra Mode** (`--ultra`) raises all thresholds, quadruples rank_ch
 ### Key Thresholds
 
 - No limit (all GEM stocks from surge list), New face lookback: 3 days
-- New face min score: 20, Old face min score: 10
-- 小而美: Max market cap 100亿, Max price 50元
-- Scoring: bottom confirmation +25, pullback +20, sector cluster up to +8, rank trend up to +6, 小而美 up to +16
-- Ultra mode: new face 35, old face 20, momentum 30, intraday min score 2, rank_change 4-tier (3000→+25, 2000→+20, 1000→+10, 500→+5)
+- New face min score: 20, Momentum min score: 15
+- 小而美: Max market cap 300亿, Max price 100元
+- Scoring: bottom confirmation +15, sector cluster up to +8, rank trend up to +6
+- Ultra mode: new face 35, momentum 30, intraday min score 2, rank_change 4-tier (3000→+25, 2000→+20, 1000→+10, 500→+5)
 
 ### Key Files
 

@@ -154,6 +154,6 @@ def scan(conn, session, ultra=False):
 
     update_rank_history({s.symbol: s.rank for s in gem_stocks})
 
-    new_faces.sort(key=lambda c: c.stock.rank)
-    momentum.sort(key=lambda c: c.stock.rank)
+    new_faces.sort(key=lambda c: -c.score)
+    momentum.sort(key=lambda c: -c.score)
     return new_faces, momentum, gem_stocks, filtered_large_cap
