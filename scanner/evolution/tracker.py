@@ -69,6 +69,21 @@ def backfill_outcomes(conn: sqlite3.Connection, session=None) -> dict:
             ORDER BY date LIMIT 5
         """, (symbol, rec_date, today_str)).fetchall()
 
+        if not future and session is not None:
+            try:
+                from scanner.api import fetch_kline
+                from scanner.database import save_kline_to_db
+                kline = fetch_kline(session, symbol)
+                if kline:
+                    save_kline_to_db(conn, symbol, kline)
+                    future = conn.execute("""
+                        SELECT date, close FROM daily_kline
+                        WHERE symbol = ? AND date > ? AND date <= ?
+                        ORDER BY date LIMIT 5
+                    """, (symbol, rec_date, today_str)).fetchall()
+            except Exception:
+                pass
+
         if not future:
             skipped += 1
             continue

@@ -5,7 +5,6 @@ from scanner.analysis import analyze_new_face, analyze_momentum
 from scanner.config import (
     NEW_FACE_LOOKBACK_DAYS,
     NEW_FACE_MIN_SCORE, MOMENTUM_MIN_SCORE,
-    MIN_INTRADAY_SCORE,
     MAX_STOCK_PRICE, MAX_MARKET_CAP,
 )
 from scanner.database import record_appearances, get_symbol_appearances, ensure_kline
@@ -19,8 +18,6 @@ def scan(conn, session):
     today = date.today().isoformat()
     new_face_min = NEW_FACE_MIN_SCORE
     momentum_min = MOMENTUM_MIN_SCORE
-    intraday_min = MIN_INTRADAY_SCORE
-
     raw = fetch_biaosheng(session)
 
     gem_stocks: list[StockInfo] = []
@@ -89,6 +86,15 @@ def scan(conn, session):
                     first_seen=first_date,
                     history_pct=[k["percent"] for k in kline] if kline else [],
                 ))
+            else:
+                new_face_fallback = analyze_new_face(stock, kline)
+                if new_face_fallback and new_face_fallback.score >= new_face_min:
+                    raw_new_faces.append(Candidate(
+                        stock=stock, category="new_face", score=new_face_fallback.score,
+                        reason=new_face_fallback.trend, kline=new_face_fallback,
+                        first_seen=first_date,
+                        history_pct=[k["percent"] for k in kline] if kline else [],
+                    ))
 
     all_raw = raw_new_faces + raw_momentum
     if all_raw:
@@ -132,8 +138,7 @@ def scan(conn, session):
         intra = analyze_intraday(session, c.stock.symbol)
         if intra is not None:
             c.intraday_score = intra
-            factor = 1 + intra / 20
-            c.score = max(1, int(c.score * factor))
+            c.score += int(round(intra))
 
         live_vol = estimate_live_volume(session, c.stock.symbol)
         if live_vol is not None and c.kline and c.kline.avg_volume > 0:
@@ -142,8 +147,11 @@ def scan(conn, session):
                 c.live_vol_bonus = 5
         c.score += c.rank_trend_bonus + c.sector_bonus + c.live_vol_bonus
 
-    new_faces = [c for c in new_faces if c.intraday_score >= intraday_min]
-    momentum = [c for c in momentum if c.intraday_score >= intraday_min]
+        if c.kline and c.kline.dimensions is not None:
+            c.kline.dimensions["rank_trend_bonus"] = c.rank_trend_bonus
+            c.kline.dimensions["sector_bonus"] = c.sector_bonus
+            c.kline.dimensions["live_vol_bonus"] = c.live_vol_bonus
+            c.kline.dimensions["intraday_score"] = round(c.intraday_score, 1)
 
     update_rank_history({s.symbol: s.rank for s in gem_stocks})
 

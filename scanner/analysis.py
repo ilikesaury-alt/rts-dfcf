@@ -41,6 +41,18 @@ def _rank_change_score(rc: int) -> int:
     return 0
 
 
+def _gentle_breakout_bonus(rank_change: int, vol_ratio: float, candle: int, value: float) -> int:
+    if not (1000 <= rank_change < 5000):
+        return 0
+    if not (0.7 < vol_ratio < 2.0):
+        return 0
+    if candle < 3:
+        return 0
+    if value >= 5000:
+        return 0
+    return 5
+
+
 def analyze_new_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary | None:
     if not kline or len(kline) < 5:
         return None
@@ -101,23 +113,28 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     elif today_pct > 6:
         score += 5
 
-    if -5 < accumulated < 15:
+    if -5 < accumulated <= 10:
         score += 15
     elif accumulated <= -5:
-        score -= 10
-    elif accumulated >= 15:
-        score -= 10
-    if accumulated >= 25:
-        score -= 10
+        score -= 5
+    elif accumulated <= 15:
+        score += 8
+    elif accumulated < 25:
+        score -= 5
+    else:
+        score -= 15
 
     if bottom_confirmed:
         score += 15
-    if v_shape_reversal:
+    elif v_shape_reversal:
         score += 12
-    if volume_surge:
+    elif volume_surge:
         score += 10
 
-    score += _rank_change_score(stock.rank_change)
+    rank_change_pts = _rank_change_score(stock.rank_change)
+    score += rank_change_pts
+    if rank_change_pts >= 12 and accumulated >= 10:
+        score -= 10
     if stock.value >= 10000:
         score += 5
     elif stock.value >= 5000:
@@ -128,22 +145,33 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     candle = _candle_quality_score(kline)
     score += candle
 
+    gentle = _gentle_breakout_bonus(stock.rank_change, vol_ratio, candle, stock.value)
+    score += gentle
+
     dims = {}
     td = stock.percent
     if 2 <= td <= 6: dims["new_face_today_pct"] = 20
     elif td < 2: dims["new_face_today_pct"] = 5
     elif td > 8: dims["new_face_today_pct"] = -15
     else: dims["new_face_today_pct"] = 5
-    dims["new_face_accumulated"] = 15 if -5 < accumulated < 15 else (-10 if accumulated >= 15 else 0)
-    if accumulated >= 25: dims["new_face_accumulated"] = -20
+    if accumulated <= -5:
+        dims["new_face_accumulated"] = -5
+    elif accumulated <= 10:
+        dims["new_face_accumulated"] = 15
+    elif accumulated <= 15:
+        dims["new_face_accumulated"] = 8
+    elif accumulated < 25:
+        dims["new_face_accumulated"] = -5
+    else:
+        dims["new_face_accumulated"] = -15
     if bottom_confirmed: dims["new_face_bottom"] = 15
     if volume_surge: dims["new_face_volume"] = 10
-    rc_score = _rank_change_score(stock.rank_change)
-    if rc_score: dims["new_face_rank_change"] = rc_score
+    if rank_change_pts: dims["new_face_rank_change"] = rank_change_pts
     if stock.value >= 10000: dims["new_face_value"] = 5
     elif stock.value >= 5000: dims["new_face_value"] = 2
     if ma_bull: dims["new_face_ma_bull"] = ma_bull
     if candle: dims["new_face_candle"] = candle
+    if gentle: dims["new_face_gentle_breakout"] = gentle
 
     return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
                         volume_ratio=round(vol_ratio, 2), bottom_confirmed=bottom_confirmed,
@@ -222,10 +250,14 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     candle = _candle_quality_score(kline)
     score += candle
 
+    gentle = _gentle_breakout_bonus(stock.rank_change, vol_ratio, candle, stock.value)
+    score += gentle
+
     dims = {}
     td = stock.percent
     if 2 <= td <= 8: dims["momentum_today_pct"] = 20
     elif td < 2: dims["momentum_today_pct"] = 5
+    else: dims["momentum_today_pct"] = 5
     if accumulated >= 30: dims["momentum_accumulated"] = -15
     elif accumulated >= 20: dims["momentum_accumulated"] = 5
     elif accumulated >= 15: dims["momentum_accumulated"] = 10
@@ -240,6 +272,7 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     elif stock.value >= 5000: dims["momentum_value"] = 2
     if ma_bull: dims["momentum_ma_bull"] = ma_bull
     if candle: dims["momentum_candle"] = candle
+    if gentle: dims["momentum_gentle_breakout"] = gentle
 
     return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
                         volume_ratio=round(vol_ratio, 2), bottom_confirmed=no_crash,
