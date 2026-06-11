@@ -5,8 +5,7 @@ from scanner.analysis import analyze_new_face, analyze_momentum
 from scanner.config import (
     NEW_FACE_LOOKBACK_DAYS,
     NEW_FACE_MIN_SCORE, MOMENTUM_MIN_SCORE,
-    ULTRA_NEW_FACE_MIN_SCORE, ULTRA_MOMENTUM_MIN_SCORE,
-    ULTRA_MIN_INTRADAY_SCORE, MIN_INTRADAY_SCORE,
+    MIN_INTRADAY_SCORE,
     MAX_STOCK_PRICE, MAX_MARKET_CAP,
 )
 from scanner.database import record_appearances, get_symbol_appearances, ensure_kline
@@ -16,17 +15,11 @@ from scanner.rank_trend import rank_streak_score, update_rank_history
 from scanner.utils import is_hk_stock, is_gem, is_st
 
 
-def scan(conn, session, ultra=False):
+def scan(conn, session):
     today = date.today().isoformat()
-
-    if ultra:
-        new_face_min = ULTRA_NEW_FACE_MIN_SCORE
-        momentum_min = ULTRA_MOMENTUM_MIN_SCORE
-        intraday_min = ULTRA_MIN_INTRADAY_SCORE
-    else:
-        new_face_min = NEW_FACE_MIN_SCORE
-        momentum_min = MOMENTUM_MIN_SCORE
-        intraday_min = MIN_INTRADAY_SCORE
+    new_face_min = NEW_FACE_MIN_SCORE
+    momentum_min = MOMENTUM_MIN_SCORE
+    intraday_min = MIN_INTRADAY_SCORE
 
     raw = fetch_biaosheng(session)
 
@@ -70,7 +63,7 @@ def scan(conn, session, ultra=False):
         kline = ensure_kline(conn, session, stock.symbol)
 
         if is_new:
-            kline_summary = analyze_new_face(stock, kline, ultra=ultra)
+            kline_summary = analyze_new_face(stock, kline)
             if kline_summary and kline_summary.score >= new_face_min:
                 raw_new_faces.append(Candidate(
                     stock=stock, category="new_face", score=kline_summary.score,
@@ -79,7 +72,7 @@ def scan(conn, session, ultra=False):
                     history_pct=[k["percent"] for k in kline] if kline else [],
                 ))
             else:
-                momentum_result = analyze_momentum(stock, kline, ultra=ultra)
+                momentum_result = analyze_momentum(stock, kline)
                 if momentum_result and momentum_result.score >= momentum_min:
                     raw_momentum.append(Candidate(
                         stock=stock, category="momentum", score=momentum_result.score,
@@ -88,7 +81,7 @@ def scan(conn, session, ultra=False):
                         history_pct=[k["percent"] for k in kline] if kline else [],
                     ))
         else:
-            momentum_result = analyze_momentum(stock, kline, ultra=ultra)
+            momentum_result = analyze_momentum(stock, kline)
             if momentum_result and momentum_result.score >= momentum_min:
                 raw_momentum.append(Candidate(
                     stock=stock, category="momentum", score=momentum_result.score,

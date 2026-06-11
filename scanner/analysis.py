@@ -35,25 +35,19 @@ def _candle_quality_score(kline: list[dict]) -> int:
     return max(-6, min(6, score))
 
 
-def _rank_change_score(rc: int, ultra: bool = False) -> int:
-    if ultra:
-        if rc >= 3000: return 25
-        if rc >= 2000: return 20
-        if rc >= 1000: return 10
-        if rc >= 500: return 5
-        return 0
+def _rank_change_score(rc: int) -> int:
     if rc >= 2000: return 12
     if rc >= 1000: return 6
     return 0
 
 
-def analyze_new_face(stock: StockInfo, kline: list[dict] | None, ultra: bool = False) -> KlineSummary | None:
+def analyze_new_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary | None:
     if not kline or len(kline) < 5:
         return None
 
     today_pct = stock.percent
 
-    if not ultra and today_pct <= 0:
+    if today_pct <= 0:
         return None
 
     pcts = [k["percent"] for k in kline]
@@ -123,7 +117,7 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None, ultra: bool = F
     if volume_surge:
         score += 10
 
-    score += _rank_change_score(stock.rank_change, ultra)
+    score += _rank_change_score(stock.rank_change)
     if stock.value >= 10000:
         score += 5
     elif stock.value >= 5000:
@@ -144,7 +138,7 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None, ultra: bool = F
     if accumulated >= 25: dims["new_face_accumulated"] = -20
     if bottom_confirmed: dims["new_face_bottom"] = 15
     if volume_surge: dims["new_face_volume"] = 10
-    rc_score = _rank_change_score(stock.rank_change, ultra)
+    rc_score = _rank_change_score(stock.rank_change)
     if rc_score: dims["new_face_rank_change"] = rc_score
     if stock.value >= 10000: dims["new_face_value"] = 5
     elif stock.value >= 5000: dims["new_face_value"] = 2
@@ -156,12 +150,12 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None, ultra: bool = F
                         score=score, dimensions=dims, avg_volume=round(avg_vol, 2))
 
 
-def analyze_momentum(stock: StockInfo, kline: list[dict] | None, ultra: bool = False) -> KlineSummary | None:
+def analyze_momentum(stock: StockInfo, kline: list[dict] | None) -> KlineSummary | None:
     if not kline or len(kline) < 5:
         return None
 
     today_pct = stock.percent
-    if not ultra and today_pct <= 0:
+    if today_pct <= 0:
         return None
 
     pcts = [k["percent"] for k in kline]
@@ -179,7 +173,7 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None, ultra: bool = F
 
     score = 0
 
-    if not ultra and today_pct > 8:
+    if today_pct > 8:
         return None
 
     if 2 <= today_pct <= 8:
@@ -217,7 +211,7 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None, ultra: bool = F
     if no_crash:
         score += 15
 
-    score += _rank_change_score(stock.rank_change, ultra)
+    score += _rank_change_score(stock.rank_change)
     if stock.value >= 10000:
         score += 5
     elif stock.value >= 5000:
@@ -240,7 +234,7 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None, ultra: bool = F
     elif vol_ratio >= 2.0: dims["momentum_volume"] = -8
     elif vol_ratio < 0.7: dims["momentum_volume"] = -5
     if no_crash: dims["momentum_no_crash"] = 15
-    rc_score = _rank_change_score(stock.rank_change, ultra)
+    rc_score = _rank_change_score(stock.rank_change)
     if rc_score: dims["momentum_rank_change"] = rc_score
     if stock.value >= 10000: dims["momentum_value"] = 5
     elif stock.value >= 5000: dims["momentum_value"] = 2

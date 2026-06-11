@@ -26,18 +26,14 @@ def main():
     parser = argparse.ArgumentParser(description="创业板飙升扫描器")
     parser.add_argument("interval", nargs="?", type=int, default=REFRESH_INTERVAL,
                         help="刷新间隔（秒）")
-    parser.add_argument("--ultra", action="store_true", help="超短模式：更高门槛、rank_change驱动")
     args = parser.parse_args()
 
     interval = max(60, args.interval)
-    ultra = args.ultra
 
     conn = init_db()
     session = make_session()
 
     print(f"  创业板飙升扫描器  |  每{interval}s刷新  |  DB: {DB_PATH}")
-    if ultra:
-        print(f"  🔥 超短模式 | rank_change驱动 | 高置信度过滤")
     print(f"  新面孔: 过去{NEW_FACE_LOOKBACK_DAYS}天未出现 = 新 | 旧面孔: 出现过 = 旧")
     print(f"  交易时段: 09:30-11:45 / 13:00-15:00  |  非交易时段自动休眠")
     print(f"  {'='*60}")
@@ -64,7 +60,7 @@ def main():
         try:
             update_recommendation_results(conn, session)
 
-            new_faces, momentum, all_gem, filtered_large_cap = scan(conn, session, ultra=ultra)
+            new_faces, momentum, all_gem, filtered_large_cap = scan(conn, session)
 
             display(new_faces, momentum, len(all_gem), interval,
                     filtered_large_cap=filtered_large_cap, last_ranks=last_ranks)

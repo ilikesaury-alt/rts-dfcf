@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 - **Run scanner**: `python limit_up_scanner.py` (default 180s interval) or `python limit_up_scanner.py 120` (custom seconds)
-- **Ultra-short mode**: `python limit_up_scanner.py --ultra` or `python run_ultra.py` (rank_change-driven, higher thresholds)
+
 - **Quick data check**: `python xueqiu_hot.py` (dump raw surge ranking)
 - **Self-evolution**: `python self_evolve.py` (performance report + IC dimension analysis)
 - **Backfill**: `python self_evolve.py --backfill` (fill missing outcome data)
@@ -19,8 +19,6 @@ An A-share stock momentum scanner that monitors Xueqiu's (雪球) "飙升榜" (s
 
 - **New Face** (bottom breakout): First-time appearance in surge list within 3 days — looks for early-stage capital inflows with volume confirmation
 - **Momentum** (trend continuation): Stocks with 10%+ 5-day gain but still room to run — fills the gap between New Face and Old Face (Old Face was removed 2026-06-10)
-
-An optional **Ultra Mode** (`--ultra`) raises all thresholds, quadruples rank_change weighting, and removes today's percent hard-skips to serve ultra-short-term frequent traders.
 
 ## Architecture
 
@@ -66,12 +64,10 @@ An optional **Ultra Mode** (`--ultra`) raises all thresholds, quadruples rank_ch
 - New face min score: 20, Momentum min score: 15
 - 小而美: Max market cap 300亿, Max price 100元
 - Scoring: bottom confirmation +15, sector cluster up to +8, rank trend up to +6
-- Ultra mode: new face 35, momentum 30, intraday min score 2, rank_change 4-tier (3000→+25, 2000→+20, 1000→+10, 500→+5)
 
 ### Key Files
 
 - `limit_up_scanner.py` — Main scanner (~1300 lines, all logic in one file)
-- `run_ultra.py` — Ultra-short-mode launcher shortcut
 - `xueqiu_hot.py` — Standalone surge-ranking data fetcher
 - `self_evolve.py` — Self-evolution entry point (weekly tuning, backfill, IC analysis)
 - `STRATEGY.md` — Full strategy documentation with scoring tables
