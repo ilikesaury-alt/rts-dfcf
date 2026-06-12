@@ -108,7 +108,7 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     closes = [k["close"] for k in kline]
     recent_3_pcts = pcts[-3:] if len(pcts) >= 3 else pcts
     no_heavy_loss = all(p > -3 for p in recent_3_pcts)
-    volume_surge = vol_ratio > 1.0
+    volume_surge = vol_ratio > 1.15
     near_20d_low = (closes[-1] - min(closes[-20:])) / max(min(closes[-20:]), 0.01) < 0.05 if len(closes) >= 20 else True
     bottom_confirmed = no_heavy_loss and volume_surge and near_20d_low
 
@@ -239,8 +239,6 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
 
     if 2 <= today_pct <= 12:
         score += 20
-    elif today_pct < 2:
-        score += 5
     else:
         score += 5
 

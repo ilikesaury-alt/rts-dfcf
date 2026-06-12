@@ -72,38 +72,41 @@ def scan(conn, session):
         if is_new:
             kline_summary = analyze_new_face(stock, kline)
             if kline_summary and kline_summary.score >= new_face_min:
-                    bonus = 5 if is_first_today else 0
                     raw_new_faces.append(Candidate(
-                        stock=stock, category="new_face", score=kline_summary.score + bonus,
+                        stock=stock, category="new_face", score=kline_summary.score,
                         reason=kline_summary.trend, kline=kline_summary,
                         first_seen=first_date,
+                        first_today_bonus=5 if is_first_today else 0,
                         history_pct=[k["percent"] for k in kline] if kline else [],
                     ))
             else:
                 momentum_result = analyze_momentum(stock, kline)
                 if momentum_result and momentum_result.score >= momentum_min:
                     raw_momentum.append(Candidate(
-                        stock=stock, category="momentum", score=momentum_result.score + (5 if is_first_today else 0),
+                        stock=stock, category="momentum", score=momentum_result.score,
                         reason=momentum_result.trend, kline=momentum_result,
                         first_seen=first_date,
+                        first_today_bonus=5 if is_first_today else 0,
                         history_pct=[k["percent"] for k in kline] if kline else [],
                     ))
         else:
             momentum_result = analyze_momentum(stock, kline)
             if momentum_result and momentum_result.score >= momentum_min:
                 raw_momentum.append(Candidate(
-                    stock=stock, category="momentum", score=momentum_result.score + (5 if is_first_today else 0),
+                    stock=stock, category="momentum", score=momentum_result.score,
                     reason=momentum_result.trend, kline=momentum_result,
                     first_seen=first_date,
+                    first_today_bonus=5 if is_first_today else 0,
                     history_pct=[k["percent"] for k in kline] if kline else [],
                 ))
             else:
                 new_face_fallback = analyze_new_face(stock, kline)
                 if new_face_fallback and new_face_fallback.score >= new_face_min:
                     raw_new_faces.append(Candidate(
-                        stock=stock, category="new_face", score=new_face_fallback.score + (5 if is_first_today else 0),
+                        stock=stock, category="new_face", score=new_face_fallback.score,
                         reason=new_face_fallback.trend, kline=new_face_fallback,
                         first_seen=first_date,
+                        first_today_bonus=5 if is_first_today else 0,
                         history_pct=[k["percent"] for k in kline] if kline else [],
                     ))
 
@@ -156,13 +159,15 @@ def scan(conn, session):
             live_vol_ratio = live_vol / c.kline.avg_volume
             if live_vol_ratio > 1.3:
                 c.live_vol_bonus = 5
-        c.score += c.rank_trend_bonus + c.sector_bonus + c.live_vol_bonus
+        c.score += c.rank_trend_bonus + c.sector_bonus + c.live_vol_bonus + c.first_today_bonus
 
         if c.kline and c.kline.dimensions is not None:
             c.kline.dimensions["rank_trend_bonus"] = c.rank_trend_bonus
             c.kline.dimensions["sector_bonus"] = c.sector_bonus
             c.kline.dimensions["live_vol_bonus"] = c.live_vol_bonus
             c.kline.dimensions["intraday_score"] = round(c.intraday_score, 1)
+            if c.first_today_bonus:
+                c.kline.dimensions["first_today_bonus"] = c.first_today_bonus
 
     update_rank_history({s.symbol: s.rank for s in gem_stocks})
 
