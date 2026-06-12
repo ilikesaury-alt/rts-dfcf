@@ -48,7 +48,7 @@ def _gentle_breakout_bonus(rank_change: int, vol_ratio: float, candle: int, valu
         return 0
     if candle < 3:
         return 0
-    if value >= 5000:
+    if value >= 10000:
         return 0
     return 5
 
@@ -82,14 +82,14 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     closes = [k["close"] for k in kline]
     recent_3_pcts = pcts[-3:] if len(pcts) >= 3 else pcts
     no_heavy_loss = all(p > -3 for p in recent_3_pcts)
-    volume_surge = vol_ratio > 1.3
+    volume_surge = vol_ratio > 1.0
     near_20d_low = (closes[-1] - min(closes[-20:])) / max(min(closes[-20:]), 0.01) < 0.05 if len(closes) >= 20 else True
     bottom_confirmed = no_heavy_loss and volume_surge and near_20d_low
 
     v_shape_reversal = (
-        accumulated < -8
+        accumulated < -5
         and volume_surge
-        and today_pct > 3
+        and today_pct > 2
     )
 
     if bottom_confirmed:
@@ -133,7 +133,7 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
 
     rank_change_pts = _rank_change_score(stock.rank_change)
     score += rank_change_pts
-    if rank_change_pts >= 12 and accumulated >= 10:
+    if rank_change_pts >= 12 and accumulated >= 15:
         score -= 10
     if stock.value >= 10000:
         score += 5
@@ -201,10 +201,10 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
 
     score = 0
 
-    if today_pct > 8:
+    if today_pct > 12:
         return None
 
-    if 2 <= today_pct <= 8:
+    if 2 <= today_pct <= 12:
         score += 20
     elif today_pct < 2:
         score += 5

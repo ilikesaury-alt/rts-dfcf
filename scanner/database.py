@@ -167,6 +167,12 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: li
     now = datetime.now().strftime("%H:%M:%S")
     for c in new_faces + momentum:
         try:
+            existing = conn.execute(
+                "SELECT id FROM recommendations WHERE date = ? AND symbol = ? AND category = ? LIMIT 1",
+                (today, c.stock.symbol, c.category),
+            ).fetchone()
+            if existing:
+                continue
             breakdown = json.dumps(c.kline.dimensions, ensure_ascii=False) if c.kline and c.kline.dimensions else None
             conn.execute(
                 "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, trend, score_breakdown) "
