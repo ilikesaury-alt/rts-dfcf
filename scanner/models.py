@@ -41,3 +41,4 @@ class Candidate:
     history_pct: list[float] = field(default_factory=list)
     market_cap: float = 0.0
     circ_market_cap: float = 0.0
+    first_today_bonus: int = 0

@@ -1,7 +1,7 @@
 import os
 from datetime import time as dtime
 
-REFRESH_INTERVAL = 120
+REFRESH_INTERVAL = 60
 REQUEST_TIMEOUT = 15
 NEW_FACE_LOOKBACK_DAYS = 3
 

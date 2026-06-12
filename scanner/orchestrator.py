@@ -13,9 +13,16 @@ from scanner.sector import get_sector_clusters, classify_sector
 from scanner.rank_trend import rank_streak_score, update_rank_history
 from scanner.utils import is_hk_stock, is_gem, is_st
 
+_seen_today: set[str] = set()
+_last_today: str = ""
+
 
 def scan(conn, session):
+    global _seen_today, _last_today
     today = date.today().isoformat()
+    if today != _last_today:
+        _seen_today.clear()
+        _last_today = today
     new_face_min = NEW_FACE_MIN_SCORE
     momentum_min = MOMENTUM_MIN_SCORE
     raw = fetch_biaosheng(session)
@@ -49,6 +56,9 @@ def scan(conn, session):
     raw_momentum: list[Candidate] = []
 
     for stock in gem_top:
+        is_first_today = stock.symbol not in _seen_today
+        _seen_today.add(stock.symbol)
+
         if stock.current > 0 and stock.current > MAX_STOCK_PRICE:
             continue
 
@@ -62,17 +72,18 @@ def scan(conn, session):
         if is_new:
             kline_summary = analyze_new_face(stock, kline)
             if kline_summary and kline_summary.score >= new_face_min:
-                raw_new_faces.append(Candidate(
-                    stock=stock, category="new_face", score=kline_summary.score,
-                    reason=kline_summary.trend, kline=kline_summary,
-                    first_seen=first_date,
-                    history_pct=[k["percent"] for k in kline] if kline else [],
-                ))
+                    bonus = 5 if is_first_today else 0
+                    raw_new_faces.append(Candidate(
+                        stock=stock, category="new_face", score=kline_summary.score + bonus,
+                        reason=kline_summary.trend, kline=kline_summary,
+                        first_seen=first_date,
+                        history_pct=[k["percent"] for k in kline] if kline else [],
+                    ))
             else:
                 momentum_result = analyze_momentum(stock, kline)
                 if momentum_result and momentum_result.score >= momentum_min:
                     raw_momentum.append(Candidate(
-                        stock=stock, category="momentum", score=momentum_result.score,
+                        stock=stock, category="momentum", score=momentum_result.score + (5 if is_first_today else 0),
                         reason=momentum_result.trend, kline=momentum_result,
                         first_seen=first_date,
                         history_pct=[k["percent"] for k in kline] if kline else [],
@@ -81,7 +92,7 @@ def scan(conn, session):
             momentum_result = analyze_momentum(stock, kline)
             if momentum_result and momentum_result.score >= momentum_min:
                 raw_momentum.append(Candidate(
-                    stock=stock, category="momentum", score=momentum_result.score,
+                    stock=stock, category="momentum", score=momentum_result.score + (5 if is_first_today else 0),
                     reason=momentum_result.trend, kline=momentum_result,
                     first_seen=first_date,
                     history_pct=[k["percent"] for k in kline] if kline else [],
@@ -90,7 +101,7 @@ def scan(conn, session):
                 new_face_fallback = analyze_new_face(stock, kline)
                 if new_face_fallback and new_face_fallback.score >= new_face_min:
                     raw_new_faces.append(Candidate(
-                        stock=stock, category="new_face", score=new_face_fallback.score,
+                        stock=stock, category="new_face", score=new_face_fallback.score + (5 if is_first_today else 0),
                         reason=new_face_fallback.trend, kline=new_face_fallback,
                         first_seen=first_date,
                         history_pct=[k["percent"] for k in kline] if kline else [],

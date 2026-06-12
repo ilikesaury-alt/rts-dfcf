@@ -53,6 +53,32 @@ def _gentle_breakout_bonus(rank_change: int, vol_ratio: float, candle: int, valu
     return 5
 
 
+def _close_position_bonus(kline: list[dict]) -> int:
+    if len(kline) < 2:
+        return 0
+    prev = kline[-2]
+    if prev["high"] == prev["low"]:
+        return 0
+    pos = (prev["close"] - prev["low"]) / (prev["high"] - prev["low"])
+    if pos > 0.7:
+        return 5
+    if pos > 0.5:
+        return 2
+    return 0
+
+
+def _compression_bonus(kline: list[dict]) -> int:
+    if len(kline) < 8:
+        return 0
+    recent = [abs(k["high"] - k["low"]) for k in kline[-3:]]
+    prior = [abs(k["high"] - k["low"]) for k in kline[-8:-3]]
+    avg_recent = sum(recent) / max(len(recent), 1)
+    avg_prior = sum(prior) / max(len(prior), 1)
+    if avg_prior > 0 and avg_recent / avg_prior < 0.8:
+        return 5
+    return 0
+
+
 def analyze_new_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary | None:
     if not kline or len(kline) < 5:
         return None
@@ -148,6 +174,11 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     gentle = _gentle_breakout_bonus(stock.rank_change, vol_ratio, candle, stock.value)
     score += gentle
 
+    close_pos = _close_position_bonus(kline)
+    score += close_pos
+    compression = _compression_bonus(kline)
+    score += compression
+
     dims = {}
     td = stock.percent
     if 2 <= td <= 6: dims["new_face_today_pct"] = 20
@@ -172,6 +203,8 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     if ma_bull: dims["new_face_ma_bull"] = ma_bull
     if candle: dims["new_face_candle"] = candle
     if gentle: dims["new_face_gentle_breakout"] = gentle
+    if close_pos: dims["new_face_close_pos"] = close_pos
+    if compression: dims["new_face_compression"] = compression
 
     return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
                         volume_ratio=round(vol_ratio, 2), bottom_confirmed=bottom_confirmed,
@@ -253,6 +286,11 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     gentle = _gentle_breakout_bonus(stock.rank_change, vol_ratio, candle, stock.value)
     score += gentle
 
+    close_pos = _close_position_bonus(kline)
+    score += close_pos
+    compression = _compression_bonus(kline)
+    score += compression
+
     dims = {}
     td = stock.percent
     if 2 <= td <= 8: dims["momentum_today_pct"] = 20
@@ -273,6 +311,8 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     if ma_bull: dims["momentum_ma_bull"] = ma_bull
     if candle: dims["momentum_candle"] = candle
     if gentle: dims["momentum_gentle_breakout"] = gentle
+    if close_pos: dims["momentum_close_pos"] = close_pos
+    if compression: dims["momentum_compression"] = compression
 
     return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
                         volume_ratio=round(vol_ratio, 2), bottom_confirmed=no_crash,
