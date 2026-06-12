@@ -1,20 +1,71 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 
-from scanner.api import fetch_biaosheng, fetch_market_caps_batch, analyze_intraday, estimate_live_volume
+from scanner.api import fetch_biaosheng, fetch_kline, fetch_market_caps_batch, analyze_intraday, estimate_live_volume
 from scanner.analysis import analyze_new_face, analyze_momentum
 from scanner.config import (
     NEW_FACE_LOOKBACK_DAYS,
     NEW_FACE_MIN_SCORE, MOMENTUM_MIN_SCORE,
     MAX_STOCK_PRICE, MAX_MARKET_CAP,
 )
-from scanner.database import record_appearances, get_symbol_appearances, ensure_kline
+from scanner.database import record_appearances, get_symbol_appearances, get_cached_kline, save_kline_to_db
 from scanner.models import StockInfo, Candidate
 from scanner.sector import get_sector_clusters, classify_sector
 from scanner.rank_trend import rank_streak_score, update_rank_history
+from scanner.trading_session import is_trading_day
 from scanner.utils import is_hk_stock, is_gem, is_st
 
 _seen_today: set[str] = set()
 _last_today: str = ""
+
+
+def _fetch_all_klines(conn, session, stocks: list[StockInfo]) -> dict[str, list[dict] | None]:
+    from datetime import timedelta
+
+    result: dict[str, list[dict] | None] = {}
+    needs_fetch: list[str] = []
+    stale_cache: dict[str, list[dict]] = {}
+
+    for s in stocks:
+        cached = get_cached_kline(conn, s.symbol)
+        if cached:
+            max_date_str = max(k["date"] for k in cached)
+            max_date = date.fromisoformat(max_date_str)
+            cursor = max_date + timedelta(days=1)
+            trading_days_missing = 0
+            while cursor < date.today():
+                if is_trading_day(cursor):
+                    trading_days_missing += 1
+                cursor += timedelta(days=1)
+            if trading_days_missing <= 2:
+                result[s.symbol] = cached
+                continue
+            stale_cache[s.symbol] = cached
+        needs_fetch.append(s.symbol)
+
+    if not needs_fetch:
+        return result
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        fut_map = {pool.submit(fetch_kline, session, sym): sym for sym in needs_fetch}
+        for fut in as_completed(fut_map):
+            sym = fut_map[fut]
+            try:
+                kline = fut.result()
+                if kline:
+                    result[sym] = kline
+                    save_kline_to_db(conn, sym, kline)
+                elif sym in stale_cache:
+                    result[sym] = stale_cache[sym]
+            except Exception:
+                if sym in stale_cache:
+                    result[sym] = stale_cache[sym]
+
+    for sym in needs_fetch:
+        if sym not in result and sym in stale_cache:
+            result[sym] = stale_cache[sym]
+
+    return result
 
 
 def scan(conn, session):
@@ -52,6 +103,8 @@ def scan(conn, session):
         for s in gem_top
     ])
 
+    klines = _fetch_all_klines(conn, session, gem_top)
+
     raw_new_faces: list[Candidate] = []
     raw_momentum: list[Candidate] = []
 
@@ -67,7 +120,7 @@ def scan(conn, session):
         is_new = len(previous_dates) == 0
         first_date = previous_dates[0] if previous_dates else today
 
-        kline = ensure_kline(conn, session, stock.symbol)
+        kline = klines.get(stock.symbol)
 
         if is_new:
             kline_summary = analyze_new_face(stock, kline)
@@ -139,7 +192,35 @@ def scan(conn, session):
 
     clusters = get_sector_clusters(gem_top)
 
-    for c in new_faces + momentum:
+    all_candidates = new_faces + momentum
+    intraday_scores: dict[str, float | None] = {}
+    live_volumes: dict[str, float | None] = {}
+
+    if all_candidates:
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            intra_futs = {
+                pool.submit(analyze_intraday, session, c.stock.symbol): c.stock.symbol
+                for c in all_candidates
+            }
+            for fut in as_completed(intra_futs):
+                sym = intra_futs[fut]
+                try:
+                    intraday_scores[sym] = fut.result()
+                except Exception:
+                    intraday_scores[sym] = None
+
+            vol_futs = {
+                pool.submit(estimate_live_volume, session, c.stock.symbol): c.stock.symbol
+                for c in all_candidates
+            }
+            for fut in as_completed(vol_futs):
+                sym = vol_futs[fut]
+                try:
+                    live_volumes[sym] = fut.result()
+                except Exception:
+                    live_volumes[sym] = None
+
+    for c in all_candidates:
         c.rank_trend_bonus = rank_streak_score(c.stock.symbol)
         sec = classify_sector(c.stock.name)
         c.sector = sec
@@ -149,12 +230,13 @@ def scan(conn, session):
                 c.sector_bonus = 8
             elif cluster_count >= 2:
                 c.sector_bonus = 4
-        intra = analyze_intraday(session, c.stock.symbol)
+
+        intra = intraday_scores.get(c.stock.symbol)
         if intra is not None:
             c.intraday_score = intra
             c.score += int(round(intra))
 
-        live_vol = estimate_live_volume(session, c.stock.symbol)
+        live_vol = live_volumes.get(c.stock.symbol)
         if live_vol is not None and c.kline and c.kline.avg_volume > 0:
             live_vol_ratio = live_vol / c.kline.avg_volume
             if live_vol_ratio > 1.3:

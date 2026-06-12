@@ -9,7 +9,7 @@ from datetime import datetime
 import requests
 
 from scanner.config import REFRESH_INTERVAL, DB_PATH, NEW_FACE_LOOKBACK_DAYS
-from scanner.database import init_db, update_recommendation_results, save_recommendations, get_tracking_summary
+from scanner.database import init_db, save_recommendations, get_tracking_summary
 from scanner.api import make_session
 from scanner.orchestrator import scan
 from scanner.trading_session import is_trading_time, seconds_until_next_session, next_session_label
@@ -58,8 +58,6 @@ def main():
             continue
 
         try:
-            update_recommendation_results(conn, session)
-
             new_faces, momentum, all_gem, filtered_large_cap = scan(conn, session)
 
             display(new_faces, momentum, len(all_gem), interval,

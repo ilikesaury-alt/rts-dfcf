@@ -1,3 +1,4 @@
+import threading
 import time
 from datetime import datetime
 
@@ -7,14 +8,16 @@ from scanner.config import HEADERS, REQUEST_TIMEOUT
 
 
 _last_api_call: float = 0
+_throttle_lock = threading.Lock()
 
 
 def _throttle(min_interval: float = 0.15):
     global _last_api_call
-    elapsed = time.time() - _last_api_call
-    if elapsed < min_interval:
-        time.sleep(min_interval - elapsed)
-    _last_api_call = time.time()
+    with _throttle_lock:
+        elapsed = time.time() - _last_api_call
+        if elapsed < min_interval:
+            time.sleep(min_interval - elapsed)
+        _last_api_call = time.time()
 
 
 def make_session() -> requests.Session:

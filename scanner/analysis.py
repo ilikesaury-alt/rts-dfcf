@@ -94,10 +94,12 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     down_days = sum(1 for p in recent_5_pcts if p < 0)
     has_crash_day = any(p <= -10 for p in recent_5_pcts)
     has_big_up_day = any(p >= 10 for p in recent_5_pcts)
-    if not has_crash_day and not has_big_up_day and down_days >= 3 and sum(recent_5_pcts) < 5 and sum(recent_5_pcts) > -5 and today_pct < 5:
+    if not has_crash_day and not has_big_up_day and down_days >= 3 and sum(recent_5_pcts) < 5 and sum(recent_5_pcts) > -5 and today_pct < 3:
         return None
 
     accumulated = sum(pcts[-5:])
+    if accumulated < -8:
+        return None
 
     volumes = [k["volume"] for k in kline]
     vol_window = volumes[-11:-1] if len(volumes) >= 11 else volumes[:-1]
@@ -109,7 +111,7 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     recent_3_pcts = pcts[-3:] if len(pcts) >= 3 else pcts
     no_heavy_loss = all(p > -3 for p in recent_3_pcts)
     volume_surge = vol_ratio > 1.15
-    near_20d_low = (closes[-1] - min(closes[-20:])) / max(min(closes[-20:]), 0.01) < 0.05 if len(closes) >= 20 else True
+    near_20d_low = (closes[-1] - min(closes[-20:])) / max(min(closes[-20:]), 0.01) < 0.08 if len(closes) >= 20 else True
     bottom_confirmed = no_heavy_loss and volume_surge and near_20d_low
 
     v_shape_reversal = (
@@ -132,11 +134,13 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     score = 0
     if 2 <= today_pct <= 6:
         score += 20
-    elif today_pct < 2:
+    elif today_pct < 1:
         score += 5
+    elif today_pct < 2:
+        score += 10
     elif today_pct > 8:
         score -= 15
-    elif today_pct > 6:
+    else:
         score += 5
 
     if -5 < accumulated <= 10:
@@ -182,7 +186,8 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
     dims = {}
     td = stock.percent
     if 2 <= td <= 6: dims["new_face_today_pct"] = 20
-    elif td < 2: dims["new_face_today_pct"] = 5
+    elif td < 1: dims["new_face_today_pct"] = 5
+    elif td < 2: dims["new_face_today_pct"] = 10
     elif td > 8: dims["new_face_today_pct"] = -15
     else: dims["new_face_today_pct"] = 5
     if accumulated <= -5:
@@ -234,11 +239,15 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
 
     score = 0
 
-    if today_pct > 12:
+    if today_pct > 8:
         return None
 
-    if 2 <= today_pct <= 12:
+    if 2 <= today_pct <= 6:
         score += 20
+    elif today_pct < 1:
+        score += 5
+    elif today_pct < 2:
+        score += 10
     else:
         score += 5
 
@@ -263,8 +272,9 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
         score -= 5
 
     if len(pcts) >= 2:
+        has_crash_day = any(p <= -7 for p in pcts[-5:])
         recent_2_return = pcts[-2] + pcts[-1]
-        no_crash = recent_2_return > -3
+        no_crash = not has_crash_day and recent_2_return > -3
     else:
         no_crash = True
     if no_crash:
@@ -291,8 +301,9 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None) -> KlineSummary
 
     dims = {}
     td = stock.percent
-    if 2 <= td <= 8: dims["momentum_today_pct"] = 20
-    elif td < 2: dims["momentum_today_pct"] = 5
+    if 2 <= td <= 6: dims["momentum_today_pct"] = 20
+    elif td < 1: dims["momentum_today_pct"] = 5
+    elif td < 2: dims["momentum_today_pct"] = 10
     else: dims["momentum_today_pct"] = 5
     if accumulated >= 30: dims["momentum_accumulated"] = -15
     elif accumulated >= 20: dims["momentum_accumulated"] = 5
