@@ -88,7 +88,7 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
         batch = symbols[i:i + 50]
         sym_str = ",".join(batch)
         url = (f"https://stock.xueqiu.com/v5/stock/batch/quote.json"
-               f"?symbol={sym_str}&extend=market_cap")
+               f"?symbol={sym_str}")
         try:
             resp = session.get(url, timeout=REQUEST_TIMEOUT)
             resp.raise_for_status()
@@ -99,8 +99,8 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
                     q = item if isinstance(item, dict) else {}
                 sym = q.get("symbol", "")
                 if sym:
-                    mc = q.get("market_capital") or q.get("total_market_capital") or 0
-                    cmc = q.get("circ_market_capital") or 0
+                    mc = q.get("market_capital") or 0
+                    cmc = q.get("float_market_capital") or 0
                     result[sym] = {"market_cap": mc, "circ_market_cap": cmc}
         except Exception:
             continue
@@ -118,13 +118,16 @@ _INTRADAY_CACHE: dict[str, tuple[float | None, float]] = {}
 _INTRADAY_CACHE_TTL = 300
 _INTRADAY_CACHE_FAIL_TTL = 60
 
+_MINUTE_DATA_CACHE: dict[str, tuple[list[dict] | None, float]] = {}
+_MINUTE_DATA_CACHE_TTL = 120
 
-def estimate_live_volume(session: requests.Session, symbol: str) -> float | None:
-    """Estimate today's full-day volume from minute data.
 
-    Returns estimated daily volume (shares), or None if data insufficient.
-    Uses the same minute endpoint as analyze_intraday but focuses on volume.
-    """
+def _fetch_minute_data(session: requests.Session, symbol: str) -> list[dict] | None:
+    now = time.time()
+    if symbol in _MINUTE_DATA_CACHE:
+        data, ts = _MINUTE_DATA_CACHE[symbol]
+        if now - ts < _MINUTE_DATA_CACHE_TTL:
+            return data
     try:
         _throttle()
         ts_ms = int(time.time() * 1000)
@@ -132,15 +135,25 @@ def estimate_live_volume(session: requests.Session, symbol: str) -> float | None
         resp = session.get(url, timeout=15)
         d = resp.json()
         items = d.get("data", {}).get("items", [])
-        if not items or len(items) < 10:
-            return None
-        total_vol = sum(item.get("volume", 0) for item in items)
-        minutes_elapsed = len(items)
-        trading_minutes_total = 240
-        estimated = total_vol * trading_minutes_total / max(minutes_elapsed, 1)
-        return estimated
-    except Exception:
+        if items and len(items) >= 10:
+            _MINUTE_DATA_CACHE[symbol] = (items, now)
+            return items
+        _MINUTE_DATA_CACHE[symbol] = (None, now)
         return None
+    except Exception:
+        _MINUTE_DATA_CACHE[symbol] = (None, now)
+        return None
+
+
+def estimate_live_volume(session: requests.Session, symbol: str) -> float | None:
+    items = _fetch_minute_data(session, symbol)
+    if not items:
+        return None
+    total_vol = sum(item.get("volume", 0) for item in items)
+    minutes_elapsed = len(items)
+    trading_minutes_total = 240
+    estimated = total_vol * trading_minutes_total / max(minutes_elapsed, 1)
+    return estimated
 
 
 def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
@@ -152,27 +165,19 @@ def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
         if val is None and now - ts < _INTRADAY_CACHE_FAIL_TTL:
             return None
 
-    try:
-        _throttle()
-        ts_ms = int(time.time() * 1000)
-        url = f"https://stock.xueqiu.com/v5/stock/chart/minute.json?symbol={symbol}&period=1d&_={ts_ms}"
-        resp = session.get(url, timeout=15)
-        d = resp.json()
-        items = d.get("data", {}).get("items", [])
-        if not items or len(items) < 10:
-            _INTRADAY_CACHE[symbol] = (None, now)
-            return None
+    items = _fetch_minute_data(session, symbol)
+    if not items:
+        _INTRADAY_CACHE[symbol] = (None, now)
+        return None
 
+    try:
         first_px = items[0]["current"]
         last_px = items[-1]["current"]
-
         prices = [item["current"] for item in items]
         high = max(prices)
         low = min(prices)
-
         score = 0.0
 
-        # 1. 冲高回落检测：从日内最高点的回撤幅度
         if high > low and high > first_px * 1.005:
             fade_pct = (high - last_px) / high * 100
             if fade_pct > 3:
@@ -182,7 +187,6 @@ def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
             elif fade_pct > 0.5:
                 score -= 1.0
 
-        # 2. 在日内区间的位置（收盘/当前价在高低点的位置）
         if high > low:
             position = (last_px - low) / (high - low)
             if position > 0.7:
@@ -190,7 +194,6 @@ def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
             elif position < 0.3:
                 score -= 2.5
 
-        # 3. 分时攻击波 vs 衰退波净胜
         segments = 10
         seg_size = len(items) // segments
         if seg_size > 0:
@@ -208,7 +211,6 @@ def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
             elif net_waves <= -1:
                 score -= 1.0
 
-        # 4. 大单资金流向
         capital = items[-1].get("capital", {})
         xlarge = capital.get("xlarge", 0) if capital else 0
         if xlarge > 5:
@@ -216,7 +218,6 @@ def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
         elif xlarge < -5:
             score -= 2.0
 
-        # 5. 上午 vs 全天结构（前1/3段走势占全天比例）
         split = len(items) // 3
         morning_end = items[split]["current"]
         morning_chg = (morning_end - first_px) / first_px * 100
