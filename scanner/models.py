@@ -42,3 +42,7 @@ class Candidate:
     market_cap: float = 0.0
     circ_market_cap: float = 0.0
     first_today_bonus: int = 0
+    turnover_bonus: int = 0
+    first_breakout_bonus: int = 0
+    gap_up_bonus: int = 0
+    time_bonus: int = 0

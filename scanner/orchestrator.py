@@ -1,14 +1,16 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 
-from scanner.api import fetch_biaosheng, fetch_kline, fetch_market_caps_batch, analyze_intraday, estimate_live_volume
+from scanner.api import fetch_biaosheng, fetch_kline, fetch_market_caps_batch, analyze_intraday, estimate_live_volume, fetch_market_index
 from scanner.analysis import analyze_new_face, analyze_momentum
 from scanner.config import (
     NEW_FACE_LOOKBACK_DAYS,
     NEW_FACE_MIN_SCORE, MOMENTUM_MIN_SCORE,
     MAX_STOCK_PRICE, MAX_MARKET_CAP,
+    EARLY_TRADE_CUTOFF, LATE_TRADE_START,
+    EARLY_BONUS, LATE_BONUS,
 )
-from scanner.database import record_appearances, get_symbol_appearances, get_cached_kline, save_kline_to_db
+from scanner.database import record_appearances, get_symbol_appearances, get_cached_kline, save_kline_to_db, get_active_weights
 from scanner.models import StockInfo, Candidate
 from scanner.sector import get_sector_clusters, classify_sector
 from scanner.rank_trend import rank_streak_score, update_rank_history
@@ -76,6 +78,12 @@ def scan(conn, session):
         _last_today = today
     new_face_min = NEW_FACE_MIN_SCORE
     momentum_min = MOMENTUM_MIN_SCORE
+    active_weights_raw: dict = get_active_weights(conn)
+    new_face_overrides = {k.replace("new_face_", ""): v for k, v in active_weights_raw.items() if k.startswith("new_face_")}
+    momentum_overrides = {k.replace("momentum_", ""): v for k, v in active_weights_raw.items() if k.startswith("momentum_")}
+    if active_weights_raw:
+        print(f"  [进化] 加载活跃参数, 新面孔{len(new_face_overrides)} 动量{len(momentum_overrides)} 维度已覆盖")
+
     raw = fetch_biaosheng(session)
 
     gem_stocks: list[StockInfo] = []
@@ -123,43 +131,51 @@ def scan(conn, session):
         kline = klines.get(stock.symbol)
 
         if is_new:
-            kline_summary = analyze_new_face(stock, kline)
+            kline_summary = analyze_new_face(stock, kline, weight_overrides=new_face_overrides)
             if kline_summary and kline_summary.score >= new_face_min:
+                    first_breakout = stock.rank_change >= 500 and kline_summary.volume_ratio > 1.15
                     raw_new_faces.append(Candidate(
                         stock=stock, category="new_face", score=kline_summary.score,
                         reason=kline_summary.trend, kline=kline_summary,
                         first_seen=first_date,
                         first_today_bonus=5 if is_first_today else 0,
+                        first_breakout_bonus=12 if first_breakout else 0,
                         history_pct=[k["percent"] for k in kline] if kline else [],
                     ))
             else:
-                momentum_result = analyze_momentum(stock, kline)
+                momentum_result = analyze_momentum(stock, kline, weight_overrides=momentum_overrides)
                 if momentum_result and momentum_result.score >= momentum_min:
+                    first_breakout = stock.rank_change >= 500 and momentum_result.volume_ratio > 1.15
                     raw_momentum.append(Candidate(
                         stock=stock, category="momentum", score=momentum_result.score,
                         reason=momentum_result.trend, kline=momentum_result,
                         first_seen=first_date,
                         first_today_bonus=5 if is_first_today else 0,
+                        first_breakout_bonus=12 if first_breakout else 0,
                         history_pct=[k["percent"] for k in kline] if kline else [],
                     ))
         else:
-            momentum_result = analyze_momentum(stock, kline)
+            momentum_result = analyze_momentum(stock, kline, weight_overrides=momentum_overrides)
             if momentum_result and momentum_result.score >= momentum_min:
+                first_breakout = stock.rank_change >= 500 and momentum_result.volume_ratio > 1.15
                 raw_momentum.append(Candidate(
                     stock=stock, category="momentum", score=momentum_result.score,
                     reason=momentum_result.trend, kline=momentum_result,
                     first_seen=first_date,
                     first_today_bonus=5 if is_first_today else 0,
+                    first_breakout_bonus=12 if first_breakout else 0,
                     history_pct=[k["percent"] for k in kline] if kline else [],
                 ))
             else:
-                new_face_fallback = analyze_new_face(stock, kline)
+                new_face_fallback = analyze_new_face(stock, kline, weight_overrides=new_face_overrides)
                 if new_face_fallback and new_face_fallback.score >= new_face_min:
+                    first_breakout = stock.rank_change >= 500 and new_face_fallback.volume_ratio > 1.15
                     raw_new_faces.append(Candidate(
-                        stock=stock, category="new_face", score=new_face_fallback.score,
+                        stock=stock, category="known_new_face", score=new_face_fallback.score,
                         reason=new_face_fallback.trend, kline=new_face_fallback,
                         first_seen=first_date,
                         first_today_bonus=5 if is_first_today else 0,
+                        first_breakout_bonus=12 if first_breakout else 0,
                         history_pct=[k["percent"] for k in kline] if kline else [],
                     ))
 
@@ -185,7 +201,7 @@ def scan(conn, session):
         c.market_cap = market_cap
         c.circ_market_cap = cap_data.get("circ_market_cap", 0)
 
-        if c.category == "new_face":
+        if c.category in ("new_face", "known_new_face"):
             new_faces.append(c)
         else:
             momentum.append(c)
@@ -220,6 +236,22 @@ def scan(conn, session):
                 except Exception:
                     live_volumes[sym] = None
 
+    market_idx_pct = fetch_market_index(session)
+    market_env_bonus = 0
+    if market_idx_pct is not None:
+        if market_idx_pct > 0.5:
+            market_env_bonus = 3
+        elif market_idx_pct < -1:
+            market_env_bonus = -3
+
+    now_minutes = datetime.now().hour * 60 + datetime.now().minute
+    if now_minutes < EARLY_TRADE_CUTOFF:
+        time_bonus = EARLY_BONUS
+    elif now_minutes >= LATE_TRADE_START:
+        time_bonus = LATE_BONUS
+    else:
+        time_bonus = 0
+
     for c in all_candidates:
         c.rank_trend_bonus = rank_streak_score(c.stock.symbol)
         sec = classify_sector(c.stock.name)
@@ -241,7 +273,24 @@ def scan(conn, session):
             live_vol_ratio = live_vol / c.kline.avg_volume
             if live_vol_ratio > 1.3:
                 c.live_vol_bonus = 5
-        c.score += c.rank_trend_bonus + c.sector_bonus + c.live_vol_bonus + c.first_today_bonus
+        if c.market_cap > 0:
+            tr = market_caps.get(c.stock.symbol, {}).get("turnover_rate")
+            if tr is not None:
+                if tr > 8:
+                    c.turnover_bonus = -3
+                elif tr > 4:
+                    c.turnover_bonus = 3
+                elif tr > 2:
+                    c.turnover_bonus = 5
+
+        c.time_bonus = time_bonus
+        if c.kline and c.kline.dimensions:
+            gap_key = "new_face_gap_up" if c.category in ("new_face", "known_new_face") else "momentum_gap_up"
+            c.gap_up_bonus = c.kline.dimensions.get(gap_key, 0)
+
+        c.score += (c.rank_trend_bonus + c.sector_bonus + c.live_vol_bonus
+                    + c.first_today_bonus + c.first_breakout_bonus
+                    + market_env_bonus + c.turnover_bonus + c.time_bonus)
 
         if c.kline and c.kline.dimensions is not None:
             c.kline.dimensions["rank_trend_bonus"] = c.rank_trend_bonus
@@ -250,6 +299,14 @@ def scan(conn, session):
             c.kline.dimensions["intraday_score"] = round(c.intraday_score, 1)
             if c.first_today_bonus:
                 c.kline.dimensions["first_today_bonus"] = c.first_today_bonus
+            if c.first_breakout_bonus:
+                c.kline.dimensions["first_breakout_bonus"] = c.first_breakout_bonus
+            if market_env_bonus:
+                c.kline.dimensions["market_env_bonus"] = market_env_bonus
+            if c.turnover_bonus:
+                c.kline.dimensions["turnover_bonus"] = c.turnover_bonus
+            if c.time_bonus:
+                c.kline.dimensions["time_bonus"] = c.time_bonus
 
     update_rank_history({s.symbol: s.rank for s in gem_stocks})
 

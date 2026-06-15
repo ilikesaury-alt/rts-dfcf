@@ -60,6 +60,10 @@ def _bonus_tag(c: Candidate) -> str:
         parts.append(f"T{c.rank_trend_bonus:+d}")
     if c.sector_bonus:
         parts.append(f"S{c.sector_bonus:+d}")
+    if c.first_breakout_bonus:
+        parts.append(f"B{c.first_breakout_bonus:+d}")
+    if c.gap_up_bonus:
+        parts.append(f"G{c.gap_up_bonus:+d}")
     if c.intraday_score:
         d_tag = f"D{int(c.intraday_score):+d}"
         if c.intraday_score < -2:
@@ -67,6 +71,8 @@ def _bonus_tag(c: Candidate) -> str:
         elif c.intraday_score > 2:
             d_tag = f"{ANSI['GREEN']}{d_tag}{ANSI['RESET']}"
         parts.append(d_tag)
+    if c.turnover_bonus:
+        parts.append(f"H{c.turnover_bonus:+d}")
     return " ".join(parts) if parts else ""
 
 
@@ -104,9 +110,10 @@ def display(new_faces: list[Candidate], momentum: list[Candidate],
     print(f"  小而美: 市值≤{int(MAX_MARKET_CAP/YI)}亿 股价≤{MAX_STOCK_PRICE}元")
     print(f"{'='*96}")
 
-    def _print_row(c: Candidate, show_val: bool = False):
+    def _print_row(c: Candidate, icon: str = "", show_val: bool = False):
         s = c.stock
         k = c.kline
+        display_name = f"{icon} {s.name}" if icon else s.name
         cur = f"{s.current:.2f}" if s.current else "N/A"
         acc = f"{k.accumulated_pct:+.2f}%" if k else "N/A"
         vr = f"{k.volume_ratio:.1f}x" if k else "N/A"
@@ -119,9 +126,9 @@ def display(new_faces: list[Candidate], momentum: list[Candidate],
         cap_str = _fmt_market_cap(c.market_cap)
         val_str = f"{s.value:.0f}" if s.value else "N/A"
         if show_val:
-            print(f"  {s.rank:>4} {delta_display} {_pad(s.name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} {_pad(bonus_str,16)} {cap_str:>8} {val_str:>6}")
+            print(f"  {s.rank:>4} {delta_display} {_pad(display_name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} {_pad(bonus_str,16)} {cap_str:>8} {val_str:>6}")
         else:
-            print(f"  {s.rank:>4} {delta_display} {_pad(s.name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} {_pad(bonus_str,16)} {cap_str:>8}")
+            print(f"  {s.rank:>4} {delta_display} {_pad(display_name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} {_pad(bonus_str,16)} {cap_str:>8}")
 
     hdr = f"  {_pad('排名',4,'r')} {_pad('变化',6,'r')} {_pad('名称',10)} {_pad('代码',12)} {_pad('现价',7,'r')} {_pad('涨幅',8,'r')} {_pad('趋势',14)} {_pad('5日累计',8,'r')} {_pad('量比',6,'r')} {_pad('评分',4,'r')} {_pad('增强',16)} {_pad('市值',8,'r')}"
 
@@ -130,7 +137,8 @@ def display(new_faces: list[Candidate], momentum: list[Candidate],
     print(f"  {'-'*108}")
     if new_faces:
         for c in new_faces:
-            _print_row(c)
+            icon = "★" if c.first_breakout_bonus else ("△" if c.category == "known_new_face" else "")
+            _print_row(c, icon=icon)
     else:
         print(f"  {ANSI['YELLOW']}暂无新面孔{ANSI['RESET']}")
 

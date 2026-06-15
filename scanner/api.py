@@ -20,6 +20,29 @@ def _throttle(min_interval: float = 0.15):
         _last_api_call = time.time()
 
 
+_market_index_cache: tuple[float | None, float] = (None, 0)
+
+
+def fetch_market_index(session: requests.Session) -> float | None:
+    global _market_index_cache
+    now = time.time()
+    if _market_index_cache[0] is not None and now - _market_index_cache[1] < 180:
+        return _market_index_cache[0]
+    try:
+        _throttle()
+        ts_ms = int(time.time() * 1000)
+        url = f"https://stock.xueqiu.com/v5/stock/chart/kline.json?symbol=SZ399006&begin={ts_ms - 86400*1000*3}&period=day&count=2&_={ts_ms}"
+        resp = session.get(url, timeout=REQUEST_TIMEOUT)
+        items = resp.json().get("data", {}).get("item", [])
+        if items:
+            pct = items[-1][7]
+            _market_index_cache = (pct, now)
+            return pct
+    except Exception:
+        pass
+    return None
+
+
 def make_session() -> requests.Session:
     s = requests.Session()
     s.trust_env = False
@@ -104,7 +127,9 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
                 if sym:
                     mc = q.get("market_capital") or 0
                     cmc = q.get("float_market_capital") or 0
-                    result[sym] = {"market_cap": mc, "circ_market_cap": cmc}
+                    turnover = q.get("turnover_rate")
+                    result[sym] = {"market_cap": mc, "circ_market_cap": cmc,
+                                   "turnover_rate": turnover}
         except Exception:
             continue
 

@@ -3,7 +3,7 @@ import sqlite3
 import copy
 from datetime import date, timedelta
 
-from scanner.config import MAX_MARKET_CAP, MAX_STOCK_PRICE
+from scanner.config import MAX_MARKET_CAP, MAX_STOCK_PRICE, NEW_FACE_WEIGHTS, MOMENTUM_WEIGHTS
 from scanner.evolution.analytics import dimension_ic
 
 YI = 100_000_000
@@ -15,22 +15,22 @@ BASE_PARAMS = {
     "max_market_cap": 300 * YI,
     "max_stock_price": 100.0,
     "weights": {
-        "new_face_today_pct": 20,
-        "new_face_accumulated": 10,
-        "new_face_bottom": 8,
-        "new_face_volume": 12,
-        "new_face_rank_change": 15,
-        "new_face_value": 5,
-        "new_face_ma_bull": 3,
-        "new_face_candle": 3,
-        "momentum_today_pct": 20,
-        "momentum_accumulated": 10,
-        "momentum_volume": 10,
-        "momentum_no_crash": 10,
-        "momentum_rank_change": 15,
-        "momentum_value": 5,
-        "momentum_ma_bull": 3,
-        "momentum_candle": 3,
+        "new_face_today_pct": NEW_FACE_WEIGHTS.get("today_pct_2_6", 20),
+        "new_face_accumulated": NEW_FACE_WEIGHTS.get("accum_neg5_10", 10),
+        "new_face_bottom": NEW_FACE_WEIGHTS.get("bottom_confirmed", 8),
+        "new_face_volume": NEW_FACE_WEIGHTS.get("volume_surge", 12),
+        "new_face_rank_change": NEW_FACE_WEIGHTS.get("rank_change_gte_2000", 15),
+        "new_face_value": NEW_FACE_WEIGHTS.get("value_gte_10000", 5),
+        "new_face_ma_bull": NEW_FACE_WEIGHTS.get("ma_bull", 3),
+        "new_face_candle": NEW_FACE_WEIGHTS.get("candle_quality_max", 6),
+        "momentum_today_pct": MOMENTUM_WEIGHTS.get("today_pct_2_6", 20),
+        "momentum_accumulated": MOMENTUM_WEIGHTS.get("accum_10_15", 15),
+        "momentum_volume": MOMENTUM_WEIGHTS.get("vol_healthy", 10),
+        "momentum_no_crash": MOMENTUM_WEIGHTS.get("no_crash", 10),
+        "momentum_rank_change": MOMENTUM_WEIGHTS.get("rank_change_gte_2000", 15),
+        "momentum_value": MOMENTUM_WEIGHTS.get("value_gte_10000", 5),
+        "momentum_ma_bull": MOMENTUM_WEIGHTS.get("ma_bull", 3),
+        "momentum_candle": MOMENTUM_WEIGHTS.get("candle_quality_max", 6),
     },
 }
 

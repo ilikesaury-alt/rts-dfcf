@@ -6,7 +6,7 @@ REQUEST_TIMEOUT = 15
 NEW_FACE_LOOKBACK_DAYS = 3
 
 # Normal mode thresholds
-NEW_FACE_MIN_SCORE = 20
+NEW_FACE_MIN_SCORE = 18
 MOMENTUM_MIN_SCORE = 15
 
 YI = 100_000_000
@@ -32,9 +32,66 @@ DB_PATH = os.path.join(BASE_DIR, "scanner.db")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 
 MORNING_START = dtime(9, 30)
-MORNING_END = dtime(11, 45)
+MORNING_END = dtime(11, 30)
 AFTERNOON_START = dtime(13, 0)
 AFTERNOON_END = dtime(15, 0)
+
+# Scoring weights — used by analysis.py, overridable via self-evolution
+NEW_FACE_WEIGHTS: dict[str, int] = {
+    "today_pct_2_6": 20,
+    "today_pct_1_2": 10,
+    "today_pct_0_5_1": 5,
+    "today_pct_lt_0_5": 2,
+    "today_pct_6_8": 5,
+    "today_pct_gt_8": -15,
+    "accum_neg5_10": 10,
+    "accum_lt_neg5": -5,
+    "accum_10_15": 5,
+    "accum_15_25": -5,
+    "accum_gt_25": -15,
+    "bottom_confirmed": 10,
+    "v_shape": 10,
+    "volume_surge": 15,
+    "vol_rank_combo": 12,
+    "gap_up_gt_2": 8,
+    "gap_up_1_2": 5,
+    "gap_up_0_5_1": 3,
+    "value_gte_10000": 2,
+    "value_gte_5000": 1,
+    "ma_bull": 5,
+    "ma_bear": -3,
+}
+
+MOMENTUM_WEIGHTS: dict[str, int] = {
+    "today_pct_2_6": 26,
+    "today_pct_1_2": 10,
+    "today_pct_0_5_1": 5,
+    "today_pct_lt_0_5": 2,
+    "today_pct_6_8": 5,
+    "today_pct_gt_8_skip": 0,
+    "accum_10_15": 19,
+    "accum_15_20": 10,
+    "accum_20_30": 5,
+    "accum_gte_30": -15,
+    "vol_healthy": 5,
+    "vol_surge": -4,
+    "vol_low": -5,
+    "no_crash": 13,
+    "vol_rank_combo": 8,
+    "gap_up_gt_2": 8,
+    "gap_up_1_2": 5,
+    "gap_up_0_5_1": 3,
+    "value_gte_10000": 2,
+    "value_gte_5000": 1,
+    "ma_bull": 5,
+    "ma_bear": -3,
+}
+
+# Time-based bonus thresholds (minutes since midnight)
+EARLY_TRADE_CUTOFF = 10 * 60 + 30   # 10:30
+LATE_TRADE_START = 14 * 60           # 14:00
+EARLY_BONUS = -5
+LATE_BONUS = 3
 
 HOLIDAYS: set[str] = {
     "2025-01-01",
