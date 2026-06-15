@@ -58,10 +58,11 @@ def main():
             continue
 
         try:
-            new_faces, momentum, all_gem, filtered_large_cap = scan(conn, session)
+            new_faces, momentum, stale_candidates, all_gem, filtered_large_cap = scan(conn, session)
 
             display(new_faces, momentum, len(all_gem), interval,
-                    filtered_large_cap=filtered_large_cap, last_ranks=last_ranks)
+                    filtered_large_cap=filtered_large_cap, last_ranks=last_ranks,
+                    stale_candidates=stale_candidates)
             log_results(new_faces, momentum)
 
             last_ranks.clear()

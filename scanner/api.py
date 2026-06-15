@@ -129,7 +129,9 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
                     cmc = q.get("float_market_capital") or 0
                     turnover = q.get("turnover_rate")
                     result[sym] = {"market_cap": mc, "circ_market_cap": cmc,
-                                   "turnover_rate": turnover}
+                                   "turnover_rate": turnover,
+                                   "current": q.get("current", 0),
+                                   "percent": q.get("percent", 0)}
         except Exception:
             continue
 

@@ -9,6 +9,7 @@ from scanner.config import (
     MAX_STOCK_PRICE, MAX_MARKET_CAP,
     EARLY_TRADE_CUTOFF, LATE_TRADE_START,
     EARLY_BONUS, LATE_BONUS,
+    STALE_TIMEOUT_MINUTES,
 )
 from scanner.database import record_appearances, get_symbol_appearances, get_cached_kline, save_kline_to_db, get_active_weights
 from scanner.models import StockInfo, Candidate
@@ -19,6 +20,7 @@ from scanner.utils import is_hk_stock, is_gem, is_st
 
 _seen_today: set[str] = set()
 _last_today: str = ""
+_today_pool: dict[str, Candidate] = {}
 
 
 def _fetch_all_klines(conn, session, stocks: list[StockInfo]) -> dict[str, list[dict] | None]:
@@ -71,10 +73,11 @@ def _fetch_all_klines(conn, session, stocks: list[StockInfo]) -> dict[str, list[
 
 
 def scan(conn, session):
-    global _seen_today, _last_today
+    global _seen_today, _last_today, _today_pool
     today = date.today().isoformat()
     if today != _last_today:
         _seen_today.clear()
+        _today_pool.clear()
         _last_today = today
     new_face_min = NEW_FACE_MIN_SCORE
     momentum_min = MOMENTUM_MIN_SCORE
@@ -180,9 +183,10 @@ def scan(conn, session):
                     ))
 
     all_raw = raw_new_faces + raw_momentum
-    if all_raw:
-        cand_symbols = list(set(c.stock.symbol for c in all_raw))
-        market_caps = fetch_market_caps_batch(session, cand_symbols)
+    stale_syms = [sym for sym, c in _today_pool.items() if c.is_stale]
+    all_syms = list(set(c.stock.symbol for c in all_raw) | set(stale_syms))
+    if all_syms:
+        market_caps = fetch_market_caps_batch(session, all_syms)
     else:
         market_caps = {}
 
@@ -310,6 +314,44 @@ def scan(conn, session):
 
     update_rank_history({s.symbol: s.rank for s in gem_stocks})
 
+    # ── 持久候选池管理 ──
+    from datetime import timedelta
+
+    current_symbols = {c.stock.symbol for c in all_candidates}
+    now_dt = datetime.now()
+
+    for c in all_candidates:
+        if c.stock.symbol in _today_pool and not _today_pool[c.stock.symbol].is_stale:
+            old = _today_pool[c.stock.symbol]
+            c.first_seen = old.first_seen
+        else:
+            c.first_seen = now_dt.strftime("%H:%M")
+        _today_pool[c.stock.symbol] = c
+
+    stale_candidates: list[Candidate] = []
+    for sym, c in list(_today_pool.items()):
+        if sym not in current_symbols and not c.is_stale:
+            c.is_stale = True
+            c.stale_since = now_dt.strftime("%H:%M")
+        if c.is_stale:
+            cap_data = market_caps.get(sym)
+            if cap_data and cap_data.get("current"):
+                c.stock.current = cap_data["current"]
+                c.stock.percent = cap_data["percent"]
+            stale_candidates.append(c)
+
+    stale_cutoff = now_dt - timedelta(minutes=STALE_TIMEOUT_MINUTES)
+    _today_pool = {
+        sym: c for sym, c in _today_pool.items()
+        if not c.is_stale
+    }
+    for c in stale_candidates[:]:
+        stale_dt = datetime.strptime(f"{today} {c.stale_since}", "%Y-%m-%d %H:%M")
+        if stale_dt < stale_cutoff:
+            stale_candidates.remove(c)
+            _today_pool.pop(c.stock.symbol, None)
+    stale_candidates.sort(key=lambda c: -c.score)
+
     new_faces.sort(key=lambda c: -c.score)
     momentum.sort(key=lambda c: -c.score)
-    return new_faces, momentum, gem_stocks, filtered_large_cap
+    return new_faces, momentum, stale_candidates, gem_stocks, filtered_large_cap

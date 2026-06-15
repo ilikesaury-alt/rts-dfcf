@@ -15,6 +15,8 @@ def log_results(new_faces: list[Candidate], momentum: list[Candidate]):
             f.write("时间,分类,名称,代码,现价,涨幅,趋势,5日累计,量比,评分\n")
         now = datetime.now().strftime("%H:%M:%S")
         for c in (new_faces + momentum):
+            if c.is_stale:
+                continue
             k = c.kline
             tag = {"new_face": "新", "momentum": "动量"}.get(c.category, "?")
             f.write(f"{now},{tag},{c.stock.name},{c.stock.symbol},{c.stock.current:.2f},{c.stock.percent:+.2f}%,{k.trend if k else ''},{k.accumulated_pct if k else ''},{k.volume_ratio if k else ''},{c.score}\n")

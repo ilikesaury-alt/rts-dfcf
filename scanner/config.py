@@ -88,6 +88,8 @@ MOMENTUM_WEIGHTS: dict[str, int] = {
 }
 
 # Time-based bonus thresholds (minutes since midnight)
+STALE_TIMEOUT_MINUTES = 30  # 掉榜后保留时长
+
 EARLY_TRADE_CUTOFF = 10 * 60 + 30   # 10:30
 LATE_TRADE_START = 14 * 60           # 14:00
 EARLY_BONUS = -5

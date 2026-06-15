@@ -2,7 +2,7 @@ from datetime import datetime
 
 import wcwidth
 
-from scanner.config import YI, MAX_MARKET_CAP, MAX_STOCK_PRICE
+from scanner.config import YI, MAX_MARKET_CAP, MAX_STOCK_PRICE, STALE_TIMEOUT_MINUTES
 from scanner.models import Candidate
 
 
@@ -87,7 +87,8 @@ def _fmt_market_cap(cap: float) -> str:
 
 def display(new_faces: list[Candidate], momentum: list[Candidate],
             gem_total: int, interval: int, filtered_large_cap: int = 0,
-            last_ranks: dict[str, int] | None = None):
+            last_ranks: dict[str, int] | None = None,
+            stale_candidates: list[Candidate] | None = None):
     if last_ranks is None:
         last_ranks = {}
     clear_screen()
@@ -148,6 +149,20 @@ def display(new_faces: list[Candidate], momentum: list[Candidate],
         print(f"  {'-'*108}")
         for c in momentum:
             _print_row(c)
+
+    if stale_candidates:
+        print(f"\n{ANSI['YELLOW']}◆ 掉榜回顾 — 仍在观察 (保留{STALE_TIMEOUT_MINUTES}分钟){ANSI['RESET']}")
+        print(hdr)
+        print(f"  {'-'*108}")
+        for c in stale_candidates:
+            s = c.stock
+            display_name = f"○ {s.name}"
+            cur = f"{s.current:.2f}" if s.current else "N/A"
+            acc = f"{c.kline.accumulated_pct:+.2f}%" if c.kline else "N/A"
+            vr = f"{c.kline.volume_ratio:.1f}x" if c.kline else "N/A"
+            score_visible = str(c.score)
+            trend_tag = c.kline.trend if c.kline else "N/A"
+            print(f"  {'—':>4} {'—':>6} {_pad(display_name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {_pad(score_visible,4,'r')}")
 
     print(f"\n{'-'*96}")
     print(f"  {ANSI['GREEN']}新面孔{ANSI['RESET']}: 底部放量启动+涨幅2-6%")
