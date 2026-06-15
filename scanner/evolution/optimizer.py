@@ -9,30 +9,28 @@ from scanner.evolution.analytics import dimension_ic
 YI = 100_000_000
 
 BASE_PARAMS = {
-    "name": "当前参数 (v2026-06)",
+    "name": "超短调参 (v2026-06)",
     "new_face_min_score": 20,
     "momentum_min_score": 15,
     "max_market_cap": 300 * YI,
     "max_stock_price": 100.0,
     "weights": {
-        # new_face dimensions
         "new_face_today_pct": 20,
-        "new_face_accumulated": 15,
-        "new_face_bottom": 15,
-        "new_face_volume": 10,
-        "new_face_rank_change": 12,
+        "new_face_accumulated": 10,
+        "new_face_bottom": 8,
+        "new_face_volume": 12,
+        "new_face_rank_change": 15,
         "new_face_value": 5,
-        "new_face_ma_bull": 6,
-        "new_face_candle": 6,
-        # momentum dimensions
+        "new_face_ma_bull": 3,
+        "new_face_candle": 3,
         "momentum_today_pct": 20,
         "momentum_accumulated": 10,
         "momentum_volume": 10,
-        "momentum_no_crash": 15,
-        "momentum_rank_change": 12,
+        "momentum_no_crash": 10,
+        "momentum_rank_change": 15,
         "momentum_value": 5,
-        "momentum_ma_bull": 6,
-        "momentum_candle": 6,
+        "momentum_ma_bull": 3,
+        "momentum_candle": 3,
     },
 }
 

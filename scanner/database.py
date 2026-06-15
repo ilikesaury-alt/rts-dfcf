@@ -113,7 +113,7 @@ def save_kline_to_db(conn: sqlite3.Connection, symbol: str, kline: list[dict]):
 
 def get_cached_kline(conn: sqlite3.Connection, symbol: str) -> list[dict] | None:
     today = date.today().isoformat()
-    lookback = (date.today() - timedelta(days=25)).isoformat()
+    lookback = (date.today() - timedelta(days=15)).isoformat()
     cur = conn.execute(
         "SELECT date, open, close, high, low, volume, percent FROM daily_kline WHERE symbol = ? AND date >= ? ORDER BY date",
         (symbol, lookback),

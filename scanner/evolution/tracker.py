@@ -3,36 +3,39 @@ from datetime import date
 
 
 def backfill_outcomes(conn: sqlite3.Connection, session=None) -> dict:
-    """Backfill all missing next_day_pct, fwd_3d, fwd_5d from daily_kline.
+    """Backfill missing forward returns using next-day open as entry.
 
-    Finds every recommendation whose entry close is known (via daily_kline on
-    the rec date) and forward returns are not yet filled.  Queries up to 5
-    future trading days from daily_kline and computes 1d/3d/5d returns.
-
-    If entry close is not cached (JOIN failure), optionally fetches K-line
-    from the API via session to fill the gap.
+    For ultra-short trading, entry is assumed at the next trading day's
+    OPEN price (not the recommendation day's close).  Returns are computed
+    from that open to future closes: next_day_pct = (day2_close - day2_open) / day2_open.
 
     Safe to call every scan cycle – already-filled rows are skipped.
     """
     today_str = date.today().isoformat()
 
-    # First pass: try JOIN (most common case)
+    # First pass: find recs with next-day K-line data, use next-day open as entry
     missing = conn.execute("""
-        SELECT r.id, r.symbol, r.date, d.close AS entry_close
+        SELECT r.id, r.symbol, r.date,
+               (SELECT d2.open FROM daily_kline d2
+                WHERE d2.symbol = r.symbol AND d2.date > r.date
+                ORDER BY d2.date LIMIT 1) AS entry_open
         FROM recommendations r
-        JOIN daily_kline d ON r.symbol = d.symbol AND d.date = r.date
         WHERE r.next_day_pct IS NULL
+          AND EXISTS (
+            SELECT 1 FROM daily_kline d2
+            WHERE d2.symbol = r.symbol AND d2.date > r.date
+          )
     """).fetchall()
 
-    # Second pass: use API fallback for rows without cached entry close
+    # Second pass: use API fallback for rows without cached data
     if session is not None:
         fallback_missing = conn.execute("""
             SELECT r.id, r.symbol, r.date
             FROM recommendations r
             WHERE r.next_day_pct IS NULL
               AND NOT EXISTS (
-                SELECT 1 FROM daily_kline d
-                WHERE d.symbol = r.symbol AND d.date = r.date
+                SELECT 1 FROM daily_kline d2
+                WHERE d2.symbol = r.symbol AND d2.date > r.date
               )
         """).fetchall()
 
@@ -44,15 +47,13 @@ def backfill_outcomes(conn: sqlite3.Connection, session=None) -> dict:
                 kline = fetch_kline(session, symbol)
                 if kline:
                     save_kline_to_db(conn, symbol, kline)
-                    entry_close = None
+                    next_day = None
                     for k in kline:
-                        if k["date"] == rec_date:
-                            entry_close = k["close"]
+                        if k["date"] > rec_date:
+                            next_day = k["open"]
                             break
-                    if entry_close is None and len(kline) > 0:
-                        entry_close = kline[-1]["close"]
-                    if entry_close:
-                        missing.append((rec_id, symbol, rec_date, entry_close))
+                    if next_day is not None:
+                        missing.append((rec_id, symbol, rec_date, next_day))
             except Exception:
                 continue
 
@@ -62,7 +63,11 @@ def backfill_outcomes(conn: sqlite3.Connection, session=None) -> dict:
     filled = 0
     skipped = 0
 
-    for rec_id, symbol, rec_date, entry_close in missing:
+    for rec_id, symbol, rec_date, entry_open in missing:
+        if entry_open is None or entry_open <= 0:
+            skipped += 1
+            continue
+
         future = conn.execute("""
             SELECT date, close FROM daily_kline
             WHERE symbol = ? AND date > ? AND date <= ?
@@ -89,16 +94,16 @@ def backfill_outcomes(conn: sqlite3.Connection, session=None) -> dict:
             continue
 
         closes = [r[1] for r in future]
-        fwd_1d = (closes[0] - entry_close) / entry_close if entry_close else None
-        fwd_3d = (closes[min(2, len(closes) - 1)] - entry_close) / entry_close if len(closes) >= 3 else None
-        fwd_5d = (closes[min(4, len(closes) - 1)] - entry_close) / entry_close if len(closes) >= 5 else None
+        fwd_1d = (closes[0] - entry_open) / entry_open
+        fwd_3d = (closes[min(2, len(closes) - 1)] - entry_open) / entry_open if len(closes) >= 3 else None
+        fwd_5d = (closes[min(4, len(closes) - 1)] - entry_open) / entry_open if len(closes) >= 5 else None
 
         conn.execute("""
             UPDATE recommendations SET
                 next_day_pct = ?, fwd_3d = ?, fwd_5d = ?
             WHERE id = ? AND next_day_pct IS NULL
         """, (
-            round(fwd_1d * 100, 2) if fwd_1d is not None else None,
+            round(fwd_1d * 100, 2),
             round(fwd_3d * 100, 2) if fwd_3d is not None else None,
             round(fwd_5d * 100, 2) if fwd_5d is not None else None,
             rec_id,

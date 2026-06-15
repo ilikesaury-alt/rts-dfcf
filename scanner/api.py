@@ -28,7 +28,7 @@ def make_session() -> requests.Session:
     return s
 
 
-def fetch_kline(session: requests.Session, symbol: str, days: int = 25) -> list[dict] | None:
+def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[dict] | None:
     _throttle()
     now_ms = int(time.time() * 1000)
     begin_ms = now_ms - days * 86400 * 1000
