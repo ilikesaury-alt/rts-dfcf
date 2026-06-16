@@ -341,10 +341,6 @@ def scan(conn, session):
             stale_candidates.append(c)
 
     stale_cutoff = now_dt - timedelta(minutes=STALE_TIMEOUT_MINUTES)
-    _today_pool = {
-        sym: c for sym, c in _today_pool.items()
-        if not c.is_stale
-    }
     for c in stale_candidates[:]:
         stale_dt = datetime.strptime(f"{today} {c.stale_since}", "%Y-%m-%d %H:%M")
         if stale_dt < stale_cutoff:
