@@ -177,6 +177,45 @@ def _fetch_minute_data(session: requests.Session, symbol: str) -> list[dict] | N
         return None
 
 
+def analyze_opening_strength(session: requests.Session, symbol: str) -> float | None:
+    """开盘强度因子: 分析前5分钟(9:30-9:35)的量价行为."""
+    items = _fetch_minute_data(session, symbol)
+    if not items or len(items) < 6:
+        return None
+
+    first_5 = items[:5]
+    open_px = first_5[0]["current"]
+    five_min_px = first_5[-1]["current"]
+
+    opening_chg = (five_min_px - open_px) / open_px * 100 if open_px > 0 else 0
+    opening_vol = sum(item.get("volume", 0) for item in first_5)
+    avg_vol_per_min = sum(item.get("volume", 0) for item in items) / max(len(items), 1)
+    vol_ratio = opening_vol / (avg_vol_per_min * 5) if avg_vol_per_min > 0 else 1.0
+
+    score = 0.0
+    if opening_chg > 2:
+        score += 4.0
+    elif opening_chg > 1:
+        score += 3.0
+    elif opening_chg > 0.5:
+        score += 2.0
+    elif opening_chg < -2:
+        score -= 4.0
+    elif opening_chg < -1:
+        score -= 3.0
+    elif opening_chg < -0.5:
+        score -= 2.0
+
+    if vol_ratio > 2.0:
+        score += 2.0
+    elif vol_ratio > 1.5:
+        score += 1.0
+    elif vol_ratio < 0.5:
+        score -= 1.0
+
+    return max(-5.0, min(5.0, score))
+
+
 def estimate_live_volume(session: requests.Session, symbol: str) -> float | None:
     items = _fetch_minute_data(session, symbol)
     if not items:
@@ -203,45 +242,72 @@ def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
         return None
 
     try:
-        first_px = items[0]["current"]
-        last_px = items[-1]["current"]
         prices = [item["current"] for item in items]
         high = max(prices)
         low = min(prices)
-        score = 0.0
+        first_px = prices[0]
+        last_px = prices[-1]
 
-        if high > low and high > first_px * 1.005:
-            fade_pct = (high - last_px) / high * 100
-            if fade_pct > 3:
-                score -= 5.0
-            elif fade_pct > 1.5:
-                score -= 3.0
-            elif fade_pct > 0.5:
-                score -= 1.0
+        def _score_period(period_items: list[dict], period_weight: float) -> float:
+            if len(period_items) < 2:
+                return 0.0
+            pxs = [p["current"] for p in period_items]
+            p_high = max(pxs)
+            p_low = min(pxs)
+            p_first = pxs[0]
+            p_last = pxs[-1]
+            p_score = 0.0
 
-        if high > low:
-            position = (last_px - low) / (high - low)
+            if p_high > p_low and p_high > p_first * 1.005:
+                fade = (p_high - p_last) / p_high * 100
+                if fade > 3:
+                    p_score -= 5.0
+                elif fade > 1.5:
+                    p_score -= 3.0
+                elif fade > 0.5:
+                    p_score -= 1.0
+
+            position = (p_last - p_low) / (p_high - p_low) if p_high > p_low else 0.5
             if position > 0.7:
-                score += 2.5
+                p_score += 2.5
             elif position < 0.3:
-                score -= 2.5
+                p_score -= 2.5
 
-        segments = 10
-        seg_size = len(items) // segments
-        if seg_size > 0:
-            seg_prices = [items[min(i * seg_size, len(items) - 1)]["current"] for i in range(segments + 1)]
-            seg_changes = [(seg_prices[i + 1] - seg_prices[i]) / seg_prices[i] * 100 for i in range(segments)]
-            attack_waves = sum(1 for c in seg_changes if c > 0.2)
-            decline_waves = sum(1 for c in seg_changes if c < -0.2)
-            net_waves = attack_waves - decline_waves
-            if net_waves >= 3:
-                score += 3.0
-            elif net_waves >= 1:
-                score += 1.0
-            elif net_waves <= -3:
-                score -= 3.0
-            elif net_waves <= -1:
-                score -= 1.0
+            n = len(period_items)
+            segs = min(5, n)
+            seg_sz = n // segs
+            if seg_sz > 0:
+                seg_chgs = []
+                for i in range(segs):
+                    idx = min(i * seg_sz, n - 1)
+                    nxt = min((i + 1) * seg_sz, n - 1)
+                    if idx != nxt:
+                        c = (period_items[nxt]["current"] - period_items[idx]["current"]) / period_items[idx]["current"] * 100
+                        seg_chgs.append(c)
+                attacks = sum(1 for c in seg_chgs if c > 0.15)
+                declines = sum(1 for c in seg_chgs if c < -0.15)
+                net = attacks - declines
+                if net >= 2:
+                    p_score += 2.0
+                elif net <= -2:
+                    p_score -= 2.0
+
+            chg = (p_last - p_first) / p_first * 100 if p_first > 0 else 0
+            return p_score * period_weight
+
+        total_items = len(items)
+        early_end = min(total_items, 60)
+        mid_end = min(total_items, 180)
+
+        early_items = items[:early_end]
+        mid_items = items[early_end:mid_end]
+        late_items = items[mid_end:]
+
+        early_score = _score_period(early_items, 0.4)
+        mid_score = _score_period(mid_items, 0.3)
+        late_score = _score_period(late_items, 0.3)
+
+        score = early_score + mid_score + late_score
 
         capital = items[-1].get("capital", {})
         xlarge = capital.get("xlarge", 0) if capital else 0
@@ -249,17 +315,6 @@ def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
             score += 2.0
         elif xlarge < -5:
             score -= 2.0
-
-        split = len(items) // 3
-        morning_end = items[split]["current"]
-        morning_chg = (morning_end - first_px) / first_px * 100
-        total_chg = (last_px - first_px) / first_px * 100
-        if total_chg > 0 and morning_chg > total_chg * 0.5:
-            score += 1.5
-        elif total_chg > 0 and morning_chg < total_chg * 0.3:
-            score -= 1.5
-        elif total_chg < 0 and morning_chg < total_chg * 1.2:
-            score -= 1.0
 
         score = max(-10.0, min(10.0, score))
         _INTRADAY_CACHE[symbol] = (score, now)

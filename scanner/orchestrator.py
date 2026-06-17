@@ -1,7 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 
-from scanner.api import fetch_biaosheng, fetch_kline, fetch_market_caps_batch, analyze_intraday, estimate_live_volume, fetch_market_index
+from scanner.api import fetch_biaosheng, fetch_kline, fetch_market_caps_batch, analyze_intraday, analyze_opening_strength, estimate_live_volume, fetch_market_index
 from scanner.analysis import analyze_new_face, analyze_momentum
 from scanner.config import (
     NEW_FACE_LOOKBACK_DAYS,
@@ -214,10 +214,11 @@ def scan(conn, session):
 
     all_candidates = new_faces + momentum
     intraday_scores: dict[str, float | None] = {}
+    opening_scores: dict[str, float | None] = {}
     live_volumes: dict[str, float | None] = {}
 
     if all_candidates:
-        with ThreadPoolExecutor(max_workers=5) as pool:
+        with ThreadPoolExecutor(max_workers=6) as pool:
             intra_futs = {
                 pool.submit(analyze_intraday, session, c.stock.symbol): c.stock.symbol
                 for c in all_candidates
@@ -229,6 +230,17 @@ def scan(conn, session):
                 except Exception as e:
                     print(f"  [!] 分时强度失败 {sym}: {e}")
                     intraday_scores[sym] = None
+
+            open_futs = {
+                pool.submit(analyze_opening_strength, session, c.stock.symbol): c.stock.symbol
+                for c in all_candidates
+            }
+            for fut in as_completed(open_futs):
+                sym = open_futs[fut]
+                try:
+                    opening_scores[sym] = fut.result()
+                except Exception as e:
+                    opening_scores[sym] = None
 
             vol_futs = {
                 pool.submit(estimate_live_volume, session, c.stock.symbol): c.stock.symbol
@@ -273,6 +285,8 @@ def scan(conn, session):
         if intra is not None:
             c.intraday_score = intra
 
+        opening = opening_scores.get(c.stock.symbol)
+
         live_vol = live_volumes.get(c.stock.symbol)
         if live_vol is not None and c.kline and c.kline.avg_volume > 0:
             live_vol_ratio = live_vol / c.kline.avg_volume
@@ -294,16 +308,19 @@ def scan(conn, session):
             c.gap_up_bonus = c.kline.dimensions.get(gap_key, 0)
 
         intra_bonus = int(round(c.intraday_score)) if c.intraday_score else 0
+        opening_bonus = int(round(opening)) if opening is not None else 0
         c.score += (c.rank_trend_bonus + c.sector_bonus + c.live_vol_bonus
                     + c.first_today_bonus + c.first_breakout_bonus
                     + market_env_bonus + c.turnover_bonus + c.time_bonus
-                    + intra_bonus)
+                    + intra_bonus + opening_bonus)
 
         if c.kline and c.kline.dimensions is not None:
             c.kline.dimensions["rank_trend_bonus"] = c.rank_trend_bonus
             c.kline.dimensions["sector_bonus"] = c.sector_bonus
             c.kline.dimensions["live_vol_bonus"] = c.live_vol_bonus
             c.kline.dimensions["intraday_score"] = round(c.intraday_score, 1)
+            if opening is not None:
+                c.kline.dimensions["opening_score"] = round(opening, 1)
             if c.first_today_bonus:
                 c.kline.dimensions["first_today_bonus"] = c.first_today_bonus
             if c.first_breakout_bonus:

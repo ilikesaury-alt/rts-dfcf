@@ -56,6 +56,36 @@ DEFAULT_PARAMS = {
             "max_today_pct": 5.0, "max_accumulated": 8.0, "score": 8,
         },
     },
+    "momentum": {
+        "min_score": 15,
+        "today_pct": {
+            "golden_min": 2.0, "golden_max": 6.0, "golden_score": 26,
+            "low_score": 5,
+            "overheat_threshold": 8.0, "overheat_score": 0,
+        },
+        "accumulated": {
+            "sweet_min": 10, "sweet_score": 19,
+            "mid_threshold": 15, "mid_score": 10,
+            "high_threshold": 20, "high_score": 5,
+            "danger_threshold": 30, "danger_score": -15,
+        },
+        "volume": {
+            "healthy_min": 0.7, "healthy_max": 2.0, "healthy_score": 5,
+            "surge_min": 2.0, "surge_score": -4,
+            "low_max": 0.7, "low_score": -5,
+        },
+        "no_crash": {
+            "crash_threshold": -7, "recent_2_return": -3, "score": 13,
+        },
+        "rank_change": {
+            "strong_threshold": 2000, "strong_score": 8,
+            "medium_threshold": 1000, "medium_score": 4,
+        },
+        "value": {
+            "high_threshold": 10000, "high_score": 5,
+            "medium_threshold": 5000, "medium_score": 2,
+        },
+    },
     "top_n": 40,
     "lookback_days": 3,
     "max_market_cap": 500 * YI,
@@ -119,6 +149,63 @@ def score_new_face(today_pct, accumulated, vol_ratio, recent_3_pcts, stock_rank,
     cb = p["combo"]
     if today_pct <= cb["max_today_pct"] and accumulated < cb["max_accumulated"]:
         score += cb["score"]
+
+    return score
+
+
+def score_momentum(today_pct, accumulated, vol_ratio, recent_5_pcts, stock_rank, stock_value, params):
+    p = params["momentum"]
+    score = 0
+
+    if today_pct <= 0:
+        return 0
+
+    tp = p["today_pct"]
+    if today_pct >= tp.get("overheat_threshold", 8.0):
+        return 0
+    if tp["golden_min"] <= today_pct <= tp["golden_max"]:
+        score += tp["golden_score"]
+    elif today_pct < tp["golden_min"]:
+        score += tp["low_score"]
+
+    acc = p["accumulated"]
+    if accumulated < acc["sweet_min"]:
+        return 0
+    if accumulated >= acc["danger_threshold"]:
+        score += acc["danger_score"]
+    elif accumulated >= acc["high_threshold"]:
+        score += acc["high_score"]
+    elif accumulated >= acc["mid_threshold"]:
+        score += acc["mid_score"]
+    else:
+        score += acc["sweet_score"]
+
+    vol = p["volume"]
+    if vol["healthy_min"] < vol_ratio < vol["healthy_max"]:
+        score += vol["healthy_score"]
+    elif vol_ratio >= vol["surge_min"]:
+        score += vol["surge_score"]
+    elif vol_ratio <= vol["low_max"]:
+        score += vol["low_score"]
+
+    no_crash = p["no_crash"]
+    has_crash_day = any(pct <= no_crash["crash_threshold"] for pct in recent_5_pcts)
+    recent_2_return = sum(recent_5_pcts[-2:]) if len(recent_5_pcts) >= 2 else 0
+    if not has_crash_day and recent_2_return > no_crash["recent_2_return"]:
+        score += no_crash["score"]
+
+    rc = p["rank_change"]
+    rc_val = _rank_to_rank_change(stock_rank, params["rank_proxy"])
+    if rc_val >= rc["strong_threshold"]:
+        score += rc["strong_score"]
+    elif rc_val >= rc["medium_threshold"]:
+        score += rc["medium_score"]
+
+    v = p["value"]
+    if stock_value >= v["high_threshold"]:
+        score += v["high_score"]
+    elif stock_value >= v["medium_threshold"]:
+        score += v["medium_score"]
 
     return score
 
@@ -342,13 +429,40 @@ def run_backtest(params=None, db_path="scanner.db", session=None, live=False):
                 recent_3_pcts = pcts[-3:] if len(pcts) >= 3 else pcts
                 score = score_new_face(today_pct, accumulated, vol_ratio, recent_3_pcts,
                                        stock_rank, value, params)
-                if score < params["new_face"]["min_score"]:
+                if score >= params["new_face"]["min_score"]:
+                    rec = BacktestRec(date=current_date, symbol=symbol, name=name,
+                                      rank=stock_rank, percent=today_pct, value=value,
+                                      category="new_face", score=score, entry_close=entry_close)
+                elif accumulated >= 10:
+                    m_score = score_momentum(today_pct, accumulated, vol_ratio, recent_5_pcts,
+                                             stock_rank, value, params)
+                    if m_score >= params["momentum"]["min_score"]:
+                        rec = BacktestRec(date=current_date, symbol=symbol, name=name,
+                                          rank=stock_rank, percent=today_pct, value=value,
+                                          category="momentum", score=m_score, entry_close=entry_close)
+                    else:
+                        continue
+                else:
                     continue
-                rec = BacktestRec(date=current_date, symbol=symbol, name=name,
-                                  rank=stock_rank, percent=today_pct, value=value,
-                                  category="new_face", score=score, entry_close=entry_close)
             else:
-                continue
+                if accumulated < 10:
+                    continue
+                m_score = score_momentum(today_pct, accumulated, vol_ratio, recent_5_pcts,
+                                         stock_rank, value, params)
+                if m_score >= params["momentum"]["min_score"]:
+                    rec = BacktestRec(date=current_date, symbol=symbol, name=name,
+                                      rank=stock_rank, percent=today_pct, value=value,
+                                      category="momentum", score=m_score, entry_close=entry_close)
+                else:
+                    new_score = score_new_face(today_pct, accumulated, vol_ratio, pcts[-3:],
+                                               stock_rank, value, params)
+                    if new_score >= params["new_face"]["min_score"]:
+                        rec = BacktestRec(date=current_date, symbol=symbol, name=name,
+                                          rank=stock_rank, percent=today_pct, value=value,
+                                          category="known_new_face", score=new_score,
+                                          entry_close=entry_close)
+                    else:
+                        continue
 
             # Forward returns (extend kline cache via API if live)
             fwd_kline = ensure_kline_full(symbol, kline_by_symbol, session, live)
@@ -367,22 +481,76 @@ def run_backtest(params=None, db_path="scanner.db", session=None, live=False):
                     rec.score += sb_map[threshold]
                     break
 
-    new_recs = [r for r in all_recs if r.category == "new_face"]
+    new_recs = [r for r in all_recs if r.category in ("new_face", "known_new_face")]
+    momentum_recs = [r for r in all_recs if r.category == "momentum"]
 
     if __name__ == "__main__":
-        report(new_recs, params)
-    return new_recs, []
+        report(all_recs, new_recs, momentum_recs, params)
+    return new_recs, momentum_recs
 
 
-def report(new_recs, params):
+def _sharpe(returns):
+    if len(returns) < 2 or _std(returns) == 0:
+        return 0.0
+    trades_per_year = 252
+    return _avg(returns) / _std(returns) * (trades_per_year ** 0.5)
+
+
+def _std(vals):
+    if len(vals) < 2:
+        return 0.0
+    avg = _avg(vals)
+    return (sum((v - avg) ** 2 for v in vals) / (len(vals) - 1)) ** 0.5
+
+
+def _max_drawdown(returns):
+    if not returns:
+        return 0.0
+    cum = 1.0
+    peak = 1.0
+    max_dd = 0.0
+    for r in returns:
+        cum *= (1 + r)
+        peak = max(peak, cum)
+        dd = (cum - peak) / peak
+        max_dd = min(max_dd, dd)
+    return max_dd
+
+
+def _random_benchmark(all_recs_by_date, kline_by_symbol, n_trials=1000):
+    """Random picks from same date pools for comparison."""
+    results = {d: [] for d in all_recs_by_date}
+    import random
+    random.seed(42)
+    for _ in range(n_trials):
+        for d, pool in all_recs_by_date.items():
+            if not pool:
+                continue
+            pick = random.choice(pool)
+            symbol = pick["symbol"]
+            if symbol not in kline_by_symbol:
+                continue
+            kline = kline_by_symbol[symbol]
+            future = [k for k in kline if k["date"] > d]
+            if not future:
+                results[d].append(None)
+                continue
+            entry_close = kline[-1]["close"]
+            fwd_1d = (future[0]["close"] - entry_close) / entry_close if len(future) >= 1 else None
+            results[d].append(fwd_1d)
+    flat = [r for day_results in results.values() for r in day_results if r is not None]
+    return flat
+
+
+def report(all_recs, new_recs, momentum_recs, params):
     print(f"\n{'='*60}")
     print(f"回测报告")
     print(f"{'='*60}")
-    print(f"新面孔阈值: {params['new_face']['min_score']}")
-    print(f"回测天数: {len(set(r.date for r in new_recs))}")
-    print(f"推荐总数: {len(new_recs)}")
+    print(f"新面孔阈值: {params['new_face']['min_score']}  动量阈值: {params['momentum']['min_score']}")
+    print(f"回测天数: {len(set(r.date for r in all_recs))}")
+    print(f"推荐总数: {len(all_recs)} (新面孔 {len(new_recs)}, 动量 {len(momentum_recs)})")
 
-    for label, recs in [("新面孔", new_recs)]:
+    for label, recs in [("新面孔", new_recs), ("动量", momentum_recs)]:
         if not recs:
             print(f"\n{label}: 无推荐")
             continue
@@ -394,25 +562,44 @@ def report(new_recs, params):
         wins_5d = sum(1 for v in fwd_5d if v > 0)
 
         print(f"\n{label} ({len(recs)}次推荐):")
-        print(f"  +1d 胜率: {wins_1d}/{len(fwd_1d)} ({wins_1d*100//max(len(fwd_1d),1)}%) 均值: {_avg(fwd_1d):+.2%}")
+        print(f"  +1d 胜率: {wins_1d}/{len(fwd_1d)} ({wins_1d*100//max(len(fwd_1d),1)}%) 均值: {_avg(fwd_1d):+.2%} Sharpe: {_sharpe(fwd_1d):.2f}")
         print(f"  +3d 胜率: {wins_3d}/{len(fwd_3d)} ({wins_3d*100//max(len(fwd_3d),1)}%) 均值: {_avg(fwd_3d):+.2%}")
         print(f"  +5d 胜率: {wins_5d}/{len(fwd_5d)} ({wins_5d*100//max(len(fwd_5d),1)}%) 均值: {_avg(fwd_5d):+.2%}")
+        if fwd_1d:
+            print(f"  +1d 最大回撤: {_max_drawdown(fwd_1d):.2%}")
 
-        # Score buckets
-        buckets = [(50, 100), (30, 49), (20, 29)]
+        buckets = [(50, 100), (30, 49), (20, 29), (15, 19)]
         print(f"  评分分层 (+1d均收益):")
         for lo, hi in buckets:
             subset = [r for r in recs if lo <= r.score <= hi]
             if subset:
                 rets = [r.fwd_1d for r in subset if r.fwd_1d is not None]
-                print(f"    {lo}-{hi}分 ({len(subset)}只): {_avg(rets):+.2%}" if rets else f"    {lo}-{hi}分 ({len(subset)}只): N/A")
+                wins = sum(1 for v in rets if v > 0)
+                n = len(rets)
+                print(f"    {lo}-{hi}分 ({len(subset)}只): {_avg(rets):+.2%} 胜率 {wins}/{n} ({wins*100//max(n,1)}%)" if n > 0 else f"    {lo}-{hi}分 ({len(subset)}只): N/A")
 
-        # Top recs table
-        print(f"  Top 5:")
+        print(f"  Top 5 (按评分):")
         for r in sorted(recs, key=lambda x: x.score, reverse=True)[:5]:
             f1 = f"{r.fwd_1d:+.2%}" if r.fwd_1d is not None else "N/A"
             f3 = f"{r.fwd_3d:+.2%}" if r.fwd_3d is not None else "N/A"
             print(f"    {r.date} {r.name} ({r.symbol}) score={r.score} rank={r.rank} +1d={f1} +3d={f3}")
+
+    if new_recs:
+        ic_1d = _ic(new_recs)
+        print(f"\n  IC (评分 vs +1d收益): {ic_1d:+.3f}")
+
+
+def _ic(recs):
+    scored = [(r.score, r.fwd_1d) for r in recs if r.fwd_1d is not None]
+    if len(scored) < 5:
+        return 0.0
+    scores, returns = zip(*scored)
+    n = len(scores)
+    avg_s = _avg(scores)
+    avg_r = _avg(returns)
+    num = sum((s - avg_s) * (r - avg_r) for s, r in zip(scores, returns))
+    den = (sum((s - avg_s) ** 2 for s in scores) * sum((r - avg_r) ** 2 for r in returns)) ** 0.5
+    return num / den if den > 0 else 0.0
 
 
 def _avg(vals):
