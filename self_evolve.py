@@ -59,7 +59,6 @@ def main():
     if args.apply:
         print()
         print("正在自动应用参数调整 (基于 IC 分析)...")
-        from scanner.evolution.analytics import dimension_ic
         ic_data = dimension_ic(conn, args.days)
         adjustments = {}
         for dim, info in ic_data.items():

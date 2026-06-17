@@ -26,7 +26,7 @@ class RankTracker:
             score += 3
         elif diff < -3:
             score -= 4
-        if len(ranks) >= 3:
+        if len(ranks) >= 3 and diff >= 2:
             score += 4
         return score
 

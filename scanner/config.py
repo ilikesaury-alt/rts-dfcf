@@ -87,6 +87,26 @@ MOMENTUM_WEIGHTS: dict[str, int] = {
     "ma_bear": -3,
 }
 
+# Dimension-to-weight-key mapping for self-evolution overrides
+NEW_FACE_DIM_TO_WEIGHT_KEY: dict[str, str] = {
+    "new_face_today_pct": "today_pct_2_6",
+    "new_face_accumulated": "accum_neg5_10",
+    "new_face_bottom": "bottom_confirmed",
+    "new_face_volume": "volume_surge",
+    "new_face_value": "value_gte_10000",
+    "new_face_ma_bull": "ma_bull",
+    "new_face_vol_rank": "vol_rank_combo",
+}
+MOMENTUM_DIM_TO_WEIGHT_KEY: dict[str, str] = {
+    "momentum_today_pct": "today_pct_2_6",
+    "momentum_accumulated": "accum_10_15",
+    "momentum_volume": "vol_healthy",
+    "momentum_no_crash": "no_crash",
+    "momentum_value": "value_gte_10000",
+    "momentum_ma_bull": "ma_bull",
+    "momentum_vol_rank": "vol_rank_combo",
+}
+
 # Time-based bonus thresholds (minutes since midnight)
 STALE_TIMEOUT_MINUTES = 30  # 掉榜后保留时长
 

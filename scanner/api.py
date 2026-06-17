@@ -38,8 +38,8 @@ def fetch_market_index(session: requests.Session) -> float | None:
             pct = items[-1][7]
             _market_index_cache = (pct, now)
             return pct
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  [!] 获取大盘指数失败: {e}")
     return None
 
 
@@ -132,7 +132,8 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
                                    "turnover_rate": turnover,
                                    "current": q.get("current", 0),
                                    "percent": q.get("percent", 0)}
-        except Exception:
+        except Exception as e:
+            print(f"  [!] 市值批量查询失败(批次{i // 50 + 1}): {e}")
             continue
 
     if result:
@@ -170,7 +171,8 @@ def _fetch_minute_data(session: requests.Session, symbol: str) -> list[dict] | N
             return items
         _MINUTE_DATA_CACHE[symbol] = (None, now)
         return None
-    except Exception:
+    except Exception as e:
+        print(f"  [!] 获取分时数据失败 {symbol}: {e}")
         _MINUTE_DATA_CACHE[symbol] = (None, now)
         return None
 
@@ -262,6 +264,7 @@ def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
         score = max(-10.0, min(10.0, score))
         _INTRADAY_CACHE[symbol] = (score, now)
         return score
-    except Exception:
+    except Exception as e:
+        print(f"  [!] 分析分时强度失败 {symbol}: {e}")
         _INTRADAY_CACHE[symbol] = (None, now)
         return None

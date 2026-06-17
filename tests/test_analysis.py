@@ -69,8 +69,8 @@ class TestAnalyzeNewFace:
         assert analyze_new_face(_stock(percent=3), None) is None
 
     def test_weak_form_filter_rejects_downtrend(self):
-        kline = _kline([-2, -1, -1, -0.5, 3], volumes=[0.8, 0.9, 0.7, 0.8, 0.9])
-        result = analyze_new_face(_stock(percent=3), kline)
+        kline = _kline([-2, -1, -1, -0.5, 2.5], volumes=[0.8, 0.9, 0.7, 0.8, 0.9])
+        result = analyze_new_face(_stock(percent=2.5), kline)
         assert result is None
 
     def test_high_accumulated_penalty(self):
@@ -98,13 +98,6 @@ class TestAnalyzeNewFace:
         assert result is not None
         assert "new_face_ma_bull" in result.dimensions
         assert result.dimensions["new_face_ma_bull"] >= 3
-
-    def test_candle_quality_with_fat_bullish_candles(self):
-        kline = _kline([1, 1, 1, 2, 3], body_ratio=0.8)
-        result = analyze_new_face(_stock(percent=3), kline)
-        assert result is not None
-        assert result.dimensions.get("new_face_candle", 0) >= 3
-
 
 class TestAnalyzeMomentum:
 
@@ -137,7 +130,7 @@ class TestAnalyzeMomentum:
         kline = _kline([2, 3, 4, 5, 3], volumes=[1.0, 1.0, 0.8, 0.6, 3.5])
         result = analyze_momentum(_stock(percent=3), kline)
         assert result is not None
-        assert result.dimensions.get("momentum_volume", 0) == -8
+        assert result.dimensions.get("momentum_volume", 0) == -4
 
     def test_high_accumulated_danger(self):
         kline = _kline([10, 10, 10, 8, 5])
@@ -152,8 +145,4 @@ class TestAnalyzeMomentum:
         assert result is not None
         assert "momentum_ma_bull" in result.dimensions
 
-    def test_candle_quality_in_momentum(self):
-        kline = _kline([5, 4, 5, 4, 4], body_ratio=0.8)
-        result = analyze_momentum(_stock(percent=4), kline)
-        assert result is not None
-        assert result.dimensions.get("momentum_candle", 0) >= 3
+

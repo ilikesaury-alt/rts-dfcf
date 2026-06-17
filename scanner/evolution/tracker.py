@@ -54,7 +54,8 @@ def backfill_outcomes(conn: sqlite3.Connection, session=None) -> dict:
                             break
                     if next_day is not None:
                         missing.append((rec_id, symbol, rec_date, next_day))
-            except Exception:
+            except Exception as e:
+                print(f"  [!] 回填outcome API失败 {symbol}: {e}")
                 continue
 
     if not missing:
@@ -86,8 +87,8 @@ def backfill_outcomes(conn: sqlite3.Connection, session=None) -> dict:
                         WHERE symbol = ? AND date > ? AND date <= ?
                         ORDER BY date LIMIT 5
                     """, (symbol, rec_date, today_str)).fetchall()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"  [!] 回填outcome二次查询失败 {symbol}: {e}")
 
         if not future:
             skipped += 1

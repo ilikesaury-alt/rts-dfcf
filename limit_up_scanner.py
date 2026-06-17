@@ -13,7 +13,6 @@ from scanner.database import init_db, save_recommendations, get_tracking_summary
 from scanner.api import make_session
 from scanner.orchestrator import scan
 from scanner.trading_session import is_trading_time, seconds_until_next_session, next_session_label
-from scanner.feishu import push_feishu
 from scanner.display import display
 from scanner.logging import log_results
 
@@ -35,7 +34,7 @@ def main():
 
     print(f"  创业板飙升扫描器  |  每{interval}s刷新  |  DB: {DB_PATH}")
     print(f"  新面孔: 过去{NEW_FACE_LOOKBACK_DAYS}天未出现 = 新 | 旧面孔: 出现过 = 旧")
-    print(f"  交易时段: 09:30-11:45 / 13:00-15:00  |  非交易时段自动休眠")
+    print(f"  交易时段: 09:30-11:30 / 13:00-15:00  |  非交易时段自动休眠")
     print(f"  {'='*60}")
 
     tracking = get_tracking_summary(conn)

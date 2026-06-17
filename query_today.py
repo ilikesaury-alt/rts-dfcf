@@ -1,13 +1,16 @@
 import sqlite3, json
 import sys
+from datetime import date, timedelta
+
 sys.stdout.reconfigure(encoding='utf-8')
 conn = sqlite3.connect('scanner.db')
+target_date = (date.today() - timedelta(days=1)).isoformat()
 # Check columns
 cur = conn.execute("PRAGMA table_info(recommendations)")
 cols = cur.fetchall()
 col_names = [c[1] for c in cols]
 print('columns:', col_names)
-cur = conn.execute("SELECT * FROM recommendations r WHERE r.date = '2026-06-11' ORDER BY r.score DESC")
+cur = conn.execute("SELECT * FROM recommendations r WHERE r.date = ? ORDER BY r.score DESC", (target_date,))
 rows = cur.fetchall()
 cur.close()
 conn.close()

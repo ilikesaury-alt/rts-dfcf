@@ -1,3 +1,5 @@
+from datetime import date
+
 from scanner.models import StockInfo, KlineSummary
 from scanner.config import NEW_FACE_WEIGHTS, MOMENTUM_WEIGHTS
 
@@ -18,7 +20,7 @@ def _ma_bull_score(closes: list[float]) -> int:
 
 def _detect_gap_up(today_current: float, kline: list[dict]) -> tuple[float, int]:
     yesterday_close = None
-    today_str = __import__("datetime").date.today().isoformat()
+    today_str = date.today().isoformat()
     for k in reversed(kline):
         if k["date"] != today_str:
             yesterday_close = k["close"]
@@ -57,7 +59,10 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
     if today_pct <= 0:
         return None
 
-    pcts = [k["percent"] for k in kline]
+    today_str = date.today().isoformat()
+    historical_kline = [k for k in kline if k["date"] != today_str]
+    pcts = [k["percent"] for k in historical_kline]
+    closes = [k["close"] for k in historical_kline]
 
     recent_5_pcts = pcts[-5:]
     down_days = sum(1 for p in recent_5_pcts if p < 0)
@@ -75,8 +80,6 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
     avg_vol = sum(vol_window) / max(len(vol_window), 1)
     today_vol = volumes[-1] if volumes else 0
     vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
-
-    closes = [k["close"] for k in kline]
     recent_3_pcts = pcts[-3:] if len(pcts) >= 3 else pcts
     no_heavy_loss = all(p > -3 for p in recent_3_pcts)
     volume_surge = vol_ratio > 1.15
@@ -190,8 +193,10 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
     if today_pct <= 0:
         return None
 
-    pcts = [k["percent"] for k in kline]
-    closes = [k["close"] for k in kline]
+    today_str = date.today().isoformat()
+    historical_kline = [k for k in kline if k["date"] != today_str]
+    pcts = [k["percent"] for k in historical_kline]
+    closes = [k["close"] for k in historical_kline]
     accumulated = sum(pcts[-5:])
 
     if accumulated < 10:

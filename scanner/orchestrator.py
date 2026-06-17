@@ -1,5 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from scanner.api import fetch_biaosheng, fetch_kline, fetch_market_caps_batch, analyze_intraday, estimate_live_volume, fetch_market_index
 from scanner.analysis import analyze_new_face, analyze_momentum
@@ -10,6 +10,7 @@ from scanner.config import (
     EARLY_TRADE_CUTOFF, LATE_TRADE_START,
     EARLY_BONUS, LATE_BONUS,
     STALE_TIMEOUT_MINUTES,
+    NEW_FACE_DIM_TO_WEIGHT_KEY, MOMENTUM_DIM_TO_WEIGHT_KEY,
 )
 from scanner.database import record_appearances, get_symbol_appearances, get_cached_kline, save_kline_to_db, get_active_weights
 from scanner.models import StockInfo, Candidate
@@ -24,8 +25,6 @@ _today_pool: dict[str, Candidate] = {}
 
 
 def _fetch_all_klines(conn, session, stocks: list[StockInfo]) -> dict[str, list[dict] | None]:
-    from datetime import timedelta
-
     result: dict[str, list[dict] | None] = {}
     needs_fetch: list[str] = []
     stale_cache: dict[str, list[dict]] = {}
@@ -61,7 +60,8 @@ def _fetch_all_klines(conn, session, stocks: list[StockInfo]) -> dict[str, list[
                     save_kline_to_db(conn, sym, kline)
                 elif sym in stale_cache:
                     result[sym] = stale_cache[sym]
-            except Exception:
+            except Exception as e:
+                print(f"  [!] K线获取失败 {sym}: {e}")
                 if sym in stale_cache:
                     result[sym] = stale_cache[sym]
 
@@ -82,8 +82,8 @@ def scan(conn, session):
     new_face_min = NEW_FACE_MIN_SCORE
     momentum_min = MOMENTUM_MIN_SCORE
     active_weights_raw: dict = get_active_weights(conn)
-    new_face_overrides = {k.replace("new_face_", ""): v for k, v in active_weights_raw.items() if k.startswith("new_face_")}
-    momentum_overrides = {k.replace("momentum_", ""): v for k, v in active_weights_raw.items() if k.startswith("momentum_")}
+    new_face_overrides = {NEW_FACE_DIM_TO_WEIGHT_KEY[k]: v for k, v in active_weights_raw.items() if k in NEW_FACE_DIM_TO_WEIGHT_KEY}
+    momentum_overrides = {MOMENTUM_DIM_TO_WEIGHT_KEY[k]: v for k, v in active_weights_raw.items() if k in MOMENTUM_DIM_TO_WEIGHT_KEY}
     if active_weights_raw:
         print(f"  [进化] 加载活跃参数, 新面孔{len(new_face_overrides)} 动量{len(momentum_overrides)} 维度已覆盖")
 
@@ -226,7 +226,8 @@ def scan(conn, session):
                 sym = intra_futs[fut]
                 try:
                     intraday_scores[sym] = fut.result()
-                except Exception:
+                except Exception as e:
+                    print(f"  [!] 分时强度失败 {sym}: {e}")
                     intraday_scores[sym] = None
 
             vol_futs = {
@@ -237,7 +238,8 @@ def scan(conn, session):
                 sym = vol_futs[fut]
                 try:
                     live_volumes[sym] = fut.result()
-                except Exception:
+                except Exception as e:
+                    print(f"  [!] 实时量比失败 {sym}: {e}")
                     live_volumes[sym] = None
 
     market_idx_pct = fetch_market_index(session)
@@ -270,7 +272,6 @@ def scan(conn, session):
         intra = intraday_scores.get(c.stock.symbol)
         if intra is not None:
             c.intraday_score = intra
-            c.score += int(round(intra))
 
         live_vol = live_volumes.get(c.stock.symbol)
         if live_vol is not None and c.kline and c.kline.avg_volume > 0:
@@ -292,9 +293,11 @@ def scan(conn, session):
             gap_key = "new_face_gap_up" if c.category in ("new_face", "known_new_face") else "momentum_gap_up"
             c.gap_up_bonus = c.kline.dimensions.get(gap_key, 0)
 
+        intra_bonus = int(round(c.intraday_score)) if c.intraday_score else 0
         c.score += (c.rank_trend_bonus + c.sector_bonus + c.live_vol_bonus
                     + c.first_today_bonus + c.first_breakout_bonus
-                    + market_env_bonus + c.turnover_bonus + c.time_bonus)
+                    + market_env_bonus + c.turnover_bonus + c.time_bonus
+                    + intra_bonus)
 
         if c.kline and c.kline.dimensions is not None:
             c.kline.dimensions["rank_trend_bonus"] = c.rank_trend_bonus
@@ -315,8 +318,6 @@ def scan(conn, session):
     update_rank_history({s.symbol: s.rank for s in gem_stocks})
 
     # ── 持久候选池管理 ──
-    from datetime import timedelta
-
     current_symbols = {c.stock.symbol for c in all_candidates}
     now_dt = datetime.now()
 
@@ -341,11 +342,14 @@ def scan(conn, session):
             stale_candidates.append(c)
 
     stale_cutoff = now_dt - timedelta(minutes=STALE_TIMEOUT_MINUTES)
-    for c in stale_candidates[:]:
+    stale_keep = []
+    for c in stale_candidates:
         stale_dt = datetime.strptime(f"{today} {c.stale_since}", "%Y-%m-%d %H:%M")
         if stale_dt < stale_cutoff:
-            stale_candidates.remove(c)
             _today_pool.pop(c.stock.symbol, None)
+        else:
+            stale_keep.append(c)
+    stale_candidates = stale_keep
     stale_candidates.sort(key=lambda c: -c.score)
 
     new_faces.sort(key=lambda c: -c.score)

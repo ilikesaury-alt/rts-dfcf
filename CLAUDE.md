@@ -50,6 +50,7 @@ An A-share stock momentum scanner that monitors Xueqiu's (雪球) "飙升榜" (s
 | `daily_kline` | Cached K-line data (avoid redundant API calls) |
 | `recommendations` | Scan recommendations with next-day % tracking |
 | `sector_cache` | Stock-to-sector mapping |
+| `parameter_snapshots` | Self-evolution weight versioning (active params) |
 
 ### Self-Evolution Loop (`evolution/`)
 
@@ -61,17 +62,25 @@ An A-share stock momentum scanner that monitors Xueqiu's (雪球) "飙升榜" (s
 ### Key Thresholds
 
 - No limit (all GEM stocks from surge list), New face lookback: 3 days
-- New face min score: 20, Momentum min score: 15
+- New face min score: 18, Momentum min score: 15
 - 小而美: Max market cap 300亿, Max price 100元
-- Scoring: bottom confirmation +15, sector cluster up to +8, rank trend up to +6
+- Scoring: bottom confirmation +8~10, sector cluster up to +8, rank trend -4~+10
+- New face scoring: today_pct range (+2~+20), accumulated range (-15~+10), volume (+12~+15), vol_rank_combo (+8~+15)
+- Momentum scoring: today_pct range (+2~+26), accumulated range (-15~+19), volume (-5~+5), no_crash (+13)
 
 ### Key Files
 
-- `limit_up_scanner.py` — Main scanner (~1300 lines, all logic in one file)
+- `limit_up_scanner.py` — Main scanner entry point (~100 lines, orchestrator loop)
+- `scanner/orchestrator.py` — Core scan orchestration (~350 lines, all logic in one file)
+- `scanner/analysis.py` — New Face & Momentum scoring engines
+- `scanner/config.py` — All thresholds, weights, and dimension-to-key mappings
+- `scanner/api.py` — Xueqiu API interaction (biaosheng, kline, batch quote, intraday)
+- `scanner/database.py` — SQLite CRUD (appearances, kline, recommendations, snapshots)
+- `scanner/evolution/` — Self-evolution: tracker, analytics (IC), optimizer
 - `xueqiu_hot.py` — Standalone surge-ranking data fetcher
 - `self_evolve.py` — Self-evolution entry point (weekly tuning, backfill, IC analysis)
 - `STRATEGY.md` — Full strategy documentation with scoring tables
-- `REVIEW.md` — Iteration history and known issues
+- `OPTIMIZE.md` — Iteration history and known issues
 
 ## Non-Trading Hours
 

@@ -87,10 +87,82 @@
 
 ---
 
+## 2026-06-17 迭代（代码审查修复）
+
+### 🔴 Bug 修复
+
+#### 14. [Bug] 自进化权重覆盖不生效 ✅
+
+- **位置**: `scanner/orchestrator.py:84-86` + `scanner/analysis.py:53,187`
+- **问题**: `orchestrator.py` 用 `replace("new_face_", "")` 截取键名（`new_face_today_pct` → `today_pct`），但 `analysis.py` 评分用的是 `W["today_pct_2_6"]` 等 config-level 键。覆盖被静默丢弃。
+- **修复**: 新增 `NEW_FACE_DIM_TO_WEIGHT_KEY` / `MOMENTUM_DIM_TO_WEIGHT_KEY` 精准映射表，orchestrator 加载时做映射而非简单 replace。
+- **改动**: `scanner/config.py` + `scanner/orchestrator.py:87-88`
+
+#### 15. [Bug] 4 个测试失败 ✅
+
+| 测试 | 原因 | 修复 |
+|------|------|------|
+| `test_candle_quality_*` (2个) | 引用不存在的 `new_face_candle` / `momentum_candle` 维度键 | 删除测试 |
+| `test_volume_surge_penalty` | 期望 `== -8`，实际配置 `vol_surge: -4` | 改为 `== -4` |
+| `test_weak_form_filter_rejects_downtrend` | 测试数据 `today_pct=3` 不满足 `< 3` 条件 | K 线最后一天 `3%` → `2.5%` |
+
+---
+
+### 🟡 质量改进
+
+#### 16. [质量] `rank_streak_score` 无条件 +4 ✅
+
+- **位置**: `scanner/rank_trend.py:29-31`
+- **问题**: `len(ranks) >= 3` 无条件加 4 分，纯"露脸时间"奖励，与排名趋势无关
+- **修复**: 改为 `len(ranks) >= 3 and diff >= 2`，要求排名至少改善 2 位才加分
+
+#### 17. [质量] `stale_candidates.remove(c)` 迭代修改 ✅
+
+- **位置**: `scanner/orchestrator.py:343-348`
+- **问题**: `remove()` 依赖 `__eq__` 按值比较，O(n²) 且字段变异时可能失败
+- **修复**: 改为列表推导 + 统一 `_today_pool.pop()`
+
+#### 18. [质量] 函数体内 import ✅
+
+- **位置**: `scanner/analysis.py:21`、`scanner/orchestrator.py:27,318`
+- **修复**: `__import__("datetime")` → `from datetime import date` 模块级；`timedelta` 统一提到模块级
+
+---
+
+### 🟢 新迭代计划（待完成）
+
+#### P0 — 逻辑 Bug
+
+| # | 问题 | 说明 |
+|---|------|------|
+| 19 | **accumulated 双算 today_pct** | `pcts[-5:]` 含今日涨幅，评分又单独加 `today_pct` 权重 → 今日涨幅被计分两次 |
+| 20 | **stock.percent 与 K 线最后一天 percent 不一致** | `today_pct` 来自榜单实时数据，`pcts[-1]` 是 K 线昨日数据，`accumulated` 混用二者 |
+
+#### P1 — 架构/质量
+
+| # | 问题 | 说明 |
+|---|------|------|
+| 21 | **Score 可变性违规** | `Candidate.score` 在创建后 `+=` 多次突变 |
+| 22 | **14 处 bare except Exception** | 全部静默吞异常，不记录原因 |
+| 23 | **self_evolve.py 重复导入** | `dimension_ic` 在模块顶部和 `if args.apply:` 块内各导入一次 |
+| 24 | **optimizer.py 引用不存在 config 键** | `rank_change_gte_2000` 和 `candle_quality_max` 在 config 中不存在 |
+| 25 | **交易时段显示不一致** | 启动日志打印 `11:45`，config 中 `MORNING_END = 11:30` |
+
+#### P2 — 工程改进
+
+| # | 问题 | 说明 |
+|---|------|------|
+| 26 | **测试覆盖不足** | 仅 `analysis.py` 有测试，orchestrator/database/evolution 无覆盖 |
+| 27 | **query 脚本硬编码日期** | `query_today.py` / `query_summary.py` 写死 `2026-06-11` |
+| 28 | **Feishu 推送注释状态** | `limit_up_scanner.py:83` 已注释，可清理相关代码 |
+
+---
+
 ## 改动量汇总
 
 | 级别 | 总数 | 已完成 | 剩余 |
 |------|:----:|:------:|:----:|
-| 🔴 Bug 修复 | 3 | 3 | 0 |
-| 🟡 策略改进 | 5 | 5 | 0 |
-| 🟢 体验优化 | 3 | 3 | 0 |
+| 🔴 Bug 修复 | 5 | 5 | 0 |
+| 🟡 策略/质量改进 | 8 | 8 | 0 |
+| 🟢 体验优化 | 4 | 4 | 0 |
+| 🆕 P0/P1/P2 迭代 | 10 | 0 | 10 |
