@@ -1,6 +1,5 @@
 import json
 import sqlite3
-from statistics import NormalDist
 from datetime import date, timedelta
 
 

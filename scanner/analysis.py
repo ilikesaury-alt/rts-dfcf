@@ -3,6 +3,47 @@ from datetime import date
 from scanner.models import StockInfo, KlineSummary
 from scanner.config import NEW_FACE_WEIGHTS, MOMENTUM_WEIGHTS
 
+# Weak-form filter thresholds
+_WEAK_FORM_MIN_DOWN_DAYS = 3
+_WEAK_FORM_MAX_ACCUM = 5
+_WEAK_FORM_MIN_ACCUM = -5
+_WEAK_FORM_MAX_TODAY_PCT = 3
+_WEAK_FORM_CRASH_THRESHOLD = -10
+_WEAK_FORM_BIG_UP_THRESHOLD = 10
+
+# Gap-up thresholds
+_GAP_UP_STRONG = 2.0
+_GAP_UP_MEDIUM = 1.0
+_GAP_UP_WEAK = 0.5
+_GAP_UP_STRONG_PTS = 8
+_GAP_UP_MEDIUM_PTS = 5
+_GAP_UP_WEAK_PTS = 3
+
+# Volume-rank combo thresholds
+_VOL_RANK_VOL_THRESHOLD = 1.15
+_VOL_RANK_STRONG = 2000
+_VOL_RANK_MEDIUM = 1000
+_VOL_RANK_WEAK = 500
+_VOL_RANK_STRONG_PTS = 15
+_VOL_RANK_MEDIUM_PTS = 12
+_VOL_RANK_WEAK_PTS = 8
+
+# Bottom confirmation thresholds
+_BOTTOM_MAX_LOSS = -3.0
+_BOTTOM_VOL_SURGE = 1.15
+_BOTTOM_NEAR_LOW_PCT = 0.08
+
+# Crash detection thresholds
+_CRASH_THRESHOLD = -7.0
+_RECENT_2_RETURN_THRESHOLD = -3.0
+_MOMENTUM_VOL_HEALTHY_MIN = 0.7
+_MOMENTUM_VOL_HEALTHY_MAX = 2.0
+
+# MA alignment thresholds
+_MA_BULL_3_TIER_SCORE = 6
+_MA_BULL_2_TIER_SCORE = 3
+_MA_BEAR_SCORE = -3
+
 
 def _ma_bull_score(closes: list[float]) -> int:
     if len(closes) < 10:
@@ -12,10 +53,10 @@ def _ma_bull_score(closes: list[float]) -> int:
     if len(closes) >= 20:
         ma20 = sum(closes[-20:]) / 20
         if ma5 > ma10 > ma20:
-            return 6
+            return _MA_BULL_3_TIER_SCORE
     if ma5 > ma10:
-        return 3
-    return -3
+        return _MA_BULL_2_TIER_SCORE
+    return _MA_BEAR_SCORE
 
 
 def _detect_gap_up(today_current: float, kline: list[dict]) -> tuple[float, int]:
@@ -28,22 +69,22 @@ def _detect_gap_up(today_current: float, kline: list[dict]) -> tuple[float, int]
     if yesterday_close is None or yesterday_close <= 0:
         return 0.0, 0
     gap_pct = (today_current - yesterday_close) / yesterday_close * 100
-    if gap_pct > 2:
-        return round(gap_pct, 2), 8
-    if gap_pct > 1:
-        return round(gap_pct, 2), 5
-    if gap_pct > 0.5:
-        return round(gap_pct, 2), 3
+    if gap_pct > _GAP_UP_STRONG:
+        return round(gap_pct, 2), _GAP_UP_STRONG_PTS
+    if gap_pct > _GAP_UP_MEDIUM:
+        return round(gap_pct, 2), _GAP_UP_MEDIUM_PTS
+    if gap_pct > _GAP_UP_WEAK:
+        return round(gap_pct, 2), _GAP_UP_WEAK_PTS
     return round(gap_pct, 2), 0
 
 
 def _vol_rank_combo_score(vol_ratio: float, rank_change: int) -> int:
-    if vol_ratio > 1.15 and rank_change >= 2000:
-        return 15
-    if vol_ratio > 1.15 and rank_change >= 1000:
-        return 12
-    if vol_ratio > 1.15 and rank_change >= 500:
-        return 8
+    if vol_ratio > _VOL_RANK_VOL_THRESHOLD and rank_change >= _VOL_RANK_STRONG:
+        return _VOL_RANK_STRONG_PTS
+    if vol_ratio > _VOL_RANK_VOL_THRESHOLD and rank_change >= _VOL_RANK_MEDIUM:
+        return _VOL_RANK_MEDIUM_PTS
+    if vol_ratio > _VOL_RANK_VOL_THRESHOLD and rank_change >= _VOL_RANK_WEAK:
+        return _VOL_RANK_WEAK_PTS
     return 0
 
 
@@ -66,9 +107,13 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
 
     recent_5_pcts = pcts[-5:]
     down_days = sum(1 for p in recent_5_pcts if p < 0)
-    has_crash_day = any(p <= -10 for p in recent_5_pcts)
-    has_big_up_day = any(p >= 10 for p in recent_5_pcts)
-    if not has_crash_day and not has_big_up_day and down_days >= 3 and sum(recent_5_pcts) < 5 and sum(recent_5_pcts) > -5 and today_pct < 3:
+    has_crash_day = any(p <= _WEAK_FORM_CRASH_THRESHOLD for p in recent_5_pcts)
+    has_big_up_day = any(p >= _WEAK_FORM_BIG_UP_THRESHOLD for p in recent_5_pcts)
+    sum_5 = sum(recent_5_pcts)
+    if (not has_crash_day and not has_big_up_day
+            and down_days >= _WEAK_FORM_MIN_DOWN_DAYS
+            and _WEAK_FORM_MIN_ACCUM < sum_5 < _WEAK_FORM_MAX_ACCUM
+            and today_pct < _WEAK_FORM_MAX_TODAY_PCT):
         return None
 
     accumulated = sum(pcts[-5:])
@@ -81,9 +126,9 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
     today_vol = volumes[-1] if volumes else 0
     vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
     recent_3_pcts = pcts[-3:] if len(pcts) >= 3 else pcts
-    no_heavy_loss = all(p > -3 for p in recent_3_pcts)
-    volume_surge = vol_ratio > 1.15
-    near_20d_low = (closes[-1] - min(closes[-20:])) / max(min(closes[-20:]), 0.01) < 0.08 if len(closes) >= 20 else True
+    no_heavy_loss = all(p > _BOTTOM_MAX_LOSS for p in recent_3_pcts)
+    volume_surge = vol_ratio > _BOTTOM_VOL_SURGE
+    near_20d_low = (closes[-1] - min(closes[-20:])) / max(min(closes[-20:]), 0.01) < _BOTTOM_NEAR_LOW_PCT if len(closes) >= 20 else True
     bottom_confirmed = no_heavy_loss and volume_surge and near_20d_low
 
     v_shape_reversal = (
@@ -245,9 +290,9 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
         score += W["vol_low"]
 
     if len(pcts) >= 2:
-        has_crash_day = any(p <= -7 for p in pcts[-5:])
+        has_crash_day = any(p <= _CRASH_THRESHOLD for p in pcts[-5:])
         recent_2_return = pcts[-2] + pcts[-1]
-        no_crash = not has_crash_day and recent_2_return > -3
+        no_crash = not has_crash_day and recent_2_return > _RECENT_2_RETURN_THRESHOLD
     else:
         no_crash = True
     if no_crash:

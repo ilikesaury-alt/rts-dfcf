@@ -6,7 +6,10 @@ from scanner.config import HOLIDAYS, MORNING_START, MORNING_END, AFTERNOON_START
 def is_trading_day(d: date) -> bool:
     if d.weekday() >= 5:
         return False
-    return d.isoformat() not in HOLIDAYS
+    if d.isoformat() in HOLIDAYS:
+        print(f"  [节假日] {d} 识别为假期，跳过交易")
+        return False
+    return True
 
 
 def is_trading_time(now: datetime | None = None) -> bool:

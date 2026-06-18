@@ -7,6 +7,25 @@ import requests
 from scanner.config import HEADERS, REQUEST_TIMEOUT
 
 
+def _request_with_retry(session: requests.Session, url: str,
+                        max_retries: int = 3, base_delay: float = 1.0,
+                        timeout: int | None = None) -> requests.Response:
+    last_exc = None
+    for attempt in range(max_retries):
+        try:
+            _throttle()
+            resp = session.get(url, timeout=timeout or REQUEST_TIMEOUT)
+            resp.raise_for_status()
+            return resp
+        except requests.RequestException as e:
+            last_exc = e
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(f"  [重试] {url[:60]}... 第{attempt+1}次失败: {e}, {delay:.0f}s后重试")
+                time.sleep(delay)
+    raise last_exc  # type: ignore
+
+
 _last_api_call: float = 0
 _throttle_lock = threading.Lock()
 
@@ -29,10 +48,9 @@ def fetch_market_index(session: requests.Session) -> float | None:
     if _market_index_cache[0] is not None and now - _market_index_cache[1] < 180:
         return _market_index_cache[0]
     try:
-        _throttle()
         ts_ms = int(time.time() * 1000)
         url = f"https://stock.xueqiu.com/v5/stock/chart/kline.json?symbol=SZ399006&begin={ts_ms - 86400*1000*3}&period=day&count=2&_={ts_ms}"
-        resp = session.get(url, timeout=REQUEST_TIMEOUT)
+        resp = _request_with_retry(session, url)
         items = resp.json().get("data", {}).get("item", [])
         if items:
             pct = items[-1][7]
@@ -52,15 +70,17 @@ def make_session() -> requests.Session:
 
 
 def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[dict] | None:
-    _throttle()
     now_ms = int(time.time() * 1000)
     begin_ms = now_ms - days * 86400 * 1000
     url = (
         f"https://stock.xueqiu.com/v5/stock/chart/kline.json"
         f"?symbol={symbol}&begin={begin_ms}&period=day&count={days}&_={now_ms}"
     )
-    resp = session.get(url, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
+    try:
+        resp = _request_with_retry(session, url)
+    except Exception as e:
+        print(f"  [!] K线获取失败 {symbol}: {e}")
+        return None
     data = resp.json().get("data")
     if not data:
         return None
@@ -89,9 +109,12 @@ def fetch_biaosheng(session: requests.Session, size: int = 100) -> list[dict]:
         f"https://stock.xueqiu.com/v5/stock/hot_stock/new_list.json"
         f"?page=1&size={size}&order=desc&order_by=rank_change&type=10&_={ts}"
     )
-    resp = session.get(url, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
-    return resp.json().get("data", {}).get("items", [])
+    try:
+        resp = _request_with_retry(session, url)
+        return resp.json().get("data", {}).get("items", [])
+    except Exception as e:
+        print(f"  [!] 飙升榜获取失败: {e}")
+        return []
 
 
 _market_cap_cache: dict[str, dict] = {}
@@ -116,8 +139,7 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
         url = (f"https://stock.xueqiu.com/v5/stock/batch/quote.json"
                f"?symbol={sym_str}")
         try:
-            resp = session.get(url, timeout=REQUEST_TIMEOUT)
-            resp.raise_for_status()
+            resp = _request_with_retry(session, url)
             items = resp.json().get("data", {}).get("items", [])
             for item in items:
                 q = item.get("quote") if isinstance(item, dict) else {}
@@ -160,10 +182,9 @@ def _fetch_minute_data(session: requests.Session, symbol: str) -> list[dict] | N
         if now - ts < _MINUTE_DATA_CACHE_TTL:
             return data
     try:
-        _throttle()
         ts_ms = int(time.time() * 1000)
         url = f"https://stock.xueqiu.com/v5/stock/chart/minute.json?symbol={symbol}&period=1d&_={ts_ms}"
-        resp = session.get(url, timeout=15)
+        resp = _request_with_retry(session, url)
         d = resp.json()
         items = d.get("data", {}).get("items", [])
         if items and len(items) >= 10:
@@ -237,7 +258,7 @@ def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
             return None
 
     items = _fetch_minute_data(session, symbol)
-    if not items:
+    if not items or len(items) < 2:
         _INTRADAY_CACHE[symbol] = (None, now)
         return None
 

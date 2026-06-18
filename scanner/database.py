@@ -86,17 +86,34 @@ def get_recent_symbols(conn: sqlite3.Connection, days: int) -> set[str]:
 
 def record_appearances(conn: sqlite3.Connection, symbols: list[dict]):
     today = date.today().isoformat()
+    rows = []
     for i, item in enumerate(symbols, 1):
-        try:
-            conn.execute(
-                "INSERT INTO appearances (symbol, name, date, rank, percent, value) VALUES (?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(symbol, date) DO UPDATE SET "
-                "percent = MAX(percent, excluded.percent), rank = excluded.rank, value = excluded.value, name = excluded.name",
-                (item["symbol"], item["name"], today, i, item.get("percent", 0), item.get("value", 0)),
-            )
-        except Exception:
-            continue
-    conn.commit()
+        rows.append((
+            item["symbol"], item["name"], today, i,
+            item.get("percent", 0), item.get("value", 0),
+        ))
+    try:
+        conn.executemany(
+            "INSERT INTO appearances (symbol, name, date, rank, percent, value) VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(symbol, date) DO UPDATE SET "
+            "percent = MAX(percent, excluded.percent), rank = excluded.rank, "
+            "value = excluded.value, name = excluded.name",
+            rows,
+        )
+        conn.commit()
+    except Exception:
+        for row in rows:
+            try:
+                conn.execute(
+                    "INSERT INTO appearances (symbol, name, date, rank, percent, value) VALUES (?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(symbol, date) DO UPDATE SET "
+                    "percent = MAX(percent, excluded.percent), rank = excluded.rank, "
+                    "value = excluded.value, name = excluded.name",
+                    row,
+                )
+            except Exception:
+                continue
+        conn.commit()
 
 
 def get_symbol_appearances(conn: sqlite3.Connection, symbol: str, days: int) -> list[dict]:
@@ -110,15 +127,32 @@ def get_symbol_appearances(conn: sqlite3.Connection, symbol: str, days: int) -> 
 
 
 def save_kline_to_db(conn: sqlite3.Connection, symbol: str, kline: list[dict]):
+    rows = []
     for k in kline:
-        try:
-            conn.execute(
-                "INSERT OR REPLACE INTO daily_kline (symbol, timestamp, date, open, close, high, low, volume, percent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (symbol, k["timestamp"], k["date"], k["open"], k["close"], k["high"], k["low"], k["volume"], k["percent"]),
-            )
-        except Exception:
-            continue
-    conn.commit()
+        rows.append((
+            symbol, k["timestamp"], k["date"], k["open"], k["close"],
+            k["high"], k["low"], k["volume"], k["percent"],
+        ))
+    try:
+        conn.executemany(
+            "INSERT OR REPLACE INTO daily_kline "
+            "(symbol, timestamp, date, open, close, high, low, volume, percent) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        conn.commit()
+    except Exception:
+        for row in rows:
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO daily_kline "
+                    "(symbol, timestamp, date, open, close, high, low, volume, percent) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    row,
+                )
+            except Exception:
+                continue
+        conn.commit()
 
 
 def get_cached_kline(conn: sqlite3.Connection, symbol: str) -> list[dict] | None:

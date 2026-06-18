@@ -1,9 +1,13 @@
 def is_st(name: str) -> bool:
-    return name.startswith("*ST") or name.startswith("ST") or "退" in name
+    return name.startswith("*ST") or name.startswith("ST") or "退市" in name or name.startswith("退")
 
 
 def _strip_exchange(code: str) -> str:
-    return code[2:] if code[:2] in ("SH", "SZ", "BJ") and len(code) > 2 else code
+    if len(code) > 2 and code[:2] in ("SH", "SZ", "BJ"):
+        return code[2:]
+    if code.startswith("30"):
+        return code
+    return code
 
 
 def is_gem(code: str) -> bool:
