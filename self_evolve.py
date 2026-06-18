@@ -68,18 +68,19 @@ def main():
             ic = info["ic"]
             if ic > 0.15:
                 adjustments[dim] = int(base * 1.3)
-            elif ic < -0.05 and base > 0:
-                adjustments[dim] = max(0, int(base * 0.5))
             elif ic < -0.1:
                 adjustments[dim] = max(-20, -base)
+            elif ic < -0.05 and base > 0:
+                adjustments[dim] = max(0, int(base * 0.5))
 
         if adjustments:
             new_params = dict(BASE_PARAMS)
             new_params["weights"].update(adjustments)
-            apply_params(conn, new_params, notes=f"自动调整 {len(adjustments)} 个维度权重")
-            print(f"  已调整 {len(adjustments)} 个维度")
+            notes = "自动调整 %d 个维度权重" % len(adjustments)
+            apply_params(conn, new_params, notes=notes)
+            print("  已调整 %d 个维度" % len(adjustments))
             for d, w in adjustments.items():
-                print(f"    {d}: {BASE_PARAMS['weights'].get(d, 0)} -> {w}")
+                print("    %s: %s -> %s" % (d, BASE_PARAMS["weights"].get(d, 0), w))
         else:
             print("  无需要调整的维度")
 

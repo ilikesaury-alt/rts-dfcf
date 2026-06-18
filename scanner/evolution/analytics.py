@@ -2,6 +2,22 @@ import json
 import sqlite3
 from datetime import date, timedelta
 
+_NEW_STYLE_PREFIXES = ("new_face_", "momentum_")
+_MIN_SAMPLE_SIZE = 15
+
+
+def _is_new_style_breakdown(dims: dict) -> bool:
+    return any(k.startswith(_NEW_STYLE_PREFIXES) for k in dims)
+
+
+def _winsorize(values: list[float], lower: float = 0.01, upper: float = 0.99) -> list[float]:
+    if len(values) < 4:
+        return values
+    sorted_v = sorted(values)
+    lo = sorted_v[int(len(sorted_v) * lower)]
+    hi = sorted_v[min(len(sorted_v) - 1, int(len(sorted_v) * upper))]
+    return [max(lo, min(v, hi)) for v in values]
+
 
 def dimension_ic(conn: sqlite3.Connection, window_days: int = 30) -> dict:
     """Compute Information Coefficient (rank correlation) per dimension.
@@ -21,6 +37,7 @@ def dimension_ic(conn: sqlite3.Connection, window_days: int = 30) -> dict:
         WHERE next_day_pct IS NOT NULL
           AND score_breakdown IS NOT NULL
           AND score_breakdown != ''
+          AND category NOT IN ('old_face')
           AND date >= ?
     """, (cutoff,)).fetchall()
 
@@ -33,6 +50,8 @@ def dimension_ic(conn: sqlite3.Connection, window_days: int = 30) -> dict:
             continue
         if not isinstance(dims, dict):
             continue
+        if not _is_new_style_breakdown(dims):
+            continue
         for dim, score in dims.items():
             if dim not in dim_scores:
                 dim_scores[dim] = []
@@ -40,10 +59,11 @@ def dimension_ic(conn: sqlite3.Connection, window_days: int = 30) -> dict:
 
     result = {}
     for dim, pairs in dim_scores.items():
-        if len(pairs) < 10:
+        if len(pairs) < _MIN_SAMPLE_SIZE:
             continue
         scores, returns = zip(*pairs)
-        ic_val = _spearman_rho(scores, returns)
+        clipped_returns = _winsorize(list(returns))
+        ic_val = _spearman_rho(scores, clipped_returns)
         avg_score = sum(scores) / len(scores)
         avg_return = sum(returns) / len(returns)
         result[dim] = {
