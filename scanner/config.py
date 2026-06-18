@@ -60,6 +60,9 @@ NEW_FACE_WEIGHTS: dict[str, int] = {
     "value_gte_5000": 1,
     "ma_bull": 5,
     "ma_bear": -3,
+    "rsi_bonus": 3,
+    "kdj_bonus": 3,
+    "macd_bonus": 3,
 }
 
 MOMENTUM_WEIGHTS: dict[str, int] = {
@@ -85,6 +88,9 @@ MOMENTUM_WEIGHTS: dict[str, int] = {
     "value_gte_5000": 1,
     "ma_bull": 5,
     "ma_bear": -3,
+    "rsi_bonus": 3,
+    "kdj_bonus": 3,
+    "macd_bonus": 3,
 }
 
 # Dimension-to-weight-key mapping for self-evolution overrides
@@ -96,6 +102,9 @@ NEW_FACE_DIM_TO_WEIGHT_KEY: dict[str, str] = {
     "new_face_value": "value_gte_10000",
     "new_face_ma_bull": "ma_bull",
     "new_face_vol_rank": "vol_rank_combo",
+    "new_face_rsi": "rsi_bonus",
+    "new_face_kdj": "kdj_bonus",
+    "new_face_macd": "macd_bonus",
 }
 MOMENTUM_DIM_TO_WEIGHT_KEY: dict[str, str] = {
     "momentum_today_pct": "today_pct_2_6",
@@ -105,6 +114,9 @@ MOMENTUM_DIM_TO_WEIGHT_KEY: dict[str, str] = {
     "momentum_value": "value_gte_10000",
     "momentum_ma_bull": "ma_bull",
     "momentum_vol_rank": "vol_rank_combo",
+    "momentum_rsi": "rsi_bonus",
+    "momentum_kdj": "kdj_bonus",
+    "momentum_macd": "macd_bonus",
 }
 
 # Bonus constants
@@ -130,6 +142,26 @@ MARKET_ENV_STRONG = 3
 MARKET_ENV_WEAK = -3
 MARKET_STRONG_THRESHOLD = 0.5
 MARKET_WEAK_THRESHOLD = -1.0
+
+# Sentiment cycle thresholds
+SENTIMENT_BOILING = 5
+SENTIMENT_WARM = 2
+SENTIMENT_COOL = -2
+SENTIMENT_FROZEN = -5
+SENTIMENT_AVG_TOP10_BOILING = 8.0
+SENTIMENT_PCT_GT5_BOILING = 0.30
+SENTIMENT_AVG_TOP10_WARM = 4.0
+SENTIMENT_PCT_GT5_WARM = 0.15
+SENTIMENT_AVG_TOP10_COOL = 1.0
+SENTIMENT_PCT_GT5_COOL = 0.05
+
+# RPS bonus
+RPS_BONUS_HIGH = 4
+RPS_BONUS_MEDIUM = 2
+RPS_BONUS_LOW = -3
+RPS_PCTILE_HIGH = 80
+RPS_PCTILE_MEDIUM = 60
+RPS_PCTILE_LOW = 30
 
 # Time-based bonus thresholds (minutes since midnight)
 STALE_TIMEOUT_MINUTES = 30  # 掉榜后保留时长

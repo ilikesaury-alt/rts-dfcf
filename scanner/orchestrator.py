@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta
 from scanner.api import (
     fetch_biaosheng, fetch_kline, fetch_market_caps_batch,
     analyze_intraday, analyze_opening_strength, estimate_live_volume,
-    fetch_market_index,
+    fetch_market_index, compute_surge_sentiment,
 )
 from scanner.analysis import analyze_new_face, analyze_momentum
 from scanner.config import (
@@ -12,6 +12,8 @@ from scanner.config import (
     NEW_FACE_MIN_SCORE, MOMENTUM_MIN_SCORE,
     MAX_STOCK_PRICE, MAX_MARKET_CAP,
     NEW_FACE_DIM_TO_WEIGHT_KEY, MOMENTUM_DIM_TO_WEIGHT_KEY,
+    RPS_PCTILE_HIGH, RPS_PCTILE_MEDIUM, RPS_PCTILE_LOW,
+    RPS_BONUS_HIGH, RPS_BONUS_MEDIUM, RPS_BONUS_LOW,
 )
 from scanner.database import (
     record_appearances, get_symbol_appearances, get_cached_kline,
@@ -54,9 +56,16 @@ def _fetch_all_klines(conn, session, stocks: list[StockInfo]) -> dict[str, list[
     needs_fetch: list[str] = []
     stale_cache: dict[str, list[dict]] = {}
 
+    KLINE_DAYS = 45
+    MIN_KLINE_LEN = 34
+
     for s in stocks:
         cached = get_cached_kline(conn, s.symbol)
         if cached:
+            if len(cached) < MIN_KLINE_LEN:
+                stale_cache[s.symbol] = cached
+                needs_fetch.append(s.symbol)
+                continue
             max_date_str = max(k["date"] for k in cached)
             max_date = date.fromisoformat(max_date_str)
             cursor = max_date + timedelta(days=1)
@@ -75,7 +84,7 @@ def _fetch_all_klines(conn, session, stocks: list[StockInfo]) -> dict[str, list[
         return result
 
     with ThreadPoolExecutor(max_workers=8) as pool:
-        fut_map = {pool.submit(fetch_kline, session, sym): sym for sym in needs_fetch}
+        fut_map = {pool.submit(fetch_kline, session, sym, KLINE_DAYS): sym for sym in needs_fetch}
         for fut in as_completed(fut_map):
             sym = fut_map[fut]
             try:
@@ -122,6 +131,7 @@ def scan(conn, session) -> tuple[list[Candidate], list[Candidate], list[Candidat
     new_face_overrides, momentum_overrides = _load_weight_overrides(conn)
 
     raw = fetch_biaosheng(session)
+    sentiment_info = compute_surge_sentiment(raw)
 
     gem_stocks: list[StockInfo] = []
     for i, item in enumerate(raw, 1):
@@ -210,6 +220,31 @@ def scan(conn, session) -> tuple[list[Candidate], list[Candidate], list[Candidat
     clusters = get_sector_clusters(gem_stocks)
 
     all_candidates = new_faces + momentum
+
+    def _compute_rps(candidates: list[Candidate]) -> dict[str, int]:
+        scores: dict[str, int] = {}
+        if len(candidates) < 2:
+            return {c.stock.symbol: 0 for c in candidates}
+        accum = [(c.stock.symbol, c.kline.accumulated_pct if c.kline else 0)
+                 for c in candidates]
+        sorted_by_accum = sorted(accum, key=lambda x: x[1])
+        total = len(sorted_by_accum)
+        for rank, (sym, _) in enumerate(sorted_by_accum):
+            pctile = (rank + 1) * 100 // total
+            if pctile >= RPS_PCTILE_HIGH:
+                scores[sym] = RPS_BONUS_HIGH
+            elif pctile >= RPS_PCTILE_MEDIUM:
+                scores[sym] = RPS_BONUS_MEDIUM
+            elif pctile < RPS_PCTILE_LOW:
+                scores[sym] = RPS_BONUS_LOW
+            else:
+                scores[sym] = 0
+        return scores
+
+    rps_scores: dict[str, int] = {}
+    rps_scores.update(_compute_rps(new_faces))
+    rps_scores.update(_compute_rps(momentum))
+
     intraday_scores: dict[str, float | None] = {}
     opening_scores: dict[str, float | None] = {}
     live_volumes: dict[str, float | None] = {}
@@ -225,7 +260,8 @@ def scan(conn, session) -> tuple[list[Candidate], list[Candidate], list[Candidat
 
     apply_all_bonuses(all_candidates, gem_stocks, intraday_scores,
                       opening_scores, live_volumes, market_caps,
-                      clusters, market_idx_pct, time_bonus)
+                      clusters, market_idx_pct, time_bonus,
+                      sentiment_info=sentiment_info, rps_scores=rps_scores)
 
     for c in all_candidates:
         extra = accumulate_final_score(c, market_env_bonus, opening_scores)

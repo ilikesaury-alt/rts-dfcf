@@ -26,8 +26,9 @@ An A-share stock momentum scanner that monitors Xueqiu's (雪球) "飙升榜" (s
 雪球API → fetch_biaosheng() → filter GEM/ST
   → batch quote API (market cap)
   → DB lookup (check if new face)
-  → fetch K-line (DB cache or Xueqiu API)
+  → fetch K-line (DB cache or Xueqiu API, 45-day)
   → scoring (trend, volume, rank momentum, sector cluster, intraday strength, 小而美)
+  → enhance (sentiment cycle, RPS, RSI/KDJ/MACD indicators)
   → display + CSV log + Feishu push (optional)
 ```
 
@@ -36,10 +37,13 @@ An A-share stock momentum scanner that monitors Xueqiu's (雪球) "飙升榜" (s
 1. **Fetch**: `fetch_biaosheng()` — GET Xueqiu hot stock list (rank_change sorted)
 2. **Filter**: Remove HK stocks, non-GEM, ST/*ST/退市; apply 小而美 (market cap ≤300亿, price ≤100元)
 3. **Classify**: `get_recent_symbols()` — check DB for appearances in last 3 days → new vs known
-4. **Analyze**: `ensure_kline()` — 25-day K-line from cache or Xueqiu API, then:
+4. **Analyze**: `ensure_kline()` — 45-day K-line from cache or Xueqiu API, then:
    - `analyze_new_face()` — check bottom breakout signals (volume surge, accumulated gain, price range)
    - `analyze_momentum()` — check trend continuation (accumulated gain ≥10%, no crash days); also used as fallback for non-new-face stocks
-5. **Enhance**: Add sector cluster bonus, rank trend bonus, intraday strength score, 小而美 bonus
+5. **Enhance**: Add sector cluster bonus, rank trend bonus, intraday strength score, 小而美 bonus, plus:
+   - **Market sentiment cycle**: Phase derived from surge list top100 stats (boiling/warm/cool/frozen), applied uniformly
+   - **RPS relative strength**: Per-category ranking (within new_face or momentum) by 5-day accumulated return, top 20% get bonus
+   - **Technical indicators**: RSI(6)/KDJ(9,3,3)/MACD(12,26,9) from K-line — oversold signals for new_face, trend confirmation for momentum
 6. **Output**: Terminal table (color-coded), CSV log (`logs/scan_YYYY-MM-DD.csv`), Feishu push (currently commented out)
 
 ### Persistence (`scanner.db` SQLite)
@@ -67,6 +71,9 @@ An A-share stock momentum scanner that monitors Xueqiu's (雪球) "飙升榜" (s
 - Scoring: bottom confirmation +8~10, sector cluster up to +8, rank trend -4~+10
 - New face scoring: today_pct range (+2~+20), accumulated range (-15~+10), volume (+12~+15), vol_rank_combo (+8~+15)
 - Momentum scoring: today_pct range (+2~+26), accumulated range (-15~+19), volume (-5~+5), no_crash (+13)
+- Sentiment bonus: boiling +5, warm +2, cool -2, frozen -5 (from surge list stats)
+- RPS: within-category 5d-return percentile ranking, top 20% +4, mid 60% +2, bottom 30% -3
+- Indicators: RSI(6)/KDJ/MACD per-side signal, each +3 base weight (evolvable), up to +9 per stock
 
 ### Key Files
 
@@ -75,6 +82,7 @@ An A-share stock momentum scanner that monitors Xueqiu's (雪球) "飙升榜" (s
 - `scanner/analysis.py` — New Face & Momentum scoring engines
 - `scanner/config.py` — All thresholds, weights, and dimension-to-key mappings
 - `scanner/api.py` — Xueqiu API interaction (biaosheng, kline, batch quote, intraday)
+- `scanner/indicators.py` — RSI/KDJ/MACD pure functions
 - `scanner/database.py` — SQLite CRUD (appearances, kline, recommendations, snapshots)
 - `scanner/evolution/` — Self-evolution: tracker, analytics (IC), optimizer
 - `xueqiu_hot.py` — Standalone surge-ranking data fetcher

@@ -11,6 +11,8 @@ from scanner.config import (
     TURNOVER_HIGH, TURNOVER_MEDIUM, TURNOVER_LOW,
     MARKET_ENV_STRONG, MARKET_ENV_WEAK,
     MARKET_STRONG_THRESHOLD, MARKET_WEAK_THRESHOLD,
+    RPS_BONUS_HIGH, RPS_BONUS_MEDIUM, RPS_BONUS_LOW,
+    RPS_PCTILE_HIGH, RPS_PCTILE_MEDIUM, RPS_PCTILE_LOW,
 )
 from scanner.models import Candidate
 from scanner.sector import classify_sector, get_sector_clusters
@@ -27,12 +29,16 @@ def apply_all_bonuses(
     clusters: dict[str, list[str]],
     market_idx_pct: float | None,
     time_bonus: int,
+    sentiment_info: dict = None,
+    rps_scores: dict[str, int] = None,
 ):
     for c in candidates:
         _apply_sector_bonus(c, clusters)
         _apply_intraday_bonus(c, intraday_scores)
         _apply_live_vol_bonus(c, live_volumes)
         _apply_turnover_bonus(c, market_caps)
+        _apply_sentiment_bonus(c, sentiment_info)
+        _apply_rps_bonus(c, rps_scores)
         c.rank_trend_bonus = rank_streak_score(c.stock.symbol)
         c.time_bonus = time_bonus
         _apply_gap_up_bonus(c)
@@ -76,6 +82,16 @@ def _apply_turnover_bonus(c: Candidate, market_caps: dict[str, dict]):
                 c.turnover_bonus = TURNOVER_BONUS_MEDIUM
 
 
+def _apply_sentiment_bonus(c: Candidate, sentiment_info: dict):
+    if sentiment_info:
+        c.market_sentiment_bonus = sentiment_info.get("bonus", 0)
+
+
+def _apply_rps_bonus(c: Candidate, rps_scores: dict[str, int]):
+    if rps_scores:
+        c.rps_bonus = rps_scores.get(c.stock.symbol, 0)
+
+
 def _apply_gap_up_bonus(c: Candidate):
     if c.kline and c.kline.dimensions:
         gap_key = "new_face_gap_up" if c.category in ("new_face", "known_new_face") else "momentum_gap_up"
@@ -93,6 +109,10 @@ def _record_dimensions(
     c.kline.dimensions["sector_bonus"] = c.sector_bonus
     c.kline.dimensions["live_vol_bonus"] = c.live_vol_bonus
     c.kline.dimensions["intraday_score"] = round(c.intraday_score, 1)
+    if c.market_sentiment_bonus != 0:
+        c.kline.dimensions["market_sentiment_bonus"] = c.market_sentiment_bonus
+    if c.rps_bonus != 0:
+        c.kline.dimensions["rps_bonus"] = c.rps_bonus
     opening = opening_scores.get(c.stock.symbol)
     if opening is not None:
         c.kline.dimensions["opening_score"] = round(opening, 1)
@@ -138,5 +158,6 @@ def accumulate_final_score(c: Candidate, market_env_bonus: int, opening_scores: 
     total = (c.rank_trend_bonus + c.sector_bonus + c.live_vol_bonus
              + c.first_today_bonus + c.first_breakout_bonus
              + market_env_bonus + c.turnover_bonus + c.time_bonus
+             + c.market_sentiment_bonus + c.rps_bonus
              + intra_bonus + opening_bonus)
     return total

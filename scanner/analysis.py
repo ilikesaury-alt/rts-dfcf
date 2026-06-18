@@ -2,6 +2,7 @@ from datetime import date
 
 from scanner.models import StockInfo, KlineSummary
 from scanner.config import NEW_FACE_WEIGHTS, MOMENTUM_WEIGHTS
+from scanner.indicators import compute_rsi, compute_kdj, compute_macd
 
 # Weak-form filter thresholds
 _WEAK_FORM_MIN_DOWN_DAYS = 3
@@ -222,6 +223,32 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
     elif stock.value >= 5000: dims["new_face_value"] = W["value_gte_5000"]
     if ma_bull: dims["new_face_ma_bull"] = ma_bull
 
+    rsi_val = compute_rsi(closes, period=6)
+    kdj_val = compute_kdj([k["high"] for k in historical_kline],
+                          [k["low"] for k in historical_kline], closes)
+    macd_val = compute_macd(closes)
+
+    indicator_bonus = 0
+    if rsi_val is not None:
+        if rsi_val < 20:
+            indicator_bonus += W["rsi_bonus"] * 2
+        elif rsi_val < 30:
+            indicator_bonus += W["rsi_bonus"]
+        dims["new_face_rsi"] = round(rsi_val, 1)
+    if kdj_val is not None:
+        if kdj_val["K"] < 20 and kdj_val["K"] > kdj_val["D"]:
+            indicator_bonus += W["kdj_bonus"]
+        if kdj_val["J"] < 0:
+            indicator_bonus += W["kdj_bonus"]
+        dims["new_face_kdj"] = round(kdj_val["J"], 1)
+    if macd_val is not None:
+        if macd_val["histogram"] > 0 and macd_val["histogram_prev"] <= 0:
+            indicator_bonus += W["macd_bonus"]
+        if macd_val["macd"] > macd_val["signal"]:
+            indicator_bonus += W["macd_bonus"]
+        dims["new_face_macd"] = round(macd_val["histogram"], 4)
+    score += indicator_bonus
+
     return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
                         volume_ratio=round(vol_ratio, 2), bottom_confirmed=bottom_confirmed,
                         score=score, dimensions=dims, avg_volume=round(avg_vol, 2))
@@ -332,6 +359,34 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
     if stock.value >= 10000: dims["momentum_value"] = W["value_gte_10000"]
     elif stock.value >= 5000: dims["momentum_value"] = W["value_gte_5000"]
     if ma_bull: dims["momentum_ma_bull"] = ma_bull
+
+    rsi_val = compute_rsi(closes, period=6)
+    kdj_val = compute_kdj([k["high"] for k in historical_kline],
+                          [k["low"] for k in historical_kline], closes)
+    macd_val = compute_macd(closes)
+
+    indicator_bonus = 0
+    if rsi_val is not None:
+        if 50 <= rsi_val <= 70:
+            indicator_bonus += W["rsi_bonus"]
+        elif rsi_val > 80:
+            indicator_bonus -= W["rsi_bonus"]
+        dims["momentum_rsi"] = round(rsi_val, 1)
+    if kdj_val is not None:
+        if kdj_val["K"] > kdj_val["D"] and 50 <= kdj_val["K"] <= 80:
+            indicator_bonus += W["kdj_bonus"]
+        if kdj_val["J"] > 100:
+            indicator_bonus -= W["kdj_bonus"]
+        dims["momentum_kdj"] = round(kdj_val["J"], 1)
+    if macd_val is not None:
+        if macd_val["histogram"] > 0:
+            indicator_bonus += W["macd_bonus"]
+        if macd_val["histogram"] > 0 and macd_val["histogram"] > macd_val["histogram_prev"]:
+            indicator_bonus += W["macd_bonus"]
+        elif macd_val["histogram"] > 0 and macd_val["histogram"] < macd_val["histogram_prev"]:
+            indicator_bonus -= W["macd_bonus"]
+        dims["momentum_macd"] = round(macd_val["histogram"], 4)
+    score += indicator_bonus
 
     return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
                         volume_ratio=round(vol_ratio, 2), bottom_confirmed=no_crash,

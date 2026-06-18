@@ -4,7 +4,13 @@ from datetime import datetime
 
 import requests
 
-from scanner.config import HEADERS, REQUEST_TIMEOUT
+from scanner.config import (
+    HEADERS, REQUEST_TIMEOUT,
+    SENTIMENT_BOILING, SENTIMENT_WARM, SENTIMENT_COOL, SENTIMENT_FROZEN,
+    SENTIMENT_AVG_TOP10_BOILING, SENTIMENT_PCT_GT5_BOILING,
+    SENTIMENT_AVG_TOP10_WARM, SENTIMENT_PCT_GT5_WARM,
+    SENTIMENT_AVG_TOP10_COOL, SENTIMENT_PCT_GT5_COOL,
+)
 
 
 def _request_with_retry(session: requests.Session, url: str,
@@ -59,6 +65,49 @@ def fetch_market_index(session: requests.Session) -> float | None:
     except Exception as e:
         print(f"  [!] 获取大盘指数失败: {e}")
     return None
+
+
+def compute_surge_sentiment(raw_items: list[dict]) -> dict:
+    top20 = raw_items[:20]
+    top10 = raw_items[:10]
+
+    top10_pcts = [item.get("percent") or 0 for item in top10]
+    avg_top10 = sum(top10_pcts) / len(top10_pcts) if top10_pcts else 0
+
+    all_pcts = [item.get("percent") or 0 for item in raw_items]
+    pct_gt_5 = sum(1 for p in all_pcts if p > 5)
+    pct_lt_0 = sum(1 for p in all_pcts if p < 0)
+    total = len(all_pcts) or 1
+
+    rank_changes = [abs(item.get("rank_change") or 0) for item in raw_items]
+    avg_rank_churn = sum(rank_changes) / len(rank_changes) if rank_changes else 0
+
+    pct_gt_5_ratio = pct_gt_5 / total
+
+    if avg_top10 > SENTIMENT_AVG_TOP10_BOILING or pct_gt_5_ratio > SENTIMENT_PCT_GT5_BOILING:
+        phase = "boiling"
+        bonus = SENTIMENT_BOILING
+    elif avg_top10 > SENTIMENT_AVG_TOP10_WARM or pct_gt_5_ratio > SENTIMENT_PCT_GT5_WARM:
+        phase = "warm"
+        bonus = SENTIMENT_WARM
+    elif avg_top10 < SENTIMENT_AVG_TOP10_COOL and pct_gt_5_ratio < SENTIMENT_PCT_GT5_COOL and pct_lt_0 > total * 0.5:
+        phase = "frozen"
+        bonus = SENTIMENT_FROZEN
+    elif avg_top10 < SENTIMENT_AVG_TOP10_COOL and pct_gt_5_ratio < SENTIMENT_PCT_GT5_COOL:
+        phase = "cool"
+        bonus = SENTIMENT_COOL
+    else:
+        phase = "warm"
+        bonus = SENTIMENT_WARM
+
+    return {
+        "phase": phase,
+        "bonus": bonus,
+        "avg_top10_pct": round(avg_top10, 2),
+        "pct_gt_5_ratio": round(pct_gt_5_ratio, 3),
+        "pct_lt_0_count": pct_lt_0,
+        "avg_rank_churn": round(avg_rank_churn, 0),
+    }
 
 
 def make_session() -> requests.Session:

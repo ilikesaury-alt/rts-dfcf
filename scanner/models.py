@@ -46,5 +46,7 @@ class Candidate:
     first_breakout_bonus: int = 0
     gap_up_bonus: int = 0
     time_bonus: int = 0
+    market_sentiment_bonus: int = 0
+    rps_bonus: int = 0
     is_stale: bool = False
     stale_since: str = ""

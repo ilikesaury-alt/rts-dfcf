@@ -29,6 +29,12 @@ BASE_PARAMS = {
         "momentum_vol_rank": MOMENTUM_WEIGHTS.get("vol_rank_combo", 8),
         "momentum_value": MOMENTUM_WEIGHTS.get("value_gte_10000", 5),
         "momentum_ma_bull": MOMENTUM_WEIGHTS.get("ma_bull", 3),
+        "new_face_rsi": NEW_FACE_WEIGHTS.get("rsi_bonus", 3),
+        "new_face_kdj": NEW_FACE_WEIGHTS.get("kdj_bonus", 3),
+        "new_face_macd": NEW_FACE_WEIGHTS.get("macd_bonus", 3),
+        "momentum_rsi": MOMENTUM_WEIGHTS.get("rsi_bonus", 3),
+        "momentum_kdj": MOMENTUM_WEIGHTS.get("kdj_bonus", 3),
+        "momentum_macd": MOMENTUM_WEIGHTS.get("macd_bonus", 3),
     },
 }
 

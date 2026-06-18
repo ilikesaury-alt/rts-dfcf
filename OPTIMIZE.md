@@ -158,6 +158,40 @@
 
 ---
 
+## 2026-06-18 迭代（市场情绪 + 技术指标 + RPS）
+
+### P0 — 市场情绪周期 ✅
+
+- **位置**: `scanner/api.py:65-107`, `scanner/enhancer.py`, `scanner/orchestrator.py`
+- **新增**: `compute_surge_sentiment()` 从飙升榜 top100 推导情绪阶段
+- **四阶段**: 沸腾 +5, 温暖 +2, 冷却 -2, 冰封 -5
+- **数据源**: 复用 `fetch_biaosheng()` 返回值，零外部依赖
+- **注入点**: `orchestrator.py` → `apply_all_bonuses()` → `_record_dimensions()` IC 跟踪
+
+### P1a — 经典技术指标 ✅
+
+- **新文件**: `scanner/indicators.py` — RSI(6)/KDJ(9,3,3)/MACD(12,26,9) 纯函数
+- **接入**: `analysis.py` 中 integrate 到 `analyze_new_face()` 和 `analyze_momentum()`
+- **新面孔信号**: 超卖反转（RSI < 30, KDJ 低位金叉, MACD 转正）
+- **动量信号**: 趋势确认（RSI 50~70, KDJ 中位上行, MACD > 0）
+- **基础权重**: 3/维度（`rsi_bonus` / `kdj_bonus` / `macd_bonus`），可自进化
+
+### P1b — RPS 相对强弱 ✅
+
+- **位置**: `scanner/orchestrator.py`
+- **实现**: 按策略类别分层排名（新面孔 / 动量分别计算）
+- **评分**: top 20% +4, 中间 60% +2, bottom 30% -3
+- **排序依据**: 5 日累计涨幅百分位
+- **落库**: 记录在 `score_breakdown["rps_bonus"]` 用于 IC 跟踪，不加入 weight-key 映射
+
+### 附带改动
+
+- K 线获取从 15 天升级到 45 天，缓存长度检查 ≥34 条（MACD 需求）
+- `self_evolve.py --apply` 新增 6 个指标维度的 weight-key 映射
+- 废弃字段清理：`Candidate.indicator_bonus` 删除（改为 analysis.py 局部变量）
+
+---
+
 ## 改动量汇总
 
 | 级别 | 总数 | 已完成 | 剩余 |
@@ -165,4 +199,4 @@
 | 🔴 Bug 修复 | 5 | 5 | 0 |
 | 🟡 策略/质量改进 | 8 | 8 | 0 |
 | 🟢 体验优化 | 4 | 4 | 0 |
-| 🆕 P0/P1/P2 迭代 | 10 | 0 | 10 |
+| 🆕 P0/P1/P2 迭代 | 10 | 3 | 7 |
