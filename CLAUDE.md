@@ -6,6 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **Run scanner**: `python limit_up_scanner.py` (default 180s interval) or `python limit_up_scanner.py 120` (custom seconds)
 
+- **Chain watch**: `python chain_watch.py` (single run) or `python chain_watch.py --interval 300` (every 5 min)
 - **Quick data check**: `python xueqiu_hot.py` (dump raw surge ranking)
 - **Self-evolution**: `python self_evolve.py` (performance report + IC dimension analysis)
 - **Backfill**: `python self_evolve.py --backfill` (fill missing outcome data)
@@ -15,10 +16,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-An A-share stock momentum scanner that monitors Xueqiu's (雪球) "飙升榜" (surge ranking) API in real-time during trading hours. It scores and recommends ChiNext (创业板, 300xxx) stocks using three strategies:
+An A-share stock momentum scanner that monitors Xueqiu's (雪球) "飙升榜" (surge ranking) API in real-time during trading hours. It scores and recommends ChiNext (创业板, 300xxx) stocks using two strategies:
 
 - **New Face** (bottom breakout): First-time appearance in surge list within 3 days — looks for early-stage capital inflows with volume confirmation
 - **Momentum** (trend continuation): Stocks with 10%+ 5-day gain but still room to run — fills the gap between New Face and Old Face (Old Face was removed 2026-06-10)
+
+A companion tool `chain_watch.py` monitors the same surge list for industrial chain (产业链) trend signals — detects which chains are heating up (AI算力/半导体/新能源车/光伏储能/机器人/低空经济/军工) and scores individual stocks by MA alignment, pullback health, volume trend, and bottleneck position.
 
 ## Architecture
 
@@ -87,6 +90,8 @@ An A-share stock momentum scanner that monitors Xueqiu's (雪球) "飙升榜" (s
 - `scanner/evolution/` — Self-evolution: tracker, analytics (IC), optimizer
 - `xueqiu_hot.py` — Standalone surge-ranking data fetcher
 - `self_evolve.py` — Self-evolution entry point (weekly tuning, backfill, IC analysis)
+- `scanner/chain_watch/` — Chain watch: chains.py (7-chain knowledge base), heat_detect.py, trend_score.py, display.py
+- `chain_watch.py` — Chain watch entry point (standalone, not part of scan loop)
 - `STRATEGY.md` — Full strategy documentation with scoring tables
 - `OPTIMIZE.md` — Iteration history and known issues
 
