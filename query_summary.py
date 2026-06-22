@@ -19,7 +19,7 @@ for r in rows:
     dims = {}
     if r[4] and str(r[4]).strip():
         try: dims = json.loads(r[4])
-        except: pass
+        except Exception as e: dims = {"parse_error": str(e)}
     rc = dims.get('momentum_rank_change') or dims.get('new_face_rank_change', '')
     val = dims.get('momentum_value') or dims.get('new_face_value', '')
     gentle = dims.get('momentum_gentle_breakout') or dims.get('new_face_gentle_breakout', '')

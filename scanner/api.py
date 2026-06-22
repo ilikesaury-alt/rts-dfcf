@@ -97,8 +97,8 @@ def compute_surge_sentiment(raw_items: list[dict]) -> dict:
         phase = "cool"
         bonus = SENTIMENT_COOL
     else:
-        phase = "warm"
-        bonus = SENTIMENT_WARM
+        phase = "neutral"
+        bonus = 0
 
     return {
         "phase": phase,

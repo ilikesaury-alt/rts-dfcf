@@ -21,7 +21,7 @@ for r in rows:
     idx = col_names.index('score_breakdown')
     if r[idx] and str(r[idx]).strip():
         try: dims = json.loads(r[idx])
-        except: pass
+        except Exception as e: dims = {"parse_error": str(e)}
     sym_idx = col_names.index('symbol')
     sc_idx = col_names.index('score')
     cat_idx = col_names.index('category')

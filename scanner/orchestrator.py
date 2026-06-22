@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace as dataclass_replace
 from datetime import date, datetime, timedelta
 
 from scanner.api import (
@@ -34,7 +35,7 @@ from scanner.enhancer import (
 _session_state = ScanSession()
 
 
-def _load_weight_overrides(conn) -> tuple[dict, dict]:
+def _load_weight_overrides(conn) -> tuple[dict, dict, dict]:
     active_weights_raw: dict = get_active_weights(conn)
     new_face_overrides = {
         NEW_FACE_DIM_TO_WEIGHT_KEY[k]: v
@@ -46,9 +47,13 @@ def _load_weight_overrides(conn) -> tuple[dict, dict]:
         for k, v in active_weights_raw.items()
         if k in MOMENTUM_DIM_TO_WEIGHT_KEY
     }
+    thresholds = {
+        k: v for k, v in active_weights_raw.items()
+        if k in ("new_face_min_score", "momentum_min_score")
+    }
     if active_weights_raw:
         print(f"  [进化] 加载活跃参数, 新面孔{len(new_face_overrides)} 动量{len(momentum_overrides)} 维度已覆盖")
-    return new_face_overrides, momentum_overrides
+    return new_face_overrides, momentum_overrides, thresholds
 
 
 def _fetch_all_klines(conn, session, stocks: list[StockInfo]) -> dict[str, list[dict] | None]:
@@ -126,9 +131,9 @@ def scan(conn, session) -> tuple[list[Candidate], list[Candidate], list[Candidat
     today = date.today().isoformat()
     session_state.reset_if_new_day(today)
 
-    new_face_min = NEW_FACE_MIN_SCORE
-    momentum_min = MOMENTUM_MIN_SCORE
-    new_face_overrides, momentum_overrides = _load_weight_overrides(conn)
+    new_face_overrides, momentum_overrides, thresholds = _load_weight_overrides(conn)
+    new_face_min = thresholds.get("new_face_min_score", NEW_FACE_MIN_SCORE)
+    momentum_min = thresholds.get("momentum_min_score", MOMENTUM_MIN_SCORE)
 
     raw = fetch_biaosheng(session)
     sentiment_info = compute_surge_sentiment(raw)
@@ -263,9 +268,9 @@ def scan(conn, session) -> tuple[list[Candidate], list[Candidate], list[Candidat
                       clusters, market_idx_pct, time_bonus,
                       sentiment_info=sentiment_info, rps_scores=rps_scores)
 
-    for c in all_candidates:
+    for i, c in enumerate(all_candidates):
         extra = accumulate_final_score(c, market_env_bonus, opening_scores)
-        c.score += extra
+        all_candidates[i] = dataclass_replace(c, score=c.score + extra)
 
     update_rank_history({s.symbol: s.rank for s in gem_stocks})
 

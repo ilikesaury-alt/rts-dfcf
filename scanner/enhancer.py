@@ -5,6 +5,7 @@ from scanner.config import (
     LATE_TRADE_START, LATE_BONUS,
     FIRST_TODAY_BONUS, FIRST_BREAKOUT_BONUS,
     FIRST_BREAKOUT_RANK_CHANGE, FIRST_BREAKOUT_VOL_RATIO,
+    SECTOR_CLUSTER_BONUS_5, SECTOR_CLUSTER_BONUS_4,
     SECTOR_CLUSTER_BONUS_3, SECTOR_CLUSTER_BONUS_2,
     LIVE_VOL_BONUS, LIVE_VOL_RATIO_THRESHOLD,
     TURNOVER_BONUS_HIGH, TURNOVER_BONUS_MEDIUM, TURNOVER_BONUS_LOW,
@@ -50,7 +51,11 @@ def _apply_sector_bonus(c: Candidate, clusters: dict[str, list[str]]):
     c.sector = sec
     if sec != "其他":
         cluster_count = len(clusters.get(sec, []))
-        if cluster_count >= 3:
+        if cluster_count >= 5:
+            c.sector_bonus = SECTOR_CLUSTER_BONUS_5
+        elif cluster_count >= 4:
+            c.sector_bonus = SECTOR_CLUSTER_BONUS_4
+        elif cluster_count >= 3:
             c.sector_bonus = SECTOR_CLUSTER_BONUS_3
         elif cluster_count >= 2:
             c.sector_bonus = SECTOR_CLUSTER_BONUS_2

@@ -101,7 +101,8 @@ def record_appearances(conn: sqlite3.Connection, symbols: list[dict]):
             rows,
         )
         conn.commit()
-    except Exception:
+    except Exception as e:
+        print(f"  [!] 批量写入appearances失败: {e}, 逐行回退写入")
         for row in rows:
             try:
                 conn.execute(
@@ -111,8 +112,8 @@ def record_appearances(conn: sqlite3.Connection, symbols: list[dict]):
                     "value = excluded.value, name = excluded.name",
                     row,
                 )
-            except Exception:
-                continue
+            except Exception as e2:
+                print(f"  [!] 逐行写入appearances失败 {row[0]}: {e2}")
         conn.commit()
 
 
@@ -151,7 +152,8 @@ def save_kline_to_db(conn: sqlite3.Connection, symbol: str, kline: list[dict]):
             rows,
         )
         conn.commit()
-    except Exception:
+    except Exception as e:
+        print(f"  [!] 批量写入kline失败: {e}, 逐行回退写入")
         for row in rows:
             try:
                 conn.execute(
@@ -160,8 +162,8 @@ def save_kline_to_db(conn: sqlite3.Connection, symbol: str, kline: list[dict]):
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     row,
                 )
-            except Exception:
-                continue
+            except Exception as e2:
+                print(f"  [!] 逐行写入kline失败 {row[0]}: {e2}")
         conn.commit()
 
 
@@ -202,16 +204,16 @@ def ensure_kline(conn: sqlite3.Connection, session, symbol: str) -> list[dict] |
             if kline:
                 save_kline_to_db(conn, symbol, kline)
                 return kline
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [!] 刷新K线缓存失败 {symbol}: {e}")
         return cached
     try:
         kline = fetch_kline(session, symbol)
         if kline:
             save_kline_to_db(conn, symbol, kline)
             return kline
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  [!] 获取K线失败 {symbol}: {e}")
     return None
 
 
@@ -234,8 +236,8 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: li
                 (today, now, c.stock.symbol, c.stock.name, c.category,
                  c.score, c.stock.percent, c.kline.trend if c.kline else None, breakdown),
             )
-        except Exception:
-            continue
+        except Exception as e:
+            print(f"  [!] 保存推荐记录失败 {c.stock.symbol}: {e}")
     conn.commit()
 
 
