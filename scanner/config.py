@@ -43,7 +43,7 @@ NEW_FACE_WEIGHTS: dict[str, int] = {
     "today_pct_0_5_1": 5,
     "today_pct_lt_0_5": 2,
     "today_pct_6_8": 5,
-    "today_pct_gt_8": -15,
+    "today_pct_gt_8": -8,
     "accum_neg5_10": 10,
     "accum_lt_neg5": -5,
     "accum_10_15": 5,

@@ -5,9 +5,10 @@ from datetime import date, timedelta
 from scanner.database import (
     init_db, get_recent_symbols, record_appearances,
     get_symbol_appearances, save_kline_to_db, get_cached_kline,
-    save_recommendations, get_active_weights,
+    save_recommendations, get_active_weights, _n_trading_days_ago,
 )
 from scanner.models import StockInfo, Candidate, KlineSummary
+from scanner.trading_session import is_trading_day
 
 
 @pytest.fixture
@@ -98,6 +99,45 @@ class TestRecordAppearances:
     def test_get_symbol_appearances_no_data(self, memory_db):
         app = get_symbol_appearances(memory_db, "300999", 3)
         assert app == []
+
+    def test_n_trading_days_ago_returns_trading_day(self, memory_db):
+        result = _n_trading_days_ago(3)
+        result_date = date.fromisoformat(result)
+        assert is_trading_day(result_date), f"{result} should be a trading day"
+
+    def test_symbol_appearances_holiday_gap(self, memory_db):
+        today = date.today()
+        if not is_trading_day(today):
+            return
+        cursor = date.today() - timedelta(days=1)
+        non_trading_count = 0
+        while cursor > date.today() - timedelta(days=10):
+            if not is_trading_day(cursor):
+                non_trading_count += 1
+            cursor -= timedelta(days=1)
+        if non_trading_count == 0:
+            return
+        holiday_date = None
+        cursor = date.today() - timedelta(days=1)
+        while cursor > date.today() - timedelta(days=10):
+            if not is_trading_day(cursor):
+                holiday_date = cursor
+                break
+            cursor -= timedelta(days=1)
+        if holiday_date is None:
+            return
+        recent_trading = holiday_date - timedelta(days=1)
+        while recent_trading > date.today() - timedelta(days=10) and not is_trading_day(recent_trading):
+            recent_trading -= timedelta(days=1)
+        if not is_trading_day(recent_trading):
+            return
+        memory_db.execute(
+            "INSERT INTO appearances (symbol, name, date, rank, percent, value) VALUES (?, ?, ?, ?, ?, ?)",
+            ("300001", "Test", recent_trading.isoformat(), 1, 5.0, 10000),
+        )
+        memory_db.commit()
+        app = get_symbol_appearances(memory_db, "300001", 3)
+        assert len(app) == 1, f"Should find appearance on {recent_trading} despite holiday gap (3 trading day lookback)"
 
 
 class TestSaveKline:

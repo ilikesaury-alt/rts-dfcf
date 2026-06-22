@@ -83,7 +83,7 @@ class TestAnalyzeNewFace:
         kline = _kline([1, 1, 1, 2, 3], volumes=[1.0]*5)
         result = analyze_new_face(_stock(percent=9.5), kline)
         assert result is not None
-        assert result.dimensions["new_face_today_pct"] == -15
+        assert result.dimensions["new_face_today_pct"] == -8
 
     def test_bottom_confirmed_gives_bonus(self):
         kline = _kline([-2, -1, 1, 1, 4], volumes=[0.8, 0.9, 1.5, 1.8, 2.2])

@@ -271,7 +271,7 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
     closes = [k["close"] for k in historical_kline]
     accumulated = sum(pcts[-5:])
 
-    if accumulated < 10:
+    if accumulated < 8:
         return None
 
     volumes = [k["volume"] for k in kline]

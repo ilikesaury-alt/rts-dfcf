@@ -116,9 +116,19 @@ def record_appearances(conn: sqlite3.Connection, symbols: list[dict]):
         conn.commit()
 
 
+def _n_trading_days_ago(n: int) -> str:
+    cursor = date.today()
+    trading_days = 0
+    while trading_days < n:
+        cursor -= timedelta(days=1)
+        if is_trading_day(cursor):
+            trading_days += 1
+    return cursor.isoformat()
+
+
 def get_symbol_appearances(conn: sqlite3.Connection, symbol: str, days: int) -> list[dict]:
     today = date.today().isoformat()
-    lookback = (date.today() - timedelta(days=days)).isoformat()
+    lookback = _n_trading_days_ago(days)
     cur = conn.execute(
         "SELECT date, rank, percent, value FROM appearances WHERE symbol = ? AND date >= ? AND date < ? ORDER BY date",
         (symbol, lookback, today),
