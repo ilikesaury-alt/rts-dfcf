@@ -23,16 +23,23 @@ def dimension_ic(conn: sqlite3.Connection, window_days: int = 30) -> dict:
     """Compute Information Coefficient (rank correlation) per dimension.
 
     For each scoring dimension, compute the rank correlation between the
-    dimension score and the forward 1d return.  A positive IC means the
-    dimension predicts returns in the expected direction.
+    dimension score and forward returns at 1d / 3d / 5d horizons.  A
+    positive IC means the dimension predicts returns in the expected
+    direction.
 
     Returns:
-        dict[dimension_name -> {ic, count, avg_score, avg_return}]
+        dict[dimension_name -> {
+            ic, ic_1d, ic_3d, ic_5d,      # rank correlation per horizon
+            count,                          # sample count
+            avg_score,                      # avg dimension contribution
+            avg_return_1d, avg_return_3d, avg_return_5d,
+        }]
+        `ic` is an alias for `ic_1d` for backward compatibility.
     """
     cutoff = (date.today() - timedelta(days=window_days)).isoformat()
 
     rows = conn.execute("""
-        SELECT score_breakdown, next_day_pct
+        SELECT score_breakdown, next_day_pct, fwd_3d, fwd_5d
         FROM recommendations
         WHERE next_day_pct IS NOT NULL
           AND score_breakdown IS NOT NULL
@@ -41,9 +48,10 @@ def dimension_ic(conn: sqlite3.Connection, window_days: int = 30) -> dict:
           AND date >= ?
     """, (cutoff,)).fetchall()
 
-    dim_scores: dict[str, list[tuple[float, float]]] = {}
+    dim_scores: dict[str, list[tuple[float, float, float | None, float | None]]] = {}
 
-    for breakdown_json, fwd_return in rows:
+    for row in rows:
+        breakdown_json, r1d, r3d, r5d = row
         try:
             dims = json.loads(breakdown_json)
         except (json.JSONDecodeError, TypeError):
@@ -55,25 +63,44 @@ def dimension_ic(conn: sqlite3.Connection, window_days: int = 30) -> dict:
         for dim, score in dims.items():
             if dim not in dim_scores:
                 dim_scores[dim] = []
-            dim_scores[dim].append((float(score), float(fwd_return)))
+            dim_scores[dim].append((float(score), float(r1d), r3d, r5d))
 
     result = {}
     for dim, pairs in dim_scores.items():
         if len(pairs) < _MIN_SAMPLE_SIZE:
             continue
-        scores, returns = zip(*pairs)
-        clipped_returns = _winsorize(list(returns))
-        ic_val = _spearman_rho(scores, clipped_returns)
+
+        scores = [p[0] for p in pairs]
+        r1d = [p[1] for p in pairs]
         avg_score = sum(scores) / len(scores)
-        avg_return = sum(returns) / len(returns)
-        result[dim] = {
-            "ic": round(ic_val, 3),
+
+        def _ic_for(scores, returns):
+            valid = [(s, r) for s, r in zip(scores, returns) if r is not None]
+            if len(valid) < _MIN_SAMPLE_SIZE:
+                return None, None
+            sc, rt = zip(*valid)
+            clipped = _winsorize(list(rt))
+            return _spearman_rho(sc, clipped), sum(rt) / len(rt)
+
+        ic_1d, avg_r1d = _ic_for(scores, r1d)
+        ic_3d, avg_r3d = _ic_for(scores, [p[2] for p in pairs])
+        ic_5d, avg_r5d = _ic_for(scores, [p[3] for p in pairs])
+
+        entry = {
+            "ic": round(ic_1d, 3) if ic_1d is not None else None,
+            "ic_1d": round(ic_1d, 3) if ic_1d is not None else None,
+            "ic_3d": round(ic_3d, 3) if ic_3d is not None else None,
+            "ic_5d": round(ic_5d, 3) if ic_5d is not None else None,
             "count": len(pairs),
             "avg_score": round(avg_score, 1),
-            "avg_return": round(avg_return, 3),
+            "avg_return_1d": round(avg_r1d, 3) if avg_r1d is not None else None,
+            "avg_return_3d": round(avg_r3d, 3) if avg_r3d is not None else None,
+            "avg_return_5d": round(avg_r5d, 3) if avg_r5d is not None else None,
         }
+        result[dim] = entry
 
-    return dict(sorted(result.items(), key=lambda x: -abs(x[1]["ic"])))
+    sort_key = lambda x: -abs(x[1].get("ic") or 0)
+    return dict(sorted(result.items(), key=sort_key))
 
 
 def weekly_report(conn: sqlite3.Connection, week_start: str, week_end: str) -> str:
@@ -114,8 +141,14 @@ def weekly_report(conn: sqlite3.Connection, week_start: str, week_end: str) -> s
         lines.append("")
         lines.append("  \u7ef4\u5ea6\u6548\u80fd (IC):")
         for dim, info in list(ic_data.items())[:8]:
-            icon = "\u2705" if info["ic"] > 0.1 else ("\u26a0\ufe0f" if info["ic"] > -0.05 else "\u274c")
-            lines.append(f"    {icon} {dim}: IC={info['ic']:+.3f} ({info['count']}\u6b21) \u5747\u5206{info['avg_score']:+.0f} \u5747\u6536\u76ca{info['avg_return']:+.2%}")
+            ic1 = info.get("ic")
+            ic3 = info.get("ic_3d")
+            ic5 = info.get("ic_5d")
+            ic3_str = f" 3d{ic3:+.3f}" if ic3 is not None else ""
+            ic5_str = f" 5d{ic5:+.3f}" if ic5 is not None else ""
+            icon = "\u2705" if ic1 is not None and ic1 > 0.1 else ("\u26a0\ufe0f" if ic1 is not None and ic1 > -0.05 else "\u274c")
+            ic1_str = f"{ic1:+.3f}" if ic1 is not None else "N/A"
+            lines.append(f"    {icon} {dim}: 1dIC={ic1_str}{ic3_str}{ic5_str} ({info['count']}\u6b21) \u5747\u5206{info['avg_score']:+.0f} 1d\u5747\u6536\u76ca{info['avg_return_1d']:+.2%}")
 
     # Best / worst recs
     best = conn.execute("""

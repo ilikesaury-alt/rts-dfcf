@@ -60,9 +60,9 @@ def _ma_bull_score(closes: list[float]) -> int:
     return _MA_BEAR_SCORE
 
 
-def _detect_gap_up(today_current: float, kline: list[dict]) -> tuple[float, int]:
+def _detect_gap_up(today_current: float, kline: list[dict], today_str: str | None = None) -> tuple[float, int]:
     yesterday_close = None
-    today_str = date.today().isoformat()
+    today_str = today_str or date.today().isoformat()
     for k in reversed(kline):
         if k["date"] != today_str:
             yesterday_close = k["close"]
@@ -90,7 +90,8 @@ def _vol_rank_combo_score(vol_ratio: float, rank_change: int) -> int:
 
 
 def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
-                     weight_overrides: dict | None = None) -> KlineSummary | None:
+                     weight_overrides: dict | None = None,
+                     today_str: str | None = None) -> KlineSummary | None:
     if not kline or len(kline) < 5:
         return None
 
@@ -101,7 +102,7 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
     if today_pct <= 0:
         return None
 
-    today_str = date.today().isoformat()
+    today_str = today_str or date.today().isoformat()
     historical_kline = [k for k in kline if k["date"] != today_str]
     pcts = [k["percent"] for k in historical_kline]
     closes = [k["close"] for k in historical_kline]
@@ -186,7 +187,7 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
     if vol_rank >= 12 and accumulated >= 20:
         score -= 10
 
-    gap_pct, gap_pts = _detect_gap_up(stock.current, kline)
+    gap_pct, gap_pts = _detect_gap_up(stock.current, kline, today_str)
     score += gap_pts
 
     if stock.value >= 10000:
@@ -255,7 +256,8 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
 
 
 def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
-                     weight_overrides: dict | None = None) -> KlineSummary | None:
+                     weight_overrides: dict | None = None,
+                     today_str: str | None = None) -> KlineSummary | None:
     if not kline or len(kline) < 5:
         return None
 
@@ -265,7 +267,7 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
     if today_pct <= 0:
         return None
 
-    today_str = date.today().isoformat()
+    today_str = today_str or date.today().isoformat()
     historical_kline = [k for k in kline if k["date"] != today_str]
     pcts = [k["percent"] for k in historical_kline]
     closes = [k["close"] for k in historical_kline]
@@ -328,7 +330,7 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
     vol_rank = _vol_rank_combo_score(vol_ratio, stock.rank_change)
     score += vol_rank
 
-    gap_pct, gap_pts = _detect_gap_up(stock.current, kline)
+    gap_pct, gap_pts = _detect_gap_up(stock.current, kline, today_str)
     score += gap_pts
 
     if stock.value >= 10000:

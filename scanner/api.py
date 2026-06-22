@@ -1,3 +1,4 @@
+import logging
 import threading
 import time
 from datetime import datetime
@@ -12,6 +13,8 @@ from scanner.config import (
     SENTIMENT_AVG_TOP10_COOL, SENTIMENT_PCT_GT5_COOL,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _request_with_retry(session: requests.Session, url: str,
                         max_retries: int = 3, base_delay: float = 1.0,
@@ -21,13 +24,36 @@ def _request_with_retry(session: requests.Session, url: str,
         try:
             _throttle()
             resp = session.get(url, timeout=timeout or REQUEST_TIMEOUT)
+
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("Retry-After", "5"))
+                wait = min(retry_after, 30)
+                if attempt < max_retries - 1:
+                    logger.warning("  限流(429) %s, 等待%d秒后重试", url[:60], wait)
+                    time.sleep(wait)
+                    continue
+                resp.raise_for_status()
+
+            if resp.status_code >= 500 and attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                logger.warning("  服务端错误(%d) %s, %.0f秒后重试", resp.status_code, url[:60], delay)
+                time.sleep(delay)
+                continue
+
             resp.raise_for_status()
             return resp
+
+        except requests.Timeout as e:
+            last_exc = e
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                logger.warning("  超时 %s, %.0f秒后重试", url[:60], delay)
+                time.sleep(delay)
         except requests.RequestException as e:
             last_exc = e
             if attempt < max_retries - 1:
                 delay = base_delay * (2 ** attempt)
-                print(f"  [重试] {url[:60]}... 第{attempt+1}次失败: {e}, {delay:.0f}s后重试")
+                logger.warning("  请求失败 %s, %.0f秒后重试: %s", url[:60], delay, e)
                 time.sleep(delay)
     raise last_exc  # type: ignore
 
@@ -46,6 +72,9 @@ def _throttle(min_interval: float = 0.15):
 
 
 _market_index_cache: tuple[float | None, float] = (None, 0)
+
+_kline_cache: dict[str, tuple[list[dict] | None, float]] = {}
+_kline_cache_ttl = 600
 
 
 def fetch_market_index(session: requests.Session) -> float | None:
@@ -119,7 +148,15 @@ def make_session() -> requests.Session:
 
 
 def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[dict] | None:
-    now_ms = int(time.time() * 1000)
+    now = time.time()
+
+    cached = _kline_cache.get(symbol)
+    if cached:
+        data, ts = cached
+        if data is not None and now - ts < _kline_cache_ttl:
+            return data
+
+    now_ms = int(now * 1000)
     begin_ms = now_ms - days * 86400 * 1000
     url = (
         f"https://stock.xueqiu.com/v5/stock/chart/kline.json"
@@ -128,7 +165,10 @@ def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[
     try:
         resp = _request_with_retry(session, url)
     except Exception as e:
-        print(f"  [!] K线获取失败 {symbol}: {e}")
+        logger.warning("K线获取失败 %s: %s", symbol, e)
+        if cached and cached[0] is not None:
+            logger.info("  返回缓存K线(%s, %.0fs前)", symbol, now - cached[1])
+            return cached[0]
         return None
     data = resp.json().get("data")
     if not data:
@@ -149,21 +189,59 @@ def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[
             "volume": item[1],
             "percent": item[7],
         })
+    _kline_cache[symbol] = (result, now)
     return result
 
 
+# Circuit breaker state for biaosheng
+_biaosheng_cb = {"failures": 0, "last_ok": 0.0, "cached": [], "cooldown_until": 0.0}
+
+
+def _biaosheng_circuit_breaker(raw_items: list[dict]) -> list[dict]:
+    now = time.time()
+    if raw_items:
+        _biaosheng_cb["failures"] = 0
+        _biaosheng_cb["last_ok"] = now
+        _biaosheng_cb["cached"] = raw_items
+        _biaosheng_cb["cooldown_until"] = 0
+        return raw_items
+
+    _biaosheng_cb["failures"] += 1
+    fails = _biaosheng_cb["failures"]
+
+    if fails >= 3 and _biaosheng_cb["cached"]:
+        cooldown = min(60 * (2 ** (fails - 3)), 600)
+        _biaosheng_cb["cooldown_until"] = now + cooldown
+        logger.warning("  [断路器] 飙升榜连续%d次失败, 进入%.0f秒熔断, 使用缓存数据",
+                       fails, cooldown)
+        return _biaosheng_cb["cached"]
+
+    if _biaosheng_cb["cached"]:
+        logger.info("  飙升榜获取失败, 返回缓存数据(%.0fs前)", now - _biaosheng_cb["last_ok"])
+        return _biaosheng_cb["cached"]
+
+    return []
+
+
 def fetch_biaosheng(session: requests.Session, size: int = 100) -> list[dict]:
-    ts = int(time.time() * 1000)
+    now = time.time()
+    if now < _biaosheng_cb["cooldown_until"]:
+        logger.info("  [断路器] 熔断中(剩余%.0fs), 使用缓存数据",
+                    _biaosheng_cb["cooldown_until"] - now)
+        return _biaosheng_cb.get("cached") or []
+
+    ts = int(now * 1000)
     url = (
         f"https://stock.xueqiu.com/v5/stock/hot_stock/new_list.json"
         f"?page=1&size={size}&order=desc&order_by=rank_change&type=10&_={ts}"
     )
     try:
         resp = _request_with_retry(session, url)
-        return resp.json().get("data", {}).get("items", [])
+        items = resp.json().get("data", {}).get("items", [])
+        return _biaosheng_circuit_breaker(items)
     except Exception as e:
-        print(f"  [!] 飙升榜获取失败: {e}")
-        return []
+        logger.error("飙升榜获取失败: %s", e)
+        return _biaosheng_circuit_breaker([])
 
 
 _market_cap_cache: dict[str, dict] = {}
