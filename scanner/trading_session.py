@@ -7,7 +7,6 @@ def is_trading_day(d: date) -> bool:
     if d.weekday() >= 5:
         return False
     if d.isoformat() in HOLIDAYS:
-        print(f"  [节假日] {d} 识别为假期，跳过交易")
         return False
     return True
 

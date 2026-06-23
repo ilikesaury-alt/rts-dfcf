@@ -11,12 +11,14 @@ class ScanSession:
         self.seen_today: set[str] = set()
         self.today_pool: dict[str, Candidate] = {}
         self.last_today: str = ""
+        self.list_presence: dict[str, int] = {}
 
     def reset_if_new_day(self, today_str: str | None = None) -> bool:
         today_str = today_str or date.today().isoformat()
         if today_str != self.last_today:
             self.seen_today.clear()
             self.today_pool.clear()
+            self.list_presence.clear()
             self.last_today = today_str
             return True
         return False
@@ -25,6 +27,19 @@ class ScanSession:
         was_first = symbol not in self.seen_today
         self.seen_today.add(symbol)
         return was_first
+
+    def update_list_presence(self, current_symbols: set[str]):
+        for sym in list(self.list_presence.keys()):
+            if sym in current_symbols:
+                self.list_presence[sym] += 1
+            else:
+                del self.list_presence[sym]
+        for sym in current_symbols:
+            if sym not in self.list_presence:
+                self.list_presence[sym] = 1
+
+    def get_list_streak(self, symbol: str) -> int:
+        return self.list_presence.get(symbol, 0)
 
     def update_pool(self, candidates: list[Candidate], now: datetime | None = None):
         now = now or datetime.now()

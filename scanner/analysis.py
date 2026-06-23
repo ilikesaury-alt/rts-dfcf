@@ -1,7 +1,9 @@
 from datetime import date
 
 from scanner.models import StockInfo, KlineSummary
-from scanner.config import NEW_FACE_WEIGHTS, MOMENTUM_WEIGHTS, MAX_NEW_FACE_TODAY_PCT
+from scanner.config import NEW_FACE_WEIGHTS, MOMENTUM_WEIGHTS, MAX_NEW_FACE_TODAY_PCT, \
+    VOL_RANK_VOL_THRESHOLD, VOL_RANK_STRONG_RC, VOL_RANK_MEDIUM_RC, VOL_RANK_WEAK_RC, \
+    VOL_RANK_STRONG_PTS, VOL_RANK_MEDIUM_PTS, VOL_RANK_WEAK_PTS
 from scanner.indicators import compute_rsi, compute_kdj, compute_macd
 
 # Weak-form filter thresholds
@@ -19,15 +21,6 @@ _GAP_UP_WEAK = 0.5
 _GAP_UP_STRONG_PTS = 8
 _GAP_UP_MEDIUM_PTS = 5
 _GAP_UP_WEAK_PTS = 3
-
-# Volume-rank combo thresholds
-_VOL_RANK_VOL_THRESHOLD = 1.15
-_VOL_RANK_STRONG = 2000
-_VOL_RANK_MEDIUM = 1000
-_VOL_RANK_WEAK = 500
-_VOL_RANK_STRONG_PTS = 15
-_VOL_RANK_MEDIUM_PTS = 12
-_VOL_RANK_WEAK_PTS = 8
 
 # Bottom confirmation thresholds
 _BOTTOM_MAX_LOSS = -3.0
@@ -80,12 +73,12 @@ def _detect_gap_up(today_current: float, kline: list[dict], today_str: str | Non
 
 
 def _vol_rank_combo_score(vol_ratio: float, rank_change: int) -> int:
-    if vol_ratio > _VOL_RANK_VOL_THRESHOLD and rank_change >= _VOL_RANK_STRONG:
-        return _VOL_RANK_STRONG_PTS
-    if vol_ratio > _VOL_RANK_VOL_THRESHOLD and rank_change >= _VOL_RANK_MEDIUM:
-        return _VOL_RANK_MEDIUM_PTS
-    if vol_ratio > _VOL_RANK_VOL_THRESHOLD and rank_change >= _VOL_RANK_WEAK:
-        return _VOL_RANK_WEAK_PTS
+    if vol_ratio > VOL_RANK_VOL_THRESHOLD and rank_change >= VOL_RANK_STRONG_RC:
+        return VOL_RANK_STRONG_PTS
+    if vol_ratio > VOL_RANK_VOL_THRESHOLD and rank_change >= VOL_RANK_MEDIUM_RC:
+        return VOL_RANK_MEDIUM_PTS
+    if vol_ratio > VOL_RANK_VOL_THRESHOLD and rank_change >= VOL_RANK_WEAK_RC:
+        return VOL_RANK_WEAK_PTS
     return 0
 
 
@@ -373,10 +366,6 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
             indicator_bonus -= W["rsi_bonus"]
         dims["momentum_rsi"] = round(rsi_val, 1)
     if kdj_val is not None:
-        if kdj_val["K"] > kdj_val["D"] and 50 <= kdj_val["K"] <= 80:
-            indicator_bonus += W["kdj_bonus"]
-        if kdj_val["J"] > 100:
-            indicator_bonus -= W["kdj_bonus"]
         dims["momentum_kdj"] = round(kdj_val["J"], 1)
     if macd_val is not None:
         if macd_val["histogram"] > 0:

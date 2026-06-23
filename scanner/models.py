@@ -48,5 +48,6 @@ class Candidate:
     time_bonus: int = 0
     market_sentiment_bonus: int = 0
     rps_bonus: int = 0
+    list_momentum_bonus: int = 0
     is_stale: bool = False
     stale_since: str = ""

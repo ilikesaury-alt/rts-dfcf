@@ -14,10 +14,12 @@ from scanner.config import (
     MARKET_STRONG_THRESHOLD, MARKET_WEAK_THRESHOLD,
     RPS_BONUS_HIGH, RPS_BONUS_MEDIUM, RPS_BONUS_LOW,
     RPS_PCTILE_HIGH, RPS_PCTILE_MEDIUM, RPS_PCTILE_LOW,
+    LIST_STREAK_BONUS_2, LIST_STREAK_BONUS_3, LIST_STREAK_BONUS_5,
+    TOP40_THRESHOLD, TOP40_BONUS, TOP40_ADVANCE_PER_10, TOP20_EXTRA,
 )
 from scanner.models import Candidate
 from scanner.sector import classify_sector, get_sector_clusters
-from scanner.rank_trend import rank_streak_score
+from scanner.rank_trend import rank_streak_score, rank_trajectory_score
 
 
 def apply_all_bonuses(
@@ -32,6 +34,7 @@ def apply_all_bonuses(
     time_bonus: int,
     sentiment_info: dict = None,
     rps_scores: dict[str, int] = None,
+    list_streaks: dict[str, int] = None,
 ):
     for c in candidates:
         _apply_sector_bonus(c, clusters)
@@ -40,6 +43,7 @@ def apply_all_bonuses(
         _apply_turnover_bonus(c, market_caps)
         _apply_sentiment_bonus(c, sentiment_info)
         _apply_rps_bonus(c, rps_scores)
+        _apply_list_momentum_bonus(c, list_streaks)
         c.rank_trend_bonus = rank_streak_score(c.stock.symbol)
         c.time_bonus = time_bonus
         _apply_gap_up_bonus(c)
@@ -103,6 +107,29 @@ def _apply_gap_up_bonus(c: Candidate):
         c.gap_up_bonus = c.kline.dimensions.get(gap_key, 0)
 
 
+def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None):
+    if not list_streaks:
+        return
+    streak = list_streaks.get(c.stock.symbol, 0)
+    traj = rank_trajectory_score(c.stock.symbol)
+    rank = c.stock.rank
+    bonus = 0
+    if streak >= 5:
+        bonus += LIST_STREAK_BONUS_5
+    elif streak >= 3:
+        bonus += LIST_STREAK_BONUS_3
+    elif streak >= 2:
+        bonus += LIST_STREAK_BONUS_2
+    bonus += traj
+    if rank <= TOP40_THRESHOLD:
+        bonus += TOP40_BONUS
+        advance = (TOP40_THRESHOLD - rank) // 10
+        bonus += advance * TOP40_ADVANCE_PER_10
+        if rank <= 20:
+            bonus += TOP20_EXTRA
+    c.list_momentum_bonus = bonus
+
+
 def _record_dimensions(
     c: Candidate,
     market_idx_pct: float | None,
@@ -134,6 +161,8 @@ def _record_dimensions(
         c.kline.dimensions["turnover_bonus"] = c.turnover_bonus
     if c.time_bonus:
         c.kline.dimensions["time_bonus"] = c.time_bonus
+    if c.list_momentum_bonus:
+        c.kline.dimensions["list_momentum_bonus"] = c.list_momentum_bonus
 
 
 def compute_time_bonus(now: datetime | None = None) -> int:
@@ -157,12 +186,11 @@ def compute_market_env_bonus(market_idx_pct: float | None) -> int:
 
 
 def accumulate_final_score(c: Candidate, market_env_bonus: int, opening_scores: dict[str, float | None]) -> int:
-    intra_bonus = int(round(c.intraday_score)) if c.intraday_score else 0
     opening = opening_scores.get(c.stock.symbol)
     opening_bonus = int(round(opening)) if opening is not None else 0
     total = (c.rank_trend_bonus + c.sector_bonus + c.live_vol_bonus
              + c.first_today_bonus + c.first_breakout_bonus
              + market_env_bonus + c.turnover_bonus + c.time_bonus
              + c.market_sentiment_bonus + c.rps_bonus
-             + intra_bonus + opening_bonus)
+             + c.list_momentum_bonus + opening_bonus)
     return total

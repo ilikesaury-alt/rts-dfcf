@@ -161,6 +161,8 @@ def scan(conn, session) -> tuple[list[Candidate], list[Candidate], list[Candidat
         for s in gem_stocks
     ])
 
+    session_state.update_list_presence({s.symbol for s in gem_stocks})
+
     klines = _fetch_all_klines(conn, session, gem_stocks)
 
     raw_new_faces: list[Candidate] = []
@@ -266,7 +268,8 @@ def scan(conn, session) -> tuple[list[Candidate], list[Candidate], list[Candidat
     apply_all_bonuses(all_candidates, gem_stocks, intraday_scores,
                       opening_scores, live_volumes, market_caps,
                       clusters, market_idx_pct, time_bonus,
-                      sentiment_info=sentiment_info, rps_scores=rps_scores)
+                      sentiment_info=sentiment_info, rps_scores=rps_scores,
+                      list_streaks=session_state.list_presence)
 
     for i, c in enumerate(all_candidates):
         extra = accumulate_final_score(c, market_env_bonus, opening_scores)
