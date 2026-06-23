@@ -5,6 +5,8 @@
 - **Run scanner**: `python limit_up_scanner.py` (default 60s interval) or `python limit_up_scanner.py 120` (custom seconds)
 - **Run tests**: `python -m pytest tests/ -v`
 - **Single test**: `python -m pytest tests/test_analysis.py::test_new_face -v`
+- **Run backtest**: `python backtest.py` or `python backtest.py --live`
+- **Grid search**: `python backtest.py --optimize`
 
 ## Project Structure
 
@@ -12,19 +14,27 @@ A-share stock momentum scanner monitoring Xueqiu's surge ranking API. Scores Chi
 
 ```
 limit_up_scanner.py   # Entry point - main loop
+backtest.py           # Backtest entry point (--live, --optimize, --params)
 scanner/
   orchestrator.py     # Core scan pipeline (~336 lines)
   analysis.py         # Scoring engines (new_face, momentum, pullback)
   config.py           # All thresholds, weights, dimension mappings
   api.py              # Xueqiu API calls (biaosheng, kline, market cap)
   database.py         # SQLite CRUD (appearances, kline, recommendations)
-  models.py           # StockInfo, Candidate dataclasses
+  models.py           # StockInfo, Candidate, KlineSummary dataclasses
+  indicators.py       # RSI, KDJ, MACD computation
   enhancer.py         # Bonus scoring (sector, sentiment, RPS, indicators)
   candidate_pool.py   # ScanSession with list presence tracking
   rank_trend.py       # RankTracker with trajectory scoring
   sector.py           # Sector cluster detection
   trading_session.py  # Trading hours/holidays
+  log_utils.py        # Log formatting utilities
+  chain_watch/        # Chain heat detection subsystem
   evolution/          # Self-evolution loop (tracker, analytics, optimizer)
+  backtest/           # Backtest engine (calls production scoring directly)
+    engine.py         # Data loading, forward returns, run_backtest()
+    grid_search.py    # Parameter grid search over flat weight dicts
+    reporting.py      # Sharpe, IC, drawdown, report generation
 tests/                # pytest test suite
 ```
 
@@ -32,7 +42,7 @@ tests/                # pytest test suite
 
 - **Database**: SQLite at `scanner.db` (auto-created). Tables: appearances, daily_kline, recommendations, sector_cache, parameter_snapshots
 - **Python version**: 3.12+ (uses f-strings, dataclasses, type hints)
-- **Dependencies**: `requests` only (sqlite3 is stdlib). No requirements.txt file.
+- **Dependencies**: `requests`, `wcwidth` (see `requirements.txt`)
 - **Trading hours**: Auto-sleeps outside 09:30-11:30 / 13:00-15:00 on trading days
 - **Encoding**: Windows-specific `sys.stdout.reconfigure(encoding="utf-8")` for Chinese output
 
@@ -40,8 +50,9 @@ tests/                # pytest test suite
 
 - Scanner filters: GEM stocks only (300xxx), excludes ST/*ST, HK stocks, market cap >300亿, price >100元
 - Three strategies: new_face (bottom breakout), momentum (trend continuation), pullback (reversion)
+- Backtest engine calls production `analyze_new_face`/`analyze_momentum` directly — no separate scoring logic
+- Backtest params are flat weight dicts matching `NEW_FACE_WEIGHTS`/`MOMENTUM_WEIGHTS` in config.py
 - Self-evolution loop adjusts scoring weights based on IC (Information Coefficient) analysis
-- Feishu push currently commented out in `limit_up_scanner.py:83`
 
 ## Testing
 

@@ -280,7 +280,94 @@
 
 | 级别 | 总数 | 已完成 | 剩余 |
 |------|:----:|:------:|:----:|
-| 🔴 Bug 修复 | 9 | 9 | 0 |
-| 🟡 策略/质量改进 | 12 | 12 | 0 |
-| 🟢 体验优化 | 4 | 4 | 0 |
+| 🔴 Bug 修复 | 14 | 14 | 0 |
+| 🟡 策略/质量改进 | 14 | 14 | 0 |
+| 🟢 体验优化/工程 | 10 | 10 | 0 |
 | 🆕 P0/P1/P2 迭代 | 10 | 3 | 7 |
+
+---
+
+## 2026-06-23 代码审查修复
+
+### 🔴 Bug 修复
+
+#### 41. [Bug] 回测引擎与 production 评分结构性分歧 ✅
+
+- **位置**: `scanner/backtest/scoring.py`（已删除）
+- **问题**: 独立重写的评分函数与 production `analysis.py` 存在多处结构性分歧:
+  - accumulated 评分：加法（backtest）vs 互斥 if/elif（production）
+  - bottom 检测：遗漏 `near_20d_low`、`v_shape_reversal`
+  - `no_heavy_loss` + `volume_surge` 同时 true 时：backtest 加 25 分，production 最多 15 分
+  - 缺少 gap-up、MA bull、RSI/KDJ/MACD、weak-form filter
+- **修复**: 删除 `scanner/backtest/scoring.py`，backtest 引擎直接调用 production `analyze_new_face`/`analyze_momentum`
+- **改动**: `scanner/backtest/engine.py`（重写）、`scanner/backtest/grid_search.py`（flat weight dicts）、`scanner/backtest/__init__.py`、`backtest.py`
+
+#### 42. [Bug] K 线缓存查询窗口过短 ✅
+
+- **位置**: `scanner/database.py:172`
+- **问题**: `get_cached_kline` 仅查 15 天，回填时大量有效数据缺失
+- **修复**: `timedelta(days=15)` → `timedelta(days=60)`
+
+#### 43. [Bug] 市值缓存跨周期脏读 ✅
+
+- **位置**: `scanner/api.py` — `fetch_market_caps_batch()`
+- **问题**: 300s 内存缓存导致不同扫描周期间市值数据混淆
+- **修复**: 删除全局缓存，每次 fresh fetch
+
+#### 44. [Bug] `get_stale_candidates` 日期不一致 ✅
+
+- **位置**: `scanner/candidate_pool.py:63`
+- **问题**: 用 `date.today()` 而非 `now.date()` 构造 stale_dt，mock 测试失败
+- **修复**: 改为 `now.date()`
+
+### 🟡 质量改进
+
+#### 45. [质量] analysis.py score/dims 逻辑三重重复 ✅
+
+- **位置**: `scanner/analysis.py`
+- **问题**: `analyze_new_face`、`analyze_momentum`、`analyze_pullback` 中 score/dims 计算高度相似
+- **修复**: 提取 `_score_today_pct()`、`_compute_new_face_indicators()`、`_compute_momentum_indicators()`
+
+#### 46. [质量] 回填重复 API 调用 ✅
+
+- **位置**: `scanner/evolution/tracker.py`
+- **问题**: `fallback_missing` 未去重，同一 symbol 多次 API 调用
+- **修复**: `symbols_to_fetch` 去重 + `kline_cache` dict
+
+#### 47. [质量] 循环内 import ✅
+
+- **位置**: `scanner/chain_watch/heat_detect.py:29`
+- **修复**: `match_chains` import 移至文件顶部
+
+### 🟢 工程改进
+
+#### 48. [工程] `scanner/logging.py` stdlib 同名 ✅
+
+- **修复**: 重命名为 `scanner/log_utils.py`
+
+#### 49. [工程] `scanner/feishu.py` 死代码 ✅
+
+- **修复**: 删除文件 + 移除 `limit_up_scanner.py` 中注释行
+
+#### 50. [工程] 缺少 requirements.txt ✅
+
+- **修复**: 新建 `requirements.txt`（`requests`, `wcwidth`）
+
+#### 51. [工程] display.py 行过长 ✅
+
+- **位置**: `scanner/display.py:133`
+- **修复**: 拆分为多行 f-string
+
+#### 52. [工程] query 脚本硬编码日期 ✅
+
+- **位置**: `query_today.py`、`query_summary.py`
+- **修复**: 添加 `--date` 参数
+
+#### 53. [工程] indicators.py 无测试覆盖 ✅
+
+- **修复**: 新增 `tests/test_indicators.py`（9 个 RSI/KDJ/MACD 测试）
+
+#### 54. [工程] 重复 YI 常量 ✅
+
+- **位置**: `scanner/backtest/engine.py`、`scanner/backtest/scoring.py`（已删除）
+- **修复**: 随 scoring.py 删除，engine.py 不再定义 YI

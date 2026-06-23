@@ -4,8 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-- **Run scanner**: `python limit_up_scanner.py` (default 180s interval) or `python limit_up_scanner.py 120` (custom seconds)
-
+- **Run scanner**: `python limit_up_scanner.py` (default 60s interval) or `python limit_up_scanner.py 120` (custom seconds)
+- **Run tests**: `python -m pytest tests/ -v`
+- **Run backtest**: `python backtest.py` or `python backtest.py --live`
+- **Grid search**: `python backtest.py --optimize`
 - **Chain watch**: `python chain_watch.py` (single run) or `python chain_watch.py --interval 300` (every 5 min)
 - **Quick data check**: `python xueqiu_hot.py` (dump raw surge ranking)
 - **Self-evolution**: `python self_evolve.py` (performance report + IC dimension analysis)
@@ -33,8 +35,15 @@ A companion tool `chain_watch.py` monitors the same surge list for industrial ch
   → fetch K-line (DB cache or Xueqiu API, 45-day)
   → scoring (new_face → momentum → pullback → known_new_face)
   → enhance (sector cluster, rank trend, list momentum, sentiment, RPS, indicators)
-  → display + CSV log + Feishu push (optional)
+  → display + CSV log
 ```
+
+### Backtest (`backtest.py` → `scanner/backtest/`)
+
+- **Engine** (`engine.py`): Loads historical appearances + K-line from SQLite, calls production `analyze_new_face`/`analyze_momentum` directly — no separate scoring logic
+- **Grid search** (`grid_search.py`): Iterates over flat weight dict overrides (`NEW_FACE_WEIGHTS`/`MOMENTUM_WEIGHTS` keys) to find optimal parameters
+- **Params format**: `{"new_face": {"today_pct_2_6": 25, ...}, "momentum": {"accum_10_15": 19, ...}}`
+- **Usage**: `python backtest.py --optimize` or `python backtest.py --params custom.json --live`
 
 ### Data Flow (`limit_up_scanner.py`)
 
@@ -55,7 +64,7 @@ A companion tool `chain_watch.py` monitors the same surge list for industrial ch
    - **RPS relative strength**: Per-category ranking (within new_face or momentum) by 5-day accumulated return, top 20% get bonus
    - **Technical indicators**: RSI(6)/KDJ(9,3,3)/MACD(12,26,9) from K-line — oversold for new_face/pullback, trend confirmation for momentum
 6. **Disabled**: `intraday_score` (IC=-0.307) and `momentum_kdj` (IC=-0.369) — fetched but not scored
-7. **Output**: Terminal table (color-coded), CSV log (`logs/scan_YYYY-MM-DD.csv`), Feishu push (currently commented out)
+7. **Output**: Terminal table (color-coded), CSV log (`logs/scan_YYYY-MM-DD.csv`)
 
 ### Persistence (`scanner.db` SQLite)
 
@@ -95,7 +104,7 @@ A companion tool `chain_watch.py` monitors the same surge list for industrial ch
 
 - `limit_up_scanner.py` — Main scanner entry point (~100 lines, orchestrator loop)
 - `scanner/orchestrator.py` — Core scan orchestration (~350 lines, pipeline in one file)
-- `scanner/analysis.py` — New Face, Momentum & Pullback scoring engines
+- `scanner/analysis.py` — New Face, Momentum & Pullback scoring engines (production functions called by backtest)
 - `scanner/config.py` — All thresholds, weights, and dimension-to-key mappings
 - `scanner/candidate_pool.py` — ScanSession with list_presence tracking
 - `scanner/enhancer.py` — Bonus application (sector, list momentum, sentiment, RPS, indicators)
@@ -103,13 +112,16 @@ A companion tool `chain_watch.py` monitors the same surge list for industrial ch
 - `scanner/api.py` — Xueqiu API interaction (biaosheng, kline, batch quote, intraday)
 - `scanner/indicators.py` — RSI/KDJ/MACD pure functions
 - `scanner/database.py` — SQLite CRUD (appearances, kline, recommendations, snapshots)
+- `scanner/log_utils.py` — Log formatting utilities
 - `scanner/evolution/` — Self-evolution: tracker, analytics (IC), optimizer
-- `xueqiu_hot.py` — Standalone surge-ranking data fetcher
+- `scanner/backtest/` — Backtest engine (calls production scoring directly), grid search, reporting
+- `backtest.py` — Backtest entry point (--live, --optimize, --params)
 - `self_evolve.py` — Self-evolution entry point (weekly tuning, backfill, IC analysis)
 - `scanner/chain_watch/` — Chain watch: chains.py (7-chain knowledge base), heat_detect.py, trend_score.py, display.py
 - `chain_watch.py` — Chain watch entry point (standalone, not part of scan loop)
 - `STRATEGY.md` — Full strategy documentation with scoring tables
 - `OPTIMIZE.md` — Iteration history and known issues
+- `requirements.txt` — Python dependencies (requests, wcwidth)
 
 ## Non-Trading Hours
 
