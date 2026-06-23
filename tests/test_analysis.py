@@ -1,6 +1,6 @@
 import pytest
 from scanner.models import StockInfo
-from scanner.analysis import analyze_new_face, analyze_momentum
+from scanner.analysis import analyze_new_face, analyze_momentum, analyze_pullback
 
 
 def _stock(percent=5.0, rank_change=1500, value=8000, current=15.0, rank=10):
@@ -143,5 +143,101 @@ class TestAnalyzeMomentum:
         result = analyze_momentum(_stock(percent=3, rank_change=2000, value=12000), kline)
         assert result is not None
         assert "momentum_ma_bull" in result.dimensions
+
+
+class TestAnalyzePullback:
+
+    def test_golden_path_returns_scored_candidate(self):
+        kline = _kline([1, 2, 1, 2, 3], volumes=[0.8, 0.9, 0.7, 1.5, 2.0])
+        result = analyze_pullback(_stock(percent=-2, rank_change=2500, value=12000), kline)
+        assert result is not None
+        assert result.score >= 18
+        assert "pullback_today_pct" in result.dimensions
+        assert "pullback_accumulated" in result.dimensions
+
+    def test_zero_to_two_pct_returns_scored(self):
+        kline = _kline([1, 2, 1, 2, 3])
+        result = analyze_pullback(_stock(percent=0), kline)
+        assert result is not None
+        assert "pullback_today_pct" in result.dimensions
+        assert result.dimensions["pullback_today_pct"] == 10  # today_neg1_0 weight (0 falls in -1 < pct <= 0)
+        
+        result = analyze_pullback(_stock(percent=1), kline)
+        assert result is not None
+        assert "pullback_today_pct" in result.dimensions
+        assert result.dimensions["pullback_today_pct"] == 5  # today_pos0_2 weight (0 < pct <= 2)
+        
+        result = analyze_pullback(_stock(percent=2), kline)
+        assert result is not None
+        assert "pullback_today_pct" in result.dimensions
+        assert result.dimensions["pullback_today_pct"] == 5  # today_pos0_2 weight
+
+    def test_short_kline_returns_none(self):
+        kline = _kline([1, 2])
+        assert analyze_pullback(_stock(percent=-2), kline) is None
+
+    def test_none_kline_returns_none(self):
+        assert analyze_pullback(_stock(percent=-2), None) is None
+
+    def test_over_2_pct_rejected(self):
+        kline = _kline([1, 1, 1, 2, 3], volumes=[1.0]*5)
+        assert analyze_pullback(_stock(percent=2.5), kline) is None
+
+    def test_under_neg8_pct_rejected(self):
+        kline = _kline([1, 1, 1, 2, 3], volumes=[1.0]*5)
+        assert analyze_pullback(_stock(percent=-8.5), kline) is None
+
+    def test_low_accumulated_rejected(self):
+        kline = _kline([0.5, 0.5, 0.5, 0.5, 0.5], volumes=[1.0]*5)  # sum = 2.5 < 5
+        assert analyze_pullback(_stock(percent=-2), kline) is None
+
+    def test_volume_scenarios(self):
+        kline = _kline([1, 2, 1, 2, 3], volumes=[1.0]*5)
+        result = analyze_pullback(_stock(percent=-2), kline)
+        assert result is not None
+        assert "pullback_volume" in result.dimensions
+
+    def test_ma_bull_bonus(self):
+        pcts = [0.5]*5 + [1.0]*5 + [1.5]*5 + [2.0, 2.0, 2.5, 3.0, 3.0]
+        kline = _kline(pcts)
+        result = analyze_pullback(_stock(percent=-2), kline)
+        assert result is not None
+        assert "pullback_ma_bull" in result.dimensions
+
+    def test_ma_support_bonus(self):
+        pcts = [0.5]*10 + [1.0]*5  # sideways near MA10, no bull alignment (ma5 <= ma10)
+        kline = _kline(pcts)
+        result = analyze_pullback(_stock(percent=-1), kline)
+        assert result is not None
+        assert "pullback_ma_support" in result.dimensions
+        assert "pullback_ma_bull" not in result.dimensions
+
+    def test_ma_broken_penalty(self):
+        pcts = [0.5]*10 + [1.0]*10 + [1.0]*5  # strong uptrend, 25 days
+        kline = _kline(pcts)
+        # Manually adjust last close to be below MA20 (keep percent positive for accumulated)
+        kline[-1]["close"] = kline[-1]["close"] * 0.85  # 15% drop, close < MA20
+        # today_pct is separate (passed via stock.percent)
+        result = analyze_pullback(_stock(percent=-5), kline)
+        assert result is not None
+        assert "pullback_ma_broken" in result.dimensions
+
+    def test_rank_bonus(self):
+        kline = _kline([1, 2, 1, 2, 3], volumes=[1.0]*5)
+        result = analyze_pullback(_stock(percent=-2, rank=5), kline)
+        assert result is not None
+        assert "pullback_rank" in result.dimensions
+
+    def test_rsi_indicator_bonus(self):
+        kline = _kline([1, 2, 1, 2, 3] + [1.0]*5, volumes=[1.0]*10)  # last 5 sum to 5
+        result = analyze_pullback(_stock(percent=-2), kline)
+        assert result is not None
+        assert "pullback_rsi" in result.dimensions
+
+    def test_macd_indicator_bonus(self):
+        kline = _kline([1, 2, 1, 2, 3] + [1.0]*30, volumes=[1.0]*35)  # 35 days for MACD (needs 34+)
+        result = analyze_pullback(_stock(percent=-2), kline)
+        assert result is not None
+        assert "pullback_macd" in result.dimensions
 
 

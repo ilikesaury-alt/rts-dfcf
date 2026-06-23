@@ -3,7 +3,7 @@ import sqlite3
 import copy
 from datetime import date, timedelta
 
-from scanner.config import MAX_MARKET_CAP, MAX_STOCK_PRICE, NEW_FACE_WEIGHTS, MOMENTUM_WEIGHTS
+from scanner.config import MAX_MARKET_CAP, MAX_STOCK_PRICE, NEW_FACE_WEIGHTS, MOMENTUM_WEIGHTS, PULLBACK_WEIGHTS
 from scanner.evolution.analytics import dimension_ic
 
 YI = 100_000_000
@@ -22,6 +22,9 @@ BASE_PARAMS = {
         "new_face_vol_rank": NEW_FACE_WEIGHTS.get("vol_rank_combo", 12),
         "new_face_value": NEW_FACE_WEIGHTS.get("value_gte_10000", 2),
         "new_face_ma_bull": NEW_FACE_WEIGHTS.get("ma_bull", 5),
+        "new_face_rsi": NEW_FACE_WEIGHTS.get("rsi_bonus", 3),
+        "new_face_kdj": NEW_FACE_WEIGHTS.get("kdj_bonus", 3),
+        "new_face_macd": NEW_FACE_WEIGHTS.get("macd_bonus", 3),
         "momentum_today_pct": MOMENTUM_WEIGHTS.get("today_pct_2_6", 26),
         "momentum_accumulated": MOMENTUM_WEIGHTS.get("accum_10_15", 19),
         "momentum_volume": MOMENTUM_WEIGHTS.get("vol_healthy", 5),
@@ -29,12 +32,17 @@ BASE_PARAMS = {
         "momentum_vol_rank": MOMENTUM_WEIGHTS.get("vol_rank_combo", 8),
         "momentum_value": MOMENTUM_WEIGHTS.get("value_gte_10000", 2),
         "momentum_ma_bull": MOMENTUM_WEIGHTS.get("ma_bull", 5),
-        "new_face_rsi": NEW_FACE_WEIGHTS.get("rsi_bonus", 3),
-        "new_face_kdj": NEW_FACE_WEIGHTS.get("kdj_bonus", 3),
-        "new_face_macd": NEW_FACE_WEIGHTS.get("macd_bonus", 3),
         "momentum_rsi": MOMENTUM_WEIGHTS.get("rsi_bonus", 3),
         "momentum_kdj": MOMENTUM_WEIGHTS.get("kdj_bonus", 3),
         "momentum_macd": MOMENTUM_WEIGHTS.get("macd_bonus", 3),
+        "pullback_today_pct": PULLBACK_WEIGHTS.get("today_neg3_neg1", 15),
+        "pullback_accumulated": PULLBACK_WEIGHTS.get("accum_10_20", 18),
+        "pullback_volume": PULLBACK_WEIGHTS.get("vol_healthy", 12),
+        "pullback_no_crash": PULLBACK_WEIGHTS.get("no_crash", 13),
+        "pullback_ma_support": PULLBACK_WEIGHTS.get("ma_support", 12),
+        "pullback_ma_broken": PULLBACK_WEIGHTS.get("ma_broken", -10),
+        "pullback_rsi": PULLBACK_WEIGHTS.get("rsi_oversold", 5),
+        "pullback_macd": PULLBACK_WEIGHTS.get("macd_bonus", 3),
     },
 }
 

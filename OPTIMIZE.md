@@ -371,3 +371,16 @@
 
 - **位置**: `scanner/backtest/engine.py`、`scanner/backtest/scoring.py`（已删除）
 - **修复**: 随 scoring.py 删除，engine.py 不再定义 YI
+
+---
+
+## 🔴 破坏性变更记录
+
+### 回测入场价变更：收盘价 → 次日开盘价
+
+- **位置**: `scanner/backtest/engine.py:_next_trading_open()` (L88-97)
+- **变更**: 回测入场价格从当日收盘价 (`entry_close`) 改为 **下一交易日开盘价** (`entry_price = _next_trading_open(...)`)
+- **影响**: 所有历史回测结果将发生显著变化，前向收益计算基准改变
+- **兼容**: 若无下一交易日 K 线数据，回退使用收盘价（向后兼容）
+- **相关**: `run_backtest()` L208, L215-217；`forward_return()` 使用 `entry_price`
+- **状态**: ✅ 已完成（需注意对比历史数据时的基准差异）

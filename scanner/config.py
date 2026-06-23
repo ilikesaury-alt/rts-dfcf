@@ -131,7 +131,6 @@ PULLBACK_WEIGHTS: dict[str, int] = {
     "macd_bonus": 3,
     "rank_top10": 8,
     "rank_top30": 5,
-    "streak_3": 5,
 }
 
 # Dimension-to-weight-key mapping for self-evolution overrides
@@ -165,7 +164,10 @@ PULLBACK_DIM_TO_WEIGHT_KEY: dict[str, str] = {
     "pullback_accumulated": "accum_10_20",
     "pullback_volume": "vol_healthy",
     "pullback_no_crash": "no_crash",
-    "pullback_ma": "ma_support",
+    "pullback_ma_support": "ma_support",
+    "pullback_ma_broken": "ma_broken",
+    "pullback_ma_bull": "ma_support",
+    "pullback_rank": "rank_top10",
     "pullback_rsi": "rsi_oversold",
     "pullback_macd": "macd_bonus",
 }

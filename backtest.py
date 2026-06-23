@@ -39,13 +39,13 @@ def main():
                 custom = json.load(f)
             nf_overrides = custom.get("new_face")
             mo_overrides = custom.get("momentum")
-        new_recs, momentum_recs = run_backtest(
+        new_recs, momentum_recs, pullback_recs = run_backtest(
             new_face_overrides=nf_overrides,
             momentum_overrides=mo_overrides,
             db_path=args.db, session=session, live=args.live,
         )
-        all_recs = new_recs + momentum_recs
-        report(all_recs, new_recs, momentum_recs)
+        all_recs = new_recs + momentum_recs + pullback_recs
+        report(all_recs, new_recs, momentum_recs, pullback_recs)
         if args.live:
             print("  Tip: 使用 --live 会调用雪球API，注意频率限制")
 

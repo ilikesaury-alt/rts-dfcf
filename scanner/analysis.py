@@ -97,26 +97,6 @@ def _score_today_pct(today_pct: float, W: dict, prefix: str) -> tuple[int, str, 
         return W["today_pct_6_8"], f"{prefix}_today_pct", W["today_pct_6_8"]
 
 
-def _compute_indicators(closes: list[float], historical_kline: list[dict],
-                        W: dict, prefix: str) -> tuple[int, dict]:
-    """Compute RSI/KDJ/MACD indicators and return (bonus_score, dims_dict)."""
-    rsi_val = compute_rsi(closes, period=6)
-    kdj_val = compute_kdj([k["high"] for k in historical_kline],
-                          [k["low"] for k in historical_kline], closes)
-    macd_val = compute_macd(closes)
-
-    bonus = 0
-    dims: dict[str, float] = {}
-
-    if rsi_val is not None:
-        dims[f"{prefix}_rsi"] = round(rsi_val, 1)
-    if kdj_val is not None:
-        dims[f"{prefix}_kdj"] = round(kdj_val["J"], 1)
-    if macd_val is not None:
-        dims[f"{prefix}_macd"] = round(macd_val["histogram"], 4)
-
-    return bonus, dims
-
 
 def _compute_new_face_indicators(closes: list[float], historical_kline: list[dict],
                                  W: dict) -> tuple[int, dict]:
@@ -420,26 +400,17 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
                         score=score, dimensions=dims, avg_volume=round(avg_vol, 2))
 
 
-def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
-                     weight_overrides: dict | None = None,
-                     today_str: str | None = None) -> KlineSummary | None:
-    if not kline or len(kline) < 5:
-        return None
-
-    W = {**PULLBACK_WEIGHTS, **(weight_overrides or {})}
-
-    today_pct = stock.percent
-    if today_pct <= -8 or today_pct > 2:
-        return None
-
+def _calc_pullback_base_metrics(kline: list[dict], today_str: str) -> tuple[list, list, float, float, float]:
+    """Calculate base metrics for pullback analysis.
+    
+    Returns:
+        (pcts, closes, accumulated, vol_ratio, avg_vol) tuple
+    """
     today_str = today_str or date.today().isoformat()
     historical_kline = [k for k in kline if k["date"] != today_str]
     pcts = [k["percent"] for k in historical_kline]
     closes = [k["close"] for k in historical_kline]
     accumulated = sum(pcts[-5:])
-
-    if accumulated < 5:
-        return None
 
     volumes = [k["volume"] for k in kline]
     vol_window = volumes[-11:-1] if len(volumes) >= 11 else volumes[:-1]
@@ -447,6 +418,15 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
     today_vol = volumes[-1] if volumes else 0
     vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
 
+    return pcts, closes, accumulated, vol_ratio, avg_vol
+
+
+def _score_pullback_today_pct(today_pct: float, W: dict) -> tuple[int, dict]:
+    """Score based on today's percentage change.
+    
+    Returns:
+        (score, dimensions) tuple
+    """
     score = 0
     dims: dict[str, int | float] = {}
 
@@ -464,6 +444,18 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
         score += W["today_pos0_2"]
         dims["pullback_today_pct"] = W["today_pos0_2"]
 
+    return score, dims
+
+
+def _score_pullback_accumulated(accumulated: float, W: dict) -> tuple[int, dict]:
+    """Score based on accumulated percentage change.
+    
+    Returns:
+        (score, dimensions) tuple
+    """
+    score = 0
+    dims: dict[str, int | float] = {}
+
     if accumulated < 10:
         score += W["accum_5_10"]
         dims["pullback_accumulated"] = W["accum_5_10"]
@@ -477,6 +469,18 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
         score += W["accum_gte_30"]
         dims["pullback_accumulated"] = W["accum_gte_30"]
 
+    return score, dims
+
+
+def _score_pullback_volume(vol_ratio: float, W: dict) -> tuple[int, dict]:
+    """Score based on volume ratio.
+    
+    Returns:
+        (score, dimensions) tuple
+    """
+    score = 0
+    dims: dict[str, int | float] = {}
+
     if vol_ratio < 0.4:
         score += W["vol_low"]
         dims["pullback_volume"] = W["vol_low"]
@@ -487,45 +491,162 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
         score += W["vol_surge"]
         dims["pullback_volume"] = W["vol_surge"]
     else:
-        dims["pullback_volume"] = 5
+        # 0.9 < vol_ratio <= 1.3: moderate volume, neutral for pullback
+        dims["pullback_volume"] = 0
 
+    return score, dims
+
+
+def _check_crash_day(pcts: list, W: dict) -> tuple[bool, int, dict]:
+    """Check if there's been a crash day in the last 5 days.
+    
+    Returns:
+        (has_crash_day, score, dimensions) tuple
+    """
     has_crash_day = any(p <= -7.0 for p in pcts[-5:])
+    score = 0
+    dims: dict[str, int | float] = {}
+
     if not has_crash_day:
-        score += W["no_crash"]
+        score = W["no_crash"]
         dims["pullback_no_crash"] = W["no_crash"]
 
-    ma10 = None
-    ma_support = False
-    ma_broken = False
-    ma_bull_extra = 0
+    return has_crash_day, score, dims
+
+
+def _analyze_pullback_ma(closes: list, W: dict) -> dict:
+    """Analyze moving averages for pullback strategy.
+    
+    Returns:
+        Dictionary containing MA analysis results
+    """
+    result = {
+        "ma10": None,
+        "ma_support": False,
+        "ma_broken": False,
+        "ma_bull_extra": 0,
+        "score": 0,
+        "dimensions": {}
+    }
+
     if len(closes) >= 10:
-        ma10 = sum(closes[-10:]) / 10
+        result["ma10"] = sum(closes[-10:]) / 10
         current_close = closes[-1]
-        pct_from_ma10 = (current_close - ma10) / ma10 * 100
+        pct_from_ma10 = (current_close - result["ma10"]) / result["ma10"] * 100
         if abs(pct_from_ma10) <= 2:
-            ma_support = True
-            score += W["ma_support"]
-            dims["pullback_ma"] = W["ma_support"]
+            result["ma_support"] = True
+            result["score"] += W["ma_support"]
+            result["dimensions"]["pullback_ma_support"] = W["ma_support"]
+
     if len(closes) >= 20:
         ma20 = sum(closes[-20:]) / 20
         if closes[-1] < ma20:
-            ma_broken = True
-            score += W["ma_broken"]
-            dims["pullback_ma"] = W["ma_broken"]
+            result["ma_broken"] = True
+            result["score"] += W["ma_broken"]
+            result["dimensions"]["pullback_ma_broken"] = W["ma_broken"]
         ma5 = sum(closes[-5:]) / 5
-        if ma10 is not None and ma5 > ma10 and ma10 > ma20:
-            ma_bull_extra = 5
-            score += ma_bull_extra
-            dims["pullback_ma_bull"] = ma_bull_extra
+        if result["ma10"] is not None and ma5 > result["ma10"] and result["ma10"] > ma20:
+            result["ma_bull_extra"] = 5
+            result["score"] += result["ma_bull_extra"]
+            result["dimensions"]["pullback_ma_bull"] = result["ma_bull_extra"]
     elif len(closes) >= 10:
-        if ma_support and ma10 is not None:
+        if result["ma_support"] and result["ma10"] is not None:
             ma5 = sum(closes[-5:]) / 5
-            if ma5 > ma10:
-                ma_bull_extra = 5
-                score += ma_bull_extra
-                dims["pullback_ma_bull"] = ma_bull_extra
-    if not ma_support and not ma_broken and ma_bull_extra == 0:
-        dims["pullback_ma"] = 0
+            if ma5 > result["ma10"]:
+                result["ma_bull_extra"] = 5
+                result["score"] += result["ma_bull_extra"]
+                result["dimensions"]["pullback_ma_bull"] = result["ma_bull_extra"]
+
+    if not result["ma_support"] and not result["ma_broken"] and result["ma_bull_extra"] == 0:
+        result["dimensions"]["pullback_ma_support"] = 0
+
+    return result
+
+
+def _score_pullback_indicators(closes: list, W: dict) -> tuple[int, dict]:
+    """Score based on technical indicators (RSI, MACD).
+    
+    Returns:
+        (score, dimensions) tuple
+    """
+    score = 0
+    dims: dict[str, int | float] = {}
+
+    rsi_val = compute_rsi(closes, period=6)
+    macd_val = compute_macd(closes)
+
+    if rsi_val is not None:
+        if rsi_val < 30:
+            score += W["rsi_oversold"]
+            dims["pullback_rsi"] = round(rsi_val, 1)
+        elif rsi_val < 45:
+            score += W["rsi_mid"]
+            dims["pullback_rsi"] = round(rsi_val, 1)
+        else:
+            dims["pullback_rsi"] = round(rsi_val, 1)
+
+    if macd_val is not None:
+        if macd_val["macd"] > macd_val["signal"]:
+            score += W["macd_bonus"]
+            dims["pullback_macd"] = round(macd_val["histogram"], 4)
+
+    return score, dims
+
+
+def _classify_pullback_trend(ma_support: bool, ma_broken: bool, today_pct: float) -> str:
+    """Classify the pullback trend based on conditions.
+    
+    Returns:
+        Trend classification string
+    """
+    if ma_support and not ma_broken and (-5 < today_pct < 0):
+        return "缩量回调"
+    elif ma_broken:
+        return "破位回调"
+    else:
+        return "回踩整理"
+
+
+def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
+                     weight_overrides: dict | None = None,
+                     today_str: str | None = None) -> KlineSummary | None:
+    if not kline or len(kline) < 5:
+        return None
+
+    W = {**PULLBACK_WEIGHTS, **(weight_overrides or {})}
+
+    today_pct = stock.percent
+    if today_pct <= -8 or today_pct > 2:
+        return None
+
+    pcts, closes, accumulated, vol_ratio, avg_vol = _calc_pullback_base_metrics(kline, today_str)
+
+    if accumulated < 5:
+        return None
+
+    score = 0
+    dims: dict[str, int | float] = {}
+
+    # Score each component
+    today_score, today_dims = _score_pullback_today_pct(today_pct, W)
+    score += today_score
+    dims.update(today_dims)
+
+    accum_score, accum_dims = _score_pullback_accumulated(accumulated, W)
+    score += accum_score
+    dims.update(accum_dims)
+
+    vol_score, vol_dims = _score_pullback_volume(vol_ratio, W)
+    score += vol_score
+    dims.update(vol_dims)
+
+    has_crash_day, crash_score, crash_dims = _check_crash_day(pcts, W)
+    score += crash_score
+    dims.update(crash_dims)
+
+    ma_result = _analyze_pullback_ma(closes, W)
+    score += ma_result["score"]
+    dims.update(ma_result["dimensions"])
 
     rank = stock.rank
     if rank <= 10:
@@ -535,31 +656,11 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
         score += W["rank_top30"]
         dims["pullback_rank"] = W["rank_top30"]
 
-    rsi_val = compute_rsi(closes, period=6)
-    macd_val = compute_macd(closes)
+    indicator_score, indicator_dims = _score_pullback_indicators(closes, W)
+    score += indicator_score
+    dims.update(indicator_dims)
 
-    indicator_bonus = 0
-    if rsi_val is not None:
-        if rsi_val < 30:
-            indicator_bonus += W["rsi_oversold"]
-            dims["pullback_rsi"] = round(rsi_val, 1)
-        elif rsi_val < 45:
-            indicator_bonus += W["rsi_mid"]
-            dims["pullback_rsi"] = round(rsi_val, 1)
-        else:
-            dims["pullback_rsi"] = round(rsi_val, 1)
-    if macd_val is not None:
-        if macd_val["macd"] > macd_val["signal"]:
-            indicator_bonus += W["macd_bonus"]
-            dims["pullback_macd"] = round(macd_val["histogram"], 4)
-    score += indicator_bonus
-
-    if ma_support and not has_crash_day and (-5 < today_pct < 0):
-        trend = "⬇️缩量回调"
-    elif ma_broken:
-        trend = "⚠️破位回调"
-    else:
-        trend = "⚖️回踩整理"
+    trend = _classify_pullback_trend(ma_result["ma_support"], ma_result["ma_broken"], today_pct)
 
     return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
                         volume_ratio=round(vol_ratio, 2), bottom_confirmed=not has_crash_day,
