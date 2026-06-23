@@ -9,7 +9,7 @@ from datetime import datetime
 import requests
 
 from scanner.config import REFRESH_INTERVAL, DB_PATH, NEW_FACE_LOOKBACK_DAYS
-from scanner.database import init_db, save_recommendations, update_recommendation_results, get_tracking_summary
+from scanner.database import init_db, save_recommendations
 from scanner.api import make_session
 from scanner.orchestrator import scan
 from scanner.trading_session import is_trading_time, seconds_until_next_session, next_session_label
@@ -36,11 +36,6 @@ def main():
     print(f"  新面孔: 过去{NEW_FACE_LOOKBACK_DAYS}天未出现 = 新 | 旧面孔: 出现过 = 旧")
     print(f"  交易时段: 09:30-11:30 / 13:00-15:00  |  非交易时段自动休眠")
     print(f"  {'='*60}")
-
-    tracking = get_tracking_summary(conn)
-    if tracking:
-        print(tracking)
-    print()
 
     last_ranks: dict[str, int] = {}
 
@@ -79,7 +74,6 @@ def main():
                 print(f"  ▶ 动量延续首选: {top_m.stock.name}({top_m.stock.symbol}) "
                       f"{top_m.stock.percent:+.2f}% | {top_m.kline.trend if top_m.kline else ''}")
             save_recommendations(conn, new_faces, momentum)
-            update_recommendation_results(conn, session)
 
         except requests.RequestException as e:
             print(f"\n  [!] 网络错误: {e}")

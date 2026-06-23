@@ -12,13 +12,12 @@ from scanner.config import (
     NEW_FACE_LOOKBACK_DAYS,
     NEW_FACE_MIN_SCORE, MOMENTUM_MIN_SCORE, PULLBACK_MIN_SCORE,
     MAX_STOCK_PRICE, MAX_MARKET_CAP,
-    NEW_FACE_DIM_TO_WEIGHT_KEY, MOMENTUM_DIM_TO_WEIGHT_KEY, PULLBACK_DIM_TO_WEIGHT_KEY,
     RPS_PCTILE_HIGH, RPS_PCTILE_MEDIUM, RPS_PCTILE_LOW,
     RPS_BONUS_HIGH, RPS_BONUS_MEDIUM, RPS_BONUS_LOW,
 )
 from scanner.database import (
     record_appearances, get_symbol_appearances, get_cached_kline,
-    save_kline_to_db, get_active_weights,
+    save_kline_to_db,
 )
 from scanner.models import StockInfo, Candidate
 from scanner.sector import get_sector_clusters
@@ -33,32 +32,6 @@ from scanner.enhancer import (
 )
 
 _session_state = ScanSession()
-
-
-def _load_weight_overrides(conn) -> tuple[dict, dict, dict, dict]:
-    active_weights_raw: dict = get_active_weights(conn)
-    new_face_overrides = {
-        NEW_FACE_DIM_TO_WEIGHT_KEY[k]: v
-        for k, v in active_weights_raw.items()
-        if k in NEW_FACE_DIM_TO_WEIGHT_KEY
-    }
-    momentum_overrides = {
-        MOMENTUM_DIM_TO_WEIGHT_KEY[k]: v
-        for k, v in active_weights_raw.items()
-        if k in MOMENTUM_DIM_TO_WEIGHT_KEY
-    }
-    pullback_overrides = {
-        PULLBACK_DIM_TO_WEIGHT_KEY[k]: v
-        for k, v in active_weights_raw.items()
-        if k in PULLBACK_DIM_TO_WEIGHT_KEY
-    }
-    thresholds = {
-        k: v for k, v in active_weights_raw.items()
-        if k in ("new_face_min_score", "momentum_min_score", "pullback_min_score")
-    }
-    if active_weights_raw:
-        print(f"  [进化] 加载活跃参数, 新面孔{len(new_face_overrides)} 动量{len(momentum_overrides)} 回调{len(pullback_overrides)} 维度已覆盖")
-    return new_face_overrides, momentum_overrides, pullback_overrides, thresholds
 
 
 def _fetch_all_klines(conn, session, stocks: list[StockInfo]) -> dict[str, list[dict] | None]:
@@ -136,11 +109,6 @@ def scan(conn, session) -> tuple[list[Candidate], list[Candidate], list[Candidat
     today = date.today().isoformat()
     session_state.reset_if_new_day(today)
 
-    new_face_overrides, momentum_overrides, pullback_overrides, thresholds = _load_weight_overrides(conn)
-    new_face_min = thresholds.get("new_face_min_score", NEW_FACE_MIN_SCORE)
-    momentum_min = thresholds.get("momentum_min_score", MOMENTUM_MIN_SCORE)
-    pullback_min = thresholds.get("pullback_min_score", PULLBACK_MIN_SCORE)
-
     raw = fetch_biaosheng(session)
     sentiment_info = compute_surge_sentiment(raw)
 
@@ -188,28 +156,28 @@ def scan(conn, session) -> tuple[list[Candidate], list[Candidate], list[Candidat
         kline = klines.get(stock.symbol)
 
         if is_new:
-            kline_summary = analyze_new_face(stock, kline, weight_overrides=new_face_overrides)
-            if kline_summary and kline_summary.score >= new_face_min:
+            kline_summary = analyze_new_face(stock, kline)
+            if kline_summary and kline_summary.score >= NEW_FACE_MIN_SCORE:
                 raw_new_faces.append(_build_candidate(
                     stock, kline_summary, "new_face", is_first_today, first_date, kline))
             else:
-                momentum_result = analyze_momentum(stock, kline, weight_overrides=momentum_overrides)
-                if momentum_result and momentum_result.score >= momentum_min:
+                momentum_result = analyze_momentum(stock, kline)
+                if momentum_result and momentum_result.score >= MOMENTUM_MIN_SCORE:
                     raw_momentum.append(_build_candidate(
                         stock, momentum_result, "momentum", is_first_today, first_date, kline))
         else:
-            momentum_result = analyze_momentum(stock, kline, weight_overrides=momentum_overrides)
-            if momentum_result and momentum_result.score >= momentum_min:
+            momentum_result = analyze_momentum(stock, kline)
+            if momentum_result and momentum_result.score >= MOMENTUM_MIN_SCORE:
                 raw_momentum.append(_build_candidate(
                     stock, momentum_result, "momentum", is_first_today, first_date, kline))
             else:
-                pullback_result = analyze_pullback(stock, kline, weight_overrides=pullback_overrides)
-                if pullback_result and pullback_result.score >= pullback_min:
+                pullback_result = analyze_pullback(stock, kline)
+                if pullback_result and pullback_result.score >= PULLBACK_MIN_SCORE:
                     raw_momentum.append(_build_candidate(
                         stock, pullback_result, "pullback", is_first_today, first_date, kline))
                 else:
-                    new_face_fallback = analyze_new_face(stock, kline, weight_overrides=new_face_overrides)
-                    if new_face_fallback and new_face_fallback.score >= new_face_min:
+                    new_face_fallback = analyze_new_face(stock, kline)
+                    if new_face_fallback and new_face_fallback.score >= NEW_FACE_MIN_SCORE:
                         raw_new_faces.append(_build_candidate(
                             stock, new_face_fallback, "known_new_face", is_first_today, first_date, kline))
 

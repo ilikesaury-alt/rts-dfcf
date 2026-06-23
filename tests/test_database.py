@@ -1,11 +1,10 @@
 import pytest
 import sqlite3
-import json
 from datetime import date, timedelta
 from scanner.database import (
     init_db, get_recent_symbols, record_appearances,
     get_symbol_appearances, save_kline_to_db, get_cached_kline,
-    save_recommendations, get_active_weights, _n_trading_days_ago,
+    save_recommendations, _n_trading_days_ago,
 )
 from scanner.models import StockInfo, Candidate, KlineSummary
 from scanner.trading_session import is_trading_day
@@ -55,16 +54,6 @@ def memory_db():
             fwd_3d REAL,
             fwd_5d REAL,
             score_breakdown TEXT
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS parameter_snapshots (
-            version TEXT PRIMARY KEY,
-            params_json TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            metrics_json TEXT,
-            notes TEXT,
-            active INTEGER DEFAULT 0
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_date ON appearances(date)")
@@ -179,20 +168,3 @@ class TestSaveRecommendations:
             "SELECT COUNT(*) FROM recommendations"
         ).fetchone()[0]
         assert count == 1
-
-
-class TestGetActiveWeights:
-    def test_no_active_snapshot(self, memory_db):
-        weights = get_active_weights(memory_db)
-        assert weights == {}
-
-    def test_active_snapshot_returns_weights(self, memory_db):
-        params = json.dumps({"weights": {"new_face_today_pct": 25}})
-        memory_db.execute(
-            "INSERT INTO parameter_snapshots (version, params_json, created_at, active) "
-            "VALUES (?, ?, ?, 1)",
-            ("v1", params, "2026-06-18"),
-        )
-        memory_db.commit()
-        weights = get_active_weights(memory_db)
-        assert weights == {"new_face_today_pct": 25}

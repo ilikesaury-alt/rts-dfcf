@@ -56,7 +56,7 @@ MORNING_END = dtime(11, 30)
 AFTERNOON_START = dtime(13, 0)
 AFTERNOON_END = dtime(15, 0)
 
-# Scoring weights — used by analysis.py, overridable via self-evolution
+# Scoring weights — used by analysis.py
 NEW_FACE_WEIGHTS: dict[str, int] = {
     "today_pct_2_6": 20,
     "today_pct_1_2": 10,
@@ -131,45 +131,6 @@ PULLBACK_WEIGHTS: dict[str, int] = {
     "macd_bonus": 3,
     "rank_top10": 8,
     "rank_top30": 5,
-}
-
-# Dimension-to-weight-key mapping for self-evolution overrides
-NEW_FACE_DIM_TO_WEIGHT_KEY: dict[str, str] = {
-    "new_face_today_pct": "today_pct_2_6",
-    "new_face_accumulated": "accum_neg5_10",
-    "new_face_bottom": "bottom_confirmed",
-    "new_face_volume": "volume_surge",
-    "new_face_value": "value_gte_10000",
-    "new_face_ma_bull": "ma_bull",
-    "new_face_vol_rank": "vol_rank_combo",
-    "new_face_rsi": "rsi_bonus",
-    "new_face_kdj": "kdj_bonus",
-    "new_face_macd": "macd_bonus",
-}
-MOMENTUM_DIM_TO_WEIGHT_KEY: dict[str, str] = {
-    "momentum_today_pct": "today_pct_2_6",
-    "momentum_accumulated": "accum_10_15",
-    "momentum_volume": "vol_healthy",
-    "momentum_no_crash": "no_crash",
-    "momentum_value": "value_gte_10000",
-    "momentum_ma_bull": "ma_bull",
-    "momentum_vol_rank": "vol_rank_combo",
-    "momentum_rsi": "rsi_bonus",
-    "momentum_kdj": "kdj_bonus",
-    "momentum_macd": "macd_bonus",
-}
-
-PULLBACK_DIM_TO_WEIGHT_KEY: dict[str, str] = {
-    "pullback_today_pct": "today_neg3_neg1",
-    "pullback_accumulated": "accum_10_20",
-    "pullback_volume": "vol_healthy",
-    "pullback_no_crash": "no_crash",
-    "pullback_ma_support": "ma_support",
-    "pullback_ma_broken": "ma_broken",
-    "pullback_ma_bull": "ma_support",
-    "pullback_rank": "rank_top10",
-    "pullback_rsi": "rsi_oversold",
-    "pullback_macd": "macd_bonus",
 }
 
 # Bonus constants

@@ -163,12 +163,11 @@ def _compute_momentum_indicators(closes: list[float], historical_kline: list[dic
 
 
 def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
-                     weight_overrides: dict | None = None,
                      today_str: str | None = None) -> KlineSummary | None:
     if not kline or len(kline) < 5:
         return None
 
-    W = {**NEW_FACE_WEIGHTS, **(weight_overrides or {})}
+    W = NEW_FACE_WEIGHTS
 
     today_pct = stock.percent
 
@@ -293,12 +292,11 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
 
 
 def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
-                     weight_overrides: dict | None = None,
                      today_str: str | None = None) -> KlineSummary | None:
     if not kline or len(kline) < 5:
         return None
 
-    W = {**MOMENTUM_WEIGHTS, **(weight_overrides or {})}
+    W = MOMENTUM_WEIGHTS
 
     today_pct = stock.percent
     if today_pct <= 0:
@@ -608,12 +606,11 @@ def _classify_pullback_trend(ma_support: bool, ma_broken: bool, today_pct: float
 
 
 def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
-                     weight_overrides: dict | None = None,
                      today_str: str | None = None) -> KlineSummary | None:
     if not kline or len(kline) < 5:
         return None
 
-    W = {**PULLBACK_WEIGHTS, **(weight_overrides or {})}
+    W = PULLBACK_WEIGHTS
 
     today_pct = stock.percent
     if today_pct <= -8 or today_pct > 2:

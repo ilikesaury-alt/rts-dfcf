@@ -57,16 +57,6 @@ def init_db() -> sqlite3.Connection:
             updated TEXT NOT NULL
         )
     """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS parameter_snapshots (
-            version TEXT PRIMARY KEY,
-            params_json TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            metrics_json TEXT,
-            notes TEXT,
-            active INTEGER DEFAULT 0
-        )
-    """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_date ON appearances(date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_sym ON appearances(symbol)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_date ON recommendations(date)")
@@ -239,85 +229,3 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: li
         except Exception as e:
             print(f"  [!] 保存推荐记录失败 {c.stock.symbol}: {e}")
     conn.commit()
-
-
-def _last_trading_day(conn: sqlite3.Connection) -> str:
-    today = date.today()
-    cur = conn.execute(
-        "SELECT MAX(date) FROM appearances WHERE date < ?",
-        (today.isoformat(),),
-    )
-    row = cur.fetchone()
-    if row and row[0]:
-        return row[0]
-    return (date.today() - timedelta(days=1)).isoformat()
-
-
-def update_recommendation_results(conn: sqlite3.Connection, session=None):
-    from scanner.evolution.tracker import backfill_outcomes
-    result = backfill_outcomes(conn, session)
-    if result["filled"] > 0:
-        print(f"  [进化] 填补 {result['filled']}/{result['total']} 条推荐 outcome")
-
-
-def get_active_weights(conn: sqlite3.Connection) -> dict:
-    row = conn.execute(
-        "SELECT params_json FROM parameter_snapshots WHERE active = 1 ORDER BY created_at DESC LIMIT 1"
-    ).fetchone()
-    if not row:
-        return {}
-    import json
-    try:
-        params = json.loads(row[0])
-        return params.get("weights", {})
-    except (json.JSONDecodeError, TypeError):
-        return {}
-
-
-def get_tracking_summary(conn: sqlite3.Connection) -> str:
-    from scanner.evolution.tracker import tracking_stats
-
-    stats = tracking_stats(conn)
-    all_stats = stats.get("all")
-    if not all_stats:
-        return ""
-
-    def fmt_wr(wins, total):
-        return f"{wins}/{total} ({wins*100//max(total,1)}%)" if total else "N/A"
-
-    lines = ["", "▎胜率统计 (累计)"]
-    for cat in ("new_face", "known_new_face", "momentum", "all"):
-        s = stats.get(cat)
-        if not s or s["total"] == 0:
-            continue
-        label = {"new_face": "新面孔", "known_new_face": "已知△", "momentum": "动量", "all": "合计"}.get(cat, cat)
-        w1 = fmt_wr(s["wins_1d"], s["total"])
-        w3 = fmt_wr(s["wins_3d"], s["total"])
-        w5 = fmt_wr(s["wins_5d"], s["total"])
-        a1 = f"{s['avg_1d']:+.2f}%" if s["avg_1d"] is not None else "N/A"
-        lines.append(f"  {label}: {s['total']}次  +1d{w1}  +3d{w3}  +5d{w5}  均收益{a1}")
-
-    yesterday = _last_trading_day(conn)
-    cur = conn.execute(
-        "SELECT name, category, score, percent, trend, next_day_pct, fwd_3d, fwd_5d "
-        "FROM recommendations WHERE date = ? ORDER BY score DESC LIMIT 8",
-        (yesterday,),
-    )
-    rows = cur.fetchall()
-    if rows:
-        lines.append("")
-        lines.append("▎昨日推荐明细")
-        for name, cat, score, pct, trend, nd_pct, f3, f5 in rows:
-            tag = {"new_face": "新", "known_new_face": "△", "momentum": "动量"}.get(cat, "?")
-            parts = [f"  {tag} {name} 评分{score} 入{pct:+.1f}%"]
-            if nd_pct is not None:
-                parts.append(f"+1d{nd_pct:+.1f}%{'✅' if nd_pct > 0 else '❌'}")
-            else:
-                parts.append("+1d待更新")
-            if f3 is not None:
-                parts.append(f"+3d{f3:+.1f}%")
-            if f5 is not None:
-                parts.append(f"+5d{f5:+.1f}%")
-            lines.append(" ".join(parts))
-
-    return "\n".join(lines)
