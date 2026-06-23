@@ -83,6 +83,105 @@ def _vol_rank_combo_score(vol_ratio: float, rank_change: int) -> int:
     return 0
 
 
+def _score_today_pct(today_pct: float, W: dict, prefix: str) -> tuple[int, str, int]:
+    """Score today_pct and return (total_score, dim_key, dim_value)."""
+    if 2 <= today_pct <= 6:
+        return W["today_pct_2_6"], f"{prefix}_today_pct", W["today_pct_2_6"]
+    elif today_pct < 0.5:
+        return W["today_pct_lt_0_5"], f"{prefix}_today_pct", W["today_pct_lt_0_5"]
+    elif today_pct < 1:
+        return W["today_pct_0_5_1"], f"{prefix}_today_pct", W["today_pct_0_5_1"]
+    elif today_pct < 2:
+        return W["today_pct_1_2"], f"{prefix}_today_pct", W["today_pct_1_2"]
+    else:
+        return W["today_pct_6_8"], f"{prefix}_today_pct", W["today_pct_6_8"]
+
+
+def _compute_indicators(closes: list[float], historical_kline: list[dict],
+                        W: dict, prefix: str) -> tuple[int, dict]:
+    """Compute RSI/KDJ/MACD indicators and return (bonus_score, dims_dict)."""
+    rsi_val = compute_rsi(closes, period=6)
+    kdj_val = compute_kdj([k["high"] for k in historical_kline],
+                          [k["low"] for k in historical_kline], closes)
+    macd_val = compute_macd(closes)
+
+    bonus = 0
+    dims: dict[str, float] = {}
+
+    if rsi_val is not None:
+        dims[f"{prefix}_rsi"] = round(rsi_val, 1)
+    if kdj_val is not None:
+        dims[f"{prefix}_kdj"] = round(kdj_val["J"], 1)
+    if macd_val is not None:
+        dims[f"{prefix}_macd"] = round(macd_val["histogram"], 4)
+
+    return bonus, dims
+
+
+def _compute_new_face_indicators(closes: list[float], historical_kline: list[dict],
+                                 W: dict) -> tuple[int, dict]:
+    """New face specific indicator scoring (oversold reversal signals)."""
+    rsi_val = compute_rsi(closes, period=6)
+    kdj_val = compute_kdj([k["high"] for k in historical_kline],
+                          [k["low"] for k in historical_kline], closes)
+    macd_val = compute_macd(closes)
+
+    bonus = 0
+    dims: dict[str, float] = {}
+
+    if rsi_val is not None:
+        if rsi_val < 20:
+            bonus += W["rsi_bonus"] * 2
+        elif rsi_val < 30:
+            bonus += W["rsi_bonus"]
+        dims["new_face_rsi"] = round(rsi_val, 1)
+    if kdj_val is not None:
+        if kdj_val["K"] < 20 and kdj_val["K"] > kdj_val["D"]:
+            bonus += W["kdj_bonus"]
+        if kdj_val["J"] < 0:
+            bonus += W["kdj_bonus"]
+        dims["new_face_kdj"] = round(kdj_val["J"], 1)
+    if macd_val is not None:
+        if macd_val["histogram"] > 0 and macd_val["histogram_prev"] <= 0:
+            bonus += W["macd_bonus"]
+        if macd_val["macd"] > macd_val["signal"]:
+            bonus += W["macd_bonus"]
+        dims["new_face_macd"] = round(macd_val["histogram"], 4)
+
+    return bonus, dims
+
+
+def _compute_momentum_indicators(closes: list[float], historical_kline: list[dict],
+                                 W: dict) -> tuple[int, dict]:
+    """Momentum specific indicator scoring (trend confirmation signals)."""
+    rsi_val = compute_rsi(closes, period=6)
+    kdj_val = compute_kdj([k["high"] for k in historical_kline],
+                          [k["low"] for k in historical_kline], closes)
+    macd_val = compute_macd(closes)
+
+    bonus = 0
+    dims: dict[str, float] = {}
+
+    if rsi_val is not None:
+        if 50 <= rsi_val <= 70:
+            bonus += W["rsi_bonus"]
+        elif rsi_val > 80:
+            bonus -= W["rsi_bonus"]
+        dims["momentum_rsi"] = round(rsi_val, 1)
+    if kdj_val is not None:
+        dims["momentum_kdj"] = round(kdj_val["J"], 1)
+    if macd_val is not None:
+        if macd_val["histogram"] > 0:
+            bonus += W["macd_bonus"]
+        if macd_val["histogram"] > 0 and macd_val["histogram"] > macd_val["histogram_prev"]:
+            bonus += W["macd_bonus"]
+        elif macd_val["histogram"] > 0 and macd_val["histogram"] < macd_val["histogram_prev"]:
+            bonus -= W["macd_bonus"]
+        dims["momentum_macd"] = round(macd_val["histogram"], 4)
+
+    return bonus, dims
+
+
 def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
                      weight_overrides: dict | None = None,
                      today_str: str | None = None) -> KlineSummary | None:
@@ -145,102 +244,68 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
     else:
         trend = "震荡整理"
 
-    score = 0
-    if 2 <= today_pct <= 6:
-        score += W["today_pct_2_6"]
-    elif today_pct < 0.5:
-        score += W["today_pct_lt_0_5"]
-    elif today_pct < 1:
-        score += W["today_pct_0_5_1"]
-    elif today_pct < 2:
-        score += W["today_pct_1_2"]
-    else:
-        score += W["today_pct_6_8"]
+    # Score and dims in one pass
+    dims: dict[str, int | float] = {}
 
+    today_score, today_dim_key, today_dim_val = _score_today_pct(today_pct, W, "new_face")
+    score = today_score
+    dims[today_dim_key] = today_dim_val
+
+    # Accumulated
     if -5 < accumulated <= 10:
-        score += W["accum_neg5_10"]
+        acc_score = W["accum_neg5_10"]
+        dims["new_face_accumulated"] = W["accum_neg5_10"]
     elif accumulated <= -5:
-        score += W["accum_lt_neg5"]
+        acc_score = W["accum_lt_neg5"]
+        dims["new_face_accumulated"] = W["accum_lt_neg5"]
     elif accumulated <= 15:
-        score += W["accum_10_15"]
+        acc_score = W["accum_10_15"]
+        dims["new_face_accumulated"] = W["accum_10_15"]
     elif accumulated < 25:
-        score += W["accum_15_25"]
+        acc_score = W["accum_15_25"]
+        dims["new_face_accumulated"] = W["accum_15_25"]
     else:
-        score += W["accum_gt_25"]
+        acc_score = W["accum_gt_25"]
+        dims["new_face_accumulated"] = W["accum_gt_25"]
+    score += acc_score
 
+    # Bottom / V-shape / volume
     if bottom_confirmed:
         score += W["bottom_confirmed"]
+        dims["new_face_bottom"] = W["bottom_confirmed"]
     elif v_shape_reversal:
         score += W["v_shape"]
     elif volume_surge:
         score += W["volume_surge"]
+        dims["new_face_volume"] = W["volume_surge"]
 
     vol_rank = _vol_rank_combo_score(vol_ratio, stock.rank_change)
     score += vol_rank
+    if vol_rank:
+        dims["new_face_vol_rank"] = vol_rank
     if vol_rank >= 12 and accumulated >= 20:
         score -= 10
 
     gap_pct, gap_pts = _detect_gap_up(stock.current, kline, today_str)
     score += gap_pts
+    if gap_pts:
+        dims["new_face_gap_up"] = gap_pts
 
     if stock.value >= 10000:
         score += W["value_gte_10000"]
+        dims["new_face_value"] = W["value_gte_10000"]
     elif stock.value >= 5000:
         score += W["value_gte_5000"]
+        dims["new_face_value"] = W["value_gte_5000"]
 
     ma_bull = _ma_bull_score(closes)
     score += ma_bull
+    if ma_bull:
+        dims["new_face_ma_bull"] = ma_bull
 
-    dims = {}
-    td = stock.percent
-    if 2 <= td <= 6: dims["new_face_today_pct"] = W["today_pct_2_6"]
-    elif td < 0.5: dims["new_face_today_pct"] = W["today_pct_lt_0_5"]
-    elif td < 1: dims["new_face_today_pct"] = W["today_pct_0_5_1"]
-    elif td < 2: dims["new_face_today_pct"] = W["today_pct_1_2"]
-    else: dims["new_face_today_pct"] = W["today_pct_6_8"]
-    if accumulated <= -5:
-        dims["new_face_accumulated"] = W["accum_lt_neg5"]
-    elif accumulated <= 10:
-        dims["new_face_accumulated"] = W["accum_neg5_10"]
-    elif accumulated <= 15:
-        dims["new_face_accumulated"] = W["accum_10_15"]
-    elif accumulated < 25:
-        dims["new_face_accumulated"] = W["accum_15_25"]
-    else:
-        dims["new_face_accumulated"] = W["accum_gt_25"]
-    if bottom_confirmed: dims["new_face_bottom"] = W["bottom_confirmed"]
-    if volume_surge: dims["new_face_volume"] = W["volume_surge"]
-    if vol_rank: dims["new_face_vol_rank"] = vol_rank
-    if gap_pts: dims["new_face_gap_up"] = gap_pts
-    if stock.value >= 10000: dims["new_face_value"] = W["value_gte_10000"]
-    elif stock.value >= 5000: dims["new_face_value"] = W["value_gte_5000"]
-    if ma_bull: dims["new_face_ma_bull"] = ma_bull
-
-    rsi_val = compute_rsi(closes, period=6)
-    kdj_val = compute_kdj([k["high"] for k in historical_kline],
-                          [k["low"] for k in historical_kline], closes)
-    macd_val = compute_macd(closes)
-
-    indicator_bonus = 0
-    if rsi_val is not None:
-        if rsi_val < 20:
-            indicator_bonus += W["rsi_bonus"] * 2
-        elif rsi_val < 30:
-            indicator_bonus += W["rsi_bonus"]
-        dims["new_face_rsi"] = round(rsi_val, 1)
-    if kdj_val is not None:
-        if kdj_val["K"] < 20 and kdj_val["K"] > kdj_val["D"]:
-            indicator_bonus += W["kdj_bonus"]
-        if kdj_val["J"] < 0:
-            indicator_bonus += W["kdj_bonus"]
-        dims["new_face_kdj"] = round(kdj_val["J"], 1)
-    if macd_val is not None:
-        if macd_val["histogram"] > 0 and macd_val["histogram_prev"] <= 0:
-            indicator_bonus += W["macd_bonus"]
-        if macd_val["macd"] > macd_val["signal"]:
-            indicator_bonus += W["macd_bonus"]
-        dims["new_face_macd"] = round(macd_val["histogram"], 4)
+    indicator_bonus, indicator_dims = _compute_new_face_indicators(closes, historical_kline, W)
     score += indicator_bonus
+    dims.update(indicator_dims)
 
     return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
                         volume_ratio=round(vol_ratio, 2), bottom_confirmed=bottom_confirmed,
@@ -275,41 +340,45 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
     vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
 
     score = 0
+    dims: dict[str, int | float] = {}
 
     if today_pct > 8:
         return None
 
-    if 2 <= today_pct <= 6:
-        score += W["today_pct_2_6"]
-    elif today_pct < 0.5:
-        score += W["today_pct_lt_0_5"]
-    elif today_pct < 1:
-        score += W["today_pct_0_5_1"]
-    elif today_pct < 2:
-        score += W["today_pct_1_2"]
-    else:
-        score += W["today_pct_6_8"]
+    today_score, today_dim_key, today_dim_val = _score_today_pct(today_pct, W, "momentum")
+    score += today_score
+    dims[today_dim_key] = today_dim_val
 
+    # Accumulated
     if accumulated >= 30:
         score += W["accum_gte_30"]
+        dims["momentum_accumulated"] = W["accum_gte_30"]
         trend = "涨多⚠️"
     elif accumulated >= 20:
         score += W["accum_20_30"]
+        dims["momentum_accumulated"] = W["accum_20_30"]
         trend = "动量延续"
     elif accumulated >= 15:
         score += W["accum_15_20"]
+        dims["momentum_accumulated"] = W["accum_15_20"]
         trend = "动量启动"
     else:
         score += W["accum_10_15"]
+        dims["momentum_accumulated"] = W["accum_10_15"]
         trend = "加速启动"
 
+    # Volume
     if 0.7 < vol_ratio < 2.0:
         score += W["vol_healthy"]
+        dims["momentum_volume"] = W["vol_healthy"]
     elif vol_ratio >= 2.0:
         score += W["vol_surge"]
+        dims["momentum_volume"] = W["vol_surge"]
     elif vol_ratio < 0.7:
         score += W["vol_low"]
+        dims["momentum_volume"] = W["vol_low"]
 
+    # Crash check
     if len(pcts) >= 2:
         has_crash_day = any(p <= _CRASH_THRESHOLD for p in pcts[-5:])
         recent_2_return = pcts[-2] + pcts[-1]
@@ -318,65 +387,33 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
         no_crash = True
     if no_crash:
         score += W["no_crash"]
+        dims["momentum_no_crash"] = W["no_crash"]
 
     vol_rank = _vol_rank_combo_score(vol_ratio, stock.rank_change)
     score += vol_rank
+    if vol_rank:
+        dims["momentum_vol_rank"] = vol_rank
 
     gap_pct, gap_pts = _detect_gap_up(stock.current, kline, today_str)
     score += gap_pts
+    if gap_pts:
+        dims["momentum_gap_up"] = gap_pts
 
     if stock.value >= 10000:
         score += W["value_gte_10000"]
+        dims["momentum_value"] = W["value_gte_10000"]
     elif stock.value >= 5000:
         score += W["value_gte_5000"]
+        dims["momentum_value"] = W["value_gte_5000"]
 
     ma_bull = _ma_bull_score(closes)
     score += ma_bull
+    if ma_bull:
+        dims["momentum_ma_bull"] = ma_bull
 
-    dims = {}
-    td = stock.percent
-    if 2 <= td <= 6: dims["momentum_today_pct"] = W["today_pct_2_6"]
-    elif td < 0.5: dims["momentum_today_pct"] = W["today_pct_lt_0_5"]
-    elif td < 1: dims["momentum_today_pct"] = W["today_pct_0_5_1"]
-    elif td < 2: dims["momentum_today_pct"] = W["today_pct_1_2"]
-    else: dims["momentum_today_pct"] = W["today_pct_6_8"]
-    if accumulated >= 30: dims["momentum_accumulated"] = W["accum_gte_30"]
-    elif accumulated >= 20: dims["momentum_accumulated"] = W["accum_20_30"]
-    elif accumulated >= 15: dims["momentum_accumulated"] = W["accum_15_20"]
-    else: dims["momentum_accumulated"] = W["accum_10_15"]
-    if 0.7 < vol_ratio < 2.0: dims["momentum_volume"] = W["vol_healthy"]
-    elif vol_ratio >= 2.0: dims["momentum_volume"] = W["vol_surge"]
-    elif vol_ratio < 0.7: dims["momentum_volume"] = W["vol_low"]
-    if no_crash: dims["momentum_no_crash"] = W["no_crash"]
-    if vol_rank: dims["momentum_vol_rank"] = vol_rank
-    if gap_pts: dims["momentum_gap_up"] = gap_pts
-    if stock.value >= 10000: dims["momentum_value"] = W["value_gte_10000"]
-    elif stock.value >= 5000: dims["momentum_value"] = W["value_gte_5000"]
-    if ma_bull: dims["momentum_ma_bull"] = ma_bull
-
-    rsi_val = compute_rsi(closes, period=6)
-    kdj_val = compute_kdj([k["high"] for k in historical_kline],
-                          [k["low"] for k in historical_kline], closes)
-    macd_val = compute_macd(closes)
-
-    indicator_bonus = 0
-    if rsi_val is not None:
-        if 50 <= rsi_val <= 70:
-            indicator_bonus += W["rsi_bonus"]
-        elif rsi_val > 80:
-            indicator_bonus -= W["rsi_bonus"]
-        dims["momentum_rsi"] = round(rsi_val, 1)
-    if kdj_val is not None:
-        dims["momentum_kdj"] = round(kdj_val["J"], 1)
-    if macd_val is not None:
-        if macd_val["histogram"] > 0:
-            indicator_bonus += W["macd_bonus"]
-        if macd_val["histogram"] > 0 and macd_val["histogram"] > macd_val["histogram_prev"]:
-            indicator_bonus += W["macd_bonus"]
-        elif macd_val["histogram"] > 0 and macd_val["histogram"] < macd_val["histogram_prev"]:
-            indicator_bonus -= W["macd_bonus"]
-        dims["momentum_macd"] = round(macd_val["histogram"], 4)
+    indicator_bonus, indicator_dims = _compute_momentum_indicators(closes, historical_kline, W)
     score += indicator_bonus
+    dims.update(indicator_dims)
 
     return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
                         volume_ratio=round(vol_ratio, 2), bottom_confirmed=no_crash,
@@ -457,6 +494,7 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
         score += W["no_crash"]
         dims["pullback_no_crash"] = W["no_crash"]
 
+    ma10 = None
     ma_support = False
     ma_broken = False
     ma_bull_extra = 0
@@ -475,12 +513,12 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
             score += W["ma_broken"]
             dims["pullback_ma"] = W["ma_broken"]
         ma5 = sum(closes[-5:]) / 5
-        if ma5 > ma10 and ma10 > ma20:
+        if ma10 is not None and ma5 > ma10 and ma10 > ma20:
             ma_bull_extra = 5
             score += ma_bull_extra
             dims["pullback_ma_bull"] = ma_bull_extra
     elif len(closes) >= 10:
-        if ma_support:
+        if ma_support and ma10 is not None:
             ma5 = sum(closes[-5:]) / 5
             if ma5 > ma10:
                 ma_bull_extra = 5

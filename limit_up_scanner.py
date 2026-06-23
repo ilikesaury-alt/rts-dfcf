@@ -14,7 +14,7 @@ from scanner.api import make_session
 from scanner.orchestrator import scan
 from scanner.trading_session import is_trading_time, seconds_until_next_session, next_session_label
 from scanner.display import display
-from scanner.logging import log_results
+from scanner.log_utils import log_results
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -80,7 +80,6 @@ def main():
                       f"{top_m.stock.percent:+.2f}% | {top_m.kline.trend if top_m.kline else ''}")
             save_recommendations(conn, new_faces, momentum)
             update_recommendation_results(conn, session)
-            # push_feishu(new_faces, momentum, len(all_gem), conn)
 
         except requests.RequestException as e:
             print(f"\n  [!] 网络错误: {e}")

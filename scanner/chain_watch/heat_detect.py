@@ -1,4 +1,4 @@
-from scanner.chain_watch.chains import match_chain_simple
+from scanner.chain_watch.chains import match_chain_simple, match_chains
 
 HEAT_HOT_THRESHOLD = 5
 HEAT_WARM_THRESHOLD = 3
@@ -26,7 +26,6 @@ def detect_hot_chains(raw_items: list[dict]) -> dict:
         chain_rank_changes[chain].append(abs(item.get("rank_change") or 0))
         chain_volumes[chain].append(item.get("volume", 0) or 0)
 
-        from scanner.chain_watch.chains import match_chains
         node_matches = match_chains(name)
         for _, _, is_bottleneck in node_matches:
             if is_bottleneck:

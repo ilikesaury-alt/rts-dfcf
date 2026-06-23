@@ -12,6 +12,7 @@ def backfill_outcomes(conn: sqlite3.Connection, session=None) -> dict:
     Safe to call every scan cycle – already-filled rows are skipped.
     """
     today_str = date.today().isoformat()
+    kline_cache: dict[str, list[dict] | None] = {}
 
     # First pass: find recs with next-day K-line data, use next-day open as entry
     missing = conn.execute("""
@@ -29,6 +30,9 @@ def backfill_outcomes(conn: sqlite3.Connection, session=None) -> dict:
 
     # Second pass: use API fallback for rows without cached data
     if session is not None:
+        from scanner.api import fetch_kline
+        from scanner.database import save_kline_to_db
+
         fallback_missing = conn.execute("""
             SELECT r.id, r.symbol, r.date
             FROM recommendations r
@@ -39,24 +43,30 @@ def backfill_outcomes(conn: sqlite3.Connection, session=None) -> dict:
               )
         """).fetchall()
 
-        for rec_id, symbol, rec_date in fallback_missing:
-            from scanner.api import fetch_kline
-            from scanner.database import save_kline_to_db
-
+        # Deduplicate symbols to avoid redundant API calls
+        symbols_to_fetch = list({row[1] for row in fallback_missing})
+        for symbol in symbols_to_fetch:
             try:
                 kline = fetch_kline(session, symbol)
                 if kline:
                     save_kline_to_db(conn, symbol, kline)
-                    next_day = None
-                    for k in kline:
-                        if k["date"] > rec_date:
-                            next_day = k["open"]
-                            break
-                    if next_day is not None:
-                        missing.append((rec_id, symbol, rec_date, next_day))
+                    kline_cache[symbol] = kline
+                else:
+                    kline_cache[symbol] = None
             except Exception as e:
                 print(f"  [!] 回填outcome API失败 {symbol}: {e}")
-                continue
+                kline_cache[symbol] = None
+
+        for rec_id, symbol, rec_date in fallback_missing:
+            kline = kline_cache.get(symbol)
+            if kline:
+                next_day = None
+                for k in kline:
+                    if k["date"] > rec_date:
+                        next_day = k["open"]
+                        break
+                if next_day is not None:
+                    missing.append((rec_id, symbol, rec_date, next_day))
 
     if not missing:
         return {"total": 0, "filled": 0, "skipped": 0}
@@ -76,19 +86,23 @@ def backfill_outcomes(conn: sqlite3.Connection, session=None) -> dict:
         """, (symbol, rec_date, today_str)).fetchall()
 
         if not future and session is not None:
-            try:
-                from scanner.api import fetch_kline
-                from scanner.database import save_kline_to_db
-                kline = fetch_kline(session, symbol)
-                if kline:
-                    save_kline_to_db(conn, symbol, kline)
-                    future = conn.execute("""
-                        SELECT date, close FROM daily_kline
-                        WHERE symbol = ? AND date > ? AND date <= ?
-                        ORDER BY date LIMIT 5
-                    """, (symbol, rec_date, today_str)).fetchall()
-            except Exception as e:
-                print(f"  [!] 回填outcome二次查询失败 {symbol}: {e}")
+            kline = kline_cache.get(symbol)
+            if kline is None and symbol not in kline_cache:
+                try:
+                    from scanner.api import fetch_kline
+                    from scanner.database import save_kline_to_db
+                    kline = fetch_kline(session, symbol)
+                    if kline:
+                        save_kline_to_db(conn, symbol, kline)
+                        kline_cache[symbol] = kline
+                except Exception as e:
+                    print(f"  [!] 回填outcome二次查询失败 {symbol}: {e}")
+            if kline:
+                future = conn.execute("""
+                    SELECT date, close FROM daily_kline
+                    WHERE symbol = ? AND date > ? AND date <= ?
+                    ORDER BY date LIMIT 5
+                """, (symbol, rec_date, today_str)).fetchall()
 
         if not future:
             skipped += 1

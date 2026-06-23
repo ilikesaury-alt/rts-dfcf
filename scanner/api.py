@@ -244,17 +244,7 @@ def fetch_biaosheng(session: requests.Session, size: int = 100) -> list[dict]:
         return _biaosheng_circuit_breaker([])
 
 
-_market_cap_cache: dict[str, dict] = {}
-_market_cap_cache_time: float = 0
-
-
 def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> dict[str, dict]:
-    global _market_cap_cache, _market_cap_cache_time
-
-    now = time.time()
-    if _market_cap_cache and now - _market_cap_cache_time < 300:
-        return _market_cap_cache
-
     if not symbols:
         return {}
 
@@ -285,13 +275,10 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
             print(f"  [!] 市值批量查询失败(批次{i // 50 + 1}): {e}")
             continue
 
-    if result:
-        _market_cap_cache = result
-        _market_cap_cache_time = now
-    elif not _market_cap_cache:
+    if not result:
         print(f"\n  [!] 警告: 市值数据获取失败，小而美规则暂不生效")
 
-    return result or _market_cap_cache
+    return result
 
 
 _INTRADAY_CACHE: dict[str, tuple[float | None, float]] = {}

@@ -54,7 +54,7 @@ class TestAnalyzeNewFace:
         assert result is not None
         assert result.score >= 20
         assert result.dimensions["new_face_today_pct"] == 20
-        assert "new_face_volume" in result.dimensions
+        assert "new_face_vol_rank" in result.dimensions
 
     def test_zero_or_negative_pct_returns_none(self):
         kline = _kline([1, 2, 1, 2, 3])

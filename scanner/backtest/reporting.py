@@ -44,11 +44,14 @@ def _ic(recs):
     return num / den if den > 0 else 0.0
 
 
-def report(all_recs, new_recs, momentum_recs, params):
+def report(all_recs, new_recs, momentum_recs, new_face_min=None, momentum_min=None):
+    from scanner.backtest.engine import DEFAULT_NEW_FACE_MIN, DEFAULT_MOMENTUM_MIN
+    nf_min = new_face_min if new_face_min is not None else DEFAULT_NEW_FACE_MIN
+    mo_min = momentum_min if momentum_min is not None else DEFAULT_MOMENTUM_MIN
     print(f"\n{'='*60}")
     print(f"回测报告")
     print(f"{'='*60}")
-    print(f"新面孔阈值: {params['new_face']['min_score']}  动量阈值: {params['momentum']['min_score']}")
+    print(f"新面孔阈值: {nf_min}  动量阈值: {mo_min}")
     print(f"回测天数: {len(set(r.date for r in all_recs))}")
     print(f"推荐总数: {len(all_recs)} (新面孔 {len(new_recs)}, 动量 {len(momentum_recs)})")
 

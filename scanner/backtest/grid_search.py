@@ -3,33 +3,30 @@ import os
 import sys
 from itertools import product
 
-from .engine import DEFAULT_PARAMS, run_backtest
+from scanner.config import NEW_FACE_WEIGHTS, MOMENTUM_WEIGHTS
+from .engine import run_backtest, DEFAULT_NEW_FACE_MIN, DEFAULT_MOMENTUM_MIN
 from .reporting import _avg
 
 
 GRID_PARAMS = {
-    "new_face.min_score": [15, 20, 25],
-    "new_face.today_pct.golden_min": [1.0, 2.0, 3.0],
-    "new_face.today_pct.golden_max": [5.0, 6.0, 8.0],
-    "new_face.accumulated.sweet_max": [10.0, 15.0, 20.0],
-    "new_face.accumulated.warn_threshold": [10.0, 15.0, 20.0],
-    "new_face.bottom.min_vol_ratio": [1.1, 1.3, 1.5],
+    "new_face.today_pct_2_6": [15, 20, 25],
+    "new_face.accum_neg5_10": [5, 10, 15],
+    "new_face.bottom_confirmed": [5, 10, 15],
+    "new_face.vol_rank_combo": [8, 12, 16],
+    "new_face.volume_surge": [10, 15, 20],
+    "momentum.today_pct_2_6": [20, 26, 32],
+    "momentum.accum_10_15": [15, 19, 23],
+    "momentum.vol_healthy": [3, 5, 8],
+    "momentum.no_crash": [10, 13, 16],
 }
 
 
-def _set_param(params, path, value):
+def _set_param(d, path, value):
     keys = path.split(".")
-    obj = params
+    obj = d
     for k in keys[:-1]:
         obj = obj[k]
     obj[keys[-1]] = value
-
-
-def _get_default(path):
-    obj = DEFAULT_PARAMS
-    for p in path.split("."):
-        obj = obj[p]
-    return obj
 
 
 def run_grid_search(db_path="scanner.db", session=None):
@@ -42,13 +39,22 @@ def run_grid_search(db_path="scanner.db", session=None):
     print(f"Grid search: {total} combinations over {len(keys)} params\n")
 
     for i, combo in enumerate(product(*values)):
-        params = copy.deepcopy(DEFAULT_PARAMS)
+        nf_overrides = {}
+        mo_overrides = {}
         for k, v in zip(keys, combo):
-            _set_param(params, k, v)
+            strategy, weight_key = k.split(".")
+            if strategy == "new_face":
+                nf_overrides[weight_key] = v
+            else:
+                mo_overrides[weight_key] = v
 
         old_stdout = sys.stdout
         sys.stdout = open(os.devnull, "w")
-        new_recs, old_recs = run_backtest(params, db_path)
+        new_recs, old_recs = run_backtest(
+            new_face_overrides=nf_overrides or None,
+            momentum_overrides=mo_overrides or None,
+            db_path=db_path,
+        )
         sys.stdout.close()
         sys.stdout = old_stdout
 
@@ -73,7 +79,7 @@ def run_grid_search(db_path="scanner.db", session=None):
     print(f"网格搜索结果 ({len(results)}组合) — 需配合 --live 验前向收益")
     print(f"{'='*60}")
 
-    default_tuple = tuple(_get_default(k) for k in keys)
+    default_tuple = tuple(GRID_PARAMS[k][1] for k in keys)  # middle value as default
     default_idx = next((i for i, r in enumerate(results)
                         if r["params"] == default_tuple), -1)
     if default_idx >= 0:

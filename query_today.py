@@ -1,10 +1,16 @@
 import sqlite3, json
 import sys
+import argparse
 from datetime import date, timedelta
 
 sys.stdout.reconfigure(encoding='utf-8')
+
+parser = argparse.ArgumentParser(description='查询今日推荐')
+parser.add_argument('--date', default=None, help='目标日期 (YYYY-MM-DD)，默认为昨日')
+args = parser.parse_args()
+
 conn = sqlite3.connect('scanner.db')
-target_date = (date.today() - timedelta(days=1)).isoformat()
+target_date = args.date or (date.today() - timedelta(days=1)).isoformat()
 # Check columns
 cur = conn.execute("PRAGMA table_info(recommendations)")
 cols = cur.fetchall()

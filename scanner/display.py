@@ -125,16 +125,26 @@ def display(new_faces: list[Candidate], momentum: list[Candidate],
         score_tag = f"{ANSI['BOLD']}{_pad(score_visible,4,'r')}{ANSI['RESET']}" if c.score >= 15 else _pad(score_visible,4,'r')
         trend_tag = k.trend if k else "N/A"
         delta_text, delta_color = _rank_delta_str(s.symbol, s.rank, last_ranks)
-        delta_display = f"{delta_color}{_pad(delta_text,6,'r')}{ANSI['RESET']}" if delta_color else _pad(delta_text,6,'r')
+        delta_display = (f"{delta_color}{_pad(delta_text,6,'r')}{ANSI['RESET']}"
+                         if delta_color else _pad(delta_text,6,'r'))
         bonus_str = _bonus_tag(c)
         cap_str = _fmt_market_cap(c.market_cap)
         val_str = f"{s.value:.0f}" if s.value else "N/A"
         if show_val:
-            print(f"  {s.rank:>4} {delta_display} {_pad(display_name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} {_pad(bonus_str,16)} {cap_str:>8} {val_str:>6}")
+            print(f"  {s.rank:>4} {delta_display} {_pad(display_name,10)} "
+                  f"{s.symbol:<12} {cur:>7} {pct_colored(s.percent)} "
+                  f"{_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} "
+                  f"{_pad(bonus_str,16)} {cap_str:>8} {val_str:>6}")
         else:
-            print(f"  {s.rank:>4} {delta_display} {_pad(display_name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} {_pad(bonus_str,16)} {cap_str:>8}")
+            print(f"  {s.rank:>4} {delta_display} {_pad(display_name,10)} "
+                  f"{s.symbol:<12} {cur:>7} {pct_colored(s.percent)} "
+                  f"{_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} "
+                  f"{_pad(bonus_str,16)} {cap_str:>8}")
 
-    hdr = f"  {_pad('排名',4,'r')} {_pad('变化',6,'r')} {_pad('名称',10)} {_pad('代码',12)} {_pad('现价',7,'r')} {_pad('涨幅',8,'r')} {_pad('趋势',14)} {_pad('5日累计',8,'r')} {_pad('量比',6,'r')} {_pad('评分',4,'r')} {_pad('增强',16)} {_pad('市值',8,'r')}"
+    hdr = (f"  {_pad('排名',4,'r')} {_pad('变化',6,'r')} {_pad('名称',10)} "
+           f"{_pad('代码',12)} {_pad('现价',7,'r')} {_pad('涨幅',8,'r')} "
+           f"{_pad('趋势',14)} {_pad('5日累计',8,'r')} {_pad('量比',6,'r')} "
+           f"{_pad('评分',4,'r')} {_pad('增强',16)} {_pad('市值',8,'r')}")
 
     print(f"\n{ANSI['GREEN']}◆ 新面孔 — 底部异动 / 刚启动{ANSI['RESET']}  (找: 今日小涨+日线底部放量)")
     print(hdr)

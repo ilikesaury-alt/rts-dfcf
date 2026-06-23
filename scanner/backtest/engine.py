@@ -1,18 +1,24 @@
 import sqlite3
 from datetime import date, timedelta
 
-from scanner.analysis import analyze_new_face, analyze_momentum
 from scanner.models import StockInfo
 from scanner.config import (
-    NEW_FACE_MIN_SCORE, MOMENTUM_MIN_SCORE, MAX_STOCK_PRICE,
+    NEW_FACE_WEIGHTS, MOMENTUM_WEIGHTS,
+    MAX_STOCK_PRICE,
     SECTOR_CLUSTER_BONUS_5, SECTOR_CLUSTER_BONUS_4,
     SECTOR_CLUSTER_BONUS_3, SECTOR_CLUSTER_BONUS_2,
 )
+from scanner.analysis import analyze_new_face, analyze_momentum
 from scanner.sector import classify_sector
 from scanner.trading_session import is_trading_day
 
 
 TOP_N_FILTER = 40
+
+DEFAULT_NEW_FACE_WEIGHTS = dict(NEW_FACE_WEIGHTS)
+DEFAULT_MOMENTUM_WEIGHTS = dict(MOMENTUM_WEIGHTS)
+DEFAULT_NEW_FACE_MIN = 18
+DEFAULT_MOMENTUM_MIN = 15
 
 
 def _n_trading_days_ago(n: int, from_date: date) -> str:
@@ -77,7 +83,14 @@ def forward_return(kline_list, entry_date, entry_close, days):
     return None
 
 
-def run_backtest(db_path="scanner.db"):
+def run_backtest(new_face_overrides=None, momentum_overrides=None,
+                 new_face_min=None, momentum_min=None,
+                 db_path="scanner.db", session=None, live=False):
+    nf_w = {**NEW_FACE_WEIGHTS, **(new_face_overrides or {})}
+    mo_w = {**MOMENTUM_WEIGHTS, **(momentum_overrides or {})}
+    nf_min = new_face_min if new_face_min is not None else DEFAULT_NEW_FACE_MIN
+    mo_min = momentum_min if momentum_min is not None else DEFAULT_MOMENTUM_MIN
+
     appearances_by_date, kline_by_symbol = load_data(db_path)
     sorted_dates = sorted(appearances_by_date.keys())
 
@@ -128,50 +141,48 @@ def run_backtest(db_path="scanner.db"):
             rank_change = prev_rank - stock_rank
 
             stock = StockInfo(
-                symbol=symbol,
-                name=name,
-                code=symbol[-6:] if len(symbol) >= 6 else symbol,
-                percent=today_pct,
-                current=entry_close,
-                value=value,
-                rank_change=rank_change,
-                rank=stock_rank,
+                symbol=symbol, name=name, code=symbol,
+                percent=today_pct, current=entry_close,
+                value=value, rank_change=rank_change, rank=stock_rank,
             )
 
-            kline_summary = None
+            score = 0
             cat = None
 
             if is_new:
-                kline_summary = analyze_new_face(stock, kline, today_str=current_date_str)
-                if kline_summary and kline_summary.score >= NEW_FACE_MIN_SCORE:
+                result = analyze_new_face(stock, kline, nf_w, current_date_str)
+                if result and result.score >= nf_min:
+                    score = result.score
                     cat = "new_face"
                 else:
-                    kline_summary = analyze_momentum(stock, kline, today_str=current_date_str)
-                    if kline_summary and kline_summary.score >= MOMENTUM_MIN_SCORE:
+                    result = analyze_momentum(stock, kline, mo_w, current_date_str)
+                    if result and result.score >= mo_min:
+                        score = result.score
                         cat = "momentum"
             else:
-                kline_summary = analyze_momentum(stock, kline, today_str=current_date_str)
-                if kline_summary and kline_summary.score >= MOMENTUM_MIN_SCORE:
+                result = analyze_momentum(stock, kline, mo_w, current_date_str)
+                if result and result.score >= mo_min:
+                    score = result.score
                     cat = "momentum"
                 else:
-                    kline_summary = analyze_new_face(stock, kline, today_str=current_date_str)
-                    if kline_summary and kline_summary.score >= NEW_FACE_MIN_SCORE:
+                    result = analyze_new_face(stock, kline, nf_w, current_date_str)
+                    if result and result.score >= nf_min:
+                        score = result.score
                         cat = "known_new_face"
 
-            if kline_summary is None or cat is None:
+            if cat is None:
                 continue
 
             rec = BacktestRec(
                 date=current_date_str, symbol=symbol, name=name,
                 rank=stock_rank, percent=today_pct, value=value,
-                category=cat, score=kline_summary.score, entry_close=entry_close,
+                category=cat, score=score, entry_close=entry_close,
             )
             rec.fwd_1d = forward_return(full_kline, current_date_str, entry_close, 1)
             rec.fwd_3d = forward_return(full_kline, current_date_str, entry_close, 3)
             rec.fwd_5d = forward_return(full_kline, current_date_str, entry_close, 5)
             recs.append(rec)
 
-    # Apply sector bonus (same logic as production enhancer)
     for rec in recs:
         sector = classify_sector(rec.name)
         if sector != "其他":
