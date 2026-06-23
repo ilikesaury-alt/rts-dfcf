@@ -7,12 +7,12 @@ from scanner.api import (
     analyze_intraday, analyze_opening_strength, estimate_live_volume,
     fetch_market_index, compute_surge_sentiment,
 )
-from scanner.analysis import analyze_new_face, analyze_momentum
+from scanner.analysis import analyze_new_face, analyze_momentum, analyze_pullback
 from scanner.config import (
     NEW_FACE_LOOKBACK_DAYS,
-    NEW_FACE_MIN_SCORE, MOMENTUM_MIN_SCORE,
+    NEW_FACE_MIN_SCORE, MOMENTUM_MIN_SCORE, PULLBACK_MIN_SCORE,
     MAX_STOCK_PRICE, MAX_MARKET_CAP,
-    NEW_FACE_DIM_TO_WEIGHT_KEY, MOMENTUM_DIM_TO_WEIGHT_KEY,
+    NEW_FACE_DIM_TO_WEIGHT_KEY, MOMENTUM_DIM_TO_WEIGHT_KEY, PULLBACK_DIM_TO_WEIGHT_KEY,
     RPS_PCTILE_HIGH, RPS_PCTILE_MEDIUM, RPS_PCTILE_LOW,
     RPS_BONUS_HIGH, RPS_BONUS_MEDIUM, RPS_BONUS_LOW,
 )
@@ -35,7 +35,7 @@ from scanner.enhancer import (
 _session_state = ScanSession()
 
 
-def _load_weight_overrides(conn) -> tuple[dict, dict, dict]:
+def _load_weight_overrides(conn) -> tuple[dict, dict, dict, dict]:
     active_weights_raw: dict = get_active_weights(conn)
     new_face_overrides = {
         NEW_FACE_DIM_TO_WEIGHT_KEY[k]: v
@@ -47,13 +47,18 @@ def _load_weight_overrides(conn) -> tuple[dict, dict, dict]:
         for k, v in active_weights_raw.items()
         if k in MOMENTUM_DIM_TO_WEIGHT_KEY
     }
+    pullback_overrides = {
+        PULLBACK_DIM_TO_WEIGHT_KEY[k]: v
+        for k, v in active_weights_raw.items()
+        if k in PULLBACK_DIM_TO_WEIGHT_KEY
+    }
     thresholds = {
         k: v for k, v in active_weights_raw.items()
-        if k in ("new_face_min_score", "momentum_min_score")
+        if k in ("new_face_min_score", "momentum_min_score", "pullback_min_score")
     }
     if active_weights_raw:
-        print(f"  [进化] 加载活跃参数, 新面孔{len(new_face_overrides)} 动量{len(momentum_overrides)} 维度已覆盖")
-    return new_face_overrides, momentum_overrides, thresholds
+        print(f"  [进化] 加载活跃参数, 新面孔{len(new_face_overrides)} 动量{len(momentum_overrides)} 回调{len(pullback_overrides)} 维度已覆盖")
+    return new_face_overrides, momentum_overrides, pullback_overrides, thresholds
 
 
 def _fetch_all_klines(conn, session, stocks: list[StockInfo]) -> dict[str, list[dict] | None]:
@@ -131,9 +136,10 @@ def scan(conn, session) -> tuple[list[Candidate], list[Candidate], list[Candidat
     today = date.today().isoformat()
     session_state.reset_if_new_day(today)
 
-    new_face_overrides, momentum_overrides, thresholds = _load_weight_overrides(conn)
+    new_face_overrides, momentum_overrides, pullback_overrides, thresholds = _load_weight_overrides(conn)
     new_face_min = thresholds.get("new_face_min_score", NEW_FACE_MIN_SCORE)
     momentum_min = thresholds.get("momentum_min_score", MOMENTUM_MIN_SCORE)
+    pullback_min = thresholds.get("pullback_min_score", PULLBACK_MIN_SCORE)
 
     raw = fetch_biaosheng(session)
     sentiment_info = compute_surge_sentiment(raw)
@@ -197,10 +203,15 @@ def scan(conn, session) -> tuple[list[Candidate], list[Candidate], list[Candidat
                 raw_momentum.append(_build_candidate(
                     stock, momentum_result, "momentum", is_first_today, first_date, kline))
             else:
-                new_face_fallback = analyze_new_face(stock, kline, weight_overrides=new_face_overrides)
-                if new_face_fallback and new_face_fallback.score >= new_face_min:
-                    raw_new_faces.append(_build_candidate(
-                        stock, new_face_fallback, "known_new_face", is_first_today, first_date, kline))
+                pullback_result = analyze_pullback(stock, kline, weight_overrides=pullback_overrides)
+                if pullback_result and pullback_result.score >= pullback_min:
+                    raw_momentum.append(_build_candidate(
+                        stock, pullback_result, "pullback", is_first_today, first_date, kline))
+                else:
+                    new_face_fallback = analyze_new_face(stock, kline, weight_overrides=new_face_overrides)
+                    if new_face_fallback and new_face_fallback.score >= new_face_min:
+                        raw_new_faces.append(_build_candidate(
+                            stock, new_face_fallback, "known_new_face", is_first_today, first_date, kline))
 
     all_raw = raw_new_faces + raw_momentum
     all_syms = list(set(c.stock.symbol for c in all_raw)
@@ -221,6 +232,8 @@ def scan(conn, session) -> tuple[list[Candidate], list[Candidate], list[Candidat
         c.circ_market_cap = cap_data.get("circ_market_cap", 0)
         if c.category in ("new_face", "known_new_face"):
             new_faces.append(c)
+        elif c.category == "pullback":
+            momentum.append(c)
         else:
             momentum.append(c)
 

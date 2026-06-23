@@ -192,11 +192,95 @@
 
 ---
 
+---
+
+## 2026-06-23 迭代（回调介入 + 列表动量 + 反指清理）
+
+### P0 — 新策略
+
+#### 29. [策略] 回调介入策略（低吸建仓） ✅
+
+- **位置**: `scanner/analysis.py:386-528`, `scanner/config.py:114-135,163-171`
+- **逻辑**: 从动量候补剩余池筛选今日回调（-8% < today_pct ≤ 2%）但5日累计 ≥ 5%的强势股回踩机会
+- **评分**: 今日跌幅 -3% ~ -1% 加分最高(+15)，累计 10%~20% 加分最高(+18)，缩量回踩 MA10 +12
+- **最低门槛**: 18 分（配置 `PULLBACK_MIN_SCORE`）
+- **显示**: `○` 青色 + `回` 标签
+- **自进化**: 已配置 `PULLBACK_DIM_TO_WEIGHT_KEY` 映射
+
+#### 30. [策略] 列表动量跟踪 ✅
+
+- **位置**: `scanner/candidate_pool.py:31-42` (list_presence), `scanner/enhancer.py:110-130` (list_momentum_bonus), `scanner/rank_trend.py:33-69` (trajectory_score)
+- **逻辑**: 追踪股票在飙升榜的连续出现次数 + 排名轨迹改善
+- **评分**: 连续5次+8、3次+5、2次+3、排名改善+2、Top40+3、Top20额外+2
+- **替代**: 取代分时强度成为主要动态加分维度
+- **接入**: 所有候选统一应用（含新面孔/动量/回调/known_new_face）
+
+### 🟡 反指维度清理
+
+#### 31. [反指] `intraday_score` 禁用 ✅
+
+- **位置**: `scanner/enhancer.py:188-196`
+- **IC**: -0.307（353样本，反指）
+- **修复**: `accumulate_final_score` 中不再累加 `intraday_score`，保留字段不变仅用于诊断
+
+#### 32. [反指] `momentum_kdj` 禁用 ✅
+
+- **位置**: `scanner/analysis.py` (动量评分块)
+- **IC**: -0.369
+- **修复**: 移除动量侧 KDJ 评分分支
+
+### 🔴 Bug 修复
+
+#### 33. [Bug] 新面孔今日涨幅 > 8% 不可过滤 ✅
+
+- **位置**: `scanner/config.py` (+ `MAX_NEW_FACE_TODAY_PCT = 8`), `scanner/analysis.py`
+- **问题**: 旧逻辑对 > 8% 只扣 15 分，仍可能因其他维度凑够 18 分上榜
+- **修复**: 硬拒绝 `today_pct > MAX_NEW_FACE_TODAY_PCT`，权重中删除 `today_pct_gt_8`
+
+#### 34. [Bug] 已删除的 `today_pct_gt_8` 权重仍被引用 ✅
+
+- **位置**: `scanner/config.py` (NEW_FACE_WEIGHTS & MOMENTUM_WEIGHTS)
+- **修复**: 删除两个权重字典中的 `today_pct_gt_8: -4` 条目，删除 analysis.py 中的死分支
+
+#### 35. [Bug] `trend = "仍在探底"` 死分支 ✅
+
+- **位置**: `scanner/analysis.py`
+- **修复**: 删除不可达代码块（已被硬拒绝 `accumulated < -8` 守卫拦截）
+
+#### 36. [Bug] 自进化 `new_face_min_score` 默认值与 config 不同步 ✅
+
+- **位置**: `scanner/evolution/optimizer.py`
+- **修复**: `BASE_PARAMS` 中的 `new_face_min_score` 由 20 → 18
+
+#### 37. [Bug] 推荐结果未落库 ✅
+
+- **位置**: `limit_up_scanner.py`
+- **修复**: 扫描循环中新增 `update_recommendation_results(conn, session)` 调用
+
+#### 38. [Bug] 列表 momentum 双重复计分（pullback） ✅
+
+- **位置**: `scanner/analysis.py:502-504`
+- **问题**: `analyze_pullback` 内部加了一次 `streak_3`，enhancer 又加了一次，回调票双倍拿分
+- **修复**: 删除 `list_streak` 参数及内部 streak 评分，统一走 enhancer
+
+### 🟢 质量改进
+
+#### 39. [质量] `vol_rank_combo` 阈值迁移到 config.py ✅
+
+- **位置**: `scanner/analysis.py` → `scanner/config.py`
+- **改动**: `_VOL_RANK_*` 常量从 analysis.py 移至 config.py 作为 `VOL_RANK_*`，函数读取 config 值
+- **目的**: 使自进化调参生效
+
+#### 40. [质量] 冗余 `if len(closes) >= 20` 嵌套 ✅
+
+- **位置**: `scanner/analysis.py:478`
+- **修复**: 删除始终为真的嵌套判断
+
 ## 改动量汇总
 
 | 级别 | 总数 | 已完成 | 剩余 |
 |------|:----:|:------:|:----:|
-| 🔴 Bug 修复 | 5 | 5 | 0 |
-| 🟡 策略/质量改进 | 8 | 8 | 0 |
+| 🔴 Bug 修复 | 9 | 9 | 0 |
+| 🟡 策略/质量改进 | 12 | 12 | 0 |
 | 🟢 体验优化 | 4 | 4 | 0 |
 | 🆕 P0/P1/P2 迭代 | 10 | 3 | 7 |

@@ -79,11 +79,10 @@ class TestAnalyzeNewFace:
         assert result is not None
         assert result.dimensions.get("new_face_accumulated", 0) < 0
 
-    def test_over_8_pct_gets_penalty_not_rejected(self):
+    def test_over_8_pct_rejected(self):
         kline = _kline([1, 1, 1, 2, 3], volumes=[1.0]*5)
         result = analyze_new_face(_stock(percent=9.5), kline)
-        assert result is not None
-        assert result.dimensions["new_face_today_pct"] == -8
+        assert result is None
 
     def test_bottom_confirmed_gives_bonus(self):
         kline = _kline([-2, -1, 1, 1, 4], volumes=[0.8, 0.9, 1.5, 1.8, 2.2])

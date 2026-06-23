@@ -1,7 +1,8 @@
 from datetime import date
 
 from scanner.models import StockInfo, KlineSummary
-from scanner.config import NEW_FACE_WEIGHTS, MOMENTUM_WEIGHTS, MAX_NEW_FACE_TODAY_PCT, \
+from scanner.config import NEW_FACE_WEIGHTS, MOMENTUM_WEIGHTS, PULLBACK_WEIGHTS, \
+    MAX_NEW_FACE_TODAY_PCT, \
     VOL_RANK_VOL_THRESHOLD, VOL_RANK_STRONG_RC, VOL_RANK_MEDIUM_RC, VOL_RANK_WEAK_RC, \
     VOL_RANK_STRONG_PTS, VOL_RANK_MEDIUM_PTS, VOL_RANK_WEAK_PTS
 from scanner.indicators import compute_rsi, compute_kdj, compute_macd
@@ -379,4 +380,149 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
 
     return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
                         volume_ratio=round(vol_ratio, 2), bottom_confirmed=no_crash,
+                        score=score, dimensions=dims, avg_volume=round(avg_vol, 2))
+
+
+def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
+                     weight_overrides: dict | None = None,
+                     today_str: str | None = None) -> KlineSummary | None:
+    if not kline or len(kline) < 5:
+        return None
+
+    W = {**PULLBACK_WEIGHTS, **(weight_overrides or {})}
+
+    today_pct = stock.percent
+    if today_pct <= -8 or today_pct > 2:
+        return None
+
+    today_str = today_str or date.today().isoformat()
+    historical_kline = [k for k in kline if k["date"] != today_str]
+    pcts = [k["percent"] for k in historical_kline]
+    closes = [k["close"] for k in historical_kline]
+    accumulated = sum(pcts[-5:])
+
+    if accumulated < 5:
+        return None
+
+    volumes = [k["volume"] for k in kline]
+    vol_window = volumes[-11:-1] if len(volumes) >= 11 else volumes[:-1]
+    avg_vol = sum(vol_window) / max(len(vol_window), 1)
+    today_vol = volumes[-1] if volumes else 0
+    vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
+
+    score = 0
+    dims: dict[str, int | float] = {}
+
+    if today_pct <= 0:
+        if today_pct > -1:
+            score += W["today_neg1_0"]
+            dims["pullback_today_pct"] = W["today_neg1_0"]
+        elif today_pct > -3:
+            score += W["today_neg3_neg1"]
+            dims["pullback_today_pct"] = W["today_neg3_neg1"]
+        else:
+            score += W["today_neg5_neg3"]
+            dims["pullback_today_pct"] = W["today_neg5_neg3"]
+    else:
+        score += W["today_pos0_2"]
+        dims["pullback_today_pct"] = W["today_pos0_2"]
+
+    if accumulated < 10:
+        score += W["accum_5_10"]
+        dims["pullback_accumulated"] = W["accum_5_10"]
+    elif accumulated < 20:
+        score += W["accum_10_20"]
+        dims["pullback_accumulated"] = W["accum_10_20"]
+    elif accumulated < 30:
+        score += W["accum_20_30"]
+        dims["pullback_accumulated"] = W["accum_20_30"]
+    else:
+        score += W["accum_gte_30"]
+        dims["pullback_accumulated"] = W["accum_gte_30"]
+
+    if vol_ratio < 0.4:
+        score += W["vol_low"]
+        dims["pullback_volume"] = W["vol_low"]
+    elif vol_ratio <= 0.9:
+        score += W["vol_healthy"]
+        dims["pullback_volume"] = W["vol_healthy"]
+    elif vol_ratio > 1.3:
+        score += W["vol_surge"]
+        dims["pullback_volume"] = W["vol_surge"]
+    else:
+        dims["pullback_volume"] = 5
+
+    has_crash_day = any(p <= -7.0 for p in pcts[-5:])
+    if not has_crash_day:
+        score += W["no_crash"]
+        dims["pullback_no_crash"] = W["no_crash"]
+
+    ma_support = False
+    ma_broken = False
+    ma_bull_extra = 0
+    if len(closes) >= 10:
+        ma10 = sum(closes[-10:]) / 10
+        current_close = closes[-1]
+        pct_from_ma10 = (current_close - ma10) / ma10 * 100
+        if abs(pct_from_ma10) <= 2:
+            ma_support = True
+            score += W["ma_support"]
+            dims["pullback_ma"] = W["ma_support"]
+    if len(closes) >= 20:
+        ma20 = sum(closes[-20:]) / 20
+        if closes[-1] < ma20:
+            ma_broken = True
+            score += W["ma_broken"]
+            dims["pullback_ma"] = W["ma_broken"]
+        ma5 = sum(closes[-5:]) / 5
+        if ma5 > ma10 and ma10 > ma20:
+            ma_bull_extra = 5
+            score += ma_bull_extra
+            dims["pullback_ma_bull"] = ma_bull_extra
+    elif len(closes) >= 10:
+        if ma_support:
+            ma5 = sum(closes[-5:]) / 5
+            if ma5 > ma10:
+                ma_bull_extra = 5
+                score += ma_bull_extra
+                dims["pullback_ma_bull"] = ma_bull_extra
+    if not ma_support and not ma_broken and ma_bull_extra == 0:
+        dims["pullback_ma"] = 0
+
+    rank = stock.rank
+    if rank <= 10:
+        score += W["rank_top10"]
+        dims["pullback_rank"] = W["rank_top10"]
+    elif rank <= 30:
+        score += W["rank_top30"]
+        dims["pullback_rank"] = W["rank_top30"]
+
+    rsi_val = compute_rsi(closes, period=6)
+    macd_val = compute_macd(closes)
+
+    indicator_bonus = 0
+    if rsi_val is not None:
+        if rsi_val < 30:
+            indicator_bonus += W["rsi_oversold"]
+            dims["pullback_rsi"] = round(rsi_val, 1)
+        elif rsi_val < 45:
+            indicator_bonus += W["rsi_mid"]
+            dims["pullback_rsi"] = round(rsi_val, 1)
+        else:
+            dims["pullback_rsi"] = round(rsi_val, 1)
+    if macd_val is not None:
+        if macd_val["macd"] > macd_val["signal"]:
+            indicator_bonus += W["macd_bonus"]
+            dims["pullback_macd"] = round(macd_val["histogram"], 4)
+    score += indicator_bonus
+
+    if ma_support and not has_crash_day and (-5 < today_pct < 0):
+        trend = "⬇️缩量回调"
+    elif ma_broken:
+        trend = "⚠️破位回调"
+    else:
+        trend = "⚖️回踩整理"
+
+    return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
+                        volume_ratio=round(vol_ratio, 2), bottom_confirmed=not has_crash_day,
                         score=score, dimensions=dims, avg_volume=round(avg_vol, 2))

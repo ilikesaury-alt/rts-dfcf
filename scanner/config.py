@@ -8,6 +8,7 @@ NEW_FACE_LOOKBACK_DAYS = 3
 # Normal mode thresholds
 NEW_FACE_MIN_SCORE = 18
 MOMENTUM_MIN_SCORE = 15
+PULLBACK_MIN_SCORE = 18
 
 YI = 100_000_000
 MAX_MARKET_CAP = 300 * YI
@@ -110,6 +111,29 @@ MOMENTUM_WEIGHTS: dict[str, int] = {
     "macd_bonus": 3,
 }
 
+PULLBACK_WEIGHTS: dict[str, int] = {
+    "today_pos0_2": 5,
+    "today_neg1_0": 10,
+    "today_neg3_neg1": 15,
+    "today_neg5_neg3": 8,
+    "accum_5_10": 10,
+    "accum_10_20": 18,
+    "accum_20_30": 8,
+    "accum_gte_30": -10,
+    "vol_healthy": 12,
+    "vol_low": 0,
+    "vol_surge": -8,
+    "no_crash": 13,
+    "ma_support": 12,
+    "ma_broken": -10,
+    "rsi_oversold": 5,
+    "rsi_mid": 3,
+    "macd_bonus": 3,
+    "rank_top10": 8,
+    "rank_top30": 5,
+    "streak_3": 5,
+}
+
 # Dimension-to-weight-key mapping for self-evolution overrides
 NEW_FACE_DIM_TO_WEIGHT_KEY: dict[str, str] = {
     "new_face_today_pct": "today_pct_2_6",
@@ -134,6 +158,16 @@ MOMENTUM_DIM_TO_WEIGHT_KEY: dict[str, str] = {
     "momentum_rsi": "rsi_bonus",
     "momentum_kdj": "kdj_bonus",
     "momentum_macd": "macd_bonus",
+}
+
+PULLBACK_DIM_TO_WEIGHT_KEY: dict[str, str] = {
+    "pullback_today_pct": "today_neg3_neg1",
+    "pullback_accumulated": "accum_10_20",
+    "pullback_volume": "vol_healthy",
+    "pullback_no_crash": "no_crash",
+    "pullback_ma": "ma_support",
+    "pullback_rsi": "rsi_oversold",
+    "pullback_macd": "macd_bonus",
 }
 
 # Bonus constants

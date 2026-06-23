@@ -94,6 +94,9 @@ def display(new_faces: list[Candidate], momentum: list[Candidate],
     clear_screen()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    pullback_list = [c for c in momentum if c.category == "pullback"]
+    pure_momentum = [c for c in momentum if c.category != "pullback"]
+
     print(f"{'='*96}")
     print(f"  创业板飙升榜监控  ({now})")
 
@@ -107,7 +110,7 @@ def display(new_faces: list[Candidate], momentum: list[Candidate],
     filter_info = f" | 过滤{filtered_large_cap}只" if filtered_large_cap else ""
     cap_count = sum(1 for c in all_c if c.market_cap > 0)
     cap_status = f"市值数据{cap_count}/{len(all_c)}" if all_c else "暂无候选"
-    print(f"  创业板共 {gem_total} 只 | 新{len(new_faces)}动{len(momentum)}{filter_info} | {sec_line} | {cap_status} | 每{interval}s刷新")
+    print(f"  创业板共 {gem_total} 只 | 新{len(new_faces)}动{len(pure_momentum)}回{len(pullback_list)}{filter_info} | {sec_line} | {cap_status} | 每{interval}s刷新")
     print(f"  小而美: 市值≤{int(MAX_MARKET_CAP/YI)}亿 股价≤{MAX_STOCK_PRICE}元")
     print(f"{'='*96}")
 
@@ -143,12 +146,19 @@ def display(new_faces: list[Candidate], momentum: list[Candidate],
     else:
         print(f"  {ANSI['YELLOW']}暂无新面孔{ANSI['RESET']}")
 
-    if momentum:
+    if pure_momentum:
         print(f"\n{ANSI['YELLOW']}◆ 动量延续 — 已启动 / 温和上攻{ANSI['RESET']}  (找: 累计涨幅已起+今日温和放量)")
         print(hdr)
         print(f"  {'-'*108}")
-        for c in momentum:
+        for c in pure_momentum:
             _print_row(c)
+
+    if pullback_list:
+        print(f"\n{ANSI['CYAN']}◆ 回调介入 — 强势股回踩{ANSI['RESET']}  (找: 近期动量+今日缩量回调)")
+        print(hdr)
+        print(f"  {'-'*108}")
+        for c in pullback_list:
+            _print_row(c, icon="○")
 
     if stale_candidates:
         print(f"\n{ANSI['YELLOW']}◆ 掉榜回顾 — 仍在观察 (保留{STALE_TIMEOUT_MINUTES}分钟){ANSI['RESET']}")
@@ -167,4 +177,4 @@ def display(new_faces: list[Candidate], momentum: list[Candidate],
     print(f"\n{'-'*96}")
     print(f"  {ANSI['GREEN']}新面孔{ANSI['RESET']}: 底部放量启动+涨幅2-6%")
     print(f"  {ANSI['YELLOW']}动量延续{ANSI['RESET']}: 累计涨幅10%+今日温和上攻")
-    print()
+    print(f"  {ANSI['CYAN']}回调介入{ANSI['RESET']}: 强势股回踩+缩量+未破位")
