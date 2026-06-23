@@ -12,6 +12,7 @@ MOMENTUM_MIN_SCORE = 15
 YI = 100_000_000
 MAX_MARKET_CAP = 300 * YI
 MAX_STOCK_PRICE = 100.0
+MAX_NEW_FACE_TODAY_PCT = 8
 
 FEISHU_WEBHOOK = os.environ.get("FEISHU_WEBHOOK", "")
 FEISHU_KEYWORD = "lichun"
@@ -43,7 +44,6 @@ NEW_FACE_WEIGHTS: dict[str, int] = {
     "today_pct_0_5_1": 5,
     "today_pct_lt_0_5": 2,
     "today_pct_6_8": 5,
-    "today_pct_gt_8": -8,
     "accum_neg5_10": 10,
     "accum_lt_neg5": -5,
     "accum_10_15": 5,
@@ -71,7 +71,6 @@ MOMENTUM_WEIGHTS: dict[str, int] = {
     "today_pct_0_5_1": 5,
     "today_pct_lt_0_5": 2,
     "today_pct_6_8": 5,
-    "today_pct_gt_8_skip": 0,
     "accum_10_15": 19,
     "accum_15_20": 10,
     "accum_20_30": 5,

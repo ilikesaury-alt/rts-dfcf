@@ -9,7 +9,7 @@ from datetime import datetime
 import requests
 
 from scanner.config import REFRESH_INTERVAL, DB_PATH, NEW_FACE_LOOKBACK_DAYS
-from scanner.database import init_db, save_recommendations, get_tracking_summary
+from scanner.database import init_db, save_recommendations, update_recommendation_results, get_tracking_summary
 from scanner.api import make_session
 from scanner.orchestrator import scan
 from scanner.trading_session import is_trading_time, seconds_until_next_session, next_session_label
@@ -79,6 +79,7 @@ def main():
                 print(f"  ▶ 动量延续首选: {top_m.stock.name}({top_m.stock.symbol}) "
                       f"{top_m.stock.percent:+.2f}% | {top_m.kline.trend if top_m.kline else ''}")
             save_recommendations(conn, new_faces, momentum)
+            update_recommendation_results(conn, session)
             # push_feishu(new_faces, momentum, len(all_gem), conn)
 
         except requests.RequestException as e:

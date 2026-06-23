@@ -1,7 +1,7 @@
 from datetime import date
 
 from scanner.models import StockInfo, KlineSummary
-from scanner.config import NEW_FACE_WEIGHTS, MOMENTUM_WEIGHTS
+from scanner.config import NEW_FACE_WEIGHTS, MOMENTUM_WEIGHTS, MAX_NEW_FACE_TODAY_PCT
 from scanner.indicators import compute_rsi, compute_kdj, compute_macd
 
 # Weak-form filter thresholds
@@ -102,6 +102,9 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
     if today_pct <= 0:
         return None
 
+    if today_pct > MAX_NEW_FACE_TODAY_PCT:
+        return None
+
     today_str = today_str or date.today().isoformat()
     historical_kline = [k for k in kline if k["date"] != today_str]
     pcts = [k["percent"] for k in historical_kline]
@@ -145,8 +148,6 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
         trend = "V型反转"
     elif no_heavy_loss:
         trend = "企稳回升"
-    elif accumulated < -8:
-        trend = "仍在探底"
     else:
         trend = "震荡整理"
 
@@ -159,8 +160,6 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
         score += W["today_pct_0_5_1"]
     elif today_pct < 2:
         score += W["today_pct_1_2"]
-    elif today_pct > 8:
-        score += W["today_pct_gt_8"]
     else:
         score += W["today_pct_6_8"]
 
@@ -204,7 +203,6 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
     elif td < 0.5: dims["new_face_today_pct"] = W["today_pct_lt_0_5"]
     elif td < 1: dims["new_face_today_pct"] = W["today_pct_0_5_1"]
     elif td < 2: dims["new_face_today_pct"] = W["today_pct_1_2"]
-    elif td > 8: dims["new_face_today_pct"] = W["today_pct_gt_8"]
     else: dims["new_face_today_pct"] = W["today_pct_6_8"]
     if accumulated <= -5:
         dims["new_face_accumulated"] = W["accum_lt_neg5"]
