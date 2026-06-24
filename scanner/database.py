@@ -194,3 +194,76 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: li
         except Exception as e:
             print(f"  [!] 保存推荐记录失败 {c.stock.symbol}: {e}")
     conn.commit()
+
+
+def init_industry_chain_tables() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chain_trend_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_id TEXT NOT NULL,
+            scan_time TEXT NOT NULL,
+            chain_name TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            score INTEGER NOT NULL,
+            stock_count INTEGER,
+            bottleneck_active INTEGER,
+            avg_rank_change REAL,
+            signals TEXT,
+            UNIQUE(scan_id, chain_name)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chain_stock_cache (
+            symbol TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            chain_name TEXT NOT NULL,
+            node_name TEXT,
+            is_bottleneck INTEGER DEFAULT 0,
+            updated TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chokepoint_recommendations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            time TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            name TEXT NOT NULL,
+            chain_name TEXT NOT NULL,
+            node_name TEXT,
+            is_bottleneck INTEGER DEFAULT 0,
+            chain_phase TEXT,
+            score INTEGER NOT NULL,
+            percent REAL,
+            current REAL,
+            rank INTEGER,
+            rank_change INTEGER,
+            signals TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_chr_date ON chokepoint_recommendations(date)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_chr_chain ON chokepoint_recommendations(chain_name)")
+    conn.commit()
+    return conn
+
+
+def init_cross_validation_tables() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS cross_validated_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            name TEXT NOT NULL,
+            level TEXT NOT NULL,
+            bonus INTEGER NOT NULL,
+            existing_category TEXT,
+            chain_name TEXT,
+            chain_phase TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cvs_date ON cross_validated_signals(date)")
+    conn.commit()
+    return conn

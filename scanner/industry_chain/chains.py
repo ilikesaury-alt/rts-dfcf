@@ -1,0 +1,412 @@
+CHAINS = {
+    "AI算力": {
+        "keywords": ["光模块", "CPO", "算力", "液冷", "光通信", "AI服务器",
+                     "GPU", "800G", "1.6T", "硅光", "MPO", "数据中心"],
+        "stock_names": ["中际旭创", "新易盛", "天孚通信", "光迅科技",
+                        "华工科技", "德科立", "源杰科技", "长光华芯",
+                        "太辰光", "博创科技", "联特科技", "剑桥科技",
+                        "铭普光磁", "兆龙互联", "立讯精密", "锐捷网络",
+                        "菲菱科思", "中贝通信", "润建股份", "奥飞数据"],
+        "nodes": [
+            {"name": "光芯片/器件", "kw": ["光芯片", "激光器", "探测器", "EML",
+                                           "VCSEL", "TEC", "透镜", "硅光"],
+             "level": "上游", "bottleneck": True, "weight": 3},
+            {"name": "光模块/连接", "kw": ["光模块", "MPO", "连接器", "FA",
+                                            "AWG", "WDM", "800G", "1.6T"],
+             "level": "中游", "bottleneck": False, "weight": 2},
+            {"name": "服务器/散热", "kw": ["服务器", "液冷", "散热", "交换机",
+                                            "数据中心", "算力", "AI服务器"],
+             "level": "下游", "bottleneck": False, "weight": 1},
+        ],
+        "flow": ["光芯片/器件", "光模块/连接", "服务器/散热"],
+    },
+    "半导体": {
+        "keywords": ["半导体", "芯片", "集成电路", "封测", "晶圆",
+                     "存储", "MCU", "模拟芯片", "功率半导体", "EDA",
+                     "IP", "IC"],
+        "stock_names": ["北方华创", "中微公司", "长电科技", "通富微电",
+                        "华大九天", "韦尔股份", "卓胜微", "兆易创新",
+                        "北京君正", "紫光国微", "士兰微", "华虹公司",
+                        "中芯国际", "沪硅产业", "寒武纪", "海光信息",
+                        "龙芯中科", "景嘉微", "澜起科技", "圣邦股份",
+                        "思瑞浦", "纳芯微", "复旦微电", "安集科技",
+                        "中船特气", "华特气体", "容大感光", "南大光电",
+                        "上海新阳", "鼎龙股份", "雅克科技", "江丰电子",
+                        "有研新材", "飞凯材料", "江波龙", "佰维存储",
+                        "朗科科技", "聚辰股份", "普冉股份", "东芯股份",
+                        "麦捷科技", "风华高科", "三环集团", "洁美科技",
+                        "精测电子", "长川科技", "华峰测控", "芯源微"],
+        "nodes": [
+            {"name": "设备/材料", "kw": ["设备", "材料", "光刻", "掩膜", "硅片",
+                                          "沉积", "刻蚀", "清洗", "检测",
+                                          "特种气体", "光刻胶"],
+             "level": "上游", "bottleneck": True, "weight": 3},
+            {"name": "设计/IP", "kw": ["设计", "EDA", "IP", "存储", "MCU",
+                                        "模拟", "射频", "SOC", "AI芯片"],
+             "level": "中游", "bottleneck": False, "weight": 2},
+            {"name": "封测/制造", "kw": ["封测", "封装", "测试", "先进封装",
+                                          "CoWoS", "HBM", "晶圆代工"],
+             "level": "下游", "bottleneck": False, "weight": 1},
+        ],
+        "flow": ["设备/材料", "设计/IP", "封测/制造"],
+    },
+    "新能源车": {
+        "keywords": ["新能源车", "智能驾驶", "激光雷达", "固态电池",
+                     "电驱", "热管理", "汽车电子", "域控", "智能座舱",
+                     "线控", "一体化压铸"],
+        "stock_names": ["比亚迪", "宁德时代", "拓普集团", "德赛西威",
+                        "华阳集团", "均胜电子", "伯特利", "保隆科技",
+                        "科博达", "星宇股份", "银轮股份", "三花智控",
+                        "旭升集团", "文灿股份", "沪光股份", "瑞鹄模具",
+                        "常熟汽饰", "新泉股份", "岱美股份", "经纬恒润",
+                        "中科创达", "光庭信息", "上声电子", "菱电电控"],
+        "nodes": [
+            {"name": "电池/材料", "kw": ["固态电池", "碳纳米管", "导电剂",
+                                          "高压", "锂电", "正极", "负极",
+                                          "电解液", "隔膜"],
+             "level": "上游", "bottleneck": True, "weight": 3},
+            {"name": "智能驾驶", "kw": ["智能驾驶", "激光雷达", "域控",
+                                          "智驾", "毫米波", "摄像头",
+                                          "智能座舱"],
+             "level": "中游", "bottleneck": False, "weight": 2},
+            {"name": "整车/零部件", "kw": ["整车", "电驱", "热管理",
+                                             "汽车电子", "线控", "一体化压铸"],
+             "level": "下游", "bottleneck": False, "weight": 1},
+        ],
+        "flow": ["电池/材料", "智能驾驶", "整车/零部件"],
+    },
+    "光伏储能": {
+        "keywords": ["光伏", "储能", "逆变器", "HJT", "钙钛矿",
+                     "TOPCon", "BC", "焊带", "银浆", "异质结"],
+        "stock_names": ["阳光电源", "隆基绿能", "通威股份", "晶澳科技",
+                        "天合光能", "晶科能源", "德业股份", "锦浪科技",
+                        "固德威", "派能科技", "科士达", "上能电气",
+                        "盛弘股份", "昱能科技", "禾迈股份", "中信博",
+                        "福莱特", "福斯特", "海优新材", "赛伍技术",
+                        "石英股份", "欧晶科技", "宇邦新材", "快可电子",
+                        "通灵股份", "威腾电气", "艾罗能源"],
+        "nodes": [
+            {"name": "电池技术", "kw": ["HJT", "钙钛矿", "TOPCon", "BC",
+                                          "异质结", "叠层", "电池片"],
+             "level": "上游", "bottleneck": True, "weight": 3},
+            {"name": "逆变器/系统", "kw": ["逆变器", "储能", "变流器",
+                                             "PCS", "BMS", "微逆"],
+             "level": "中游", "bottleneck": False, "weight": 2},
+            {"name": "辅材/设备", "kw": ["焊带", "银浆", "金刚线", "设备",
+                                          "胶膜", "玻璃", "石英"],
+             "level": "下游", "bottleneck": False, "weight": 1},
+        ],
+        "flow": ["电池技术", "逆变器/系统", "辅材/设备"],
+    },
+    "机器人": {
+        "keywords": ["机器人", "人形", "减速器", "伺服", "空心杯",
+                     "丝杠", "力矩", "灵巧手", "机器视觉"],
+        "stock_names": ["汇川技术", "绿的谐波", "双环传动", "中大力德",
+                        "拓斯达", "埃斯顿", "埃夫特", "禾川科技",
+                        "昊志机电", "江苏北人", "步科股份", "伟创电气",
+                        "儒竞科技", "五洲新春", "长盛轴承", "力星股份",
+                        "鼎智科技", "丰立智能", "通力科技", "夏厦精密",
+                        "博实股份", "新松机器人", "智迪科技", "罗博特科",
+                        "奥比中光", "凌云光", "天准科技", "奥普特"],
+        "nodes": [
+            {"name": "核心部件", "kw": ["减速器", "伺服", "空心杯", "丝杠",
+                                          "力矩", "编码器", "关节"],
+             "level": "上游", "bottleneck": True, "weight": 3},
+            {"name": "整机/集成", "kw": ["机器人", "人形", "自动化",
+                                           "执行器", "机器视觉"],
+             "level": "下游", "bottleneck": False, "weight": 2},
+        ],
+        "flow": ["核心部件", "整机/集成"],
+    },
+    "低空经济": {
+        "keywords": ["低空", "飞行汽车", "eVTOL", "无人机", "空管"],
+        "stock_names": ["亿航智能", "中无人机", "纵横股份", "莱斯信息",
+                        "中信海直", "万丰奥威", "亿嘉和", "观典防务",
+                        "航天彩虹", "中直股份", "航天电子", "星网宇达",
+                        "华设集团", "深城交", "苏交科", "宗申动力",
+                        "中交设计", "纳睿雷达", "四创电子", "国睿科技"],
+        "nodes": [
+            {"name": "飞行器", "kw": ["飞行汽车", "eVTOL", "无人机",
+                                        "evtol", "直升机"],
+             "level": "上游", "bottleneck": True, "weight": 3},
+            {"name": "基建/运营", "kw": ["空管", "雷达", "导航",
+                                           "低空经济", "低空基建"],
+             "level": "下游", "bottleneck": False, "weight": 2},
+        ],
+        "flow": ["飞行器", "基建/运营"],
+    },
+    "军工": {
+        "keywords": ["军工", "航天", "航空", "国防", "特种"],
+        "stock_names": ["中航沈飞", "中航西飞", "中国船舶", "中国重工",
+                        "中航光电", "航天电器", "中航高科", "航发动力",
+                        "中航重机", "航天彩虹", "火炬电子", "振华风光",
+                        "睿创微纳", "菲利华", "光启技术", "西部超导",
+                        "抚顺特钢", "钢研高纳", "图南股份", "北摩高科",
+                        "爱乐达", "三角防务", "航亚科技", "立航科技"],
+        "nodes": [
+            {"name": "特种材料", "kw": ["特种", "复合", "合金", "碳纤维",
+                                          "钛合金", "高温合金", "隐身"],
+             "level": "上游", "bottleneck": True, "weight": 3},
+            {"name": "电子/系统", "kw": ["电子", "雷达", "导航", "信息",
+                                          "相控阵", "导引"],
+             "level": "中游", "bottleneck": False, "weight": 2},
+            {"name": "整机/总装", "kw": ["航空", "航天", "船舶", "整机",
+                                          "总装", "发动机"],
+             "level": "下游", "bottleneck": False, "weight": 1},
+        ],
+        "flow": ["特种材料", "电子/系统", "整机/总装"],
+    },
+    "创新药": {
+        "keywords": ["创新药", "生物药", "CRO", "CDMO", "靶向药",
+                     "抗体", "ADC", "双抗", "CAR-T", "核酸药物",
+                     "基因治疗", "细胞治疗", "GLP-1"],
+        "stock_names": ["恒瑞医药", "百济神州", "信达生物", "康方生物",
+                        "荣昌生物", "君实生物", "科伦药业", "海思科",
+                        "贝达药业", "泽璟制药", "艾力斯", "迪哲医药",
+                        "百利天恒", "迈威生物", "神州细胞", "康诺亚",
+                        "药明康德", "药明生物", "康龙化成", "泰格医药",
+                        "凯莱英", "博腾股份", "昭衍新药", "美迪西",
+                        "皓元医药", "百诚医药", "阳光诺和"],
+        "nodes": [
+            {"name": "生物技术/CRO", "kw": ["CRO", "CDMO", "抗体", "ADC",
+                                              "双抗", "CAR-T", "基因治疗",
+                                              "细胞治疗", "靶点"],
+             "level": "上游", "bottleneck": True, "weight": 3},
+            {"name": "制剂/生产", "kw": ["创新药", "生物药", "制剂",
+                                          "原料药", "GMP"],
+             "level": "中游", "bottleneck": False, "weight": 2},
+            {"name": "商业化/流通", "kw": ["医药商业", "流通", "药店",
+                                            "分销", "处方药"],
+             "level": "下游", "bottleneck": False, "weight": 1},
+        ],
+        "flow": ["生物技术/CRO", "制剂/生产", "商业化/流通"],
+    },
+    "医疗器械": {
+        "keywords": ["医疗器械", "医疗设备", "高值耗材", "IVD", "影像",
+                     "内窥镜", "CT", "MRI", "超声", "POCT",
+                     "心脏瓣膜", "支架", "骨科", "吻合器"],
+        "stock_names": ["迈瑞医疗", "联影医疗", "微创医疗", "乐普医疗",
+                        "威高骨科", "大博医疗", "春立医疗", "三友医疗",
+                        "心脉医疗", "惠泰医疗", "微电生理", "赛诺医疗",
+                        "南微医学", "安杰思", "开立医疗", "澳华内镜",
+                        "新产业生物", "安图生物", "迈克生物", "万孚生物",
+                        "迪瑞医疗", "普门科技", "理邦仪器", "宝莱特"],
+        "nodes": [
+            {"name": "核心部件/材料", "kw": ["探头", "传感器", "球管",
+                                              "探测器", "超声换能",
+                                              "高分子", "钛合金"],
+             "level": "上游", "bottleneck": True, "weight": 3},
+            {"name": "整机/耗材", "kw": ["CT", "MRI", "超声", "内窥镜",
+                                          "支架", "瓣膜", "骨科", "IVD"],
+             "level": "中游", "bottleneck": False, "weight": 2},
+            {"name": "流通/服务", "kw": ["流通", "配送", "第三方",
+                                          "检验", "病理"],
+             "level": "下游", "bottleneck": False, "weight": 1},
+        ],
+        "flow": ["核心部件/材料", "整机/耗材", "流通/服务"],
+    },
+    "消费电子": {
+        "keywords": ["消费电子", "智能手机", "MR", "VR", "AR",
+                     "可穿戴", "TWS", "面板", "OLED", "MiniLED",
+                     "精密结构件", "摄像头", "声学"],
+        "stock_names": ["立讯精密", "歌尔股份", "京东方", "TCL科技",
+                        "深天马", "维信诺", "蓝思科技", "长信科技",
+                        "水晶光电", "舜宇光学", "丘钛科技", "欧菲光",
+                        "瑞声科技", "传音控股", "安克创新", "漫步者",
+                        "恒玄科技", "中科蓝讯", "炬芯科技", "全志科技",
+                        "长盈精密", "领益智造", "精研科技", "统联精密",
+                        "鹏鼎控股", "东山精密", "景旺电子", "兴森科技"],
+        "nodes": [
+            {"name": "核心部件", "kw": ["芯片", "传感器", "镜头", "面板",
+                                          "OLED", "MiniLED", "扬声器",
+                                          "麦克风", "马达"],
+             "level": "上游", "bottleneck": True, "weight": 3},
+            {"name": "精密制造", "kw": ["精密结构件", "外壳", "连接器",
+                                          "PCB", "FPC", "模具"],
+             "level": "中游", "bottleneck": False, "weight": 2},
+            {"name": "品牌/终端", "kw": ["智能手机", "MR", "VR", "AR",
+                                          "可穿戴", "TWS", "整机"],
+             "level": "下游", "bottleneck": False, "weight": 1},
+        ],
+        "flow": ["核心部件", "精密制造", "品牌/终端"],
+    },
+    "氢能源": {
+        "keywords": ["氢能", "氢能源", "燃料电池", "电解槽", "绿氢",
+                     "质子交换膜", "储氢", "加氢"],
+        "stock_names": ["亿华通", "美锦能源", "雄韬股份", "厚普股份",
+                        "雪人股份", "冰轮环境", "富瑞特装", "京城股份",
+                        "中集安瑞科", "科威尔", "东岳集团", "贵研铂业",
+                        "潍柴动力", "昇辉科技", "华电重工", "兰石重装",
+                        "镇海股份", "蜀道装备", "密封科技"],
+        "nodes": [
+            {"name": "制氢/电解槽", "kw": ["电解槽", "绿氢", "PEM",
+                                            "ALK", "SOEC", "制氢"],
+             "level": "上游", "bottleneck": True, "weight": 3},
+            {"name": "储运/加注", "kw": ["储氢", "加氢", "氢气", "罐",
+                                          "压缩机", "运氢"],
+             "level": "中游", "bottleneck": False, "weight": 2},
+            {"name": "燃料电池/应用", "kw": ["燃料电池", "电堆", "双极板",
+                                               "膜电极", "质子交换膜"],
+             "level": "下游", "bottleneck": False, "weight": 1},
+        ],
+        "flow": ["制氢/电解槽", "储运/加注", "燃料电池/应用"],
+    },
+    "核电": {
+        "keywords": ["核电", "核岛", "核电站", "核聚变", "原子能",
+                     "铀", "堆芯", "蒸汽发生器"],
+        "stock_names": ["中国核电", "中国广核", "东方电气", "上海电气",
+                        "哈尔滨电气", "应流股份", "中核科技", "江苏神通",
+                        "纽威股份", "佳电股份", "久立特材", "钢研高纳",
+                        "航天晨光", "海陆重工", "科新机电", "兰石重装",
+                        "中密控股", "西部材料", "宝钛股份", "中洲特材"],
+        "nodes": [
+            {"name": "核心设备/材料", "kw": ["核岛", "蒸汽发生器", "堆芯",
+                                               "压力容器", "主泵", "铀",
+                                               "核燃料", "特种材料"],
+             "level": "上游", "bottleneck": True, "weight": 3},
+            {"name": "辅助系统", "kw": ["阀门", "泵", "管道", "冷却",
+                                          "仪控", "DCS"],
+             "level": "中游", "bottleneck": False, "weight": 2},
+            {"name": "运营/工程", "kw": ["核电", "核电站", "运营",
+                                          "工程总包", "检修"],
+             "level": "下游", "bottleneck": False, "weight": 1},
+        ],
+        "flow": ["核心设备/材料", "辅助系统", "运营/工程"],
+    },
+    "AI应用": {
+        "keywords": ["AI应用", "大模型", "AIGC", "多模态", "NLP",
+                     "计算机视觉", "智能语音", "数字人", "RPA",
+                     "AI agent", "AI代理", "知识图谱"],
+        "stock_names": ["科大讯飞", "金山办公", "同花顺", "万兴科技",
+                        "虹软科技", "当虹科技", "拓尔思", "海天瑞声",
+                        "云从科技", "云天励飞", "格灵深瞳", "商汤科技",
+                        "第四范式", "星环科技", "光云科技", "焦点科技",
+                        "彩讯股份", "博思软件", "新致软件", "汉得信息",
+                        "中科曙光", "神州数码", "浪潮信息", "紫光股份"],
+        "nodes": [
+            {"name": "基础模型/算力", "kw": ["大模型", "算力", "GPU",
+                                              "训练", "推理", "多模态"],
+             "level": "上游", "bottleneck": True, "weight": 3},
+            {"name": "中间件/工具", "kw": ["RPA", "NLP", "语音", "视觉",
+                                            "OCR", "知识图谱"],
+             "level": "中游", "bottleneck": False, "weight": 2},
+            {"name": "应用/场景", "kw": ["AI应用", "AIGC", "数字人",
+                                           "办公", "金融科技", "教育"],
+             "level": "下游", "bottleneck": False, "weight": 1},
+        ],
+        "flow": ["基础模型/算力", "中间件/工具", "应用/场景"],
+    },
+    "量子计算": {
+        "keywords": ["量子计算", "量子", "量子通信", "量子加密",
+                     "量子芯片", "超导"],
+        "stock_names": ["国盾量子", "科大国创", "神州信息", "亨通光电",
+                        "华工科技", "光迅科技", "中国长城", "腾景科技"],
+        "nodes": [
+            {"name": "测控/制冷", "kw": ["测控", "制冷", "稀释制冷",
+                                          "低温", "微波"],
+             "level": "上游", "bottleneck": True, "weight": 3},
+            {"name": "量子芯片", "kw": ["量子芯片", "超导", "离子阱",
+                                          "光量子"],
+             "level": "中游", "bottleneck": False, "weight": 2},
+            {"name": "应用/网络", "kw": ["量子通信", "量子加密", "QKD",
+                                          "量子网络"],
+             "level": "下游", "bottleneck": False, "weight": 1},
+        ],
+        "flow": ["测控/制冷", "量子芯片", "应用/网络"],
+    },
+    "合成生物学": {
+        "keywords": ["合成生物", "生物制造", "基因编辑", "发酵",
+                     "酶催化", "生物基", "菌株"],
+        "stock_names": ["华恒生物", "凯赛生物", "嘉必优", "蔚蓝生物",
+                        "梅花生物", "安琪酵母", "金丹科技", "金达威",
+                        "新和成", "华熙生物", "巨子生物", "锦波生物"],
+        "nodes": [
+            {"name": "菌株/酶", "kw": ["菌株", "酶催化", "基因编辑",
+                                        "CRISPR", "底盘细胞", "蛋白"],
+             "level": "上游", "bottleneck": True, "weight": 3},
+            {"name": "发酵/纯化", "kw": ["发酵", "纯化", "生物反应器",
+                                          "分离", "提取"],
+             "level": "中游", "bottleneck": False, "weight": 2},
+            {"name": "终端产品", "kw": ["生物基", "氨基酸", "维生素",
+                                          "原料", "保健品"],
+             "level": "下游", "bottleneck": False, "weight": 1},
+        ],
+        "flow": ["菌株/酶", "发酵/纯化", "终端产品"],
+    },
+}
+
+STOCK_TO_CHAIN: dict[str, str] = {}
+STOCK_TO_NODE: dict[str, str] = {}
+for chain_name, chain_def in CHAINS.items():
+    for stock_name in chain_def.get("stock_names", []):
+        STOCK_TO_CHAIN[stock_name] = chain_name
+        matched_any = False
+        for node in chain_def["nodes"]:
+            if any(kw.lower() in stock_name.lower() for kw in node["kw"]):
+                STOCK_TO_NODE[stock_name] = node["name"]
+                matched_any = True
+                break
+        if not matched_any:
+            STOCK_TO_NODE[stock_name] = "其他"
+
+
+def match_chains(name: str) -> list[tuple[str, str, bool, str]]:
+    results = []
+    chain_name = STOCK_TO_CHAIN.get(name)
+    if chain_name:
+        chain_def = CHAINS[chain_name]
+        matched_any_node = False
+        for node in chain_def["nodes"]:
+            if any(kw.lower() in name.lower() for kw in node["kw"]):
+                results.append((chain_name, node["name"], node["bottleneck"], node["level"]))
+                matched_any_node = True
+        if not matched_any_node:
+            results.append((chain_name, "其他", False, "未知"))
+        return results
+
+    for chain_name, chain_def in CHAINS.items():
+        chain_kw = chain_def["keywords"]
+        if not any(kw.lower() in name.lower() for kw in chain_kw):
+            continue
+        matched_any_node = False
+        for node in chain_def["nodes"]:
+            if any(kw.lower() in name.lower() for kw in node["kw"]):
+                results.append((chain_name, node["name"], node["bottleneck"], node["level"]))
+                matched_any_node = True
+        if not matched_any_node:
+            results.append((chain_name, "其他", False, "未知"))
+    return results
+
+
+def match_chain_simple(name: str) -> str | None:
+    if name in STOCK_TO_CHAIN:
+        return STOCK_TO_CHAIN[name]
+    for chain_name, chain_def in CHAINS.items():
+        if any(kw.lower() in name.lower() for kw in chain_def["keywords"]):
+            return chain_name
+    return None
+
+
+def get_node(name: str, chain_name: str) -> str | None:
+    if name in STOCK_TO_NODE:
+        return STOCK_TO_NODE[name]
+    chain_def = CHAINS.get(chain_name)
+    if not chain_def:
+        return None
+    for node in chain_def["nodes"]:
+        if any(kw.lower() in name.lower() for kw in node["kw"]):
+            return node["name"]
+    return None
+
+
+def is_bottleneck_node(name: str, chain_name: str) -> bool:
+    node = get_node(name, chain_name)
+    if not node:
+        return False
+    chain_def = CHAINS.get(chain_name)
+    if not chain_def:
+        return False
+    for n in chain_def["nodes"]:
+        if n["name"] == node:
+            return n.get("bottleneck", False)
+    return False

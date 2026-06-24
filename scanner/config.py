@@ -259,3 +259,33 @@ V_PB_SHRINK_NO = -5
 V_PB_SECTOR_HOT = 8
 V_PB_SECTOR_COLD = 3
 V_PB_SECTOR_DEAD = -5
+
+# ============================================================
+# Industry chain trend & chokepoint scoring (industry_chain/)
+# ============================================================
+# Chain trend phase bonuses (applied by chokepoint_scorer.py)
+CHAIN_ERUPTING_BONUS = 15
+CHAIN_GROWING_BONUS = 8
+CHAIN_FORMING_BONUS = 3
+CHAIN_FADING_PENALTY = -5
+
+# Chokepoint / bottleneck bonus
+BOTTLENECK_BONUS = 10
+
+# Trend judgment thresholds (used by trend_judge.py)
+CHAIN_CONCENTRATION_HOT = 5
+CHAIN_CONCENTRATION_WARM = 3
+CHAIN_CONCENTRATION_LOW = 2
+CHAIN_PERSISTENCE_MIN = 3
+CHAIN_PERSISTENCE_FADING = 5
+
+# Technical scoring weights (chokepoint_scorer.py)
+TECH_MA_BULL = 8
+TECH_MA_BEAR = -5
+TECH_VOL_CONFIRM = 5
+TECH_RSI_STRONG = 5
+TECH_RSI_OVERSOLD = 3
+TECH_MACD_GOLDEN = 5
+TECH_ACCUM_HEALTHY = 5
+TECH_ACCUM_OVERHEAT = -8
+TECH_NEW_FACE_BONUS = 8
