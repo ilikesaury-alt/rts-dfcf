@@ -24,11 +24,10 @@ def run_once(session_state: IndustryScanSession | None = None) -> dict:
     session_state = session_state or IndustryScanSession()
 
     conn = init_industry_chain_tables()
-    session = make_session() if not hasattr(run_once, "_session") else run_once._session
-
     try:
-        session = make_session()
-        run_once._session = session
+        if not hasattr(run_once, "_session"):
+            run_once._session = make_session()
+        session = run_once._session
 
         start = time.time()
         candidates, chain_trends = scan(conn, session, session_state)

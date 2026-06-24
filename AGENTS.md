@@ -3,6 +3,7 @@
 ## Quick Commands
 
 - **Run scanner**: `python limit_up_scanner.py` (default 60s interval) or `python limit_up_scanner.py 120` (custom seconds)
+- **Run industry chain scanner**: `python industry_chain_scanner.py`
 - **Run tests**: `python -m pytest tests/ -v`
 - **Single test**: `python -m pytest tests/test_analysis.py::test_new_face -v`
 
@@ -11,24 +12,25 @@
 A-share stock momentum scanner monitoring Xueqiu's surge ranking API. Scores ChiNext (300xxx) stocks using "new face" vs "old face" strategies.
 
 ```
-limit_up_scanner.py   # Entry point - main loop
+limit_up_scanner.py       # Main scanner entry point
+industry_chain_scanner.py # Industry chain scanner entry point
 scanner/
-  orchestrator.py     # Core scan pipeline
-  analysis.py         # Scoring engines (new_face, momentum, pullback)
-  validator.py        # Cross-validation (3-dim check per strategy)
-  config.py           # All thresholds and weights
-  api.py              # Xueqiu API calls (biaosheng, kline, market cap)
-  database.py         # SQLite CRUD (appearances, kline, recommendations)
-  models.py           # StockInfo, Candidate, KlineSummary dataclasses
-  indicators.py       # RSI, KDJ, MACD computation
-  enhancer.py         # Bonus scoring (sector, sentiment, RPS, indicators)
-  candidate_pool.py   # ScanSession with list presence tracking
-  rank_trend.py       # RankTracker with trajectory scoring
-  sector.py           # Sector cluster detection
-  trading_session.py  # Trading hours/holidays
-  log_utils.py        # Log formatting utilities
-  chain_watch/        # Chain heat detection subsystem
-tests/                # pytest test suite
+  orchestrator.py         # Core scan pipeline
+  analysis.py             # Scoring engines (new_face, momentum, pullback)
+  validator.py            # Cross-validation (3-dim check per strategy)
+  config.py               # All thresholds and weights
+  api.py                  # Xueqiu API calls (biaosheng, kline, market cap)
+  database.py             # SQLite CRUD (appearances, kline, recommendations)
+  models.py               # StockInfo, Candidate, KlineSummary dataclasses
+  indicators.py           # RSI, KDJ, MACD computation
+  enhancer.py             # Bonus scoring (sector, sentiment, RPS, indicators)
+  candidate_pool.py       # ScanSession with list presence tracking
+  rank_trend.py           # RankTracker with trajectory scoring
+  sector.py               # Sector cluster detection
+  trading_session.py      # Trading hours/holidays
+  log_utils.py            # Log formatting utilities
+  industry_chain/         # Chokepoint industry chain scanner
+tests/                    # pytest test suite
 ```
 
 ## Key Facts
@@ -48,6 +50,7 @@ tests/                # pytest test suite
   - **momentum**: MA5>10>20 alignment, no divergence, volume uniformity
   - **pullback**: MA20 trending up, volume shrinkage, sector still active
 - Priority chain: primary strategy attempted first; if cross-validation fails, falls through to next strategy
+- Industry chain scanner (`industry_chain/`): independent subsystem implementing a chokepoint investment thesis — detects chain phases (潜伏→形成→成长→爆发→消退), verifies bottleneck node participation, picks technically strong bottleneck stocks from active chains
 
 ## Testing
 

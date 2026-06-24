@@ -22,9 +22,9 @@ from scanner.config import (
     TOP40_ADVANCE_PER_10,
     TOP40_BONUS,
     TOP40_THRESHOLD,
-    TURNOVER_BONUS_HIGH,
-    TURNOVER_BONUS_LOW,
-    TURNOVER_BONUS_MEDIUM,
+    TURNOVER_BONUS_MODERATE,
+    TURNOVER_BONUS_PENALTY,
+    TURNOVER_BONUS_HEALTHY,
     TURNOVER_HIGH,
     TURNOVER_LOW,
     TURNOVER_MEDIUM,
@@ -96,11 +96,11 @@ def _apply_turnover_bonus(c: Candidate, market_caps: dict[str, dict]):
         tr = market_caps.get(c.stock.symbol, {}).get("turnover_rate")
         if tr is not None:
             if tr > TURNOVER_HIGH:
-                c.turnover_bonus = TURNOVER_BONUS_LOW
+                c.turnover_bonus = TURNOVER_BONUS_PENALTY
             elif tr > TURNOVER_MEDIUM:
-                c.turnover_bonus = TURNOVER_BONUS_HIGH
+                c.turnover_bonus = TURNOVER_BONUS_MODERATE
             elif tr > TURNOVER_LOW:
-                c.turnover_bonus = TURNOVER_BONUS_MEDIUM
+                c.turnover_bonus = TURNOVER_BONUS_HEALTHY
 
 
 def _apply_sentiment_bonus(c: Candidate, sentiment_info: dict):

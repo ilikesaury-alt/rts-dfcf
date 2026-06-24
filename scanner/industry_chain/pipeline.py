@@ -21,7 +21,7 @@ from scanner.utils import is_gem, is_hk_stock, is_st
 _thread_local = threading.local()
 
 
-def _get_session(base_session: requests.Session) -> requests.Session:
+def _get_session() -> requests.Session:
     if not hasattr(_thread_local, "session"):
         _thread_local.session = make_session()
     return _thread_local.session
@@ -65,7 +65,7 @@ def _fetch_klines(session: requests.Session, gem_stocks: list) -> dict[str, list
 
     if needs_fetch:
         def _fetch_one(sym: str) -> tuple[str, list[dict] | None]:
-            sess = _get_session(session)
+            sess = _get_session()
             kline = fetch_kline(sess, sym, KLINE_FETCH_DAYS)
             return sym, kline
 

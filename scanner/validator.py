@@ -1,6 +1,6 @@
 from scanner.config import (
-    V_MO_DIVERGE_BEAR,
-    V_MO_DIVERGE_NONE,
+    V_MO_DIVERGENCE_BEAR,
+    V_MO_DIVERGENCE_NONE,
     V_MO_MA_FULL,
     V_MO_MA_NONE,
     V_MO_MA_PARTIAL,
@@ -130,11 +130,11 @@ def _mo_ma_alignment(closes: list[float]) -> tuple[int, str]:
 
 def _mo_divergence(closes: list[float], historical_kline: list[dict]) -> tuple[int, str]:
     if len(closes) < 10:
-        return V_MO_DIVERGE_NONE, "data_short"
+        return V_MO_DIVERGENCE_NONE, "data_short"
 
     rsi = compute_rsi(closes, period=6)
     if rsi is None:
-        return V_MO_DIVERGE_NONE, "rsi_na"
+        return V_MO_DIVERGENCE_NONE, "rsi_na"
 
     if len(closes) >= 5:
         price_high_now = max(closes[-3:])
@@ -144,16 +144,15 @@ def _mo_divergence(closes: list[float], historical_kline: list[dict]) -> tuple[i
         if price_up and len(closes) >= 10:
             rsi_vals = []
             for i in range(3, 0, -1):
-                segment = closes[: -i or None] if i > 0 else closes
                 seg = closes[:-i] if i > 0 else closes
                 r = compute_rsi(seg, period=6)
                 if r is not None:
                     rsi_vals.append(r)
             rsi_vals = rsi_vals[-2:] if len(rsi_vals) >= 2 else []
             if len(rsi_vals) == 2 and rsi_vals[-1] < rsi_vals[-2] * 0.95:
-                return V_MO_DIVERGE_BEAR, "bear_divergence"
+                return V_MO_DIVERGENCE_BEAR, "bear_divergence"
 
-    return V_MO_DIVERGE_NONE, "no_divergence"
+    return V_MO_DIVERGENCE_NONE, "no_divergence"
 
 
 def _mo_volume_uniformity(historical_kline: list[dict]) -> tuple[int, str]:

@@ -61,7 +61,7 @@ from scanner.utils import is_gem, is_hk_stock, is_st
 _thread_local = threading.local()
 
 
-def _get_session(base_session: requests.Session) -> requests.Session:
+def _get_session() -> requests.Session:
     if not hasattr(_thread_local, "session"):
         _thread_local.session = make_session()
     return _thread_local.session
@@ -99,7 +99,7 @@ def _fetch_all_klines(conn: sqlite3.Connection, session: requests.Session, stock
         return result
 
     def _fetch_one(sym: str) -> tuple[str, list[dict] | None]:
-        sess = _get_session(session)
+        sess = _get_session()
         kline = fetch_kline(sess, sym, KLINE_FETCH_DAYS)
         return sym, kline
 
@@ -348,7 +348,7 @@ def _parallel_fetch(pool: ThreadPoolExecutor, base_session: requests.Session,
     for c in candidates:
         sym = c.stock.symbol
         def _do(sym=sym, fn=analyze_intraday):
-            return fn(_get_session(base_session), sym)
+            return fn(_get_session(), sym)
         intra_futs[pool.submit(_do)] = sym
     for fut in as_completed(intra_futs):
         sym = intra_futs[fut]
@@ -362,7 +362,7 @@ def _parallel_fetch(pool: ThreadPoolExecutor, base_session: requests.Session,
     for c_ in candidates:
         sym = c_.stock.symbol
         def _open(sym=sym):
-            return analyze_opening_strength(_get_session(base_session), sym)
+            return analyze_opening_strength(_get_session(), sym)
         open_futs[pool.submit(_open)] = sym
     for fut in as_completed(open_futs):
         sym = open_futs[fut]
@@ -375,7 +375,7 @@ def _parallel_fetch(pool: ThreadPoolExecutor, base_session: requests.Session,
     for c_ in candidates:
         sym = c_.stock.symbol
         def _vol(sym=sym):
-            return estimate_live_volume(_get_session(base_session), sym)
+            return estimate_live_volume(_get_session(), sym)
         vol_futs[pool.submit(_vol)] = sym
     for fut in as_completed(vol_futs):
         sym = vol_futs[fut]
