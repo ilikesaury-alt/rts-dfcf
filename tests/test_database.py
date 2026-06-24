@@ -1,12 +1,17 @@
-import pytest
 import sqlite3
 from datetime import date, timedelta
+
+import pytest
+
 from scanner.database import (
-    init_db, get_recent_symbols, record_appearances,
-    get_symbol_appearances, save_kline_to_db, get_cached_kline,
-    save_recommendations, _n_trading_days_ago,
+    _n_trading_days_ago,
+    get_cached_kline,
+    get_symbol_appearances,
+    record_appearances,
+    save_kline_to_db,
+    save_recommendations,
 )
-from scanner.models import StockInfo, Candidate, KlineSummary
+from scanner.models import Candidate, KlineSummary, StockInfo
 from scanner.trading_session import is_trading_day
 
 
@@ -97,7 +102,7 @@ class TestRecordAppearances:
     def test_symbol_appearances_holiday_gap(self, memory_db):
         today = date.today()
         if not is_trading_day(today):
-            return
+            pytest.skip("Not a trading day")
         cursor = date.today() - timedelta(days=1)
         non_trading_count = 0
         while cursor > date.today() - timedelta(days=10):
@@ -105,7 +110,7 @@ class TestRecordAppearances:
                 non_trading_count += 1
             cursor -= timedelta(days=1)
         if non_trading_count == 0:
-            return
+            pytest.skip("No holidays found in last 10 days")
         holiday_date = None
         cursor = date.today() - timedelta(days=1)
         while cursor > date.today() - timedelta(days=10):
@@ -114,12 +119,12 @@ class TestRecordAppearances:
                 break
             cursor -= timedelta(days=1)
         if holiday_date is None:
-            return
+            pytest.skip("Could not find holiday date")
         recent_trading = holiday_date - timedelta(days=1)
         while recent_trading > date.today() - timedelta(days=10) and not is_trading_day(recent_trading):
             recent_trading -= timedelta(days=1)
         if not is_trading_day(recent_trading):
-            return
+            pytest.skip("Could not find trading day before holiday")
         memory_db.execute(
             "INSERT INTO appearances (symbol, name, date, rank, percent, value) VALUES (?, ?, ?, ?, ?, ?)",
             ("300001", "Test", recent_trading.isoformat(), 1, 5.0, 10000),

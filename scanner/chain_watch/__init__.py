@@ -1,17 +1,19 @@
 import sqlite3
 import time
-from datetime import datetime
 
-from scanner.api import make_session, fetch_biaosheng
-from scanner.utils import is_gem, is_hk_stock, is_st
-from scanner.database import DB_PATH
-from scanner.config import MAX_STOCK_PRICE
-from scanner.chain_watch.chains import match_chains, match_chain_simple
-from scanner.chain_watch.heat_detect import detect_hot_chains
-from scanner.chain_watch.trend_score import score_stock, fetch_kline_for_symbol, WATCH_MIN_SCORE
+from scanner.api import fetch_biaosheng, make_session
+from scanner.chain_watch.chains import match_chains
 from scanner.chain_watch.display import (
-    _safe_print, print_watch_table, print_header, print_summary,
+    _safe_print,
+    print_header,
+    print_summary,
+    print_watch_table,
 )
+from scanner.chain_watch.heat_detect import detect_hot_chains
+from scanner.chain_watch.trend_score import WATCH_MIN_SCORE, fetch_kline_for_symbol, score_stock
+from scanner.config import MAX_STOCK_PRICE
+from scanner.database import DB_PATH
+from scanner.utils import is_gem, is_hk_stock, is_st
 
 
 def run_once() -> dict:

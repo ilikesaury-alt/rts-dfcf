@@ -158,7 +158,6 @@ def save_kline_to_db(conn: sqlite3.Connection, symbol: str, kline: list[dict]):
 
 
 def get_cached_kline(conn: sqlite3.Connection, symbol: str) -> list[dict] | None:
-    today = date.today().isoformat()
     lookback = (date.today() - timedelta(days=60)).isoformat()
     cur = conn.execute(
         "SELECT date, open, close, high, low, volume, percent FROM daily_kline WHERE symbol = ? AND date >= ? ORDER BY date",
@@ -170,40 +169,6 @@ def get_cached_kline(conn: sqlite3.Connection, symbol: str) -> list[dict] | None
             {"date": r[0], "open": r[1], "close": r[2], "high": r[3], "low": r[4], "volume": r[5], "percent": r[6]}
             for r in rows
         ]
-    return None
-
-
-def ensure_kline(conn: sqlite3.Connection, session, symbol: str) -> list[dict] | None:
-    from scanner.api import fetch_kline
-
-    cached = get_cached_kline(conn, symbol)
-    if cached:
-        max_date_str = max(k["date"] for k in cached)
-        max_date = date.fromisoformat(max_date_str)
-        today = date.today()
-        cursor = max_date + timedelta(days=1)
-        trading_days_missing = 0
-        while cursor < today:
-            if is_trading_day(cursor):
-                trading_days_missing += 1
-            cursor += timedelta(days=1)
-        if trading_days_missing <= 2:
-            return cached
-        try:
-            kline = fetch_kline(session, symbol)
-            if kline:
-                save_kline_to_db(conn, symbol, kline)
-                return kline
-        except Exception as e:
-            print(f"  [!] 刷新K线缓存失败 {symbol}: {e}")
-        return cached
-    try:
-        kline = fetch_kline(session, symbol)
-        if kline:
-            save_kline_to_db(conn, symbol, kline)
-            return kline
-    except Exception as e:
-        print(f"  [!] 获取K线失败 {symbol}: {e}")
     return None
 
 

@@ -2,6 +2,9 @@ class RankTracker:
     def __init__(self):
         self._history: list[dict[str, int]] = []
 
+    def reset(self):
+        self._history.clear()
+
     def update(self, current_ranks: dict[str, int]):
         self._history.append(current_ranks)
         if len(self._history) > 5:

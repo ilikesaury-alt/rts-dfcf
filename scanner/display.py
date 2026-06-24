@@ -1,15 +1,24 @@
+import os
 from datetime import datetime
 
 import wcwidth
 
-from scanner.config import YI, MAX_MARKET_CAP, MAX_STOCK_PRICE, STALE_TIMEOUT_MINUTES
+from scanner.config import MAX_MARKET_CAP, MAX_STOCK_PRICE, STALE_TIMEOUT_MINUTES, YI
 from scanner.models import Candidate
 
+if os.name == "nt":
+    import subprocess
+    _supports_ansi = subprocess.call("color", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 1
+else:
+    _supports_ansi = True
 
-ANSI = {
-    "RED": "\033[91m", "YELLOW": "\033[93m", "GREEN": "\033[92m",
-    "CYAN": "\033[96m", "BOLD": "\033[1m", "RESET": "\033[0m",
-}
+if _supports_ansi:
+    ANSI = {
+        "RED": "\033[91m", "YELLOW": "\033[93m", "GREEN": "\033[92m",
+        "CYAN": "\033[96m", "BOLD": "\033[1m", "RESET": "\033[0m",
+    }
+else:
+    ANSI = {"RED": "", "YELLOW": "", "GREEN": "", "CYAN": "", "BOLD": "", "RESET": ""}
 
 
 def _rank_delta_str(symbol: str, current_rank: int, last_ranks: dict[str, int]) -> tuple[str, str]:
@@ -64,7 +73,7 @@ def _bonus_tag(c: Candidate) -> str:
         parts.append(f"B{c.first_breakout_bonus:+d}")
     if c.gap_up_bonus:
         parts.append(f"G{c.gap_up_bonus:+d}")
-    if c.intraday_score:
+    if c.intraday_score is not None and c.intraday_score != 0.0:
         d_tag = f"D{int(c.intraday_score):+d}"
         if c.intraday_score < -2:
             d_tag = f"{ANSI['RED']}{d_tag}{ANSI['RESET']}"

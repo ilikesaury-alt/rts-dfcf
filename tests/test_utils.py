@@ -1,5 +1,4 @@
-import pytest
-from scanner.utils import is_st, _strip_exchange, is_gem, is_hk_stock, detect_board
+from scanner.utils import _strip_exchange, detect_board, is_gem, is_hk_stock, is_st
 
 
 class TestIsSt:

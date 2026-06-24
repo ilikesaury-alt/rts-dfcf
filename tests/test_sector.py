@@ -1,4 +1,3 @@
-import pytest
 from scanner.sector import classify_sector
 
 

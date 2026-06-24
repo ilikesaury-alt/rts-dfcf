@@ -1,6 +1,6 @@
 from datetime import date, datetime, timedelta
 
-from scanner.config import HOLIDAYS, MORNING_START, MORNING_END, AFTERNOON_START, AFTERNOON_END
+from scanner.config import AFTERNOON_END, AFTERNOON_START, HOLIDAYS, MORNING_END, MORNING_START
 
 
 def is_trading_day(d: date) -> bool:

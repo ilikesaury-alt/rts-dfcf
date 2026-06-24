@@ -1,7 +1,6 @@
-import pytest
-from datetime import time, date, datetime
+from datetime import date, datetime
+
 from scanner.trading_session import is_trading_day, is_trading_time
-from scanner.config import HOLIDAYS
 
 
 class TestIsTradingDay:

@@ -179,6 +179,10 @@ RPS_PCTILE_HIGH = 80
 RPS_PCTILE_MEDIUM = 60
 RPS_PCTILE_LOW = 30
 
+# K-line fetch configuration
+KLINE_FETCH_DAYS = 45     # Number of days to fetch from API
+KLINE_MIN_LENGTH = 34     # Minimum kline bars required for analysis
+
 # Time-based bonus thresholds (minutes since midnight)
 STALE_TIMEOUT_MINUTES = 30  # 掉榜后保留时长
 
@@ -187,7 +191,9 @@ LATE_TRADE_START = 14 * 60           # 14:00
 EARLY_BONUS = -5
 LATE_BONUS = 3
 
-HOLIDAYS: set[str] = {
+HOLIDAYS_FILE = os.path.join(BASE_DIR, "holidays.json")
+
+_HOLIDAYS_FALLBACK: set[str] = {
     "2025-01-01",
     "2025-01-28", "2025-01-29", "2025-01-30", "2025-01-31",
     "2025-02-01", "2025-02-02", "2025-02-03", "2025-02-04",
@@ -206,3 +212,18 @@ HOLIDAYS: set[str] = {
     "2026-10-01", "2026-10-02", "2026-10-03",
     "2026-10-04", "2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08",
 }
+
+
+def _load_holidays_from_file(path: str) -> set[str] | None:
+    try:
+        import json
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return set(data)
+        return None
+    except (FileNotFoundError, json.JSONDecodeError, TypeError):
+        return None
+
+
+HOLIDAYS: set[str] = _load_holidays_from_file(HOLIDAYS_FILE) or _HOLIDAYS_FALLBACK

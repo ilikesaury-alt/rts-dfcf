@@ -244,7 +244,7 @@ python limit_up_scanner.py 60    # 每1分钟（盘中最密集）
 | | 柱线 > 0 且递增 | +3 | 动能加速 |
 | | 柱线 > 0 但递减 | **-3** | 动能衰减 |
 
-> 三个维度各有基准权重 3（可通过自进化调整），单只股票最多叠加 +9 分。
+> 三个维度各有基准权重 3，单只股票最多叠加 +9 分。
 > 权重键：`rsi_bonus` / `kdj_bonus` / `macd_bonus`，分别映射 `new_face_rsi` / `new_face_kdj` / `new_face_macd`（动量侧同理）。
 > `momentum_kdj` 已禁用（2026-06-22，IC = -0.369）。
 
@@ -522,7 +522,6 @@ python limit_up_scanner.py 60    # 每1分钟（盘中最密集）
 | 23 | 动量策略outcome永远缺失 | backfill_outcomes 新增API fallback获取未来K线 |
 | 24 | Intraday乘数放大评分偏差 | 乘数(0.5x-1.5x) → 直接加减分(-10~+10) |
 | 25 | Intraday静默误杀候选 | 移除intraday_score硬过滤 |
-| 26 | 自进化IC缺orchestrator维度 | score_breakdown新增rank_trend/sector/live_vol/intraday |
 | 27 | dims与score不匹配(accum≤-5) | dims记录-5而非0 |
 | 28 | 已上榜股票卡在中间地带（非新面孔又不够动量） | 非新面孔且momentum失败后回退到新面孔评分 |
 | 29 | 评分奖励"暴涨暴跌"模式（海航控股rc=25, nd=-10.8%）| 新增温和启动加分：rank_change 1000~4999+健康放量+K线好+热度低 → +5，奖励阿石创模式，压制海航模式 |

@@ -48,7 +48,7 @@ def score_stock(symbol: str, kline: list[dict], is_bottleneck: bool,
         else:
             diff_pct = (ma60 - ma20) / ma60 * 100
             score -= 5
-            signals.append(f"短空-5")
+            signals.append("短空-5")
 
     recent_high_20 = max(closes[-20:]) if len(closes) >= 20 else max(closes)
     current = closes[-1]
@@ -99,7 +99,7 @@ def score_stock(symbol: str, kline: list[dict], is_bottleneck: bool,
         pct_5d = (closes[-1] - closes[-5]) / closes[-5] * 100
         if 5 <= pct_5d <= 25:
             score += 5
-            signals.append(f"5日合理涨幅+5")
+            signals.append("5日合理涨幅+5")
 
     score = max(0, min(100, score))
     return {"score": score, "signals": signals}

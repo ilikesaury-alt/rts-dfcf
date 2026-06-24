@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta
 
-from scanner.models import Candidate
 from scanner.config import STALE_TIMEOUT_MINUTES
+from scanner.models import Candidate
 
 
 class ScanSession:

@@ -1,6 +1,5 @@
-import pytest
+from scanner.analysis import analyze_momentum, analyze_new_face, analyze_pullback
 from scanner.models import StockInfo
-from scanner.analysis import analyze_new_face, analyze_momentum, analyze_pullback
 
 
 def _stock(percent=5.0, rank_change=1500, value=8000, current=15.0, rank=10):
@@ -34,13 +33,13 @@ def _kline(pcts, volumes=None, body_ratio=None):
             total_range = abs(body) / body_ratio
             wiggle = (total_range - abs(body)) / 2
             h = max(o, c) + wiggle
-            l = min(o, c) - wiggle
+            lo = min(o, c) - wiggle
         else:
             h = max(o, c) * 1.02 if max(o, c) > 0 else o + 1
-            l = min(o, c) * 0.98 if min(o, c) > 0 else o - 1
+            lo = min(o, c) * 0.98 if min(o, c) > 0 else o - 1
         result.append({
             "date": f"2026-01-{i+1:02d}",
-            "open": o, "close": c, "high": h, "low": l,
+            "open": o, "close": c, "high": h, "low": lo,
             "volume": volumes[i], "percent": pcts[i],
         })
     return result
@@ -161,12 +160,12 @@ class TestAnalyzePullback:
         assert result is not None
         assert "pullback_today_pct" in result.dimensions
         assert result.dimensions["pullback_today_pct"] == 10  # today_neg1_0 weight (0 falls in -1 < pct <= 0)
-        
+
         result = analyze_pullback(_stock(percent=1), kline)
         assert result is not None
         assert "pullback_today_pct" in result.dimensions
         assert result.dimensions["pullback_today_pct"] == 5  # today_pos0_2 weight (0 < pct <= 2)
-        
+
         result = analyze_pullback(_stock(percent=2), kline)
         assert result is not None
         assert "pullback_today_pct" in result.dimensions

@@ -6,11 +6,18 @@ from datetime import datetime
 import requests
 
 from scanner.config import (
-    HEADERS, REQUEST_TIMEOUT,
-    SENTIMENT_BOILING, SENTIMENT_WARM, SENTIMENT_COOL, SENTIMENT_FROZEN,
-    SENTIMENT_AVG_TOP10_BOILING, SENTIMENT_PCT_GT5_BOILING,
-    SENTIMENT_AVG_TOP10_WARM, SENTIMENT_PCT_GT5_WARM,
-    SENTIMENT_AVG_TOP10_COOL, SENTIMENT_PCT_GT5_COOL,
+    HEADERS,
+    REQUEST_TIMEOUT,
+    SENTIMENT_AVG_TOP10_BOILING,
+    SENTIMENT_AVG_TOP10_COOL,
+    SENTIMENT_AVG_TOP10_WARM,
+    SENTIMENT_BOILING,
+    SENTIMENT_COOL,
+    SENTIMENT_FROZEN,
+    SENTIMENT_PCT_GT5_BOILING,
+    SENTIMENT_PCT_GT5_COOL,
+    SENTIMENT_PCT_GT5_WARM,
+    SENTIMENT_WARM,
 )
 
 logger = logging.getLogger(__name__)
@@ -71,6 +78,12 @@ def _throttle(min_interval: float = 0.15):
         _last_api_call = time.time()
 
 
+_cache_lock = threading.Lock()
+_index_cache_lock = threading.Lock()
+_kline_cache_lock = threading.Lock()
+_intraday_cache_lock = threading.Lock()
+_minute_data_cache_lock = threading.Lock()
+
 _market_index_cache: tuple[float | None, float] = (None, 0)
 
 _kline_cache: dict[str, tuple[list[dict] | None, float]] = {}
@@ -80,8 +93,9 @@ _kline_cache_ttl = 600
 def fetch_market_index(session: requests.Session) -> float | None:
     global _market_index_cache
     now = time.time()
-    if _market_index_cache[0] is not None and now - _market_index_cache[1] < 180:
-        return _market_index_cache[0]
+    with _index_cache_lock:
+        if _market_index_cache[0] is not None and now - _market_index_cache[1] < 180:
+            return _market_index_cache[0]
     try:
         ts_ms = int(time.time() * 1000)
         url = f"https://stock.xueqiu.com/v5/stock/chart/kline.json?symbol=SZ399006&begin={ts_ms - 86400*1000*3}&period=day&count=2&_={ts_ms}"
@@ -89,7 +103,8 @@ def fetch_market_index(session: requests.Session) -> float | None:
         items = resp.json().get("data", {}).get("item", [])
         if items:
             pct = items[-1][7]
-            _market_index_cache = (pct, now)
+            with _index_cache_lock:
+                _market_index_cache = (pct, now)
             return pct
     except Exception as e:
         print(f"  [!] 获取大盘指数失败: {e}")
@@ -97,7 +112,6 @@ def fetch_market_index(session: requests.Session) -> float | None:
 
 
 def compute_surge_sentiment(raw_items: list[dict]) -> dict:
-    top20 = raw_items[:20]
     top10 = raw_items[:10]
 
     top10_pcts = [item.get("percent") or 0 for item in top10]
@@ -150,11 +164,12 @@ def make_session() -> requests.Session:
 def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[dict] | None:
     now = time.time()
 
-    cached = _kline_cache.get(symbol)
-    if cached:
-        data, ts = cached
-        if data is not None and now - ts < _kline_cache_ttl:
-            return data
+    with _kline_cache_lock:
+        cached = _kline_cache.get(symbol)
+        if cached:
+            data, ts = cached
+            if data is not None and now - ts < _kline_cache_ttl:
+                return data
 
     now_ms = int(now * 1000)
     begin_ms = now_ms - days * 86400 * 1000
@@ -189,7 +204,8 @@ def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[
             "volume": item[1],
             "percent": item[7],
         })
-    _kline_cache[symbol] = (result, now)
+    with _kline_cache_lock:
+        _kline_cache[symbol] = (result, now)
     return result
 
 
@@ -199,36 +215,38 @@ _biaosheng_cb = {"failures": 0, "last_ok": 0.0, "cached": [], "cooldown_until": 
 
 def _biaosheng_circuit_breaker(raw_items: list[dict]) -> list[dict]:
     now = time.time()
-    if raw_items:
-        _biaosheng_cb["failures"] = 0
-        _biaosheng_cb["last_ok"] = now
-        _biaosheng_cb["cached"] = raw_items
-        _biaosheng_cb["cooldown_until"] = 0
-        return raw_items
+    with _cache_lock:
+        if raw_items:
+            _biaosheng_cb["failures"] = 0
+            _biaosheng_cb["last_ok"] = now
+            _biaosheng_cb["cached"] = raw_items
+            _biaosheng_cb["cooldown_until"] = 0
+            return raw_items
 
-    _biaosheng_cb["failures"] += 1
-    fails = _biaosheng_cb["failures"]
+        _biaosheng_cb["failures"] += 1
+        fails = _biaosheng_cb["failures"]
 
-    if fails >= 3 and _biaosheng_cb["cached"]:
-        cooldown = min(60 * (2 ** (fails - 3)), 600)
-        _biaosheng_cb["cooldown_until"] = now + cooldown
-        logger.warning("  [断路器] 飙升榜连续%d次失败, 进入%.0f秒熔断, 使用缓存数据",
-                       fails, cooldown)
-        return _biaosheng_cb["cached"]
+        if fails >= 3 and _biaosheng_cb["cached"]:
+            cooldown = min(60 * (2 ** (fails - 3)), 600)
+            _biaosheng_cb["cooldown_until"] = now + cooldown
+            logger.warning("  [断路器] 飙升榜连续%d次失败, 进入%.0f秒熔断, 使用缓存数据",
+                           fails, cooldown)
+            return _biaosheng_cb["cached"]
 
-    if _biaosheng_cb["cached"]:
-        logger.info("  飙升榜获取失败, 返回缓存数据(%.0fs前)", now - _biaosheng_cb["last_ok"])
-        return _biaosheng_cb["cached"]
+        if _biaosheng_cb["cached"]:
+            logger.info("  飙升榜获取失败, 返回缓存数据(%.0fs前)", now - _biaosheng_cb["last_ok"])
+            return _biaosheng_cb["cached"]
 
-    return []
+        return []
 
 
 def fetch_biaosheng(session: requests.Session, size: int = 100) -> list[dict]:
     now = time.time()
-    if now < _biaosheng_cb["cooldown_until"]:
-        logger.info("  [断路器] 熔断中(剩余%.0fs), 使用缓存数据",
-                    _biaosheng_cb["cooldown_until"] - now)
-        return _biaosheng_cb.get("cached") or []
+    with _cache_lock:
+        if now < _biaosheng_cb["cooldown_until"]:
+            logger.info("  [断路器] 熔断中(剩余%.0fs), 使用缓存数据",
+                        _biaosheng_cb["cooldown_until"] - now)
+            return _biaosheng_cb.get("cached") or []
 
     ts = int(now * 1000)
     url = (
@@ -276,7 +294,7 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
             continue
 
     if not result:
-        print(f"\n  [!] 警告: 市值数据获取失败，小而美规则暂不生效")
+        print("\n  [!] 警告: 市值数据获取失败，小而美规则暂不生效")
 
     return result
 
@@ -291,10 +309,11 @@ _MINUTE_DATA_CACHE_TTL = 120
 
 def _fetch_minute_data(session: requests.Session, symbol: str) -> list[dict] | None:
     now = time.time()
-    if symbol in _MINUTE_DATA_CACHE:
-        data, ts = _MINUTE_DATA_CACHE[symbol]
-        if now - ts < _MINUTE_DATA_CACHE_TTL:
-            return data
+    with _minute_data_cache_lock:
+        if symbol in _MINUTE_DATA_CACHE:
+            data, ts = _MINUTE_DATA_CACHE[symbol]
+            if now - ts < _MINUTE_DATA_CACHE_TTL:
+                return data
     try:
         ts_ms = int(time.time() * 1000)
         url = f"https://stock.xueqiu.com/v5/stock/chart/minute.json?symbol={symbol}&period=1d&_={ts_ms}"
@@ -302,13 +321,16 @@ def _fetch_minute_data(session: requests.Session, symbol: str) -> list[dict] | N
         d = resp.json()
         items = d.get("data", {}).get("items", [])
         if items and len(items) >= 10:
-            _MINUTE_DATA_CACHE[symbol] = (items, now)
+            with _minute_data_cache_lock:
+                _MINUTE_DATA_CACHE[symbol] = (items, now)
             return items
-        _MINUTE_DATA_CACHE[symbol] = (None, now)
+        with _minute_data_cache_lock:
+            _MINUTE_DATA_CACHE[symbol] = (None, now)
         return None
     except Exception as e:
         print(f"  [!] 获取分时数据失败 {symbol}: {e}")
-        _MINUTE_DATA_CACHE[symbol] = (None, now)
+        with _minute_data_cache_lock:
+            _MINUTE_DATA_CACHE[symbol] = (None, now)
         return None
 
 
@@ -364,25 +386,21 @@ def estimate_live_volume(session: requests.Session, symbol: str) -> float | None
 
 def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
     now = time.time()
-    if symbol in _INTRADAY_CACHE:
-        val, ts = _INTRADAY_CACHE[symbol]
-        if val is not None and now - ts < _INTRADAY_CACHE_TTL:
-            return val
-        if val is None and now - ts < _INTRADAY_CACHE_FAIL_TTL:
-            return None
+    with _intraday_cache_lock:
+        if symbol in _INTRADAY_CACHE:
+            val, ts = _INTRADAY_CACHE[symbol]
+            if val is not None and now - ts < _INTRADAY_CACHE_TTL:
+                return val
+            if val is None and now - ts < _INTRADAY_CACHE_FAIL_TTL:
+                return None
 
     items = _fetch_minute_data(session, symbol)
     if not items or len(items) < 2:
-        _INTRADAY_CACHE[symbol] = (None, now)
+        with _intraday_cache_lock:
+            _INTRADAY_CACHE[symbol] = (None, now)
         return None
 
     try:
-        prices = [item["current"] for item in items]
-        high = max(prices)
-        low = min(prices)
-        first_px = prices[0]
-        last_px = prices[-1]
-
         def _score_period(period_items: list[dict], period_weight: float) -> float:
             if len(period_items) < 2:
                 return 0.0
@@ -427,7 +445,6 @@ def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
                 elif net <= -2:
                     p_score -= 2.0
 
-            chg = (p_last - p_first) / p_first * 100 if p_first > 0 else 0
             return p_score * period_weight
 
         total_items = len(items)
@@ -452,9 +469,11 @@ def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
             score -= 2.0
 
         score = max(-10.0, min(10.0, score))
-        _INTRADAY_CACHE[symbol] = (score, now)
+        with _intraday_cache_lock:
+            _INTRADAY_CACHE[symbol] = (score, now)
         return score
     except Exception as e:
         print(f"  [!] 分析分时强度失败 {symbol}: {e}")
-        _INTRADAY_CACHE[symbol] = (None, now)
+        with _intraday_cache_lock:
+            _INTRADAY_CACHE[symbol] = (None, now)
         return None

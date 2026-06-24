@@ -4,8 +4,9 @@ API: /v5/stock/hot_stock/new_list.json?type=10&order_by=rank_change
 """
 
 import time
-import requests
 from datetime import datetime
+
+import requests
 
 
 def fetch_biaosheng(page=1, size=100):

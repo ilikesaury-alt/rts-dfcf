@@ -1,7 +1,7 @@
-import pytest
+from datetime import datetime
+
 from scanner.candidate_pool import ScanSession
-from scanner.models import Candidate, StockInfo, KlineSummary
-from datetime import datetime, date
+from scanner.models import Candidate, KlineSummary, StockInfo
 
 
 def _make_candidate(symbol: str, score: int = 20) -> Candidate:

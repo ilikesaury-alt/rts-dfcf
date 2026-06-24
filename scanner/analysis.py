@@ -1,11 +1,20 @@
 from datetime import date
 
-from scanner.models import StockInfo, KlineSummary
-from scanner.config import NEW_FACE_WEIGHTS, MOMENTUM_WEIGHTS, PULLBACK_WEIGHTS, \
-    MAX_NEW_FACE_TODAY_PCT, \
-    VOL_RANK_VOL_THRESHOLD, VOL_RANK_STRONG_RC, VOL_RANK_MEDIUM_RC, VOL_RANK_WEAK_RC, \
-    VOL_RANK_STRONG_PTS, VOL_RANK_MEDIUM_PTS, VOL_RANK_WEAK_PTS
-from scanner.indicators import compute_rsi, compute_kdj, compute_macd
+from scanner.config import (
+    MAX_NEW_FACE_TODAY_PCT,
+    MOMENTUM_WEIGHTS,
+    NEW_FACE_WEIGHTS,
+    PULLBACK_WEIGHTS,
+    VOL_RANK_MEDIUM_PTS,
+    VOL_RANK_MEDIUM_RC,
+    VOL_RANK_STRONG_PTS,
+    VOL_RANK_STRONG_RC,
+    VOL_RANK_VOL_THRESHOLD,
+    VOL_RANK_WEAK_PTS,
+    VOL_RANK_WEAK_RC,
+)
+from scanner.indicators import compute_kdj, compute_macd, compute_rsi
+from scanner.models import KlineSummary, StockInfo
 
 # Weak-form filter thresholds
 _WEAK_FORM_MIN_DOWN_DAYS = 3
@@ -400,7 +409,7 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
 
 def _calc_pullback_base_metrics(kline: list[dict], today_str: str) -> tuple[list, list, float, float, float]:
     """Calculate base metrics for pullback analysis.
-    
+
     Returns:
         (pcts, closes, accumulated, vol_ratio, avg_vol) tuple
     """
@@ -421,7 +430,7 @@ def _calc_pullback_base_metrics(kline: list[dict], today_str: str) -> tuple[list
 
 def _score_pullback_today_pct(today_pct: float, W: dict) -> tuple[int, dict]:
     """Score based on today's percentage change.
-    
+
     Returns:
         (score, dimensions) tuple
     """
@@ -447,7 +456,7 @@ def _score_pullback_today_pct(today_pct: float, W: dict) -> tuple[int, dict]:
 
 def _score_pullback_accumulated(accumulated: float, W: dict) -> tuple[int, dict]:
     """Score based on accumulated percentage change.
-    
+
     Returns:
         (score, dimensions) tuple
     """
@@ -472,7 +481,7 @@ def _score_pullback_accumulated(accumulated: float, W: dict) -> tuple[int, dict]
 
 def _score_pullback_volume(vol_ratio: float, W: dict) -> tuple[int, dict]:
     """Score based on volume ratio.
-    
+
     Returns:
         (score, dimensions) tuple
     """
@@ -497,7 +506,7 @@ def _score_pullback_volume(vol_ratio: float, W: dict) -> tuple[int, dict]:
 
 def _check_crash_day(pcts: list, W: dict) -> tuple[bool, int, dict]:
     """Check if there's been a crash day in the last 5 days.
-    
+
     Returns:
         (has_crash_day, score, dimensions) tuple
     """
@@ -514,7 +523,7 @@ def _check_crash_day(pcts: list, W: dict) -> tuple[bool, int, dict]:
 
 def _analyze_pullback_ma(closes: list, W: dict) -> dict:
     """Analyze moving averages for pullback strategy.
-    
+
     Returns:
         Dictionary containing MA analysis results
     """
@@ -563,7 +572,7 @@ def _analyze_pullback_ma(closes: list, W: dict) -> dict:
 
 def _score_pullback_indicators(closes: list, W: dict) -> tuple[int, dict]:
     """Score based on technical indicators (RSI, MACD).
-    
+
     Returns:
         (score, dimensions) tuple
     """
@@ -593,7 +602,7 @@ def _score_pullback_indicators(closes: list, W: dict) -> tuple[int, dict]:
 
 def _classify_pullback_trend(ma_support: bool, ma_broken: bool, today_pct: float) -> str:
     """Classify the pullback trend based on conditions.
-    
+
     Returns:
         Trend classification string
     """

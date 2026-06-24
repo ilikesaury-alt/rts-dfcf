@@ -1,4 +1,4 @@
-from scanner.indicators import compute_rsi, compute_kdj, compute_macd
+from scanner.indicators import compute_kdj, compute_macd, compute_rsi
 
 
 def test_rsi_basic():

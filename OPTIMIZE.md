@@ -91,13 +91,6 @@
 
 ### 🔴 Bug 修复
 
-#### 14. [Bug] 自进化权重覆盖不生效 ✅
-
-- **位置**: `scanner/orchestrator.py:84-86` + `scanner/analysis.py:53,187`
-- **问题**: `orchestrator.py` 用 `replace("new_face_", "")` 截取键名（`new_face_today_pct` → `today_pct`），但 `analysis.py` 评分用的是 `W["today_pct_2_6"]` 等 config-level 键。覆盖被静默丢弃。
-- **修复**: 新增 `NEW_FACE_DIM_TO_WEIGHT_KEY` / `MOMENTUM_DIM_TO_WEIGHT_KEY` 精准映射表，orchestrator 加载时做映射而非简单 replace。
-- **改动**: `scanner/config.py` + `scanner/orchestrator.py:87-88`
-
 #### 15. [Bug] 4 个测试失败 ✅
 
 | 测试 | 原因 | 修复 |
@@ -144,15 +137,13 @@
 |---|------|------|
 | 21 | **Score 可变性违规** | `Candidate.score` 在创建后 `+=` 多次突变 |
 | 22 | **14 处 bare except Exception** | 全部静默吞异常，不记录原因 |
-| 23 | **self_evolve.py 重复导入** | `dimension_ic` 在模块顶部和 `if args.apply:` 块内各导入一次 |
-| 24 | **optimizer.py 引用不存在 config 键** | `rank_change_gte_2000` 和 `candle_quality_max` 在 config 中不存在 |
 | 25 | **交易时段显示不一致** | 启动日志打印 `11:45`，config 中 `MORNING_END = 11:30` |
 
 #### P2 — 工程改进
 
 | # | 问题 | 说明 |
 |---|------|------|
-| 26 | **测试覆盖不足** | 仅 `analysis.py` 有测试，orchestrator/database/evolution 无覆盖 |
+| 26 | **测试覆盖不足** | 仅 `analysis.py` 有测试，orchestrator/database/chain_watch 无覆盖 |
 | 27 | **query 脚本硬编码日期** | `query_today.py` / `query_summary.py` 写死 `2026-06-11` |
 | 28 | **Feishu 推送注释状态** | `limit_up_scanner.py:83` 已注释，可清理相关代码 |
 
@@ -174,7 +165,7 @@
 - **接入**: `analysis.py` 中 integrate 到 `analyze_new_face()` 和 `analyze_momentum()`
 - **新面孔信号**: 超卖反转（RSI < 30, KDJ 低位金叉, MACD 转正）
 - **动量信号**: 趋势确认（RSI 50~70, KDJ 中位上行, MACD > 0）
-- **基础权重**: 3/维度（`rsi_bonus` / `kdj_bonus` / `macd_bonus`），可自进化
+- **基础权重**: 3/维度（`rsi_bonus` / `kdj_bonus` / `macd_bonus`）
 
 ### P1b — RPS 相对强弱 ✅
 
@@ -187,7 +178,6 @@
 ### 附带改动
 
 - K 线获取从 15 天升级到 45 天，缓存长度检查 ≥34 条（MACD 需求）
-- `self_evolve.py --apply` 新增 6 个指标维度的 weight-key 映射
 - 废弃字段清理：`Candidate.indicator_bonus` 删除（改为 analysis.py 局部变量）
 
 ---
@@ -205,7 +195,6 @@
 - **评分**: 今日跌幅 -3% ~ -1% 加分最高(+15)，累计 10%~20% 加分最高(+18)，缩量回踩 MA10 +12
 - **最低门槛**: 18 分（配置 `PULLBACK_MIN_SCORE`）
 - **显示**: `○` 青色 + `回` 标签
-- **自进化**: 已配置 `PULLBACK_DIM_TO_WEIGHT_KEY` 映射
 
 #### 30. [策略] 列表动量跟踪 ✅
 
@@ -247,11 +236,6 @@
 - **位置**: `scanner/analysis.py`
 - **修复**: 删除不可达代码块（已被硬拒绝 `accumulated < -8` 守卫拦截）
 
-#### 36. [Bug] 自进化 `new_face_min_score` 默认值与 config 不同步 ✅
-
-- **位置**: `scanner/evolution/optimizer.py`
-- **修复**: `BASE_PARAMS` 中的 `new_face_min_score` 由 20 → 18
-
 #### 37. [Bug] 推荐结果未落库 ✅
 
 - **位置**: `limit_up_scanner.py`
@@ -269,38 +253,15 @@
 
 - **位置**: `scanner/analysis.py` → `scanner/config.py`
 - **改动**: `_VOL_RANK_*` 常量从 analysis.py 移至 config.py 作为 `VOL_RANK_*`，函数读取 config 值
-- **目的**: 使自进化调参生效
 
 #### 40. [质量] 冗余 `if len(closes) >= 20` 嵌套 ✅
 
 - **位置**: `scanner/analysis.py:478`
 - **修复**: 删除始终为真的嵌套判断
 
-## 改动量汇总
-
-| 级别 | 总数 | 已完成 | 剩余 |
-|------|:----:|:------:|:----:|
-| 🔴 Bug 修复 | 14 | 14 | 0 |
-| 🟡 策略/质量改进 | 14 | 14 | 0 |
-| 🟢 体验优化/工程 | 10 | 10 | 0 |
-| 🆕 P0/P1/P2 迭代 | 10 | 3 | 7 |
-
----
-
 ## 2026-06-23 代码审查修复
 
 ### 🔴 Bug 修复
-
-#### 41. [Bug] 回测引擎与 production 评分结构性分歧 ✅
-
-- **位置**: `scanner/backtest/scoring.py`（已删除）
-- **问题**: 独立重写的评分函数与 production `analysis.py` 存在多处结构性分歧:
-  - accumulated 评分：加法（backtest）vs 互斥 if/elif（production）
-  - bottom 检测：遗漏 `near_20d_low`、`v_shape_reversal`
-  - `no_heavy_loss` + `volume_surge` 同时 true 时：backtest 加 25 分，production 最多 15 分
-  - 缺少 gap-up、MA bull、RSI/KDJ/MACD、weak-form filter
-- **修复**: 删除 `scanner/backtest/scoring.py`，backtest 引擎直接调用 production `analyze_new_face`/`analyze_momentum`
-- **改动**: `scanner/backtest/engine.py`（重写）、`scanner/backtest/grid_search.py`（flat weight dicts）、`scanner/backtest/__init__.py`、`backtest.py`
 
 #### 42. [Bug] K 线缓存查询窗口过短 ✅
 
@@ -327,12 +288,6 @@
 - **位置**: `scanner/analysis.py`
 - **问题**: `analyze_new_face`、`analyze_momentum`、`analyze_pullback` 中 score/dims 计算高度相似
 - **修复**: 提取 `_score_today_pct()`、`_compute_new_face_indicators()`、`_compute_momentum_indicators()`
-
-#### 46. [质量] 回填重复 API 调用 ✅
-
-- **位置**: `scanner/evolution/tracker.py`
-- **问题**: `fallback_missing` 未去重，同一 symbol 多次 API 调用
-- **修复**: `symbols_to_fetch` 去重 + `kline_cache` dict
 
 #### 47. [质量] 循环内 import ✅
 
@@ -366,21 +321,3 @@
 #### 53. [工程] indicators.py 无测试覆盖 ✅
 
 - **修复**: 新增 `tests/test_indicators.py`（9 个 RSI/KDJ/MACD 测试）
-
-#### 54. [工程] 重复 YI 常量 ✅
-
-- **位置**: `scanner/backtest/engine.py`、`scanner/backtest/scoring.py`（已删除）
-- **修复**: 随 scoring.py 删除，engine.py 不再定义 YI
-
----
-
-## 🔴 破坏性变更记录
-
-### 回测入场价变更：收盘价 → 次日开盘价
-
-- **位置**: `scanner/backtest/engine.py:_next_trading_open()` (L88-97)
-- **变更**: 回测入场价格从当日收盘价 (`entry_close`) 改为 **下一交易日开盘价** (`entry_price = _next_trading_open(...)`)
-- **影响**: 所有历史回测结果将发生显著变化，前向收益计算基准改变
-- **兼容**: 若无下一交易日 K 线数据，回退使用收盘价（向后兼容）
-- **相关**: `run_backtest()` L208, L215-217；`forward_return()` 使用 `entry_price`
-- **状态**: ✅ 已完成（需注意对比历史数据时的基准差异）
