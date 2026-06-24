@@ -1,3 +1,4 @@
+import os
 import sys
 
 from scanner.industry_chain.chains import CHAINS
@@ -6,6 +7,10 @@ from scanner.industry_chain.models import (
     ChokepointCandidate,
     ChainTrend,
 )
+
+
+def clear_console():
+    os.system("cls" if os.name == "nt" else "clear")
 
 
 def _safe_print(text: str):

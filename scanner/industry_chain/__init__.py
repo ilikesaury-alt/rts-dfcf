@@ -10,6 +10,7 @@ from scanner.api import make_session
 from scanner.database import init_industry_chain_tables
 from scanner.industry_chain.display import (
     _safe_print,
+    clear_console,
     print_candidate_detail,
     print_candidates,
     print_chain_trends,
@@ -21,6 +22,7 @@ from scanner.industry_chain.pipeline import scan
 
 
 def run_once(session_state: IndustryScanSession | None = None) -> dict:
+    clear_console()
     session_state = session_state or IndustryScanSession()
 
     conn = init_industry_chain_tables()
