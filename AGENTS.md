@@ -4,6 +4,7 @@
 
 - **Run scanner**: `python limit_up_scanner.py` (default 60s interval) or `python limit_up_scanner.py 120` (custom seconds)
 - **Run industry chain scanner**: `python industry_chain_scanner.py`
+- **Run tonghuashun scanner**: `python tonghuashun_scanner.py` (default 60s interval) or `python tonghuashun_scanner.py 120` (custom seconds)
 - **Run tests**: `python -m pytest tests/ -v`
 - **Single test**: `python -m pytest tests/test_analysis.py::test_new_face -v`
 
@@ -12,14 +13,16 @@
 A-share stock momentum scanner monitoring Xueqiu's surge ranking API. Scores ChiNext (300xxx) stocks using "new face" vs "old face" strategies.
 
 ```
-limit_up_scanner.py       # Main scanner entry point
+limit_up_scanner.py       # Main scanner entry point (Xueqiu source)
 industry_chain_scanner.py # Industry chain scanner entry point
+tonghuashun_scanner.py    # Tonghuashun hot list scanner entry point
 scanner/
   orchestrator.py         # Core scan pipeline
   analysis.py             # Scoring engines (new_face, momentum, pullback)
   validator.py            # Cross-validation (3-dim check per strategy)
   config.py               # All thresholds and weights
   api.py                  # Xueqiu API calls (biaosheng, kline, market cap)
+  ths_api.py              # Tonghuashun hot list API calls
   database.py             # SQLite CRUD (appearances, kline, recommendations)
   models.py               # StockInfo, Candidate, KlineSummary dataclasses
   indicators.py           # RSI, KDJ, MACD computation

@@ -249,13 +249,15 @@ def _compute_rps(candidates: list[Candidate]) -> dict[str, int]:
     return scores
 
 
-def scan(conn: sqlite3.Connection, session: requests.Session) -> tuple[list[Candidate], list[Candidate], list[Candidate], list[StockInfo], int]:
+def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
+                  session: requests.Session) -> tuple[
+                      list[Candidate], list[Candidate], list[Candidate],
+                      list[StockInfo], int]:
     global _session_state
     session_state = _session_state
     today = date.today().isoformat()
     session_state.reset_if_new_day(today)
 
-    raw = fetch_biaosheng(session)
     sentiment_info = compute_surge_sentiment(raw)
     gem_stocks = _filter_gem_stocks(raw)
 
@@ -272,9 +274,12 @@ def scan(conn: sqlite3.Connection, session: requests.Session) -> tuple[list[Cand
     gem_stocks_filtered: list[StockInfo] = []
     filtered_large_cap = 0
     for s in gem_stocks:
+        cap_data = market_caps.get(s.symbol, {})
+        cap_current = cap_data.get("current", 0)
+        if cap_current and s.current == 0:
+            object.__setattr__(s, "current", cap_current)
         if s.current > 0 and s.current > MAX_STOCK_PRICE:
             continue
-        cap_data = market_caps.get(s.symbol, {})
         mc = cap_data.get("market_cap", 0)
         if mc > 0 and mc > MAX_MARKET_CAP:
             filtered_large_cap += 1
@@ -337,6 +342,11 @@ def scan(conn: sqlite3.Connection, session: requests.Session) -> tuple[list[Cand
     new_faces.sort(key=lambda c: -c.score)
     momentum.sort(key=lambda c: -c.score)
     return new_faces, momentum, stale_candidates, gem_stocks_filtered, filtered_large_cap
+
+
+def scan(conn: sqlite3.Connection, session: requests.Session) -> tuple[list[Candidate], list[Candidate], list[Candidate], list[StockInfo], int]:
+    raw = fetch_biaosheng(session)
+    return scan_with_raw(raw, conn, session)
 
 
 def _parallel_fetch(pool: ThreadPoolExecutor, base_session: requests.Session,

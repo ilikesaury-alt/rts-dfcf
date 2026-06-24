@@ -79,11 +79,12 @@
 - **修复**: 每次 API 调用（K 线/分时）前检查间隔，确保 ≥0.15 秒
 - **状态**: ✅ 已完成
 
-### 13. [体验] 单数据源依赖
+### 13. [体验] 单数据源依赖 ✅
 
 - **问题**: 完全依赖雪球飙升榜，API 变动即瘫痪
-- **建议**: 增加东方财富/同花顺的热榜 API 作为备选源
-- **改动量**: 大
+- **修复**: 新增 `scanner/ths_api.py` + `tonghuashun_scanner.py`，同花顺热股榜作为独立入口
+- **数据源**: `https://dq.10jqka.com.cn/fuyao/hot_list_data/out/hot_list/v1/stock?list_type=skyrocket`
+- **改动量**: 大 ✅ 已完成
 
 ---
 
