@@ -7,6 +7,7 @@ from datetime import date, timedelta
 import requests
 
 from scanner.analysis import analyze_momentum, analyze_new_face, analyze_pullback
+from scanner.validator import validate
 from scanner.api import (
     analyze_intraday,
     analyze_opening_strength,
@@ -159,7 +160,8 @@ def _filter_gem_stocks(raw: list[dict]) -> list[StockInfo]:
 
 
 def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, list[dict] | None],
-                 today: str, session_state: ScanSession
+                 today: str, session_state: ScanSession,
+                 clusters: dict[str, list[str]] | None = None
                  ) -> tuple[Candidate | None, Candidate | None]:
     is_first_today = session_state.mark_seen(stock.symbol)
     app_history = get_symbol_appearances(conn, stock.symbol, NEW_FACE_LOOKBACK_DAYS)
@@ -171,26 +173,58 @@ def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, l
     new_face_result: Candidate | None = None
     momentum_result: Candidate | None = None
 
+    nk = analyze_new_face(stock, kline)
+    mk = analyze_momentum(stock, kline)
+    pk = analyze_pullback(stock, kline)
+
+    historical = [k for k in (kline or []) if k["date"] != today]
+    closes = [k["close"] for k in historical]
+
     if is_new:
-        ks = analyze_new_face(stock, kline)
-        if ks and ks.score >= NEW_FACE_MIN_SCORE:
-            new_face_result = _build_candidate(stock, ks, "new_face", is_first_today, first_date, kline)
-        else:
-            mk = analyze_momentum(stock, kline)
-            if mk and mk.score >= MOMENTUM_MIN_SCORE:
+        if nk and nk.score >= NEW_FACE_MIN_SCORE:
+            passed, bonus, dims = validate(
+                "new_face", stock, nk, closes, historical, clusters)
+            if passed:
+                nk.score += bonus
+                nk.dimensions["validation_bonus"] = bonus
+                nk.dimensions.update(dims)
+                new_face_result = _build_candidate(stock, nk, "new_face", is_first_today, first_date, kline)
+                return new_face_result, None
+        if mk and mk.score >= MOMENTUM_MIN_SCORE:
+            passed, bonus, dims = validate(
+                "momentum", stock, mk, closes, historical, clusters)
+            if passed:
+                mk.score += bonus
+                mk.dimensions["validation_bonus"] = bonus
+                mk.dimensions.update(dims)
                 momentum_result = _build_candidate(stock, mk, "momentum", is_first_today, first_date, kline)
     else:
-        mk = analyze_momentum(stock, kline)
         if mk and mk.score >= MOMENTUM_MIN_SCORE:
-            momentum_result = _build_candidate(stock, mk, "momentum", is_first_today, first_date, kline)
-        else:
-            pk = analyze_pullback(stock, kline)
-            if pk and pk.score >= PULLBACK_MIN_SCORE:
+            passed, bonus, dims = validate(
+                "momentum", stock, mk, closes, historical, clusters)
+            if passed:
+                mk.score += bonus
+                mk.dimensions["validation_bonus"] = bonus
+                mk.dimensions.update(dims)
+                momentum_result = _build_candidate(stock, mk, "momentum", is_first_today, first_date, kline)
+                return None, momentum_result
+        if pk and pk.score >= PULLBACK_MIN_SCORE:
+            passed, bonus, dims = validate(
+                "pullback", stock, pk, closes, historical, clusters)
+            if passed:
+                pk.score += bonus
+                pk.dimensions["validation_bonus"] = bonus
+                pk.dimensions.update(dims)
                 momentum_result = _build_candidate(stock, pk, "pullback", is_first_today, first_date, kline)
-            else:
-                nk = analyze_new_face(stock, kline)
-                if nk and nk.score >= NEW_FACE_MIN_SCORE:
-                    new_face_result = _build_candidate(stock, nk, "known_new_face", is_first_today, first_date, kline)
+                return None, momentum_result
+        if nk and nk.score >= NEW_FACE_MIN_SCORE:
+            passed, bonus, dims = validate(
+                "known_new_face", stock, nk, closes, historical, clusters)
+            if passed:
+                nk.score += bonus
+                nk.dimensions["validation_bonus"] = bonus
+                nk.dimensions.update(dims)
+                new_face_result = _build_candidate(stock, nk, "known_new_face", is_first_today, first_date, kline)
 
     return new_face_result, momentum_result
 
@@ -249,11 +283,13 @@ def scan(conn: sqlite3.Connection, session: requests.Session) -> tuple[list[Cand
 
     klines = _fetch_all_klines(conn, session, gem_stocks_filtered)
 
+    clusters = get_sector_clusters(gem_stocks_filtered)
+
     new_faces: list[Candidate] = []
     momentum: list[Candidate] = []
 
     for stock in gem_stocks_filtered:
-        nf, mo = _score_stock(stock, conn, klines, today, session_state)
+        nf, mo = _score_stock(stock, conn, klines, today, session_state, clusters)
         if nf:
             new_faces.append(nf)
         if mo:
@@ -263,8 +299,6 @@ def scan(conn: sqlite3.Connection, session: requests.Session) -> tuple[list[Cand
         cap_data = market_caps.get(c.stock.symbol, {})
         c.market_cap = cap_data.get("market_cap", 0)
         c.circ_market_cap = cap_data.get("circ_market_cap", 0)
-
-    clusters = get_sector_clusters(gem_stocks_filtered)
     all_candidates = new_faces + momentum
 
     rps_scores: dict[str, int] = {}

@@ -15,6 +15,7 @@ limit_up_scanner.py   # Entry point - main loop
 scanner/
   orchestrator.py     # Core scan pipeline
   analysis.py         # Scoring engines (new_face, momentum, pullback)
+  validator.py        # Cross-validation (3-dim check per strategy)
   config.py           # All thresholds and weights
   api.py              # Xueqiu API calls (biaosheng, kline, market cap)
   database.py         # SQLite CRUD (appearances, kline, recommendations)
@@ -42,6 +43,11 @@ tests/                # pytest test suite
 
 - Scanner filters: GEM stocks only (300xxx), excludes ST/*ST, HK stocks, market cap >300亿, price >100元
 - Three strategies: new_face (bottom breakout), momentum (trend continuation), pullback (reversion)
+- Cross-validation (`validator.py`): each candidate must pass ≥2 of 3 independent dimensions before final acceptance
+  - **new_face**: indicator convergence (RSI+MACD+KDJ), higher-low structure, sector resonance
+  - **momentum**: MA5>10>20 alignment, no divergence, volume uniformity
+  - **pullback**: MA20 trending up, volume shrinkage, sector still active
+- Priority chain: primary strategy attempted first; if cross-validation fails, falls through to next strategy
 
 ## Testing
 

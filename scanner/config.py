@@ -227,3 +227,35 @@ def _load_holidays_from_file(path: str) -> set[str] | None:
 
 
 HOLIDAYS: set[str] = _load_holidays_from_file(HOLIDAYS_FILE) or _HOLIDAYS_FALLBACK
+
+# == Cross-validation weights ==
+# New face
+V_NF_CONVERGE_STRONG = 13
+V_NF_CONVERGE_PARTIAL = 8
+V_NF_HL_CLEAR = 8
+V_NF_HL_STABLE = 3
+V_NF_HL_FAIL = -5
+V_NF_SECTOR_STRONG = 8
+V_NF_SECTOR_MOD = 5
+V_NF_SECTOR_WEAK = 3
+
+# Momentum
+V_MO_MA_FULL = 10
+V_MO_MA_PARTIAL = 5
+V_MO_MA_NONE = -8
+V_MO_DIVERGE_NONE = 8
+V_MO_DIVERGE_BEAR = -10
+V_MO_VOL_UP = 8
+V_MO_VOL_STABLE = 5
+V_MO_VOL_SPIKE = -5
+
+# Pullback
+V_PB_MA_UP = 10
+V_PB_MA_FLAT = 0
+V_PB_MA_DOWN = -10
+V_PB_SHRINK_YES = 10
+V_PB_SHRINK_MOD = 5
+V_PB_SHRINK_NO = -5
+V_PB_SECTOR_HOT = 8
+V_PB_SECTOR_COLD = 3
+V_PB_SECTOR_DEAD = -5
