@@ -6,6 +6,13 @@ from scanner.config import (
     EARLY_TRADE_CUTOFF,
     LATE_BONUS,
     LATE_TRADE_START,
+    FATIGUE_ACCELERATE_BONUS_PER_DAY,
+    FATIGUE_ACCELERATE_PCT,
+    FATIGUE_PENALTY_CAP,
+    FATIGUE_PENALTY_PER_DAY,
+    FATIGUE_PRICE_WARN_ACCUM,
+    FATIGUE_STREAK_MIN,
+    FATIGUE_VOL_WARN_RATIO,
     LIST_STREAK_BONUS_2,
     LIST_STREAK_BONUS_3,
     LIST_STREAK_BONUS_5,
@@ -132,12 +139,48 @@ def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None
     traj = rank_trajectory_score(c.stock.symbol)
     rank = c.stock.rank
     bonus = 0
-    if streak >= 5:
-        bonus += LIST_STREAK_BONUS_5
-    elif streak >= 3:
-        bonus += LIST_STREAK_BONUS_3
-    elif streak >= 2:
-        bonus += LIST_STREAK_BONUS_2
+
+    if streak >= FATIGUE_STREAK_MIN:
+        fatigue_signals = 0
+        if c.kline and c.kline.accumulated_pct < FATIGUE_PRICE_WARN_ACCUM:
+            fatigue_signals += 1
+        if c.kline and c.kline.volume_ratio < FATIGUE_VOL_WARN_RATIO:
+            fatigue_signals += 1
+        if traj < 2:
+            fatigue_signals += 1
+
+        today_pct = c.stock.percent
+        accelerating = (
+            today_pct >= FATIGUE_ACCELERATE_PCT
+            and c.kline and c.kline.volume_ratio > 1.0
+        ) if c.kline else False
+
+        if fatigue_signals >= 2:
+            penalty = max(streak * FATIGUE_PENALTY_PER_DAY, FATIGUE_PENALTY_CAP)
+            bonus += penalty
+            if c.kline:
+                c.kline.dimensions["fatigue"] = penalty
+                c.kline.dimensions["fatigue_detail"] = f"signals_{fatigue_signals}/3_streak_{streak}"
+        elif accelerating:
+            bonus += streak * FATIGUE_ACCELERATE_BONUS_PER_DAY
+            if c.kline:
+                c.kline.dimensions["fatigue"] = streak * FATIGUE_ACCELERATE_BONUS_PER_DAY
+                c.kline.dimensions["fatigue_detail"] = "accelerating"
+        else:
+            if streak >= 5:
+                bonus += LIST_STREAK_BONUS_5
+            elif streak >= 3:
+                bonus += LIST_STREAK_BONUS_3
+            elif streak >= 2:
+                bonus += LIST_STREAK_BONUS_2
+    else:
+        if streak >= 5:
+            bonus += LIST_STREAK_BONUS_5
+        elif streak >= 3:
+            bonus += LIST_STREAK_BONUS_3
+        elif streak >= 2:
+            bonus += LIST_STREAK_BONUS_2
+
     bonus += traj
     if rank <= TOP40_THRESHOLD:
         bonus += TOP40_BONUS

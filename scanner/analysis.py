@@ -6,6 +6,10 @@ from scanner.config import (
     MOMENTUM_WEIGHTS,
     NEW_FACE_WEIGHTS,
     PULLBACK_WEIGHTS,
+    VOL_PEAK_LOOKBACK,
+    VOL_PEAK_MOMENTUM_WARN,
+    VOL_PEAK_NEW_FACE_MIN,
+    VOL_PEAK_PULLBACK_CONFIRM,
     VOL_RANK_MEDIUM_PTS,
     VOL_RANK_MEDIUM_RC,
     VOL_RANK_STRONG_PTS,
@@ -96,6 +100,12 @@ def _vol_rank_combo_score(vol_ratio: float, rank_change: int) -> int:
     return 0
 
 
+def _vol_peak_ratio(volumes: list[float], lookback: int = VOL_PEAK_LOOKBACK) -> float:
+    window = volumes[-lookback:] if len(volumes) >= lookback else volumes
+    peak = max(window)
+    return volumes[-1] / peak if peak > 0 else 1.0
+
+
 def _score_today_pct(today_pct: float, W: dict, prefix: str) -> tuple[int, str, int]:
     if today_pct < 0.5:
         return W["today_pct_lt_0_5"], f"{prefix}_today_pct", W["today_pct_lt_0_5"]
@@ -172,12 +182,16 @@ def _compute_momentum_indicators(closes: list[float], historical_kline: list[dic
     if rsi_val is not None:
         if 50 <= rsi_val <= 70:
             bonus += W["rsi_bonus"]
+        elif rsi_val > 85:
+            bonus -= W["rsi_bonus"] * 3
         elif rsi_val > 80:
+            bonus -= W["rsi_bonus"] * 2
+        elif rsi_val > 70:
             bonus -= W["rsi_bonus"]
         dims["momentum_rsi"] = round(rsi_val, 1)
     if kdj_val is not None:
         if kdj_val["J"] > 100:
-            bonus -= W["kdj_bonus"]
+            bonus -= W["kdj_bonus"] * 2
         elif kdj_val["J"] < 20:
             bonus += W["kdj_bonus"]
         elif kdj_val["K"] > kdj_val["D"]:
@@ -298,6 +312,11 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
         score += W["volume_surge"]
         dims["new_face_volume"] = W["volume_surge"]
 
+    vol_peak = _vol_peak_ratio(volumes)
+    if vol_peak < VOL_PEAK_NEW_FACE_MIN:
+        score += 5
+        dims["new_face_vol_peak"] = round(vol_peak, 2)
+
     vol_rank = _vol_rank_combo_score(vol_ratio, stock.rank_change)
     score += vol_rank
     if vol_rank:
@@ -396,6 +415,11 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
         score += W["vol_low"]
         dims["momentum_volume"] = W["vol_low"]
 
+    vol_peak = _vol_peak_ratio(volumes)
+    if vol_peak < VOL_PEAK_MOMENTUM_WARN:
+        score -= 8
+        dims["momentum_vol_peak"] = round(vol_peak, 2)
+
     # Crash check
     if len(pcts) >= 2:
         has_crash_day = any(p <= _CRASH_THRESHOLD for p in pcts[-5:])
@@ -438,11 +462,11 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
                         score=score, dimensions=dims, avg_volume=round(avg_vol, 2))
 
 
-def _calc_pullback_base_metrics(kline: list[dict], today_str: str) -> tuple[list, list, float, float, float, list]:
+def _calc_pullback_base_metrics(kline: list[dict], today_str: str) -> tuple[list, list, float, float, float, list, list]:
     """Calculate base metrics for pullback analysis.
 
     Returns:
-        (pcts, closes, accumulated, vol_ratio, avg_vol, historical_kline) tuple
+        (pcts, closes, accumulated, vol_ratio, avg_vol, historical_kline, volumes) tuple
     """
     today_str = today_str or date.today().isoformat()
     historical_kline = [k for k in kline if k["date"] != today_str]
@@ -456,7 +480,7 @@ def _calc_pullback_base_metrics(kline: list[dict], today_str: str) -> tuple[list
     today_vol = volumes[-1] if volumes else 0
     vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
 
-    return pcts, closes, accumulated, vol_ratio, avg_vol, historical_kline
+    return pcts, closes, accumulated, vol_ratio, avg_vol, historical_kline, volumes
 
 
 def _score_pullback_today_pct(today_pct: float, W: dict) -> tuple[int, dict]:
@@ -676,7 +700,7 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
     if today_pct <= -8 or today_pct > 2:
         return None
 
-    pcts, closes, accumulated, vol_ratio, avg_vol, historical_kline = _calc_pullback_base_metrics(kline, today_str)
+    pcts, closes, accumulated, vol_ratio, avg_vol, historical_kline, volumes = _calc_pullback_base_metrics(kline, today_str)
 
     if accumulated < 5:
         return None
@@ -696,6 +720,11 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
     vol_score, vol_dims = _score_pullback_volume(vol_ratio, W)
     score += vol_score
     dims.update(vol_dims)
+
+    vol_peak = _vol_peak_ratio(volumes)
+    if vol_peak < VOL_PEAK_PULLBACK_CONFIRM:
+        score += 5
+        dims["pullback_vol_peak"] = round(vol_peak, 2)
 
     has_crash_day, crash_score, crash_dims = _check_crash_day(pcts, W)
     score += crash_score

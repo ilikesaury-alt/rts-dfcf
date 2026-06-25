@@ -32,6 +32,12 @@ VOL_RANK_STRONG_PTS = 15
 VOL_RANK_MEDIUM_PTS = 12
 VOL_RANK_WEAK_PTS = 8
 
+# Peak volume ratio thresholds (current / max volume in lookback window)
+VOL_PEAK_LOOKBACK = 20
+VOL_PEAK_MOMENTUM_WARN = 0.5  # volume < 50% of peak → momentum exhaustion
+VOL_PEAK_NEW_FACE_MIN = 0.3   # volume < 30% of peak → insufficient reversal volume
+VOL_PEAK_PULLBACK_CONFIRM = 0.3  # volume < 30% of peak → genuine shrinkage
+
 # List momentum scoring (consecutive surge list appearances + rank trajectory)
 LIST_STREAK_BONUS_2 = 3
 LIST_STREAK_BONUS_3 = 5
@@ -210,6 +216,15 @@ RPS_PCTILE_LOW = 30
 # K-line fetch configuration
 KLINE_FETCH_DAYS = 45     # Number of days to fetch from API
 KLINE_MIN_LENGTH = 34     # Minimum kline bars required for analysis
+
+# Fatigue detection for multi-day list appearances
+FATIGUE_PRICE_WARN_ACCUM = 8    # 5-day accum below this after 3+ days → price fatigue
+FATIGUE_VOL_WARN_RATIO = 1.0   # vol_ratio below this → volume fatigue
+FATIGUE_STREAK_MIN = 3          # minimum streak before fatigue applies
+FATIGUE_PENALTY_PER_DAY = -3   # penalty per streak day when fatigued
+FATIGUE_PENALTY_CAP = -15      # max fatigue penalty
+FATIGUE_ACCELERATE_PCT = 3     # today pct above this + healthy vol → acceleration bonus
+FATIGUE_ACCELERATE_BONUS_PER_DAY = 2  # bonus per streak day when accelerating
 
 # Time-based bonus thresholds (minutes since midnight)
 STALE_TIMEOUT_MINUTES = 30  # 掉榜后保留时长
