@@ -212,7 +212,7 @@ def _is_consecutive_trading_days(prev: date, curr: date) -> bool:
     return True
 
 
-def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: list, source: str = "xueqiu"):
+def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: list, source: str | None = None):
     import json
     today = now_beijing().date().isoformat()
     now = datetime.now().strftime("%H:%M:%S")
@@ -225,11 +225,12 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: li
             if existing:
                 continue
             breakdown = json.dumps(c.kline.dimensions, ensure_ascii=False) if c.kline and c.kline.dimensions else None
+            rec_source = source or getattr(c.stock, "source_tag", "unified")
             conn.execute(
                 "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, trend, score_breakdown, source) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (today, now, c.stock.symbol, c.stock.name, c.category,
-                 c.score, c.stock.percent, c.kline.trend if c.kline else None, breakdown, source),
+                 c.score, c.stock.percent, c.kline.trend if c.kline else None, breakdown, rec_source),
             )
         except Exception as e:
             print(f"  [!] 保存推荐记录失败 {c.stock.symbol}: {e}")

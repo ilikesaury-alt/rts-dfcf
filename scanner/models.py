@@ -11,6 +11,7 @@ class StockInfo:
     value: float
     rank_change: int
     rank: int
+    source_tag: str = "xueqiu"
 
 
 @dataclass

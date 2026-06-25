@@ -64,6 +64,7 @@ def ths_normalize(item: dict) -> dict:
         "value": 0,  # no trading amount equivalent
         "rank_change": item.get("hot_rank_chg", 0),
         "rank": item.get("order", 0),
+        "source_tag": "tonghuashun",
         "concept_tags": tag.get("concept_tag", []),
         "popularity_tag": tag.get("popularity_tag", ""),
     }

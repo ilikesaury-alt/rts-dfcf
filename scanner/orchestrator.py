@@ -155,6 +155,7 @@ def _filter_gem_stocks(raw: list[dict]) -> list[StockInfo]:
             value=item.get("value") or 0.0,
             rank_change=item.get("rank_change") or 0,
             rank=item.get("rank", i),
+            source_tag=item.get("source_tag", "xueqiu"),
         ))
     return gem_stocks
 

@@ -63,6 +63,15 @@ def pct_colored(pct: float, width: int = 8) -> str:
     return f"{c}{s:>{width}}{ANSI['RESET']}" if c else f"{s:>{width}}"
 
 
+def _source_tag(c: Candidate) -> str:
+    tag = getattr(c.stock, "source_tag", "xueqiu")
+    if tag == "both":
+        return f"{ANSI['GREEN']}双{ANSI['RESET']}"
+    if tag == "tonghuashun":
+        return "同"
+    return ""
+
+
 def _bonus_tag(c: Candidate) -> str:
     parts = []
     if c.rank_trend_bonus:
@@ -136,28 +145,29 @@ def display(new_faces: list[Candidate], momentum: list[Candidate],
         delta_text, delta_color = _rank_delta_str(s.symbol, s.rank, last_ranks)
         delta_display = (f"{delta_color}{_pad(delta_text,6,'r')}{ANSI['RESET']}"
                          if delta_color else _pad(delta_text,6,'r'))
+        src_tag = _source_tag(c)
         bonus_str = _bonus_tag(c)
         cap_str = _fmt_market_cap(c.market_cap)
         val_str = f"{s.value:.0f}" if s.value else "N/A"
         if show_val:
-            print(f"  {s.rank:>4} {delta_display} {_pad(display_name,10)} "
+            print(f"  {s.rank:>4} {delta_display} {_pad(src_tag,4)} {_pad(display_name,10)} "
                   f"{s.symbol:<12} {cur:>7} {pct_colored(s.percent)} "
                   f"{_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} "
                   f"{_pad(bonus_str,16)} {cap_str:>8} {val_str:>6}")
         else:
-            print(f"  {s.rank:>4} {delta_display} {_pad(display_name,10)} "
+            print(f"  {s.rank:>4} {delta_display} {_pad(src_tag,4)} {_pad(display_name,10)} "
                   f"{s.symbol:<12} {cur:>7} {pct_colored(s.percent)} "
                   f"{_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} "
                   f"{_pad(bonus_str,16)} {cap_str:>8}")
 
-    hdr = (f"  {_pad('排名',4,'r')} {_pad('变化',6,'r')} {_pad('名称',10)} "
+    hdr = (f"  {_pad('排名',4,'r')} {_pad('变化',6,'r')} {_pad('源',4)} {_pad('名称',10)} "
            f"{_pad('代码',12)} {_pad('现价',7,'r')} {_pad('涨幅',8,'r')} "
            f"{_pad('趋势',14)} {_pad('5日累计',8,'r')} {_pad('量比',6,'r')} "
            f"{_pad('评分',4,'r')} {_pad('增强',16)} {_pad('市值',8,'r')}")
 
     print(f"\n{ANSI['GREEN']}◆ 新面孔 — 底部异动 / 刚启动{ANSI['RESET']}  (找: 今日小涨+日线底部放量)")
     print(hdr)
-    print(f"  {'-'*108}")
+    print(f"  {'-'*112}")
     if new_faces:
         for c in new_faces:
             icon = "★" if c.first_breakout_bonus else ("△" if c.category == "known_new_face" else "")
@@ -168,14 +178,14 @@ def display(new_faces: list[Candidate], momentum: list[Candidate],
     if pure_momentum:
         print(f"\n{ANSI['YELLOW']}◆ 动量延续 — 已启动 / 温和上攻{ANSI['RESET']}  (找: 累计涨幅已起+今日温和放量)")
         print(hdr)
-        print(f"  {'-'*108}")
+        print(f"  {'-'*112}")
         for c in pure_momentum:
             _print_row(c)
 
     if pullback_list:
         print(f"\n{ANSI['CYAN']}◆ 回调介入 — 强势股回踩{ANSI['RESET']}  (找: 近期动量+今日缩量回调)")
         print(hdr)
-        print(f"  {'-'*108}")
+        print(f"  {'-'*112}")
         for c in pullback_list:
             _print_row(c, icon="○")
 
@@ -191,7 +201,7 @@ def display(new_faces: list[Candidate], momentum: list[Candidate],
             vr = f"{c.kline.volume_ratio:.1f}x" if c.kline else "N/A"
             score_visible = str(c.score)
             trend_tag = c.kline.trend if c.kline else "N/A"
-            print(f"  {'—':>4} {'—':>6} {_pad(display_name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {_pad(score_visible,4,'r')}")
+            print(f"  {'—':>4} {'—':>6} {'—':>4} {_pad(display_name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {_pad(score_visible,4,'r')}")
 
     print(f"\n{'-'*96}")
     print(f"  {ANSI['GREEN']}新面孔{ANSI['RESET']}: 底部放量启动+涨幅2-6%")
