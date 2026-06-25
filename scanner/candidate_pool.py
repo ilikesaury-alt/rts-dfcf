@@ -64,7 +64,7 @@ class ScanSession:
         result: list[Candidate] = []
         for sym, c in list(self.today_pool.items()):
             if c.is_stale:
-                stale_dt = datetime.strptime(f"{now.date()} {c.stale_since}", "%Y-%m-%d %H:%M")
+                stale_dt = datetime.strptime(f"{now.date()} {c.stale_since}", "%Y-%m-%d %H:%M").replace(tzinfo=now.tzinfo)
                 if stale_dt >= stale_cutoff:
                     result.append(c)
                 else:
