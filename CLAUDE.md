@@ -4,8 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-- **Run scanner (Xueqiu)**: `python limit_up_scanner.py` (default 60s interval) or `python limit_up_scanner.py 120` (custom seconds)
-- **Run scanner (Tonghuashun)**: `python tonghuashun_scanner.py` (default 60s) or `python tonghuashun_scanner.py 120`
+- **Run scanner**: `python unified_scanner.py` (default 60s interval) or `python unified_scanner.py 120` (custom seconds)
 - **Run tests**: `python -m pytest tests/ -v`
 - **Chain watch**: `python chain_watch.py` (single run) or `python chain_watch.py --interval 300` (every 5 min)
 - **Quick data check**: `python xueqiu_hot.py` (dump raw surge ranking)
@@ -13,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-An A-share stock momentum scanner that monitors surge ranking APIs from multiple sources (Xueqiu 雪球, Tonghuashun 同花顺) in real-time during trading hours. It scores and recommends ChiNext (创业板, 300xxx) stocks using three strategies:
+An A-share stock momentum scanner that monitors Xueqiu 雪球 surge ranking API (primary) with Tonghuashun 同花顺 热榜 as cross-reference in real-time during trading hours. It scores and recommends ChiNext (创业板, 300xxx) stocks using three strategies:
 
 - **New Face** (bottom breakout): First-time appearance in surge list within 3 days, today_pct ≤ 8% — looks for early-stage capital inflows with volume confirmation
 - **Momentum** (trend continuation): Stocks with 10%+ 5-day gain ≤ 8% today — fills the gap between New Face and Old Face (Old Face was removed 2026-06-10)
@@ -24,7 +23,8 @@ A companion tool `chain_watch.py` monitors the same surge list for industrial ch
 ## Architecture
 
 ```
-[雪球API | 同花顺热榜] → fetch surge list → filter GEM/ST
+[雪球API](主数据源) → fetch surge list → filter GEM/ST
+[同花顺热榜](仅做符号校验) → 双源交集 → +5 bonus
   → batch quote API (Xueqiu market cap)
   → DB lookup (check if new face)
   → fetch K-line (DB cache or Xueqiu API, 45-day)
@@ -33,9 +33,9 @@ A companion tool `chain_watch.py` monitors the same surge list for industrial ch
   → display + CSV log
 ```
 
-### Data Flow (`limit_up_scanner.py` / `tonghuashun_scanner.py`)
+### Data Flow (`unified_scanner.py`)
 
-1. **Fetch**: `fetch_biaosheng()` (Xueqiu) or `fetch_ths_hot_list()` (同花顺) — GET surge/hot stock list
+1. **Fetch**: `fetch_biaosheng()` (Xueqiu primary) + `fetch_ths_hot_list()` (同花顺 cross-ref) — merge via symbol set
 2. **Filter**: Remove HK stocks, non-GEM, ST/*ST/退市; apply 小而美 (market cap ≤300亿, price ≤100元)
 3. **Classify**: `get_recent_symbols()` — check DB for appearances in last 3 days → new vs known
 4. **Analyze**: 45-day K-line from cache or Xueqiu API, then:
@@ -79,8 +79,7 @@ A companion tool `chain_watch.py` monitors the same surge list for industrial ch
 
 ### Key Files
 
-- `limit_up_scanner.py` — Scanner entry point — Xueqiu source
-- `tonghuashun_scanner.py` — Scanner entry point — Tonghuashun hot list source
+- `unified_scanner.py` — Single entry point — Xueqiu primary + Tonghuashun cross-validation
 - `scanner/orchestrator.py` — Core scan orchestration (~350 lines, pipeline in one file)
 - `scanner/analysis.py` — New Face, Momentum & Pullback scoring engines
 - `scanner/config.py` — All thresholds, weights, and dimension-to-key mappings

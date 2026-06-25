@@ -85,6 +85,7 @@
 - **修复**: 新增 `scanner/ths_api.py` + `tonghuashun_scanner.py`，同花顺热股榜作为独立入口
 - **数据源**: `https://dq.10jqka.com.cn/fuyao/hot_list_data/out/hot_list/v1/stock?list_type=skyrocket`
 - **改动量**: 大 ✅ 已完成
+- **后续演化** (2026-06-25): `limit_up_scanner.py` + `tonghuashun_scanner.py` → 合并为 `unified_scanner.py`，同花顺改为仅做符号集校验，不再作为独立入口
 
 ---
 
