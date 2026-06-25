@@ -154,7 +154,7 @@ def _filter_gem_stocks(raw: list[dict]) -> list[StockInfo]:
             current=item.get("current") or 0.0,
             value=item.get("value") or 0.0,
             rank_change=item.get("rank_change") or 0,
-            rank=i,
+            rank=item.get("rank", i),
         ))
     return gem_stocks
 

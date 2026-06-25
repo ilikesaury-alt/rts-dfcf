@@ -58,7 +58,8 @@ def memory_db():
             next_day_pct REAL,
             fwd_3d REAL,
             fwd_5d REAL,
-            score_breakdown TEXT
+            score_breakdown TEXT,
+            source TEXT DEFAULT 'xueqiu'
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_date ON appearances(date)")

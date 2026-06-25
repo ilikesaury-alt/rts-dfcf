@@ -26,9 +26,9 @@ def seconds_until_next_session(now: datetime | None = None) -> int:
 
     if is_trading_day(today):
         if t < MORNING_START:
-            return int((datetime.combine(today, MORNING_START) - now).total_seconds())
+            return int((datetime.combine(today, MORNING_START, now.tzinfo) - now).total_seconds())
         if MORNING_END < t < AFTERNOON_START:
-            return int((datetime.combine(today, AFTERNOON_START) - now).total_seconds())
+            return int((datetime.combine(today, AFTERNOON_START, now.tzinfo) - now).total_seconds())
         if t > AFTERNOON_END:
             return _seconds_until_next_trading_day(now)
         return 0
@@ -40,7 +40,7 @@ def _seconds_until_next_trading_day(now: datetime) -> int:
     cursor = now.date() + timedelta(days=1)
     while not is_trading_day(cursor):
         cursor += timedelta(days=1)
-    return int((datetime.combine(cursor, MORNING_START) - now).total_seconds())
+    return int((datetime.combine(cursor, MORNING_START, now.tzinfo) - now).total_seconds())
 
 
 def next_session_label(now: datetime | None = None) -> str:

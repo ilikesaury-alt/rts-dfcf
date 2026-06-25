@@ -8,7 +8,7 @@
 
 import json
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from scanner.database import DB_PATH, init_cross_validation_tables
 
@@ -46,7 +46,7 @@ _CROSS_T1_BONUS = 15
 _CROSS_T2_BONUS = 8
 
 
-def validate() -> list[dict]:
+def cross_validate() -> list[dict]:
     conn = init_cross_validation_tables()
     try:
         existing = _load_existing_recommendations(conn)
@@ -103,7 +103,6 @@ def validate() -> list[dict]:
 
 def _check_appearance_history(conn: sqlite3.Connection, symbol: str) -> bool:
     try:
-        from datetime import timedelta
         lookback = (date.today() - timedelta(days=3)).isoformat()
         row = conn.execute(
             "SELECT 1 FROM appearances WHERE symbol = ? AND date >= ? LIMIT 1",
@@ -126,6 +125,8 @@ def _get_latest_existing_category(conn: sqlite3.Connection, symbol: str) -> str 
 
 
 def _save_results(conn: sqlite3.Connection, results: list[dict], now: str):
+    today = date.today().isoformat()
+    conn.execute("DELETE FROM cross_validated_signals WHERE date = ?", (today,))
     for r in results:
         try:
             conn.execute(

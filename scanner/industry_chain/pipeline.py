@@ -139,6 +139,12 @@ def _save_recommendations(conn: sqlite3.Connection, candidates: list[ChokepointC
 
     for c in candidates:
         try:
+            existing = conn.execute(
+                "SELECT id FROM chokepoint_recommendations WHERE date = ? AND symbol = ? LIMIT 1",
+                (today, c.symbol),
+            ).fetchone()
+            if existing:
+                continue
             conn.execute(
                 "INSERT INTO chokepoint_recommendations "
                 "(date, time, symbol, name, chain_name, node_name, is_bottleneck, "

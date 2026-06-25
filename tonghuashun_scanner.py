@@ -12,6 +12,7 @@ import requests
 from scanner.api import make_session as make_xueqiu_session
 from scanner.ths_api import fetch_ths_hot_list, make_ths_session
 from scanner.config import DB_PATH, NEW_FACE_LOOKBACK_DAYS, REFRESH_INTERVAL, now_beijing
+from scanner.cross_validation import cross_validate, print_validation_summary
 from scanner.database import init_db, save_recommendations
 from scanner.display import display
 from scanner.log_utils import log_results
@@ -86,7 +87,9 @@ def main():
                     top_m = momentum[0]
                     print(f"  ▶ 动量延续首选: {top_m.stock.name}({top_m.stock.symbol}) "
                           f"{top_m.stock.percent:+.2f}% | {top_m.kline.trend if top_m.kline else ''}")
-                save_recommendations(conn, new_faces, momentum)
+                save_recommendations(conn, new_faces, momentum, source="tonghuashun")
+                cross_validate()
+                print_validation_summary()
 
             except requests.RequestException as e:
                 print(f"\n  [!] 网络错误: {e}")

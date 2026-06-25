@@ -47,9 +47,11 @@ def init_db() -> sqlite3.Connection:
             next_day_pct REAL,
             fwd_3d REAL,
             fwd_5d REAL,
-            score_breakdown TEXT
+            score_breakdown TEXT,
+            source TEXT DEFAULT 'xueqiu'
         )
     """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_source ON recommendations(source)")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sector_cache (
             symbol TEXT PRIMARY KEY,
@@ -60,6 +62,10 @@ def init_db() -> sqlite3.Connection:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_date ON appearances(date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_sym ON appearances(symbol)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_date ON recommendations(date)")
+    try:
+        conn.execute("ALTER TABLE recommendations ADD COLUMN source TEXT DEFAULT 'xueqiu'")
+    except Exception:
+        pass
     conn.commit()
     return conn
 
@@ -203,7 +209,7 @@ def _is_consecutive_trading_days(prev: date, curr: date) -> bool:
     return True
 
 
-def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: list):
+def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: list, source: str = "xueqiu"):
     import json
     today = now_beijing().date().isoformat()
     now = datetime.now().strftime("%H:%M:%S")
@@ -217,10 +223,10 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: li
                 continue
             breakdown = json.dumps(c.kline.dimensions, ensure_ascii=False) if c.kline and c.kline.dimensions else None
             conn.execute(
-                "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, trend, score_breakdown) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, trend, score_breakdown, source) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (today, now, c.stock.symbol, c.stock.name, c.category,
-                 c.score, c.stock.percent, c.kline.trend if c.kline else None, breakdown),
+                 c.score, c.stock.percent, c.kline.trend if c.kline else None, breakdown, source),
             )
         except Exception as e:
             print(f"  [!] 保存推荐记录失败 {c.stock.symbol}: {e}")
