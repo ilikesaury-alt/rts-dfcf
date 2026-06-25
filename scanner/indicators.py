@@ -68,3 +68,105 @@ def compute_macd(closes: list[float], fast: int = 12,
         "histogram": round(histogram[-1], 4),
         "histogram_prev": round(histogram[-2], 4) if len(histogram) >= 2 else 0,
     }
+
+
+def compute_adx(highs: list[float], lows: list[float],
+                closes: list[float], period: int = 14) -> dict | None:
+    if len(closes) < period * 2:
+        return None
+
+    tr_list, plus_dm_list, minus_dm_list = [], [], []
+    for i in range(1, len(closes)):
+        tr = max(highs[i] - lows[i],
+                 abs(highs[i] - closes[i - 1]),
+                 abs(lows[i] - closes[i - 1]))
+        tr_list.append(tr)
+        up_move = highs[i] - highs[i - 1]
+        down_move = lows[i - 1] - lows[i]
+        plus_dm = up_move if up_move > down_move and up_move > 0 else 0
+        minus_dm = down_move if down_move > up_move and down_move > 0 else 0
+        plus_dm_list.append(plus_dm)
+        minus_dm_list.append(minus_dm)
+
+    def _smooth(data: list[float], p: int) -> list[float]:
+        result = [sum(data[:p]) / p]
+        for v in data[p:]:
+            result.append((result[-1] * (p - 1) + v) / p)
+        return result
+
+    atr = _smooth(tr_list, period)
+    plus_di = _smooth(plus_dm_list, period)
+    minus_di = _smooth(minus_dm_list, period)
+
+    di_sum = plus_di[-1] + minus_di[-1]
+    dx = abs(plus_di[-1] - minus_di[-1]) / max(di_sum, 0.001) * 100
+    adx_list = _smooth([
+        abs(p - m) / max(p + m, 0.001) * 100
+        for p, m in zip(plus_di, minus_di)
+    ], period)
+
+    return {
+        "adx": round(adx_list[-1], 2),
+        "plus_di": round(plus_di[-1] / max(atr[-1], 0.001) * 100, 2),
+        "minus_di": round(minus_di[-1] / max(atr[-1], 0.001) * 100, 2),
+    }
+
+
+def compute_bollinger_bands(closes: list[float], period: int = 20,
+                             std_mult: float = 2.0) -> dict | None:
+    if len(closes) < period:
+        return None
+    window = closes[-period:]
+    ma = sum(window) / period
+    variance = sum((x - ma) ** 2 for x in window) / period
+    std = variance ** 0.5
+    upper = ma + std_mult * std
+    lower = ma - std_mult * std
+    current = closes[-1]
+    bandwidth = (upper - lower) / max(ma, 0.001)
+    if upper == lower:
+        b_pct = 0.5
+    else:
+        b_pct = (current - lower) / (upper - lower)
+    return {
+        "upper": round(upper, 4),
+        "middle": round(ma, 4),
+        "lower": round(lower, 4),
+        "bandwidth": round(bandwidth, 4),
+        "b_pct": round(b_pct, 4),
+    }
+
+
+def compute_atr(highs: list[float], lows: list[float],
+                closes: list[float], period: int = 14) -> float | None:
+    if len(closes) < period + 1:
+        return None
+    tr_list = []
+    for i in range(1, len(closes)):
+        tr = max(highs[i] - lows[i],
+                 abs(highs[i] - closes[i - 1]),
+                 abs(lows[i] - closes[i - 1]))
+        tr_list.append(tr)
+    atr = sum(tr_list[:period]) / period
+    for v in tr_list[period:]:
+        atr = (atr * (period - 1) + v) / period
+    return round(atr, 4)
+
+
+def compute_obv(closes: list[float], volumes: list[float]) -> dict | None:
+    if len(closes) < 2 or len(volumes) < 2:
+        return None
+    n = min(len(closes), len(volumes))
+    obv = 0
+    obv_history = [0]
+    for i in range(1, n):
+        if closes[i] > closes[i - 1]:
+            obv += volumes[i]
+        elif closes[i] < closes[i - 1]:
+            obv -= volumes[i]
+        obv_history.append(obv)
+    recent_5 = obv_history[-5:]
+    uptrend = all(recent_5[i] <= recent_5[i + 1] for i in range(len(recent_5) - 1))
+    downtrend = all(recent_5[i] >= recent_5[i + 1] for i in range(len(recent_5) - 1))
+    trend = 1 if uptrend else (-1 if downtrend else 0)
+    return {"obv": obv, "obv_trend": trend}

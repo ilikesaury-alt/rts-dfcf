@@ -14,7 +14,10 @@ from scanner.config import (
     VOL_RANK_WEAK_PTS,
     VOL_RANK_WEAK_RC,
 )
-from scanner.indicators import compute_kdj, compute_macd, compute_rsi
+from scanner.indicators import (
+    compute_adx, compute_bollinger_bands, compute_kdj,
+    compute_macd, compute_rsi,
+)
 from scanner.models import KlineSummary, StockInfo
 
 # Weak-form filter thresholds
@@ -113,6 +116,7 @@ def _compute_new_face_indicators(closes: list[float], historical_kline: list[dic
                                  W: dict) -> tuple[int, dict]:
     """New face specific indicator scoring (oversold reversal signals)."""
     rsi_val = compute_rsi(closes, period=6)
+    rsi14_val = compute_rsi(closes, period=14)
     kdj_val = compute_kdj([k["high"] for k in historical_kline],
                           [k["low"] for k in historical_kline], closes)
     macd_val = compute_macd(closes)
@@ -126,6 +130,9 @@ def _compute_new_face_indicators(closes: list[float], historical_kline: list[dic
         elif rsi_val < 30:
             bonus += W["rsi_bonus"]
         dims["new_face_rsi"] = round(rsi_val, 1)
+    if rsi14_val is not None and rsi14_val < 30:
+        bonus += W["rsi14_oversold_bonus"]
+        dims["new_face_rsi14"] = round(rsi14_val, 1)
     if kdj_val is not None:
         if kdj_val["K"] < 20 and kdj_val["K"] > kdj_val["D"]:
             bonus += W["kdj_bonus"]
@@ -139,6 +146,11 @@ def _compute_new_face_indicators(closes: list[float], historical_kline: list[dic
             bonus += W["macd_bonus"]
         dims["new_face_macd"] = round(macd_val["histogram"], 4)
 
+    boll = compute_bollinger_bands(closes)
+    if boll is not None and boll["b_pct"] < 0:
+        bonus += W["bollinger_oversold"]
+        dims["new_face_bollinger"] = round(boll["b_pct"], 2)
+
     return bonus, dims
 
 
@@ -149,6 +161,10 @@ def _compute_momentum_indicators(closes: list[float], historical_kline: list[dic
     kdj_val = compute_kdj([k["high"] for k in historical_kline],
                           [k["low"] for k in historical_kline], closes)
     macd_val = compute_macd(closes)
+    adx_val = compute_adx(
+        [k["high"] for k in historical_kline],
+        [k["low"] for k in historical_kline], closes,
+    )
 
     bonus = 0
     dims: dict[str, float] = {}
@@ -160,6 +176,12 @@ def _compute_momentum_indicators(closes: list[float], historical_kline: list[dic
             bonus -= W["rsi_bonus"]
         dims["momentum_rsi"] = round(rsi_val, 1)
     if kdj_val is not None:
+        if kdj_val["J"] > 100:
+            bonus -= W["kdj_bonus"]
+        elif kdj_val["J"] < 20:
+            bonus += W["kdj_bonus"]
+        elif kdj_val["K"] > kdj_val["D"]:
+            bonus += W["kdj_bonus"] // 2
         dims["momentum_kdj"] = round(kdj_val["J"], 1)
     if macd_val is not None:
         if macd_val["histogram"] > 0:
@@ -169,6 +191,13 @@ def _compute_momentum_indicators(closes: list[float], historical_kline: list[dic
         elif macd_val["histogram"] > 0 and macd_val["histogram"] < macd_val["histogram_prev"]:
             bonus -= W["macd_bonus"]
         dims["momentum_macd"] = round(macd_val["histogram"], 4)
+    if adx_val is not None:
+        if adx_val["adx"] > 25:
+            bonus += W["adx_bonus"]
+            dims["momentum_adx"] = W["adx_bonus"]
+        elif adx_val["adx"] < 20:
+            bonus += W["adx_weak"]
+            dims["momentum_adx"] = W["adx_weak"]
 
     return bonus, dims
 
@@ -409,11 +438,11 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
                         score=score, dimensions=dims, avg_volume=round(avg_vol, 2))
 
 
-def _calc_pullback_base_metrics(kline: list[dict], today_str: str) -> tuple[list, list, float, float, float]:
+def _calc_pullback_base_metrics(kline: list[dict], today_str: str) -> tuple[list, list, float, float, float, list]:
     """Calculate base metrics for pullback analysis.
 
     Returns:
-        (pcts, closes, accumulated, vol_ratio, avg_vol) tuple
+        (pcts, closes, accumulated, vol_ratio, avg_vol, historical_kline) tuple
     """
     today_str = today_str or date.today().isoformat()
     historical_kline = [k for k in kline if k["date"] != today_str]
@@ -427,7 +456,7 @@ def _calc_pullback_base_metrics(kline: list[dict], today_str: str) -> tuple[list
     today_vol = volumes[-1] if volumes else 0
     vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
 
-    return pcts, closes, accumulated, vol_ratio, avg_vol
+    return pcts, closes, accumulated, vol_ratio, avg_vol, historical_kline
 
 
 def _score_pullback_today_pct(today_pct: float, W: dict) -> tuple[int, dict]:
@@ -572,8 +601,9 @@ def _analyze_pullback_ma(closes: list, W: dict) -> dict:
     return result
 
 
-def _score_pullback_indicators(closes: list, W: dict) -> tuple[int, dict]:
-    """Score based on technical indicators (RSI, MACD).
+def _score_pullback_indicators(closes: list, historical_kline: list[dict],
+                               W: dict) -> tuple[int, dict]:
+    """Score based on technical indicators (RSI, MACD, KDJ, Bollinger).
 
     Returns:
         (score, dimensions) tuple
@@ -583,6 +613,10 @@ def _score_pullback_indicators(closes: list, W: dict) -> tuple[int, dict]:
 
     rsi_val = compute_rsi(closes, period=6)
     macd_val = compute_macd(closes)
+    kdj_val = compute_kdj(
+        [k["high"] for k in historical_kline],
+        [k["low"] for k in historical_kline], closes,
+    )
 
     if rsi_val is not None:
         if rsi_val < 30:
@@ -598,6 +632,21 @@ def _score_pullback_indicators(closes: list, W: dict) -> tuple[int, dict]:
         if macd_val["macd"] > macd_val["signal"]:
             score += W["macd_bonus"]
             dims["pullback_macd"] = round(macd_val["histogram"], 4)
+
+    if kdj_val is not None and kdj_val["J"] < 0:
+        score += W["kdj_bonus"]
+        dims["pullback_kdj"] = round(kdj_val["J"], 1)
+
+    boll = compute_bollinger_bands(closes)
+    if boll is not None:
+        dist_to_mid = abs(closes[-1] - boll["middle"]) / max(boll["middle"], 0.01) * 100
+        if dist_to_mid < 0.5:
+            score += W["bollinger_mid_support"]
+            dims["pullback_bollinger"] = round(boll["middle"], 2)
+        elif boll["b_pct"] < 0.05:
+            dims["pullback_bollinger"] = round(boll["lower"], 2)
+        else:
+            dims["pullback_bollinger"] = round(boll["b_pct"], 2)
 
     return score, dims
 
@@ -627,7 +676,7 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
     if today_pct <= -8 or today_pct > 2:
         return None
 
-    pcts, closes, accumulated, vol_ratio, avg_vol = _calc_pullback_base_metrics(kline, today_str)
+    pcts, closes, accumulated, vol_ratio, avg_vol, historical_kline = _calc_pullback_base_metrics(kline, today_str)
 
     if accumulated < 5:
         return None
@@ -664,7 +713,7 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
         score += W["rank_top30"]
         dims["pullback_rank"] = W["rank_top30"]
 
-    indicator_score, indicator_dims = _score_pullback_indicators(closes, W)
+    indicator_score, indicator_dims = _score_pullback_indicators(closes, historical_kline, W)
     score += indicator_score
     dims.update(indicator_dims)
 

@@ -9,12 +9,14 @@ from scanner.config import (
     V_MO_VOL_UP,
     V_NF_CONVERGE_PARTIAL,
     V_NF_CONVERGE_STRONG,
+    V_NF_DIVERGENCE_BULL,
     V_NF_HL_CLEAR,
     V_NF_HL_FAIL,
     V_NF_HL_STABLE,
     V_NF_SECTOR_MOD,
     V_NF_SECTOR_STRONG,
     V_NF_SECTOR_WEAK,
+    V_PB_BOLLINGER_TOUCH,
     V_PB_MA_DOWN,
     V_PB_MA_FLAT,
     V_PB_MA_UP,
@@ -25,7 +27,9 @@ from scanner.config import (
     V_PB_SHRINK_NO,
     V_PB_SHRINK_YES,
 )
-from scanner.indicators import compute_kdj, compute_macd, compute_rsi
+from scanner.indicators import (
+    compute_bollinger_bands, compute_kdj, compute_macd, compute_rsi,
+)
 from scanner.sector import classify_sector
 
 
@@ -50,11 +54,27 @@ def _nf_convergence(closes: list[float], historical_kline: list[dict]) -> tuple[
     if kdj is not None and kdj["K"] < 20 and kdj["K"] > kdj["D"]:
         hits += 1
 
+    divergence_bonus = V_NF_DIVERGENCE_BULL if _has_macd_bull_divergence(closes, macd) else 0
+
     if hits >= 3:
-        return V_NF_CONVERGE_STRONG, f"converge_3of3"
+        return V_NF_CONVERGE_STRONG + divergence_bonus, f"converge_3of3"
     if hits >= 2:
-        return V_NF_CONVERGE_PARTIAL, f"converge_{hits}of3"
+        return V_NF_CONVERGE_PARTIAL + divergence_bonus, f"converge_{hits}of3"
+    if divergence_bonus:
+        return divergence_bonus, "macd_bull_divergence"
     return 0, "converge_weak"
+
+
+def _has_macd_bull_divergence(closes: list[float], macd: dict | None) -> bool:
+    if macd is None or len(closes) < 15:
+        return False
+    recent_low = min(closes[-5:])
+    prev_low = min(closes[-10:-5])
+    if recent_low >= prev_low:
+        return False
+    if macd["histogram"] > macd["histogram_prev"] and macd["histogram_prev"] < 0:
+        return True
+    return False
 
 
 def _nf_higher_low(closes: list[float]) -> tuple[int, str]:
@@ -231,12 +251,29 @@ def _pb_sector(name: str, clusters: dict[str, list[str]] | None) -> tuple[int, i
     return V_PB_SECTOR_DEAD, count
 
 
+def _pb_bollinger_touch(closes: list[float]) -> tuple[int, str]:
+    if len(closes) < 20:
+        return 0, "data_short"
+    boll = compute_bollinger_bands(closes)
+    if boll is None:
+        return 0, "bb_na"
+    current = closes[-1]
+    touch_lower = current <= boll["lower"] * 1.02
+    near_mid = abs(current - boll["middle"]) / max(boll["middle"], 0.01) * 100 < 1.0
+    if touch_lower:
+        return V_PB_BOLLINGER_TOUCH, f"bb_lower_touch_b{boll['b_pct']:.2f}"
+    if near_mid:
+        return V_PB_BOLLINGER_TOUCH, f"bb_mid_return_b{boll['b_pct']:.2f}"
+    return 0, f"bb_mid_b{boll['b_pct']:.2f}"
+
+
 def validate_pullback(stock, kline_summary, closes: list[float],
                       historical_kline: list[dict], clusters: dict[str, list[str]] | None
                       ) -> tuple[bool, int, dict]:
     ma_bonus, ma_detail = _pb_ma_trend(closes)
     shr_bonus, shr_vr = _pb_shrinkage(kline_summary)
     sec_bonus, sec_count = _pb_sector(stock.name, clusters)
+    boll_bonus, boll_detail = _pb_bollinger_touch(closes)
 
     details: dict[str, int | float | str] = {
         "v_pb_ma_trend": ma_bonus,
@@ -245,11 +282,13 @@ def validate_pullback(stock, kline_summary, closes: list[float],
         "v_pb_shrinkage_vr": round(shr_vr, 2),
         "v_pb_sector": sec_bonus,
         "v_pb_sector_count": sec_count,
+        "v_pb_bollinger": boll_bonus,
+        "v_pb_bollinger_detail": boll_detail,
     }
 
-    total = ma_bonus + shr_bonus + sec_bonus
+    total = ma_bonus + shr_bonus + sec_bonus + boll_bonus
 
-    pos_dims = sum(1 for b in (ma_bonus, shr_bonus, sec_bonus) if b > 0)
+    pos_dims = sum(1 for b in (ma_bonus, shr_bonus, sec_bonus, boll_bonus) if b > 0)
     passed = pos_dims >= 2
 
     return passed, total, details

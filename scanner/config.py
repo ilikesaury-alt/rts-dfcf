@@ -102,6 +102,8 @@ NEW_FACE_WEIGHTS: dict[str, int] = {
     "rsi_bonus": 3,
     "kdj_bonus": 3,
     "macd_bonus": 3,
+    "rsi14_oversold_bonus": 3,
+    "bollinger_oversold": 4,
 }
 
 MOMENTUM_WEIGHTS: dict[str, int] = {
@@ -130,6 +132,8 @@ MOMENTUM_WEIGHTS: dict[str, int] = {
     "rsi_bonus": 3,
     "kdj_bonus": 3,
     "macd_bonus": 3,
+    "adx_bonus": 5,
+    "adx_weak": -3,
 }
 
 PULLBACK_WEIGHTS: dict[str, int] = {
@@ -152,6 +156,8 @@ PULLBACK_WEIGHTS: dict[str, int] = {
     "macd_bonus": 3,
     "rank_top10": 8,
     "rank_top30": 5,
+    "kdj_bonus": 3,
+    "bollinger_mid_support": 5,
 }
 
 # Bonus constants
@@ -281,6 +287,12 @@ V_PB_SHRINK_NO = -5
 V_PB_SECTOR_HOT = 8
 V_PB_SECTOR_COLD = 3
 V_PB_SECTOR_DEAD = -5
+
+# New face — added in P0
+V_NF_DIVERGENCE_BULL = 8
+
+# Pullback — added in P0
+V_PB_BOLLINGER_TOUCH = 5
 
 # ============================================================
 # Industry chain trend & chokepoint scoring (industry_chain/)

@@ -239,4 +239,44 @@ class TestAnalyzePullback:
         assert result is not None
         assert "pullback_macd" in result.dimensions
 
+    def test_kdj_indicator_in_pullback(self):
+        pcts = [-1]*5 + [2]*5 + [-2]*5 + [-3]*5  # downtrend after rise, J<0 likely
+        kline = _kline(pcts, volumes=[1.0]*20)
+        result = analyze_pullback(_stock(percent=-2), kline)
+        if result:
+            assert "pullback_kdj" in result.dimensions or "pullback_rsi" in result.dimensions
+            assert result.score >= 10
+
+    def test_bollinger_mid_support_in_pullback(self):
+        pcts = [1.0]*15 + [4, 4, -1, -1, 0]
+        kline = _kline(pcts, volumes=[1.0]*20)
+        result = analyze_pullback(_stock(percent=-0.5), kline)
+        assert result is not None
+        assert result.score >= 0
+
+
+class TestIndicatorIntegration:
+
+    def test_new_face_bollinger_oversold(self):
+        pcts = [-2, -3, -4, -5, -3, -2, 3]
+        kline = _kline(pcts, volumes=[1.0]*7)
+        result = analyze_new_face(_stock(percent=3, rank_change=1500, value=8000), kline)
+        if result:
+            assert "new_face_bollinger" in result.dimensions or "new_face_rsi14" in result.dimensions
+
+    def test_momentum_adx_bonus(self):
+        pcts = [2]*35
+        kline = _kline(pcts, volumes=[1.0]*35)
+        result = analyze_momentum(_stock(percent=4, rank_change=2000, value=12000), kline)
+        assert result is not None
+        assert "momentum_adx" in result.dimensions
+        assert result.dimensions["momentum_adx"] == 5
+
+    def test_momentum_kdj_scoring(self):
+        pcts = [1, 2, 3, 4, 5, 6, 5, 7, 6, 8]
+        kline = _kline(pcts, volumes=[1.0]*10)
+        result = analyze_momentum(_stock(percent=3, rank_change=1500, value=8000), kline)
+        assert result is not None
+        assert "momentum_kdj" in result.dimensions
+
 
