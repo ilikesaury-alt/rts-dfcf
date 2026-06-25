@@ -51,7 +51,6 @@ def init_db() -> sqlite3.Connection:
             source TEXT DEFAULT 'xueqiu'
         )
     """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_source ON recommendations(source)")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sector_cache (
             symbol TEXT PRIMARY KEY,
@@ -64,6 +63,10 @@ def init_db() -> sqlite3.Connection:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_date ON recommendations(date)")
     try:
         conn.execute("ALTER TABLE recommendations ADD COLUMN source TEXT DEFAULT 'xueqiu'")
+    except Exception:
+        pass
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_source ON recommendations(source)")
     except Exception:
         pass
     conn.commit()
