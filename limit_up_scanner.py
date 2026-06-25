@@ -10,7 +10,7 @@ from datetime import datetime
 import requests
 
 from scanner.api import make_session
-from scanner.config import DB_PATH, NEW_FACE_LOOKBACK_DAYS, REFRESH_INTERVAL
+from scanner.config import DB_PATH, NEW_FACE_LOOKBACK_DAYS, REFRESH_INTERVAL, now_beijing
 from scanner.database import init_db, save_recommendations
 from scanner.display import display
 from scanner.log_utils import log_results
@@ -43,7 +43,7 @@ def main():
 
     try:
         while True:
-            now = datetime.now()
+            now = now_beijing()
             if not is_trading_time(now):
                 wait = seconds_until_next_session(now)
                 label = next_session_label(now)

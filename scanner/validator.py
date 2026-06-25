@@ -197,7 +197,7 @@ def validate_momentum(stock, kline_summary, closes: list[float],
 
 def _pb_ma_trend(closes: list[float]) -> tuple[int, str]:
     if len(closes) < 25:
-        return V_PB_MA_DOWN, "data_short"
+        return 0, "data_short"
 
     ma20_now = sum(closes[-20:]) / 20
     ma20_prev = sum(closes[-25:-5]) / 20

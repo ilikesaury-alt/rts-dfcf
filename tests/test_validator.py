@@ -162,8 +162,8 @@ class TestValidatePullbackHelpers:
         assert bonus > 0, f"expected ma up, got {bonus} ({detail})"
 
     def test_ma_trend_down(self):
-        pcts = [-1.0]*25
-        k = _kline(pcts, volumes=[1.0]*25)
+        pcts = [-1.0]*26
+        k = _kline(pcts, volumes=[1.0]*26)
         closes = [c["close"] for c in k[:-1]]
         bonus, detail = _pb_ma_trend(closes)
         assert bonus < 0, f"expected ma down, got {bonus} ({detail})"

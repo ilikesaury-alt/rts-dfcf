@@ -1,6 +1,6 @@
 from datetime import date, datetime, timedelta
 
-from scanner.config import STALE_TIMEOUT_MINUTES
+from scanner.config import STALE_TIMEOUT_MINUTES, now_beijing
 from scanner.models import Candidate
 
 
@@ -42,7 +42,7 @@ class ScanSession:
         return self.list_presence.get(symbol, 0)
 
     def update_pool(self, candidates: list[Candidate], now: datetime | None = None):
-        now = now or datetime.now()
+        now = now or now_beijing()
         current_syms = {c.stock.symbol for c in candidates}
 
         for c in candidates:
@@ -59,7 +59,7 @@ class ScanSession:
                 c.stale_since = now.strftime("%H:%M")
 
     def get_stale_candidates(self, now: datetime | None = None) -> list[Candidate]:
-        now = now or datetime.now()
+        now = now or now_beijing()
         stale_cutoff = now - timedelta(minutes=STALE_TIMEOUT_MINUTES)
         result: list[Candidate] = []
         for sym, c in list(self.today_pool.items()):

@@ -1,5 +1,12 @@
 import os
-from datetime import time as dtime
+from datetime import datetime, time as dtime, timezone, timedelta
+
+BEIJING_TZ = timezone(timedelta(hours=8), name="CST")
+
+
+def now_beijing() -> datetime:
+    """Return current datetime in Beijing timezone (UTC+8)."""
+    return datetime.now(BEIJING_TZ)
 
 REFRESH_INTERVAL = 60
 REQUEST_TIMEOUT = 15

@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from scanner.config import (
@@ -11,6 +11,7 @@ from scanner.config import (
     CHAIN_PERSISTENCE_MIN,
 )
 from scanner.industry_chain.chains import CHAINS, is_bottleneck_node, match_chains
+from scanner.trading_session import is_trading_day
 from scanner.industry_chain.models import ChainTrend, IndustryScanSession
 
 
@@ -161,13 +162,32 @@ def _check_diffusion_path(chain_name: str, stocks: list[dict], result: dict[str,
 
 def _calc_persistence(chain_name: str, conn: sqlite3.Connection) -> int:
     try:
-        today = datetime.now().strftime("%Y-%m-%d")
         rows = conn.execute(
-            "SELECT scan_id FROM chain_trend_history WHERE chain_name = ? "
-            "AND scan_time >= ? ORDER BY scan_time DESC LIMIT ?",
-            (chain_name, today, CHAIN_PERSISTENCE_FADING + 2),
+            "SELECT DISTINCT substr(scan_time,1,10) AS day FROM chain_trend_history "
+            "WHERE chain_name = ? ORDER BY day DESC LIMIT ?",
+            (chain_name, CHAIN_PERSISTENCE_FADING + 2),
         ).fetchall()
-        return len(rows)
+        if not rows:
+            return 0
+        dates = sorted(r[0] for r in rows)
+        streak = 1
+        for i in range(len(dates) - 1, 0, -1):
+            d1 = date.fromisoformat(dates[i])
+            d2 = date.fromisoformat(dates[i - 1])
+            cursor = d1 - timedelta(days=1)
+            consecutive = False
+            while cursor >= d2:
+                if cursor == d2:
+                    consecutive = True
+                    break
+                if is_trading_day(cursor):
+                    break
+                cursor -= timedelta(days=1)
+            if consecutive:
+                streak += 1
+            else:
+                break
+        return streak
     except Exception:
         return 0
 

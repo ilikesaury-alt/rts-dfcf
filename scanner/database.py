@@ -1,7 +1,7 @@
 import sqlite3
 from datetime import date, datetime, timedelta
 
-from scanner.config import DB_PATH
+from scanner.config import DB_PATH, now_beijing
 from scanner.trading_session import is_trading_day
 
 
@@ -65,8 +65,8 @@ def init_db() -> sqlite3.Connection:
 
 
 def get_recent_symbols(conn: sqlite3.Connection, days: int) -> set[str]:
-    today = date.today().isoformat()
-    lookback = (date.today() - timedelta(days=days)).isoformat()
+    today = now_beijing().date().isoformat()
+    lookback = (now_beijing().date() - timedelta(days=days)).isoformat()
     cur = conn.execute(
         "SELECT DISTINCT symbol FROM appearances WHERE date >= ? AND date < ?",
         (lookback, today),
@@ -75,7 +75,7 @@ def get_recent_symbols(conn: sqlite3.Connection, days: int) -> set[str]:
 
 
 def record_appearances(conn: sqlite3.Connection, symbols: list[dict]):
-    today = date.today().isoformat()
+    today = now_beijing().date().isoformat()
     rows = []
     for i, item in enumerate(symbols, 1):
         rows.append((
@@ -86,7 +86,7 @@ def record_appearances(conn: sqlite3.Connection, symbols: list[dict]):
         conn.executemany(
             "INSERT INTO appearances (symbol, name, date, rank, percent, value) VALUES (?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(symbol, date) DO UPDATE SET "
-            "percent = MAX(percent, excluded.percent), rank = excluded.rank, "
+            "percent = excluded.percent, rank = excluded.rank, "
             "value = excluded.value, name = excluded.name",
             rows,
         )
@@ -98,7 +98,7 @@ def record_appearances(conn: sqlite3.Connection, symbols: list[dict]):
                 conn.execute(
                     "INSERT INTO appearances (symbol, name, date, rank, percent, value) VALUES (?, ?, ?, ?, ?, ?) "
                     "ON CONFLICT(symbol, date) DO UPDATE SET "
-                    "percent = MAX(percent, excluded.percent), rank = excluded.rank, "
+                    "percent = excluded.percent, rank = excluded.rank, "
                     "value = excluded.value, name = excluded.name",
                     row,
                 )
@@ -108,7 +108,7 @@ def record_appearances(conn: sqlite3.Connection, symbols: list[dict]):
 
 
 def _n_trading_days_ago(n: int) -> str:
-    cursor = date.today()
+    cursor = now_beijing().date()
     trading_days = 0
     while trading_days < n:
         cursor -= timedelta(days=1)
@@ -118,7 +118,7 @@ def _n_trading_days_ago(n: int) -> str:
 
 
 def get_symbol_appearances(conn: sqlite3.Connection, symbol: str, days: int) -> list[dict]:
-    today = date.today().isoformat()
+    today = now_beijing().date().isoformat()
     lookback = _n_trading_days_ago(days)
     cur = conn.execute(
         "SELECT date, rank, percent, value FROM appearances WHERE symbol = ? AND date >= ? AND date < ? ORDER BY date",
@@ -158,7 +158,7 @@ def save_kline_to_db(conn: sqlite3.Connection, symbol: str, kline: list[dict]):
 
 
 def get_cached_kline(conn: sqlite3.Connection, symbol: str) -> list[dict] | None:
-    lookback = (date.today() - timedelta(days=60)).isoformat()
+    lookback = (now_beijing().date() - timedelta(days=60)).isoformat()
     cur = conn.execute(
         "SELECT date, open, close, high, low, volume, percent FROM daily_kline WHERE symbol = ? AND date >= ? ORDER BY date",
         (symbol, lookback),
@@ -172,9 +172,40 @@ def get_cached_kline(conn: sqlite3.Connection, symbol: str) -> list[dict] | None
     return None
 
 
+def get_consecutive_appearance_days(conn: sqlite3.Connection, symbol: str, max_days: int = 10) -> int:
+    """Count consecutive trading days a symbol appeared up to (not including) today."""
+    today = now_beijing().date().isoformat()
+    rows = conn.execute(
+        "SELECT DISTINCT date FROM appearances WHERE symbol = ? AND date < ? ORDER BY date DESC LIMIT ?",
+        (symbol, today, max_days),
+    ).fetchall()
+    if not rows:
+        return 0
+    dates = sorted(r[0] for r in rows)
+    streak = 1
+    for i in range(len(dates) - 1, 0, -1):
+        d1 = date.fromisoformat(dates[i])
+        d2 = date.fromisoformat(dates[i - 1])
+        if _is_consecutive_trading_days(d2, d1):
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def _is_consecutive_trading_days(prev: date, curr: date) -> bool:
+    """True if prev is the immediate previous trading day before curr (no trading days between)."""
+    cursor = curr - timedelta(days=1)
+    while cursor > prev:
+        if is_trading_day(cursor):
+            return False
+        cursor -= timedelta(days=1)
+    return True
+
+
 def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: list):
     import json
-    today = date.today().isoformat()
+    today = now_beijing().date().isoformat()
     now = datetime.now().strftime("%H:%M:%S")
     for c in new_faces + momentum:
         try:

@@ -327,7 +327,8 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
                       opening_scores, live_volumes, market_caps,
                       clusters, market_idx_pct, time_bonus,
                       sentiment_info=sentiment_info, rps_scores=rps_scores,
-                      list_streaks=session_state.list_presence)
+                      list_streaks=session_state.list_presence,
+                      conn=conn)
 
     for i, c in enumerate(all_candidates):
         extra = accumulate_final_score(c, market_env_bonus, opening_scores)

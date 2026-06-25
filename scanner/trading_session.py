@@ -1,6 +1,6 @@
 from datetime import date, datetime, timedelta
 
-from scanner.config import AFTERNOON_END, AFTERNOON_START, HOLIDAYS, MORNING_END, MORNING_START
+from scanner.config import AFTERNOON_END, AFTERNOON_START, HOLIDAYS, MORNING_END, MORNING_START, now_beijing
 
 
 def is_trading_day(d: date) -> bool:
@@ -12,7 +12,7 @@ def is_trading_day(d: date) -> bool:
 
 
 def is_trading_time(now: datetime | None = None) -> bool:
-    now = now or datetime.now()
+    now = now or now_beijing()
     if not is_trading_day(now.date()):
         return False
     t = now.time()
@@ -20,7 +20,7 @@ def is_trading_time(now: datetime | None = None) -> bool:
 
 
 def seconds_until_next_session(now: datetime | None = None) -> int:
-    now = now or datetime.now()
+    now = now or now_beijing()
     today = now.date()
     t = now.time()
 
@@ -44,7 +44,7 @@ def _seconds_until_next_trading_day(now: datetime) -> int:
 
 
 def next_session_label(now: datetime | None = None) -> str:
-    now = now or datetime.now()
+    now = now or now_beijing()
     t = now.time()
     today = now.date()
 

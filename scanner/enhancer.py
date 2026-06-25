@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from scanner.config import (
+    now_beijing,
     EARLY_BONUS,
     EARLY_TRADE_CUTOFF,
     LATE_BONUS,
@@ -47,6 +48,7 @@ def apply_all_bonuses(
     sentiment_info: dict = None,
     rps_scores: dict[str, int] = None,
     list_streaks: dict[str, int] = None,
+    conn=None,
 ):
     for c in candidates:
         _apply_sector_bonus(c, clusters)
@@ -55,7 +57,7 @@ def apply_all_bonuses(
         _apply_turnover_bonus(c, market_caps)
         _apply_sentiment_bonus(c, sentiment_info)
         _apply_rps_bonus(c, rps_scores)
-        _apply_list_momentum_bonus(c, list_streaks)
+        _apply_list_momentum_bonus(c, list_streaks, conn)
         c.rank_trend_bonus = rank_streak_score(c.stock.symbol)
         c.time_bonus = time_bonus
         _apply_gap_up_bonus(c)
@@ -119,10 +121,14 @@ def _apply_gap_up_bonus(c: Candidate):
         c.gap_up_bonus = c.kline.dimensions.get(gap_key, 0)
 
 
-def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None):
-    if not list_streaks:
-        return
-    streak = list_streaks.get(c.stock.symbol, 0)
+def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None, conn=None):
+    intraday_streak = (list_streaks or {}).get(c.stock.symbol, 0)
+    if conn:
+        from scanner.database import get_consecutive_appearance_days
+        cross_days = get_consecutive_appearance_days(conn, c.stock.symbol)
+    else:
+        cross_days = 0
+    streak = max(cross_days, intraday_streak)
     traj = rank_trajectory_score(c.stock.symbol)
     rank = c.stock.rank
     bonus = 0
@@ -178,7 +184,7 @@ def _record_dimensions(
 
 
 def compute_time_bonus(now: datetime | None = None) -> int:
-    now = now or datetime.now()
+    now = now or now_beijing()
     now_minutes = now.hour * 60 + now.minute
     if now_minutes < EARLY_TRADE_CUTOFF:
         return EARLY_BONUS
@@ -200,9 +206,11 @@ def compute_market_env_bonus(market_idx_pct: float | None) -> int:
 def accumulate_final_score(c: Candidate, market_env_bonus: int, opening_scores: dict[str, float | None]) -> int:
     opening = opening_scores.get(c.stock.symbol)
     opening_bonus = int(round(opening)) if opening is not None else 0
+    intraday_bonus = int(round(c.intraday_score))
     total = (c.rank_trend_bonus + c.sector_bonus + c.live_vol_bonus
              + c.first_today_bonus + c.first_breakout_bonus
              + market_env_bonus + c.turnover_bonus + c.time_bonus
              + c.market_sentiment_bonus + c.rps_bonus
-             + c.list_momentum_bonus + opening_bonus)
+             + c.list_momentum_bonus + opening_bonus
+             + intraday_bonus)
     return total
