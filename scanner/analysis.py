@@ -1,6 +1,7 @@
 from datetime import date
 
 from scanner.config import (
+    MAX_MOMENTUM_TODAY_PCT,
     MAX_NEW_FACE_TODAY_PCT,
     MOMENTUM_WEIGHTS,
     NEW_FACE_WEIGHTS,
@@ -38,7 +39,7 @@ _BOTTOM_VOL_SURGE = 1.15
 _BOTTOM_NEAR_LOW_PCT = 0.08
 
 # Crash detection thresholds
-_CRASH_THRESHOLD = -7.0
+_CRASH_THRESHOLD = -12.0
 _RECENT_2_RETURN_THRESHOLD = -3.0
 _MOMENTUM_VOL_HEALTHY_MIN = 0.7
 _MOMENTUM_VOL_HEALTHY_MAX = 2.0
@@ -93,17 +94,18 @@ def _vol_rank_combo_score(vol_ratio: float, rank_change: int) -> int:
 
 
 def _score_today_pct(today_pct: float, W: dict, prefix: str) -> tuple[int, str, int]:
-    """Score today_pct and return (total_score, dim_key, dim_value)."""
-    if 2 <= today_pct <= 6:
-        return W["today_pct_2_6"], f"{prefix}_today_pct", W["today_pct_2_6"]
-    elif today_pct < 0.5:
+    if today_pct < 0.5:
         return W["today_pct_lt_0_5"], f"{prefix}_today_pct", W["today_pct_lt_0_5"]
     elif today_pct < 1:
         return W["today_pct_0_5_1"], f"{prefix}_today_pct", W["today_pct_0_5_1"]
     elif today_pct < 2:
         return W["today_pct_1_2"], f"{prefix}_today_pct", W["today_pct_1_2"]
+    elif today_pct <= 6:
+        return W["today_pct_2_6"], f"{prefix}_today_pct", W["today_pct_2_6"]
+    elif today_pct <= 7:
+        return W["today_pct_6_7"], f"{prefix}_today_pct", W["today_pct_6_7"]
     else:
-        return W["today_pct_6_8"], f"{prefix}_today_pct", W["today_pct_6_8"]
+        return W["today_pct_7_12"], f"{prefix}_today_pct", W["today_pct_7_12"]
 
 
 
@@ -329,7 +331,7 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
     score = 0
     dims: dict[str, int | float] = {}
 
-    if today_pct > 8:
+    if today_pct > MAX_MOMENTUM_TODAY_PCT:
         return None
 
     today_score, today_dim_key, today_dim_val = _score_today_pct(today_pct, W, "momentum")
@@ -510,7 +512,7 @@ def _check_crash_day(pcts: list, W: dict) -> tuple[bool, int, dict]:
     Returns:
         (has_crash_day, score, dimensions) tuple
     """
-    has_crash_day = any(p <= -7.0 for p in pcts[-5:])
+    has_crash_day = any(p <= _CRASH_THRESHOLD for p in pcts[-5:])
     score = 0
     dims: dict[str, int | float] = {}
 

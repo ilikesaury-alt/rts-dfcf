@@ -9,12 +9,13 @@ from scanner.config import (
     CHAIN_GROWING_BONUS,
     KLINE_FETCH_DAYS,
     KLINE_MIN_LENGTH,
+    MAX_NEW_FACE_TODAY_PCT,
     TECH_ACCUM_HEALTHY,
     TECH_ACCUM_OVERHEAT,
     TECH_MA_BEAR,
     TECH_MA_BULL,
     TECH_MACD_GOLDEN,
-    TECH_NEW_FACE_BONUS,
+    TECH_POSITIVE_RETURN_BONUS,
     TECH_RSI_OVERSOLD,
     TECH_RSI_STRONG,
     TECH_VOL_CONFIRM,
@@ -77,8 +78,8 @@ def _score_technical(closes: list[float], kline: list[dict], percent: float) -> 
             score += TECH_ACCUM_OVERHEAT
             signals.append(f"5日涨幅{accum:.1f}%过热")
 
-    if 0 < percent <= 8:
-        score += TECH_NEW_FACE_BONUS
+    if 0 < percent <= MAX_NEW_FACE_TODAY_PCT:
+        score += TECH_POSITIVE_RETURN_BONUS
         signals.append(f"今日涨幅{percent:.1f}%")
 
     return score, signals
