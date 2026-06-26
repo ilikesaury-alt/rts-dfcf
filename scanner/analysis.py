@@ -243,7 +243,7 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
     sum_5 = sum(recent_5_pcts)
     if (not has_crash_day and not has_big_up_day
             and down_days >= _WEAK_FORM_MIN_DOWN_DAYS
-            and _WEAK_FORM_MIN_ACCUM < sum_5 < _WEAK_FORM_MAX_ACCUM
+            and _WEAK_FORM_MIN_ACCUM < sum_5 <= _WEAK_FORM_MAX_ACCUM
             and today_pct < _WEAK_FORM_MAX_TODAY_PCT):
         return None
 

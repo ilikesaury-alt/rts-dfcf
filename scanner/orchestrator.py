@@ -163,7 +163,7 @@ def _filter_gem_stocks(raw: list[dict]) -> list[StockInfo]:
 def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, list[dict] | None],
                  today: str, session_state: ScanSession,
                  clusters: dict[str, list[str]] | None = None
-                 ) -> tuple[Candidate | None, Candidate | None]:
+                 ) -> tuple[Candidate | None, Candidate | None, Candidate | None]:
     is_first_today = session_state.mark_seen(stock.symbol)
     app_history = get_symbol_appearances(conn, stock.symbol, NEW_FACE_LOOKBACK_DAYS)
     previous_dates = [a["date"] for a in app_history]
@@ -173,6 +173,7 @@ def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, l
 
     new_face_result: Candidate | None = None
     momentum_result: Candidate | None = None
+    pullback_result: Candidate | None = None
 
     nk = analyze_new_face(stock, kline)
     mk = analyze_momentum(stock, kline)
@@ -190,7 +191,7 @@ def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, l
                 nk.dimensions["validation_bonus"] = bonus
                 nk.dimensions.update(dims)
                 new_face_result = _build_candidate(stock, nk, "new_face", is_first_today, first_date, kline)
-                return new_face_result, None
+                return new_face_result, None, None
         if mk and mk.score >= MOMENTUM_MIN_SCORE:
             passed, bonus, dims = validate(
                 "momentum", stock, mk, closes, historical, clusters)
@@ -208,7 +209,7 @@ def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, l
                 mk.dimensions["validation_bonus"] = bonus
                 mk.dimensions.update(dims)
                 momentum_result = _build_candidate(stock, mk, "momentum", is_first_today, first_date, kline)
-                return None, momentum_result
+                return None, momentum_result, None
         if pk and pk.score >= PULLBACK_MIN_SCORE:
             passed, bonus, dims = validate(
                 "pullback", stock, pk, closes, historical, clusters)
@@ -216,8 +217,8 @@ def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, l
                 pk.score += bonus
                 pk.dimensions["validation_bonus"] = bonus
                 pk.dimensions.update(dims)
-                momentum_result = _build_candidate(stock, pk, "pullback", is_first_today, first_date, kline)
-                return None, momentum_result
+                pullback_result = _build_candidate(stock, pk, "pullback", is_first_today, first_date, kline)
+                return None, None, pullback_result
         if nk and nk.score >= NEW_FACE_MIN_SCORE:
             passed, bonus, dims = validate(
                 "known_new_face", stock, nk, closes, historical, clusters)
@@ -227,7 +228,7 @@ def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, l
                 nk.dimensions.update(dims)
                 new_face_result = _build_candidate(stock, nk, "known_new_face", is_first_today, first_date, kline)
 
-    return new_face_result, momentum_result
+    return new_face_result, momentum_result, pullback_result
 
 
 def _compute_rps(candidates: list[Candidate]) -> dict[str, int]:
@@ -253,7 +254,7 @@ def _compute_rps(candidates: list[Candidate]) -> dict[str, int]:
 def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
                   session: requests.Session) -> tuple[
                       list[Candidate], list[Candidate], list[Candidate],
-                      list[StockInfo], int]:
+                      list[Candidate], list[StockInfo], int]:
     global _session_state
     session_state = _session_state
     today = date.today().isoformat()
@@ -293,23 +294,27 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
 
     new_faces: list[Candidate] = []
     momentum: list[Candidate] = []
+    pullback_list: list[Candidate] = []
 
     for stock in gem_stocks_filtered:
-        nf, mo = _score_stock(stock, conn, klines, today, session_state, clusters)
+        nf, mo, pb = _score_stock(stock, conn, klines, today, session_state, clusters)
         if nf:
             new_faces.append(nf)
         if mo:
             momentum.append(mo)
+        if pb:
+            pullback_list.append(pb)
 
-    for c in new_faces + momentum:
+    for c in new_faces + momentum + pullback_list:
         cap_data = market_caps.get(c.stock.symbol, {})
         c.market_cap = cap_data.get("market_cap", 0)
         c.circ_market_cap = cap_data.get("circ_market_cap", 0)
-    all_candidates = new_faces + momentum
+    all_candidates = new_faces + momentum + pullback_list
 
     rps_scores: dict[str, int] = {}
     rps_scores.update(_compute_rps(new_faces))
     rps_scores.update(_compute_rps(momentum))
+    rps_scores.update(_compute_rps(pullback_list))
 
     intraday_scores: dict[str, float | None] = {}
     opening_scores: dict[str, float | None] = {}
@@ -343,10 +348,11 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
 
     new_faces.sort(key=lambda c: -c.score)
     momentum.sort(key=lambda c: -c.score)
-    return new_faces, momentum, stale_candidates, gem_stocks_filtered, filtered_large_cap
+    pullback_list.sort(key=lambda c: -c.score)
+    return new_faces, momentum, pullback_list, stale_candidates, gem_stocks_filtered, filtered_large_cap
 
 
-def scan(conn: sqlite3.Connection, session: requests.Session) -> tuple[list[Candidate], list[Candidate], list[Candidate], list[StockInfo], int]:
+def scan(conn: sqlite3.Connection, session: requests.Session) -> tuple[list[Candidate], list[Candidate], list[Candidate], list[Candidate], list[StockInfo], int]:
     raw = fetch_biaosheng(session)
     return scan_with_raw(raw, conn, session)
 

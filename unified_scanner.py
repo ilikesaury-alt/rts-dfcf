@@ -6,7 +6,6 @@
   - 仅雪球 → 正常参与分析
   - 仅同花顺 → 不纳入候选
 """
-import atexit
 import sys
 import time
 
@@ -48,7 +47,6 @@ def main():
     interval = max(60, args.interval)
 
     conn = init_db()
-    atexit.register(conn.close)
     xq_session = make_session()
     ths_session = make_ths_session()
 
@@ -89,20 +87,21 @@ def main():
                 both_count = sum(1 for i in xq_raw if i.get("source_tag") == "both")
                 print(f"\r  📡 雪球{len(xq_raw)}只 (双源{both_count}只)", end="", flush=True)
 
-                new_faces, momentum, stale_candidates, all_gem, filtered_large_cap = (
+                new_faces, momentum, pullback_list, stale_candidates, all_gem, filtered_large_cap = (
                     scan_with_raw(xq_raw, conn, xq_session))
 
-                for c in new_faces + momentum:
+                for c in new_faces + momentum + pullback_list:
                     if c.stock.source_tag == "both":
                         c.score += CROSS_SOURCE_BONUS
 
                 new_faces.sort(key=lambda x: -x.score)
                 momentum.sort(key=lambda x: -x.score)
+                pullback_list.sort(key=lambda x: -x.score)
 
-                display(new_faces, momentum, len(all_gem), interval,
+                display(new_faces, momentum + pullback_list, len(all_gem), interval,
                         filtered_large_cap=filtered_large_cap, last_ranks=last_ranks,
                         stale_candidates=stale_candidates)
-                log_results(new_faces, momentum)
+                log_results(new_faces, momentum + pullback_list)
 
                 last_ranks.clear()
                 for s in all_gem:
@@ -119,7 +118,7 @@ def main():
                     print(f"  ▶ 动量延续首选: {top_m.stock.name}({top_m.stock.symbol}) [{src}] "
                           f"{top_m.stock.percent:+.2f}% | {top_m.kline.trend if top_m.kline else ''}")
 
-                save_recommendations(conn, new_faces, momentum)
+                save_recommendations(conn, new_faces, momentum + pullback_list)
                 cross_validate()
                 print_validation_summary()
 

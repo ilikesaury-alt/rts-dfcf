@@ -56,7 +56,7 @@ class ScanSession:
             c = self.today_pool[sym]
             if sym not in current_syms and not c.is_stale:
                 c.is_stale = True
-                c.stale_since = now.strftime("%H:%M")
+                c.stale_since = now.isoformat()
 
     def get_stale_candidates(self, now: datetime | None = None) -> list[Candidate]:
         now = now or now_beijing()
@@ -64,7 +64,7 @@ class ScanSession:
         result: list[Candidate] = []
         for sym, c in list(self.today_pool.items()):
             if c.is_stale:
-                stale_dt = datetime.strptime(f"{now.date()} {c.stale_since}", "%Y-%m-%d %H:%M").replace(tzinfo=now.tzinfo)
+                stale_dt = datetime.fromisoformat(c.stale_since).replace(tzinfo=now.tzinfo)
                 if stale_dt >= stale_cutoff:
                     result.append(c)
                 else:
