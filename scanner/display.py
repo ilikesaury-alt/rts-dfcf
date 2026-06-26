@@ -7,8 +7,14 @@ from scanner.config import MAX_MARKET_CAP, MAX_STOCK_PRICE, STALE_TIMEOUT_MINUTE
 from scanner.models import Candidate
 
 if os.name == "nt":
-    import subprocess
-    _supports_ansi = subprocess.call("color", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 1
+    import ctypes
+    _kernel32 = ctypes.windll.kernel32
+    _handle = _kernel32.GetStdHandle(-11)
+    _mode = ctypes.c_uint32()
+    _supports_ansi = (
+        _kernel32.GetConsoleMode(_handle, ctypes.byref(_mode)) != 0
+        and _kernel32.SetConsoleMode(_handle, _mode.value | 0x0004) != 0
+    )
 else:
     _supports_ansi = True
 
@@ -43,7 +49,10 @@ def _pad(s: str, width: int, align: str = "l") -> str:
 
 
 def clear_screen():
-    print("\033[2J\033[H", end="")
+    if os.name == "nt":
+        os.system("cls")
+    else:
+        print("\033[2J\033[H", end="")
 
 
 def fmt_time():
