@@ -98,9 +98,9 @@ def main():
                 momentum.sort(key=lambda x: -x.score)
                 pullback_list.sort(key=lambda x: -x.score)
 
-                display(new_faces, momentum + pullback_list, len(all_gem), interval,
+                display(new_faces, momentum, len(all_gem), interval,
                         filtered_large_cap=filtered_large_cap, last_ranks=last_ranks,
-                        stale_candidates=stale_candidates)
+                        stale_candidates=stale_candidates, pullback_list=pullback_list)
                 log_results(new_faces, momentum + pullback_list)
 
                 last_ranks.clear()

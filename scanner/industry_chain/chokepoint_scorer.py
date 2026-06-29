@@ -69,8 +69,8 @@ def _score_technical(closes: list[float], kline: list[dict], percent: float) -> 
             score += TECH_MACD_GOLDEN
             signals.append("MACD金叉")
 
-    if len(closes) >= 5:
-        accum = sum(k["percent"] for k in kline[-5:] if "percent" in k)
+    if len(closes) >= 6:
+        accum = sum(k["percent"] for k in kline[-6:-1] if "percent" in k)
         if 0 < accum < 15:
             score += TECH_ACCUM_HEALTHY
             signals.append(f"5日涨幅{accum:.1f}%合理")

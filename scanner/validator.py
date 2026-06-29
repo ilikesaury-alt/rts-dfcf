@@ -161,10 +161,12 @@ def _mo_divergence(closes: list[float], historical_kline: list[dict]) -> tuple[i
         price_high_before = max(closes[-8:-3])
         price_up = price_high_now > price_high_before
 
-        if price_up and len(closes) >= 10:
+        if price_up and len(closes) >= 15:
             rsi_vals = []
             for i in range(3, 0, -1):
                 seg = closes[:-i] if i > 0 else closes
+                if len(seg) < 7:
+                    continue
                 r = compute_rsi(seg, period=6)
                 if r is not None:
                     rsi_vals.append(r)

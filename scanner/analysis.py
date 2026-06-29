@@ -314,7 +314,7 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
 
     vol_peak = _vol_peak_ratio(volumes)
     if vol_peak < VOL_PEAK_NEW_FACE_MIN:
-        score += 5
+        score -= 5
         dims["new_face_vol_peak"] = round(vol_peak, 2)
 
     vol_rank = _vol_rank_combo_score(vol_ratio, stock.rank_change)

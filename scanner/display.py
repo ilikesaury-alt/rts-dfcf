@@ -83,8 +83,6 @@ def _source_tag(c: Candidate) -> str:
 
 def _bonus_tag(c: Candidate) -> str:
     parts = []
-    if c.rank_trend_bonus:
-        parts.append(f"T{c.rank_trend_bonus:+d}")
     if c.sector_bonus:
         parts.append(f"S{c.sector_bonus:+d}")
     if c.first_breakout_bonus:
@@ -112,22 +110,22 @@ def _fmt_market_cap(cap: float) -> str:
     return f"{cap_yi:.0f}亿"
 
 
-def display(new_faces: list[Candidate], momentum: list[Candidate],
+def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             gem_total: int, interval: int, filtered_large_cap: int = 0,
             last_ranks: dict[str, int] | None = None,
-            stale_candidates: list[Candidate] | None = None):
+            stale_candidates: list[Candidate] | None = None,
+            pullback_list: list[Candidate] | None = None):
     if last_ranks is None:
         last_ranks = {}
     clear_screen()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    pullback_list = [c for c in momentum if c.category == "pullback"]
-    pure_momentum = [c for c in momentum if c.category != "pullback"]
+    if pullback_list is None:
+        pullback_list = []
 
     print(f"{'='*96}")
     print(f"  创业板飙升榜监控  ({now})")
 
-    all_c = new_faces + momentum
+    all_c = new_faces + pure_momentum + pullback_list
     sec_counts: dict[str, int] = {}
     for c_ in all_c:
         if c_.sector:

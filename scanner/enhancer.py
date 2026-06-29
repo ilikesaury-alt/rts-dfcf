@@ -38,7 +38,7 @@ from scanner.config import (
     TURNOVER_MEDIUM,
 )
 from scanner.models import Candidate
-from scanner.rank_trend import rank_streak_score, rank_trajectory_score
+from scanner.rank_trend import rank_trajectory_score
 from scanner.sector import classify_sector
 
 
@@ -65,7 +65,6 @@ def apply_all_bonuses(
         _apply_sentiment_bonus(c, sentiment_info)
         _apply_rps_bonus(c, rps_scores)
         _apply_list_momentum_bonus(c, list_streaks, conn)
-        c.rank_trend_bonus = rank_streak_score(c.stock.symbol)
         c.time_bonus = time_bonus
         _apply_gap_up_bonus(c)
         _record_dimensions(c, market_idx_pct, opening_scores)
@@ -95,7 +94,7 @@ def _apply_intraday_bonus(c: Candidate, intraday_scores: dict[str, float | None]
 def _apply_live_vol_bonus(c: Candidate, live_volumes: dict[str, float | None]):
     live_vol = live_volumes.get(c.stock.symbol)
     if live_vol is not None and c.kline and c.kline.avg_volume > 0:
-        live_vol_ratio = live_vol / c.kline.avg_volume
+        live_vol_ratio = live_vol / c.kline.avg_volume  # 实时量比 = 今日成交量 / 日均量
         if live_vol_ratio > LIVE_VOL_RATIO_THRESHOLD:
             c.live_vol_bonus = LIVE_VOL_BONUS
 
@@ -198,7 +197,6 @@ def _record_dimensions(
 ):
     if not c.kline or c.kline.dimensions is None:
         return
-    c.kline.dimensions["rank_trend_bonus"] = c.rank_trend_bonus
     c.kline.dimensions["sector_bonus"] = c.sector_bonus
     c.kline.dimensions["live_vol_bonus"] = c.live_vol_bonus
     c.kline.dimensions["intraday_score"] = round(c.intraday_score, 1)
@@ -250,7 +248,7 @@ def accumulate_final_score(c: Candidate, market_env_bonus: int, opening_scores: 
     opening = opening_scores.get(c.stock.symbol)
     opening_bonus = int(round(opening)) if opening is not None else 0
     intraday_bonus = int(round(c.intraday_score))
-    total = (c.rank_trend_bonus + c.sector_bonus + c.live_vol_bonus
+    total = (c.sector_bonus + c.live_vol_bonus
              + c.first_today_bonus + c.first_breakout_bonus
              + market_env_bonus + c.turnover_bonus + c.time_bonus
              + c.market_sentiment_bonus + c.rps_bonus
