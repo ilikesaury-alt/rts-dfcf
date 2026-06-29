@@ -98,6 +98,8 @@ def _bonus_tag(c: Candidate) -> str:
         parts.append(d_tag)
     if c.turnover_bonus:
         parts.append(f"H{c.turnover_bonus:+d}")
+    if c.list_momentum_bonus:
+        parts.append(f"L{c.list_momentum_bonus:+d}")
     return " ".join(parts) if parts else ""
 
 

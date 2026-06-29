@@ -305,16 +305,14 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         if pb:
             pullback_list.append(pb)
 
-    for c in new_faces + momentum + pullback_list:
+    all_candidates = new_faces + momentum + pullback_list
+    for c in all_candidates:
         cap_data = market_caps.get(c.stock.symbol, {})
         c.market_cap = cap_data.get("market_cap", 0)
         c.circ_market_cap = cap_data.get("circ_market_cap", 0)
-    all_candidates = new_faces + momentum + pullback_list
 
     rps_scores: dict[str, int] = {}
-    rps_scores.update(_compute_rps(new_faces))
-    rps_scores.update(_compute_rps(momentum))
-    rps_scores.update(_compute_rps(pullback_list))
+    rps_scores.update(_compute_rps(all_candidates))
 
     intraday_scores: dict[str, float | None] = {}
     opening_scores: dict[str, float | None] = {}

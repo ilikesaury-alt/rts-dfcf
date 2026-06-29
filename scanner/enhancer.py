@@ -2,6 +2,7 @@ from datetime import datetime
 
 from scanner.config import (
     now_beijing,
+    CROSS_SOURCE_BONUS,
     EARLY_BONUS,
     EARLY_TRADE_CUTOFF,
     LATE_BONUS,
@@ -137,7 +138,7 @@ def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None
     streak = max(cross_days, intraday_streak)
     traj = rank_trajectory_score(c.stock.symbol)
     rank = c.stock.rank
-    bonus = 0
+    streak_bonus = 0
 
     if streak >= FATIGUE_STREAK_MIN:
         fatigue_signals = 0
@@ -156,38 +157,43 @@ def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None
 
         if fatigue_signals >= 2:
             penalty = max(streak * FATIGUE_PENALTY_PER_DAY, FATIGUE_PENALTY_CAP)
-            bonus += penalty
+            streak_bonus = penalty
             if c.kline:
                 c.kline.dimensions["fatigue"] = penalty
                 c.kline.dimensions["fatigue_detail"] = f"signals_{fatigue_signals}/3_streak_{streak}"
         elif accelerating:
-            bonus += streak * FATIGUE_ACCELERATE_BONUS_PER_DAY
+            streak_bonus = streak * FATIGUE_ACCELERATE_BONUS_PER_DAY
             if c.kline:
                 c.kline.dimensions["fatigue"] = streak * FATIGUE_ACCELERATE_BONUS_PER_DAY
                 c.kline.dimensions["fatigue_detail"] = "accelerating"
         else:
             if streak >= 5:
-                bonus += LIST_STREAK_BONUS_5
+                streak_bonus = LIST_STREAK_BONUS_5
             elif streak >= 3:
-                bonus += LIST_STREAK_BONUS_3
+                streak_bonus = LIST_STREAK_BONUS_3
             elif streak >= 2:
-                bonus += LIST_STREAK_BONUS_2
+                streak_bonus = LIST_STREAK_BONUS_2
     else:
         if streak >= 5:
-            bonus += LIST_STREAK_BONUS_5
+            streak_bonus = LIST_STREAK_BONUS_5
         elif streak >= 3:
-            bonus += LIST_STREAK_BONUS_3
+            streak_bonus = LIST_STREAK_BONUS_3
         elif streak >= 2:
-            bonus += LIST_STREAK_BONUS_2
+            streak_bonus = LIST_STREAK_BONUS_2
 
-    bonus += traj
+    traj_bonus = traj
+    top40_bonus = 0
     if rank <= TOP40_THRESHOLD:
-        bonus += TOP40_BONUS
+        top40_bonus = TOP40_BONUS
         advance = (TOP40_THRESHOLD - rank) // 10
-        bonus += advance * TOP40_ADVANCE_PER_10
+        top40_bonus += advance * TOP40_ADVANCE_PER_10
         if rank <= 20:
-            bonus += TOP20_EXTRA
-    c.list_momentum_bonus = bonus
+            top40_bonus += TOP20_EXTRA
+    c.list_momentum_bonus = streak_bonus + traj_bonus + top40_bonus
+    if c.kline:
+        c.kline.dimensions["list_streak_bonus"] = streak_bonus
+        c.kline.dimensions["list_traj_bonus"] = traj_bonus
+        c.kline.dimensions["list_top40_bonus"] = top40_bonus
 
 
 def _record_dimensions(
@@ -248,10 +254,11 @@ def accumulate_final_score(c: Candidate, market_env_bonus: int, opening_scores: 
     opening = opening_scores.get(c.stock.symbol)
     opening_bonus = int(round(opening)) if opening is not None else 0
     intraday_bonus = int(round(c.intraday_score))
+    cross_source = CROSS_SOURCE_BONUS if c.stock.source_tag == "both" else 0
     total = (c.sector_bonus + c.live_vol_bonus
              + c.first_today_bonus + c.first_breakout_bonus
              + market_env_bonus + c.turnover_bonus + c.time_bonus
              + c.market_sentiment_bonus + c.rps_bonus
              + c.list_momentum_bonus + opening_bonus
-             + intraday_bonus)
+             + intraday_bonus + cross_source)
     return total

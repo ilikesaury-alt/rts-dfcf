@@ -10,7 +10,7 @@ from scanner.api import (
     fetch_kline,
     make_session,
 )
-from scanner.config import KLINE_FETCH_DAYS, KLINE_MIN_LENGTH, MAX_STOCK_PRICE
+from scanner.config import KLINE_FETCH_DAYS, KLINE_MIN_LENGTH, MAX_MARKET_CAP, MAX_STOCK_PRICE
 from scanner.database import DB_PATH, save_kline_to_db
 from scanner.industry_chain.chains import match_chains
 from scanner.industry_chain.chokepoint_scorer import score_chokepoint_stocks
@@ -37,6 +37,9 @@ def _filter_gem_stocks(raw: list[dict]) -> list:
             continue
         current = item.get("current") or 0
         if current > 0 and current > MAX_STOCK_PRICE:
+            continue
+        mc = item.get("value") or 0
+        if mc > 0 and mc > MAX_MARKET_CAP:
             continue
         gem_stocks.append({
             "symbol": symbol,

@@ -8,6 +8,7 @@ except Exception:
 
 from scanner.api import make_session
 from scanner.database import init_industry_chain_tables
+from scanner.trading_session import is_trading_time
 from scanner.industry_chain.display import (
     _safe_print,
     clear_console,
@@ -69,6 +70,9 @@ def main_loop(interval: int = 300):
 
     try:
         while True:
+            if not is_trading_time():
+                time.sleep(60)
+                continue
             run_once(session_state)
             if interval <= 0:
                 break

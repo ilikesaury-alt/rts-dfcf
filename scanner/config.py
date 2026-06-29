@@ -22,6 +22,7 @@ MAX_MARKET_CAP = 300 * YI
 MAX_STOCK_PRICE = 100.0
 MAX_NEW_FACE_TODAY_PCT = 12
 MAX_MOMENTUM_TODAY_PCT = 12
+PULLBACK_MAX_TODAY_PCT = 2.0
 
 # Vol-rank combo scoring thresholds
 VOL_RANK_VOL_THRESHOLD = 1.15
@@ -90,7 +91,7 @@ NEW_FACE_WEIGHTS: dict[str, int] = {
     "today_pct_6_7": 12,
     "today_pct_7_12": 8,
     "accum_neg5_10": 10,
-    "accum_lt_neg5": -5,
+    "accum_lt_neg5": 0,
     "accum_10_15": 5,
     "accum_15_25": -5,
     "accum_gt_25": -15,
@@ -280,13 +281,13 @@ V_NF_HL_STABLE = 3
 V_NF_HL_FAIL = -5
 V_NF_SECTOR_STRONG = 8
 V_NF_SECTOR_MOD = 5
-V_NF_SECTOR_WEAK = 3
+V_NF_SECTOR_WEAK = 0
 
 # Momentum
-V_MO_MA_FULL = 10
-V_MO_MA_PARTIAL = 5
+V_MO_MA_FULL = 6
+V_MO_MA_PARTIAL = 3
 V_MO_MA_NONE = -8
-V_MO_DIVERGENCE_NONE = 8
+V_MO_DIVERGENCE_NONE = 4
 V_MO_DIVERGENCE_BEAR = -10
 V_MO_VOL_UP = 8
 V_MO_VOL_STABLE = 5
@@ -305,6 +306,7 @@ V_PB_SECTOR_DEAD = -5
 
 # New face — added in P0
 V_NF_DIVERGENCE_BULL = 8
+V_NF_VOLUME_CONFIRM = 5
 
 # Pullback — added in P0
 V_PB_BOLLINGER_TOUCH = 5

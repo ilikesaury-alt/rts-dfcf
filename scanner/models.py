@@ -33,7 +33,6 @@ class Candidate:
     reason: str
     kline: KlineSummary | None
     sector: str = ""
-    rank_trend_bonus: int = 0
     sector_bonus: int = 0
     live_vol_bonus: int = 0
     intraday_score: float = 0.0

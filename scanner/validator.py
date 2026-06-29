@@ -16,6 +16,7 @@ from scanner.config import (
     V_NF_SECTOR_MOD,
     V_NF_SECTOR_STRONG,
     V_NF_SECTOR_WEAK,
+    V_NF_VOLUME_CONFIRM,
     V_PB_BOLLINGER_TOUCH,
     V_PB_MA_DOWN,
     V_PB_MA_FLAT,
@@ -103,12 +104,22 @@ def _nf_sector(name: str, clusters: dict[str, list[str]] | None) -> tuple[int, i
     return V_NF_SECTOR_WEAK, count
 
 
+def _nf_volume_surge(kline_summary) -> tuple[int, str]:
+    if kline_summary is None:
+        return 0, "no_data"
+    vr = kline_summary.volume_ratio
+    if vr > 1.3:
+        return V_NF_VOLUME_CONFIRM, f"vol_surge_{vr:.1f}x"
+    return 0, f"vol_{vr:.1f}x"
+
+
 def validate_nf(stock, kline_summary, closes: list[float],
                 historical_kline: list[dict], clusters: dict[str, list[str]] | None
                 ) -> tuple[bool, int, dict]:
     conv_bonus, conv_detail = _nf_convergence(closes, historical_kline)
     hl_bonus, hl_detail = _nf_higher_low(closes)
     sec_bonus, sec_count = _nf_sector(stock.name, clusters)
+    vol_bonus, vol_detail = _nf_volume_surge(kline_summary)
 
     details: dict[str, int | float | str] = {
         "v_nf_convergence": conv_bonus,
@@ -117,9 +128,11 @@ def validate_nf(stock, kline_summary, closes: list[float],
         "v_nf_higher_low_detail": hl_detail,
         "v_nf_sector": sec_bonus,
         "v_nf_sector_count": sec_count,
+        "v_nf_volume": vol_bonus,
+        "v_nf_volume_detail": vol_detail,
     }
 
-    total = conv_bonus + hl_bonus + sec_bonus
+    total = conv_bonus + hl_bonus + sec_bonus + vol_bonus
 
     pos_dims = sum(1 for b in (conv_bonus, hl_bonus, sec_bonus) if b > 0)
     passed = pos_dims >= 2

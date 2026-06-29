@@ -3,6 +3,7 @@ from datetime import date
 from scanner.config import (
     MAX_MOMENTUM_TODAY_PCT,
     MAX_NEW_FACE_TODAY_PCT,
+    PULLBACK_MAX_TODAY_PCT,
     MOMENTUM_WEIGHTS,
     NEW_FACE_WEIGHTS,
     PULLBACK_WEIGHTS,
@@ -302,15 +303,17 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
         dims["new_face_accumulated"] = W["accum_gt_25"]
     score += acc_score
 
-    # Bottom / V-shape / volume
+    # Volume surge (additive: bottom confirmation or v-shape still get this)
+    if volume_surge:
+        score += W["volume_surge"]
+        dims["new_face_volume"] = W["volume_surge"]
+
     if bottom_confirmed:
         score += W["bottom_confirmed"]
         dims["new_face_bottom"] = W["bottom_confirmed"]
     elif v_shape_reversal:
         score += W["v_shape"]
-    elif volume_surge:
-        score += W["volume_surge"]
-        dims["new_face_volume"] = W["volume_surge"]
+        dims["new_face_v_shape"] = W["v_shape"]
 
     vol_peak = _vol_peak_ratio(volumes)
     if vol_peak < VOL_PEAK_NEW_FACE_MIN:
@@ -697,7 +700,7 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
     W = PULLBACK_WEIGHTS
 
     today_pct = stock.percent
-    if today_pct <= -8 or today_pct > 2:
+    if today_pct <= -8 or today_pct > PULLBACK_MAX_TODAY_PCT:
         return None
 
     pcts, closes, accumulated, vol_ratio, avg_vol, historical_kline, volumes = _calc_pullback_base_metrics(kline, today_str)
