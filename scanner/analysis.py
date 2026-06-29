@@ -31,7 +31,6 @@ _WEAK_FORM_MAX_ACCUM = 5
 _WEAK_FORM_MIN_ACCUM = -5
 _WEAK_FORM_MAX_TODAY_PCT = 3
 _WEAK_FORM_CRASH_THRESHOLD = -10
-_WEAK_FORM_BIG_UP_THRESHOLD = 10
 
 # Gap-up thresholds
 _GAP_UP_STRONG = 2.0
@@ -240,9 +239,8 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
     recent_5_pcts = pcts[-5:]
     down_days = sum(1 for p in recent_5_pcts if p < 0)
     has_crash_day = any(p <= _WEAK_FORM_CRASH_THRESHOLD for p in recent_5_pcts)
-    has_big_up_day = any(p >= _WEAK_FORM_BIG_UP_THRESHOLD for p in recent_5_pcts)
     sum_5 = sum(recent_5_pcts)
-    if (not has_crash_day and not has_big_up_day
+    if (not has_crash_day
             and down_days >= _WEAK_FORM_MIN_DOWN_DAYS
             and _WEAK_FORM_MIN_ACCUM < sum_5 <= _WEAK_FORM_MAX_ACCUM
             and today_pct < _WEAK_FORM_MAX_TODAY_PCT):
@@ -250,6 +248,8 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
 
     accumulated = sum(pcts[-5:])
     if accumulated < -8:
+        return None
+    if accumulated > 20:
         return None
 
     volumes = [k["volume"] for k in kline]

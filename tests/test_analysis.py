@@ -75,8 +75,7 @@ class TestAnalyzeNewFace:
     def test_high_accumulated_penalty(self):
         kline = _kline([6, 5, 5, 4, 7], volumes=[1.0]*5)
         result = analyze_new_face(_stock(percent=3, rank_change=500, value=3000), kline)
-        assert result is not None
-        assert result.dimensions.get("new_face_accumulated", 0) < 0
+        assert result is None
 
     def test_over_12_pct_rejected(self):
         kline = _kline([1, 1, 1, 2, 3], volumes=[1.0]*5)
