@@ -19,7 +19,7 @@ from scanner.config import (
     REFRESH_INTERVAL,
     now_beijing,
 )
-from scanner.cross_validation import cross_validate, print_validation_summary
+from scanner.cross_validation import cross_validate
 from scanner.database import init_db, save_recommendations
 from scanner.display import display
 from scanner.log_utils import log_results
@@ -122,7 +122,6 @@ def main():
 
                 save_recommendations(conn, new_faces, momentum + pullback_list)
                 cross_validate()
-                print_validation_summary()
 
             except requests.RequestException as e:
                 print(f"\n  [!] 网络错误: {e}")

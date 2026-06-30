@@ -141,28 +141,3 @@ def _save_results(conn: sqlite3.Connection, results: list[dict], now: str):
     conn.commit()
 
 
-def print_validation_summary():
-    import sys
-    conn = init_cross_validation_tables()
-    try:
-        today = date.today().isoformat()
-        rows = conn.execute(
-            "SELECT symbol, name, level, bonus, existing_category, chain_name, chain_phase "
-            "FROM cross_validated_signals WHERE date = ? ORDER BY bonus DESC, symbol",
-            (today,),
-        ).fetchall()
-        if not rows:
-            print("  今日无交叉验证信号")
-            return
-
-        print(f"\n  {'='*60}")
-        print(f"  交叉验证结果 (今日{today})")
-        print(f"  {'='*60}")
-        print(f"  {'代码':>8} {'名称':<10} {'级别':<4} {'加分':>4} {'现有系统':<12} {'产业链':<8}")
-        print(f"  {'─'*60}")
-        for r in rows:
-            sym, name, level, bonus, cat, chain, phase = r
-            tag = "🔴" if level == "T1" else ("🟡" if level == "T2" else "⚪")
-            print(f"  {sym:>8} {name:<10} {tag}{level:<3} {bonus:>4} {cat or '-':<12} {chain:<8}")
-    finally:
-        conn.close()

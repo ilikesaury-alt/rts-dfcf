@@ -178,12 +178,10 @@ class TestAnalyzePullback:
         assert "pullback_ma_bull" not in result.dimensions
 
     def test_ma_broken_penalty(self):
-        pcts = [0.5]*10 + [1.0]*10 + [1.0]*5  # strong uptrend, 25 days
+        # Rally → pullback below MA20 → slight recovery, 5-day accumulated still ≥ 5%
+        pcts = [0.8]*15 + [-3.0]*4 + [1.0]*5
         kline = _kline(pcts)
-        # Manually adjust last close to be below MA20 (keep percent positive for accumulated)
-        kline[-1]["close"] = kline[-1]["close"] * 0.85  # 15% drop, close < MA20
-        # today_pct is separate (passed via stock.percent)
-        result = analyze_pullback(_stock(percent=-5), kline)
+        result = analyze_pullback(_stock(percent=-1), kline)
         assert result is not None
         assert "pullback_ma_broken" in result.dimensions
 
@@ -244,5 +242,16 @@ class TestIndicatorIntegration:
         result = analyze_momentum(_stock(percent=3, rank_change=1500, value=8000), kline)
         assert result is not None
         assert "momentum_kdj" in result.dimensions
+
+
+class TestAccumulatedCalculation:
+
+    def test_close_based_with_volatile_pattern(self):
+        pcts = [5, -4, 5, -4, 5, -4, 5, -4, 5, -4]
+        kline = _kline(pcts)
+        cb = [b["close"] for b in kline]
+        accumulated = (cb[-1] - cb[-6]) / cb[-6] * 100
+        # sum(pcts[-5:]) = -4+5-4+5-4 = -2% (wrong), close-based = -2.46% (correct)
+        assert round(accumulated, 2) == -2.46
 
 

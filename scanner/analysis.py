@@ -246,7 +246,10 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
             and today_pct < _WEAK_FORM_MAX_TODAY_PCT):
         return None
 
-    accumulated = sum(pcts[-5:])
+    if len(closes) >= 6:
+        accumulated = (closes[-1] - closes[-6]) / closes[-6] * 100
+    else:
+        accumulated = sum(pcts[-5:])
     if accumulated < -8:
         return None
     if accumulated > 20:
@@ -368,7 +371,10 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
     historical_kline = [k for k in kline if k["date"] != today_str]
     pcts = [k["percent"] for k in historical_kline]
     closes = [k["close"] for k in historical_kline]
-    accumulated = sum(pcts[-5:])
+    if len(closes) >= 6:
+        accumulated = (closes[-1] - closes[-6]) / closes[-6] * 100
+    else:
+        accumulated = sum(pcts[-5:])
 
     if accumulated < 8:
         return None
@@ -475,7 +481,10 @@ def _calc_pullback_base_metrics(kline: list[dict], today_str: str) -> tuple[list
     historical_kline = [k for k in kline if k["date"] != today_str]
     pcts = [k["percent"] for k in historical_kline]
     closes = [k["close"] for k in historical_kline]
-    accumulated = sum(pcts[-5:])
+    if len(closes) >= 6:
+        accumulated = (closes[-1] - closes[-6]) / closes[-6] * 100
+    else:
+        accumulated = sum(pcts[-5:])
 
     volumes = [k["volume"] for k in kline]
     vol_window = volumes[-11:-1] if len(volumes) >= 11 else volumes[:-1]
