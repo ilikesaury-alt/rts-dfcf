@@ -9,7 +9,7 @@ from scanner.api import (
     make_session,
 )
 from scanner.config import KLINE_FETCH_DAYS, KLINE_MIN_LENGTH, MAX_MARKET_CAP, MAX_STOCK_PRICE, now_beijing
-from scanner.database import DB_PATH, save_kline_to_db
+from scanner.database import get_cached_kline, save_kline_to_db
 from scanner.industry_chain.chains import match_chains
 from scanner.industry_chain.chokepoint_scorer import score_chokepoint_stocks
 from scanner.industry_chain.models import ChokepointCandidate, ChainTrend, IndustryScanSession
@@ -52,13 +52,12 @@ def _filter_gem_stocks(raw: list[dict]) -> list:
     return gem_stocks
 
 
-def _fetch_klines(session: requests.Session, gem_stocks: list) -> dict[str, list[dict] | None]:
-    conn = sqlite3.connect(DB_PATH)
+def _fetch_klines(conn: sqlite3.Connection, session: requests.Session, gem_stocks: list) -> dict[str, list[dict] | None]:
     result: dict[str, list[dict] | None] = {}
     needs_fetch: list[str] = []
 
     for s in gem_stocks:
-        cached = _get_cached_kline(conn, s["symbol"])
+        cached = get_cached_kline(conn, s["symbol"])
         if cached and len(cached) >= KLINE_MIN_LENGTH:
             result[s["symbol"]] = cached
         else:
@@ -82,26 +81,7 @@ def _fetch_klines(session: requests.Session, gem_stocks: list) -> dict[str, list
                 except Exception:
                     pass
 
-    conn.close()
     return result
-
-
-def _get_cached_kline(conn: sqlite3.Connection, symbol: str) -> list[dict] | None:
-    from datetime import timedelta
-    lookback = (now_beijing().date() - timedelta(days=60)).isoformat()
-    cur = conn.execute(
-        "SELECT date, open, close, high, low, volume, percent FROM daily_kline "
-        "WHERE symbol = ? AND date >= ? ORDER BY date",
-        (symbol, lookback),
-    )
-    rows = cur.fetchall()
-    if rows:
-        return [
-            {"date": r[0], "open": r[1], "close": r[2], "high": r[3],
-             "low": r[4], "volume": r[5], "percent": r[6]}
-            for r in rows
-        ]
-    return None
 
 
 def scan(
@@ -124,7 +104,7 @@ def scan(
     if not chain_trend_results:
         return [], chain_trend_results
 
-    klines = _fetch_klines(session, gem_stocks)
+    klines = _fetch_klines(conn, session, gem_stocks)
 
     candidates = score_chokepoint_stocks(chain_trend_results, gem_stocks, klines)
 

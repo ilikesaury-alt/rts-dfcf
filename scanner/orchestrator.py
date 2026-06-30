@@ -279,7 +279,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         cap_data = market_caps.get(s.symbol, {})
         cap_current = cap_data.get("current", 0)
         if cap_current and s.current == 0:
-            object.__setattr__(s, "current", cap_current)
+            s.current = cap_current
         if s.current > 0 and s.current > MAX_STOCK_PRICE:
             continue
         mc = cap_data.get("market_cap", 0)

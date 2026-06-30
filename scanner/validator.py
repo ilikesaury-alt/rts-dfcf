@@ -177,14 +177,9 @@ def _mo_divergence(closes: list[float], historical_kline: list[dict]) -> tuple[i
         price_up = price_high_now > price_high_before
 
         if price_up and len(closes) >= 15:
-            rsi_vals = []
-            for i in range(3, 0, -1):
-                seg = closes[:-i] if i > 0 else closes
-                if len(seg) < 7:
-                    continue
-                r = compute_rsi(seg, period=6)
-                if r is not None:
-                    rsi_vals.append(r)
+            rsi_minus_1 = compute_rsi(closes[:-1], period=6)
+            rsi_minus_2 = compute_rsi(closes[:-2], period=6)
+            rsi_vals = [v for v in [rsi_minus_2, rsi_minus_1] if v is not None]
             rsi_vals = rsi_vals[-2:] if len(rsi_vals) >= 2 else []
             if len(rsi_vals) == 2 and rsi_vals[-1] < rsi_vals[-2] * 0.95:
                 return V_MO_DIVERGENCE_BEAR, "bear_divergence"

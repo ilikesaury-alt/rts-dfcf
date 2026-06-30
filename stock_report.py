@@ -186,7 +186,7 @@ def main():
                 live_data = caps[symbol]
             session.close()
         except Exception as e:
-            pass
+            print(f"  [警告] 获取实时数据失败: {e}")
 
     now = now_beijing()
     report_date = now.strftime("%Y-%m-%d %H:%M")
