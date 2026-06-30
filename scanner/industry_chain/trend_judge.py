@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import date, datetime
+from datetime import date, timedelta
 from typing import Any
 
 from scanner.config import (
@@ -8,6 +8,7 @@ from scanner.config import (
     CHAIN_CONCENTRATION_LOW,
     CHAIN_CONCENTRATION_WARM,
     CHAIN_PERSISTENCE_FADING,
+    now_beijing,
     CHAIN_PERSISTENCE_MIN,
 )
 from scanner.industry_chain.chains import CHAINS, is_bottleneck_node, match_chains
@@ -21,7 +22,7 @@ def judge_chain_trends(
     session: IndustryScanSession,
     scan_id: str,
 ) -> dict[str, ChainTrend]:
-    now = datetime.now().isoformat()
+    now = now_beijing().isoformat()
 
     chain_stocks: dict[str, list[dict]] = {}
     chain_bottleneck_active: dict[str, bool] = {}
@@ -113,7 +114,7 @@ def judge_chain_trends(
 
 def _is_newcomer(symbol: str, conn: sqlite3.Connection) -> bool:
     try:
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = now_beijing().strftime("%Y-%m-%d")
         row = conn.execute(
             "SELECT 1 FROM chokepoint_recommendations WHERE symbol = ? AND date = ? LIMIT 1",
             (symbol, today),
@@ -262,7 +263,7 @@ def _save_trend_history(
 
 def _update_session(session: IndustryScanSession, results: dict[str, ChainTrend]):
     snapshot = {
-        "time": datetime.now().isoformat(),
+        "time": now_beijing().isoformat(),
         "trends": {k: {"phase": v.phase, "score": v.score, "stock_count": v.stock_count}
                    for k, v in results.items()},
     }

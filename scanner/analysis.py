@@ -597,7 +597,7 @@ def _analyze_pullback_ma(closes: list, W: dict) -> dict:
     if len(closes) >= 10:
         result["ma10"] = sum(closes[-10:]) / 10
         current_close = closes[-1]
-        pct_from_ma10 = (current_close - result["ma10"]) / result["ma10"] * 100
+        pct_from_ma10 = (current_close - result["ma10"]) / max(result["ma10"], 0.01) * 100
         if abs(pct_from_ma10) <= 2:
             result["ma_support"] = True
             result["score"] += W["ma_support"]

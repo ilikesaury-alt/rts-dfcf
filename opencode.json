@@ -103,6 +103,18 @@
         "edit": true,
         "bash": true
       }
+    },
+    "stock-report-agent": {
+      "description": "A股个股深度分析报告（扫描器本地数据 + 网络资讯）. 用法: /stock-report <代码或名称> [--quick]",
+      "mode": "subagent",
+      "prompt": "{file:.opencode/prompts/stock-report.txt}",
+      "model": "haiku",
+      "tools": {
+        "read": true,
+        "write": true,
+        "edit": true,
+        "bash": true
+      }
     }
   },
   "command": {
@@ -189,6 +201,12 @@
     "skill-create": {
       "description": "Generate skills from git history",
       "template": "{file:C:/Program Files/nodejs/node_modules/ecc-universal/.opencode/commands/skill-create.md}\n\n$ARGUMENTS"
+    },
+    "stock-report": {
+      "description": "个股深度分析报告. 用法: /stock-report <代码或名称> [--quick]",
+      "template": "用户请求个股深度分析\n\n标的: $ARGUMENTS",
+      "agent": "stock-report-agent",
+      "subtask": true
     }
   }
 }

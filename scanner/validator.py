@@ -85,6 +85,8 @@ def _nf_higher_low(closes: list[float]) -> tuple[int, str]:
     recent_zone = min(closes[-5:])
     prev_zone = min(closes[-10:-5])
 
+    prev_zone = max(prev_zone, 0.001)
+
     if recent_zone > prev_zone * 1.01:
         return V_NF_HL_CLEAR, f"hl_clear_{recent_zone/prev_zone:.3f}"
     if recent_zone > prev_zone * 0.98:

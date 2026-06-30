@@ -1,8 +1,6 @@
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
-
 import requests
 
 from scanner.api import (
@@ -10,7 +8,7 @@ from scanner.api import (
     fetch_kline,
     make_session,
 )
-from scanner.config import KLINE_FETCH_DAYS, KLINE_MIN_LENGTH, MAX_MARKET_CAP, MAX_STOCK_PRICE
+from scanner.config import KLINE_FETCH_DAYS, KLINE_MIN_LENGTH, MAX_MARKET_CAP, MAX_STOCK_PRICE, now_beijing
 from scanner.database import DB_PATH, save_kline_to_db
 from scanner.industry_chain.chains import match_chains
 from scanner.industry_chain.chokepoint_scorer import score_chokepoint_stocks
@@ -89,8 +87,8 @@ def _fetch_klines(session: requests.Session, gem_stocks: list) -> dict[str, list
 
 
 def _get_cached_kline(conn: sqlite3.Connection, symbol: str) -> list[dict] | None:
-    from datetime import date, timedelta
-    lookback = (date.today() - timedelta(days=60)).isoformat()
+    from datetime import timedelta
+    lookback = (now_beijing().date() - timedelta(days=60)).isoformat()
     cur = conn.execute(
         "SELECT date, open, close, high, low, volume, percent FROM daily_kline "
         "WHERE symbol = ? AND date >= ? ORDER BY date",
@@ -112,7 +110,7 @@ def scan(
     session_state: IndustryScanSession,
     scan_id: str | None = None,
 ) -> tuple[list[ChokepointCandidate], dict[str, ChainTrend]]:
-    scan_id = scan_id or datetime.now().strftime("%Y%m%d%H%M%S")
+    scan_id = scan_id or now_beijing().strftime("%Y%m%d%H%M%S")
 
     raw = fetch_biaosheng(session)
     if not raw:
@@ -136,9 +134,8 @@ def scan(
 
 
 def _save_recommendations(conn: sqlite3.Connection, candidates: list[ChokepointCandidate], scan_id: str):
-    from datetime import date, datetime
-    today = date.today().isoformat()
-    now = datetime.now().strftime("%H:%M:%S")
+    today = now_beijing().strftime("%Y-%m-%d")
+    now = now_beijing().strftime("%H:%M:%S")
 
     for c in candidates:
         try:
