@@ -44,12 +44,12 @@ tests/                    # pytest test suite
 
 ## Architecture Notes
 
-- Scanner filters: GEM stocks only (300xxx), excludes ST/*ST, HK stocks, market cap >300亿, price >100元
+- Scanner filters: GEM stocks only (300xxx), excludes ST/*ST, HK stocks, market cap >500亿, price >200元
 - Three strategies: new_face (bottom breakout), momentum (trend continuation), pullback (reversion)
 - Cross-validation (`validator.py`): each candidate must pass ≥2 of 3 independent dimensions before final acceptance
-  - **new_face**: indicator convergence (RSI+MACD+KDJ), higher-low structure, sector resonance
-  - **momentum**: MA5>10>20 alignment, no divergence, volume uniformity
-  - **pullback**: MA20 trending up, volume shrinkage, sector still active
+  - **new_face**: indicator convergence (RSI<30 + MACD golden cross + KDJ K<20 & K>D), higher-low structure, sector resonance
+  - **momentum**: MA5>10>20 alignment (penalty -5 if broken), no RSI divergence, volume uniformity (5-day window)
+  - **pullback**: MA20 trending up (>+0.5%), volume shrinkage (<0.6x), sector still active (≥3 same-sector in list)
 - Priority chain: primary strategy attempted first; if cross-validation fails, falls through to next strategy
 - Industry chain scanner (`industry_chain/`): independent subsystem implementing a chokepoint investment thesis — detects chain phases (潜伏→形成→成长→爆发→消退), verifies bottleneck node participation, picks technically strong bottleneck stocks from active chains
 

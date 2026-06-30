@@ -48,7 +48,7 @@ def _nf_convergence(closes: list[float], historical_kline: list[dict]) -> tuple[
 
     hits = 0
 
-    if rsi is not None and rsi < 40:
+    if rsi is not None and rsi < 30:
         hits += 1
     if macd is not None and macd["histogram"] > 0 and macd["histogram_prev"] <= 0:
         hits += 1
@@ -193,13 +193,13 @@ def _mo_divergence(closes: list[float], historical_kline: list[dict]) -> tuple[i
 
 
 def _mo_volume_uniformity(historical_kline: list[dict]) -> tuple[int, str]:
-    volumes = [k["volume"] for k in historical_kline[-5:]]
-    if len(volumes) < 3:
+    volumes = [k["volume"] for k in historical_kline[-7:]]
+    if len(volumes) < 5:
         return 0, "data_short"
 
-    recent_3 = volumes[-3:]
-    inc = recent_3[0] <= recent_3[1] <= recent_3[2]
-    ratio = max(recent_3) / max(min(recent_3), 0.01) if min(recent_3) > 0 else 99
+    recent_5 = volumes[-5:]
+    inc = all(recent_5[i] <= recent_5[i + 1] for i in range(len(recent_5) - 1))
+    ratio = max(recent_5) / max(min(recent_5), 0.01) if min(recent_5) > 0 else 99
 
     if inc and ratio < 2.0:
         return V_MO_VOL_UP, f"vol_up_r{ratio:.1f}"
