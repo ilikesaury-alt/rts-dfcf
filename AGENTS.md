@@ -86,3 +86,27 @@ Tests use pytest with helper factories `_stock()` and `_kline()` in `tests/test_
 5. 量价结构 — 累计涨幅/回撤深度/量比
 6. 疲劳与风险 — 连续上榜天数/超买超卖/系统警告
 7. 综合评价 — 驱动逻辑 + 风险 + 位置判断
+
+## Code Review 流程
+
+当用户说 "全面审查项目代码" 时：
+
+### 第一步：读 REVIEW_STATUS.md + CODE_REVIEW_CHECKLIST.md
+- REVIEW_STATUS.md 告诉上次覆盖了什么、还缺什么
+- CODE_REVIEW_CHECKLIST.md 是结构化检查清单
+
+### 第二步：确定本次焦点
+- 优先选 ✅ 覆盖状态为 ❌ 的模块
+- 从 CODE_REVIEW_CHECKLIST.md 选 2-3 个维度
+- 如果所有模块都 ❌ 过，聚焦 OPTIMIZE.md 中 P0/P1 未修复项
+
+### 第三步：逐项检查
+按 CODE_REVIEW_CHECKLIST.md 逐项过，发现的问题按优先级标记：
+- 🔴 **P0** — 逻辑 bug（评分错误、数据错乱、空指针）→ 必须当次修
+- 🟡 **P1** — 质量改进（重复代码、异常处理不足）→ 记录到 OPTIMIZE.md
+- 🟢 **P2** — 工程优化（测试覆盖、配置迁移）→ 记录到 OPTIMIZE.md
+
+### 第四步：更新追踪文件
+- 🔴 问题当场修复（建 plan → 修 → 测试）
+- 🟡/🟢 问题追加到 OPTIMIZE.md
+- 更新 REVIEW_STATUS.md 覆盖状态和日志

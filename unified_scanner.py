@@ -98,9 +98,11 @@ def main():
                 momentum.sort(key=lambda x: -x.score)
                 pullback_list.sort(key=lambda x: -x.score)
 
+                current_rank_map = {s.symbol: s.rank for s in all_gem}
                 display(new_faces, momentum, len(all_gem), interval,
                         filtered_large_cap=filtered_large_cap, last_ranks=last_ranks,
-                        stale_candidates=stale_candidates, pullback_list=pullback_list)
+                        stale_candidates=stale_candidates, pullback_list=pullback_list,
+                        current_rank_map=current_rank_map)
                 log_results(new_faces, momentum + pullback_list)
 
                 last_ranks.clear()

@@ -116,9 +116,12 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             gem_total: int, interval: int, filtered_large_cap: int = 0,
             last_ranks: dict[str, int] | None = None,
             stale_candidates: list[Candidate] | None = None,
-            pullback_list: list[Candidate] | None = None):
+            pullback_list: list[Candidate] | None = None,
+            current_rank_map: dict[str, int] | None = None):
     if last_ranks is None:
         last_ranks = {}
+    if current_rank_map is None:
+        current_rank_map = {}
     clear_screen()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if pullback_list is None:
@@ -210,7 +213,17 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             vr = f"{c.kline.volume_ratio:.1f}x" if c.kline else "N/A"
             score_visible = str(c.score)
             trend_tag = c.kline.trend if c.kline else "N/A"
-            print(f"  {'—':>4} {'—':>6} {'—':>4} {_pad(display_name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {_pad(score_visible,4,'r')}")
+            if s.symbol in current_rank_map:
+                current_rank = current_rank_map[s.symbol]
+                delta_text, delta_color = _rank_delta_str(s.symbol, current_rank, last_ranks)
+                delta_display = (f"{delta_color}{_pad(delta_text,6,'r')}{ANSI['RESET']}"
+                                 if delta_color else _pad(delta_text,6,'r'))
+                src_tag = _source_tag(c)
+                print(f"  {current_rank:>4} {delta_display} {_pad(src_tag,4)} {_pad(display_name,10)} "
+                      f"{s.symbol:<12} {cur:>7} {pct_colored(s.percent)} "
+                      f"{_pad(trend_tag,14)} {acc:>8} {vr:>6} {_pad(score_visible,4,'r')}")
+            else:
+                print(f"  {'—':>4} {'—':>6} {'—':>4} {_pad(display_name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {_pad(score_visible,4,'r')}")
 
     print(f"\n{'-'*96}")
     print(f"  {ANSI['GREEN']}新面孔{ANSI['RESET']}: 底部放量启动+涨幅2-6%")
