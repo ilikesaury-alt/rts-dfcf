@@ -253,12 +253,11 @@ def compute_market_env_bonus(market_idx_pct: float | None) -> int:
 def accumulate_final_score(c: Candidate, market_env_bonus: int, opening_scores: dict[str, float | None]) -> int:
     opening = opening_scores.get(c.stock.symbol)
     opening_bonus = int(round(opening)) if opening is not None else 0
-    intraday_bonus = int(round(c.intraday_score))
     cross_source = CROSS_SOURCE_BONUS if c.stock.source_tag == "both" else 0
     total = (c.sector_bonus + c.live_vol_bonus
              + c.first_today_bonus + c.first_breakout_bonus
              + market_env_bonus + c.turnover_bonus + c.time_bonus
              + c.market_sentiment_bonus + c.rps_bonus
              + c.list_momentum_bonus + opening_bonus
-             + intraday_bonus + cross_source)
+             + cross_source)
     return total

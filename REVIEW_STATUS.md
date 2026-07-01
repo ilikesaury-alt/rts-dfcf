@@ -13,15 +13,15 @@
 
 | 模块 | 状态 | 最后审查 | 覆盖维度 | 备注 |
 |------|------|---------|---------|------|
-| `analysis.py` | ⚠️ | — | — | OPTIMIZE.md 有 2 个 P0 bug 未修复 |
-| `config.py` | ❌ | — | — | |
-| `validator.py` | ❌ | — | — | |
+| `analysis.py` | ⚠️ | 2026-07-01 | 策略逻辑/配置一致性 | 5处硬编码已迁移至 config.py；#19/#20 确认已修 |
+| `config.py` | ⚠️ | 2026-07-01 | 配置一致性 | 清理 12 个死权重条目 |
+| `validator.py` | ⚠️ | 2026-07-01 | 策略逻辑 | 维度定义清晰，联动 coverage 通过 |
+| `enhancer.py` | ⚠️ | 2026-07-01 | 数据流完整性 | 移除反指 intraday_score 累加 (IC=-0.307) |
+| `orchestrator.py` | ❌ | — | — | |
 | `cross_validation.py` | ❌ | — | — | |
 | `api.py` | ❌ | — | — | |
 | `ths_api.py` | ❌ | — | — | |
 | `database.py` | ❌ | — | — | |
-| `orchestrator.py` | ❌ | — | — | |
-| `enhancer.py` | ❌ | — | — | |
 | `indicators.py` | ❌ | — | — | |
 | `models.py` | ❌ | — | — | |
 | `candidate_pool.py` | ❌ | — | — | |
@@ -44,8 +44,9 @@
 
 | 优先级 | # | 问题 | 目标版本 |
 |--------|---|------|---------|
-| 🔴 P0 | 19 | `accumulated` 双算 `today_pct` | — |
-| 🔴 P0 | 20 | `stock.percent` 与 K 线 `pcts[-1]` 混用 | — |
+| ✅ | 19 | `accumulated` 双算 `today_pct` | 2026-06-23 重构已修 |
+| ✅ | 20 | `stock.percent` 与 K 线 `pcts[-1]` 混用 | 同上 |
+| 🔴 P0 | 31 | `intraday_score` 反指仍被累加 | enhancer.py accumulate_final_score 2026-07-01 已修，需跟进 IC |
 | 🟡 P1 | 21 | `Candidate.score` 可变性违规 | — |
 | 🟡 P1 | 22 | 14 处 `bare except Exception` | — |
 | 🟡 P1 | 25 | 交易时段显示不一致（11:45 vs 11:30） | — |
@@ -59,7 +60,7 @@
 
 | 日期 | 覆盖维度 | 覆盖模块 | 发现 | 备注 |
 |------|---------|---------|------|------|
-| — | — | — | — | 首次基线尚未建立 |
+| 2026-07-01 | 策略逻辑/配置一致性/数据流完整性 | analysis.py, config.py, validator.py, enhancer.py | 🔴 intraday_score 反指累加(P0)修; 🟡5处硬编码迁移; 🟡12死权重清理; #19/#20确认已修 | 全库通读 baseline 建立，6/22 模块本次覆盖 4 个 |
 
 ---
 

@@ -130,8 +130,9 @@
 
 | # | 问题 | 说明 |
 |---|------|------|
-| 19 | **accumulated 双算 today_pct** | `pcts[-5:]` 含今日涨幅，评分又单独加 `today_pct` 权重 → 今日涨幅被计分两次 |
-| 20 | **stock.percent 与 K 线最后一天 percent 不一致** | `today_pct` 来自榜单实时数据，`pcts[-1]` 是 K 线昨日数据，`accumulated` 混用二者 |
+| 19 | **accumulated 双算 today_pct** | `pcts[-5:]` 含今日涨幅，评分又单独加 `today_pct` 权重 → 今日涨幅被计分两次 | ✅ 已修复 (2026-06-23 重构引入 `historical_kline` 过滤今日K线) |
+| 20 | **stock.percent 与 K 线最后一天 percent 不一致** | `today_pct` 来自榜单实时数据，`pcts[-1]` 是 K 线昨日数据，`accumulated` 混用二者 | ✅ 已修复 (同上，`accumulated` 已使用 `historical_kline` 的 closes 计算) |
+| 31 | **intraday_score 反指仍被累加** | IC=-0.307 (353样本)，`accumulate_final_score` 仍加 `intraday_bonus` | ✅ 已修复 (2026-07-01 移除累加) |
 
 #### P1 — 架构/质量
 
@@ -323,3 +324,9 @@
 #### 53. [工程] indicators.py 无测试覆盖 ✅
 
 - **修复**: 新增 `tests/test_indicators.py`（9 个 RSI/KDJ/MACD 测试）
+
+#### 54. [Bug] `intraday_score` 反指仍被累加 ✅
+
+- **位置**: `scanner/enhancer.py`
+- **问题**: IC = -0.307 (353样本) 反指，`accumulate_final_score` 仍累加 `intraday_bonus`
+- **修复**: 从 `accumulate_final_score` 中移除 `intraday_bonus` 行，保留字段仅用于诊断

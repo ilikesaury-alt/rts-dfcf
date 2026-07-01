@@ -1,6 +1,7 @@
 from datetime import date
 
 from scanner.config import (
+    MA_BULL_EXTRA_BONUS,
     MAX_MOMENTUM_TODAY_PCT,
     MAX_NEW_FACE_TODAY_PCT,
     PULLBACK_MAX_TODAY_PCT,
@@ -10,7 +11,13 @@ from scanner.config import (
     VOL_PEAK_LOOKBACK,
     VOL_PEAK_MOMENTUM_WARN,
     VOL_PEAK_NEW_FACE_MIN,
+    VOL_PEAK_NEW_FACE_PENALTY,
+    VOL_PEAK_MOMENTUM_PENALTY,
     VOL_PEAK_PULLBACK_CONFIRM,
+    VOL_PEAK_PULLBACK_BONUS,
+    VOL_RANK_HIGH_ACCUM_OVERLAP_MIN_RANK,
+    VOL_RANK_HIGH_ACCUM_OVERLAP_MIN_ACCUM,
+    VOL_RANK_HIGH_ACCUM_OVERLAP_PENALTY,
     VOL_RANK_MEDIUM_PTS,
     VOL_RANK_MEDIUM_RC,
     VOL_RANK_STRONG_PTS,
@@ -320,15 +327,15 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
 
     vol_peak = _vol_peak_ratio(volumes)
     if vol_peak < VOL_PEAK_NEW_FACE_MIN:
-        score -= 5
+        score += VOL_PEAK_NEW_FACE_PENALTY
         dims["new_face_vol_peak"] = round(vol_peak, 2)
 
     vol_rank = _vol_rank_combo_score(vol_ratio, stock.rank_change)
     score += vol_rank
     if vol_rank:
         dims["new_face_vol_rank"] = vol_rank
-    if vol_rank >= 12 and accumulated >= 20:
-        score -= 10
+    if vol_rank >= VOL_RANK_HIGH_ACCUM_OVERLAP_MIN_RANK and accumulated >= VOL_RANK_HIGH_ACCUM_OVERLAP_MIN_ACCUM:
+        score += VOL_RANK_HIGH_ACCUM_OVERLAP_PENALTY
 
     gap_pct, gap_pts = _detect_gap_up(stock.current, kline, today_str)
     score += gap_pts
@@ -426,7 +433,7 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
 
     vol_peak = _vol_peak_ratio(volumes)
     if vol_peak < VOL_PEAK_MOMENTUM_WARN:
-        score -= 8
+        score += VOL_PEAK_MOMENTUM_PENALTY
         dims["momentum_vol_peak"] = round(vol_peak, 2)
 
     # Crash check
@@ -620,14 +627,14 @@ def _analyze_pullback_ma(closes: list, W: dict) -> dict:
             result["dimensions"]["pullback_ma_broken"] = W["ma_broken"]
         ma5 = sum(closes[-5:]) / 5
         if result["ma10"] is not None and ma5 > result["ma10"] and result["ma10"] > ma20:
-            result["ma_bull_extra"] = 5
+            result["ma_bull_extra"] = MA_BULL_EXTRA_BONUS
             result["score"] += result["ma_bull_extra"]
             result["dimensions"]["pullback_ma_bull"] = result["ma_bull_extra"]
     elif len(closes) >= 10:
         if result["ma_support"] and result["ma10"] is not None:
             ma5 = sum(closes[-5:]) / 5
             if ma5 > result["ma10"]:
-                result["ma_bull_extra"] = 5
+                result["ma_bull_extra"] = MA_BULL_EXTRA_BONUS
                 result["score"] += result["ma_bull_extra"]
                 result["dimensions"]["pullback_ma_bull"] = result["ma_bull_extra"]
 
@@ -735,7 +742,7 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
 
     vol_peak = _vol_peak_ratio(volumes)
     if vol_peak < VOL_PEAK_PULLBACK_CONFIRM:
-        score += 5
+        score += VOL_PEAK_PULLBACK_BONUS
         dims["pullback_vol_peak"] = round(vol_peak, 2)
 
     has_crash_day, crash_score, crash_dims = _check_crash_day(pcts, W)

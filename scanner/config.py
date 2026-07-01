@@ -39,6 +39,19 @@ VOL_PEAK_MOMENTUM_WARN = 0.5  # volume < 50% of peak → momentum exhaustion
 VOL_PEAK_NEW_FACE_MIN = 0.3   # volume < 30% of peak → insufficient reversal volume
 VOL_PEAK_PULLBACK_CONFIRM = 0.3  # volume < 30% of peak → genuine shrinkage
 
+# Peak volume ratio scoring (analysis.py hardcoded values migrated)
+VOL_PEAK_NEW_FACE_PENALTY = -5   # new_face vol_peak < threshold → penalty
+VOL_PEAK_MOMENTUM_PENALTY = -8   # momentum vol_peak < threshold → penalty
+VOL_PEAK_PULLBACK_BONUS = 5     # pullback vol_peak < threshold → shrinkage bonus
+
+# Vol-rank + accumulated combo penalty
+VOL_RANK_HIGH_ACCUM_OVERLAP_MIN_RANK = 12
+VOL_RANK_HIGH_ACCUM_OVERLAP_MIN_ACCUM = 20
+VOL_RANK_HIGH_ACCUM_OVERLAP_PENALTY = -10
+
+# MA bull extra bonus (pullback)
+MA_BULL_EXTRA_BONUS = 5
+
 # List momentum scoring (consecutive surge list appearances + rank trajectory)
 LIST_STREAK_BONUS_2 = 3
 LIST_STREAK_BONUS_3 = 5
@@ -98,14 +111,8 @@ NEW_FACE_WEIGHTS: dict[str, int] = {
     "bottom_confirmed": 10,
     "v_shape": 10,
     "volume_surge": 15,
-    "vol_rank_combo": 12,
-    "gap_up_gt_2": 8,
-    "gap_up_1_2": 5,
-    "gap_up_0_5_1": 3,
     "value_gte_10000": 2,
     "value_gte_5000": 1,
-    "ma_bull": 5,
-    "ma_bear": -3,
     "rsi_bonus": 3,
     "kdj_bonus": 3,
     "macd_bonus": 3,
@@ -128,14 +135,8 @@ MOMENTUM_WEIGHTS: dict[str, int] = {
     "vol_surge": -4,
     "vol_low": -5,
     "no_crash": 13,
-    "vol_rank_combo": 8,
-    "gap_up_gt_2": 8,
-    "gap_up_1_2": 5,
-    "gap_up_0_5_1": 3,
     "value_gte_10000": 2,
     "value_gte_5000": 1,
-    "ma_bull": 5,
-    "ma_bear": -3,
     "rsi_bonus": 3,
     "kdj_bonus": 3,
     "macd_bonus": 3,
