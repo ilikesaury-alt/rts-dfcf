@@ -218,6 +218,30 @@ class TestAnalyzePullback:
         assert result is not None
         assert result.score >= 0
 
+    def test_20day_gain_under_warn_no_penalty(self):
+        """20日涨幅 < 40% → 无惩罚"""
+        pcts = [1.0] * 22
+        kline = _kline(pcts, volumes=[1.0] * 22)
+        result = analyze_pullback(_stock(percent=-1, rank_change=2500, value=12000), kline)
+        assert result is not None
+        assert "pullback_20d_gain" not in result.dimensions
+
+    def test_20day_gain_warn_penalty(self):
+        """20日涨幅 40-60% → -10 分"""
+        pcts = [2.0] * 22
+        kline = _kline(pcts, volumes=[1.0] * 22)
+        result = analyze_pullback(_stock(percent=-1, rank_change=2500, value=12000), kline)
+        assert result is not None
+        assert result.dimensions.get("pullback_20d_gain") == -10
+
+    def test_20day_gain_extreme_penalty(self):
+        """20日涨幅 > 60% → -15 分"""
+        pcts = [2.5] * 22
+        kline = _kline(pcts, volumes=[1.0] * 22)
+        result = analyze_pullback(_stock(percent=-1, rank_change=2500, value=12000), kline)
+        assert result is not None
+        assert result.dimensions.get("pullback_20d_gain") == -15
+
 
 class TestIndicatorIntegration:
 

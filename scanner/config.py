@@ -312,6 +312,12 @@ V_NF_VOLUME_CONFIRM = 5
 # Pullback — added in P0
 V_PB_BOLLINGER_TOUCH = 5
 
+# Pullback 20-day gain penalty (late-stage lifecycle protection)
+PULLBACK_20D_GAIN_WARN = 40       # 20-day gain > 40% → warn
+PULLBACK_20D_GAIN_EXTREME = 60    # 20-day gain > 60% → extreme
+PULLBACK_20D_WARN_PENALTY = -10
+PULLBACK_20D_EXTREME_PENALTY = -15
+
 # ============================================================
 # Industry chain trend & chokepoint scoring (industry_chain/)
 # ============================================================

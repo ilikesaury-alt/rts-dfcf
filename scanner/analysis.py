@@ -15,6 +15,10 @@ from scanner.config import (
     VOL_PEAK_MOMENTUM_PENALTY,
     VOL_PEAK_PULLBACK_CONFIRM,
     VOL_PEAK_PULLBACK_BONUS,
+    PULLBACK_20D_GAIN_WARN,
+    PULLBACK_20D_GAIN_EXTREME,
+    PULLBACK_20D_WARN_PENALTY,
+    PULLBACK_20D_EXTREME_PENALTY,
     VOL_RANK_HIGH_ACCUM_OVERLAP_MIN_RANK,
     VOL_RANK_HIGH_ACCUM_OVERLAP_MIN_ACCUM,
     VOL_RANK_HIGH_ACCUM_OVERLAP_PENALTY,
@@ -694,6 +698,18 @@ def _score_pullback_indicators(closes: list, historical_kline: list[dict],
     return score, dims
 
 
+def _pullback_20day_gain_penalty(closes: list) -> tuple[int, str]:
+    """20日累计涨幅过大 → pullback 高风险惩罚（生命周期保护）"""
+    if len(closes) < 21:
+        return 0, "data_short"
+    gain_20d = (closes[-1] - closes[-21]) / closes[-21] * 100
+    if gain_20d > PULLBACK_20D_GAIN_EXTREME:
+        return PULLBACK_20D_EXTREME_PENALTY, f"20d_gain_{gain_20d:.0f}%_extreme"
+    if gain_20d > PULLBACK_20D_GAIN_WARN:
+        return PULLBACK_20D_WARN_PENALTY, f"20d_gain_{gain_20d:.0f}%_warn"
+    return 0, f"20d_gain_{gain_20d:.0f}%_ok"
+
+
 def _classify_pullback_trend(ma_support: bool, ma_broken: bool, today_pct: float) -> str:
     """Classify the pullback trend based on conditions.
 
@@ -764,6 +780,12 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
     indicator_score, indicator_dims = _score_pullback_indicators(closes, historical_kline, W)
     score += indicator_score
     dims.update(indicator_dims)
+
+    gain_penalty, gain_detail = _pullback_20day_gain_penalty(closes)
+    score += gain_penalty
+    if gain_penalty:
+        dims["pullback_20d_gain"] = gain_penalty
+        dims["pullback_20d_gain_detail"] = gain_detail
 
     trend = _classify_pullback_trend(ma_result["ma_support"], ma_result["ma_broken"], today_pct)
 
