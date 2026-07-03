@@ -61,7 +61,7 @@ TOP40_BONUS = 3
 TOP40_ADVANCE_PER_10 = 2
 TOP20_EXTRA = 2
 
-FEISHU_WEBHOOK = os.environ.get("FEISHU_WEBHOOK", "")
+FEISHU_WEBHOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/d0caf1dd-54b6-4b86-b83d-861e4c79afda"
 FEISHU_KEYWORD = "lichun"
 
 HEADERS = {

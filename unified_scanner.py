@@ -22,6 +22,7 @@ from scanner.config import (
 from scanner.cross_validation import cross_validate
 from scanner.database import init_db, save_recommendations
 from scanner.display import display
+from scanner.feishu import push_feishu
 from scanner.log_utils import log_results
 from scanner.orchestrator import scan_with_raw
 from scanner.ths_api import fetch_ths_hot_list, make_ths_session
@@ -42,6 +43,7 @@ def main():
     parser = argparse.ArgumentParser(description="双源融合创业板飙升扫描器")
     parser.add_argument("interval", nargs="?", type=int, default=REFRESH_INTERVAL,
                         help="刷新间隔（秒）")
+    parser.add_argument("--no-feishu", action="store_true", help="禁用飞书推送")
     args = parser.parse_args()
 
     interval = max(60, args.interval)
@@ -104,6 +106,10 @@ def main():
                         stale_candidates=stale_candidates, pullback_list=pullback_list,
                         current_rank_map=current_rank_map)
                 log_results(new_faces, momentum + pullback_list)
+                if not args.no_feishu:
+                    push_feishu(new_faces, momentum, pullback_list, stale_candidates,
+                                len(all_gem), filtered_large_cap=filtered_large_cap,
+                                current_rank_map=current_rank_map)
 
                 last_ranks.clear()
                 for s in all_gem:
