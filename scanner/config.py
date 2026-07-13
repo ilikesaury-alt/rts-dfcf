@@ -328,9 +328,6 @@ CHAIN_GROWING_BONUS = 8
 CHAIN_FORMING_BONUS = 3
 CHAIN_FADING_PENALTY = -5
 
-# Chokepoint / bottleneck bonus
-BOTTLENECK_BONUS = 10
-
 # Trend judgment thresholds (used by trend_judge.py)
 CHAIN_CONCENTRATION_HOT = 5
 CHAIN_CONCENTRATION_WARM = 3

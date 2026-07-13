@@ -1,8 +1,7 @@
 from scanner.indicators import compute_macd, compute_rsi
-from scanner.industry_chain.chains import match_chains
+from scanner.industry_chain.chains import chain_repr_node, match_chains
 from scanner.industry_chain.models import ChokepointCandidate, ChainTrend
 from scanner.config import (
-    BOTTLENECK_BONUS,
     CHAIN_ERUPTING_BONUS,
     CHAIN_FADING_PENALTY,
     CHAIN_FORMING_BONUS,
@@ -119,14 +118,12 @@ def score_chokepoint_stocks(
         if not matches:
             continue
 
-        chain_name, node_name, bn, _ = matches[0]
+        chain_name = matches[0]
         if chain_name not in active_chains:
             continue
 
         trend = chain_trends[chain_name]
         chain_score = _phase_to_score(trend.phase)
-
-        bottleneck_bonus = BOTTLENECK_BONUS if bn else 0
 
         kline = klines.get(sym)
         tech_score = 0
@@ -136,23 +133,21 @@ def score_chokepoint_stocks(
             tech_score, tech_signals = _score_technical(closes, kline, spct)
 
         signals = list(trend.signals)
-        if bn:
-            signals.append(f"瓶颈环节({node_name})")
         signals.extend(tech_signals)
 
-        total_score = chain_score + bottleneck_bonus + tech_score
+        total_score = chain_score + tech_score
 
         if total_score > 0:
             candidates.append(ChokepointCandidate(
                 symbol=sym,
                 name=sname,
                 chain_name=chain_name,
-                node_name=node_name,
-                is_bottleneck=bn,
+                node_name=chain_repr_node(chain_name),
+                is_bottleneck=False,
                 chain_phase=trend.phase,
                 score=total_score,
                 chain_trend_score=chain_score,
-                bottleneck_bonus=bottleneck_bonus,
+                bottleneck_bonus=0,
                 tech_score=tech_score,
                 signals=signals,
                 percent=spct,

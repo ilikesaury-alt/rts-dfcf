@@ -336,77 +336,37 @@ CHAINS = {
 }
 
 STOCK_TO_CHAIN: dict[str, str] = {}
-STOCK_TO_NODE: dict[str, str] = {}
 for chain_name, chain_def in CHAINS.items():
     for stock_name in chain_def.get("stock_names", []):
         STOCK_TO_CHAIN[stock_name] = chain_name
-        matched_any = False
-        for node in chain_def["nodes"]:
-            if any(kw.lower() in stock_name.lower() for kw in node["kw"]):
-                STOCK_TO_NODE[stock_name] = node["name"]
-                matched_any = True
-                break
-        if not matched_any:
-            STOCK_TO_NODE[stock_name] = "其他"
 
 
-def match_chains(name: str) -> list[tuple[str, str, bool, str]]:
-    results = []
+def match_chains(name: str) -> list[str]:
+    """返回该股票所属的全部产业链名称。
+
+    仅做"股票 -> 链"归属（基于 CHAINS 的 stock_names 直接映射，
+    及链关键词兜底）。不再做"股票 -> 瓶颈环节"匹配——
+    原实现用公司名子串去匹配上游技术关键词（如"光芯片"/"光刻"），
+    几乎永不命中，已废弃。瓶颈环节概念已从产业链策略中移除。
+    """
     chain_name = STOCK_TO_CHAIN.get(name)
     if chain_name:
-        chain_def = CHAINS[chain_name]
-        matched_any_node = False
-        for node in chain_def["nodes"]:
-            if any(kw.lower() in name.lower() for kw in node["kw"]):
-                results.append((chain_name, node["name"], node["bottleneck"], node["level"]))
-                matched_any_node = True
-        if not matched_any_node:
-            results.append((chain_name, "其他", False, "未知"))
-        return results
-
-    for chain_name, chain_def in CHAINS.items():
-        chain_kw = chain_def["keywords"]
-        if not any(kw.lower() in name.lower() for kw in chain_kw):
-            continue
-        matched_any_node = False
-        for node in chain_def["nodes"]:
-            if any(kw.lower() in name.lower() for kw in node["kw"]):
-                results.append((chain_name, node["name"], node["bottleneck"], node["level"]))
-                matched_any_node = True
-        if not matched_any_node:
-            results.append((chain_name, "其他", False, "未知"))
-    return results
-
-
-def match_chain_simple(name: str) -> str | None:
-    if name in STOCK_TO_CHAIN:
-        return STOCK_TO_CHAIN[name]
+        return [chain_name]
+    hits = []
     for chain_name, chain_def in CHAINS.items():
         if any(kw.lower() in name.lower() for kw in chain_def["keywords"]):
-            return chain_name
-    return None
+            hits.append(chain_name)
+    return hits
 
 
-def get_node(name: str, chain_name: str) -> str | None:
-    if name in STOCK_TO_NODE:
-        return STOCK_TO_NODE[name]
+def chain_repr_node(chain_name: str) -> str:
+    """返回该链的代表性环节名（用于展示上下文，非逐股标注）。"""
     chain_def = CHAINS.get(chain_name)
     if not chain_def:
-        return None
+        return ""
     for node in chain_def["nodes"]:
-        if any(kw.lower() in name.lower() for kw in node["kw"]):
+        if node.get("bottleneck"):
             return node["name"]
-    return None
-
-
-def is_bottleneck_node(name: str, chain_name: str) -> bool:
-    node = get_node(name, chain_name)
-    if not node:
-        return False
-    chain_def = CHAINS.get(chain_name)
-    if not chain_def:
-        return False
-    for n in chain_def["nodes"]:
-        if n["name"] == node:
-            return n.get("bottleneck", False)
-    return False
+    if chain_def["nodes"]:
+        return chain_def["nodes"][0]["name"]
+    return ""

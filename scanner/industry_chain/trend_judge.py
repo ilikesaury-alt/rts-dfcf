@@ -1,4 +1,5 @@
 import json
+import logging
 import sqlite3
 from datetime import date, timedelta
 from typing import Any
@@ -11,9 +12,11 @@ from scanner.config import (
     now_beijing,
     CHAIN_PERSISTENCE_MIN,
 )
-from scanner.industry_chain.chains import CHAINS, is_bottleneck_node, match_chains
+from scanner.industry_chain.chains import match_chains
 from scanner.trading_session import is_trading_day
 from scanner.industry_chain.models import ChainTrend, IndustryScanSession
+
+logger = logging.getLogger(__name__)
 
 
 def judge_chain_trends(
@@ -25,10 +28,8 @@ def judge_chain_trends(
     now = now_beijing().isoformat()
 
     chain_stocks: dict[str, list[dict]] = {}
-    chain_bottleneck_active: dict[str, bool] = {}
     chain_rank_changes: dict[str, list[int]] = {}
     chain_newcomers: dict[str, list[str]] = {}
-    chain_bottleneck_first: dict[str, bool] = {}
 
     seen_symbols = set()
 
@@ -40,25 +41,18 @@ def judge_chain_trends(
         if not matches:
             continue
 
-        for chain_name, node_name, bottleneck, _ in matches:
+        for chain_name in matches:
             if chain_name not in chain_stocks:
                 chain_stocks[chain_name] = []
-                chain_bottleneck_active[chain_name] = False
                 chain_rank_changes[chain_name] = []
                 chain_newcomers[chain_name] = []
-                chain_bottleneck_first[chain_name] = False
 
             chain_stocks[chain_name].append(item)
             chain_rank_changes[chain_name].append(abs(item.get("rank_change") or 0))
-            if bottleneck:
-                chain_bottleneck_active[chain_name] = True
 
             is_new = _is_newcomer(symbol, conn)
             if is_new:
                 chain_newcomers[chain_name].append(symbol)
-
-    for chain_name in chain_stocks:
-        _check_diffusion_path(chain_name, chain_stocks[chain_name], chain_bottleneck_first)
 
     chain_trend_results: dict[str, ChainTrend] = {}
 
@@ -71,16 +65,16 @@ def judge_chain_trends(
         avg_rank_change = (
             sum(chain_rank_changes.get(chain_name, [])) / max(len(chain_rank_changes.get(chain_name, [])), 1)
         )
-        bottleneck_active = chain_bottleneck_active.get(chain_name, False)
-        bottleneck_first = chain_bottleneck_first.get(chain_name, False)
         persistence = _calc_persistence(chain_name, conn)
 
         signals = []
         signals.append(f"链集聚度{concentration}")
-        if bottleneck_active:
-            signals.append("瓶颈激活")
-        if bottleneck_first:
-            signals.append("良性扩散")
+        if concentration >= CHAIN_CONCENTRATION_HOT:
+            signals.append("爆发")
+        elif concentration >= CHAIN_CONCENTRATION_WARM:
+            signals.append("活跃")
+        elif concentration >= CHAIN_CONCENTRATION_LOW:
+            signals.append("形成")
         if newbie_rate > 0.3:
             signals.append(f"新人率{newbie_rate:.0%}")
         if persistence >= CHAIN_PERSISTENCE_FADING:
@@ -90,7 +84,6 @@ def judge_chain_trends(
 
         phase, score = _classify_phase(
             concentration=concentration,
-            bottleneck_active=bottleneck_active,
             persistence=persistence,
             newbie_rate=newbie_rate,
             avg_rank_change=avg_rank_change,
@@ -101,7 +94,7 @@ def judge_chain_trends(
             phase=phase,
             score=score,
             signals=signals,
-            bottleneck_activated=bottleneck_active,
+            bottleneck_activated=False,
             stock_count=concentration,
             avg_rank_change=round(avg_rank_change, 1),
         )
@@ -126,39 +119,9 @@ def _is_newcomer(symbol: str, conn: sqlite3.Connection) -> bool:
             (symbol, today),
         ).fetchone()
         return row is None
-    except Exception:
-        return True
-
-
-def _check_diffusion_path(chain_name: str, stocks: list[dict], result: dict[str, bool]):
-    chain_def = CHAINS.get(chain_name)
-    if not chain_def:
-        return
-    flow = chain_def.get("flow", [])
-    if not flow:
-        return
-
-    bottleneck_node_name = None
-    for node in chain_def.get("nodes", []):
-        if node.get("bottleneck"):
-            bottleneck_node_name = node["name"]
-            break
-
-    if not bottleneck_node_name:
-        return
-
-    bottleneck_found = False
-    for item in stocks:
-        name = item.get("name", "")
-        matches = match_chains(name)
-        for cn, nn, bn, _ in matches:
-            if cn == chain_name and nn == bottleneck_node_name:
-                bottleneck_found = True
-                break
-        if bottleneck_found:
-            break
-
-    result[chain_name] = bottleneck_found
+    except Exception as e:
+        logger.warning("  [产业链] 查询新人失败 %s: %s", symbol, e)
+        return False
 
 
 def _calc_persistence(chain_name: str, conn: sqlite3.Connection) -> int:
@@ -195,19 +158,26 @@ def _calc_persistence(chain_name: str, conn: sqlite3.Connection) -> int:
 
 def _classify_phase(
     concentration: int,
-    bottleneck_active: bool,
     persistence: int,
     newbie_rate: float,
     avg_rank_change: float,
 ) -> tuple[str, int]:
+    """按集中度 / 持续性 / 扩散信号判定产业链相变。
+
+    不再依赖"瓶颈环节"匹配（原实现用公司名去匹配上游技术关键词，
+    几乎永不命中，已废弃）。相位均可达：
+      erupting  集中度 >= HOT
+      growing   集中度 >= WARM 且 持续性 >= MIN
+      forming   集中度 >= LOW（早期入口，不要求持续性）
+      fading    持续性 >= FADING 且 集中度 < LOW
+      dormant  其他
+    """
     score = 0
 
-    if concentration >= CHAIN_CONCENTRATION_HOT and bottleneck_active:
+    if concentration >= CHAIN_CONCENTRATION_HOT:
         score += 40
     if concentration >= CHAIN_CONCENTRATION_WARM:
         score += 20
-    if bottleneck_active:
-        score += 15
     if newbie_rate > 0.3:
         score += 10
     if avg_rank_change > 100:
@@ -217,11 +187,11 @@ def _classify_phase(
     if persistence >= CHAIN_PERSISTENCE_MIN:
         score += 10
 
-    if concentration >= CHAIN_CONCENTRATION_HOT and bottleneck_active:
+    if concentration >= CHAIN_CONCENTRATION_HOT:
         phase = "erupting"
     elif concentration >= CHAIN_CONCENTRATION_WARM and persistence >= CHAIN_PERSISTENCE_MIN:
         phase = "growing"
-    elif concentration >= CHAIN_CONCENTRATION_LOW and bottleneck_active:
+    elif concentration >= CHAIN_CONCENTRATION_LOW:
         phase = "forming"
     elif persistence >= CHAIN_PERSISTENCE_FADING and concentration < CHAIN_CONCENTRATION_LOW:
         phase = "fading"
@@ -257,7 +227,7 @@ def _save_trend_history(
                 ),
             )
         except Exception as e:
-            print(f"  [!] 保存链趋势历史失败 {chain_name}: {e}")
+            logger.warning("  [产业链] 保存链趋势历史失败 %s: %s", chain_name, e)
     conn.commit()
 
 

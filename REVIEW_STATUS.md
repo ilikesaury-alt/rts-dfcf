@@ -31,7 +31,7 @@
 | `display.py` | ✅ | 2026-07-13 | 展示 | 纯展示，无评分影响 |
 | `log_utils.py` | ✅ | 2026-07-13 | 日志 | 日期基准统一(P1-1) |
 | `utils.py` | ✅ | 2026-07-13 | 工具 | is_hk_stock 依赖 isdigit 实际惰性(P2) |
-| `industry_chain/*` | ⚠️ | 2026-07-13 | 子系统/DB初始化 | 全新库崩溃已修(P0-3)；瓶颈映射失效暂缓(P0-2) |
+| `industry_chain/*` | ✅ | 2026-07-13 | 子系统重构 | 废弃瓶颈环节概念，相变改按集中度/持续性/扩散；双源/DB 修复保留 |
 | `unified_scanner.py` | ✅ | 2026-07-13 | 双源融合 | 双源加分双算已修(P0-1) |
 | `stock_report.py` | ✅ | 2026-07-13 | 报告/健壮性 | None percent 防护已加(P1-4) |
 | `tests/*` | ❌ | — | — | |
@@ -55,7 +55,7 @@
 | 🟢 P2 | 28 | Feishu 推送注释状态未清理 | — |
 | ✅ P0 | 55 | `CROSS_SOURCE_BONUS` 双算（enhancer + unified_scanner 各加一次） | 2026-07-13 删除 unified_scanner 循环累加 |
 | ✅ P0 | 56 | 产业链入口全新库崩溃（缺 daily_kline 表） | 2026-07-13 runner 补 init_db + pipeline 降级 |
-| ⏸ P0 | 57 | 产业链瓶颈节点名称子串匹配失效 | 暂缓：需逐股标注 bottleneck_stocks 数据任务 |
+| ✅ P0 | 57 | 产业链瓶颈节点名称子串匹配失效 | 2026-07-13 废弃瓶颈、按集中度/持续性/扩散重构相变与选股 |
 | ✅ P0 | 58 | 动量交叉验证"无背离"维度恒 +4 使验证门失效 | 2026-07-13 V_MO_DIVERGENCE_NONE 改 0 |
 | ✅ P1 | 59 | 跨模块日期基准不一致（date.today vs now_beijing） | 2026-07-13 全量统一 |
 | ✅ P1 | 60 | 熔断把空响应当失败回吐陈旧数据 | 2026-07-13 区分 success/失败 |
