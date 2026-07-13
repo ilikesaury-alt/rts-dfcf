@@ -141,6 +141,54 @@ def _build_candidate(stock: StockInfo, kline_summary: KlineSummary | None, categ
     )
 
 
+def _try_candidate(stock: StockInfo, kline_summary: KlineSummary | None, category: str,
+                   is_first_today: bool, first_date: str, kline: list[dict] | None,
+                   closes: list[float], historical: list[dict],
+                   clusters: dict[str, list[str]] | None) -> Candidate | None:
+    if kline_summary is None:
+        return None
+    min_score = {
+        "new_face": NEW_FACE_MIN_SCORE,
+        "known_new_face": NEW_FACE_MIN_SCORE,
+        "momentum": MOMENTUM_MIN_SCORE,
+        "pullback": PULLBACK_MIN_SCORE,
+    }[category]
+    if kline_summary.score < min_score:
+        return None
+    passed, bonus, dims = validate(category, stock, kline_summary, closes, historical, clusters)
+    if not passed:
+        return None
+    kline_summary.score += bonus
+    kline_summary.dimensions["validation_bonus"] = bonus
+    kline_summary.dimensions.update(dims)
+    return _build_candidate(stock, kline_summary, category, is_first_today, first_date, kline)
+
+
+def _classify_category(stock: StockInfo, is_new: bool,
+                       c_pb: Candidate | None, c_mo: Candidate | None,
+                       c_nf: Candidate | None) -> str | None:
+    """按价格结构（而非尝试顺序）选最贴合的策略标签。"""
+    today_pct = stock.percent
+    if is_new:
+        if c_nf is not None:
+            return "new_face"
+        if c_mo is not None:
+            return "momentum"
+        if c_pb is not None:
+            return "pullback"
+        return None
+    # 老股：今日下跌优先归回调；否则上升动能优先；浅回踩/震荡上行归回调；兜底新面孔
+    if c_pb is not None and today_pct <= 0:
+        return "pullback"
+    if c_mo is not None:
+        return "momentum"
+    if c_pb is not None:
+        return "pullback"
+    if c_nf is not None:
+        return "known_new_face"
+    return None
+
+
 def _filter_gem_stocks(raw: list[dict]) -> list[StockInfo]:
     gem_stocks: list[StockInfo] = []
     for i, item in enumerate(raw, 1):
@@ -183,53 +231,22 @@ def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, l
     historical = [k for k in (kline or []) if k["date"] != today]
     closes = [k["close"] for k in historical]
 
-    if is_new:
-        if nk and nk.score >= NEW_FACE_MIN_SCORE:
-            passed, bonus, dims = validate(
-                "new_face", stock, nk, closes, historical, clusters)
-            if passed:
-                nk.score += bonus
-                nk.dimensions["validation_bonus"] = bonus
-                nk.dimensions.update(dims)
-                new_face_result = _build_candidate(stock, nk, "new_face", is_first_today, first_date, kline)
-                return new_face_result, None, None
-        if mk and mk.score >= MOMENTUM_MIN_SCORE:
-            passed, bonus, dims = validate(
-                "momentum", stock, mk, closes, historical, clusters)
-            if passed:
-                mk.score += bonus
-                mk.dimensions["validation_bonus"] = bonus
-                mk.dimensions.update(dims)
-                momentum_result = _build_candidate(stock, mk, "momentum", is_first_today, first_date, kline)
-    else:
-        if mk and mk.score >= MOMENTUM_MIN_SCORE:
-            passed, bonus, dims = validate(
-                "momentum", stock, mk, closes, historical, clusters)
-            if passed:
-                mk.score += bonus
-                mk.dimensions["validation_bonus"] = bonus
-                mk.dimensions.update(dims)
-                momentum_result = _build_candidate(stock, mk, "momentum", is_first_today, first_date, kline)
-                return None, momentum_result, None
-        if pk and pk.score >= PULLBACK_MIN_SCORE:
-            passed, bonus, dims = validate(
-                "pullback", stock, pk, closes, historical, clusters)
-            if passed:
-                pk.score += bonus
-                pk.dimensions["validation_bonus"] = bonus
-                pk.dimensions.update(dims)
-                pullback_result = _build_candidate(stock, pk, "pullback", is_first_today, first_date, kline)
-                return None, None, pullback_result
-        if nk and nk.score >= NEW_FACE_MIN_SCORE:
-            passed, bonus, dims = validate(
-                "known_new_face", stock, nk, closes, historical, clusters)
-            if passed:
-                nk.score += bonus
-                nk.dimensions["validation_bonus"] = bonus
-                nk.dimensions.update(dims)
-                new_face_result = _build_candidate(stock, nk, "known_new_face", is_first_today, first_date, kline)
+    # 三策略独立打分 + 各自交叉验证，再按价格结构选最贴合的标签
+    c_nf = _try_candidate(stock, nk, "new_face" if is_new else "known_new_face",
+                          is_first_today, first_date, kline, closes, historical, clusters)
+    c_mo = _try_candidate(stock, mk, "momentum",
+                          is_first_today, first_date, kline, closes, historical, clusters)
+    c_pb = _try_candidate(stock, pk, "pullback",
+                          is_first_today, first_date, kline, closes, historical, clusters)
 
-    return new_face_result, momentum_result, pullback_result
+    category = _classify_category(stock, is_new, c_pb, c_mo, c_nf)
+    if category in ("new_face", "known_new_face"):
+        return c_nf, None, None
+    if category == "momentum":
+        return None, c_mo, None
+    if category == "pullback":
+        return None, None, c_pb
+    return None, None, None
 
 
 def _compute_rps(candidates: list[Candidate]) -> dict[str, int]:

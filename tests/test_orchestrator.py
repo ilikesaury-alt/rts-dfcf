@@ -82,3 +82,68 @@ class TestScanSession:
         stale = ss.get_stale_candidates(now)
         assert len(stale) == 2
         assert stale[0].score >= stale[1].score
+
+
+class TestClassifyCategory:
+    """按价格结构选标签，而非尝试顺序（修复核心）。"""
+
+    def _stock(self, percent):
+        return StockInfo(symbol="300001", name="Test", code="300001",
+                         percent=percent, current=10.0, value=10000,
+                         rank_change=1000, rank=1)
+
+    def test_new_stock_prefers_new_face(self):
+        from scanner.orchestrator import _classify_category
+        c_nf = _make_candidate("300001")
+        assert _classify_category(self._stock(5), True, None, None, c_nf) == "new_face"
+
+    def test_known_stock_down_day_is_pullback(self):
+        from scanner.orchestrator import _classify_category
+        c_pb = _make_candidate("300001", score=20)
+        assert _classify_category(self._stock(-2), False, c_pb, None, None) == "pullback"
+
+    def test_known_stock_up_day_prefers_momentum(self):
+        from scanner.orchestrator import _classify_category
+        c_pb = _make_candidate("300001")
+        c_mo = _make_candidate("300002")
+        assert _classify_category(self._stock(3), False, c_pb, c_mo, None) == "momentum"
+
+    def test_known_stock_only_new_face_fallback(self):
+        from scanner.orchestrator import _classify_category
+        c_nf = _make_candidate("300001")
+        assert _classify_category(self._stock(3), False, None, None, c_nf) == "known_new_face"
+
+    def test_no_candidate(self):
+        from scanner.orchestrator import _classify_category
+        assert _classify_category(self._stock(3), False, None, None, None) is None
+
+
+class TestScoreStockKnownNewFace:
+    """端到端锁定 P0：老股仅命中 new_face 时不应被丢弃。"""
+
+    def test_known_stock_only_new_face_not_dropped(self, monkeypatch):
+        import scanner.orchestrator as o
+        from scanner.candidate_pool import ScanSession
+        from scanner.models import KlineSummary, StockInfo
+
+        ks = KlineSummary(trend="t", accumulated_pct=2.0, volume_ratio=1.5,
+                          bottom_confirmed=True, score=30, dimensions={},
+                          avg_volume=1_000_000)
+        monkeypatch.setattr(o, "analyze_new_face", lambda *a, **k: ks)
+        monkeypatch.setattr(o, "analyze_momentum", lambda *a, **k: None)
+        monkeypatch.setattr(o, "analyze_pullback", lambda *a, **k: None)
+        monkeypatch.setattr(o, "validate", lambda *a, **k: (True, 0, {}))
+        # 返回非空历史 -> is_new=False
+        monkeypatch.setattr(o, "get_symbol_appearances",
+                            lambda *a, **k: [{"date": "2026-06-01"}])
+
+        stock = StockInfo(symbol="300001", name="Test", code="300001",
+                          percent=3.0, current=10.0, value=10000,
+                          rank_change=1000, rank=1)
+        nf, mo, pb = o._score_stock(
+            stock, conn=None, klines={}, today="2026-06-18",
+            session_state=ScanSession(), clusters=None,
+        )
+        assert nf is not None, "老股仅命中 new_face 不应被丢弃"
+        assert nf.category == "known_new_face"
+        assert mo is None and pb is None

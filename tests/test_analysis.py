@@ -50,10 +50,13 @@ class TestAnalyzeNewFace:
         assert result is None
 
     def test_bottom_confirmed_gives_bonus(self):
-        kline = _kline([-2, -1, 1, 1, 4], volumes=[0.8, 0.9, 1.5, 1.8, 2.2])
+        # 足够历史（>=20 根）以合法确认底部：横盘低位 + 末日放量 + 今日小涨
+        pcts = [0.0] * 20 + [-0.5, 3.0]
+        volumes = [1.0] * 21 + [3.0]
+        kline = _kline(pcts, volumes=volumes)
         result = analyze_new_face(_stock(percent=4, rank_change=1000, value=5000), kline)
-        if result:
-            assert "new_face_bottom" in result.dimensions
+        assert result is not None, "低位横盘放量应给出候选"
+        assert "new_face_bottom" in result.dimensions, "应确认底部启动"
 
     def test_ma_bull_bonus_with_bull_arrangement(self):
         pcts = [0.5]*5 + [0.8]*5 + [1.2]*5 + [1.5]*5
@@ -80,9 +83,9 @@ class TestAnalyzeMomentum:
         kline = _kline([1, 1, 1, 1, 2])
         assert analyze_momentum(_stock(percent=3), kline) is None
 
-    def test_over_12_pct_returns_none(self):
+    def test_over_15_pct_returns_none(self):
         kline = _kline([2, 3, 4, 5, 5])
-        assert analyze_momentum(_stock(percent=13), kline) is None
+        assert analyze_momentum(_stock(percent=16), kline) is None
 
     def test_short_kline_returns_none(self):
         assert analyze_momentum(_stock(percent=3), _kline([1, 2])) is None
@@ -90,11 +93,12 @@ class TestAnalyzeMomentum:
     def test_none_kline_returns_none(self):
         assert analyze_momentum(_stock(percent=3), None) is None
 
-    def test_volume_surge_penalty(self):
+    def test_volume_surge_neutral(self):
+        # 放量突破不再惩罚（与"突破需放量"主流一致），权重改为 0
         kline = _kline([2, 3, 4, 5, 3], volumes=[1.0, 1.0, 0.8, 0.6, 3.5])
         result = analyze_momentum(_stock(percent=3), kline)
         assert result is not None
-        assert result.dimensions.get("momentum_volume", 0) == -4
+        assert result.dimensions.get("momentum_volume", 0) == 0
 
     def test_high_accumulated_danger(self):
         kline = _kline([10, 10, 10, 8, 5])

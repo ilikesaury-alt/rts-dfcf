@@ -141,8 +141,10 @@ def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None
     streak_bonus = 0
 
     if streak >= FATIGUE_STREAK_MIN:
+        # 底部反转（new_face）本就期望低 accumulated，跳过价格疲劳信号以免误罚
+        is_reversal = c.category in ("new_face", "known_new_face")
         fatigue_signals = 0
-        if c.kline and c.kline.accumulated_pct < FATIGUE_PRICE_WARN_ACCUM:
+        if c.kline and c.kline.accumulated_pct < FATIGUE_PRICE_WARN_ACCUM and not is_reversal:
             fatigue_signals += 1
         if c.kline and c.kline.volume_ratio < FATIGUE_VOL_WARN_RATIO:
             fatigue_signals += 1

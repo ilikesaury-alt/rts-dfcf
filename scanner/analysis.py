@@ -53,7 +53,7 @@ _GAP_UP_WEAK_PTS = 3
 
 # Bottom confirmation thresholds
 _BOTTOM_MAX_LOSS = -3.0
-_BOTTOM_VOL_SURGE = 1.15
+_BOTTOM_VOL_SURGE = 1.5
 _BOTTOM_NEAR_LOW_PCT = 0.08
 
 # Crash detection thresholds
@@ -274,7 +274,7 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
     recent_3_pcts = pcts[-3:] if len(pcts) >= 3 else pcts
     no_heavy_loss = all(p > _BOTTOM_MAX_LOSS for p in recent_3_pcts)
     volume_surge = vol_ratio > _BOTTOM_VOL_SURGE
-    near_20d_low = (closes[-1] - min(closes[-20:])) / max(min(closes[-20:]), 0.01) < _BOTTOM_NEAR_LOW_PCT if len(closes) >= 20 else True
+    near_20d_low = (closes[-1] - min(closes[-20:])) / max(min(closes[-20:]), 0.01) < _BOTTOM_NEAR_LOW_PCT if len(closes) >= 20 else False
     bottom_confirmed = no_heavy_loss and volume_surge and near_20d_low
 
     v_shape_reversal = (
@@ -309,12 +309,9 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
     elif accumulated <= 15:
         acc_score = W["accum_10_15"]
         dims["new_face_accumulated"] = W["accum_10_15"]
-    elif accumulated < 25:
-        acc_score = W["accum_15_25"]
-        dims["new_face_accumulated"] = W["accum_15_25"]
-    else:
-        acc_score = W["accum_gt_25"]
-        dims["new_face_accumulated"] = W["accum_gt_25"]
+    elif accumulated <= 20:
+        acc_score = W["accum_15_20"]
+        dims["new_face_accumulated"] = W["accum_15_20"]
     score += acc_score
 
     # Volume surge (additive: bottom confirmation or v-shape still get this)

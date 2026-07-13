@@ -43,7 +43,7 @@ class TestValidateNewFaceHelpers:
         pcts = [0.3]*15 + [-3, -4, -5, -3, -2, -1, 1, 2, 3, 2, 4]*2
         k = _kline(pcts, volumes=[1.0]*37)
         closes = [c["close"] for c in k[:-1]]
-        bonus, detail = _nf_convergence(closes, k[:-1])
+        bonus, detail, hits = _nf_convergence(closes, k[:-1])
         assert isinstance(bonus, int) and isinstance(detail, str)
         assert "data_short" not in detail
 
@@ -93,6 +93,19 @@ class TestValidateNewFace:
         closes = [c["close"] for c in k[:-1]]
         passed, total, dims = validate_nf(_stock(), None, closes, k[:-1], None)
         assert not passed
+
+    def test_uptrend_without_oversold_rejected(self):
+        # 上升中继股：higher_low + 板块共振都满足，但无超卖共振，
+        # 按新规则不应冒充新面孔
+        pcts = [1.0] * 20
+        k = _kline(pcts, volumes=[1.0] * 20)
+        closes = [c["close"] for c in k[:-1]]
+        passed, total, dims = validate_nf(
+            _stock(name="半导体测试"), None, closes, k[:-1],
+            SEMICONDUCTOR_CLUSTER
+        )
+        assert not passed, f"无超卖信号不应通过 new_face，dims={dims}"
+        assert dims["v_nf_convergence_hits"] == 0
 
 
 class TestValidateMomentumHelpers:

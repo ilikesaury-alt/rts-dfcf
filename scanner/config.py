@@ -13,7 +13,7 @@ REQUEST_TIMEOUT = 15
 NEW_FACE_LOOKBACK_DAYS = 3
 
 # Normal mode thresholds
-NEW_FACE_MIN_SCORE = 18
+NEW_FACE_MIN_SCORE = 22
 MOMENTUM_MIN_SCORE = 16
 PULLBACK_MIN_SCORE = 18
 
@@ -21,11 +21,11 @@ YI = 100_000_000
 MAX_MARKET_CAP = 500 * YI
 MAX_STOCK_PRICE = 200.0
 MAX_NEW_FACE_TODAY_PCT = 12
-MAX_MOMENTUM_TODAY_PCT = 12
+MAX_MOMENTUM_TODAY_PCT = 15
 PULLBACK_MAX_TODAY_PCT = 2.0
 
 # Vol-rank combo scoring thresholds
-VOL_RANK_VOL_THRESHOLD = 1.15
+VOL_RANK_VOL_THRESHOLD = 1.5
 VOL_RANK_STRONG_RC = 2000
 VOL_RANK_MEDIUM_RC = 1000
 VOL_RANK_WEAK_RC = 500
@@ -106,11 +106,10 @@ NEW_FACE_WEIGHTS: dict[str, int] = {
     "accum_neg5_10": 10,
     "accum_lt_neg5": 0,
     "accum_10_15": 5,
-    "accum_15_25": -5,
-    "accum_gt_25": -15,
+    "accum_15_20": -5,
     "bottom_confirmed": 10,
     "v_shape": 10,
-    "volume_surge": 15,
+    "volume_surge": 8,
     "value_gte_10000": 2,
     "value_gte_5000": 1,
     "rsi_bonus": 3,
@@ -132,7 +131,7 @@ MOMENTUM_WEIGHTS: dict[str, int] = {
     "accum_20_30": 5,
     "accum_gte_30": -15,
     "vol_healthy": 5,
-    "vol_surge": -4,
+    "vol_surge": 0,
     "vol_low": -5,
     "no_crash": 13,
     "value_gte_10000": 2,
@@ -277,8 +276,8 @@ HOLIDAYS: set[str] = _load_holidays_from_file(HOLIDAYS_FILE) or _HOLIDAYS_FALLBA
 # New face
 V_NF_CONVERGE_STRONG = 13
 V_NF_CONVERGE_PARTIAL = 8
-V_NF_HL_CLEAR = 8
-V_NF_HL_STABLE = 3
+V_NF_HL_CLEAR = 5
+V_NF_HL_STABLE = 2
 V_NF_HL_FAIL = -5
 V_NF_SECTOR_STRONG = 8
 V_NF_SECTOR_MOD = 5

@@ -35,9 +35,9 @@ from scanner.indicators import (
 from scanner.sector import classify_sector
 
 
-def _nf_convergence(closes: list[float], historical_kline: list[dict]) -> tuple[int, str]:
+def _nf_convergence(closes: list[float], historical_kline: list[dict]) -> tuple[int, str, int]:
     if len(closes) < 10:
-        return 0, "data_short"
+        return 0, "data_short", 0
 
     rsi = compute_rsi(closes, period=6)
     macd = compute_macd(closes)
@@ -59,12 +59,12 @@ def _nf_convergence(closes: list[float], historical_kline: list[dict]) -> tuple[
     divergence_bonus = V_NF_DIVERGENCE_BULL if _has_macd_bull_divergence(closes, macd) else 0
 
     if hits >= 3:
-        return V_NF_CONVERGE_STRONG + divergence_bonus, f"converge_3of3"
+        return V_NF_CONVERGE_STRONG + divergence_bonus, f"converge_3of3", hits
     if hits >= 2:
-        return V_NF_CONVERGE_PARTIAL + divergence_bonus, f"converge_{hits}of3"
+        return V_NF_CONVERGE_PARTIAL + divergence_bonus, f"converge_{hits}of3", hits
     if divergence_bonus:
-        return divergence_bonus, "macd_bull_divergence"
-    return 0, "converge_weak"
+        return divergence_bonus, "macd_bull_divergence", hits
+    return 0, "converge_weak", hits
 
 
 def _has_macd_bull_divergence(closes: list[float], macd: dict | None) -> bool:
@@ -119,7 +119,7 @@ def _nf_volume_surge(kline_summary) -> tuple[int, str]:
 def validate_nf(stock, kline_summary, closes: list[float],
                 historical_kline: list[dict], clusters: dict[str, list[str]] | None
                 ) -> tuple[bool, int, dict]:
-    conv_bonus, conv_detail = _nf_convergence(closes, historical_kline)
+    conv_bonus, conv_detail, conv_hits = _nf_convergence(closes, historical_kline)
     hl_bonus, hl_detail = _nf_higher_low(closes)
     sec_bonus, sec_count = _nf_sector(stock.name, clusters)
     vol_bonus, vol_detail = _nf_volume_surge(kline_summary)
@@ -127,6 +127,7 @@ def validate_nf(stock, kline_summary, closes: list[float],
     details: dict[str, int | float | str] = {
         "v_nf_convergence": conv_bonus,
         "v_nf_convergence_detail": conv_detail,
+        "v_nf_convergence_hits": conv_hits,
         "v_nf_higher_low": hl_bonus,
         "v_nf_higher_low_detail": hl_detail,
         "v_nf_sector": sec_bonus,
@@ -138,7 +139,10 @@ def validate_nf(stock, kline_summary, closes: list[float],
     total = conv_bonus + hl_bonus + sec_bonus + vol_bonus
 
     pos_dims = sum(1 for b in (conv_bonus, hl_bonus, sec_bonus) if b > 0)
-    passed = pos_dims >= 2
+    # 硬前提：必须至少 1 项超卖共振（convergence 命中 或 MACD 底背离），
+    # 否则仅凭 higher_low + 板块无法证明是"超卖反转"，杜绝上升中继股冒充新面孔。
+    oversold_signal = conv_hits >= 1 or conv_detail == "macd_bull_divergence"
+    passed = oversold_signal and pos_dims >= 2
 
     return passed, total, details
 
@@ -197,9 +201,10 @@ def _mo_volume_uniformity(historical_kline: list[dict]) -> tuple[int, str]:
     inc = all(recent_5[i] <= recent_5[i + 1] for i in range(len(recent_5) - 1))
     ratio = max(recent_5) / max(min(recent_5), 0.01) if min(recent_5) > 0 else 99
 
-    if inc and ratio < 2.0:
+    # 放宽：去掉"严格非递减"硬要求；仅当 5 日内量能爆量（ratio>=3.0）才判异常
+    if inc and ratio < 3.0:
         return V_MO_VOL_UP, f"vol_up_r{ratio:.1f}"
-    if ratio < 1.8:
+    if ratio < 3.0:
         return V_MO_VOL_STABLE, f"vol_stable_r{ratio:.1f}"
     return V_MO_VOL_SPIKE, f"vol_spike_r{ratio:.1f}"
 
