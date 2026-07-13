@@ -8,13 +8,14 @@
 
 import json
 import sqlite3
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
+from scanner.config import now_beijing
 from scanner.database import DB_PATH, init_cross_validation_tables
 
 
 def _load_existing_recommendations(conn: sqlite3.Connection, days: int = 1) -> dict[str, dict]:
-    today = date.today().isoformat()
+    today = now_beijing().date().isoformat()
     rows = conn.execute(
         "SELECT symbol, name, category, score, trend FROM recommendations "
         "WHERE date = ? ORDER BY score DESC",
@@ -27,7 +28,7 @@ def _load_existing_recommendations(conn: sqlite3.Connection, days: int = 1) -> d
 
 
 def _load_chain_recommendations(conn: sqlite3.Connection, days: int = 1) -> dict[str, dict]:
-    today = date.today().isoformat()
+    today = now_beijing().date().isoformat()
     rows = conn.execute(
         "SELECT symbol, name, chain_name, node_name, is_bottleneck, chain_phase, score "
         "FROM chokepoint_recommendations WHERE date = ? ORDER BY score DESC",
@@ -51,7 +52,7 @@ def cross_validate() -> list[dict]:
     try:
         existing = _load_existing_recommendations(conn)
         chain_recs = _load_chain_recommendations(conn)
-        today = date.today().isoformat()
+        today = now_beijing().date().isoformat()
         now = datetime.now().strftime("%H:%M:%S")
 
         results: list[dict] = []
@@ -103,7 +104,7 @@ def cross_validate() -> list[dict]:
 
 def _check_appearance_history(conn: sqlite3.Connection, symbol: str) -> bool:
     try:
-        lookback = (date.today() - timedelta(days=3)).isoformat()
+        lookback = (now_beijing().date() - timedelta(days=3)).isoformat()
         row = conn.execute(
             "SELECT 1 FROM appearances WHERE symbol = ? AND date >= ? LIMIT 1",
             (symbol, lookback),
@@ -125,7 +126,7 @@ def _get_latest_existing_category(conn: sqlite3.Connection, symbol: str) -> str 
 
 
 def _save_results(conn: sqlite3.Connection, results: list[dict], now: str):
-    today = date.today().isoformat()
+    today = now_beijing().date().isoformat()
     conn.execute("DELETE FROM cross_validated_signals WHERE date = ?", (today,))
     for r in results:
         try:

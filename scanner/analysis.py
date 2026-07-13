@@ -1,4 +1,4 @@
-from datetime import date
+from scanner.config import now_beijing
 
 from scanner.config import (
     MA_BULL_EXTRA_BONUS,
@@ -84,7 +84,7 @@ def _ma_bull_score(closes: list[float]) -> int:
 
 def _detect_gap_up(today_current: float, kline: list[dict], today_str: str | None = None) -> tuple[float, int]:
     yesterday_close = None
-    today_str = today_str or date.today().isoformat()
+    today_str = today_str or now_beijing().date().isoformat()
     for k in reversed(kline):
         if k["date"] != today_str:
             yesterday_close = k["close"]
@@ -242,7 +242,7 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
     if today_pct > MAX_NEW_FACE_TODAY_PCT:
         return None
 
-    today_str = today_str or date.today().isoformat()
+    today_str = today_str or now_beijing().date().isoformat()
     historical_kline = [k for k in kline if k["date"] != today_str]
     pcts = [k["percent"] for k in historical_kline]
     closes = [k["close"] for k in historical_kline]
@@ -378,7 +378,7 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
     if today_pct <= 0:
         return None
 
-    today_str = today_str or date.today().isoformat()
+    today_str = today_str or now_beijing().date().isoformat()
     historical_kline = [k for k in kline if k["date"] != today_str]
     pcts = [k["percent"] for k in historical_kline]
     closes = [k["close"] for k in historical_kline]
@@ -425,13 +425,13 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
         trend = "加速启动"
 
     # Volume
-    if 0.7 < vol_ratio < 2.0:
+    if _MOMENTUM_VOL_HEALTHY_MIN < vol_ratio < _MOMENTUM_VOL_HEALTHY_MAX:
         score += W["vol_healthy"]
         dims["momentum_volume"] = W["vol_healthy"]
-    elif vol_ratio >= 2.0:
+    elif vol_ratio >= _MOMENTUM_VOL_HEALTHY_MAX:
         score += W["vol_surge"]
         dims["momentum_volume"] = W["vol_surge"]
-    elif vol_ratio < 0.7:
+    elif vol_ratio < _MOMENTUM_VOL_HEALTHY_MIN:
         score += W["vol_low"]
         dims["momentum_volume"] = W["vol_low"]
 
@@ -488,7 +488,7 @@ def _calc_pullback_base_metrics(kline: list[dict], today_str: str) -> tuple[list
     Returns:
         (pcts, closes, accumulated, vol_ratio, avg_vol, historical_kline, volumes) tuple
     """
-    today_str = today_str or date.today().isoformat()
+    today_str = today_str or now_beijing().date().isoformat()
     historical_kline = [k for k in kline if k["date"] != today_str]
     pcts = [k["percent"] for k in historical_kline]
     closes = [k["close"] for k in historical_kline]

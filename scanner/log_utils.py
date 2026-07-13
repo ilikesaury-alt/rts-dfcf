@@ -1,13 +1,13 @@
 import os
-from datetime import date, datetime
+from datetime import datetime
 
-from scanner.config import LOG_DIR
+from scanner.config import LOG_DIR, now_beijing
 from scanner.models import Candidate
 
 
 def log_results(new_faces: list[Candidate], momentum: list[Candidate]):
     os.makedirs(LOG_DIR, exist_ok=True)
-    today = date.today().isoformat()
+    today = now_beijing().date().isoformat()
     log_file = os.path.join(LOG_DIR, f"scan_{today}.csv")
     is_new = not os.path.exists(log_file)
     with open(log_file, "a", encoding="utf-8") as f:

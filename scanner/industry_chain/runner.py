@@ -1,7 +1,7 @@
 import time
 
 from scanner.api import make_session
-from scanner.database import init_industry_chain_tables
+from scanner.database import init_db, init_industry_chain_tables
 from scanner.trading_session import is_trading_time
 from scanner.industry_chain.display import (
     _safe_print,
@@ -21,6 +21,7 @@ def run_once(session_state: IndustryScanSession | None = None) -> dict:
     session_state = session_state or IndustryScanSession()
 
     conn = init_industry_chain_tables()
+    init_db()
     try:
         if not hasattr(run_once, "_session"):
             run_once._session = make_session()
@@ -60,6 +61,7 @@ def run_once(session_state: IndustryScanSession | None = None) -> dict:
 def main_loop(interval: int = 300):
     session_state = IndustryScanSession()
     conn = init_industry_chain_tables()
+    init_db()
     conn.close()
 
     try:

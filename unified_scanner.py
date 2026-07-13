@@ -92,10 +92,6 @@ def main():
                 new_faces, momentum, pullback_list, stale_candidates, all_gem, filtered_large_cap = (
                     scan_with_raw(xq_raw, conn, xq_session))
 
-                for c in new_faces + momentum + pullback_list:
-                    if c.stock.source_tag == "both":
-                        c.score += CROSS_SOURCE_BONUS
-
                 new_faces.sort(key=lambda x: -x.score)
                 momentum.sort(key=lambda x: -x.score)
                 pullback_list.sort(key=lambda x: -x.score)

@@ -288,7 +288,7 @@ V_NF_SECTOR_WEAK = 0
 V_MO_MA_FULL = 6
 V_MO_MA_PARTIAL = 3
 V_MO_MA_NONE = -5
-V_MO_DIVERGENCE_NONE = 4
+V_MO_DIVERGENCE_NONE = 0
 V_MO_DIVERGENCE_BEAR = -10
 V_MO_VOL_UP = 8
 V_MO_VOL_STABLE = 5
@@ -302,8 +302,8 @@ V_PB_SHRINK_YES = 10
 V_PB_SHRINK_MOD = 5
 V_PB_SHRINK_NO = -5
 V_PB_SECTOR_HOT = 8
-V_PB_SECTOR_COLD = 3
 V_PB_SECTOR_DEAD = -5
+V_PB_SECTOR_NEUTRAL = 0
 
 # New face — added in P0
 V_NF_DIVERGENCE_BULL = 8
@@ -311,6 +311,7 @@ V_NF_VOLUME_CONFIRM = 5
 
 # Pullback — added in P0
 V_PB_BOLLINGER_TOUCH = 5
+V_PB_BOLLINGER_MID = 2
 
 # Pullback 20-day gain penalty (late-stage lifecycle protection)
 PULLBACK_20D_GAIN_WARN = 40       # 20-day gain > 40% → warn

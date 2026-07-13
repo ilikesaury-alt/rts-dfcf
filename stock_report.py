@@ -228,7 +228,7 @@ def main():
     if sector:
         print(f"  所属板块: {sector}")
     if first_app:
-        print(f"  首次上榜: {first_app['date']} (排名{first_app['rank']}, 涨幅{first_app['percent']:.2f}%)")
+        print(f"  首次上榜: {first_app['date']} (排名{first_app['rank']}, 涨幅{(first_app['percent'] or 0):.2f}%)")
     print(f"  累计上榜: {len(appearances)}天")
     if consecutive_days:
         print(f"  连续上榜: {consecutive_days}天" if consecutive_days > 0 else "  连续上榜: 0天(今日未上榜)")
@@ -255,10 +255,11 @@ def main():
         print(f"  {'日期':<8} {'排名':>4} {'涨幅':>8} {'走势':>4}")
         last_pct = None
         for a in recent:
-            arrow = trend_arrow(a["percent"] - last_pct) if last_pct is not None else ""
-            pct_display = green(f"+{a['percent']:.2f}%") if a["percent"] > 0 else red(f"{a['percent']:.2f}%")
+            pct = a["percent"] or 0
+            arrow = trend_arrow(pct - last_pct) if last_pct is not None else ""
+            pct_display = green(f"+{pct:.2f}%") if pct > 0 else red(f"{pct:.2f}%")
             print(f"  {a['date'][5:]:<8} {a['rank']:>4}  {pct_display:>10}  {arrow}")
-            last_pct = a["percent"]
+            last_pct = pct
     else:
         print(f"  {yellow('(无上榜记录)')}")
 
@@ -270,7 +271,7 @@ def main():
         print(f"  {sparkline(closes[-40:], 30)}")
         print(f"  {'日期':<8} {'收盘':>8} {'涨幅':>8} {'量':>12}")
         for k in reversed(recent_k):
-            p = k["percent"]
+            p = k["percent"] or 0
             pct_display = green(f"+{p:.2f}%") if p > 0 else red(f"{p:.2f}%")
             print(f"  {k['date'][5:]:<8} {k['close']:>8.2f}  {pct_display:>10}  {format_value(k['volume']):>12}")
 
@@ -420,7 +421,7 @@ def main():
             print(f"  区间涨幅: {(high_ever - low_ever) / low_ever * 100:.1f}%")
 
     if appearances:
-        pct_values = [a["percent"] for a in appearances]
+        pct_values = [a["percent"] or 0 for a in appearances]
         if pct_values:
             avg_pct = sum(pct_values) / len(pct_values)
             max_pct = max(pct_values)

@@ -12,6 +12,7 @@ from scanner.database import (
     save_recommendations,
 )
 from scanner.models import Candidate, KlineSummary, StockInfo
+from scanner.config import now_beijing
 from scanner.trading_session import is_trading_day
 
 
@@ -102,7 +103,7 @@ class TestRecordAppearances:
 
     def test_symbol_appearances_holiday_gap(self, memory_db):
         """Holiday gap should not prevent finding records within N-trading-day lookback."""
-        today = date.today()
+        today = now_beijing().date()
         if not is_trading_day(today):
             pytest.skip("Not a trading day")
         cursor = today - timedelta(days=1)

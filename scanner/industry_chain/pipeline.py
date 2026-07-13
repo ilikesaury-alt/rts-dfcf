@@ -57,7 +57,11 @@ def _fetch_klines(conn: sqlite3.Connection, session: requests.Session, gem_stock
     needs_fetch: list[str] = []
 
     for s in gem_stocks:
-        cached = get_cached_kline(conn, s["symbol"])
+        cached = None
+        try:
+            cached = get_cached_kline(conn, s["symbol"])
+        except sqlite3.OperationalError:
+            cached = None
         if cached and len(cached) >= KLINE_MIN_LENGTH:
             result[s["symbol"]] = cached
         else:

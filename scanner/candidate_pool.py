@@ -14,7 +14,7 @@ class ScanSession:
         self.list_presence: dict[str, int] = {}
 
     def reset_if_new_day(self, today_str: str | None = None) -> bool:
-        today_str = today_str or date.today().isoformat()
+        today_str = today_str or now_beijing().date().isoformat()
         if today_str != self.last_today:
             self.seen_today.clear()
             self.today_pool.clear()

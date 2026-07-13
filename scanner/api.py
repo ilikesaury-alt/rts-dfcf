@@ -213,14 +213,15 @@ def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[
 _biaosheng_cb = {"failures": 0, "last_ok": 0.0, "cached": [], "cooldown_until": 0.0}
 
 
-def _biaosheng_circuit_breaker(raw_items: list[dict]) -> list[dict]:
+def _biaosheng_circuit_breaker(raw_items: list[dict], success: bool = True) -> list[dict]:
     now = time.time()
     with _cache_lock:
-        if raw_items:
+        if success:
             _biaosheng_cb["failures"] = 0
-            _biaosheng_cb["last_ok"] = now
-            _biaosheng_cb["cached"] = raw_items
             _biaosheng_cb["cooldown_until"] = 0
+            _biaosheng_cb["last_ok"] = now
+            if raw_items:
+                _biaosheng_cb["cached"] = raw_items
             return raw_items
 
         _biaosheng_cb["failures"] += 1
@@ -256,10 +257,10 @@ def fetch_biaosheng(session: requests.Session, size: int = 100) -> list[dict]:
     try:
         resp = _request_with_retry(session, url)
         items = resp.json().get("data", {}).get("items", [])
-        return _biaosheng_circuit_breaker(items)
+        return _biaosheng_circuit_breaker(items, success=True)
     except Exception as e:
         logger.error("飙升榜获取失败: %s", e)
-        return _biaosheng_circuit_breaker([])
+        return _biaosheng_circuit_breaker([], success=False)
 
 
 def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> dict[str, dict]:
@@ -284,7 +285,7 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
                 if sym:
                     mc = q.get("market_capital") or 0
                     cmc = q.get("float_market_capital") or 0
-                    turnover = q.get("turnover_rate")
+                    turnover = q.get("turnover_rate") or 0
                     result[sym] = {"market_cap": mc, "circ_market_cap": cmc,
                                    "turnover_rate": turnover,
                                    "current": q.get("current", 0),

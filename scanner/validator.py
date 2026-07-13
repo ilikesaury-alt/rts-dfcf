@@ -18,12 +18,13 @@ from scanner.config import (
     V_NF_SECTOR_WEAK,
     V_NF_VOLUME_CONFIRM,
     V_PB_BOLLINGER_TOUCH,
+    V_PB_BOLLINGER_MID,
     V_PB_MA_DOWN,
     V_PB_MA_FLAT,
     V_PB_MA_UP,
-    V_PB_SECTOR_COLD,
     V_PB_SECTOR_DEAD,
     V_PB_SECTOR_HOT,
+    V_PB_SECTOR_NEUTRAL,
     V_PB_SHRINK_MOD,
     V_PB_SHRINK_NO,
     V_PB_SHRINK_YES,
@@ -258,9 +259,7 @@ def _pb_sector(name: str, clusters: dict[str, list[str]] | None) -> tuple[int, i
     count = len(clusters.get(sec, []))
     if count >= 3:
         return V_PB_SECTOR_HOT, count
-    if count >= 1:
-        return V_PB_SECTOR_COLD, count
-    return V_PB_SECTOR_DEAD, count
+    return V_PB_SECTOR_NEUTRAL, count
 
 
 def _pb_bollinger_touch(closes: list[float]) -> tuple[int, str]:
@@ -275,7 +274,7 @@ def _pb_bollinger_touch(closes: list[float]) -> tuple[int, str]:
     if touch_lower:
         return V_PB_BOLLINGER_TOUCH, f"bb_lower_touch_b{boll['b_pct']:.2f}"
     if near_mid:
-        return V_PB_BOLLINGER_TOUCH, f"bb_mid_return_b{boll['b_pct']:.2f}"
+        return V_PB_BOLLINGER_MID, f"bb_mid_return_b{boll['b_pct']:.2f}"
     return 0, f"bb_mid_b{boll['b_pct']:.2f}"
 
 

@@ -21,6 +21,7 @@ from scanner.api import (
 )
 from scanner.candidate_pool import ScanSession
 from scanner.config import (
+    now_beijing,
     FIRST_BREAKOUT_BONUS,
     FIRST_BREAKOUT_RANK_CHANGE,
     FIRST_BREAKOUT_VOL_RATIO,
@@ -85,7 +86,7 @@ def _fetch_all_klines(conn: sqlite3.Connection, session: requests.Session, stock
             max_date = date.fromisoformat(max_date_str)
             cursor = max_date + timedelta(days=1)
             trading_days_missing = 0
-            while cursor < date.today():
+            while cursor < now_beijing().date():
                 if is_trading_day(cursor):
                     trading_days_missing += 1
                 cursor += timedelta(days=1)
@@ -257,7 +258,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
                       list[Candidate], list[StockInfo], int]:
     global _session_state
     session_state = _session_state
-    today = date.today().isoformat()
+    today = now_beijing().date().isoformat()
     session_state.reset_if_new_day(today)
 
     sentiment_info = compute_surge_sentiment(raw)

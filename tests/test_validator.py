@@ -109,7 +109,7 @@ class TestValidateMomentumHelpers:
         k = _kline(pcts, volumes=[1.0]*20)
         closes = [c["close"] for c in k[:-1]]
         bonus, detail = _mo_divergence(closes, k[:-1])
-        assert bonus > 0, f"expected no divergence (bonus>0), got {bonus} ({detail})"
+        assert bonus == 0, f"expected neutral (no divergence => 0), got {bonus} ({detail})"
 
     def test_volume_uniformity_good(self):
         k = _kline([0.5]*15, volumes=[1.0, 1.2, 1.4, 1.5, 1.6]*3)
@@ -177,7 +177,7 @@ class TestValidatePullbackHelpers:
     def test_sector_cold(self):
         bonus, count = _pb_sector("半导体测试", {"医疗": ["300001"]})
         assert count == 0
-        assert bonus < 0
+        assert bonus == 0
 
 
 class TestValidatePullback:

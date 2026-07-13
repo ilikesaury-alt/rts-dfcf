@@ -17,23 +17,23 @@
 | `config.py` | ⚠️ | 2026-07-01 | 配置一致性 | 清理 12 个死权重条目 |
 | `validator.py` | ⚠️ | 2026-07-01 | 策略逻辑 | 维度定义清晰，联动 coverage 通过 |
 | `enhancer.py` | ⚠️ | 2026-07-01 | 数据流完整性 | 移除反指 intraday_score 累加 (IC=-0.307) |
-| `orchestrator.py` | ❌ | — | — | |
-| `cross_validation.py` | ❌ | — | — | |
-| `api.py` | ❌ | — | — | |
-| `ths_api.py` | ❌ | — | — | |
-| `database.py` | ❌ | — | — | |
-| `indicators.py` | ❌ | — | — | |
-| `models.py` | ❌ | — | — | |
-| `candidate_pool.py` | ❌ | — | — | |
-| `rank_trend.py` | ❌ | — | — | |
-| `sector.py` | ❌ | — | — | |
-| `trading_session.py` | ❌ | — | — | |
-| `display.py` | ❌ | — | — | |
-| `log_utils.py` | ❌ | — | — | |
-| `utils.py` | ❌ | — | — | |
-| `industry_chain/*` | ❌ | — | — | 整包未覆盖 |
-| `unified_scanner.py` | ❌ | — | — | |
-| `stock_report.py` | ❌ | — | — | |
+| `orchestrator.py` | ✅ | 2026-07-13 | 策略逻辑/数据流/双源融合 | fallthrough 链正确；双源加分双算已修(P0-1) |
+| `cross_validation.py` | ✅ | 2026-07-13 | 错误处理/日期基准 | 日期基准统一 now_beijing(P1-1)；DB 查无异常已降级 |
+| `api.py` | ✅ | 2026-07-13 | 错误处理/熔断/缓存 | 熔断区分空响应与失败(P1-2)；turnover_rate 缺省(P1-3) |
+| `ths_api.py` | ✅ | 2026-07-13 | 错误处理 | 重试/超时/参数化齐全，无 P0 |
+| `database.py` | ✅ | 2026-07-13 | 数据安全/连接 | SQL 参数化；连接回收正常 |
+| `indicators.py` | ✅ | 2026-07-13 | 指标数学 | RSI/KDJ/MACD/ADX 数学正确，仅有死变量 P2 |
+| `models.py` | ✅ | 2026-07-13 | 数据模型 | 无逻辑问题 |
+| `candidate_pool.py` | ✅ | 2026-07-13 | 列表追踪 | 日期基准统一(P1-1) |
+| `rank_trend.py` | ✅ | 2026-07-13 | 轨迹评分 | 无逻辑问题 |
+| `sector.py` | ✅ | 2026-07-13 | 板块分类 | 无崩溃；None 名未防护(P2) |
+| `trading_session.py` | ✅ | 2026-07-13 | 交易时段 | 时段判断用 now.time()，正确 |
+| `display.py` | ✅ | 2026-07-13 | 展示 | 纯展示，无评分影响 |
+| `log_utils.py` | ✅ | 2026-07-13 | 日志 | 日期基准统一(P1-1) |
+| `utils.py` | ✅ | 2026-07-13 | 工具 | is_hk_stock 依赖 isdigit 实际惰性(P2) |
+| `industry_chain/*` | ⚠️ | 2026-07-13 | 子系统/DB初始化 | 全新库崩溃已修(P0-3)；瓶颈映射失效暂缓(P0-2) |
+| `unified_scanner.py` | ✅ | 2026-07-13 | 双源融合 | 双源加分双算已修(P0-1) |
+| `stock_report.py` | ✅ | 2026-07-13 | 报告/健壮性 | None percent 防护已加(P1-4) |
 | `tests/*` | ❌ | — | — | |
 
 ---
@@ -53,6 +53,16 @@
 | 🟡 P1 | 10 | 行业分类纯名称匹配太粗糙 | — |
 | 🟢 P2 | 26 | 测试覆盖不足（orchestrator/database 无测试） | — |
 | 🟢 P2 | 28 | Feishu 推送注释状态未清理 | — |
+| ✅ P0 | 55 | `CROSS_SOURCE_BONUS` 双算（enhancer + unified_scanner 各加一次） | 2026-07-13 删除 unified_scanner 循环累加 |
+| ✅ P0 | 56 | 产业链入口全新库崩溃（缺 daily_kline 表） | 2026-07-13 runner 补 init_db + pipeline 降级 |
+| ⏸ P0 | 57 | 产业链瓶颈节点名称子串匹配失效 | 暂缓：需逐股标注 bottleneck_stocks 数据任务 |
+| ✅ P0 | 58 | 动量交叉验证"无背离"维度恒 +4 使验证门失效 | 2026-07-13 V_MO_DIVERGENCE_NONE 改 0 |
+| ✅ P1 | 59 | 跨模块日期基准不一致（date.today vs now_beijing） | 2026-07-13 全量统一 |
+| ✅ P1 | 60 | 熔断把空响应当失败回吐陈旧数据 | 2026-07-13 区分 success/失败 |
+| ✅ P1 | 61 | `turnover_rate` 缺省返回 None | 2026-07-13 加 `or 0` |
+| ✅ P1 | 62 | `stock_report.py` 对 None percent 未防护 | 2026-07-13 4 处加守卫 |
+| ✅ P1 | 63 | 回调 sector 维度 `count>=1` 即正分 / bollinger 回中轨同 +5 | 2026-07-13 sector 改 `count>=3`(+8)，1~2 改中性 0（非 -5）；bollinger 中轨改 +2；删死常量 COLD，新增 NEUTRAL |
+| ✅ P1 | 64 | 动量量能阈值硬编码未用常量 | 2026-07-13 改用 `_MOMENTUM_VOL_HEALTHY_*` |
 
 ---
 
@@ -61,6 +71,7 @@
 | 日期 | 覆盖维度 | 覆盖模块 | 发现 | 备注 |
 |------|---------|---------|------|------|
 | 2026-07-01 | 策略逻辑/配置一致性/数据流完整性 | analysis.py, config.py, validator.py, enhancer.py | 🔴 intraday_score 反指累加(P0)修; 🟡5处硬编码迁移; 🟡12死权重清理; #19/#20确认已修 | 全库通读 baseline 建立，6/22 模块本次覆盖 4 个 |
+| 2026-07-13 | 全模块（原 ❌ 18 个文件 + 测试） | orchestrator/cross_validation/api/ths_api/database/indicators/models/candidate_pool/rank_trend/sector/trading_session/display/log_utils/utils/industry_chain/unified_scanner/stock_report/tests | 🔴 双源加分双算(P0-1)修; 🔴 产业链全新库崩溃(P0-3)修; 🔴 动量验证门失效(P0-4)修; 🟡 日期基准/熔断/换手率/报告None/回调维度/量能常量 6 项修; P0-2 瓶颈映射暂缓 | 150 测试全过；PowerShell Set-Content 曾损坏 UTF-8 中文源，已 git checkout 还原并以 UTF-8 安全方式重做 |
 
 ---
 
