@@ -56,7 +56,7 @@ from scanner.enhancer import (
 from scanner.models import Candidate, KlineSummary, StockInfo
 from scanner.rank_trend import update_rank_history
 from scanner.sector import get_sector_clusters
-from scanner.trading_session import is_trading_day
+from scanner.trading_session import is_trading_day, is_trading_time
 from scanner.utils import is_gem, is_hk_stock, is_st
 
 _thread_local = threading.local()
@@ -90,7 +90,7 @@ def _fetch_all_klines(conn: sqlite3.Connection, session: requests.Session, stock
                 if is_trading_day(cursor):
                     trading_days_missing += 1
                 cursor += timedelta(days=1)
-            if trading_days_missing <= 2:
+            if not is_trading_time() or trading_days_missing == 0:
                 result[s.symbol] = cached
                 continue
             stale_cache[s.symbol] = cached
