@@ -63,6 +63,7 @@ TOP20_EXTRA = 2
 
 FEISHU_WEBHOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/d0caf1dd-54b6-4b86-b83d-861e4c79afda"
 FEISHU_KEYWORD = "lichun"
+FEISHU_MIN_INTERVAL = 300  # 飞书最小推送间隔（秒），防止触发 Lark 限流
 
 HEADERS = {
     "User-Agent": (

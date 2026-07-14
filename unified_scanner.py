@@ -103,9 +103,11 @@ def main():
                         current_rank_map=current_rank_map)
                 log_results(new_faces, momentum + pullback_list)
                 if not args.no_feishu:
-                    push_feishu(new_faces, momentum, pullback_list, stale_candidates,
-                                len(all_gem), filtered_large_cap=filtered_large_cap,
-                                current_rank_map=current_rank_map)
+                    pushed = push_feishu(new_faces, momentum, pullback_list, stale_candidates,
+                                        len(all_gem), filtered_large_cap=filtered_large_cap,
+                                        current_rank_map=current_rank_map)
+                    if not pushed and (new_faces or momentum or pullback_list):
+                        print(f"\r  📤 飞书推送跳过（冷却中/无变化）", end="", flush=True)
 
                 last_ranks.clear()
                 for s in all_gem:

@@ -2,8 +2,11 @@ from datetime import datetime
 
 import requests
 
-from scanner.config import FEISHU_KEYWORD, FEISHU_WEBHOOK
+from scanner.config import FEISHU_KEYWORD, FEISHU_MIN_INTERVAL, FEISHU_WEBHOOK
 from scanner.models import Candidate
+
+_last_push_time: float = 0.0
+_last_push_symbols: set[str] = set()
 
 
 def _build_card(
@@ -92,6 +95,11 @@ def _build_card(
     }
 
 
+def _extract_symbols(new_faces: list[Candidate], momentum: list[Candidate],
+                     pullback_list: list[Candidate]) -> set[str]:
+    return {c.stock.symbol for c in new_faces + momentum + pullback_list}
+
+
 def push_feishu(
     new_faces: list[Candidate],
     momentum: list[Candidate],
@@ -100,14 +108,33 @@ def push_feishu(
     gem_total: int,
     filtered_large_cap: int = 0,
     current_rank_map: dict[str, int] | None = None,
-):
+) -> bool:
+    global _last_push_time, _last_push_symbols
+
     if not FEISHU_WEBHOOK:
-        return
+        return False
+
+    import time
+    now = time.time()
+    current_symbols = _extract_symbols(new_faces, momentum, pullback_list)
+    has_change = current_symbols != _last_push_symbols
+
+    if not has_change and (now - _last_push_time) < FEISHU_MIN_INTERVAL:
+        return False
+
     try:
-        card = _build_card(new_faces, momentum, pullback_list, stale_candidates, gem_total, filtered_large_cap, current_rank_map)
-        resp = requests.post(FEISHU_WEBHOOK, json={"msg_type": "interactive", "card": card}, timeout=10)
+        card = _build_card(new_faces, momentum, pullback_list, stale_candidates,
+                           gem_total, filtered_large_cap, current_rank_map)
+        resp = requests.post(FEISHU_WEBHOOK,
+                             json={"msg_type": "interactive", "card": card},
+                             timeout=10)
         result = resp.json()
         if result.get("code") != 0:
             print(f"\n  [!] 飞书推送失败: {result.get('msg')}")
+            return False
+        _last_push_time = now
+        _last_push_symbols = current_symbols
+        return True
     except Exception as e:
         print(f"\n  [!] 飞书推送异常: {e}")
+        return False
