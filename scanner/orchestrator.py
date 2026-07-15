@@ -2,7 +2,7 @@ import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace as dataclass_replace
-from datetime import date, timedelta
+from datetime import date
 
 import requests
 
@@ -86,13 +86,9 @@ def _fetch_all_klines(conn: sqlite3.Connection, session: requests.Session, stock
                 continue
             max_date_str = max(k["date"] for k in cached)
             max_date = date.fromisoformat(max_date_str)
-            cursor = max_date + timedelta(days=1)
-            trading_days_missing = 0
-            while cursor < now_beijing().date():
-                if is_trading_day(cursor):
-                    trading_days_missing += 1
-                cursor += timedelta(days=1)
-            if not is_trading_time() or trading_days_missing == 0:
+            today = now_beijing().date()
+            # 盘中且缓存不含今日 Bar 才补拉；否则复用缓存（补拉后 max_date==today 即跳过，避免重复打 API）
+            if not is_trading_time() or max_date >= today:
                 result[s.symbol] = cached
                 continue
             stale_cache[s.symbol] = cached
@@ -373,8 +369,13 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
                       list_streaks=session_state.list_presence,
                       conn=conn)
 
+    extra_by_symbol: dict[str, int] = {}
+    for c in all_candidates:
+        if c.stock.symbol not in extra_by_symbol:
+            extra_by_symbol[c.stock.symbol] = accumulate_final_score(
+                c, market_env_bonus, opening_scores)
     for i, c in enumerate(all_candidates):
-        extra = accumulate_final_score(c, market_env_bonus, opening_scores)
+        extra = extra_by_symbol[c.stock.symbol]
         all_candidates[i] = dataclass_replace(c, score=c.score + extra)
 
     update_rank_history({s.symbol: s.rank for s in gem_stocks_filtered})

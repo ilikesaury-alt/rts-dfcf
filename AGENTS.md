@@ -3,7 +3,6 @@
 ## Quick Commands
 
 - **Run scanner**: `python unified_scanner.py` (default 60s interval) or `python unified_scanner.py 120` (custom seconds)
-- **Run industry chain scanner**: `python industry_chain_scanner.py`
 - **Run tests**: `python -m pytest tests/ -v`
 - **Single test**: `python -m pytest tests/test_analysis.py::test_new_face -v`
 
@@ -13,7 +12,6 @@ A-share stock momentum scanner merging Xueqiu + Tonghuashun surge ranking APIs. 
 
 ```
 unified_scanner.py        # Single entry point (dual-source fusion)
-industry_chain_scanner.py # Industry chain scanner entry point
 scanner/
   orchestrator.py         # Core scan pipeline
   analysis.py             # Scoring engines (new_face, momentum, pullback, short_term)
@@ -30,7 +28,6 @@ scanner/
   sector.py               # Sector cluster detection
   trading_session.py      # Trading hours/holidays
   log_utils.py            # Log formatting utilities
-  industry_chain/         # Chokepoint industry chain scanner
 tests/                    # pytest test suite
 ```
 
@@ -52,7 +49,6 @@ tests/                    # pytest test suite
   - **pullback**: MA20 trending up (>+0.5%), volume shrinkage (<0.6x), sector still active (≥3 same-sector in list)
   - **short_term**: vol_ratio > 1.0 hard gate, soft checks: sector cluster, rank ≤30, MA5>MA10 support
 - Priority chain: primary strategy attempted first; if cross-validation fails, falls through to next strategy
-- Industry chain scanner (`industry_chain/`): independent subsystem implementing a chokepoint investment thesis — detects chain phases (潜伏→形成→成长→爆发→消退), verifies bottleneck node participation, picks technically strong bottleneck stocks from active chains
 
 ## Testing
 

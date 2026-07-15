@@ -157,7 +157,7 @@
 
 | # | 问题 | 说明 |
 |---|------|------|
-| 26 | **测试覆盖不足** | 仅 `analysis.py` 有测试，orchestrator/database/chain_watch 无覆盖 |
+| 26 | **测试覆盖不足** | 仅 `analysis.py` 有测试，orchestrator/database 无覆盖 |
 | 27 | **query 脚本硬编码日期** | `query_today.py` / `query_summary.py` 写死 `2026-06-11` |
 | 28 | **Feishu 推送注释状态** | `limit_up_scanner.py:83` 已注释，可清理相关代码 |
 

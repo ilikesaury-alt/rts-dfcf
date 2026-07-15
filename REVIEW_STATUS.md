@@ -31,7 +31,7 @@
 | `display.py` | ✅ | 2026-07-13 | 展示 | 纯展示，无评分影响 |
 | `log_utils.py` | ✅ | 2026-07-13 | 日志 | 日期基准统一(P1-1) |
 | `utils.py` | ✅ | 2026-07-13 | 工具 | is_hk_stock 依赖 isdigit 实际惰性(P2) |
-| `industry_chain/*` | ✅ | 2026-07-13 | 子系统重构 | 废弃瓶颈环节概念，相变改按集中度/持续性/扩散；双源/DB 修复保留 |
+| `industry_chain/*` | 🗑️ | 2026-07-15 | 已删除 | 整个产业链子系统（industry_chain/ + industry_chain_scanner.py）已移除；相关表/init 函数/cross_validation 链依赖一并清理 |
 | `unified_scanner.py` | ✅ | 2026-07-13 | 双源融合 | 双源加分双算已修(P0-1) |
 | `stock_report.py` | ✅ | 2026-07-13 | 报告/健壮性 | None percent 防护已加(P1-4) |
 | `tests/*` | ❌ | — | — | |
@@ -75,6 +75,7 @@
 | 2026-07-01 | 策略逻辑/配置一致性/数据流完整性 | analysis.py, config.py, validator.py, enhancer.py | 🔴 intraday_score 反指累加(P0)修; 🟡5处硬编码迁移; 🟡12死权重清理; #19/#20确认已修 | 全库通读 baseline 建立，6/22 模块本次覆盖 4 个 |
 | 2026-07-13 | 全模块（原 ❌ 18 个文件 + 测试） | orchestrator/cross_validation/api/ths_api/database/indicators/models/candidate_pool/rank_trend/sector/trading_session/display/log_utils/utils/industry_chain/unified_scanner/stock_report/tests | 🔴 双源加分双算(P0-1)修; 🔴 产业链全新库崩溃(P0-3)修; 🔴 动量验证门失效(P0-4)修; 🟡 日期基准/熔断/换手率/报告None/回调维度/量能常量 6 项修; P0-2 瓶颈映射暂缓 | 150 测试全过；PowerShell Set-Content 曾损坏 UTF-8 中文源，已 git checkout 还原并以 UTF-8 安全方式重做 |
 | 2026-07-15 | 策略逻辑正确性/数据流完整性/加分逻辑/交叉验证/配置一致性/错误处理 | analysis.py/config.py/validator.py/enhancer.py/orchestrator.py/api.py/database.py/indicators.py/models.py/sector.py/utils.py | 无新 P0/P1 发现；#31(intraday反指)确认已修；新增 2 项 P2 死代码 | 245 测试全过；覆盖 analysis/config/validator/enhancer 四个 ⚠️ 模块→✅；全项目仅剩 tests/* 未覆盖 |
+| 2026-07-15 | 子系统清理 + 主扫描器缺陷修复 | industry_chain(删除)/orchestrator.py/cross_validation.py/database.py/config.py | 🗑️ 移除整个产业链子系统(industry_chain/ + industry_chain_scanner.py)，清理 init_industry_chain_tables/chokepoint_recommendations 表/cross_validation 链依赖/Industry chain 配置块/文档；🔴 修复实时扫描 K 线永远少一天(orchestrator.py 盘中补拉今日 Bar)；🟡 双挂票 stock 级加分按 symbol 去重(排名不变) | 确认主扫描器市值过滤用真实 market_capital，热度值未当市值；热度当市值 bug 仅存在于已删的 industry_chain/pipeline.py:39 |
 
 ---
 

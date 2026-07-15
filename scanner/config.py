@@ -367,30 +367,4 @@ PULLBACK_20D_GAIN_WARN = 40       # 20-day gain > 40% → warn
 PULLBACK_20D_GAIN_EXTREME = 60    # 20-day gain > 60% → extreme
 PULLBACK_20D_WARN_PENALTY = -10
 PULLBACK_20D_EXTREME_PENALTY = -15
-
-# ============================================================
-# Industry chain trend & chokepoint scoring (industry_chain/)
-# ============================================================
-# Chain trend phase bonuses (applied by chokepoint_scorer.py)
-CHAIN_ERUPTING_BONUS = 15
-CHAIN_GROWING_BONUS = 8
-CHAIN_FORMING_BONUS = 3
-CHAIN_FADING_PENALTY = -5
-
-# Trend judgment thresholds (used by trend_judge.py)
-CHAIN_CONCENTRATION_HOT = 5
-CHAIN_CONCENTRATION_WARM = 3
-CHAIN_CONCENTRATION_LOW = 2
-CHAIN_PERSISTENCE_MIN = 3
-CHAIN_PERSISTENCE_FADING = 5
-
-# Technical scoring weights (chokepoint_scorer.py)
-TECH_MA_BULL = 8
-TECH_MA_BEAR = -5
-TECH_VOL_CONFIRM = 5
-TECH_RSI_STRONG = 5
-TECH_RSI_OVERSOLD = 3
-TECH_MACD_GOLDEN = 5
-TECH_ACCUM_HEALTHY = 5
-TECH_ACCUM_OVERHEAT = -8
 TECH_POSITIVE_RETURN_BONUS = 4

@@ -67,15 +67,7 @@
 | 6.2 | `config.py` 孤立条目 | `config.py` | 是否有已不被任何文件引用的配置项 |
 | 6.3 | 策略权重未注册 | `enhancer.py`, `config.py` | `apply_all_bonuses()` 中 `weight-key` 映射是否与 `config.py` 权重一致 |
 
-## 7. 行业链子系统
-
-| # | 检查项 | 关联文件 | 说明 |
-|---|--------|---------|------|
-| 7.1 | 相变检测阈值 | `industry_chain/trend_judge.py` | MA 对齐、缩量条件是否过于敏感或不敏感 |
-| 7.2 | 瓶颈节点匹配 | `industry_chain/chains.py`, `chokepoint_scorer.py` | 股票-节点映射逻辑是否正确 |
-| 7.3 | 独立入口集成 | `industry_chain_scanner.py` | 主入口与 `unified_scanner.py` 的交互/隔离是否清晰 |
-
-## 8. 性能
+## 7. 性能
 
 | # | 检查项 | 关联文件 | 说明 |
 |---|--------|---------|------|
