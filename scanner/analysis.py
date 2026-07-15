@@ -7,6 +7,12 @@ from scanner.config import (
     PULLBACK_MAX_TODAY_PCT,
     SHORT_TERM_MIN_TODAY_PCT,
     SHORT_TERM_MAX_TODAY_PCT,
+    ST_SMALL_CAP,
+    ST_MID_CAP,
+    ST_DIVERGE_UPPER_SHADOW,
+    ST_DIVERGE_CLOSE_WEAK,
+    ST_BOMB_HIGH,
+    ST_BOMB_CLOSE,
     MOMENTUM_WEIGHTS,
     NEW_FACE_WEIGHTS,
     PULLBACK_WEIGHTS,
@@ -862,10 +868,16 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
         score += W["no_crash"]
         dims["st_no_crash"] = W["no_crash"]
 
-    if stock.value >= 10000:
-        score += W["value_gte_10000"]
-    elif stock.value >= 5000:
-        score += W["value_gte_5000"]
+    # 超短偏好小市值：流通盘轻、拉升阻力小（market_cap 单位：亿元，流通市值优先）
+    if stock.market_cap > 0:
+        if stock.market_cap <= ST_SMALL_CAP:
+            score += W["value_small_cap"]
+            dims["st_value_small"] = W["value_small_cap"]
+        elif stock.market_cap <= ST_MID_CAP:
+            score += W["value_mid_cap"]
+            dims["st_value_mid"] = W["value_mid_cap"]
+        # 超大市值(>ST_MID_CAP)超短弹性差，不加分
+    # market_cap<=0 视为未知，不加分
 
     rank = stock.rank
     if rank <= 10:
@@ -902,7 +914,31 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
             score += W["macd_bonus"]
             dims["st_macd"] = round(macd_val["histogram"], 4)
 
-    trend = "放量启动" if vol_ratio > 1.3 else "温和放量" if vol_ratio > 1.0 else "缩量"
+    # 弱转强（分歧转一致）：昨日大分歧/烂板/炸板 + 今日在 2~8% 内转强
+    yest_divergence = False
+    if len(historical_kline) >= 2:
+        yest = historical_kline[-1]
+        yo = yest.get("open", 0)
+        yh = yest.get("high", 0)
+        yc = yest.get("close", 0)
+        if yc > 0:
+            upper_shadow = (yh - max(yo, yc)) / yc
+            close_to_high = yc / yh - 1 if yh > 0 else 0
+            yest_divergence = (upper_shadow > ST_DIVERGE_UPPER_SHADOW
+                                and close_to_high < ST_DIVERGE_CLOSE_WEAK)
+            prev_close = historical_kline[-2].get("close", 0)
+            if prev_close > 0 and (yh / prev_close - 1) >= ST_BOMB_HIGH and (yc / prev_close - 1) < ST_BOMB_CLOSE:
+                yest_divergence = True  # 曾触板但收盘大回落 = 炸板/烂板
+    gap_pct, gap_pts = _detect_gap_up(stock.current, kline, today_str)
+    if yest_divergence:
+        score += W["st_weak_to_strong"]
+        dims["st_weak_to_strong"] = W["st_weak_to_strong"]
+        if gap_pts > 0:
+            score += W["st_wts_gap"]
+            dims["st_wts_gap"] = W["st_wts_gap"]
+        trend = "弱转强"
+    else:
+        trend = "放量启动" if vol_ratio > 1.3 else "温和放量" if vol_ratio > 1.0 else "缩量"
 
     return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
                         volume_ratio=round(vol_ratio, 2), bottom_confirmed=False,

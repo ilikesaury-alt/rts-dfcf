@@ -22,6 +22,7 @@ from scanner.api import (
 from scanner.candidate_pool import ScanSession
 from scanner.config import (
     now_beijing,
+    YI,
     FIRST_BREAKOUT_BONUS,
     FIRST_BREAKOUT_RANK_CHANGE,
     FIRST_BREAKOUT_VOL_RATIO,
@@ -312,6 +313,9 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         cap_current = cap_data.get("current", 0)
         if cap_current and s.current == 0:
             s.current = cap_current
+        cmc = cap_data.get("circ_market_cap") or cap_data.get("market_cap", 0)
+        if cmc > 0:
+            s.market_cap = cmc / YI  # 转亿元（流通市值优先）
         if s.current > 0 and s.current > MAX_STOCK_PRICE:
             continue
         mc = cap_data.get("market_cap", 0)

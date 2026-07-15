@@ -12,6 +12,7 @@ class StockInfo:
     rank_change: int
     rank: int
     source_tag: str = "xueqiu"
+    market_cap: float = 0.0  # 流通市值（亿元），由 orchestrator 富集
 
 
 @dataclass

@@ -4,11 +4,12 @@ from scanner.models import StockInfo
 from tests.helpers import _kline
 
 
-def _stock(percent=5.0, rank_change=1500, value=8000, current=15.0, rank=10):
+def _stock(percent=5.0, rank_change=1500, value=8000, current=15.0, rank=10, market_cap=0.0):
     return StockInfo(
         symbol="300999", name="测试", code="300999",
         percent=percent, current=current,
         value=value, rank_change=rank_change, rank=rank,
+        market_cap=market_cap,
     )
 
 
@@ -319,5 +320,54 @@ class TestAnalyzeShortTerm:
         result = analyze_short_term(_stock(percent=5.0, rank=50), kline)
         assert result is not None
         # rank>40: st_rank not recorded (no bonus/penalty)
+
+    def _wts_kline(self, yesterday_high, yesterday_close, prev_close, yesterday_pct):
+        # 6 根 K 线：末根为昨日、倒数第二根为前日收盘基准
+        bars = [
+            {"date": "2026-01-01", "open": 9.8, "high": 10.1, "low": 9.7, "close": 10.0, "volume": 1.0, "percent": 2.0},
+            {"date": "2026-01-02", "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1.0, "percent": 0.0},
+            {"date": "2026-01-03", "open": 10.0, "high": 10.3, "low": 9.8, "close": 10.0, "volume": 1.0, "percent": 0.0},
+            {"date": "2026-01-04", "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1.0, "percent": 0.0},
+            {"date": "2026-01-05", "open": 10.0, "high": 10.2, "low": 9.9, "close": prev_close, "volume": 1.0, "percent": 0.0},
+            {"date": "2026-01-06", "open": 10.0, "high": yesterday_high, "low": 9.8,
+             "close": yesterday_close, "volume": 2.0, "percent": yesterday_pct},
+        ]
+        return bars
+
+    def test_weak_to_strong_bomb_detected(self):
+        # 昨日曾触板(高/前收-1=20%)但收盘仅+5% → 炸板/烂板；今日高开转强
+        kline = self._wts_kline(yesterday_high=12.0, yesterday_close=10.5, prev_close=10.0, yesterday_pct=5.0)
+        result = analyze_short_term(_stock(percent=5.0, rank=5, current=11.5), kline)
+        assert result is not None
+        assert result.dimensions.get("st_weak_to_strong") == 8
+        assert result.dimensions.get("st_wts_gap") == 4   # 今日高开(gap_pts>0)
+        assert result.trend == "弱转强"
+
+    def test_no_weak_to_strong_when_strong_close(self):
+        # 昨日小上影且收盘强势 → 非分歧，不触发弱转强
+        kline = self._wts_kline(yesterday_high=10.3, yesterday_close=10.25, prev_close=10.0, yesterday_pct=2.5)
+        result = analyze_short_term(_stock(percent=5.0, rank=5, current=10.26), kline)
+        assert result is not None
+        assert "st_weak_to_strong" not in result.dimensions
+        assert result.trend != "弱转强"
+
+    def test_small_cap_preferred(self):
+        kline = _kline([5, 3, 6, 2, 4])
+        result = analyze_short_term(_stock(percent=5.0, rank=5, market_cap=80), kline)
+        assert result is not None
+        assert result.dimensions.get("st_value_small") == 6
+
+    def test_mid_cap_small_bonus(self):
+        kline = _kline([5, 3, 6, 2, 4])
+        result = analyze_short_term(_stock(percent=5.0, rank=5, market_cap=150), kline)
+        assert result is not None
+        assert result.dimensions.get("st_value_mid") == 2
+
+    def test_large_cap_no_value_bonus(self):
+        kline = _kline([5, 3, 6, 2, 4])
+        result = analyze_short_term(_stock(percent=5.0, rank=5, market_cap=400), kline)
+        assert result is not None
+        assert "st_value_small" not in result.dimensions
+        assert "st_value_mid" not in result.dimensions
 
 

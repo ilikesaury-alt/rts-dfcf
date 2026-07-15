@@ -27,6 +27,14 @@ PULLBACK_MAX_TODAY_PCT = 2.0
 SHORT_TERM_MIN_TODAY_PCT = 2.0
 SHORT_TERM_MAX_TODAY_PCT = 8.0
 
+# 弱转强（分歧转一致）判定阈值
+ST_SMALL_CAP = 100          # 流通市值 ≤100亿 视为小盘（超短偏好）
+ST_MID_CAP = 300            # 100~300亿 中盘，>300亿 超短弹性差不加分
+ST_DIVERGE_UPPER_SHADOW = 0.04   # 昨日上影线比例阈值
+ST_DIVERGE_CLOSE_WEAK = 0.03     # 收盘/最高 - 1 < 此值 视为未封住高位
+ST_BOMB_HIGH = 0.18              # 昨日最高/前收 - 1 ≥ 此值 视为曾触板（创业板≈20%）
+ST_BOMB_CLOSE = 0.10             # 昨日收盘/前收 - 1 < 此值 视为收盘大回落（炸板/烂板）
+
 # Vol-rank combo scoring thresholds
 VOL_RANK_VOL_THRESHOLD = 1.5
 VOL_RANK_STRONG_RC = 2000
@@ -183,8 +191,10 @@ SHORT_TERM_WEIGHTS: dict[str, int] = {
     "vol_surge": 12,
     "vol_low": -10,
     "no_crash": 10,
-    "value_gte_10000": 2,
-    "value_gte_5000": 1,
+    "value_small_cap": 6,
+    "value_mid_cap": 2,
+    "st_weak_to_strong": 8,
+    "st_wts_gap": 4,
     "rsi_bonus": 3,
     "kdj_bonus": 3,
     "macd_bonus": 3,

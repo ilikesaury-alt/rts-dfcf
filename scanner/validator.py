@@ -367,7 +367,10 @@ def validate_short_term(stock, kline_summary, closes: list[float],
         elif closes[-1] < ma5:
             ma_bonus = V_ST_MA_BROKEN
 
-    total = vol_bonus + sec_bonus + rank_bonus + ma_bonus
+    # 弱转强作为第 4 个软维度：真弱转强即便板块/排名/MA 全不达标也应放行
+    wts_bonus = kline_summary.dimensions.get("st_weak_to_strong", 0)
+
+    total = vol_bonus + sec_bonus + rank_bonus + ma_bonus + wts_bonus
 
     details: dict[str, int | float | str] = {
         "v_st_vol": vol_bonus,
@@ -376,9 +379,10 @@ def validate_short_term(stock, kline_summary, closes: list[float],
         "v_st_sector_count": cluster_count,
         "v_st_rank": rank_bonus,
         "v_st_ma": ma_bonus,
+        "v_st_weak": wts_bonus,
     }
 
-    pos_dims = sum(1 for b in (sec_bonus, rank_bonus, ma_bonus) if b > 0)
+    pos_dims = sum(1 for b in (sec_bonus, rank_bonus, ma_bonus, wts_bonus) if b > 0)
     passed = pos_dims >= 1
 
     return passed, total, details

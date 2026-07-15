@@ -344,6 +344,22 @@ class TestValidateShortTerm:
         assert passed
         assert dims["v_st_rank"] == V_ST_RANK_TOP10
 
+    def test_weak_to_strong_passes_when_other_dims_negative(self):
+        # 板块<3、排名>30、MA破位 全不达标，但弱转强应作为第4软维度放行
+        k = _kline([5, 3, 6, 2, 4], volumes=[1.0, 1.0, 1.0, 1.0, 1.2])
+        closes = [c["close"] for c in k[:-1]]
+        ks = KlineSummary(
+            trend="弱转强", accumulated_pct=5.0, volume_ratio=1.2,
+            bottom_confirmed=False, score=18, avg_volume=1.0,
+            dimensions={"st_weak_to_strong": 8},
+        )
+        stock = StockInfo(symbol="300999", name="测试", code="300999",
+                          percent=5.0, current=15.0, value=8000,
+                          rank_change=1500, rank=50)
+        passed, total, dims = validate_short_term(stock, ks, closes, k[:-1], None)
+        assert passed
+        assert dims["v_st_weak"] == 8
+
     def test_hot_sector_bonus(self):
         k = _kline([5, 3, 6, 2, 4], volumes=[1.0, 1.2, 1.5, 1.8, 2.0])
         closes = [c["close"] for c in k[:-1]]
