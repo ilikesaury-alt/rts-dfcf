@@ -12,11 +12,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-An A-share stock momentum scanner that monitors Xueqiu 雪球 surge ranking API (primary) with Tonghuashun 同花顺 热榜 as cross-reference in real-time during trading hours. It scores and recommends ChiNext (创业板, 300xxx) stocks using three strategies:
+An A-share stock momentum scanner that monitors Xueqiu 雪球 surge ranking API (primary) with Tonghuashun 同花顺 热榜 as cross-reference in real-time during trading hours. It scores and recommends ChiNext (创业板, 300xxx) stocks using four strategies:
 
 - **New Face** (bottom breakout): First-time appearance in surge list within 3 days, today_pct ≤ 8% — looks for early-stage capital inflows with volume confirmation
 - **Momentum** (trend continuation): Stocks with 10%+ 5-day gain ≤ 8% today — fills the gap between New Face and Old Face (Old Face was removed 2026-06-10)
 - **Pullback** (回调介入, 2026-06-22): Strong-momentum stocks (accum ≥ 5%) on a pullback day (-8% < today_pct ≤ 2%) — low-entry reversion play
+- **Short Term** (超短次日, 2026-07-15): Today's gainer (2-8%) with volume surge and sector activity — buy today, sell next day
 
 A companion tool `chain_watch.py` monitors the same surge list for industrial chain (产业链) trend signals — detects which chains are heating up (AI算力/半导体/新能源车/光伏储能/机器人/低空经济/军工) and scores individual stocks by MA alignment, pullback health, volume trend, and bottleneck position.
 
@@ -28,7 +29,7 @@ A companion tool `chain_watch.py` monitors the same surge list for industrial ch
   → batch quote API (Xueqiu market cap)
   → DB lookup (check if new face)
   → fetch K-line (DB cache or Xueqiu API, 45-day)
-  → scoring (new_face → momentum → pullback → known_new_face)
+   → scoring (new_face → momentum → short_term → pullback → known_new_face)
   → enhance (sector cluster, rank trend, list momentum, sentiment, RPS, indicators)
   → display + CSV log
 ```
@@ -63,15 +64,17 @@ A companion tool `chain_watch.py` monitors the same surge list for industrial ch
 ### Key Thresholds
 
 - No limit (all GEM stocks from surge list), New face lookback: 3 days
-- New face min score: 18, Momentum min score: 15, Pullback min score: 18
+- New face min score: 18, Momentum min score: 15, Pullback min score: 18, Short term min score: 15
 - 小而美: Max market cap 300亿, Max price 100元
 - New Face filter: today_pct ≤ 8% (hard reject via MAX_NEW_FACE_TODAY_PCT)
 - Momentum filter: today_pct ≤ 8% (hardcoded), accum ≥ 10%, no crash day
 - Pullback filter: today_pct ≤ 2% and > -8%, accum ≥ 5%, no crash day
+- Short term filter: today_pct 2% ~ 8%, kline ≥ 5 bars
 - Scoring: bottom confirmation +8~10, sector cluster up to +8, rank trend -4~+10
 - New face scoring: today_pct range (+2~+20), accumulated range (-15~+10), volume (+12~+15), vol_rank_combo (+8~+15)
 - Momentum scoring: today_pct range (+2~+26), accumulated range (-15~+19), volume (-5~+5), no_crash (+13)
 - Pullback scoring: today_pct range (+5~+15), accumulated range (-10~+18), volume (0~+12), no_crash (+13), MA support (+12), rank (+5~+8), RSI/MACD (+3~+5)
+- Short term scoring: today_pct (+10~+20), accumulated (-5~+10), volume (-5~+12), no_crash (+10), rank (-3~+8), MA support (-5~+5), RSI/KDJ/MACD (-3~+3)
 - Sentiment bonus: boiling +5, warm +2, cool -2, frozen -5 (from surge list stats)
 - RPS: within-category 5d-return percentile ranking, top 20% +4, mid 60% +2, bottom 30% -3
 - Indicators: RSI(6)/KDJ/MACD per-side signal, each +3 base weight, up to +9 per stock
@@ -81,7 +84,7 @@ A companion tool `chain_watch.py` monitors the same surge list for industrial ch
 
 - `unified_scanner.py` — Single entry point — Xueqiu primary + Tonghuashun cross-validation
 - `scanner/orchestrator.py` — Core scan orchestration (~350 lines, pipeline in one file)
-- `scanner/analysis.py` — New Face, Momentum & Pullback scoring engines
+- `scanner/analysis.py` — New Face, Momentum, Pullback & Short Term scoring engines
 - `scanner/config.py` — All thresholds, weights, and dimension-to-key mappings
 - `scanner/candidate_pool.py` — ScanSession with list_presence tracking
 - `scanner/enhancer.py` — Bonus application (sector, list momentum, sentiment, RPS, indicators)

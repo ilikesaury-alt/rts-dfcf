@@ -9,15 +9,15 @@
 
 ## Project Structure
 
-A-share stock momentum scanner merging Xueqiu + Tonghuashun surge ranking APIs. Scores ChiNext (300xxx) stocks using "new face" / "momentum" / "pullback" strategies.
+A-share stock momentum scanner merging Xueqiu + Tonghuashun surge ranking APIs. Scores ChiNext (300xxx) stocks using "new face" / "momentum" / "pullback" / "short_term" strategies.
 
 ```
 unified_scanner.py        # Single entry point (dual-source fusion)
 industry_chain_scanner.py # Industry chain scanner entry point
 scanner/
   orchestrator.py         # Core scan pipeline
-  analysis.py             # Scoring engines (new_face, momentum, pullback)
-  validator.py            # Cross-validation (3-dim check per strategy)
+  analysis.py             # Scoring engines (new_face, momentum, pullback, short_term)
+  validator.py            # Cross-validation (3-dim check per strategy, 1-dim for short_term)
   config.py               # All thresholds and weights
   api.py                  # Xueqiu API calls (biaosheng, kline, market cap)
   ths_api.py              # Tonghuashun hot list API calls
@@ -45,11 +45,12 @@ tests/                    # pytest test suite
 ## Architecture Notes
 
 - Scanner filters: GEM stocks only (300xxx), excludes ST/*ST, HK stocks, market cap >500亿, price >200元
-- Three strategies: new_face (bottom breakout), momentum (trend continuation), pullback (reversion)
-- Cross-validation (`validator.py`): each candidate must pass ≥2 of 3 independent dimensions before final acceptance
+- Four strategies: new_face (bottom breakout), momentum (trend continuation), pullback (reversion), short_term (next-day sell)
+- Cross-validation (`validator.py`): each candidate must pass ≥2 of 3 independent dimensions before final acceptance (short_term uses ≥1 of 4 dimensions)
   - **new_face**: indicator convergence (RSI<30 + MACD golden cross + KDJ K<20 & K>D), higher-low structure, sector resonance
   - **momentum**: MA5>10>20 alignment (penalty -5 if broken), no RSI divergence, volume uniformity (5-day window)
   - **pullback**: MA20 trending up (>+0.5%), volume shrinkage (<0.6x), sector still active (≥3 same-sector in list)
+  - **short_term**: vol_ratio > 1.0 hard gate, soft checks: sector cluster, rank ≤30, MA5>MA10 support
 - Priority chain: primary strategy attempted first; if cross-validation fails, falls through to next strategy
 - Industry chain scanner (`industry_chain/`): independent subsystem implementing a chokepoint investment thesis — detects chain phases (潜伏→形成→成长→爆发→消退), verifies bottleneck node participation, picks technically strong bottleneck stocks from active chains
 
