@@ -151,6 +151,30 @@ class TestValidateMomentum:
         passed, total, dims = validate_momentum(_stock(), None, closes, k[:-1], None)
         assert not passed
 
+    def test_divergence_medium_requires_other_dims(self, monkeypatch):
+        # 中等处置：顶背离(-10)不计入正维度，需 MA 多头 + 量能均匀 两个其它正维度才放行
+        pcts = [0.5]*5 + [1.0]*5 + [1.5]*5 + [2, 2, 2.5, 3, 3]
+        k = _kline(pcts, volumes=[1.0]*20)
+        closes = [c["close"] for c in k[:-1]]
+
+        # 背离 + MA 多头 + 量能均匀 → 仍通过
+        monkeypatch.setattr("scanner.validator._mo_divergence",
+                            lambda c, h: (-10, "bear_divergence"))
+        monkeypatch.setattr("scanner.validator._mo_ma_alignment",
+                            lambda c: (V_MO_MA_FULL, "full"))
+        monkeypatch.setattr("scanner.validator._mo_volume_uniformity",
+                            lambda h: (5, "uniform"))
+        passed, total, dims = validate_momentum(_stock(), None, closes, k[:-1], None)
+        assert passed, f"背离时其它两维为正应通过, total={total}, dims={dims}"
+
+        # 背离 + MA 破位 + 量能爆量 → 不通过
+        monkeypatch.setattr("scanner.validator._mo_ma_alignment",
+                            lambda c: (0, "broken"))
+        monkeypatch.setattr("scanner.validator._mo_volume_uniformity",
+                            lambda h: (-8, "spike"))
+        passed2, total2, dims2 = validate_momentum(_stock(), None, closes, k[:-1], None)
+        assert not passed2, f"背离且无可补偿正维度应不通过, total={total2}, dims={dims2}"
+
 
 class TestValidatePullbackHelpers:
 

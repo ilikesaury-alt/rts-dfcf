@@ -239,6 +239,9 @@ def validate_momentum(stock, kline_summary, closes: list[float],
 
     total = ma_bonus + div_bonus + vol_bonus
 
+    # 中等处置：_mo_divergence 仅返回 0（无背离）或 -10（顶背离），从不计入正维度。
+    # 因此出现顶背离时，候选必须通过「MA 多头 + 量能均匀」两个其它正维度（pos_dims>=2）才放行，
+    # 背离本身不会单独否决候选，但会强制其它维度补偿（STRATEGY.md 动量「中等」策略）。
     pos_dims = sum(1 for b in (ma_bonus, div_bonus, vol_bonus) if b > 0)
     passed = pos_dims >= 2
 

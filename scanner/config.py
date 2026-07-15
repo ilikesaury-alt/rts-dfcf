@@ -22,7 +22,7 @@ YI = 100_000_000
 MAX_MARKET_CAP = 500 * YI
 MAX_STOCK_PRICE = 200.0
 MAX_NEW_FACE_TODAY_PCT = 12
-MAX_MOMENTUM_TODAY_PCT = 15
+MAX_MOMENTUM_TODAY_PCT = 8
 PULLBACK_MAX_TODAY_PCT = 2.0
 SHORT_TERM_MIN_TODAY_PCT = 2.0
 SHORT_TERM_MAX_TODAY_PCT = 8.0
@@ -112,9 +112,9 @@ NEW_FACE_WEIGHTS: dict[str, int] = {
     "today_pct_2_6": 20,
     "today_pct_1_2": 10,
     "today_pct_0_5_1": 5,
-    "today_pct_lt_0_5": 2,
-    "today_pct_6_7": 12,
-    "today_pct_7_12": 8,
+    "today_pct_lt_0_5": 5,
+    "today_pct_6_8": 5,
+    "today_pct_gt_8": -15,
     "accum_neg5_10": 10,
     "accum_lt_neg5": 0,
     "accum_10_15": 5,
@@ -132,13 +132,12 @@ NEW_FACE_WEIGHTS: dict[str, int] = {
 }
 
 MOMENTUM_WEIGHTS: dict[str, int] = {
-    "today_pct_2_6": 26,
+    "today_pct_2_6": 20,
     "today_pct_1_2": 10,
     "today_pct_0_5_1": 5,
-    "today_pct_lt_0_5": 2,
-    "today_pct_6_7": 15,
-    "today_pct_7_12": 10,
-    "accum_10_15": 19,
+    "today_pct_lt_0_5": 5,
+    "today_pct_6_8": 5,
+    "accum_10_15": 15,
     "accum_15_20": 10,
     "accum_20_30": 5,
     "accum_gte_30": -15,

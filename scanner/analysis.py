@@ -280,6 +280,7 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
     avg_vol = sum(vol_window) / max(len(vol_window), 1)
     today_vol = volumes[-1] if volumes else 0
     vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
+    vol_ratio = round(vol_ratio, 2)
     recent_3_pcts = pcts[-3:] if len(pcts) >= 3 else pcts
     no_heavy_loss = all(p > _BOTTOM_MAX_LOSS for p in recent_3_pcts)
     volume_surge = vol_ratio > _BOTTOM_VOL_SURGE
@@ -304,7 +305,17 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
     # Score and dims in one pass
     dims: dict[str, int | float] = {}
 
-    today_score, today_dim_key, today_dim_val = _score_today_pct(today_pct, W, "new_face")
+    # 今日涨幅 >= 6% 由显式分支处理（对齐 STRATEGY.md：6~8%→+5、>8%→-15），
+    # 不进入 _score_today_pct，避免其 today_pct_6_7 / today_pct_7_12 分支被覆盖却仍被读取。
+    if today_pct >= 6:
+        if today_pct > 8:
+            today_score = W["today_pct_gt_8"]
+        else:
+            today_score = W["today_pct_6_8"]
+        today_dim_key = "new_face_today_pct"
+        today_dim_val = today_score
+    else:
+        today_score, today_dim_key, today_dim_val = _score_today_pct(today_pct, W, "new_face")
     score = today_score
     dims[today_dim_key] = today_dim_val
 
@@ -393,7 +404,7 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
     else:
         accumulated = sum(pcts[-5:])
 
-    if accumulated < 8:
+    if accumulated < 10:
         return None
 
     volumes = [k["volume"] for k in kline]
@@ -401,6 +412,7 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
     avg_vol = sum(vol_window) / max(len(vol_window), 1)
     today_vol = volumes[-1] if volumes else 0
     vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
+    vol_ratio = round(vol_ratio, 2)
 
     score = 0
     dims: dict[str, int | float] = {}
@@ -408,7 +420,14 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
     if today_pct > MAX_MOMENTUM_TODAY_PCT:
         return None
 
-    today_score, today_dim_key, today_dim_val = _score_today_pct(today_pct, W, "momentum")
+    # 今日涨幅 >= 6% 由显式分支处理（对齐 STRATEGY.md：6~8%→+5；>8% 已被上游门限跳过），
+    # 不进入 _score_today_pct，避免其 today_pct_6_7 / today_pct_7_12 分支被覆盖却仍被读取。
+    if today_pct >= 6:
+        today_score = W["today_pct_6_8"]
+        today_dim_key = "momentum_today_pct"
+        today_dim_val = today_score
+    else:
+        today_score, today_dim_key, today_dim_val = _score_today_pct(today_pct, W, "momentum")
     score += today_score
     dims[today_dim_key] = today_dim_val
 

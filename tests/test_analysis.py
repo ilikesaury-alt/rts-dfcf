@@ -67,8 +67,29 @@ class TestAnalyzeNewFace:
         assert "new_face_ma_bull" in result.dimensions
         assert result.dimensions["new_face_ma_bull"] >= 3
 
-class TestAnalyzeMomentum:
+    def test_today_pct_6_8_scores_low(self):
+        # STRATEGY.md: 新面孔 6%~8% → +5（偏高但仍可接受）
+        kline = _kline([1, 2, 1, 2, 3])
+        result = analyze_new_face(_stock(percent=7, rank_change=2000, value=12000), kline)
+        assert result is not None
+        assert result.dimensions["new_face_today_pct"] == 5
 
+    def test_today_pct_gt_8_penalized_not_rejected(self):
+        # STRATEGY.md: 新面孔 >8% → -15（空间不足），但 >12% 才直接跳过
+        kline = _kline([1, 2, 1, 2, 3])
+        result = analyze_new_face(_stock(percent=10, rank_change=2000, value=12000), kline)
+        assert result is not None
+        assert result.dimensions["new_face_today_pct"] == -15
+
+    def test_today_pct_lt_0_5_scores_five(self):
+        # STRATEGY.md: 新面孔 <1% → +5（含 <0.5%）
+        kline = _kline([1, 2, 1, 2, 3])
+        result = analyze_new_face(_stock(percent=0.5, rank_change=2000, value=12000), kline)
+        assert result is not None
+        assert result.dimensions["new_face_today_pct"] == 5
+
+
+class TestAnalyzeMomentum:
     def test_golden_path_returns_scored_candidate(self):
         kline = _kline([2, 3, 4, 5, 3], volumes=[1.0, 1.0, 1.2, 1.1, 1.0])
         result = analyze_momentum(_stock(percent=4, rank_change=2000, value=12000), kline)
@@ -113,6 +134,32 @@ class TestAnalyzeMomentum:
         result = analyze_momentum(_stock(percent=3, rank_change=2000, value=12000), kline)
         assert result is not None
         assert "momentum_ma_bull" in result.dimensions
+
+    def test_today_pct_6_8_scores_low(self):
+        # STRATEGY.md: 动量 6%~8% → +5
+        kline = _kline([2, 2, 2, 2, 2])
+        result = analyze_momentum(_stock(percent=7, rank_change=2000, value=12000), kline)
+        assert result is not None
+        assert result.dimensions["momentum_today_pct"] == 5
+
+    def test_today_pct_gt_8_skipped(self):
+        # STRATEGY.md: 动量 >8% 直接跳过
+        kline = _kline([2, 2, 2, 2, 2])
+        assert analyze_momentum(_stock(percent=9), kline) is None
+
+    def test_today_pct_lt_0_5_scores_five(self):
+        # STRATEGY.md: 动量 <1% → +5（含 <0.5%）
+        kline = _kline([2, 2, 2, 2, 2])
+        result = analyze_momentum(_stock(percent=0.3, rank_change=2000, value=12000), kline)
+        assert result is not None
+        assert result.dimensions["momentum_today_pct"] == 5
+
+    def test_accumulated_10_15_scores_fifteen(self):
+        # STRATEGY.md: 动量 5日累计 10%~15% → +15
+        kline = _kline([2, 2, 2, 2, 2])
+        result = analyze_momentum(_stock(percent=4, rank_change=2000, value=12000), kline)
+        assert result is not None
+        assert result.dimensions["momentum_accumulated"] == 15
 
 
 class TestAnalyzePullback:
