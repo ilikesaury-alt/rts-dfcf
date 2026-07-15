@@ -117,6 +117,24 @@ class TestClassifyCategory:
         from scanner.orchestrator import _classify_category
         assert _classify_category(self._stock(3), False, None, None, None) is None
 
+    def test_known_stock_up_day_prefers_short_term(self):
+        from scanner.orchestrator import _classify_category
+        c_mo = _make_candidate("300001")
+        c_st = _make_candidate("300002")
+        assert _classify_category(self._stock(3), False, None, c_mo, c_st, c_st) == "short_term"
+
+    def test_known_stock_down_day_ignores_short_term(self):
+        from scanner.orchestrator import _classify_category
+        c_pb = _make_candidate("300001", score=20)
+        c_st = _make_candidate("300002")
+        assert _classify_category(self._stock(-2), False, c_pb, None, None, c_st) == "pullback"
+
+    def test_new_stock_prefers_short_term_over_momentum(self):
+        from scanner.orchestrator import _classify_category
+        c_mo = _make_candidate("300001")
+        c_st = _make_candidate("300002")
+        assert _classify_category(self._stock(5), True, None, c_mo, None, c_st) == "short_term"
+
 
 class TestScoreStockKnownNewFace:
     """端到端锁定 P0：老股仅命中 new_face 时不应被丢弃。"""
@@ -140,7 +158,7 @@ class TestScoreStockKnownNewFace:
         stock = StockInfo(symbol="300001", name="Test", code="300001",
                           percent=3.0, current=10.0, value=10000,
                           rank_change=1000, rank=1)
-        nf, mo, pb = o._score_stock(
+        nf, mo, pb, st = o._score_stock(
             stock, conn=None, klines={}, today="2026-06-18",
             session_state=ScanSession(), clusters=None,
         )

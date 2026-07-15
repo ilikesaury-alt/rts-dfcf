@@ -16,6 +16,7 @@ NEW_FACE_LOOKBACK_DAYS = 3
 NEW_FACE_MIN_SCORE = 22
 MOMENTUM_MIN_SCORE = 16
 PULLBACK_MIN_SCORE = 18
+SHORT_TERM_MIN_SCORE = 15
 
 YI = 100_000_000
 MAX_MARKET_CAP = 500 * YI
@@ -23,6 +24,8 @@ MAX_STOCK_PRICE = 200.0
 MAX_NEW_FACE_TODAY_PCT = 12
 MAX_MOMENTUM_TODAY_PCT = 15
 PULLBACK_MAX_TODAY_PCT = 2.0
+SHORT_TERM_MIN_TODAY_PCT = 2.0
+SHORT_TERM_MAX_TODAY_PCT = 8.0
 
 # Vol-rank combo scoring thresholds
 VOL_RANK_VOL_THRESHOLD = 1.5
@@ -166,6 +169,28 @@ PULLBACK_WEIGHTS: dict[str, int] = {
     "rank_top30": 5,
     "kdj_bonus": 3,
     "bollinger_mid_support": 5,
+}
+
+SHORT_TERM_WEIGHTS: dict[str, int] = {
+    "today_pct_2_4": 15,
+    "today_pct_4_6": 20,
+    "today_pct_6_8": 12,
+    "accum_5_10": 10,
+    "accum_10_15": 15,
+    "accum_15_20": 8,
+    "accum_gte_20": -5,
+    "vol_healthy": 8,
+    "vol_surge": 12,
+    "vol_low": -10,
+    "no_crash": 10,
+    "value_gte_10000": 2,
+    "value_gte_5000": 1,
+    "rsi_bonus": 3,
+    "kdj_bonus": 3,
+    "macd_bonus": 3,
+    "rank_top10": 8,
+    "rank_top20": 5,
+    "rank_top30": 3,
 }
 
 # Bonus constants
@@ -312,6 +337,20 @@ V_NF_VOLUME_CONFIRM = 5
 # Pullback — added in P0
 V_PB_BOLLINGER_TOUCH = 5
 V_PB_BOLLINGER_MID = 2
+
+# Short term
+V_ST_VOL_HEALTHY = 8
+V_ST_VOL_SURGE = 12
+V_ST_VOL_WEAK = -8
+V_ST_SECTOR_HOT = 10
+V_ST_SECTOR_WARM = 5
+V_ST_SECTOR_COLD = 0
+V_ST_RANK_TOP10 = 8
+V_ST_RANK_TOP20 = 5
+V_ST_RANK_TOP30 = 2
+V_ST_RANK_LOW = -3
+V_ST_MA_SUPPORT = 5
+V_ST_MA_BROKEN = -5
 
 # Pullback 20-day gain penalty (late-stage lifecycle protection)
 PULLBACK_20D_GAIN_WARN = 40       # 20-day gain > 40% → warn

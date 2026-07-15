@@ -7,6 +7,11 @@ from scanner.config import (
     V_NF_SECTOR_STRONG,
     V_PB_SHRINK_NO,
     V_PB_SHRINK_YES,
+    V_ST_VOL_SURGE,
+    V_ST_VOL_HEALTHY,
+    V_ST_RANK_TOP10,
+    V_ST_SECTOR_HOT,
+    V_ST_MA_SUPPORT,
 )
 from scanner.models import KlineSummary, StockInfo
 from scanner.validator import (
@@ -23,6 +28,7 @@ from scanner.validator import (
     validate_momentum,
     validate_nf,
     validate_pullback,
+    validate_short_term,
 )
 
 
@@ -271,3 +277,110 @@ class TestValidateDispatch:
         assert not passed
         assert total == 0
         assert dims == {}
+
+    def test_dispatch_short_term(self):
+        k = _kline([5, 3, 6, 2, 4], volumes=[1.0, 1.2, 1.5, 1.8, 2.0])
+        closes = [c["close"] for c in k[:-1]]
+        ks = KlineSummary(
+            trend="放量上攻", accumulated_pct=10.0, volume_ratio=1.5,
+            bottom_confirmed=False, score=18, avg_volume=1.0,
+        )
+        passed, total, dims = validate(
+            "short_term", _stock(name="半导体测试"),
+            ks, closes, k[:-1], SEMICONDUCTOR_CLUSTER
+        )
+        assert isinstance(passed, bool)
+
+
+class TestValidateShortTerm:
+
+    def test_vol_ratio_below_1_rejected(self):
+        k = _kline([5, 3, 6, 2, 4], volumes=[1.0, 1.0, 1.0, 1.0, 0.5])
+        closes = [c["close"] for c in k[:-1]]
+        ks = KlineSummary(
+            trend="缩量", accumulated_pct=5.0, volume_ratio=0.5,
+            bottom_confirmed=False, score=18, avg_volume=1.0,
+        )
+        passed, total, dims = validate_short_term(_stock(), ks, closes, k[:-1], None)
+        assert not passed
+        assert dims["v_st_vol_gate"] == "fail"
+
+    def test_vol_surge_gives_bonus(self):
+        k = _kline([5, 3, 6, 2, 4], volumes=[0.5, 0.6, 0.7, 0.8, 3.0])
+        closes = [c["close"] for c in k[:-1]]
+        ks = KlineSummary(
+            trend="放量", accumulated_pct=5.0, volume_ratio=4.6,
+            bottom_confirmed=False, score=18, avg_volume=1.0,
+        )
+        passed, total, dims = validate_short_term(
+            _stock(name="半导体测试"), ks, closes, k[:-1],
+            SEMICONDUCTOR_CLUSTER
+        )
+        assert passed
+        assert dims["v_st_vol"] == V_ST_VOL_SURGE
+
+    def test_healthy_volume_gives_bonus(self):
+        k = _kline([5, 3, 6, 2, 4], volumes=[1.0, 1.0, 1.0, 1.0, 1.2])
+        closes = [c["close"] for c in k[:-1]]
+        ks = KlineSummary(
+            trend="温和放量", accumulated_pct=5.0, volume_ratio=1.2,
+            bottom_confirmed=False, score=18, avg_volume=1.0,
+        )
+        passed, total, dims = validate_short_term(_stock(), ks, closes, k[:-1], None)
+        assert passed
+        assert dims["v_st_vol"] == V_ST_VOL_HEALTHY
+
+    def test_top10_rank_bonus(self):
+        k = _kline([5, 3, 6, 2, 4], volumes=[1.0, 1.2, 1.5, 1.8, 2.0])
+        closes = [c["close"] for c in k[:-1]]
+        ks = KlineSummary(
+            trend="上攻", accumulated_pct=5.0, volume_ratio=1.5,
+            bottom_confirmed=False, score=18, avg_volume=1.0,
+        )
+        stock = StockInfo(symbol="300999", name="测试", code="300999",
+                          percent=5.0, current=15.0, value=8000,
+                          rank_change=1500, rank=5)
+        passed, total, dims = validate_short_term(stock, ks, closes, k[:-1], None)
+        assert passed
+        assert dims["v_st_rank"] == V_ST_RANK_TOP10
+
+    def test_hot_sector_bonus(self):
+        k = _kline([5, 3, 6, 2, 4], volumes=[1.0, 1.2, 1.5, 1.8, 2.0])
+        closes = [c["close"] for c in k[:-1]]
+        ks = KlineSummary(
+            trend="上攻", accumulated_pct=5.0, volume_ratio=1.5,
+            bottom_confirmed=False, score=18, avg_volume=1.0,
+        )
+        passed, total, dims = validate_short_term(
+            _stock(name="半导体测试"), ks, closes, k[:-1],
+            SEMICONDUCTOR_CLUSTER
+        )
+        assert passed
+        assert dims["v_st_sector"] == V_ST_SECTOR_HOT
+
+    def test_ma_support_bonus(self):
+        # Uptrend: rising closes so ma5 > ma10 and last close > ma5
+        pcts = [0.5] * 25
+        k = _kline(pcts, volumes=[1.0] * 25)
+        closes = [c["close"] for c in k[:-1]]
+        ks = KlineSummary(
+            trend="上攻", accumulated_pct=5.0, volume_ratio=1.5,
+            bottom_confirmed=False, score=18, avg_volume=1.0,
+        )
+        passed, total, dims = validate_short_term(_stock(), ks, closes, k[:-1], None)
+        assert passed
+        assert dims["v_st_ma"] == V_ST_MA_SUPPORT
+
+    def test_single_positive_dimension_passes(self):
+        # Only rank is positive, others neutral/cold — should still pass (pos_dims >= 1)
+        k = _kline([5, 3, 6, 2, 4], volumes=[1.0, 1.0, 1.0, 1.0, 1.2])
+        closes = [c["close"] for c in k[:-1]]
+        ks = KlineSummary(
+            trend="温和放量", accumulated_pct=5.0, volume_ratio=1.2,
+            bottom_confirmed=False, score=18, avg_volume=1.0,
+        )
+        stock = StockInfo(symbol="300999", name="测试", code="300999",
+                          percent=5.0, current=15.0, value=8000,
+                          rank_change=1500, rank=5)
+        passed, total, dims = validate_short_term(stock, ks, closes, k[:-1], None)
+        assert passed, f"single positive dim should pass, total={total}"

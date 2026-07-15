@@ -17,9 +17,12 @@ def _build_card(
     gem_total: int,
     filtered_large_cap: int = 0,
     current_rank_map: dict[str, int] | None = None,
+    short_term_list: list[Candidate] | None = None,
 ) -> dict:
     now = datetime.now().strftime("%H:%M")
-    all_c = new_faces + momentum + pullback_list
+    if short_term_list is None:
+        short_term_list = []
+    all_c = new_faces + momentum + pullback_list + short_term_list
 
     sec_cnt: dict[str, int] = {}
     for c in all_c:
@@ -28,7 +31,7 @@ def _build_card(
     hot_secs = sorted(sec_cnt.items(), key=lambda x: -x[1])[:3]
     sec_line = " | ".join(f"{s}({n})" for s, n in hot_secs)
 
-    header_text = f"**{now}** | 🟢新{len(new_faces)} 📈动{len(momentum)} 🔄回{len(pullback_list)}"
+    header_text = f"**{now}** | 🟢新{len(new_faces)} 📈动{len(momentum)} 🔄回{len(pullback_list)} 🔴超{len(short_term_list)}"
     if stale_candidates:
         header_text += f" ⏳掉{len(stale_candidates)}"
     if sec_line:
@@ -42,6 +45,7 @@ def _build_card(
         ("🆕 新面孔", new_faces),
         ("📈 动量延续", momentum),
         ("🔄 回调介入", pullback_list),
+        ("🔴 超短次日", short_term_list),
     ]
 
     first = True
@@ -96,8 +100,8 @@ def _build_card(
 
 
 def _extract_symbols(new_faces: list[Candidate], momentum: list[Candidate],
-                     pullback_list: list[Candidate]) -> set[str]:
-    return {c.stock.symbol for c in new_faces + momentum + pullback_list}
+                     pullback_list: list[Candidate], short_term_list: list[Candidate]) -> set[str]:
+    return {c.stock.symbol for c in new_faces + momentum + pullback_list + short_term_list}
 
 
 def push_feishu(
@@ -108,15 +112,19 @@ def push_feishu(
     gem_total: int,
     filtered_large_cap: int = 0,
     current_rank_map: dict[str, int] | None = None,
+    short_term_list: list[Candidate] | None = None,
 ) -> bool:
     global _last_push_time, _last_push_symbols
 
     if not FEISHU_WEBHOOK:
         return False
 
+    if short_term_list is None:
+        short_term_list = []
+
     import time
     now = time.time()
-    current_symbols = _extract_symbols(new_faces, momentum, pullback_list)
+    current_symbols = _extract_symbols(new_faces, momentum, pullback_list, short_term_list)
     has_change = current_symbols != _last_push_symbols
 
     if not has_change and (now - _last_push_time) < FEISHU_MIN_INTERVAL:
@@ -124,7 +132,8 @@ def push_feishu(
 
     try:
         card = _build_card(new_faces, momentum, pullback_list, stale_candidates,
-                           gem_total, filtered_large_cap, current_rank_map)
+                           gem_total, filtered_large_cap, current_rank_map,
+                           short_term_list)
         resp = requests.post(FEISHU_WEBHOOK,
                              json={"msg_type": "interactive", "card": card},
                              timeout=10)

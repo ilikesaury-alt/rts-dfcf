@@ -117,7 +117,8 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             last_ranks: dict[str, int] | None = None,
             stale_candidates: list[Candidate] | None = None,
             pullback_list: list[Candidate] | None = None,
-            current_rank_map: dict[str, int] | None = None):
+            current_rank_map: dict[str, int] | None = None,
+            short_term_list: list[Candidate] | None = None):
     if last_ranks is None:
         last_ranks = {}
     if current_rank_map is None:
@@ -126,11 +127,13 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if pullback_list is None:
         pullback_list = []
+    if short_term_list is None:
+        short_term_list = []
 
     print(f"{'='*96}")
     print(f"  创业板飙升榜监控  ({now})")
 
-    all_c = new_faces + pure_momentum + pullback_list
+    all_c = new_faces + pure_momentum + pullback_list + short_term_list
     sec_counts: dict[str, int] = {}
     for c_ in all_c:
         if c_.sector:
@@ -140,7 +143,7 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
     filter_info = f" | 过滤{filtered_large_cap}只" if filtered_large_cap else ""
     cap_count = sum(1 for c in all_c if c.market_cap > 0)
     cap_status = f"市值数据{cap_count}/{len(all_c)}" if all_c else "暂无候选"
-    print(f"  创业板共 {gem_total} 只 | 新{len(new_faces)}动{len(pure_momentum)}回{len(pullback_list)}{filter_info} | {sec_line} | {cap_status} | 每{interval}s刷新")
+    print(f"  创业板共 {gem_total} 只 | 新{len(new_faces)}动{len(pure_momentum)}回{len(pullback_list)}超{len(short_term_list)}{filter_info} | {sec_line} | {cap_status} | 每{interval}s刷新")
     print(f"  小而美: 市值≤{int(MAX_MARKET_CAP/YI)}亿 股价≤{MAX_STOCK_PRICE}元")
     print(f"{'='*96}")
 
@@ -201,6 +204,13 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
         for c in pullback_list:
             _print_row(c, icon="○")
 
+    if short_term_list:
+        print(f"\n{ANSI['RED']}◆ 超短次日 — 今日涨明日卖{ANSI['RESET']}  (找: 涨2-8%+放量+板块活跃)")
+        print(hdr)
+        print(f"  {'-'*112}")
+        for c in short_term_list:
+            _print_row(c, icon="▸")
+
     if stale_candidates:
         print(f"\n{ANSI['YELLOW']}◆ 掉榜回顾 — 仍在观察 (保留{STALE_TIMEOUT_MINUTES}分钟){ANSI['RESET']}")
         print(hdr)
@@ -229,3 +239,4 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
     print(f"  {ANSI['GREEN']}新面孔{ANSI['RESET']}: 底部放量启动+涨幅2-6%")
     print(f"  {ANSI['YELLOW']}动量延续{ANSI['RESET']}: 累计涨幅10%+今日温和上攻")
     print(f"  {ANSI['CYAN']}回调介入{ANSI['RESET']}: 强势股回踩+缩量+未破位")
+    print(f"  {ANSI['RED']}超短次日{ANSI['RESET']}: 今日涨2-8%+放量+板块活跃+明日卖出")

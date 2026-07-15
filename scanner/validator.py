@@ -28,6 +28,18 @@ from scanner.config import (
     V_PB_SHRINK_MOD,
     V_PB_SHRINK_NO,
     V_PB_SHRINK_YES,
+    V_ST_MA_BROKEN,
+    V_ST_MA_SUPPORT,
+    V_ST_RANK_LOW,
+    V_ST_RANK_TOP10,
+    V_ST_RANK_TOP20,
+    V_ST_RANK_TOP30,
+    V_ST_SECTOR_COLD,
+    V_ST_SECTOR_HOT,
+    V_ST_SECTOR_WARM,
+    V_ST_VOL_HEALTHY,
+    V_ST_VOL_SURGE,
+    V_ST_VOL_WEAK,
 )
 from scanner.indicators import (
     compute_bollinger_bands, compute_kdj, compute_macd, compute_rsi,
@@ -310,6 +322,68 @@ def validate_pullback(stock, kline_summary, closes: list[float],
     return passed, total, details
 
 
+def validate_short_term(stock, kline_summary, closes: list[float],
+                        historical_kline: list[dict], clusters: dict[str, list[str]] | None
+                        ) -> tuple[bool, int, dict]:
+    vol_ratio = kline_summary.volume_ratio
+    if vol_ratio < 1.0:
+        return False, 0, {"v_st_vol_gate": "fail", "v_st_vol_ratio": round(vol_ratio, 2)}
+
+    if vol_ratio >= 1.5:
+        vol_bonus = V_ST_VOL_SURGE
+        vol_detail = f"vol_surge_{vol_ratio:.1f}x"
+    elif vol_ratio >= 1.0:
+        vol_bonus = V_ST_VOL_HEALTHY
+        vol_detail = f"vol_healthy_{vol_ratio:.1f}x"
+    else:
+        vol_bonus = V_ST_VOL_WEAK
+        vol_detail = f"vol_weak_{vol_ratio:.1f}x"
+
+    sec = classify_sector(stock.name)
+    cluster_count = len(clusters.get(sec, [])) if clusters else 0
+    if cluster_count >= 3:
+        sec_bonus = V_ST_SECTOR_HOT
+    elif cluster_count >= 2:
+        sec_bonus = V_ST_SECTOR_WARM
+    else:
+        sec_bonus = V_ST_SECTOR_COLD
+
+    rank = stock.rank
+    if rank <= 10:
+        rank_bonus = V_ST_RANK_TOP10
+    elif rank <= 20:
+        rank_bonus = V_ST_RANK_TOP20
+    elif rank <= 30:
+        rank_bonus = V_ST_RANK_TOP30
+    else:
+        rank_bonus = V_ST_RANK_LOW
+
+    ma_bonus = 0
+    if len(closes) >= 20:
+        ma5 = sum(closes[-5:]) / 5
+        ma10 = sum(closes[-10:]) / 10
+        if closes[-1] > ma5 > ma10:
+            ma_bonus = V_ST_MA_SUPPORT
+        elif closes[-1] < ma5:
+            ma_bonus = V_ST_MA_BROKEN
+
+    total = vol_bonus + sec_bonus + rank_bonus + ma_bonus
+
+    details: dict[str, int | float | str] = {
+        "v_st_vol": vol_bonus,
+        "v_st_vol_detail": vol_detail,
+        "v_st_sector": sec_bonus,
+        "v_st_sector_count": cluster_count,
+        "v_st_rank": rank_bonus,
+        "v_st_ma": ma_bonus,
+    }
+
+    pos_dims = sum(1 for b in (sec_bonus, rank_bonus, ma_bonus) if b > 0)
+    passed = pos_dims >= 1
+
+    return passed, total, details
+
+
 def validate(cat: str, stock, kline_summary, closes: list[float],
              historical_kline: list[dict], clusters: dict[str, list[str]] | None = None,
              list_presence: dict[str, int] | None = None
@@ -320,4 +394,6 @@ def validate(cat: str, stock, kline_summary, closes: list[float],
         return validate_momentum(stock, kline_summary, closes, historical_kline, clusters)
     if cat == "pullback":
         return validate_pullback(stock, kline_summary, closes, historical_kline, clusters)
+    if cat == "short_term":
+        return validate_short_term(stock, kline_summary, closes, historical_kline, clusters)
     return False, 0, {}

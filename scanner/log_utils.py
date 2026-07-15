@@ -18,5 +18,5 @@ def log_results(new_faces: list[Candidate], momentum: list[Candidate]):
             if c.is_stale:
                 continue
             k = c.kline
-            tag = {"new_face": "新", "momentum": "动量", "pullback": "回"}.get(c.category, "?")
+            tag = {"new_face": "新", "known_new_face": "新", "momentum": "动量", "pullback": "回", "short_term": "超短"}.get(c.category, "?")
             f.write(f"{now},{tag},{c.stock.name},{c.stock.symbol},{c.stock.current:.2f},{c.stock.percent:+.2f}%,{k.trend if k else ''},{k.accumulated_pct if k else ''},{k.volume_ratio if k else ''},{c.score}\n")

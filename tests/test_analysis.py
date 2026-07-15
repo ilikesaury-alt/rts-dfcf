@@ -1,4 +1,4 @@
-from scanner.analysis import analyze_momentum, analyze_new_face, analyze_pullback
+from scanner.analysis import analyze_momentum, analyze_new_face, analyze_pullback, analyze_short_term
 from scanner.models import StockInfo
 
 from tests.helpers import _kline
@@ -281,5 +281,43 @@ class TestAccumulatedCalculation:
         accumulated = (cb[-1] - cb[-6]) / cb[-6] * 100
         # sum(pcts[-5:]) = -4+5-4+5-4 = -2% (wrong), close-based = -2.46% (correct)
         assert round(accumulated, 2) == -2.46
+
+
+class TestAnalyzeShortTerm:
+
+    def test_golden_path_returns_scored_candidate(self):
+        kline = _kline([5, 3, 6, 2, 4], volumes=[1.0, 1.2, 1.5, 1.8, 2.0])
+        result = analyze_short_term(_stock(percent=5.0, rank=5), kline)
+        assert result is not None
+        assert result.score >= 15
+
+    def test_pct_below_2_returns_none(self):
+        kline = _kline([5, 3, 6, 2, 4])
+        assert analyze_short_term(_stock(percent=1.0), kline) is None
+        assert analyze_short_term(_stock(percent=0), kline) is None
+
+    def test_pct_above_8_returns_none(self):
+        kline = _kline([5, 3, 6, 2, 4])
+        assert analyze_short_term(_stock(percent=9.0), kline) is None
+
+    def test_short_kline_returns_none(self):
+        kline = _kline([5, 3, 6])
+        assert analyze_short_term(_stock(percent=5.0), kline) is None
+
+    def test_none_kline_returns_none(self):
+        assert analyze_short_term(_stock(percent=5.0), None) is None
+
+    def test_vol_ratio_surge_gives_bonus(self):
+        kline = _kline([5, 3, 6, 2, 4], volumes=[0.5, 0.6, 0.7, 0.8, 3.0])
+        result = analyze_short_term(_stock(percent=5.0, rank=5), kline)
+        assert result is not None
+        assert "st_volume" in result.dimensions
+        assert result.dimensions["st_volume"] == 12  # vol_surge
+
+    def test_high_rank_penalty(self):
+        kline = _kline([5, 3, 6, 2, 4], volumes=[1.0, 1.2, 1.5, 1.8, 2.0])
+        result = analyze_short_term(_stock(percent=5.0, rank=50), kline)
+        assert result is not None
+        # rank>40: st_rank not recorded (no bonus/penalty)
 
 

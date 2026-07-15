@@ -89,24 +89,26 @@ def main():
                 both_count = sum(1 for i in xq_raw if i.get("source_tag") == "both")
                 print(f"\r  📡 雪球{len(xq_raw)}只 (双源{both_count}只)", end="", flush=True)
 
-                new_faces, momentum, pullback_list, stale_candidates, all_gem, filtered_large_cap = (
+                new_faces, momentum, pullback_list, short_term_list, stale_candidates, all_gem, filtered_large_cap = (
                     scan_with_raw(xq_raw, conn, xq_session))
 
                 new_faces.sort(key=lambda x: -x.score)
                 momentum.sort(key=lambda x: -x.score)
                 pullback_list.sort(key=lambda x: -x.score)
+                short_term_list.sort(key=lambda x: -x.score)
 
                 current_rank_map = {s.symbol: s.rank for s in all_gem}
                 display(new_faces, momentum, len(all_gem), interval,
                         filtered_large_cap=filtered_large_cap, last_ranks=last_ranks,
                         stale_candidates=stale_candidates, pullback_list=pullback_list,
-                        current_rank_map=current_rank_map)
-                log_results(new_faces, momentum + pullback_list)
+                        current_rank_map=current_rank_map, short_term_list=short_term_list)
+                log_results(new_faces, momentum + pullback_list + short_term_list)
                 if not args.no_feishu:
                     pushed = push_feishu(new_faces, momentum, pullback_list, stale_candidates,
                                         len(all_gem), filtered_large_cap=filtered_large_cap,
-                                        current_rank_map=current_rank_map)
-                    if not pushed and (new_faces or momentum or pullback_list):
+                                        current_rank_map=current_rank_map,
+                                        short_term_list=short_term_list)
+                    if not pushed and (new_faces or momentum or pullback_list or short_term_list):
                         print(f"\r  📤 飞书推送跳过（冷却中/无变化）", end="", flush=True)
 
                 last_ranks.clear()
@@ -123,8 +125,13 @@ def main():
                     src = _SOURCE_LABELS.get(top_m.stock.source_tag, top_m.stock.source_tag)
                     print(f"  ▶ 动量延续首选: {top_m.stock.name}({top_m.stock.symbol}) [{src}] "
                           f"{top_m.stock.percent:+.2f}% | {top_m.kline.trend if top_m.kline else ''}")
+                if short_term_list:
+                    top_s = short_term_list[0]
+                    src = _SOURCE_LABELS.get(top_s.stock.source_tag, top_s.stock.source_tag)
+                    print(f"  ▶ 超短次日首选: {top_s.stock.name}({top_s.stock.symbol}) [{src}] "
+                          f"{top_s.stock.percent:+.2f}% | RPS:{top_s.kline.rps_rank if top_s.kline else '-'}")
 
-                save_recommendations(conn, new_faces, momentum + pullback_list)
+                save_recommendations(conn, new_faces, momentum + pullback_list + short_term_list)
                 cross_validate()
 
             except requests.RequestException as e:

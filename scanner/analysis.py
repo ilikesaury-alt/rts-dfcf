@@ -5,9 +5,12 @@ from scanner.config import (
     MAX_MOMENTUM_TODAY_PCT,
     MAX_NEW_FACE_TODAY_PCT,
     PULLBACK_MAX_TODAY_PCT,
+    SHORT_TERM_MIN_TODAY_PCT,
+    SHORT_TERM_MAX_TODAY_PCT,
     MOMENTUM_WEIGHTS,
     NEW_FACE_WEIGHTS,
     PULLBACK_WEIGHTS,
+    SHORT_TERM_WEIGHTS,
     VOL_PEAK_LOOKBACK,
     VOL_PEAK_MOMENTUM_WARN,
     VOL_PEAK_NEW_FACE_MIN,
@@ -788,4 +791,119 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
 
     return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
                         volume_ratio=round(vol_ratio, 2), bottom_confirmed=not has_crash_day,
+                        score=score, dimensions=dims, avg_volume=round(avg_vol, 2))
+
+
+def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
+                       today_str: str | None = None) -> KlineSummary | None:
+    if not kline or len(kline) < 5:
+        return None
+
+    W = SHORT_TERM_WEIGHTS
+
+    today_pct = stock.percent
+    if today_pct < SHORT_TERM_MIN_TODAY_PCT or today_pct > SHORT_TERM_MAX_TODAY_PCT:
+        return None
+
+    today_str = today_str or now_beijing().date().isoformat()
+    historical_kline = [k for k in kline if k["date"] != today_str]
+    pcts = [k["percent"] for k in historical_kline]
+    closes = [k["close"] for k in historical_kline]
+
+    if len(closes) >= 6:
+        accumulated = (closes[-1] - closes[-6]) / closes[-6] * 100
+    else:
+        accumulated = sum(pcts[-5:])
+
+    volumes = [k["volume"] for k in kline]
+    vol_window = volumes[-11:-1] if len(volumes) >= 11 else volumes[:-1]
+    avg_vol = sum(vol_window) / max(len(vol_window), 1)
+    today_vol = volumes[-1] if volumes else 0
+    vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
+
+    score = 0
+    dims: dict[str, int | float] = {}
+
+    if today_pct >= 6:
+        score += W["today_pct_6_8"]
+        dims["st_today_pct"] = W["today_pct_6_8"]
+    elif today_pct >= 4:
+        score += W["today_pct_4_6"]
+        dims["st_today_pct"] = W["today_pct_4_6"]
+    else:
+        score += W["today_pct_2_4"]
+        dims["st_today_pct"] = W["today_pct_2_4"]
+
+    if accumulated >= 20:
+        score += W["accum_gte_20"]
+        dims["st_accumulated"] = W["accum_gte_20"]
+    elif accumulated >= 15:
+        score += W["accum_15_20"]
+        dims["st_accumulated"] = W["accum_15_20"]
+    elif accumulated >= 10:
+        score += W["accum_10_15"]
+        dims["st_accumulated"] = W["accum_10_15"]
+    elif accumulated >= 5:
+        score += W["accum_5_10"]
+        dims["st_accumulated"] = W["accum_5_10"]
+
+    if vol_ratio >= 1.5:
+        score += W["vol_surge"]
+        dims["st_volume"] = W["vol_surge"]
+    elif vol_ratio >= 1.0:
+        score += W["vol_healthy"]
+        dims["st_volume"] = W["vol_healthy"]
+    else:
+        score += W["vol_low"]
+        dims["st_volume"] = W["vol_low"]
+
+    has_crash = any(p <= -10 for p in pcts[-5:])
+    if not has_crash:
+        score += W["no_crash"]
+        dims["st_no_crash"] = W["no_crash"]
+
+    if stock.value >= 10000:
+        score += W["value_gte_10000"]
+    elif stock.value >= 5000:
+        score += W["value_gte_5000"]
+
+    rank = stock.rank
+    if rank <= 10:
+        score += W["rank_top10"]
+        dims["st_rank"] = W["rank_top10"]
+    elif rank <= 20:
+        score += W["rank_top20"]
+        dims["st_rank"] = W["rank_top20"]
+    elif rank <= 30:
+        score += W["rank_top30"]
+        dims["st_rank"] = W["rank_top30"]
+
+    rsi_val = compute_rsi(closes, period=14)
+    if rsi_val is not None:
+        if rsi_val < 70:
+            score += W["rsi_bonus"]
+            dims["st_rsi"] = round(rsi_val, 1)
+        elif rsi_val > 80:
+            score -= W["rsi_bonus"]
+
+    kdj_val = compute_kdj(
+        [k["high"] for k in historical_kline],
+        [k["low"] for k in historical_kline],
+        closes,
+    )
+    if kdj_val is not None:
+        if kdj_val["K"] > kdj_val["D"] and kdj_val["J"] < 100:
+            score += W["kdj_bonus"]
+            dims["st_kdj"] = round(kdj_val["J"], 1)
+
+    macd_val = compute_macd(closes)
+    if macd_val is not None:
+        if macd_val["histogram"] > 0:
+            score += W["macd_bonus"]
+            dims["st_macd"] = round(macd_val["histogram"], 4)
+
+    trend = "放量启动" if vol_ratio > 1.3 else "温和放量" if vol_ratio > 1.0 else "缩量"
+
+    return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
+                        volume_ratio=round(vol_ratio, 2), bottom_confirmed=False,
                         score=score, dimensions=dims, avg_volume=round(avg_vol, 2))
