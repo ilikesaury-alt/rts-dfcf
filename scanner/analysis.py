@@ -826,6 +826,7 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
     avg_vol = sum(vol_window) / max(len(vol_window), 1)
     today_vol = volumes[-1] if volumes else 0
     vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
+    vol_ratio = round(vol_ratio, 2)
 
     score = 0
     dims: dict[str, int | float] = {}
@@ -840,7 +841,10 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
         score += W["today_pct_2_4"]
         dims["st_today_pct"] = W["today_pct_2_4"]
 
-    if accumulated >= 20:
+    if accumulated < 0:
+        score += W["accum_lt_0"]
+        dims["st_accumulated"] = W["accum_lt_0"]
+    elif accumulated >= 20:
         score += W["accum_gte_20"]
         dims["st_accumulated"] = W["accum_gte_20"]
     elif accumulated >= 15:
@@ -890,9 +894,9 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
         score += W["rank_top30"]
         dims["st_rank"] = W["rank_top30"]
 
-    rsi_val = compute_rsi(closes, period=14)
+    rsi_val = compute_rsi(closes, period=6)
     if rsi_val is not None:
-        if rsi_val < 70:
+        if 50 <= rsi_val < 70:
             score += W["rsi_bonus"]
             dims["st_rsi"] = round(rsi_val, 1)
         elif rsi_val > 80:
@@ -904,7 +908,7 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
         closes,
     )
     if kdj_val is not None:
-        if kdj_val["K"] > kdj_val["D"] and kdj_val["J"] < 100:
+        if kdj_val["K"] > kdj_val["D"] and 50 <= kdj_val["K"] <= 80 and kdj_val["J"] < 100:
             score += W["kdj_bonus"]
             dims["st_kdj"] = round(kdj_val["J"], 1)
 

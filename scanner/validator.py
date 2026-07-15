@@ -325,6 +325,7 @@ def validate_pullback(stock, kline_summary, closes: list[float],
 def validate_short_term(stock, kline_summary, closes: list[float],
                         historical_kline: list[dict], clusters: dict[str, list[str]] | None
                         ) -> tuple[bool, int, dict]:
+    # 硬门禁：量比 < 1.0 直接淘汰（超短必须放量）。软维度为下方 4 项，任一为正即通过。
     vol_ratio = kline_summary.volume_ratio
     if vol_ratio < 1.0:
         return False, 0, {"v_st_vol_gate": "fail", "v_st_vol_ratio": round(vol_ratio, 2)}

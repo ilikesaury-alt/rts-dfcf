@@ -370,4 +370,59 @@ class TestAnalyzeShortTerm:
         assert "st_value_small" not in result.dimensions
         assert "st_value_mid" not in result.dimensions
 
+    def test_accumulated_negative_penalty(self):
+        # 末段连续下跌使累计涨幅 < 0 → 应计 accum_lt_0 (-5)，而非漏记 0 分
+        pcts = [5, 5, 5, -2, -2, -2, -2, -2, -2]
+        kline = _kline(pcts)
+        result = analyze_short_term(_stock(percent=3.0, rank=5), kline)
+        assert result is not None
+        assert result.dimensions["st_accumulated"] == -5
+
+    def test_accumulated_positive_bucket(self):
+        pcts = [1, 1, 1, 1, 1, 1, 1]
+        kline = _kline(pcts)
+        result = analyze_short_term(_stock(percent=3.0, rank=5), kline)
+        assert result is not None
+        assert result.dimensions["st_accumulated"] == 10  # accum_5_10
+
+    def test_rsi_uses_period6_and_5070_window(self):
+        from unittest.mock import patch
+
+        kline = _kline([2, 3, 4, 3, 5, 2, 3])
+        with patch("scanner.analysis.compute_rsi", return_value=60.0) as m:
+            r = analyze_short_term(_stock(percent=3.0, rank=5), kline)
+            assert m.call_args.kwargs.get("period") == 6
+            assert "st_rsi" in r.dimensions
+        with patch("scanner.analysis.compute_rsi", return_value=85.0):
+            r2 = analyze_short_term(_stock(percent=3.0, rank=5), kline)
+            assert "st_rsi" not in r2.dimensions  # >80 不应给加分
+
+    def test_kdj_range_5080(self):
+        from unittest.mock import patch
+
+        kline = _kline([2, 3, 4, 3, 5, 2, 3])
+        with patch("scanner.analysis.compute_kdj", return_value={"K": 60.0, "D": 50.0, "J": 55.0}):
+            r = analyze_short_term(_stock(percent=3.0, rank=5), kline)
+            assert "st_kdj" in r.dimensions
+        with patch("scanner.analysis.compute_kdj", return_value={"K": 90.0, "D": 50.0, "J": 55.0}):
+            r2 = analyze_short_term(_stock(percent=3.0, rank=5), kline)
+            assert "st_kdj" not in r2.dimensions  # K>80 不加分
+        with patch("scanner.analysis.compute_kdj", return_value={"K": 40.0, "D": 50.0, "J": 55.0}):
+            r3 = analyze_short_term(_stock(percent=3.0, rank=5), kline)
+            assert "st_kdj" not in r3.dimensions  # K<D 不加分
+
+    def test_volume_ratio_low_consistency(self):
+        from scanner.validator import validate_short_term
+
+        # 量比 0.99：分析阶段判 vol_low，验证门禁同样判失败（同一量比值，口径一致）
+        pcts = [3, 3, 3, 3, 3, 3, 3]
+        volumes = [1.0] * 6 + [0.99]
+        kline = _kline(pcts, volumes=volumes)
+        result = analyze_short_term(_stock(percent=3.0, rank=5), kline)
+        assert result is not None
+        assert result.dimensions.get("st_volume") == -5
+        closes = [k["close"] for k in kline]
+        passed, _, _ = validate_short_term(_stock(percent=3.0, rank=5), result, closes, kline, None)
+        assert passed is False
+
 
