@@ -248,6 +248,9 @@ def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, l
     if category == "short_term":
         return None, None, None, c_st
     if category in ("new_face", "known_new_face"):
+        # 首板票若同时满足超短次日，双挂到超短列表（保留新面孔标签）
+        if is_new and c_st is not None:
+            return c_nf, None, None, c_st
         return c_nf, None, None, None
     if category == "momentum":
         return None, c_mo, None, None
@@ -258,6 +261,10 @@ def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, l
 
 def _compute_rps(candidates: list[Candidate]) -> dict[str, int]:
     scores: dict[str, int] = {}
+    # 双挂票（同代码出现在多个桶）只计一次排名，避免拉高 total 扭曲分位
+    seen: set[str] = set()
+    uniq = [c for c in candidates if not (c.stock.symbol in seen or seen.add(c.stock.symbol))]
+    candidates = uniq
     if len(candidates) < 2:
         return {c.stock.symbol: 0 for c in candidates}
     accum = [(c.stock.symbol, c.kline.accumulated_pct if c.kline else 0) for c in candidates]
@@ -389,9 +396,13 @@ def _parallel_fetch(pool: ThreadPoolExecutor, base_session: requests.Session,
                     intraday_scores: dict[str, float | None],
                     opening_scores: dict[str, float | None],
                     live_volumes: dict[str, float | None]):
+    seen: set[str] = set()
     intra_futs = {}
     for c in candidates:
         sym = c.stock.symbol
+        if sym in seen:
+            continue
+        seen.add(sym)
         def _do(sym=sym, fn=analyze_intraday):
             return fn(_get_session(), sym)
         intra_futs[pool.submit(_do)] = sym
@@ -403,9 +414,13 @@ def _parallel_fetch(pool: ThreadPoolExecutor, base_session: requests.Session,
             print(f"  [!] 分时强度失败 {sym}: {e}")
             intraday_scores[sym] = None
 
+    seen = set()
     open_futs = {}
     for c_ in candidates:
         sym = c_.stock.symbol
+        if sym in seen:
+            continue
+        seen.add(sym)
         def _open(sym=sym):
             return analyze_opening_strength(_get_session(), sym)
         open_futs[pool.submit(_open)] = sym
@@ -416,9 +431,13 @@ def _parallel_fetch(pool: ThreadPoolExecutor, base_session: requests.Session,
         except Exception:
             opening_scores[sym] = None
 
+    seen = set()
     vol_futs = {}
     for c_ in candidates:
         sym = c_.stock.symbol
+        if sym in seen:
+            continue
+        seen.add(sym)
         def _vol(sym=sym):
             return estimate_live_volume(_get_session(), sym)
         vol_futs[pool.submit(_vol)] = sym
