@@ -330,3 +330,21 @@
 - **位置**: `scanner/enhancer.py`
 - **问题**: IC = -0.307 (353样本) 反指，`accumulate_final_score` 仍累加 `intraday_bonus`
 - **修复**: 从 `accumulate_final_score` 中移除 `intraday_bonus` 行，保留字段仅用于诊断
+
+---
+
+## 2026-07-15 代码审查
+
+### 🟢 工程改进
+
+#### 65. [工程] `validator.py:339-340` 死代码
+
+- **位置**: `scanner/validator.py` — `validate_short_term()` else 分支
+- **问题**: `V_ST_VOL_WEAK` (-8) 永远不可达，因为 line 329 的硬门 `vol_ratio < 1.0` 已提前 return
+- **影响**: 无评分影响，纯死代码
+
+#### 66. [工程] `candidate_pool.py:179-184` 死代码
+
+- **位置**: `scanner/candidate_pool.py` — `_apply_list_momentum_bonus()` 外层 else (streak < 3)
+- **问题**: `streak >= 5` 和 `streak >= 3` 条件在 `streak < 3` 时不可达，仅 `streak >= 2` 有效
+- **影响**: 无评分影响，纯死代码

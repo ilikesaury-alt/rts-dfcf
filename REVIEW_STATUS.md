@@ -13,10 +13,10 @@
 
 | 模块 | 状态 | 最后审查 | 覆盖维度 | 备注 |
 |------|------|---------|---------|------|
-| `analysis.py` | ⚠️ | 2026-07-01 | 策略逻辑/配置一致性 | 5处硬编码已迁移至 config.py；#19/#20 确认已修 |
-| `config.py` | ⚠️ | 2026-07-01 | 配置一致性 | 清理 12 个死权重条目 |
-| `validator.py` | ⚠️ | 2026-07-01 | 策略逻辑 | 维度定义清晰，联动 coverage 通过 |
-| `enhancer.py` | ⚠️ | 2026-07-01 | 数据流完整性 | 移除反指 intraday_score 累加 (IC=-0.307) |
+| `analysis.py` | ✅ | 2026-07-15 | 策略逻辑/配置一致性/评分正确性 | 权重引用一致；硬拒绝完整；无双算/遗漏 |
+| `config.py` | ✅ | 2026-07-15 | 配置一致性/孤立条目 | 权重字典与 analysis.py 匹配；无新增孤立条目 |
+| `validator.py` | ✅ | 2026-07-15 | 策略逻辑/交叉验证 | 四策略维度对齐；门槛合理；P2死代码(v_st_vol_weak) |
+| `enhancer.py` | ✅ | 2026-07-15 | 加分逻辑/数据流完整性 | accumulate_final_score 覆盖完整；intraday_score 确认未累加 |
 | `orchestrator.py` | ✅ | 2026-07-13 | 策略逻辑/数据流/双源融合 | fallthrough 链正确；双源加分双算已修(P0-1) |
 | `cross_validation.py` | ✅ | 2026-07-13 | 错误处理/日期基准 | 日期基准统一 now_beijing(P1-1)；DB 查无异常已降级 |
 | `api.py` | ✅ | 2026-07-13 | 错误处理/熔断/缓存 | 熔断区分空响应与失败(P1-2)；turnover_rate 缺省(P1-3) |
@@ -46,13 +46,15 @@
 |--------|---|------|---------|
 | ✅ | 19 | `accumulated` 双算 `today_pct` | 2026-06-23 重构已修 |
 | ✅ | 20 | `stock.percent` 与 K 线 `pcts[-1]` 混用 | 同上 |
-| 🔴 P0 | 31 | `intraday_score` 反指仍被累加 | enhancer.py accumulate_final_score 2026-07-01 已修，需跟进 IC |
+| ✅ P0 | 31 | `intraday_score` 反指仍被累加 | 2026-07-01 已修；2026-07-15 确认 accumulate_final_score 无 intraday_score |
 | 🟡 P1 | 21 | `Candidate.score` 可变性违规 | — |
 | 🟡 P1 | 22 | 14 处 `bare except Exception` | — |
 | 🟡 P1 | 25 | 交易时段显示不一致（11:45 vs 11:30） | — |
 | 🟡 P1 | 10 | 行业分类纯名称匹配太粗糙 | — |
 | 🟢 P2 | 26 | 测试覆盖不足（orchestrator/database 无测试） | — |
 | 🟢 P2 | 28 | Feishu 推送注释状态未清理 | — |
+| 🟢 P2 | 65 | `validator.py:339-340` 死代码（`V_ST_VOL_WEAK` 因硬门永远不可达） | — |
+| 🟢 P2 | 66 | `candidate_pool.py:179-184` 死代码（`streak<3` 时 `>=5`/`>=3` 不可达） | — |
 | ✅ P0 | 55 | `CROSS_SOURCE_BONUS` 双算（enhancer + unified_scanner 各加一次） | 2026-07-13 删除 unified_scanner 循环累加 |
 | ✅ P0 | 56 | 产业链入口全新库崩溃（缺 daily_kline 表） | 2026-07-13 runner 补 init_db + pipeline 降级 |
 | ✅ P0 | 57 | 产业链瓶颈节点名称子串匹配失效 | 2026-07-13 废弃瓶颈、按集中度/持续性/扩散重构相变与选股 |
@@ -72,6 +74,7 @@
 |------|---------|---------|------|------|
 | 2026-07-01 | 策略逻辑/配置一致性/数据流完整性 | analysis.py, config.py, validator.py, enhancer.py | 🔴 intraday_score 反指累加(P0)修; 🟡5处硬编码迁移; 🟡12死权重清理; #19/#20确认已修 | 全库通读 baseline 建立，6/22 模块本次覆盖 4 个 |
 | 2026-07-13 | 全模块（原 ❌ 18 个文件 + 测试） | orchestrator/cross_validation/api/ths_api/database/indicators/models/candidate_pool/rank_trend/sector/trading_session/display/log_utils/utils/industry_chain/unified_scanner/stock_report/tests | 🔴 双源加分双算(P0-1)修; 🔴 产业链全新库崩溃(P0-3)修; 🔴 动量验证门失效(P0-4)修; 🟡 日期基准/熔断/换手率/报告None/回调维度/量能常量 6 项修; P0-2 瓶颈映射暂缓 | 150 测试全过；PowerShell Set-Content 曾损坏 UTF-8 中文源，已 git checkout 还原并以 UTF-8 安全方式重做 |
+| 2026-07-15 | 策略逻辑正确性/数据流完整性/加分逻辑/交叉验证/配置一致性/错误处理 | analysis.py/config.py/validator.py/enhancer.py/orchestrator.py/api.py/database.py/indicators.py/models.py/sector.py/utils.py | 无新 P0/P1 发现；#31(intraday反指)确认已修；新增 2 项 P2 死代码 | 245 测试全过；覆盖 analysis/config/validator/enhancer 四个 ⚠️ 模块→✅；全项目仅剩 tests/* 未覆盖 |
 
 ---
 
