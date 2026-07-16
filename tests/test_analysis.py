@@ -472,4 +472,41 @@ class TestAnalyzeShortTerm:
         passed, _, _ = validate_short_term(_stock(percent=3.0, rank=5), result, closes, kline, None)
         assert passed is False
 
+    def test_overbought_20d_gain_warn_penalty(self):
+        # 末周期：连续温和上涨使 20日累计涨幅落入 40%~60% 预警区间 → 软惩罚
+        pcts = [2.0] * 25
+        kline = _kline(pcts, volumes=[1.0] * 25)
+        result = analyze_short_term(_stock(percent=3.0, rank=5), kline)
+        assert result is not None
+        assert "st_overbought_20d" in result.dimensions
+        # 40%~60% → PULLBACK_20D_GAIN_WARN_PENALTY = -10（与 pullback 对齐）
+        assert result.dimensions["st_overbought_penalty"] < 0
+        # 仍远高于入选门槛，不会被软惩罚单独淘汰
+        assert result.score >= 15
+
+    def test_overbought_20d_gain_extreme_penalty(self):
+        # 20日累计 > 60% → 更重惩罚（-15）
+        pcts = [2.8] * 25
+        kline = _kline(pcts, volumes=[1.0] * 25)
+        result = analyze_short_term(_stock(percent=3.0, rank=5), kline)
+        assert result is not None
+        assert "st_overbought_20d" in result.dimensions
+
+    def test_overbought_boll_kdj_penalty(self):
+        # 抛物线式拉升：破 BOLL 上轨(%B>1) + 20日巨幅获利盘 → 应触发末周期超买扣分
+        pcts = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 5.0, 7.0, 8.0, 9.0] * 3
+        kline = _kline(pcts, volumes=[1.0] * 30)
+        result = analyze_short_term(_stock(percent=6.0, rank=5, current=kline[-1]["close"]), kline)
+        assert result is not None
+        assert result.dimensions.get("st_overbought_boll") is not None
+        assert result.dimensions["st_overbought_penalty"] < 0
+
+    def test_low_position_no_overbought_penalty(self):
+        # 低位横盘小幅波动：不触发任何末周期超买惩罚
+        pcts = [0.3, -0.2, 0.4, -0.3, 0.2] * 5
+        kline = _kline(pcts, volumes=[1.0] * 25)
+        result = analyze_short_term(_stock(percent=3.0, rank=5), kline)
+        assert result is not None
+        assert "st_overbought_penalty" not in result.dimensions
+
 

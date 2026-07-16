@@ -39,6 +39,10 @@ from scanner.config import (
     V_ST_SECTOR_WARM,
     V_ST_VOL_HEALTHY,
     V_ST_VOL_SURGE,
+    ST_OVERBOUGHT_BOLL,
+    ST_OVERBOUGHT_KDJ,
+    PULLBACK_20D_GAIN_WARN,
+    PULLBACK_20D_GAIN_EXTREME,
 )
 from scanner.indicators import (
     compute_bollinger_bands, compute_kdj, compute_macd, compute_ma, compute_rsi,
@@ -387,11 +391,59 @@ def validate_short_term(stock, kline_summary, closes: list[float],
 
     pos_dims = sum(1 for b in (sec_bonus, rank_bonus, ma_bonus, wts_bonus) if b > 0)
     non_sector_pos = sum(1 for b in (rank_bonus, ma_bonus, wts_bonus) if b > 0)
-    # 弱转强单独放行（真弱转强即便板块/排名/MA 全不达标也应保留，设计意图见 wts_bonus 注释）；
+
+    # 末周期超买判定（鱼尾段）：用 closes（历史）+ 今日收盘，复用与分析侧一致阈值。
+    overbought = _st_is_overbought(closes, historical_kline, stock)
+    details["v_st_overbought"] = overbought
+
+    # 超买时：弱转强不再享受"无条件直通"特权，且放量/板块/MA 共振这些"确认信号"
+    # 实为末周期风险而非优势，故压下验证加分（total 归零），仅按标准门禁判定，
+    # 避免高位破轨股仅凭弱转强 + 共振拿下 inflated 验证分（如 300534 案例 +24）。
+    if overbought:
+        total = 0
+    else:
+        passed = wts_bonus > 0 or (pos_dims >= 2 and non_sector_pos >= 1)
+        return passed, total, details
+
+    # 非超买：弱转强单独放行（真弱转强即便板块/排名/MA 全不达标也应保留）；
     # 否则需 ≥2 正维度且至少 1 项非 sector，避免板块普涨日靠 sector 单维度批量刷屏。
     passed = wts_bonus > 0 or (pos_dims >= 2 and non_sector_pos >= 1)
-
     return passed, total, details
+
+
+def _st_is_overbought(closes: list[float], historical_kline: list[dict],
+                      stock: object) -> bool:
+    """判定超短候选是否处于末周期超买（鱼尾段）。
+
+    用历史 closes（不含今日）计算 BOLL %B / KDJ J / 20日涨幅 / RSI(14)，
+    并尽量把今日收盘并入以反映最新价（今日 bar 已在 historical_kline 之后）。
+    """
+    series = list(closes)
+    today_close = getattr(stock, "current", 0) or 0
+    if today_close > 0 and (not series or today_close != series[-1]):
+        series.append(today_close)
+
+    if len(series) >= 20:
+        from scanner.indicators import compute_bollinger_bands
+        boll = compute_bollinger_bands(series)
+        if boll is not None and boll["b_pct"] > ST_OVERBOUGHT_BOLL:
+            return True
+    if len(series) >= 9:
+        from scanner.indicators import compute_kdj
+        kdj = compute_kdj(
+            [k["high"] for k in historical_kline] + (
+                [getattr(stock, "current", 0)] if getattr(stock, "current", 0) else []),
+            [k["low"] for k in historical_kline] + (
+                [getattr(stock, "current", 0)] if getattr(stock, "current", 0) else []),
+            series,
+        )
+        if kdj is not None and kdj["J"] > ST_OVERBOUGHT_KDJ:
+            return True
+    if len(series) >= 21:
+        gain_20d = (series[-1] - series[-21]) / series[-21] * 100
+        if gain_20d > PULLBACK_20D_GAIN_EXTREME:
+            return True
+    return False
 
 
 def validate(cat: str, stock, kline_summary, closes: list[float],

@@ -557,3 +557,59 @@ class TestValidateShortTerm:
                           rank_change=1500, rank=50)
         passed, total, dims = validate_short_term(stock, ks, closes, k[:-1], None)
         assert not passed
+
+    def _overbought_kline(self, tail_pcts):
+        # 构造末周期超买序列：前段低位横盘后，末段持续拉升使近 20日涨幅>60%、BOLL%破上轨
+        pcts = [0.2] * 5 + [2.8] * 30 + list(tail_pcts)
+        return _kline(pcts, volumes=[1.0] * len(pcts))
+
+    def test_overbought_suppresses_validation_bonus(self):
+        # 鱼尾段（超买）+ 弱转强 + 板块共振：验证加分应被压下为 0，
+        # 不再给 inflated 共振分（对应 300534 原本 +24 验证分）。
+        k = self._overbought_kline([2, 3, 6, 2, 4])
+        closes = [c["close"] for c in k[:-1]]
+        ks = KlineSummary(
+            trend="弱转强", accumulated_pct=5.0, volume_ratio=1.2,
+            bottom_confirmed=False, score=18, avg_volume=1.0,
+            dimensions={"st_weak_to_strong": 8},
+        )
+        stock = StockInfo(symbol="300999", name="半导体测试", code="300999",
+                          percent=5.0, current=k[-1]["close"], value=8000,
+                          rank_change=1500, rank=50)
+        passed, total, dims = validate_short_term(stock, ks, closes, k[:-1], SEMICONDUCTOR_CLUSTER)
+        assert dims["v_st_overbought"] is True
+        # 超买：验证加分归零（非超买时同等输入应为 vol+sector+ma+rank 之和 > 0）
+        assert total == 0, f"超买时验证加分应压下为 0, 实际 total={total}, dims={dims}"
+
+    def test_non_overbought_validation_bonus_intact(self):
+        # 非超买：同等输入应正常发放验证加分（对照，证明超买压制是针对性行为）
+        k = _kline([0.3, -0.2, 0.4, -0.3, 0.2] * 5, volumes=[1.0] * 25)
+        closes = [c["close"] for c in k[:-1]]
+        ks = KlineSummary(
+            trend="弱转强", accumulated_pct=5.0, volume_ratio=1.5,
+            bottom_confirmed=False, score=18, avg_volume=1.0,
+            dimensions={"st_weak_to_strong": 8},
+        )
+        stock = StockInfo(symbol="300999", name="半导体测试", code="300999",
+                          percent=5.0, current=k[-1]["close"], value=8000,
+                          rank_change=1500, rank=5)
+        passed, total, dims = validate_short_term(stock, ks, closes, k[:-1], SEMICONDUCTOR_CLUSTER)
+        assert dims["v_st_overbought"] is False
+        assert total > 0, "非超买时应正常发放验证加分"
+        assert passed
+
+    def test_non_overbought_weak_to_strong_still_passes(self):
+        # 非超买：弱转强即便其它维度全负仍直通（保留既有行为）
+        k = _kline([0.3, -0.2, 0.4, -0.3, 0.2] * 5, volumes=[1.0] * 25)
+        closes = [c["close"] for c in k[:-1]]
+        ks = KlineSummary(
+            trend="弱转强", accumulated_pct=5.0, volume_ratio=1.2,
+            bottom_confirmed=False, score=18, avg_volume=1.0,
+            dimensions={"st_weak_to_strong": 8},
+        )
+        stock = StockInfo(symbol="300999", name="测试", code="300999",
+                          percent=5.0, current=k[-1]["close"], value=8000,
+                          rank_change=1500, rank=50)
+        passed, total, dims = validate_short_term(stock, ks, closes, k[:-1], None)
+        assert dims["v_st_overbought"] is False
+        assert passed, f"非超买弱转强应直通, dims={dims}"

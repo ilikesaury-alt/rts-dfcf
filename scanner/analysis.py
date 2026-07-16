@@ -17,6 +17,10 @@ from scanner.config import (
     NEW_FACE_WEIGHTS,
     PULLBACK_WEIGHTS,
     SHORT_TERM_WEIGHTS,
+    ST_OVERBOUGHT_BOLL, ST_OVERBOUGHT_BOLL_PENALTY,
+    ST_OVERBOUGHT_KDJ, ST_OVERBOUGHT_KDJ_PENALTY,
+    PULLBACK_20D_GAIN_WARN, PULLBACK_20D_GAIN_EXTREME,
+    PULLBACK_20D_WARN_PENALTY, PULLBACK_20D_EXTREME_PENALTY,
     VOL_PEAK_LOOKBACK,
     VOL_PEAK_MOMENTUM_WARN,
     VOL_PEAK_NEW_FACE_MIN,
@@ -939,6 +943,29 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
         if macd_val["histogram"] > 0:
             score += W["macd_bonus"]
             dims["st_macd"] = round(macd_val["histogram"], 4)
+
+    # 末周期超买防护（鱼尾段）：软惩罚，幅度克制以免单独把正常弱转强压到 <15。
+    # 真正的硬性否决由 validator 承担（超买时弱转强需非-sector 维度达标）。
+    ob_pen = 0
+    if len(closes) >= 20:
+        boll_ob = compute_bollinger_bands(closes)
+        if boll_ob is not None and boll_ob["b_pct"] > ST_OVERBOUGHT_BOLL:
+            ob_pen += ST_OVERBOUGHT_BOLL_PENALTY
+            dims["st_overbought_boll"] = round(boll_ob["b_pct"], 2)
+    if kdj_val is not None and kdj_val["J"] > ST_OVERBOUGHT_KDJ:
+        ob_pen += ST_OVERBOUGHT_KDJ_PENALTY
+        dims["st_overbought_kdj"] = round(kdj_val["J"], 1)
+    if len(closes) >= 21:
+        gain_20d = (closes[-1] - closes[-21]) / closes[-21] * 100
+        if gain_20d > PULLBACK_20D_GAIN_EXTREME:
+            ob_pen += PULLBACK_20D_EXTREME_PENALTY
+            dims["st_overbought_20d"] = round(gain_20d, 1)
+        elif gain_20d > PULLBACK_20D_GAIN_WARN:
+            ob_pen += PULLBACK_20D_WARN_PENALTY
+            dims["st_overbought_20d"] = round(gain_20d, 1)
+    score += ob_pen
+    if ob_pen:
+        dims["st_overbought_penalty"] = ob_pen
 
     # 弱转强（分歧转一致）：昨日大分歧/烂板/炸板 + 今日在 2~8% 内转强
     yest_divergence = False

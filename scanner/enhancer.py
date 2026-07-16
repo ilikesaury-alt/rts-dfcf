@@ -226,6 +226,8 @@ def _record_dimensions(
             c.kline.dimensions["market_env_bonus"] = MARKET_ENV_WEAK
     if c.turnover_bonus:
         c.kline.dimensions["turnover_bonus"] = c.turnover_bonus
+    if c.category == "short_term" and c.kline.dimensions.get("st_overbought_penalty"):
+        c.kline.dimensions["st_overbought_flag"] = c.kline.dimensions["st_overbought_penalty"]
     if c.time_bonus:
         c.kline.dimensions["time_bonus"] = c.time_bonus
     if c.list_momentum_bonus:
