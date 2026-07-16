@@ -78,7 +78,9 @@ _MA_BEAR_SCORE = -3
 
 
 def _ma_bull_score(closes: list[float]) -> int:
-    # 使用 EMA（与 MACD 同一移动平均约定），创业板高波动下比 SMA 噪声更小。
+    # 使用 EMA（从最近 N 根收盘价播种），创业板高波动下比 SMA 噪声更小。
+    # 注意：与 compute_macd 内部 EMA（从 closes[0] 播种）并非同一序列，
+    # 此处仅用于 MA 多头结构判定，与 MACD 指标分属不同用途。
     if len(closes) < 10:
         return 0
     ma5 = compute_ma(closes, 5, ema=True)

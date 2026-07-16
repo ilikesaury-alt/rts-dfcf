@@ -13,9 +13,9 @@
 
 | 模块 | 状态 | 最后审查 | 覆盖维度 | 备注 |
 |------|------|---------|---------|------|
-| `analysis.py` | ✅ | 2026-07-15 | 策略逻辑/配置一致性/评分正确性 | 权重引用一致；硬拒绝完整；无双算/遗漏 |
-| `config.py` | ✅ | 2026-07-15 | 配置一致性/孤立条目 | 权重字典与 analysis.py 匹配；无新增孤立条目 |
-| `validator.py` | ✅ | 2026-07-15 | 策略逻辑/交叉验证 | 四策略维度对齐；门槛合理；P2死代码(v_st_vol_weak) |
+| `analysis.py` | ✅ | 2026-07-16 | 策略逻辑/配置一致性/评分正确性 | 权重引用一致；硬拒绝完整；无双算/遗漏；P0-67 MA约定已统一 |
+| `config.py` | ✅ | 2026-07-15 | 配置一致性/孤立条目 | 权重字典与 analysis.py 匹配；V_ST_VOL_WEAK 死常量已删 |
+| `validator.py` | ✅ | 2026-07-16 | 策略逻辑/交叉验证 | 四策略维度对齐；门槛合理；P0-67 动量MA改EMA与analysis一致；V_ST_VOL_WEAK死分支已删 |
 | `enhancer.py` | ✅ | 2026-07-15 | 加分逻辑/数据流完整性 | accumulate_final_score 覆盖完整；intraday_score 确认未累加 |
 | `orchestrator.py` | ✅ | 2026-07-13 | 策略逻辑/数据流/双源融合 | fallthrough 链正确；双源加分双算已修(P0-1) |
 | `cross_validation.py` | ✅ | 2026-07-13 | 错误处理/日期基准 | 日期基准统一 now_beijing(P1-1)；DB 查无异常已降级 |
@@ -65,6 +65,7 @@
 | ✅ P1 | 62 | `stock_report.py` 对 None percent 未防护 | 2026-07-13 4 处加守卫 |
 | ✅ P1 | 63 | 回调 sector 维度 `count>=1` 即正分 / bollinger 回中轨同 +5 | 2026-07-13 sector 改 `count>=3`(+8)，1~2 改中性 0（非 -5）；bollinger 中轨改 +2；删死常量 COLD，新增 NEUTRAL |
 | ✅ P1 | 64 | 动量量能阈值硬编码未用常量 | 2026-07-13 改用 `_MOMENTUM_VOL_HEALTHY_*` |
+| ✅ P0 | 67 | 动量 MA 多头判定「分析 EMA / 验证 SMA」不一致导致交叉验证脱节 | 2026-07-16 `_mo_ma_alignment` 改 EMA 与 analysis 统一；注释修正；死代码清理 |
 
 ---
 
@@ -76,6 +77,7 @@
 | 2026-07-13 | 全模块（原 ❌ 18 个文件 + 测试） | orchestrator/cross_validation/api/ths_api/database/indicators/models/candidate_pool/rank_trend/sector/trading_session/display/log_utils/utils/industry_chain/unified_scanner/stock_report/tests | 🔴 双源加分双算(P0-1)修; 🔴 产业链全新库崩溃(P0-3)修; 🔴 动量验证门失效(P0-4)修; 🟡 日期基准/熔断/换手率/报告None/回调维度/量能常量 6 项修; P0-2 瓶颈映射暂缓 | 150 测试全过；PowerShell Set-Content 曾损坏 UTF-8 中文源，已 git checkout 还原并以 UTF-8 安全方式重做 |
 | 2026-07-15 | 策略逻辑正确性/数据流完整性/加分逻辑/交叉验证/配置一致性/错误处理 | analysis.py/config.py/validator.py/enhancer.py/orchestrator.py/api.py/database.py/indicators.py/models.py/sector.py/utils.py | 无新 P0/P1 发现；#31(intraday反指)确认已修；新增 2 项 P2 死代码 | 245 测试全过；覆盖 analysis/config/validator/enhancer 四个 ⚠️ 模块→✅；全项目仅剩 tests/* 未覆盖 |
 | 2026-07-15 | 子系统清理 + 主扫描器缺陷修复 | industry_chain(删除)/orchestrator.py/cross_validation.py/database.py/config.py | 🗑️ 移除整个产业链子系统(industry_chain/ + industry_chain_scanner.py)，清理 init_industry_chain_tables/chokepoint_recommendations 表/cross_validation 链依赖/Industry chain 配置块/文档；🔴 修复实时扫描 K 线永远少一天(orchestrator.py 盘中补拉今日 Bar)；🟡 双挂票 stock 级加分按 symbol 去重(排名不变) | 确认主扫描器市值过滤用真实 market_capital，热度值未当市值；热度当市值 bug 仅存在于已删的 industry_chain/pipeline.py:39 |
+| 2026-07-16 | 策略实现专项审查（P0 修复） | analysis.py/validator.py/config.py + tests/test_validator.py | 🔴 修复动量 MA 多头判定分析(EMA)/验证(SMA)不一致(P0-67)：`_mo_ma_alignment` 改 `compute_ma(ema=True)` 与 `analysis._ma_bull_score` 统一；修正 analysis.py:81 错误注释；🟢 删除 `V_ST_VOL_WEAK` 死分支与 config 常量(原 OPTIMIZE #65)；新增 2 条 EMA/SMA 对齐回归测试 | 294 测试全过；pullback 两侧均 SMA 已一致、new_face 验证无 MA 维度均不受影响；采用 EMA 统一方向(创业板高波动噪声更小) |
 
 ---
 

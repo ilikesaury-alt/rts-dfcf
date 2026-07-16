@@ -39,10 +39,9 @@ from scanner.config import (
     V_ST_SECTOR_WARM,
     V_ST_VOL_HEALTHY,
     V_ST_VOL_SURGE,
-    V_ST_VOL_WEAK,
 )
 from scanner.indicators import (
-    compute_bollinger_bands, compute_kdj, compute_macd, compute_rsi,
+    compute_bollinger_bands, compute_kdj, compute_macd, compute_ma, compute_rsi,
 )
 from scanner.sector import classify_sector
 
@@ -160,21 +159,19 @@ def validate_nf(stock, kline_summary, closes: list[float],
 
 
 def _mo_ma_alignment(closes: list[float]) -> tuple[int, str]:
-    if len(closes) < 20:
-        if len(closes) >= 10:
-            ma5 = sum(closes[-5:]) / 5
-            ma10 = sum(closes[-10:]) / 10
-            if ma5 > ma10:
-                return V_MO_MA_PARTIAL, "ma_partial_5gt10"
-            return V_MO_MA_NONE, "ma_none"
+    # 与 analysis._ma_bull_score 统一使用 EMA 约定，消除「分析加分 / 验证剔除」脱节。
+    if len(closes) < 10:
         return V_MO_MA_NONE, "data_short"
 
-    ma5 = sum(closes[-5:]) / 5
-    ma10 = sum(closes[-10:]) / 10
-    ma20 = sum(closes[-20:]) / 20
+    ma5 = compute_ma(closes, 5, ema=True)
+    ma10 = compute_ma(closes, 10, ema=True)
+    if ma5 is None or ma10 is None:
+        return V_MO_MA_NONE, "data_short"
 
-    if ma5 > ma10 > ma20:
-        return V_MO_MA_FULL, "ma_full_5gt10gt20"
+    if len(closes) >= 20:
+        ma20 = compute_ma(closes, 20, ema=True)
+        if ma20 is not None and ma5 > ma10 > ma20:
+            return V_MO_MA_FULL, "ma_full_5gt10gt20"
     if ma5 > ma10:
         return V_MO_MA_PARTIAL, "ma_partial_5gt10"
     return V_MO_MA_NONE, "ma_none"
@@ -336,12 +333,10 @@ def validate_short_term(stock, kline_summary, closes: list[float],
     if vol_ratio >= 1.5:
         vol_bonus = V_ST_VOL_SURGE
         vol_detail = f"vol_surge_{vol_ratio:.1f}x"
-    elif vol_ratio >= 1.0:
+    else:
+        # 硬门 vol_ratio < 1.0 已提前 return，此处 vol_ratio ∈ [1.0, 1.5)
         vol_bonus = V_ST_VOL_HEALTHY
         vol_detail = f"vol_healthy_{vol_ratio:.1f}x"
-    else:
-        vol_bonus = V_ST_VOL_WEAK
-        vol_detail = f"vol_weak_{vol_ratio:.1f}x"
 
     sec = classify_sector(stock.name)
     cluster_count = len(clusters.get(sec, [])) if clusters else 0

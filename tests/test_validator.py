@@ -2,6 +2,8 @@ from tests.helpers import _kline  # noqa: E402
 
 from scanner.config import (
     V_MO_MA_FULL,
+    V_MO_MA_NONE,
+    V_MO_MA_PARTIAL,
     V_NF_HL_CLEAR,
     V_NF_HL_FAIL,
     V_NF_SECTOR_STRONG,
@@ -134,6 +136,41 @@ class TestValidateMomentumHelpers:
         k = _kline([0.5]*15, volumes=[1.0, 1.2, 1.4, 1.5, 1.6]*3)
         bonus, detail = _mo_volume_uniformity(k[:-1])
         assert bonus > 0, f"expected positive bonus, got {bonus} ({detail})"
+
+    def test_ma_alignment_uses_ema_consistent_with_analysis(self):
+        # P0 回归：validator 的 _mo_ma_alignment 必须与 analysis._ma_bull_score
+        # 使用同一 EMA 约定，否则评分加分与验证维度会脱节。
+        from scanner.analysis import _ma_bull_score
+
+        # 构造 EMA 多头（5>10>20）序列：稳定上升
+        pcts = [0.5]*5 + [1.0]*5 + [1.5]*5 + [2.0, 2.0, 2.5, 3.0, 3.0]
+        k = _kline(pcts, volumes=[1.0]*20)
+        closes = [c["close"] for c in k[:-1]]
+
+        val_bonus, val_detail = _mo_ma_alignment(closes)
+        ana_bonus = _ma_bull_score(closes)
+
+        # 三态对齐：FULL↔+6 / PARTIAL↔+3 / NONE↔-3
+        if val_bonus == V_MO_MA_FULL:
+            assert ana_bonus > 0, f"validator FULL but analysis={ana_bonus} ({val_detail})"
+        elif val_bonus == V_MO_MA_NONE:
+            assert ana_bonus <= 0, f"validator NONE but analysis={ana_bonus} ({val_detail})"
+        else:  # PARTIAL
+            assert ana_bonus > 0, f"validator PARTIAL but analysis={ana_bonus} ({val_detail})"
+
+    def test_ma_alignment_ema_differs_from_sma_rejected(self):
+        # 守卫：确保实现确实走 EMA 而非 SMA（防止回归回 SMA 导致 P0 复发）。
+        # 该序列 SMA 下 5<10（ma_none），但 EMA 下 5>10（partial）——经典分歧场景。
+        closes = [13.12, 15.67, 13.57, 14.16, 18.64, 19.97, 13.64, 11.97,
+                  17.28, 12.04, 10.06, 19.02, 14.24, 18.2, 14.06, 18.83,
+                  14.61, 11.63, 10.15, 15.52]
+        sma5 = sum(closes[-5:]) / 5
+        sma10 = sum(closes[-10:]) / 10
+        bonus, detail = _mo_ma_alignment(closes)
+        # 若实现错误地用 SMA，会得到 ma_none；正确 EMA 应给出 partial
+        assert (sma5 < sma10) and (bonus != -5), (
+            f"EMA 实现应给 partial/full，但得到 {bonus} ({detail}); SMA 判定 ma_none"
+        )
 
 
 class TestValidateMomentum:

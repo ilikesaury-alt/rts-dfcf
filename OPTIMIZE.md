@@ -25,6 +25,14 @@
 - **问题**: `get_tracking_summary()` 调用被注释掉，终端不显示胜率统计
 - **修复**: 取消注释
 
+### 67. [Bug] 动量策略 MA 多头判定「分析用 EMA / 验证用 SMA」不一致 🔴 P0 ✅
+
+- **位置**: `scanner/analysis.py:84-94` (`_ma_bull_score` EMA) vs `scanner/validator.py:162-180` (`_mo_ma_alignment` 原 SMA)
+- **问题**: 动量打分用 EMA 给 MA 多头 +6 分，交叉验证用 SMA 重新判定。两者对波动序列可给出相反结论，导致「分析加分但验证维度拿不到正分被静默剔除」或「分析未加分但验证判多头放行」，交叉验证 MA 维度失去意义。
+- **修复**: 2026-07-16 `_mo_ma_alignment` 改用 `compute_ma(closes, n, ema=True)`，与 `analysis._ma_bull_score` 完全一致（EMA 统一方案）。新增 `test_ma_alignment_uses_ema_consistent_with_analysis` 与 `test_ma_alignment_ema_differs_from_sma_rejected` 回归。同时修正 `analysis.py:81` 注释（原「与 MACD 同一 EMA 约定」错误，MACD 内部 EMA 从 closes[0] 播种，与此处 window[0] 播种不同）
+- **影响**: 部分历史票的多动验证结果改变（原本 SMA 判 ma_none 的可能变 partial/full 而更易通过），属预期修复行为
+- **备注**: pullback 两侧均 SMA 已一致；new_face 验证无 MA 维度，不受影响
+
 ---
 
 ## 🟡 策略改进
@@ -348,11 +356,12 @@
 
 ### 🟢 工程改进
 
-#### 65. [工程] `validator.py:339-340` 死代码
+#### 65. [工程] `validator.py` 死代码 `V_ST_VOL_WEAK` ✅
 
 - **位置**: `scanner/validator.py` — `validate_short_term()` else 分支
-- **问题**: `V_ST_VOL_WEAK` (-8) 永远不可达，因为 line 329 的硬门 `vol_ratio < 1.0` 已提前 return
-- **影响**: 无评分影响，纯死代码
+- **问题**: `V_ST_VOL_WEAK` (-8) 永远不可达，因为硬门 `vol_ratio < 1.0` 已提前 return
+- **修复**: 2026-07-16 删除死 else 分支与 `config.V_ST_VOL_WEAK` 常量（已确认无其他引用），合并为单一 `vol_healthy` 分支
+- **影响**: 无评分影响，纯死代码清理
 
 #### 66. [工程] `candidate_pool.py:179-184` 死代码
 
