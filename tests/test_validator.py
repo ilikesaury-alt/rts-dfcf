@@ -14,6 +14,7 @@ from scanner.config import (
     V_ST_RANK_TOP10,
     V_ST_SECTOR_HOT,
     V_ST_MA_SUPPORT,
+    MO_OVERBOUGHT_VALIDATION_PENALTY,
 )
 from scanner.models import KlineSummary, StockInfo
 from scanner.validator import (
@@ -211,6 +212,73 @@ class TestValidateMomentum:
                             lambda h: (-8, "spike"))
         passed2, total2, dims2 = validate_momentum(_stock(), None, closes, k[:-1], None)
         assert not passed2, f"背离且无可补偿正维度应不通过, total={total2}, dims={dims2}"
+
+    def _overbought_kline(self, ramp=1.6):
+        # 末周期超买序列：前段横盘 + 末段持续拉升，BOLL%破上轨、KDJ J>105、20日涨幅>60%。
+        base = 10.0
+        closes = [base] * 25
+        n = 25
+        for i in range(n):
+            closes.append(base * (1 + ramp * (i / (n - 1)) ** 1.5))
+        last = closes[-1]
+        for p in [2, 3, 6, 2, 4]:
+            last *= (1 + p / 100)
+            closes.append(last)
+        klines = []
+        for i, c in enumerate(closes):
+            klines.append({
+                "date": f"2026-03-{i+1:02d}",
+                "open": c, "close": c,
+                "high": c * 1.04, "low": c * 0.96,
+                "volume": 1.0, "percent": 0,
+            })
+        return klines
+
+    def test_overbought_flagged_and_suppressed(self):
+        # 鱼尾段超买：v_mo_overbought=True，验证分被轻度压制(-5)；
+        # 但不硬否决（momentum 趋势延续，保留 passed 门禁）。
+        k = self._overbought_kline()
+        closes = [c["close"] for c in k[:-1]]
+        stock = StockInfo(symbol="300999", name="测试", code="300999",
+                          percent=4.0, current=k[-1]["close"], value=8000,
+                          rank_change=1500, rank=10)
+        passed, total, dims = validate_momentum(stock, None, closes, k[:-1], None)
+        assert dims["v_mo_overbought"] is True, f"应判超买, dims={dims}"
+        # enhancer 标记逻辑（复刻）：以 v_mo_overbought 为准
+        flag = dims.get("mo_overbought_penalty") or True if dims.get("v_mo_overbought") else None
+        assert flag is not None
+        # 轻度压制：total 应比非超买对照低 5（MO_OVERBOUGHT_VALIDATION_PENALTY）
+        k2 = _kline([0.5, -0.3, 0.4, -0.2, 0.3] * 6, volumes=[1.0] * 30)
+        closes2 = [c["close"] for c in k2[:-1]]
+        stock_clean = StockInfo(symbol="300999", name="测试", code="300999",
+                                percent=4.0, current=k2[-1]["close"], value=8000,
+                                rank_change=1500, rank=10)
+        _, total_clean, dims_clean = validate_momentum(stock_clean, None, closes2, k2[:-1], None)
+        assert dims_clean["v_mo_overbought"] is False
+        assert total == total_clean + MO_OVERBOUGHT_VALIDATION_PENALTY, \
+            f"超买应压制 {MO_OVERBOUGHT_VALIDATION_PENALTY}, total={total}, clean={total_clean}"
+
+    def test_overbought_no_hard_veto(self):
+        # 超买不应硬否决：若 MA/量能等正维度达标，passed 仍可为 True。
+        k = self._overbought_kline()
+        closes = [c["close"] for c in k[:-1]]
+        stock = StockInfo(symbol="300999", name="测试", code="300999",
+                          percent=4.0, current=k[-1]["close"], value=8000,
+                          rank_change=1500, rank=10)
+        # 用 monkeypatch 风格的正维度组合：MA 多头 + 量能均匀
+        import scanner.validator as V
+        orig_ma, orig_vol = V._mo_ma_alignment, V._mo_volume_uniformity
+        V._mo_ma_alignment = lambda c: (V.V_MO_MA_FULL, "full")
+        V._mo_volume_uniformity = lambda h: (5, "uniform")
+        try:
+            passed, total, dims = validate_momentum(stock, None, closes, k[:-1], None)
+            assert dims["v_mo_overbought"] is True
+            assert passed, f"超买不应硬否决，正维度达标应通过, total={total}, dims={dims}"
+            # 超买仅轻度压制验证分（MA+量能 +10，减去 -5 超买惩罚 = 5），不归零、不硬否决
+            assert total == V.V_MO_MA_FULL + 5 + MO_OVERBOUGHT_VALIDATION_PENALTY, \
+                f"超买应轻度压制 -5, total={total}, dims={dims}"
+        finally:
+            V._mo_ma_alignment, V._mo_volume_uniformity = orig_ma, orig_vol
 
 
 class TestValidatePullbackHelpers:

@@ -41,6 +41,7 @@ from scanner.config import (
     V_ST_VOL_SURGE,
     ST_OVERBOUGHT_BOLL,
     ST_OVERBOUGHT_KDJ,
+    MO_OVERBOUGHT_VALIDATION_PENALTY,
     PULLBACK_20D_GAIN_WARN,
     PULLBACK_20D_GAIN_EXTREME,
 )
@@ -240,6 +241,13 @@ def validate_momentum(stock, kline_summary, closes: list[float],
 
     total = ma_bonus + div_bonus + vol_bonus
 
+    # 末周期超买（鱼尾段）：只标记 + 轻度压制验证分，不硬否决——momentum 是趋势
+    # 延续策略，高 BOLL%/J 部分属正常强势特征，硬否决会误杀仍处健康主升浪的动量股。
+    overbought = _mo_is_overbought(closes, historical_kline, stock)
+    details["v_mo_overbought"] = overbought
+    if overbought:
+        total += MO_OVERBOUGHT_VALIDATION_PENALTY
+
     # 中等处置：_mo_divergence 仅返回 0（无背离）或 -10（顶背离），从不计入正维度。
     # 因此出现顶背离时，候选必须通过「MA 多头 + 量能均匀」两个其它正维度（pos_dims>=2）才放行，
     # 背离本身不会单独否决候选，但会强制其它维度补偿（STRATEGY.md 动量「中等」策略）。
@@ -417,6 +425,41 @@ def _st_is_overbought(closes: list[float], historical_kline: list[dict],
 
     用历史 closes（不含今日）计算 BOLL %B / KDJ J / 20日涨幅 / RSI(14)，
     并尽量把今日收盘并入以反映最新价（今日 bar 已在 historical_kline 之后）。
+    """
+    series = list(closes)
+    today_close = getattr(stock, "current", 0) or 0
+    if today_close > 0 and (not series or today_close != series[-1]):
+        series.append(today_close)
+
+    if len(series) >= 20:
+        boll = compute_bollinger_bands(series)
+        if boll is not None and boll["b_pct"] > ST_OVERBOUGHT_BOLL:
+            return True
+    if len(series) >= 9:
+        kdj = compute_kdj(
+            [k["high"] for k in historical_kline] + (
+                [getattr(stock, "current", 0)] if getattr(stock, "current", 0) else []),
+            [k["low"] for k in historical_kline] + (
+                [getattr(stock, "current", 0)] if getattr(stock, "current", 0) else []),
+            series,
+        )
+        if kdj is not None and kdj["J"] > ST_OVERBOUGHT_KDJ:
+            return True
+    if len(series) >= 21:
+        gain_20d = (series[-1] - series[-21]) / series[-21] * 100
+        if gain_20d > PULLBACK_20D_GAIN_EXTREME:
+            return True
+    return False
+
+
+def _mo_is_overbought(closes: list[float], historical_kline: list[dict],
+                       stock: object) -> bool:
+    """判定动量候选是否处于末周期超买（鱼尾段）。
+
+    与 _st_is_overbought 同构：用历史 closes（不含今日）计算 BOLL %B / KDJ J /
+    20日涨幅 / RSI，并尽量把今日收盘并入以反映最新价（今日 bar 已在
+    historical_kline 之后）。momentum 是趋势延续策略，超买只标记+压制，
+    不在此硬否决（硬门禁交给标准 passed 判定）。
     """
     series = list(closes)
     today_close = getattr(stock, "current", 0) or 0

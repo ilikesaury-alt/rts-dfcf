@@ -214,6 +214,7 @@ ST_OVERBOUGHT_BOLL = 1.0          # BOLL %B > 此值 = 破上轨（高位）
 ST_OVERBOUGHT_BOLL_PENALTY = -5
 ST_OVERBOUGHT_KDJ = 105           # KDJ J > 此值 = 极端超买（健康强趋势 J 常 90~115，100 易误伤）
 ST_OVERBOUGHT_KDJ_PENALTY = -5
+MO_OVERBOUGHT_VALIDATION_PENALTY = -5  # 动量超买时验证分轻度压制（不硬否决）
 
 # Bonus constants
 CROSS_SOURCE_BONUS = 5

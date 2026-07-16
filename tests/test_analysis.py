@@ -161,6 +161,57 @@ class TestAnalyzeMomentum:
         assert result is not None
         assert result.dimensions["momentum_accumulated"] == 15
 
+    def _overbought_kline(self, tail_pcts, ramp=2.4):
+        # 构造末周期超买序列（鱼尾段）：长横盘 + 末段仅最后几根急拉冲刺，
+        # 使 BOLL%破上轨（末根远离低波动的 20日中轨）、KDJ J>105、20日涨幅>60%。
+        base = 10.0
+        closes = [base] * 30  # 长横盘：低波动 → 20日带宽窄
+        # 末段仅最后几根急拉（窄幅 +15%×3 冲刺使 KDJ J>105，整体破上轨使 BOLL%>1）
+        burst = [15, 15, 15, 8]
+        last = closes[-1]
+        for p in burst:
+            last *= (1 + p / 100)
+            closes.append(last)
+        for p in tail_pcts:
+            last *= (1 + p / 100)
+            closes.append(last)
+        klines = []
+        for i, c in enumerate(closes):
+            # 全程窄幅（±2%）：KDJ J 对急拉敏感，窄幅即可爆表
+            klines.append({
+                "date": f"2026-03-{i+1:02d}",
+                "open": c, "close": c,
+                "high": c * 1.02, "low": c * 0.98,
+                "volume": 1.0, "percent": 0,
+            })
+        return klines
+
+    def test_momentum_overbought_boll_kdj_penalty(self):
+        # 鱼尾段（破上轨 + J>105）：分析侧应施加软惩罚，标记 mo_overbought_*。
+        k = self._overbought_kline([2])
+        result = analyze_momentum(_stock(percent=4, rank_change=2000, value=12000, current=k[-1]["close"]), k)
+        assert result is not None
+        assert "mo_overbought_boll" in result.dimensions, f"应标记 BOLL 破上轨, dims={result.dimensions}"
+        assert "mo_overbought_kdj" in result.dimensions, f"应标记 KDJ J 极端, dims={result.dimensions}"
+        assert result.dimensions.get("mo_overbought_penalty", 0) < 0, "超买软惩罚应为负分"
+
+    def test_momentum_overbought_20d_extreme_penalty(self):
+        # 20日累计涨幅 > 60%（extreme）：应触发 mo_overbought_20d 软惩罚。
+        k = self._overbought_kline([4, 5, 8, 3, 6], ramp=2.4)
+        result = analyze_momentum(_stock(percent=4, rank_change=2000, value=12000, current=k[-1]["close"]), k)
+        assert result is not None
+        assert "mo_overbought_20d" in result.dimensions, f"应标记 20日极值, dims={result.dimensions}"
+        assert result.dimensions["mo_overbought_20d"] > 60, "20日涨幅应 > 60%"
+
+    def test_momentum_moderate_no_20d_extreme_penalty(self):
+        # 对照：近期温和加速（accumulated>=10）但 20日涨幅 < 40% WARN，
+        # 不触发 20日极值惩罚（BOLL% 破上轨在健康动量中属正常强势，软惩罚可接受）。
+        k = _kline([0] * 15 + [4, 4, 4, 4, 4, -2], volumes=[1.0] * 21)
+        result = analyze_momentum(_stock(percent=4, rank_change=2000, value=12000), k)
+        assert result is not None
+        assert "mo_overbought_20d" not in result.dimensions, \
+            f"温和主升浪不应触发 20日极值惩罚, dims={result.dimensions}"
+
 
 class TestAnalyzePullback:
 

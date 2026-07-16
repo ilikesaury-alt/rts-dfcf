@@ -246,6 +246,46 @@ def _compute_momentum_indicators(closes: list[float], historical_kline: list[dic
     return bonus, dims
 
 
+def _momentum_overbought_penalty(closes: list[float], historical_kline: list[dict]
+                                  ) -> tuple[int, dict]:
+    """动量末周期超买软惩罚（鱼尾段）。
+
+    与 short_term 同构但更温和：momentum 是趋势延续策略，高 BOLL%/J 部分属
+    正常强势特征，故此处仅做软惩罚、不硬否决（硬门禁留给 validator 的标记/压制）。
+    注意：用历史 closes（不含今日），与 short_term 分析侧口径一致；
+    validator 侧会再 append stock.current 做更完整的超买判定。
+    """
+    pen = 0
+    dims: dict[str, float] = {}
+
+    if len(closes) >= 20:
+        boll = compute_bollinger_bands(closes)
+        if boll is not None and boll["b_pct"] > ST_OVERBOUGHT_BOLL:
+            pen += ST_OVERBOUGHT_BOLL_PENALTY
+            dims["mo_overbought_boll"] = round(boll["b_pct"], 2)
+
+    if len(closes) >= 9:
+        kdj_val = compute_kdj(
+            [k["high"] for k in historical_kline],
+            [k["low"] for k in historical_kline],
+            closes,
+        )
+        if kdj_val is not None and kdj_val["J"] > ST_OVERBOUGHT_KDJ:
+            pen += ST_OVERBOUGHT_KDJ_PENALTY
+            dims["mo_overbought_kdj"] = round(kdj_val["J"], 1)
+
+    if len(closes) >= 21:
+        gain_20d = (closes[-1] - closes[-21]) / closes[-21] * 100
+        if gain_20d > PULLBACK_20D_GAIN_EXTREME:
+            pen += PULLBACK_20D_EXTREME_PENALTY
+            dims["mo_overbought_20d"] = round(gain_20d, 1)
+        elif gain_20d > PULLBACK_20D_GAIN_WARN:
+            pen += PULLBACK_20D_WARN_PENALTY
+            dims["mo_overbought_20d"] = round(gain_20d, 1)
+
+    return pen, dims
+
+
 def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
                      today_str: str | None = None) -> KlineSummary | None:
     if not kline or len(kline) < 5:
@@ -508,6 +548,15 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
     indicator_bonus, indicator_dims = _compute_momentum_indicators(closes, historical_kline, W)
     score += indicator_bonus
     dims.update(indicator_dims)
+
+    # 末周期超买软惩罚（鱼尾段）：与 short_term 同构但更温和——momentum 是趋势
+    # 延续策略，高 BOLL%/J 部分属正常强势，故仅软惩罚、不硬否决；validator 侧
+    # 再做标记 + 验证压制（仍保留 passed 门禁，不挡正常主升浪）。
+    ob_pen, ob_dims = _momentum_overbought_penalty(closes, historical_kline)
+    score += ob_pen
+    dims.update(ob_dims)
+    if ob_pen:
+        dims["mo_overbought_penalty"] = ob_pen
 
     return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
                         volume_ratio=round(vol_ratio, 2), bottom_confirmed=no_crash,
