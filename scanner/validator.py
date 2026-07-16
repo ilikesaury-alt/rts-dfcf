@@ -366,10 +366,12 @@ def validate_short_term(stock, kline_summary, closes: list[float],
         elif closes[-1] < ma5:
             ma_bonus = V_ST_MA_BROKEN
 
-    # 弱转强作为第 4 个软维度：真弱转强即便板块/排名/MA 全不达标也应放行
+    # 弱转强作为第 4 个软维度：真弱转强即便板块/排名/MA 全不达标也应放行。
+    # 注意：st_weak_to_strong 已在 analyze_short_term 的 score 中计入（+8），
+    # 此处仅用作门控维度（计入 pos_dims），不再加入 total，避免重复计分（P0-68）。
     wts_bonus = kline_summary.dimensions.get("st_weak_to_strong", 0)
 
-    total = vol_bonus + sec_bonus + rank_bonus + ma_bonus + wts_bonus
+    total = vol_bonus + sec_bonus + rank_bonus + ma_bonus
 
     details: dict[str, int | float | str] = {
         "v_st_vol": vol_bonus,

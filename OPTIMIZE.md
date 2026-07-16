@@ -29,9 +29,17 @@
 
 - **位置**: `scanner/analysis.py:84-94` (`_ma_bull_score` EMA) vs `scanner/validator.py:162-180` (`_mo_ma_alignment` 原 SMA)
 - **问题**: 动量打分用 EMA 给 MA 多头 +6 分，交叉验证用 SMA 重新判定。两者对波动序列可给出相反结论，导致「分析加分但验证维度拿不到正分被静默剔除」或「分析未加分但验证判多头放行」，交叉验证 MA 维度失去意义。
-- **修复**: 2026-07-16 `_mo_ma_alignment` 改用 `compute_ma(closes, n, ema=True)`，与 `analysis._ma_bull_score` 完全一致（EMA 统一方案）。新增 `test_ma_alignment_uses_ema_consistent_with_analysis` 与 `test_ma_alignment_ema_differs_from_sma_rejected` 回归。同时修正 `analysis.py:81` 注释（原「与 MACD 同一 EMA 约定」错误，MACD 内部 EMA 从 closes[0] 播种，与此处 window[0] 播种不同）
+- **修复**: 2026-07-16 `_mo_ma_alignment` 改用 `compute_ma(closes, n, ema=True)`，与 `analysis._ma_bull_score` 完全统一（EMA 统一方案）。新增 `test_ma_alignment_uses_ema_consistent_with_analysis` 与 `test_ma_alignment_ema_differs_from_sma_rejected` 回归。同时修正 `analysis.py:81` 注释（原「与 MACD 同一 EMA 约定」错误，MACD 内部 EMA 从 closes[0] 播种，与此处 window[0] 播种不同）
 - **影响**: 部分历史票的多动验证结果改变（原本 SMA 判 ma_none 的可能变 partial/full 而更易通过），属预期修复行为
 - **备注**: pullback 两侧均 SMA 已一致；new_face 验证无 MA 维度，不受影响
+
+### 68. [Bug] 超短策略 `st_weak_to_strong` 弱转强信号重复计分 🔴 P0 ✅
+
+- **位置**: `scanner/analysis.py:957-959`（`analyze_short_term` 计入 +8） + `scanner/validator.py:370-372`（`validate_short_term` 从 `kline_summary.dimensions` 读回同一 8 再加进 `total`）
+- **问题**: 弱转强信号在最终分被加两次（分析分 +8 + 验证分 +8 = +16）。其余 3 策略验证维度均为 validator 独立重算（两层独立信号），唯独此信号是 validator 逐字复制分析 `dims` 同一值再加一遍，纯属重复计值。orchestrator `_try_candidate` 把 `total` 累加进 `score` 触发重复。
+- **修复**: 2026-07-16 `validate_short_term` 保留 `wts_bonus` 作为第 4 软维度计入 `pos_dims`（门控仍生效），但**不加入 `total`**；新增 `test_weak_to_strong_not_double_counted` 回归（含对照断言：修复后 wts 不影响 total）。
+- **影响**: 弱转强类 short_term 票最终分下降 8 分（回到 +8 单计），排名可能微调，属预期修正；通过/不通过判定不变。
+- **备注**: `st_wts_gap`(+4) 仅分析计分、验证不读，单计正确，不受影响。
 
 ---
 

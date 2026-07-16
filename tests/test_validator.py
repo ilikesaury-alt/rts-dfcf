@@ -421,6 +421,54 @@ class TestValidateShortTerm:
         assert passed
         assert dims["v_st_weak"] == 8
 
+    def test_weak_to_strong_not_double_counted(self):
+        # P0-68 回归：st_weak_to_strong(+8) 已在 analyze_short_term 的 score 计入，
+        # validate_short_term 仅将其作为门控维度，不得再加入 total，否则最终分重复 +8。
+        from scanner.analysis import analyze_short_term
+
+        # 构造昨日分歧/炸板 + 今日 2~8% 转强、量比≥1.0 的弱转强序列
+        prev = 10.0
+        bars = []
+        for i in range(9):
+            bars.append({"date": f"2026-04-{i+1:02d}", "open": prev, "high": prev * 1.01,
+                         "low": prev * 0.99, "close": prev, "volume": 1.0, "percent": 0.0})
+        # 昨日：上影线 >4%、收盘/最高-1 <3%（分歧/烂板）
+        bars.append({"date": "2026-04-10", "open": 10.0, "high": 12.0,
+                     "low": prev * 0.98, "close": 10.9, "volume": 2.0, "percent": 9.0})
+        # 今日：3% 转强
+        TODAY = "2026-04-11"
+        bars.append({"date": TODAY, "open": 10.9, "high": 11.34,
+                     "low": 10.68, "close": 11.23, "volume": 2.5, "percent": 3.0})
+
+        stock = StockInfo(symbol="300999", name="测试", code="300999",
+                          percent=3.0, current=11.23, value=8000,
+                          rank_change=1500, rank=50, market_cap=50)
+        ks = analyze_short_term(stock, bars, today_str=TODAY)
+        assert ks is not None
+        assert ks.dimensions.get("st_weak_to_strong") == 8, "分析分应含弱转强 +8"
+
+        closes = [b["close"] for b in bars[:-1]]
+        historical = bars[:-1]
+        passed, total, dims = validate_short_term(stock, ks, closes, historical, None)
+
+        # 门控仍生效
+        assert passed, f"弱转强应放行, total={total}, dims={dims}"
+        # wts 不进入 total（避免重复计分）：total 应等于其余维度之和
+        expected_total = dims["v_st_vol"] + dims["v_st_sector"] + dims["v_st_rank"] + dims["v_st_ma"]
+        assert total == expected_total, (
+            f"total 不应含 wts(+8)，实际 total={total} 期望={expected_total}"
+        )
+        assert dims["v_st_weak"] == 8  # 仅展示用
+
+        # 对照：把 st_weak_to_strong 置 0 后，validate 的 total 应恰好少 8，
+        # 证明修复前 wts 确实被重复计入 total（修复后不再计入）。
+        ks_no_wts = analyze_short_term(stock, bars, today_str=TODAY)
+        ks_no_wts.dimensions["st_weak_to_strong"] = 0
+        _, total_no_wts, _ = validate_short_term(stock, ks_no_wts, closes, historical, None)
+        assert total - total_no_wts == 0, (
+            f"修复后 wts 不应影响 total（应差 0），实际差 {total - total_no_wts}"
+        )
+
     def test_hot_sector_bonus(self):
         k = _kline([5, 3, 6, 2, 4], volumes=[1.0, 1.2, 1.5, 1.8, 2.0])
         closes = [c["close"] for c in k[:-1]]

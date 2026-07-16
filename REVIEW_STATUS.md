@@ -66,6 +66,7 @@
 | ✅ P1 | 63 | 回调 sector 维度 `count>=1` 即正分 / bollinger 回中轨同 +5 | 2026-07-13 sector 改 `count>=3`(+8)，1~2 改中性 0（非 -5）；bollinger 中轨改 +2；删死常量 COLD，新增 NEUTRAL |
 | ✅ P1 | 64 | 动量量能阈值硬编码未用常量 | 2026-07-13 改用 `_MOMENTUM_VOL_HEALTHY_*` |
 | ✅ P0 | 67 | 动量 MA 多头判定「分析 EMA / 验证 SMA」不一致导致交叉验证脱节 | 2026-07-16 `_mo_ma_alignment` 改 EMA 与 analysis 统一；注释修正；死代码清理 |
+| ✅ P0 | 68 | 超短 `st_weak_to_strong` 弱转强信号重复计分（分析+8 与验证+8 叠加） | 2026-07-16 `validate_short_term` 保留 wts 作门控维度但不计入 total；新增回归 |
 
 ---
 
@@ -77,7 +78,7 @@
 | 2026-07-13 | 全模块（原 ❌ 18 个文件 + 测试） | orchestrator/cross_validation/api/ths_api/database/indicators/models/candidate_pool/rank_trend/sector/trading_session/display/log_utils/utils/industry_chain/unified_scanner/stock_report/tests | 🔴 双源加分双算(P0-1)修; 🔴 产业链全新库崩溃(P0-3)修; 🔴 动量验证门失效(P0-4)修; 🟡 日期基准/熔断/换手率/报告None/回调维度/量能常量 6 项修; P0-2 瓶颈映射暂缓 | 150 测试全过；PowerShell Set-Content 曾损坏 UTF-8 中文源，已 git checkout 还原并以 UTF-8 安全方式重做 |
 | 2026-07-15 | 策略逻辑正确性/数据流完整性/加分逻辑/交叉验证/配置一致性/错误处理 | analysis.py/config.py/validator.py/enhancer.py/orchestrator.py/api.py/database.py/indicators.py/models.py/sector.py/utils.py | 无新 P0/P1 发现；#31(intraday反指)确认已修；新增 2 项 P2 死代码 | 245 测试全过；覆盖 analysis/config/validator/enhancer 四个 ⚠️ 模块→✅；全项目仅剩 tests/* 未覆盖 |
 | 2026-07-15 | 子系统清理 + 主扫描器缺陷修复 | industry_chain(删除)/orchestrator.py/cross_validation.py/database.py/config.py | 🗑️ 移除整个产业链子系统(industry_chain/ + industry_chain_scanner.py)，清理 init_industry_chain_tables/chokepoint_recommendations 表/cross_validation 链依赖/Industry chain 配置块/文档；🔴 修复实时扫描 K 线永远少一天(orchestrator.py 盘中补拉今日 Bar)；🟡 双挂票 stock 级加分按 symbol 去重(排名不变) | 确认主扫描器市值过滤用真实 market_capital，热度值未当市值；热度当市值 bug 仅存在于已删的 industry_chain/pipeline.py:39 |
-| 2026-07-16 | 策略实现专项审查（P0 修复） | analysis.py/validator.py/config.py + tests/test_validator.py | 🔴 修复动量 MA 多头判定分析(EMA)/验证(SMA)不一致(P0-67)：`_mo_ma_alignment` 改 `compute_ma(ema=True)` 与 `analysis._ma_bull_score` 统一；修正 analysis.py:81 错误注释；🟢 删除 `V_ST_VOL_WEAK` 死分支与 config 常量(原 OPTIMIZE #65)；新增 2 条 EMA/SMA 对齐回归测试 | 294 测试全过；pullback 两侧均 SMA 已一致、new_face 验证无 MA 维度均不受影响；采用 EMA 统一方向(创业板高波动噪声更小) |
+| 2026-07-16 | 策略实现专项审查（P0 修复·第二轮） | analysis.py/validator.py + tests/test_validator.py | 🔴 修复超短 `st_weak_to_strong` 重复计分(P0-68)：`validate_short_term` 保留 wts 作门控维度(`pos_dims`)但不计入 `total`（已在分析分计 +8）；新增 `test_weak_to_strong_not_double_counted` 回归 | 295 测试全过；其余 3 策略验证维度均为 validator 独立重算两层信号，不受影响；`st_wts_gap`(+4) 单计正确 |
 
 ---
 
