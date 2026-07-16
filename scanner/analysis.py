@@ -41,7 +41,7 @@ from scanner.config import (
 )
 from scanner.indicators import (
     compute_adx, compute_bollinger_bands, compute_kdj,
-    compute_macd, compute_rsi,
+    compute_macd, compute_ma, compute_rsi,
 )
 from scanner.models import KlineSummary, StockInfo
 
@@ -78,13 +78,16 @@ _MA_BEAR_SCORE = -3
 
 
 def _ma_bull_score(closes: list[float]) -> int:
+    # 使用 EMA（与 MACD 同一移动平均约定），创业板高波动下比 SMA 噪声更小。
     if len(closes) < 10:
         return 0
-    ma5 = sum(closes[-5:]) / 5
-    ma10 = sum(closes[-10:]) / 10
+    ma5 = compute_ma(closes, 5, ema=True)
+    ma10 = compute_ma(closes, 10, ema=True)
+    if ma5 is None or ma10 is None:
+        return 0
     if len(closes) >= 20:
-        ma20 = sum(closes[-20:]) / 20
-        if ma5 > ma10 > ma20:
+        ma20 = compute_ma(closes, 20, ema=True)
+        if ma20 is not None and ma5 > ma10 > ma20:
             return _MA_BULL_3_TIER_SCORE
     if ma5 > ma10:
         return _MA_BULL_2_TIER_SCORE
@@ -160,7 +163,8 @@ def _compute_new_face_indicators(closes: list[float], historical_kline: list[dic
         elif rsi_val < 30:
             bonus += W["rsi_bonus"]
         dims["new_face_rsi"] = round(rsi_val, 1)
-    if rsi14_val is not None and rsi14_val < 30:
+    # RSI(14) 仅作"超卖但未触发 RSI(6) 极端"的补充确认，避免与 RSI(6) 共线放大超卖信号。
+    if rsi14_val is not None and rsi14_val < 30 and not (rsi_val is not None and rsi_val < 30):
         bonus += W["rsi14_oversold_bonus"]
         dims["new_face_rsi14"] = round(rsi14_val, 1)
     if kdj_val is not None:

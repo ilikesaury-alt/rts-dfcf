@@ -81,6 +81,11 @@ def main():
 
                 ths_raw = fetch_ths_hot_list(ths_session)
                 ths_symbols = {i["symbol"] for i in (ths_raw or []) if i.get("symbol")}
+                # 同花顺概念标签 → 用于更精准的行业聚类（板块联动加分）
+                concept_map = {
+                    i["symbol"]: " ".join(i.get("concept_tags") or [])
+                    for i in (ths_raw or []) if i.get("symbol")
+                }
 
                 for item in xq_raw:
                     sym = item.get("symbol", "")
@@ -90,7 +95,7 @@ def main():
                 print(f"\r  📡 雪球{len(xq_raw)}只 (双源{both_count}只)", end="", flush=True)
 
                 new_faces, momentum, pullback_list, short_term_list, stale_candidates, all_gem, filtered_large_cap = (
-                    scan_with_raw(xq_raw, conn, xq_session))
+                    scan_with_raw(xq_raw, conn, xq_session, concept_map=concept_map))
 
                 new_faces.sort(key=lambda x: -x.score)
                 momentum.sort(key=lambda x: -x.score)

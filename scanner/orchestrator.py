@@ -256,7 +256,13 @@ def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, l
     return None, None, None, None
 
 
-def _compute_rps(candidates: list[Candidate]) -> dict[str, int]:
+def _compute_rps(candidates: list[Candidate],
+                 baseline: list[float] | None = None) -> dict[str, int]:
+    """计算 RPS 相对强弱加分。
+
+    baseline: 全 GEM 监控集的累计涨幅列表（排名基准）。若提供，候选在其中排名，
+    恢复 RPS「相对全市场强弱」本意；若不提供则退化为候选池内排名（旧行为）。
+    """
     scores: dict[str, int] = {}
     # 双挂票（同代码出现在多个桶）只计一次排名，避免拉高 total 扭曲分位
     seen: set[str] = set()
@@ -264,24 +270,34 @@ def _compute_rps(candidates: list[Candidate]) -> dict[str, int]:
     candidates = uniq
     if len(candidates) < 2:
         return {c.stock.symbol: 0 for c in candidates}
-    accum = [(c.stock.symbol, c.kline.accumulated_pct if c.kline else 0) for c in candidates]
-    sorted_by_accum = sorted(accum, key=lambda x: x[1])
-    total = len(sorted_by_accum)
-    for rank, (sym, _) in enumerate(sorted_by_accum):
-        pctile = (rank + 1) * 100 // total
+    cand_accum = [c.kline.accumulated_pct if c.kline else 0 for c in candidates]
+    if baseline:
+        base_sorted = sorted(baseline)
+        base_total = len(base_sorted)
+        def _pctile(v: float) -> int:
+            # 在基准分布中的百分位（0~100）
+            lo = sum(1 for b in base_sorted if b <= v)
+            return lo * 100 // base_total
+        pctiles = [_pctile(v) for v in cand_accum]
+    else:
+        sorted_by_accum = sorted(cand_accum)
+        total = len(sorted_by_accum)
+        pctiles = [(rank + 1) * 100 // total for rank in sorted(range(total), key=lambda i: sorted_by_accum[i])]
+    for c, pctile in zip(candidates, pctiles):
         if pctile >= RPS_PCTILE_HIGH:
-            scores[sym] = RPS_BONUS_HIGH
+            scores[c.stock.symbol] = RPS_BONUS_HIGH
         elif pctile >= RPS_PCTILE_MEDIUM:
-            scores[sym] = RPS_BONUS_MEDIUM
+            scores[c.stock.symbol] = RPS_BONUS_MEDIUM
         elif pctile < RPS_PCTILE_LOW:
-            scores[sym] = RPS_BONUS_LOW
+            scores[c.stock.symbol] = RPS_BONUS_LOW
         else:
-            scores[sym] = 0
+            scores[c.stock.symbol] = 0
     return scores
 
 
 def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
-                  session: requests.Session) -> tuple[
+                  session: requests.Session,
+                  concept_map: dict[str, str] | None = None) -> tuple[
                       list[Candidate], list[Candidate], list[Candidate],
                       list[Candidate], list[Candidate], list[StockInfo], int]:
     global _session_state
@@ -322,7 +338,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
 
     klines = _fetch_all_klines(conn, session, gem_stocks_filtered)
 
-    clusters = get_sector_clusters(gem_stocks_filtered)
+    clusters = get_sector_clusters(gem_stocks_filtered, concept_map=concept_map)
 
     new_faces: list[Candidate] = []
     momentum: list[Candidate] = []
@@ -347,7 +363,19 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         c.circ_market_cap = cap_data.get("circ_market_cap", 0)
 
     rps_scores: dict[str, int] = {}
-    rps_scores.update(_compute_rps(all_candidates))
+    # RPS 基准：全 GEM 监控集（过滤后、含未入选候选）的 5 日累计涨幅列表，
+    # 使 RPS 表达「相对全市场强弱」而非仅在已涨票中比谁涨得多。
+    rps_baseline: list[float] = []
+    for s in gem_stocks_filtered:
+        kl = klines.get(s.symbol)
+        if not kl:
+            continue
+        hist = [k for k in kl if k["date"] != today]
+        closes = [k["close"] for k in hist]
+        if len(closes) >= 6:
+            acc = (closes[-1] - closes[-6]) / closes[-6] * 100
+            rps_baseline.append(acc)
+    rps_scores.update(_compute_rps(all_candidates, baseline=rps_baseline))
 
     intraday_scores: dict[str, float | None] = {}
     opening_scores: dict[str, float | None] = {}

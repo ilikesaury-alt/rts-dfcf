@@ -22,6 +22,25 @@ def compute_rsi(closes: list[float], period: int = 14) -> float | None:
     return 100.0 - (100.0 / (1.0 + rs))
 
 
+def compute_ma(closes: list[float], period: int, ema: bool = False) -> float | None:
+    """Simple or exponential moving average of the last `period` closes.
+
+    EMA is preferred for high-volatility GEM stocks (less noise than SMA),
+    and aligns with the EMA used inside MACD so the whole indicator stack
+    uses one moving-average convention.
+    """
+    if len(closes) < period:
+        return None
+    window = closes[-period:]
+    if not ema:
+        return sum(window) / period
+    m = 2 / (period + 1)
+    result = window[0]
+    for v in window[1:]:
+        result = (v - result) * m + result
+    return result
+
+
 def compute_kdj(highs: list[float], lows: list[float],
                 closes: list[float], n: int = 9,
                 k_smooth: int = 3, d_smooth: int = 3) -> dict | None:
