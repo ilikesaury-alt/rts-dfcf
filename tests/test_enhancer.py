@@ -52,10 +52,10 @@ class TestComputeTimeBonus:
 
 class TestComputeMarketEnvBonus:
     def test_strong_market(self):
-        assert compute_market_env_bonus(1.0) == 3
+        assert compute_market_env_bonus(1.0) == 2
 
     def test_weak_market(self):
-        assert compute_market_env_bonus(-1.5) == -3
+        assert compute_market_env_bonus(-1.5) == -2
 
     def test_neutral_market(self):
         assert compute_market_env_bonus(0.0) == 0
@@ -183,7 +183,7 @@ class TestApplyLiveVolBonus:
         c = _make_candidate(avg_volume=1000)
         live_volumes = {"300999": 1500.0}
         _apply_live_vol_bonus(c, live_volumes)
-        assert c.live_vol_bonus == 5
+        assert c.live_vol_bonus == 3
 
     def test_below_threshold(self):
         c = _make_candidate(avg_volume=1000)
@@ -383,12 +383,12 @@ class TestRecordDimensions:
     def test_market_env_strong(self):
         c = _make_candidate()
         _record_dimensions(c, 1.0, {})
-        assert c.kline.dimensions["market_env_bonus"] == 3
+        assert c.kline.dimensions["market_env_bonus"] == 2
 
     def test_market_env_weak(self):
         c = _make_candidate()
         _record_dimensions(c, -2.0, {})
-        assert c.kline.dimensions["market_env_bonus"] == -3
+        assert c.kline.dimensions["market_env_bonus"] == -2
 
     def test_market_env_neutral(self):
         c = _make_candidate()

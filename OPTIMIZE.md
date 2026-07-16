@@ -359,3 +359,45 @@
 - **位置**: `scanner/candidate_pool.py` — `_apply_list_momentum_bonus()` 外层 else (streak < 3)
 - **问题**: `streak >= 5` 和 `streak >= 3` 条件在 `streak < 3` 时不可达，仅 `streak >= 2` 有效
 - **影响**: 无评分影响，纯死代码
+
+---
+
+## 2026-07-16 迭代（回测驱动权重调整）
+
+### 背景
+
+新增 `scanner/backtest.py` 回测归因框架（基于 `recommendations` 表 2829 条记录 +
+`daily_kline` 历史）。分维度 IC 分析揭示多个反指维度（详见 `python -m scanner.backtest`）。
+据此做数据驱动权重调整，原则：**只改 IC 符号 + 机制逻辑双确认的维度，幅度保守，小样本只降不删。**
+
+### 🔴 权重调整（执行）
+
+| # | 维度 | 改动 | IC 依据 |
+|---|------|------|---------|
+| 70 | `new_face_bottom` (`bottom_confirmed`) | 10 → **0** | IC=-0.376 (n=48)，加分组均收益 -0.87%（全表唯一负均值），底部确认→次日均值回归陷阱 |
+| 71 | `NEW_FACE_MIN_SCORE` | 22 → **18** | 与 #70 原子配套，防 new_face 列表饥饿（最高减 10 分） |
+| 72 | `new_face_gap_up` | 移除 new_face 侧 gap 加分块 | IC=-0.180 (n=136)，高开次日多冲高回落 |
+| 73 | `MOMENTUM_WEIGHTS.vol_healthy` | 5 → **2** | IC=-0.235 (n=240) |
+| 74 | `MOMENTUM_WEIGHTS.vol_low` | -5 → **-3** | 同上，弱化方向保留 |
+| 75 | `MARKET_ENV_STRONG/WEAK` | 3/-3 → **2/-2** | IC=-0.216 (n=182) |
+| 76 | `LIVE_VOL_BONUS` | 5 → **3** | IC=-0.127 (n=342) |
+| 77 | `FIRST_TODAY_BONUS` | 5 → **3** | IC=-0.246 (n=164) |
+| 78 | `NEW_FACE_WEIGHTS.kdj_bonus` | 3 → **1** | IC=-0.184 但 n=30（小样本），仅降权不消除 |
+
+### 🟡 暂缓（数据混淆，待新样本）
+
+| # | 维度 | 原因 |
+|---|------|------|
+| 79 | `sector_bonus` | IC=-0.181 但基于**阶段2改版前**旧分类数据；阶段2板块分类已升级（最长匹配+同花顺概念标签），需累积 2 周新样本再评 |
+
+### 📌 已知死键（无需处理）
+
+`new_face_candle` / `momentum_candle` / `momentum_kdj` 出现在回测 IC 表但**无评分代码**，
+属已删除功能的 `score_breakdown` JSON 历史残留，不影响当前信号。
+
+### 验证
+
+- `tests/test_weights.py` 新增，断言上述权重值生效
+- 全量 `pytest tests/` 289 passed
+- 回测显示 momentum 仍为唯一有真实边缘策略（胜率 56.7% / 次日均 +2.01%；fwd_3d 的 `momentum_ma_bull` IC=+0.844）；new_face 次日均 +0.27%（近硬币翻转），3日持有为负——属策略定位问题，不在本次权重微调范围
+

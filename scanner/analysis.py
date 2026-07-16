@@ -362,11 +362,8 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
     if vol_rank >= VOL_RANK_HIGH_ACCUM_OVERLAP_MIN_RANK and accumulated >= VOL_RANK_HIGH_ACCUM_OVERLAP_MIN_ACCUM:
         score += VOL_RANK_HIGH_ACCUM_OVERLAP_PENALTY
 
-    gap_pct, gap_pts = _detect_gap_up(stock.current, kline, today_str)
-    score += gap_pts
-    if gap_pts:
-        dims["new_face_gap_up"] = gap_pts
-
+    # new_face_gap_up 已清零：回测 IC=-0.180（n=136），高开在 new_face 次日多为
+    # 冲高回落，不再对 new_face 加高开加分。momentum 侧保留（小样本另行评估）。
     if stock.value >= 10000:
         score += W["value_gte_10000"]
         dims["new_face_value"] = W["value_gte_10000"]

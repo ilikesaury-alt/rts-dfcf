@@ -13,7 +13,7 @@ REQUEST_TIMEOUT = 15
 NEW_FACE_LOOKBACK_DAYS = 3
 
 # Normal mode thresholds
-NEW_FACE_MIN_SCORE = 22
+NEW_FACE_MIN_SCORE = 18
 MOMENTUM_MIN_SCORE = 16
 PULLBACK_MIN_SCORE = 18
 SHORT_TERM_MIN_SCORE = 15
@@ -119,17 +119,19 @@ NEW_FACE_WEIGHTS: dict[str, int] = {
     "accum_lt_neg5": 0,
     "accum_10_15": 5,
     "accum_15_20": -5,
-    "bottom_confirmed": 10,
+    "bottom_confirmed": 0,
     "v_shape": 10,
     "volume_surge": 8,
     "value_gte_10000": 2,
     "value_gte_5000": 1,
     "rsi_bonus": 3,
-    "kdj_bonus": 3,
     "macd_bonus": 3,
     "rsi14_oversold_bonus": 3,
     "bollinger_oversold": 4,
+    "kdj_bonus": 1,
 }
+# NOTE: new_face_kdj 已降权（3->1）。回测 IC=-0.184 但 n=30（小样本），
+# 仅弱化不消除，待累积样本后再评估是否清零。
 
 MOMENTUM_WEIGHTS: dict[str, int] = {
     "today_pct_2_6": 20,
@@ -141,9 +143,9 @@ MOMENTUM_WEIGHTS: dict[str, int] = {
     "accum_15_20": 10,
     "accum_20_30": 5,
     "accum_gte_30": -15,
-    "vol_healthy": 5,
+    "vol_healthy": 2,
     "vol_surge": 0,
-    "vol_low": -5,
+    "vol_low": -3,
     "no_crash": 13,
     "value_gte_10000": 2,
     "value_gte_5000": 1,
@@ -205,12 +207,12 @@ SHORT_TERM_WEIGHTS: dict[str, int] = {
 
 # Bonus constants
 CROSS_SOURCE_BONUS = 5
-FIRST_TODAY_BONUS = 5
+FIRST_TODAY_BONUS = 3
 FIRST_BREAKOUT_BONUS = 8
 FIRST_BREAKOUT_RANK_CHANGE = 500
 FIRST_BREAKOUT_VOL_RATIO = 1.15
 
-LIVE_VOL_BONUS = 5
+LIVE_VOL_BONUS = 3
 LIVE_VOL_RATIO_THRESHOLD = 1.3
 
 TURNOVER_BONUS_MODERATE = 3
@@ -225,8 +227,8 @@ SECTOR_CLUSTER_BONUS_4 = 6
 SECTOR_CLUSTER_BONUS_3 = 4
 SECTOR_CLUSTER_BONUS_2 = 2
 
-MARKET_ENV_STRONG = 3
-MARKET_ENV_WEAK = -3
+MARKET_ENV_STRONG = 2
+MARKET_ENV_WEAK = -2
 MARKET_STRONG_THRESHOLD = 0.5
 MARKET_WEAK_THRESHOLD = -1.0
 
