@@ -325,7 +325,9 @@ def validate_pullback(stock, kline_summary, closes: list[float],
 def validate_short_term(stock, kline_summary, closes: list[float],
                         historical_kline: list[dict], clusters: dict[str, list[str]] | None
                         ) -> tuple[bool, int, dict]:
-    # 硬门禁：量比 < 1.0 直接淘汰（超短必须放量）。软维度为下方 4 项，任一为正即通过。
+    # 硬门禁：量比 < 1.0 直接淘汰（超短必须放量）。软维度为下方 4 项。
+    # 放行条件（P0-sector 单维度刷屏修复）：弱转强直接放行；否则要求 ≥2 正维度
+    # 且至少 1 项非 sector —— 杜绝板块普涨日仅靠 sector 单维度批量放行。
     vol_ratio = kline_summary.volume_ratio
     if vol_ratio < 1.0:
         return False, 0, {"v_st_vol_gate": "fail", "v_st_vol_ratio": round(vol_ratio, 2)}
@@ -384,7 +386,10 @@ def validate_short_term(stock, kline_summary, closes: list[float],
     }
 
     pos_dims = sum(1 for b in (sec_bonus, rank_bonus, ma_bonus, wts_bonus) if b > 0)
-    passed = pos_dims >= 1
+    non_sector_pos = sum(1 for b in (rank_bonus, ma_bonus, wts_bonus) if b > 0)
+    # 弱转强单独放行（真弱转强即便板块/排名/MA 全不达标也应保留，设计意图见 wts_bonus 注释）；
+    # 否则需 ≥2 正维度且至少 1 项非 sector，避免板块普涨日靠 sector 单维度批量刷屏。
+    passed = wts_bonus > 0 or (pos_dims >= 2 and non_sector_pos >= 1)
 
     return passed, total, details
 

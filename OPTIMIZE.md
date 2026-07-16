@@ -41,6 +41,14 @@
 - **影响**: 弱转强类 short_term 票最终分下降 8 分（回到 +8 单计），排名可能微调，属预期修正；通过/不通过判定不变。
 - **备注**: `st_wts_gap`(+4) 仅分析计分、验证不读，单计正确，不受影响。
 
+### 69. [Bug] 超短策略 sector 单维度即可放行，板块普涨日批量刷屏 🔴 P0 ✅
+
+- **位置**: `scanner/validator.py:386-389` (`validate_short_term` 门禁) + `tests/test_validator.py::TestValidateShortTerm`
+- **问题**: 软维度门禁为 `pos_dims >= 1`，而 4 个软维度含 sector（板块同列计数）。板块普涨日（如 2026-07-16 医药板块集体上榜）每只票互相把对方计入 `v_st_sector_count` → 全部拿到 `V_ST_SECTOR_HOT=+10`，仅凭 sector 单一正维度即可放行。当日 short_term 一次性推荐 9 只（历史从未触发），其中 4 只（光线传媒/爱朋医疗/爱美客/舒泰神）仅靠 sector 一维、rank 恒为 -3（榜单排名>30，非超短该抓的领涨票）、量比仅 1.0-1.1x，不符合超短次日强势放量画像；且 sector 维度可在板块行情下自我证明、批量通过。
+- **修复**: 2026-07-16 门禁改为 `passed = wts_bonus > 0 or (pos_dims >= 2 and non_sector_pos >= 1)`：弱转强仍单独放行（保留 P0-68 设计），否则要求 ≥2 正维度且至少 1 项非 sector（rank/MA/weak）。量比硬门维持 ≥1.0（保留健康放量档与弱转强低量比用例）。
+- **影响**: 当日 9 只 → 5 只（保留 泓博医药/博济医药 弱转强放量、常山药业/我武生物/卫宁健康 含 MA 支撑+板块共振）；滤掉纯板块跟风的 4 只。存量测试 `test_healthy_volume_gives_bonus`/`test_top10_rank_bonus` 补 HOT sector 提供第 2 维度后保留；`test_single_positive_dimension_passes` 拆为 `test_single_rank_dimension_now_rejected`(淘汰)、`test_sector_only_rejected`(板块单维淘汰)、`test_two_dims_with_non_sector_passes`(放行) 三例回归。
+- **TDD**: 新增回归 `test_sector_only_rejected` 直接对应今日病根（HOT sector 单维应被拒）。
+
 ---
 
 ## 🟡 策略改进

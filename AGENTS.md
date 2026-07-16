@@ -47,7 +47,7 @@ tests/                    # pytest test suite
   - **new_face**: indicator convergence (RSI<30 + MACD golden cross + KDJ K<20 & K>D), higher-low structure, sector resonance
   - **momentum**: MA5>10>20 alignment (penalty -5 if broken), no RSI divergence, volume uniformity (5-day window)
   - **pullback**: MA20 trending up (>+0.5%), volume shrinkage (<0.6x), sector still active (≥3 same-sector in list)
-  - **short_term**: vol_ratio > 1.0 hard gate, soft checks: sector cluster, rank ≤30, MA5>MA10 support
+  - **short_term**: vol_ratio ≥ 1.0 hard gate. Pass rule: 弱转强 (weak-to-strong) passes outright; otherwise requires ≥2 positive dims with ≥1 non-sector (rank/MA/weak) — sector cluster alone cannot pass (prevents sector-wide surge days flooding the list)
 - Priority chain: primary strategy attempted first; if cross-validation fails, falls through to next strategy
 
 ## Testing

@@ -387,7 +387,11 @@ class TestValidateShortTerm:
             trend="温和放量", accumulated_pct=5.0, volume_ratio=1.2,
             bottom_confirmed=False, score=18, avg_volume=1.0,
         )
-        passed, total, dims = validate_short_term(_stock(), ks, closes, k[:-1], None)
+        # HOT sector + rank Top10 提供 ≥2 正维度（含非 sector），使门禁放行，
+        # 从而可断言 v_st_vol 的健康放量档取值。
+        passed, total, dims = validate_short_term(
+            _stock(name="半导体测试"), ks, closes, k[:-1], SEMICONDUCTOR_CLUSTER
+        )
         assert passed
         assert dims["v_st_vol"] == V_ST_VOL_HEALTHY
 
@@ -398,10 +402,11 @@ class TestValidateShortTerm:
             trend="上攻", accumulated_pct=5.0, volume_ratio=1.5,
             bottom_confirmed=False, score=18, avg_volume=1.0,
         )
-        stock = StockInfo(symbol="300999", name="测试", code="300999",
+        stock = StockInfo(symbol="300999", name="半导体测试", code="300999",
                           percent=5.0, current=15.0, value=8000,
                           rank_change=1500, rank=5)
-        passed, total, dims = validate_short_term(stock, ks, closes, k[:-1], None)
+        # HOT sector 提供第 2 个正维度，rank Top10 为非 sector 正维度，门禁放行。
+        passed, total, dims = validate_short_term(stock, ks, closes, k[:-1], SEMICONDUCTOR_CLUSTER)
         assert passed
         assert dims["v_st_rank"] == V_ST_RANK_TOP10
 
@@ -496,8 +501,8 @@ class TestValidateShortTerm:
         assert passed
         assert dims["v_st_ma"] == V_ST_MA_SUPPORT
 
-    def test_single_positive_dimension_passes(self):
-        # Only rank is positive, others neutral/cold — should still pass (pos_dims >= 1)
+    def test_single_rank_dimension_now_rejected(self):
+        # 收紧后：仅 rank 单一正维度（sector 冷/MA不足/非弱转强）→ pos_dims=1，应淘汰。
         k = _kline([5, 3, 6, 2, 4], volumes=[1.0, 1.0, 1.0, 1.0, 1.2])
         closes = [c["close"] for c in k[:-1]]
         ks = KlineSummary(
@@ -508,7 +513,36 @@ class TestValidateShortTerm:
                           percent=5.0, current=15.0, value=8000,
                           rank_change=1500, rank=5)
         passed, total, dims = validate_short_term(stock, ks, closes, k[:-1], None)
-        assert passed, f"single positive dim should pass, total={total}"
+        assert not passed, f"single positive dim should now be rejected, dims={dims}"
+
+    def test_sector_only_rejected(self):
+        # 今日病根回归：HOT sector 单一正维度（rank>30 负、MA不足、非弱转强）→ 不应放行。
+        k = _kline([5, 3, 6, 2, 4], volumes=[1.0, 1.0, 1.0, 1.0, 1.2])
+        closes = [c["close"] for c in k[:-1]]
+        ks = KlineSummary(
+            trend="温和放量", accumulated_pct=5.0, volume_ratio=1.2,
+            bottom_confirmed=False, score=18, avg_volume=1.0,
+        )
+        stock = StockInfo(symbol="300999", name="半导体测试", code="300999",
+                          percent=5.0, current=15.0, value=8000,
+                          rank_change=1500, rank=50)
+        passed, total, dims = validate_short_term(stock, ks, closes, k[:-1], SEMICONDUCTOR_CLUSTER)
+        assert dims["v_st_sector"] == V_ST_SECTOR_HOT
+        assert not passed, f"sector-only pass must be rejected, dims={dims}"
+
+    def test_two_dims_with_non_sector_passes(self):
+        # rank Top10（非 sector 正维度）+ HOT sector → pos_dims=2 且含非 sector，应放行。
+        k = _kline([5, 3, 6, 2, 4], volumes=[1.0, 1.0, 1.0, 1.0, 1.2])
+        closes = [c["close"] for c in k[:-1]]
+        ks = KlineSummary(
+            trend="温和放量", accumulated_pct=5.0, volume_ratio=1.2,
+            bottom_confirmed=False, score=18, avg_volume=1.0,
+        )
+        stock = StockInfo(symbol="300999", name="半导体测试", code="300999",
+                          percent=5.0, current=15.0, value=8000,
+                          rank_change=1500, rank=5)
+        passed, total, dims = validate_short_term(stock, ks, closes, k[:-1], SEMICONDUCTOR_CLUSTER)
+        assert passed, f"two dims incl non-sector should pass, dims={dims}"
 
     def test_all_dims_zero_or_negative_fails(self):
         # 板块冷(None) + 排名>30(负) + MA不足(<20根) + 非弱转强 → pos_dims=0 应淘汰
