@@ -20,6 +20,7 @@ from scanner.api import (
     make_session,
 )
 from scanner.candidate_pool import ScanSession
+from scanner.confidence import compute_confidence, select_picks
 from scanner.config import (
     now_beijing,
     YI,
@@ -447,7 +448,15 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     momentum.sort(key=lambda c: -c.score)
     pullback_list.sort(key=lambda c: -c.score)
     short_term_list.sort(key=lambda c: -c.score)
-    return new_faces, momentum, pullback_list, short_term_list, stale_candidates, gem_stocks_filtered, filtered_large_cap
+
+    # 高确定性「精选」：按 confidence 评分取 Top N（硬排除已在 confidence 内完成）
+    conf_map = compute_confidence(all_candidates, conn, session_state.list_presence)
+    for i, c in enumerate(all_candidates):
+        all_candidates[i] = dataclass_replace(c, confidence=conf_map.get(c.stock.symbol, 0))
+    picks = select_picks(all_candidates, conf_map)
+
+    return (new_faces, momentum, pullback_list, short_term_list,
+            stale_candidates, gem_stocks_filtered, filtered_large_cap, picks)
 
 
 def scan(conn: sqlite3.Connection, session: requests.Session) -> tuple[list[Candidate], list[Candidate], list[Candidate], list[Candidate], list[Candidate], list[StockInfo], int]:

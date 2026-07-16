@@ -52,3 +52,4 @@ class Candidate:
     list_momentum_bonus: int = 0
     is_stale: bool = False
     stale_since: str = ""
+    confidence: int = 0  # 高确定性「精选」评分（0~100），由 confidence.py 计算
