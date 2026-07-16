@@ -36,6 +36,7 @@ from scanner.config import (
     NEW_FACE_MIN_SCORE,
     PULLBACK_MIN_SCORE,
     SHORT_TERM_MIN_SCORE,
+    SHORT_TERM_MAX_PER_SECTOR,
     RPS_BONUS_HIGH,
     RPS_BONUS_LOW,
     RPS_BONUS_MEDIUM,
@@ -57,7 +58,7 @@ from scanner.enhancer import (
 )
 from scanner.models import Candidate, KlineSummary, StockInfo
 from scanner.rank_trend import update_rank_history
-from scanner.sector import get_sector_clusters
+from scanner.sector import get_sector_clusters, classify_sector
 from scanner.trading_session import is_trading_day, is_trading_time
 from scanner.utils import is_gem, is_hk_stock, is_st
 
@@ -163,6 +164,28 @@ def _try_candidate(stock: StockInfo, kline_summary: KlineSummary | None, categor
     return _build_candidate(stock, kline_summary, category, is_first_today, first_date, kline)
 
 
+def _cap_short_term_by_sector(short_term_list: list[Candidate],
+                             concept_map: dict[str, str] | None = None,
+                             max_per_sector: int = SHORT_TERM_MAX_PER_SECTOR) -> list[Candidate]:
+    """同板块数量上限：板块普涨日防止单板块淹没超短列表。
+
+    用与校验一致的 sector 分类（concept_map 优先），按 score 降序每组保留前
+    max_per_sector 只；其余从超短列表移除（仍可能经其它策略桶保留在 all_candidates）。
+    """
+    if not max_per_sector or len(short_term_list) <= max_per_sector:
+        return short_term_list
+    by_sector: dict[str, list[Candidate]] = {}
+    for c in short_term_list:
+        hint = concept_map.get(c.stock.symbol) if concept_map else None
+        sec = classify_sector(c.stock.name, concept_hint=hint)
+        by_sector.setdefault(sec, []).append(c)
+    capped: list[Candidate] = []
+    for group in by_sector.values():
+        group.sort(key=lambda c: -c.score)
+        capped.extend(group[:max_per_sector])
+    return capped
+
+
 def _classify_category(stock: StockInfo, is_new: bool,
                        c_pb: Candidate | None, c_mo: Candidate | None,
                        c_nf: Candidate | None, c_st: Candidate | None = None) -> str | None:
@@ -178,13 +201,18 @@ def _classify_category(stock: StockInfo, is_new: bool,
         if c_pb is not None:
             return "pullback"
         return None
-    # 老股：今日下跌优先归回调；上涨时 short_term 优先（超短策略）；否则 momentum；兜底新面孔
+    # 老股：今日下跌优先归回调；上涨时弱转强优先归超短，
+    # 其它"非弱转强超短合格票"若同时过动量则归动量（避免掏空动量桶），
+    # 仅过超短不过动量的票仍留超短（不丢票）。
     if c_pb is not None and today_pct <= 0:
         return "pullback"
-    if c_st is not None:
+    st_is_wts = c_st is not None and c_st.kline.dimensions.get("st_weak_to_strong", 0) > 0
+    if c_st is not None and st_is_wts:
         return "short_term"
     if c_mo is not None:
         return "momentum"
+    if c_st is not None:
+        return "short_term"
     if c_pb is not None:
         return "pullback"
     if c_nf is not None:
@@ -353,8 +381,11 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
             momentum.append(mo)
         if pb:
             pullback_list.append(pb)
-        if st:
-            short_term_list.append(st)
+    if st:
+        short_term_list.append(st)
+
+    # 同板块上限：板块普涨日防止单板块淹没超短列表（P0-69 后再加一道闸）
+    short_term_list = _cap_short_term_by_sector(short_term_list, concept_map)
 
     all_candidates = new_faces + momentum + pullback_list + short_term_list
     for c in all_candidates:

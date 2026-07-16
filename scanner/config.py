@@ -27,6 +27,9 @@ PULLBACK_MAX_TODAY_PCT = 2.0
 SHORT_TERM_MIN_TODAY_PCT = 2.0
 SHORT_TERM_MAX_TODAY_PCT = 8.0
 
+# 超短同板块数量上限：板块普涨日防止单板块淹没超短列表（P0-69 后再加一道闸）
+SHORT_TERM_MAX_PER_SECTOR = 2
+
 # 弱转强（分歧转一致）判定阈值
 ST_SMALL_CAP = 100          # 流通市值 ≤100亿 视为小盘（超短偏好）
 ST_MID_CAP = 300            # 100~300亿 中盘，>300亿 超短弹性差不加分

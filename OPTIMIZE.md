@@ -49,6 +49,29 @@
 - **影响**: 当日 9 只 → 5 只（保留 泓博医药/博济医药 弱转强放量、常山药业/我武生物/卫宁健康 含 MA 支撑+板块共振）；滤掉纯板块跟风的 4 只。存量测试 `test_healthy_volume_gives_bonus`/`test_top10_rank_bonus` 补 HOT sector 提供第 2 维度后保留；`test_single_positive_dimension_passes` 拆为 `test_single_rank_dimension_now_rejected`(淘汰)、`test_sector_only_rejected`(板块单维淘汰)、`test_two_dims_with_non_sector_passes`(放行) 三例回归。
 - **TDD**: 新增回归 `test_sector_only_rejected` 直接对应今日病根（HOT sector 单维应被拒）。
 
+### 70. [评估] SHORT_TERM_MIN_SCORE 维持 15，不抬升 🟢 评估结论
+
+- **位置**: `scanner/config.py:19` (`SHORT_TERM_MIN_SCORE = 15`)
+- **评估**: P0-69 收缩校验门禁后，真正筛选由 `validate_short_term` 承担（sector 不得单独放行 + 弱转强例外）。回看 2026-07-16 实际数据：9 只过关票 score 含 validation_bonus 后最低为 49（最高 96），远高于 15 —— 说明 `SHORT_TERM_MIN_SCORE` 实际不构成瓶颈，仅作最后兜底。
+- **结论**: 维持 15，不抬升至 18~20。理由：(1) 抬升在当前数据下不会额外过滤任何票，无即时收益；(2) 校验门禁已足够严格，score 门槛非主筛；(3) 若未来校验放宽导致低分弱量票重新涌入，再评估抬升（届时建议对齐 new_face/pullback=18、momentum=16）。
+- **关联**: 与 #69 配套；同板块上限（#71）、分类抢占收窄（#72）为 P0-69 之后的进一步防刷屏措施。
+
+### 71. [策略] 超短同板块数量上限 N=2 🔴 P0 ✅
+
+- **位置**: `scanner/config.py` (`SHORT_TERM_MAX_PER_SECTOR = 2`) + `scanner/orchestrator.py` (`_cap_short_term_by_sector`)
+- **问题**: P0-69 后板块普涨日（如 2026-07-16 医药板块）仍可成批进入超短列表。校验门禁无法区分"同板块多只都真强"与"板块行情整体带飞"。
+- **修复**: 2026-07-16 在 `scan_with_raw` 收集 `short_term_list` 后、组装 `all_candidates` 前，按 sector 分组（用与校验一致的 `classify_sector(name, concept_hint=concept_map)`，concept 标签优先）截断，每组按 score 降序保留前 `SHORT_TERM_MAX_PER_SECTOR`(2) 只。被截票仍可能经其它策略桶（如 momentum）进入 `all_candidates`，不影响 RPS/bonus 基准。
+- **影响**: 今日 5 只幸存者里 4 只医药 → 保留弱转强高分 2 只（泓博医药/博济医药），另 2 只医药截断。超短桶在板块行情下最多 2 只同板块 + 其它板块票。
+- **TDD**: 新增 `TestCapShortTermBySector`（同板块截断、跨板块不截、concept 标签优先覆盖 name）3 例回归。
+
+### 72. [策略] 超短分类抢占收窄为「弱转强优先」 🔴 P0 ✅
+
+- **位置**: `scanner/orchestrator.py` (`_classify_category` 老股上涨分支)
+- **问题**: 老股上涨时 `c_st` 无条件优先于 `c_mo`，导致本属动量趋势的票被贴"超短次日"标签 → 动量桶被掏空、超短桶被灌水。
+- **修复**: 2026-07-16 收窄为「弱转强优先」：仅当 `c_st` 含 `st_weak_to_strong` 维度（`>0`，与 validator 同信号源）时超短优先；否则若 `c_mo` 也存在则归 momentum；**仅过非弱转强超短、不过动量的票仍留超短（不丢票）**。首板分支（`is_new`）维持现状（首板弱转强双挂合理）。
+- **影响**: 非弱转强、同时过超短与动量的票从超短改归动量，动量桶回升、超短桶下降，属预期再平衡；纯超短票不丢失。
+- **TDD**: 调整 `test_known_stock_up_day_prefers_short_term` → 拆为 `test_known_stock_up_day_weak_to_strong_prefers_short_term`(归超短)、`test_known_stock_up_day_non_wts_short_term_falls_to_momentum`(归动量)、`test_known_stock_up_day_non_wts_short_term_only_stays_short_term`(防丢票) 三例回归。
+
 ---
 
 ## 🟡 策略改进

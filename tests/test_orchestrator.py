@@ -4,13 +4,14 @@ from scanner.candidate_pool import ScanSession
 from scanner.models import Candidate, KlineSummary, StockInfo
 
 
-def _make_candidate(symbol: str, score: int = 20) -> Candidate:
-    stock = StockInfo(symbol=symbol, name="Test", code="300001",
+def _make_candidate(symbol: str, score: int = 20, kline_dims: dict | None = None,
+                    name: str = "Test") -> Candidate:
+    stock = StockInfo(symbol=symbol, name=name, code="300001",
                       percent=5.0, current=10.0, value=10000,
                       rank_change=1000, rank=1)
     kline_s = KlineSummary(trend="test", accumulated_pct=2.0,
                             volume_ratio=1.5, bottom_confirmed=True,
-                            score=score, dimensions={}, avg_volume=1_000_000)
+                            score=score, dimensions=kline_dims or {}, avg_volume=1_000_000)
     return Candidate(stock=stock, category="new_face", score=score,
                      reason="test", kline=kline_s, first_seen="09:30")
 
@@ -117,11 +118,26 @@ class TestClassifyCategory:
         from scanner.orchestrator import _classify_category
         assert _classify_category(self._stock(3), False, None, None, None) is None
 
-    def test_known_stock_up_day_prefers_short_term(self):
+    def test_known_stock_up_day_weak_to_strong_prefers_short_term(self):
+        from scanner.orchestrator import _classify_category
+        c_mo = _make_candidate("300001")
+        c_st = _make_candidate("300002",
+                               kline_dims={"st_weak_to_strong": 8})
+        # 弱转强超短即便同时过动量也优先归超短
+        assert _classify_category(self._stock(3), False, None, c_mo, c_st, c_st) == "short_term"
+
+    def test_known_stock_up_day_non_wts_short_term_falls_to_momentum(self):
         from scanner.orchestrator import _classify_category
         c_mo = _make_candidate("300001")
         c_st = _make_candidate("300002")
-        assert _classify_category(self._stock(3), False, None, c_mo, c_st, c_st) == "short_term"
+        # 非弱转强超短合格票若同时过动量 → 归动量（避免掏空动量桶）
+        assert _classify_category(self._stock(3), False, None, c_mo, c_st, c_st) == "momentum"
+
+    def test_known_stock_up_day_non_wts_short_term_only_stays_short_term(self):
+        from scanner.orchestrator import _classify_category
+        c_st = _make_candidate("300002")
+        # 仅过非弱转强超短、不过动量 → 仍留超短（不丢票）
+        assert _classify_category(self._stock(3), False, None, None, c_st, c_st) == "short_term"
 
     def test_known_stock_down_day_ignores_short_term(self):
         from scanner.orchestrator import _classify_category
@@ -134,6 +150,52 @@ class TestClassifyCategory:
         c_mo = _make_candidate("300001")
         c_st = _make_candidate("300002")
         assert _classify_category(self._stock(5), True, None, c_mo, None, c_st) == "short_term"
+
+
+class TestCapShortTermBySector:
+    """P0-69 补充：板块普涨日防止单板块淹没超短列表。"""
+
+    def _st(self, symbol: str, name: str, score: int) -> Candidate:
+        return _make_candidate(symbol, score=score, name=name)
+
+    def test_same_sector_capped_to_max(self):
+        from scanner.orchestrator import _cap_short_term_by_sector
+        # 4 只医药（name 含"医药"），score 各异
+        group = [
+            self._st("300101", "医药A", 60),
+            self._st("300102", "医药B", 90),
+            self._st("300103", "医药C", 40),
+            self._st("300104", "医药D", 70),
+        ]
+        out = _cap_short_term_by_sector(group, concept_map=None, max_per_sector=2)
+        assert len(out) == 2
+        # 高分优先：90、70 的保留
+        syms = {c.stock.symbol for c in out}
+        assert syms == {"300102", "300104"}
+
+    def test_different_sectors_not_capped(self):
+        from scanner.orchestrator import _cap_short_term_by_sector
+        group = [
+            self._st("300101", "医药A", 60),
+            self._st("300201", "半导体B", 90),
+            self._st("300301", "新能源C", 40),
+        ]
+        out = _cap_short_term_by_sector(group, concept_map=None, max_per_sector=2)
+        assert len(out) == 3
+
+    def test_concept_hint_overrides_name(self):
+        from scanner.orchestrator import _cap_short_term_by_sector
+        # name 无板块关键词，但 concept_map 标记为医药 -> 仍计入医药组
+        group = [
+            self._st("300101", "Alpha", 60),
+            self._st("300102", "Beta", 90),
+            self._st("300103", "Gamma", 40),
+        ]
+        out = _cap_short_term_by_sector(
+            group, concept_map={"300101": "医药", "300102": "医药", "300103": "医药"},
+            max_per_sector=2,
+        )
+        assert len(out) == 2
 
 
 class TestScoreStockKnownNewFace:
