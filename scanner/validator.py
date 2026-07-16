@@ -405,8 +405,8 @@ def validate_short_term(stock, kline_summary, closes: list[float],
         passed = wts_bonus > 0 or (pos_dims >= 2 and non_sector_pos >= 1)
         return passed, total, details
 
-    # 非超买：弱转强单独放行（真弱转强即便板块/排名/MA 全不达标也应保留）；
-    # 否则需 ≥2 正维度且至少 1 项非 sector，避免板块普涨日靠 sector 单维度批量刷屏。
+    # 超买路径（上方 else 已提前返回）：按标准门禁判定，弱转强不再直通；
+    # 共振验证加分已在上方归零。
     passed = wts_bonus > 0 or (pos_dims >= 2 and non_sector_pos >= 1)
     return passed, total, details
 
@@ -424,12 +424,10 @@ def _st_is_overbought(closes: list[float], historical_kline: list[dict],
         series.append(today_close)
 
     if len(series) >= 20:
-        from scanner.indicators import compute_bollinger_bands
         boll = compute_bollinger_bands(series)
         if boll is not None and boll["b_pct"] > ST_OVERBOUGHT_BOLL:
             return True
     if len(series) >= 9:
-        from scanner.indicators import compute_kdj
         kdj = compute_kdj(
             [k["high"] for k in historical_kline] + (
                 [getattr(stock, "current", 0)] if getattr(stock, "current", 0) else []),

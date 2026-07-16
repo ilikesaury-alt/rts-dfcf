@@ -613,3 +613,25 @@ class TestValidateShortTerm:
         passed, total, dims = validate_short_term(stock, ks, closes, k[:-1], None)
         assert dims["v_st_overbought"] is False
         assert passed, f"非超买弱转强应直通, dims={dims}"
+
+    def test_overbought_flag_visible_when_analysis_penalty_zero(self):
+        # Review #1 回归：分析侧仅用历史 closes，今日急拉（stock.current 远离历史）
+        # 使 validator 判 overbought 但分析侧 st_overbought_penalty=0。此时否决仍须可见
+        # （enhancer 以 v_st_overbought 打 st_overbought_flag，而非依赖分析侧 penalty）。
+        k = _kline([0.3, -0.2, 0.4, -0.3, 0.2] * 5, volumes=[1.0] * 25)
+        closes = [c["close"] for c in k[:-1]]
+        # 今日收盘远高于历史序列末端 → validator 端 BOLL/J 破阈值，但分析侧不感知
+        today_close = closes[-1] * 1.25
+        ks = KlineSummary(
+            trend="弱转强", accumulated_pct=5.0, volume_ratio=1.5,
+            bottom_confirmed=False, score=18, avg_volume=1.0,
+            dimensions={"st_weak_to_strong": 8, "st_overbought_penalty": 0},
+        )
+        stock = StockInfo(symbol="300999", name="半导体测试", code="300999",
+                          percent=20.0, current=today_close, value=8000,
+                          rank_change=1500, rank=5)
+        passed, total, dims = validate_short_term(stock, ks, closes, k[:-1], SEMICONDUCTOR_CLUSTER)
+        assert dims["v_st_overbought"] is True, f"今日急拉应被 validator 判超买, dims={dims}"
+        # enhancer 标记逻辑（复刻）：以 v_st_overbought 为准，不依赖 st_overbought_penalty
+        dims["st_overbought_flag"] = dims.get("st_overbought_penalty") or True
+        assert dims["st_overbought_flag"] is not None

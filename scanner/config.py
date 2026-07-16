@@ -212,7 +212,7 @@ SHORT_TERM_WEIGHTS: dict[str, int] = {
 # 20日涨幅阈值/惩罚直接复用 PULLBACK_20D_GAIN_*（避免常量膨胀）。
 ST_OVERBOUGHT_BOLL = 1.0          # BOLL %B > 此值 = 破上轨（高位）
 ST_OVERBOUGHT_BOLL_PENALTY = -5
-ST_OVERBOUGHT_KDJ = 100           # KDJ J > 此值 = 极端超买
+ST_OVERBOUGHT_KDJ = 105           # KDJ J > 此值 = 极端超买（健康强趋势 J 常 90~115，100 易误伤）
 ST_OVERBOUGHT_KDJ_PENALTY = -5
 
 # Bonus constants
