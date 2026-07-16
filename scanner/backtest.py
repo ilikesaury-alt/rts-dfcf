@@ -212,6 +212,10 @@ def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct") -> list
     - 维度值 > 0 组的均收益 vs 维度值 == 0 组，计算 rank IC。
     这能揭示哪些维度是「正 IC（加分越多收益越好）」还是「反指」。
     """
+    # 已删除功能残留于历史 score_breakdown JSON，无对应评分代码，仅干扰阅读。
+    dead_dim_keys = {
+        "new_face_candle", "momentum_candle", "momentum_kdj", "high_pos",
+    }
     rows = conn.execute(
         f"SELECT score_breakdown, {metric} FROM recommendations "
         f"WHERE category IN ({','.join('?' * len(ACTIVE_CATEGORIES))}) "
@@ -228,6 +232,8 @@ def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct") -> list
         except (json.JSONDecodeError, TypeError):
             continue
         for dim, val in d.items():
+            if dim in dead_dim_keys:
+                continue
             if not isinstance(val, (int, float)):
                 continue
             dim_vals[dim].append(float(val))

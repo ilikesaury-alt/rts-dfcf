@@ -86,3 +86,13 @@ def test_gap_up_helper_still_computes():
     kline = _kline([1, 2, 1, 2, 18], volumes=[1.0] * 5)
     gap_pct, pts = _detect_gap_up(20.5, kline, "2026-07-16")
     assert isinstance(pts, int)
+
+
+def test_volume_surge_raised():
+    # new_face_volume 是 next_day 最强正 IC 维度(+0.244)，从 8 上调到 10
+    assert NEW_FACE_WEIGHTS["volume_surge"] == 10
+
+
+def test_momentum_value_raised():
+    # momentum_value 次强正 IC 维度(+0.215)，从 2 上调到 3
+    assert MOMENTUM_WEIGHTS["value_gte_10000"] == 3

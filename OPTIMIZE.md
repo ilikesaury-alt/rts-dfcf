@@ -392,12 +392,50 @@
 
 ### 📌 已知死键（无需处理）
 
-`new_face_candle` / `momentum_candle` / `momentum_kdj` 出现在回测 IC 表但**无评分代码**，
-属已删除功能的 `score_breakdown` JSON 历史残留，不影响当前信号。
+`new_face_candle` / `momentum_candle` / `momentum_kdj` / `high_pos` 出现在回测 IC 表但**无评分代码**，
+属已删除功能的 `score_breakdown` JSON 历史残留，不影响当前信号。已在 `backtest.py` 的 `dimension_ic`
+中过滤显示（#83）。
+
+---
+
+## 2026-07-16 迭代（次日了结视角下的正信号加权）
+
+### 背景
+
+用户确认实际操作**次日了结**，故优化目标唯一锁定 `next_day_pct` IC（fwd_3d/fwd_5d 仅诊断、
+不参与评分）。在 #70-#78 清反指基础上，本轮对 next_day 强正 IC 维度**加权**，把分数与次日收益对齐。
+new_face 维持独立展示（靠 `orchestrator.py:249` 双挂 short_term 兜底其弱边缘）。
+
+### 🟢 权重上调（执行）
+
+| # | 维度 | 改动 | next_day IC 依据 |
+|---|------|------|---------|
+| 80 | `NEW_FACE_WEIGHTS.volume_surge` | 8 → **10** | `new_face_volume` IC=+0.244（最强正信号），原被低估 |
+| 81 | `MOMENTUM_WEIGHTS.value_gte_10000` | 2 → **3** | `momentum_value` IC=+0.215（次强正信号） |
+
+### 🟢 工程改进
+
+| # | 改动 | 说明 |
+|---|------|------|
+| 83 | `backtest.py` `dimension_ic` 过滤死键 | 跳过 `new_face_candle`/`momentum_candle`/`momentum_kdj`/`high_pos`，IC 表仅显示仍生效维度 |
+
+### 明确排除（未改）
+
+- `momentum_accumulated`：维持加分（next_day IC=+0.143 正；fwd_3d IC=-0.588 但仅诊断、不驱动权重）
+- `sector_bonus`：维持暂缓（#79）
+- new_face 权重整体：不额外加减（双挂 short_term 兜底）
+- fwd_3d/fwd_5d 逻辑：不动
 
 ### 验证
 
-- `tests/test_weights.py` 新增，断言上述权重值生效
-- 全量 `pytest tests/` 289 passed
-- 回测显示 momentum 仍为唯一有真实边缘策略（胜率 56.7% / 次日均 +2.01%；fwd_3d 的 `momentum_ma_bull` IC=+0.844）；new_face 次日均 +0.27%（近硬币翻转），3日持有为负——属策略定位问题，不在本次权重微调范围
+- `tests/test_weights.py` 追加 `test_volume_surge_raised` / `test_momentum_value_raised`
+- 全量 `pytest tests/` **291 passed**
+- 回测基线（历史数据）未变：momentum 56.7%/+2.01%、new_face 45.9%/+0.27%（预期——改动效果由未来扫描累积的新 `score_breakdown` 体现）
+- 死键已从 IC 表消失，维度列表仅含生效维度
+
+### 后续复评（约 2 周后）
+
+用新累积样本重跑 `python -m scanner.backtest --metric next_day_pct`，确认 score 与次日收益 IC 改善
+（目标：momentum IC 从 -0.119 向 0 靠拢），并评估阶段2新分类对 `sector_bonus` 的实际影响（#79）。
+
 
