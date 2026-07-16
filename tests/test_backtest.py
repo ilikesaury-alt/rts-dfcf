@@ -79,3 +79,15 @@ def test_dimension_ic_runs():
     dims = dimension_ic(conn, "next_day_pct")
     assert isinstance(dims, list)
     conn.close()
+
+
+def test_dimension_ic_keeps_live_momentum_kdj():
+    import os
+    from scanner.config import DB_PATH
+
+    if not os.path.exists(DB_PATH):
+        return
+    conn = sqlite3.connect(DB_PATH)
+    dims = {d.dimension for d in dimension_ic(conn, "next_day_pct")}
+    assert "momentum_kdj" in dims
+    conn.close()

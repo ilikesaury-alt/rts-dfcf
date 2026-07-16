@@ -134,7 +134,7 @@ def main():
                     top_s = short_term_list[0]
                     src = _SOURCE_LABELS.get(top_s.stock.source_tag, top_s.stock.source_tag)
                     print(f"  ▶ 超短次日首选: {top_s.stock.name}({top_s.stock.symbol}) [{src}] "
-                          f"{top_s.stock.percent:+.2f}% | RPS:{top_s.kline.rps_rank if top_s.kline else '-'}")
+                          f"{top_s.stock.percent:+.2f}% | RPS:{top_s.rps_bonus}")
 
                 save_recommendations(conn, new_faces, momentum + pullback_list + short_term_list)
                 cross_validate()

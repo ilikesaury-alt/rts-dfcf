@@ -438,4 +438,40 @@ new_face 维持独立展示（靠 `orchestrator.py:249` 双挂 short_term 兜底
 用新累积样本重跑 `python -m scanner.backtest --metric next_day_pct`，确认 score 与次日收益 IC 改善
 （目标：momentum IC 从 -0.119 向 0 靠拢），并评估阶段2新分类对 `sector_bonus` 的实际影响（#79）。
 
+---
+
+## 2026-07-16 二次调研复盘（P0 修正）
+
+### 🔴 诊断工具 bug 修正
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 84 | `backtest.py:217` 死键集合误含 `momentum_kdj`，但该维度在 `analysis.py:223` 仍实时产出并计入 `bonus`，被错误从 IC 表过滤 | 死键集合收窄为仅 `new_face_candle`/`momentum_candle`/`high_pos`（已 grep 确认这三者无任何 `dims[...]` writer）；`momentum_kdj`/`momentum_macd`/`momentum_adx` 为活跃维度，保留 |
+
+### 关键阻塞（数据闭环断点，需运行时信息）
+
+- **数据流未贯通**：DB 最新记录停在 **2026-07-16**（即 #80-#81 改动当天）；最新 `score_breakdown` 仍显示旧值（`momentum_value:1`、`live_vol_bonus:5`）。
+  说明自改动后扫描器未产生新记录 → 过去两周权重迭代对实际信号零影响，回测基线自然"不变"。
+  **需用户确认** `unified_scanner` 调度方式（cron/手动）后，让新权重累积 ≥2 周新样本再复评。
+- `pullback`：70 条记录但 0 条带 `next_day_pct`（疑似缺 K 线致 backfill 跳过或历史残留）。
+- `short_term`：全量 0 条，"双挂超短"（orchestrator.py:249）在真实数据从未触发，需验证 `c_st` 是否真产生。
+- `old_face`（1269 条，完整收益）被 `ACTIVE_CATEGORIES` 排除，可作反向疲劳特征诊断（未做，待确认）。
+
+### 验证
+
+- `tests/test_backtest.py` 追加 `test_dimension_ic_keeps_live_momentum_kdj`
+- 全量 `pytest tests/` **292 passed**
+- 运行时确认：`momentum_kdj` 重新出现在 IC 表；`new_face_candle`/`momentum_candle`/`high_pos` 不再泄露
+
+---
+
+## 2026-07-16 运行期 crash 修复
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 85 | `unified_scanner.py:137` 访问 `top_s.kline.rps_rank`，但 `KlineSummary` 无此属性（RPS 仅以 `c.rps_bonus` 存于 `Candidate`），运行时 `AttributeError` | 改为显示 `top_s.rps_bonus`（enhancer.py:122 已填充所有候选） |
+
+### 验证
+- `pytest tests/` **292 passed**
+
 

@@ -214,7 +214,7 @@ def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct") -> list
     """
     # 已删除功能残留于历史 score_breakdown JSON，无对应评分代码，仅干扰阅读。
     dead_dim_keys = {
-        "new_face_candle", "momentum_candle", "momentum_kdj", "high_pos",
+        "new_face_candle", "momentum_candle", "high_pos",
     }
     rows = conn.execute(
         f"SELECT score_breakdown, {metric} FROM recommendations "
