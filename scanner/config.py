@@ -132,6 +132,8 @@ NEW_FACE_WEIGHTS: dict[str, int] = {
     "rsi14_oversold_bonus": 3,
     "bollinger_oversold": 4,
     "kdj_bonus": 1,
+    "atr_contraction": 2,
+    "obv_not_negative": 2,
 }
 # NOTE: new_face_kdj 已降权（3->1）。回测 IC=-0.184 但 n=30（小样本），
 # 仅弱化不消除，待累积样本后再评估是否清零。
@@ -157,6 +159,9 @@ MOMENTUM_WEIGHTS: dict[str, int] = {
     "macd_bonus": 3,
     "adx_bonus": 5,
     "adx_weak": -3,
+    "atr_healthy": 3,
+    "atr_overheated": -3,
+    "obv_uptrend": 3,
 }
 
 PULLBACK_WEIGHTS: dict[str, int] = {
@@ -384,4 +389,3 @@ PULLBACK_20D_GAIN_WARN = 40       # 20-day gain > 40% → warn
 PULLBACK_20D_GAIN_EXTREME = 60    # 20-day gain > 60% → extreme
 PULLBACK_20D_WARN_PENALTY = -10
 PULLBACK_20D_EXTREME_PENALTY = -15
-TECH_POSITIVE_RETURN_BONUS = 4

@@ -1,4 +1,4 @@
-from scanner.utils import _strip_exchange, detect_board, is_gem, is_hk_stock, is_st
+from scanner.utils import _strip_exchange, is_gem, is_hk_stock, is_st
 
 
 class TestIsSt:
@@ -52,17 +52,3 @@ class TestIsHkStock:
 
     def test_not_hk(self):
         assert not is_hk_stock("SZ300999")
-
-
-class TestDetectBoard:
-    def test_hk(self):
-        assert detect_board("00700", "") == "港股"
-
-    def test_gem(self):
-        assert detect_board("SZ300999", "300999") == "创业板"
-
-    def test_kcb(self):
-        assert detect_board("SH688001", "688001") == "科创板"
-
-    def test_main_board(self):
-        assert detect_board("SH600519", "600519") == "主板"

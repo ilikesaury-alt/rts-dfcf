@@ -73,16 +73,6 @@ def init_db() -> sqlite3.Connection:
     return conn
 
 
-def get_recent_symbols(conn: sqlite3.Connection, days: int) -> set[str]:
-    today = now_beijing().date().isoformat()
-    lookback = (now_beijing().date() - timedelta(days=days)).isoformat()
-    cur = conn.execute(
-        "SELECT DISTINCT symbol FROM appearances WHERE date >= ? AND date < ?",
-        (lookback, today),
-    )
-    return {row[0] for row in cur.fetchall()}
-
-
 def record_appearances(conn: sqlite3.Connection, symbols: list[dict]):
     today = now_beijing().date().isoformat()
     rows = []
@@ -236,23 +226,3 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: li
             print(f"  [!] 保存推荐记录失败 {c.stock.symbol}: {e}")
     conn.commit()
 
-
-def init_cross_validation_tables() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS cross_validated_signals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT NOT NULL,
-            symbol TEXT NOT NULL,
-            name TEXT NOT NULL,
-            level TEXT NOT NULL,
-            bonus INTEGER NOT NULL,
-            existing_category TEXT,
-            chain_name TEXT,
-            chain_phase TEXT,
-            created_at TEXT NOT NULL
-        )
-    """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_cvs_date ON cross_validated_signals(date)")
-    conn.commit()
-    return conn

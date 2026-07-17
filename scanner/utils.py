@@ -16,14 +16,3 @@ def is_gem(code: str) -> bool:
 
 def is_hk_stock(symbol: str) -> bool:
     return symbol.isdigit()
-
-
-def detect_board(symbol: str, code: str) -> str:
-    if is_hk_stock(symbol):
-        return "港股"
-    if is_gem(code):
-        return "创业板"
-    raw = _strip_exchange(code)
-    if raw.startswith("688"):
-        return "科创板"
-    return "主板"

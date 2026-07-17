@@ -1,4 +1,4 @@
-from scanner.rank_trend import RankTracker, rank_streak_score, rank_trajectory_score, update_rank_history
+from scanner.rank_trend import RankTracker, rank_trajectory_score, update_rank_history
 
 
 class TestRankTrackerReset:
@@ -151,19 +151,11 @@ class TestTrajectoryScore:
 
 
 class TestModuleLevelFunctions:
-    def test_update_and_streak(self):
-        update_rank_history({"MODFUNC_A": 100})
-        update_rank_history({"MODFUNC_A": 90})
-        assert rank_streak_score("MODFUNC_A") == 6
-
     def test_update_and_trajectory(self):
         update_rank_history({"MODFUNC_B": 100})
         update_rank_history({"MODFUNC_B": 90})
         update_rank_history({"MODFUNC_B": 80})
         assert rank_trajectory_score("MODFUNC_B") == 8
-
-    def test_streak_unknown_symbol(self):
-        assert rank_streak_score("NONEXISTENT_X") == 0
 
     def test_trajectory_unknown_symbol(self):
         assert rank_trajectory_score("NONEXISTENT_Y") == 0

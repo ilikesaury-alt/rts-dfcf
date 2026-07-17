@@ -13,7 +13,6 @@ from scanner.api import (
     analyze_opening_strength,
     compute_surge_sentiment,
     estimate_live_volume,
-    fetch_biaosheng,
     fetch_kline,
     fetch_market_caps_batch,
     fetch_market_index,
@@ -457,11 +456,6 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
 
     return (new_faces, momentum, pullback_list, short_term_list,
             stale_candidates, gem_stocks_filtered, filtered_large_cap, picks)
-
-
-def scan(conn: sqlite3.Connection, session: requests.Session) -> tuple[list[Candidate], list[Candidate], list[Candidate], list[Candidate], list[Candidate], list[StockInfo], int]:
-    raw = fetch_biaosheng(session)
-    return scan_with_raw(raw, conn, session)
 
 
 def _parallel_fetch(pool: ThreadPoolExecutor, base_session: requests.Session,

@@ -64,9 +64,5 @@ def update_rank_history(current_ranks: dict[str, int]):
     tracker.update(current_ranks)
 
 
-def rank_streak_score(symbol: str) -> int:
-    return tracker.streak_score(symbol)
-
-
 def rank_trajectory_score(symbol: str) -> int:
     return tracker.trajectory_score(symbol)

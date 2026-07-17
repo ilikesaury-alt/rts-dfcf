@@ -44,8 +44,8 @@ from scanner.config import (
     VOL_RANK_WEAK_RC,
 )
 from scanner.indicators import (
-    compute_adx, compute_bollinger_bands, compute_kdj,
-    compute_macd, compute_ma, compute_rsi,
+    compute_adx, compute_atr, compute_bollinger_bands, compute_kdj,
+    compute_macd, compute_ma, compute_obv, compute_rsi,
 )
 from scanner.models import KlineSummary, StockInfo
 
@@ -191,6 +191,22 @@ def _compute_new_face_indicators(closes: list[float], historical_kline: list[dic
         bonus += W["bollinger_oversold"]
         dims["new_face_bollinger"] = round(boll["b_pct"], 2)
 
+    # ATR/OBV 增量确认：低波动蓄势 + OBV 未转负（底背离资金吸筹）
+    highs = [k["high"] for k in historical_kline]
+    lows = [k["low"] for k in historical_kline]
+    volumes = [k["volume"] for k in historical_kline]
+    atr = compute_atr(highs, lows, closes, period=14)
+    if atr is not None and closes:
+        atr_pct = atr / closes[-1] * 100
+        dims["new_face_atr_pct"] = round(atr_pct, 2)
+        if atr_pct < 3:
+            bonus += W["atr_contraction"]
+    obv = compute_obv(closes, volumes)
+    if obv is not None:
+        dims["new_face_obv_trend"] = obv["obv_trend"]
+        if obv["obv_trend"] >= 0:
+            bonus += W["obv_not_negative"]
+
     return bonus, dims
 
 
@@ -242,6 +258,23 @@ def _compute_momentum_indicators(closes: list[float], historical_kline: list[dic
         elif adx_val["adx"] < 20:
             bonus += W["adx_weak"]
             dims["momentum_adx"] = W["adx_weak"]
+
+    # ATR/OBV 增量确认：波动率适中=趋势健康，过高=过热；OBV 上行=趋势资金确认
+    highs = [k["high"] for k in historical_kline]
+    lows = [k["low"] for k in historical_kline]
+    volumes = [k["volume"] for k in historical_kline]
+    atr = compute_atr(highs, lows, closes, period=14)
+    if atr is not None and closes:
+        atr_pct = atr / closes[-1] * 100
+        dims["momentum_atr_pct"] = round(atr_pct, 2)
+        if 2 <= atr_pct <= 6:
+            bonus += W["atr_healthy"]
+        elif atr_pct > 10:
+            bonus += W["atr_overheated"]
+    obv = compute_obv(closes, volumes)
+    if obv is not None and obv["obv_trend"] == 1:
+        bonus += W["obv_uptrend"]
+        dims["momentum_obv_trend"] = obv["obv_trend"]
 
     return bonus, dims
 

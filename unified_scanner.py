@@ -19,7 +19,6 @@ from scanner.config import (
     REFRESH_INTERVAL,
     now_beijing,
 )
-from scanner.cross_validation import cross_validate
 from scanner.database import init_db, save_recommendations
 from scanner.display import display
 from scanner.feishu import push_feishu
@@ -138,7 +137,6 @@ def main():
                           f"{top_s.stock.percent:+.2f}% | RPS:{top_s.rps_bonus}")
 
                 save_recommendations(conn, new_faces, momentum + pullback_list + short_term_list)
-                cross_validate()
 
             except requests.RequestException as e:
                 print(f"\n  [!] 网络错误: {e}")

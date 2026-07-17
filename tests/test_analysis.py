@@ -355,6 +355,18 @@ class TestIndicatorIntegration:
         if result:
             assert "new_face_bollinger" in result.dimensions or "new_face_rsi14" in result.dimensions
 
+    def test_new_face_atr_obv_dims_present(self):
+        # 低波动蓄势序列（>=15 根供 ATR 计算）→ ATR 维度存在 + OBV 非负确认
+        pcts = [-1, -1, 0, 0, 1, 1, 1, 2, -1, 0, 1, 0, -1, 1, 1] + [3.0]
+        kline = _kline(pcts, volumes=[1.0] * 16)
+        result = analyze_new_face(_stock(percent=3, rank_change=1500, value=8000), kline)
+        assert result is not None
+        assert "new_face_atr_pct" in result.dimensions
+        assert "new_face_obv_trend" in result.dimensions
+        # 低波动下行后企稳 → OBV 不应转负（资金未撤离）
+        assert result.dimensions["new_face_obv_trend"] >= 0
+        assert result.dimensions["new_face_atr_pct"] > 0
+
     def test_momentum_adx_bonus(self):
         pcts = [2]*35
         kline = _kline(pcts, volumes=[1.0]*35)
@@ -369,6 +381,19 @@ class TestIndicatorIntegration:
         result = analyze_momentum(_stock(percent=3, rank_change=1500, value=8000), kline)
         assert result is not None
         assert "momentum_kdj" in result.dimensions
+
+    def test_momentum_atr_obv_dims_present(self):
+        # 16 根温和上行 K 线（6日累计>10% 通过动量门槛，且 >=15 根供 ATR 计算）
+        # → ATR% 落入健康区间、OBV 上行趋势
+        pcts = [2.0] * 15 + [3.0]
+        kline = _kline(pcts, volumes=[1.0] * 16)
+        result = analyze_momentum(_stock(percent=3, rank_change=2000, value=12000), kline)
+        assert result is not None
+        assert "momentum_atr_pct" in result.dimensions
+        assert "momentum_obv_trend" in result.dimensions
+        assert result.dimensions["momentum_obv_trend"] == 1
+        # 波动率适中（ATR% 在 2~6 健康区间）拿到 atr_healthy 加分
+        assert 2 <= result.dimensions["momentum_atr_pct"] <= 6
 
 
 class TestAccumulatedCalculation:
