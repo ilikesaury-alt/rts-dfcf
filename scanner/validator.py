@@ -408,13 +408,9 @@ def validate_short_term(stock, kline_summary, closes: list[float],
     # 实为末周期风险而非优势，故压下验证加分（total 归零），仅按标准门禁判定，
     # 避免高位破轨股仅凭弱转强 + 共振拿下 inflated 验证分（如 300534 案例 +24）。
     if overbought:
-        total = 0
-    else:
-        passed = wts_bonus > 0 or (pos_dims >= 2 and non_sector_pos >= 1)
-        return passed, total, details
+        # 末周期超买：共振验证加分归零，弱转强不再直通，按标准门禁判定
+        return wts_bonus > 0 or (pos_dims >= 2 and non_sector_pos >= 1), 0, details
 
-    # 超买路径（上方 else 已提前返回）：按标准门禁判定，弱转强不再直通；
-    # 共振验证加分已在上方归零。
     passed = wts_bonus > 0 or (pos_dims >= 2 and non_sector_pos >= 1)
     return passed, total, details
 
@@ -428,7 +424,8 @@ def _st_is_overbought(closes: list[float], historical_kline: list[dict],
     """
     series = list(closes)
     today_close = getattr(stock, "current", 0) or 0
-    if today_close > 0 and (not series or today_close != series[-1]):
+    append_today = today_close > 0 and (not series or today_close != series[-1])
+    if append_today:
         series.append(today_close)
 
     if len(series) >= 20:
@@ -436,11 +433,10 @@ def _st_is_overbought(closes: list[float], historical_kline: list[dict],
         if boll is not None and boll["b_pct"] > ST_OVERBOUGHT_BOLL:
             return True
     if len(series) >= 9:
+        today_ext = [today_close] if append_today else []
         kdj = compute_kdj(
-            [k["high"] for k in historical_kline] + (
-                [getattr(stock, "current", 0)] if getattr(stock, "current", 0) else []),
-            [k["low"] for k in historical_kline] + (
-                [getattr(stock, "current", 0)] if getattr(stock, "current", 0) else []),
+            [k["high"] for k in historical_kline] + today_ext,
+            [k["low"] for k in historical_kline] + today_ext,
             series,
         )
         if kdj is not None and kdj["J"] > ST_OVERBOUGHT_KDJ:
@@ -463,7 +459,8 @@ def _mo_is_overbought(closes: list[float], historical_kline: list[dict],
     """
     series = list(closes)
     today_close = getattr(stock, "current", 0) or 0
-    if today_close > 0 and (not series or today_close != series[-1]):
+    append_today = today_close > 0 and (not series or today_close != series[-1])
+    if append_today:
         series.append(today_close)
 
     if len(series) >= 20:
@@ -471,11 +468,10 @@ def _mo_is_overbought(closes: list[float], historical_kline: list[dict],
         if boll is not None and boll["b_pct"] > ST_OVERBOUGHT_BOLL:
             return True
     if len(series) >= 9:
+        today_ext = [today_close] if append_today else []
         kdj = compute_kdj(
-            [k["high"] for k in historical_kline] + (
-                [getattr(stock, "current", 0)] if getattr(stock, "current", 0) else []),
-            [k["low"] for k in historical_kline] + (
-                [getattr(stock, "current", 0)] if getattr(stock, "current", 0) else []),
+            [k["high"] for k in historical_kline] + today_ext,
+            [k["low"] for k in historical_kline] + today_ext,
             series,
         )
         if kdj is not None and kdj["J"] > ST_OVERBOUGHT_KDJ:

@@ -20,6 +20,7 @@ from scanner.models import KlineSummary, StockInfo
 from scanner.validator import (
     validate,
     _mo_divergence,
+    _mo_is_overbought,
     _mo_ma_alignment,
     _mo_volume_uniformity,
     _nf_convergence,
@@ -28,6 +29,7 @@ from scanner.validator import (
     _pb_ma_trend,
     _pb_shrinkage,
     _pb_sector,
+    _st_is_overbought,
     validate_momentum,
     validate_nf,
     validate_pullback,
@@ -703,3 +705,41 @@ class TestValidateShortTerm:
         # enhancer 标记逻辑（复刻）：以 v_st_overbought 为准，不依赖 st_overbought_penalty
         dims["st_overbought_flag"] = dims.get("st_overbought_penalty") or True
         assert dims["st_overbought_flag"] is not None
+
+
+class TestOverboughtLengthAlignment:
+    """FIX-3 回归：series 与 highs/lows 对今日收盘的追加须同步，避免长度错位。"""
+
+    def _make_stock(self, today_close):
+        return StockInfo(symbol="300999", name="测试", code="300999",
+                         percent=4.0, current=today_close, value=8000,
+                         rank_change=1500, rank=10)
+
+    def test_st_overbought_today_in_series(self):
+        # 今日收盘已在历史序列末端（today_close == closes[-1]）：
+        # series 不追加，highs/lows 也不应追加，三者等长。
+        k = _kline([1.0] * 25, volumes=[1.0] * 25)
+        closes = [c["close"] for c in k[:-1]]
+        today_close = closes[-1]
+        stock = self._make_stock(today_close)
+        # 不抛异常且返回布尔；重点验证 FIX-3 后逻辑稳定（无长度错位）
+        result = _st_is_overbought(closes, k[:-1], stock)
+        assert isinstance(result, bool)
+
+    def test_st_overbought_today_not_in_series(self):
+        # 今日收盘高于历史序列末端：series 追加，highs/lows 同步追加。
+        k = _kline([1.0] * 25, volumes=[1.0] * 25)
+        closes = [c["close"] for c in k[:-1]]
+        today_close = closes[-1] * 1.2
+        stock = self._make_stock(today_close)
+        result = _st_is_overbought(closes, k[:-1], stock)
+        assert isinstance(result, bool)
+
+    def test_mo_overbought_length_alignment(self):
+        # 与 test_st 同构，覆盖 momentum 端 _mo_is_overbought。
+        k = _kline([1.0] * 25, volumes=[1.0] * 25)
+        closes = [c["close"] for c in k[:-1]]
+        stock = self._make_stock(closes[-1])  # 今日收盘已在序列
+        result = _mo_is_overbought(closes, k[:-1], stock)
+        assert isinstance(result, bool)
+

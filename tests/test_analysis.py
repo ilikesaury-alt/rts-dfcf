@@ -1,4 +1,8 @@
-from scanner.analysis import analyze_momentum, analyze_new_face, analyze_pullback, analyze_short_term
+from scanner.analysis import (
+    analyze_momentum, analyze_new_face, analyze_pullback, analyze_short_term,
+    _score_today_pct,
+)
+from scanner.config import NEW_FACE_WEIGHTS, MOMENTUM_WEIGHTS
 from scanner.models import StockInfo
 
 from tests.helpers import _kline
@@ -584,5 +588,31 @@ class TestAnalyzeShortTerm:
         result = analyze_short_term(_stock(percent=3.0, rank=5), kline)
         assert result is not None
         assert "st_overbought_penalty" not in result.dimensions
+
+
+class TestScoreTodayPctDeadBranches:
+    """FIX-1 回归：_score_today_pct 不得引用未定义权重键 today_pct_6_7 / today_pct_7_12。
+
+    调用方已显式处理 today_pct >= 6，故本函数定义域收敛到 < 6。直接调用各边界值，
+    断言不抛 KeyError 且返回的评分值确实来自对应权重字典（即查不到未定义键）。
+    """
+
+    def test_new_face_full_range_no_keyerror(self):
+        for pct in (0.0, 0.49, 0.5, 0.99, 1.0, 1.99, 2.0, 3.0, 5.99):
+            score, key, val = _score_today_pct(pct, NEW_FACE_WEIGHTS, "new_face")
+            assert val in NEW_FACE_WEIGHTS.values(), f"返回分 {val} 不在 NEW_FACE_WEIGHTS (pct={pct})"
+            assert val == score
+
+    def test_momentum_full_range_no_keyerror(self):
+        for pct in (0.0, 0.49, 0.5, 0.99, 1.0, 1.99, 2.0, 3.0, 5.99):
+            score, key, val = _score_today_pct(pct, MOMENTUM_WEIGHTS, "momentum")
+            assert val in MOMENTUM_WEIGHTS.values(), f"返回分 {val} 不在 MOMENTUM_WEIGHTS (pct={pct})"
+            assert val == score
+
+    def test_boundary_covers_lt_6_only(self):
+        # 紧邻调用方拦截点（>= 6）的上界，确保 2~6 区间被 today_pct_2_6 覆盖
+        score, key, val = _score_today_pct(5.999, NEW_FACE_WEIGHTS, "new_face")
+        assert key == "new_face_today_pct"
+        assert val == NEW_FACE_WEIGHTS["today_pct_2_6"]
 
 

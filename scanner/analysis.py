@@ -136,18 +136,16 @@ def _vol_peak_ratio(volumes: list[float], lookback: int = VOL_PEAK_LOOKBACK) -> 
 
 
 def _score_today_pct(today_pct: float, W: dict, prefix: str) -> tuple[int, str, int]:
+    # 调用方已显式处理 today_pct >= 6（走 today_pct_6_8 / today_pct_gt_8），
+    # 故本函数仅覆盖 < 6 区间，不存在对未定义权重键 today_pct_6_7 / today_pct_7_12 的引用。
     if today_pct < 0.5:
         return W["today_pct_lt_0_5"], f"{prefix}_today_pct", W["today_pct_lt_0_5"]
     elif today_pct < 1:
         return W["today_pct_0_5_1"], f"{prefix}_today_pct", W["today_pct_0_5_1"]
     elif today_pct < 2:
         return W["today_pct_1_2"], f"{prefix}_today_pct", W["today_pct_1_2"]
-    elif today_pct <= 6:
+    else:  # 2 <= today_pct < 6
         return W["today_pct_2_6"], f"{prefix}_today_pct", W["today_pct_2_6"]
-    elif today_pct <= 7:
-        return W["today_pct_6_7"], f"{prefix}_today_pct", W["today_pct_6_7"]
-    else:
-        return W["today_pct_7_12"], f"{prefix}_today_pct", W["today_pct_7_12"]
 
 
 
