@@ -162,7 +162,7 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             conf = c.confidence if hasattr(c, "confidence") else 0
             conf_tag = f"{ANSI['BOLD']}{conf:>3}{ANSI['RESET']}"
             bonus = _bonus_tag(c)
-            print(f"  {s.rank:>4} {_pad(_source_tag(c),4)} {_pad(f'★ {s.name}',10} "
+            print(f"  {s.rank:>4} {_pad(_source_tag(c),4)} {_pad(f'★ {s.name}',10)} "
                   f"{s.symbol:<12} {cur:>7} {pct_colored(s.percent)} "
                   f"{_pad(k.trend if k else 'N/A',14)} {acc:>8} {vr:>6} "
                   f"确定{conf_tag} {_pad(bonus,16)}")
