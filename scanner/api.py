@@ -101,7 +101,7 @@ def fetch_market_index(session: requests.Session) -> float | None:
         url = f"https://stock.xueqiu.com/v5/stock/chart/kline.json?symbol=SZ399006&begin={ts_ms - 86400*1000*3}&period=day&count=2&_={ts_ms}"
         resp = _request_with_retry(session, url)
         items = resp.json().get("data", {}).get("item", [])
-        if items:
+        if items and len(items[-1]) > 7:
             pct = items[-1][7]
             with _index_cache_lock:
                 _market_index_cache = (pct, now)
@@ -276,20 +276,38 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
                f"?symbol={sym_str}")
         try:
             resp = _request_with_retry(session, url)
-            items = resp.json().get("data", {}).get("items", [])
-            for item in items:
-                q = item.get("quote") if isinstance(item, dict) else {}
-                if not q or not q.get("symbol"):
-                    q = item if isinstance(item, dict) else {}
-                sym = q.get("symbol", "")
-                if sym:
-                    mc = q.get("market_capital") or 0
-                    cmc = q.get("float_market_capital") or 0
-                    turnover = q.get("turnover_rate") or 0
-                    result[sym] = {"market_cap": mc, "circ_market_cap": cmc,
-                                   "turnover_rate": turnover,
-                                   "current": q.get("current", 0),
-                                   "percent": q.get("percent", 0)}
+            data = resp.json().get("data", {})
+            # batch/quote.json 返回结构为 {symbol: {"quote": {...}, ...}}，
+            # 也可能为 {"items": [...]} 形态，两种都兼容。
+            if isinstance(data, dict) and "items" not in data:
+                for sym, entry in data.items():
+                    q = entry.get("quote") if isinstance(entry, dict) else entry
+                    if not isinstance(q, dict) or not q.get("symbol"):
+                        q = entry if isinstance(entry, dict) else {}
+                    qsym = q.get("symbol", sym)
+                    if qsym:
+                        mc = q.get("market_capital") or 0
+                        cmc = q.get("float_market_capital") or 0
+                        turnover = q.get("turnover_rate") or 0
+                        result[qsym] = {"market_cap": mc, "circ_market_cap": cmc,
+                                        "turnover_rate": turnover,
+                                        "current": q.get("current", 0),
+                                        "percent": q.get("percent", 0)}
+            else:
+                items = data.get("items", []) if isinstance(data, dict) else []
+                for item in items:
+                    q = item.get("quote") if isinstance(item, dict) else {}
+                    if not q or not q.get("symbol"):
+                        q = item if isinstance(item, dict) else {}
+                    sym = q.get("symbol", "")
+                    if sym:
+                        mc = q.get("market_capital") or 0
+                        cmc = q.get("float_market_capital") or 0
+                        turnover = q.get("turnover_rate") or 0
+                        result[sym] = {"market_cap": mc, "circ_market_cap": cmc,
+                                       "turnover_rate": turnover,
+                                       "current": q.get("current", 0),
+                                       "percent": q.get("percent", 0)}
         except Exception as e:
             print(f"  [!] 市值批量查询失败(批次{i // 50 + 1}): {e}")
             continue
@@ -309,18 +327,24 @@ _MINUTE_DATA_CACHE_TTL = 120
 
 
 def _normalize_minute_item(raw) -> dict:
-    """Xueqiu chart/minute.json 返回的是数组（与 kline 同格式），需规整为 dict。
+    """Xueqiu chart/minute.json 返回的是数组，与 kline 共用同一套 column 格式，
+    需规整为 dict。
 
-    列序: [timestamp(ms), volume, avg_price, current, ...]
-    capital(大单资金) 不在分钟 bar 中，故恒为 0（分钟接口无该字段）。
+    列序（与 scanner/api.py fetch_kline 一致）:
+        [timestamp(ms), volume, open, high, low, close, chg, percent,
+         turnoverrate, amount, ...]
+    - current(当前价) = close = raw[5]
+    - avg_price(均价) = amount / volume = raw[9] / raw[1]（分钟接口无独立均价列）
+    - capital(大单资金) 不在分钟 bar 中，故恒为 0（分钟接口无该字段）。
     """
     if isinstance(raw, dict):
         return raw
     try:
         ts = raw[0]
         volume = raw[1]
-        avg_price = raw[2]
-        current = raw[3]
+        current = raw[5]
+        amount = raw[9] if len(raw) > 9 else None
+        avg_price = (amount / volume) if (amount and volume) else current
     except (IndexError, TypeError):
         return {"timestamp": 0, "volume": 0, "avg_price": 0.0, "current": 0.0}
     return {
@@ -486,12 +510,8 @@ def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
 
         score = early_score + mid_score + late_score
 
-        capital = items[-1].get("capital", {})
-        xlarge = capital.get("xlarge", 0) if capital else 0
-        if xlarge > 5:
-            score += 2.0
-        elif xlarge < -5:
-            score -= 2.0
+        # 大单资金(capital) 不在分钟 bar 中（分钟接口无该字段），该 ±2 加分恒为 0，
+        # 属预期收敛，不伪造数据。如需大单维度应改用 capital_flow 独立接口。
 
         score = max(-10.0, min(10.0, score))
         with _intraday_cache_lock:
