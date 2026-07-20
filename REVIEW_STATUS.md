@@ -67,6 +67,7 @@
 | ✅ P1 | 64 | 动量量能阈值硬编码未用常量 | 2026-07-13 改用 `_MOMENTUM_VOL_HEALTHY_*` |
 | ✅ P0 | 67 | 动量 MA 多头判定「分析 EMA / 验证 SMA」不一致导致交叉验证脱节 | 2026-07-16 `_mo_ma_alignment` 改 EMA 与 analysis 统一；注释修正；死代码清理 |
 | ✅ P0 | 68 | 超短 `st_weak_to_strong` 弱转强信号重复计分（分析+8 与验证+8 叠加） | 2026-07-16 `validate_short_term` 保留 wts 作门控维度但不计入 total；新增回归 |
+| ✅ P0 | 86 | `orchestrator.py:384` `st` 变量作用域错误——超短候选仅收集循环最后一个 stock | 2026-07-20 将 `if st:` 移入 for 循环内；analysis.py 重复导入清理 |
 
 ---
 
@@ -79,6 +80,7 @@
 | 2026-07-15 | 策略逻辑正确性/数据流完整性/加分逻辑/交叉验证/配置一致性/错误处理 | analysis.py/config.py/validator.py/enhancer.py/orchestrator.py/api.py/database.py/indicators.py/models.py/sector.py/utils.py | 无新 P0/P1 发现；#31(intraday反指)确认已修；新增 2 项 P2 死代码 | 245 测试全过；覆盖 analysis/config/validator/enhancer 四个 ⚠️ 模块→✅；全项目仅剩 tests/* 未覆盖 |
 | 2026-07-15 | 子系统清理 + 主扫描器缺陷修复 | industry_chain(删除)/orchestrator.py/cross_validation.py/database.py/config.py | 🗑️ 移除整个产业链子系统(industry_chain/ + industry_chain_scanner.py)，清理 init_industry_chain_tables/chokepoint_recommendations 表/cross_validation 链依赖/Industry chain 配置块/文档；🔴 修复实时扫描 K 线永远少一天(orchestrator.py 盘中补拉今日 Bar)；🟡 双挂票 stock 级加分按 symbol 去重(排名不变) | 确认主扫描器市值过滤用真实 market_capital，热度值未当市值；热度当市值 bug 仅存在于已删的 industry_chain/pipeline.py:39 |
 | 2026-07-16 | 策略实现专项审查（P0 修复·第二轮） | analysis.py/validator.py + tests/test_validator.py | 🔴 修复超短 `st_weak_to_strong` 重复计分(P0-68)：`validate_short_term` 保留 wts 作门控维度(`pos_dims`)但不计入 `total`（已在分析分计 +8）；新增 `test_weak_to_strong_not_double_counted` 回归 | 295 测试全过；其余 3 策略验证维度均为 validator 独立重算两层信号，不受影响；`st_wts_gap`(+4) 单计正确 |
+| 2026-07-20 | 策略逻辑正确性/配置一致性/代码质量 | orchestrator.py/analysis.py | 🔴 修复超短候选丢失(P0-86)：`orchestrator.py:384` `if st:` 在 for 循环外，仅收集最后一个 stock 的 short_term 候选→移入循环内；🟡 清理 `analysis.py` 重复 `PULLBACK_20D_*` 导入 | 324 测试全过；此 bug 导致历史上 short_term 列表几乎为空（仅当最后一个 stock 恰好过超短时才有数据） |
 
 ---
 

@@ -381,8 +381,8 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
             momentum.append(mo)
         if pb:
             pullback_list.append(pb)
-    if st:
-        short_term_list.append(st)
+        if st:
+            short_term_list.append(st)
 
     # 同板块上限：板块普涨日防止单板块淹没超短列表（P0-69 后再加一道闸）
     short_term_list = _cap_short_term_by_sector(short_term_list, concept_map)
