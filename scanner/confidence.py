@@ -71,7 +71,7 @@ def compute_confidence(
         if validation_bonus <= 0:
             result[sym] = 0  # 未过交叉验证（validator 无正共振）
             continue
-        if "momentum_no_crash" not in dims and c.category == "momentum":
+        if "momentum_no_crash_safe" not in dims and c.category == "momentum":
             result[sym] = 0  # 含 crash day
             continue
 

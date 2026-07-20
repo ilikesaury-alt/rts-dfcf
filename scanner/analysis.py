@@ -54,6 +54,8 @@ from scanner.config import (
     BOTTOM_NEAR_LOW_PCT,
     CRASH_THRESHOLD,
     RECENT_2_RETURN_THRESHOLD,
+    NO_CRASH_SAFE_BONUS,
+    RECENT_2D_BONUS,
     MOMENTUM_VOL_HEALTHY_MIN,
     MOMENTUM_VOL_HEALTHY_MAX,
     MA_BULL_3_TIER_SCORE,
@@ -539,16 +541,19 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
         score += VOL_PEAK_MOMENTUM_PENALTY
         dims["momentum_vol_peak"] = round(vol_peak, 2)
 
-    # Crash check
+    # Crash check — split: base safety + recent 2d bonus
     if len(pcts) >= 2:
         has_crash_day = any(p <= CRASH_THRESHOLD for p in pcts[-5:])
         recent_2_return = pcts[-2] + pcts[-1]
-        no_crash = not has_crash_day and recent_2_return > RECENT_2_RETURN_THRESHOLD
     else:
-        no_crash = True
-    if no_crash:
-        score += W["no_crash"]
-        dims["momentum_no_crash"] = W["no_crash"]
+        has_crash_day = False
+        recent_2_return = 0.0
+    if not has_crash_day:
+        score += NO_CRASH_SAFE_BONUS
+        dims["momentum_no_crash_safe"] = NO_CRASH_SAFE_BONUS
+        if recent_2_return > RECENT_2_RETURN_THRESHOLD:
+            score += RECENT_2D_BONUS
+            dims["momentum_recent_2d"] = RECENT_2D_BONUS
 
     vol_rank = _vol_rank_combo_score(vol_ratio, stock.rank_change)
     score += vol_rank
@@ -589,7 +594,7 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
         dims["mo_overbought_penalty"] = ob_pen
 
     return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
-                        volume_ratio=round(vol_ratio, 2), bottom_confirmed=no_crash,
+                        volume_ratio=round(vol_ratio, 2), bottom_confirmed=not has_crash_day,
                         score=score, dimensions=dims, avg_volume=round(avg_vol, 2))
 
 
@@ -693,19 +698,24 @@ def _score_pullback_volume(vol_ratio: float, W: dict) -> tuple[int, dict]:
     return score, dims
 
 
-def _check_crash_day(pcts: list, W: dict) -> tuple[bool, int, dict]:
-    """Check if there's been a crash day in the last 5 days.
+def _check_crash_day(pcts: list) -> tuple[bool, int, dict]:
+    """Check crash day + recent 2d return for pullback.
 
     Returns:
-        (has_crash_day, score, dimensions) tuple
+        (has_crash_day, score, dimensions)
     """
     has_crash_day = any(p <= CRASH_THRESHOLD for p in pcts[-5:])
     score = 0
     dims: dict[str, int | float] = {}
 
     if not has_crash_day:
-        score = W["no_crash"]
-        dims["pullback_no_crash"] = W["no_crash"]
+        score += NO_CRASH_SAFE_BONUS
+        dims["pullback_no_crash_safe"] = NO_CRASH_SAFE_BONUS
+        if len(pcts) >= 2:
+            recent_2_return = pcts[-2] + pcts[-1]
+            if recent_2_return > RECENT_2_RETURN_THRESHOLD:
+                score += RECENT_2D_BONUS
+                dims["pullback_recent_2d"] = RECENT_2D_BONUS
 
     return has_crash_day, score, dims
 
@@ -872,7 +882,7 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
         score += VOL_PEAK_PULLBACK_BONUS
         dims["pullback_vol_peak"] = round(vol_peak, 2)
 
-    has_crash_day, crash_score, crash_dims = _check_crash_day(pcts, W)
+    has_crash_day, crash_score, crash_dims = _check_crash_day(pcts)
     score += crash_score
     dims.update(crash_dims)
 
@@ -978,8 +988,13 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
 
     has_crash = any(p <= -10 for p in pcts[-5:])
     if not has_crash:
-        score += W["no_crash"]
-        dims["st_no_crash"] = W["no_crash"]
+        score += NO_CRASH_SAFE_BONUS
+        dims["st_no_crash_safe"] = NO_CRASH_SAFE_BONUS
+        if len(pcts) >= 2:
+            recent_2_return = pcts[-2] + pcts[-1]
+            if recent_2_return > RECENT_2_RETURN_THRESHOLD:
+                score += RECENT_2D_BONUS
+                dims["st_recent_2d"] = RECENT_2D_BONUS
 
     # 超短偏好小市值：流通盘轻、拉升阻力小（market_cap 单位：亿元，流通市值优先）
     if stock.market_cap > 0:

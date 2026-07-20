@@ -90,6 +90,8 @@ BOTTOM_NEAR_LOW_PCT = 0.08
 # Crash detection thresholds
 CRASH_THRESHOLD = -12.0
 RECENT_2_RETURN_THRESHOLD = -3.0
+NO_CRASH_SAFE_BONUS = 8      # 拆分自 no_crash：无 crash day 基础安全分
+RECENT_2D_BONUS = 5           # 拆分自 no_crash：近2日不差附加分
 MOMENTUM_VOL_HEALTHY_MIN = 0.7
 MOMENTUM_VOL_HEALTHY_MAX = 2.0
 
@@ -183,7 +185,6 @@ MOMENTUM_WEIGHTS: dict[str, int] = {
     "vol_healthy": 2,
     "vol_surge": 0,
     "vol_low": -3,
-    "no_crash": 13,
     "value_gte_10000": 3,
     "value_gte_5000": 1,
     "rsi_bonus": 3,
@@ -208,7 +209,6 @@ PULLBACK_WEIGHTS: dict[str, int] = {
     "vol_healthy": 12,
     "vol_low": 0,
     "vol_surge": -8,
-    "no_crash": 13,
     "ma_support": 12,
     "ma_broken": -10,
     "rsi_oversold": 5,
@@ -232,7 +232,6 @@ SHORT_TERM_WEIGHTS: dict[str, int] = {
     "vol_healthy": 8,
     "vol_surge": 12,
     "vol_low": -5,
-    "no_crash": 10,
     "value_small_cap": 6,
     "value_mid_cap": 2,
     "st_weak_to_strong": 8,

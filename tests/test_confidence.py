@@ -28,18 +28,18 @@ class TestComputeConfidence:
     def test_accum_too_high_excluded(self):
         # 累计涨幅过高（>CONF_EXCLUDE_ACCUM）-> 鱼尾风险，硬排除
         c = _c(accumulated_pct=CONF_EXCLUDE_ACCUM + 5,
-                dimensions={"validation_bonus": 10, "momentum_no_crash": 1})
+                dimensions={"validation_bonus": 10, "momentum_no_crash_safe": 1})
         conf = compute_confidence([c], conn=None, list_presence={})
         assert conf[c.stock.symbol] == 0
 
     def test_validation_bonus_zero_excluded(self):
         # validator 未给正共振（validation_bonus<=0）-> 未过交叉验证，硬排除
-        c = _c(dimensions={"validation_bonus": 0, "momentum_no_crash": 1})
+        c = _c(dimensions={"validation_bonus": 0, "momentum_no_crash_safe": 1})
         conf = compute_confidence([c], conn=None, list_presence={})
         assert conf[c.stock.symbol] == 0
 
     def test_crash_day_excluded(self):
-        # momentum 含 crash day（缺 momentum_no_crash）-> 硬排除
+        # momentum 含 crash day（缺 momentum_no_crash_safe）-> 硬排除
         c = _c(dimensions={"validation_bonus": 10})
         conf = compute_confidence([c], conn=None, list_presence={})
         assert conf[c.stock.symbol] == 0
@@ -50,13 +50,13 @@ class TestComputeConfidence:
         strong = _c(symbol="300001", source_tag="both",
                    accumulated_pct=18.0, volume_ratio=1.3,
                    dimensions={
-                       "validation_bonus": 10, "momentum_no_crash": 1,
+                       "validation_bonus": 10, "momentum_no_crash_safe": 1,
                        "rps_bonus": 5, "sector_bonus": 3,
                        "momentum_ma_bull": 6, "intraday_score": 3,
                        "opening_score": 2, "live_vol_bonus": 2,
                    })
         weak = _c(symbol="300002", accumulated_pct=18.0, volume_ratio=1.3,
-                   dimensions={"validation_bonus": 10, "momentum_no_crash": 1})
+                   dimensions={"validation_bonus": 10, "momentum_no_crash_safe": 1})
         conf = compute_confidence([strong, weak], conn=None,
                                  list_presence={"300001": 2})
         assert conf["300001"] > conf["300002"], \
@@ -69,7 +69,7 @@ class TestComputeConfidence:
             cs.append(_c(symbol=f"30010{i}", accumulated_pct=18.0,
                           volume_ratio=1.3,
                           dimensions={
-                              "validation_bonus": 10, "momentum_no_crash": 1,
+                              "validation_bonus": 10, "momentum_no_crash_safe": 1,
                               "rps_bonus": 5, "sector_bonus": 3,
                               "momentum_ma_bull": 6, "intraday_score": 3,
                               "opening_score": 2, "live_vol_bonus": 2,
