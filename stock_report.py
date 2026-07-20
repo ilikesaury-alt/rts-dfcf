@@ -25,17 +25,20 @@ def find_stock(conn: sqlite3.Connection, query: str) -> list[dict]:
     query = query.strip().upper().replace("SZ", "").replace("SH", "").replace("BJ", "")
     results = []
     if re.match(r"^\d{6}$", query):
+        # LIMIT 须作用于每个子查询，否则 UNION 后整体截断会漏匹配
         rows = conn.execute(
-            "SELECT DISTINCT symbol, name FROM appearances WHERE symbol LIKE ? UNION "
-            "SELECT DISTINCT symbol, name FROM recommendations WHERE symbol LIKE ? LIMIT 1",
+            "SELECT * FROM (SELECT DISTINCT symbol, name FROM appearances WHERE symbol LIKE ? LIMIT 1) "
+            "UNION "
+            "SELECT * FROM (SELECT DISTINCT symbol, name FROM recommendations WHERE symbol LIKE ? LIMIT 1)",
             (f"%{query}", f"%{query}"),
         ).fetchall()
         for r in rows:
             results.append({"symbol": r[0], "name": r[1]})
     else:
         rows = conn.execute(
-            "SELECT DISTINCT symbol, name FROM appearances WHERE name LIKE ? UNION "
-            "SELECT DISTINCT symbol, name FROM recommendations WHERE name LIKE ? LIMIT 10",
+            "SELECT * FROM (SELECT DISTINCT symbol, name FROM appearances WHERE name LIKE ? LIMIT 10) "
+            "UNION "
+            "SELECT * FROM (SELECT DISTINCT symbol, name FROM recommendations WHERE name LIKE ? LIMIT 10)",
             (f"%{query}%", f"%{query}%"),
         ).fetchall()
         seen = set()

@@ -28,6 +28,9 @@ from scanner.config import (
     V_PB_SHRINK_MOD,
     V_PB_SHRINK_NO,
     V_PB_SHRINK_YES,
+    PULLBACK_VOL_LOW,
+    PULLBACK_VOL_HEALTHY,
+    PULLBACK_VOL_HIGH,
     V_ST_MA_BROKEN,
     V_ST_MA_SUPPORT,
     V_ST_RANK_LOW,
@@ -274,10 +277,17 @@ def _pb_ma_trend(closes: list[float]) -> tuple[int, str]:
 
 def _pb_shrinkage(kline_summary) -> tuple[int, float]:
     vr = kline_summary.volume_ratio
+    # 与分析端 _score_pullback_volume 共用同一组阈值，避免口径矛盾：
+    #   < PULLBACK_VOL_LOW      -> 极度缩量（确认 +）
+    #   <= PULLBACK_VOL_HEALTHY -> 健康缩量（+）
+    #   <= PULLBACK_VOL_HIGH    -> 中性（0）
+    #   >  PULLBACK_VOL_HIGH    -> 放量（非缩量，惩罚 -）
     if vr < 0.6:
         return V_PB_SHRINK_YES, vr
-    if vr < 1.0:
+    if vr <= PULLBACK_VOL_HEALTHY:
         return V_PB_SHRINK_MOD, vr
+    if vr <= PULLBACK_VOL_HIGH:
+        return 0, vr
     return V_PB_SHRINK_NO, vr
 
 
@@ -385,7 +395,9 @@ def validate_short_term(stock, kline_summary, closes: list[float],
     # 此处仅用作门控维度（计入 pos_dims），不再加入 total，避免重复计分（P0-68）。
     wts_bonus = kline_summary.dimensions.get("st_weak_to_strong", 0)
 
-    total = vol_bonus + sec_bonus + rank_bonus + ma_bonus
+    # 量能奖励已在 analyze_short_term 的 score 中计入（W["vol_surge"]/W["vol_healthy"]），
+    # 此处仅作为 pos_dims 维度判定，不再并入 total，避免重复计分。
+    total = sec_bonus + rank_bonus + ma_bonus
 
     details: dict[str, int | float | str] = {
         "v_st_vol": vol_bonus,
@@ -441,8 +453,9 @@ def _st_is_overbought(closes: list[float], historical_kline: list[dict],
         )
         if kdj is not None and kdj["J"] > ST_OVERBOUGHT_KDJ:
             return True
-    if len(series) >= 21:
-        gain_20d = (series[-1] - series[-21]) / series[-21] * 100
+    # 20日涨幅口径与分析端一致：用历史 closes（不含今日）的 [-1] 与 [-21]
+    if len(closes) >= 21:
+        gain_20d = (closes[-1] - closes[-21]) / closes[-21] * 100
         if gain_20d > PULLBACK_20D_GAIN_EXTREME:
             return True
     return False
@@ -476,8 +489,9 @@ def _mo_is_overbought(closes: list[float], historical_kline: list[dict],
         )
         if kdj is not None and kdj["J"] > ST_OVERBOUGHT_KDJ:
             return True
-    if len(series) >= 21:
-        gain_20d = (series[-1] - series[-21]) / series[-21] * 100
+    # 20日涨幅口径与分析端一致：用历史 closes（不含今日）的 [-1] 与 [-21]
+    if len(closes) >= 21:
+        gain_20d = (closes[-1] - closes[-21]) / closes[-21] * 100
         if gain_20d > PULLBACK_20D_GAIN_EXTREME:
             return True
     return False

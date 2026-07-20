@@ -66,8 +66,12 @@ def compute_outcome(
     """推导推荐后收益。
 
     - next_day: 推荐日次一交易日涨幅（与现有 next_day_pct 口径一致）
-    - fwd_3d: 推荐日之后第 3 个交易日相对推荐日收盘的累计收益
-    - fwd_5d: 推荐日之后第 5 个交易日相对推荐日收盘的累计收益
+    - fwd_3d: 推荐日之后第 3 个交易日的"当日涨幅"（代理指标，非累计收益）
+    - fwd_5d: 推荐日之后第 5 个交易日的"当日涨幅"（代理指标，非累计收益）
+
+    注意：当前数据库仅存每日 percent（当日涨幅），无法还原绝对价格序列，
+    因此无法计算相对推荐日收盘的真实累计收益。fwd_3d/fwd_5d 实为第 N 个
+    交易日的单日涨幅代理，IC/胜率归因时应按此口径解读，勿与累计收益混淆。
     """
     sym_kl = kline_map.get(symbol)
     if not sym_kl or rec_date not in sym_kl:
@@ -79,10 +83,7 @@ def compute_outcome(
     if nxt and nxt.isoformat() in sym_kl:
         out.next_day = sym_kl[nxt.isoformat()]
 
-    # fwd_3d / fwd_5d 为相对推荐日收盘的累计收益，需用到推荐日当日 close 比例。
-    # 现有数据仅有每日 percent，无法还原绝对累计；用"推荐日次日起至第N日的
-    # percent 连乘近似"需 close 序列。这里改用「第N交易日当日涨幅」作为代理指标，
-    # 并在文档中标注口径差异。
+    # fwd_3d / fwd_5d 仅为第 N 交易日当日涨幅（代理），见上方 docstring 口径说明
     d3 = _nth_trading_day_after(rec_dt, 3)
     if d3 and d3.isoformat() in sym_kl:
         out.fwd_3d = sym_kl[d3.isoformat()]
@@ -140,10 +141,19 @@ def _ic(values: list[float], returns: list[float]) -> float | None:
 
 
 def _rank(xs: list[float]) -> list[float]:
+    # 标准秩：相等值取平均秩（tie-averaging），避免并列时 rank-IC 偏置
     order = sorted(range(len(xs)), key=lambda i: xs[i])
     ranks = [0.0] * len(xs)
-    for pos, idx in enumerate(order):
-        ranks[idx] = pos + 1
+    i = 0
+    n = len(order)
+    while i < n:
+        j = i
+        while j + 1 < n and xs[order[j + 1]] == xs[order[i]]:
+            j += 1
+        avg = (i + j) / 2 + 1  # 平均秩（1-based）
+        for k in range(i, j + 1):
+            ranks[order[k]] = avg
+        i = j + 1
     return ranks
 
 

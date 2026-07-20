@@ -307,13 +307,43 @@ class TestValidatePullbackHelpers:
         bonus, vr = _pb_shrinkage(ks)
         assert bonus == V_PB_SHRINK_YES, f"expected shrink yes, got {bonus}"
 
-    def test_shrinkage_no(self):
+    def test_shrinkage_neutral_at_high_boundary(self):
+        # vol_ratio == PULLBACK_VOL_HIGH(1.3) 视为中性，与分析端口径一致
         ks = KlineSummary(
             trend="回踩整理", accumulated_pct=18.0, volume_ratio=1.3,
             bottom_confirmed=True, score=16, avg_volume=1.0,
         )
         bonus, vr = _pb_shrinkage(ks)
+        assert bonus == 0, f"1.3 应为中性, got {bonus}"
+
+    def test_shrinkage_no(self):
+        # vol_ratio > PULLBACK_VOL_HIGH(1.3) 才惩罚
+        ks = KlineSummary(
+            trend="放量回落", accumulated_pct=18.0, volume_ratio=1.5,
+            bottom_confirmed=True, score=16, avg_volume=1.0,
+        )
+        bonus, vr = _pb_shrinkage(ks)
         assert bonus == V_PB_SHRINK_NO, f"expected shrink no, got {bonus}"
+
+    def test_volume_band_consistency_analysis_vs_validator(self):
+        # B3 回归：分析端与验证端对回踩量能的"正/中性/惩罚"判定必须一致，
+        # 避免 vol_ratio∈(1.0,1.3] 时分析端中性、验证端却扣分导致误判 pos_dims。
+        from scanner.analysis import _score_pullback_volume
+        from scanner.config import PULLBACK_WEIGHTS
+
+        bands = [0.3, 0.5, 0.9, 1.1, 1.3, 1.5, 2.0]
+        for vr in bands:
+            ks = KlineSummary(
+                trend="t", accumulated_pct=15.0, volume_ratio=vr,
+                bottom_confirmed=True, score=20, avg_volume=1.0,
+            )
+            vbonus, _ = _pb_shrinkage(ks)
+            validator_negative = vbonus < 0
+            a_score, _ = _score_pullback_volume(vr, PULLBACK_WEIGHTS)
+            analysis_negative = a_score < 0
+            assert validator_negative == analysis_negative, (
+                f"vol_ratio={vr}: 验证端负={validator_negative} 分析端负={analysis_negative} 不一致"
+            )
 
     def test_sector_hot(self):
         bonus, count = _pb_sector("半导体测试", SEMICONDUCTOR_CLUSTER)
@@ -528,14 +558,15 @@ class TestValidateShortTerm:
 
         # 门控仍生效
         assert passed, f"弱转强应放行, total={total}, dims={dims}"
-        # wts 不进入 total（避免重复计分）：total 应等于其余维度之和
-        expected_total = dims["v_st_vol"] + dims["v_st_sector"] + dims["v_st_rank"] + dims["v_st_ma"]
+        # 量能已在 analyze_short_term 的 score 计入，validate 的 total 不再含 vol，
+        # 避免重复计分；total 应等于其余维度之和
+        expected_total = dims["v_st_sector"] + dims["v_st_rank"] + dims["v_st_ma"]
         assert total == expected_total, (
-            f"total 不应含 wts(+8)，实际 total={total} 期望={expected_total}"
+            f"total 不应含 vol（已计入分析分），实际 total={total} 期望={expected_total}"
         )
         assert dims["v_st_weak"] == 8  # 仅展示用
 
-        # 对照：把 st_weak_to_strong 置 0 后，validate 的 total 应恰好少 8，
+        # 对照：把 st_weak_to_strong 置 0 后，validate 的 total 应不变，
         # 证明修复前 wts 确实被重复计入 total（修复后不再计入）。
         ks_no_wts = analyze_short_term(stock, bars, today_str=TODAY)
         ks_no_wts.dimensions["st_weak_to_strong"] = 0

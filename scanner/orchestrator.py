@@ -72,6 +72,11 @@ def _get_session() -> requests.Session:
 
 _session_state = ScanSession()
 
+# 盘中今日 K 线刷新 TTL（秒）：盘中时段已缓存今日 bar 时，超过该时长仍强制补拉，
+# 避免整日复用早盘残次 bar（stock.current 实时价与缓存 close 脱节）。
+KLINE_REFRESH_TTL = 300
+_last_kline_fetch: dict[str, float] = {}
+
 
 def _fetch_all_klines(conn: sqlite3.Connection, session: requests.Session, stocks: list[StockInfo]) -> dict[str, list[dict] | None]:
     result: dict[str, list[dict] | None] = {}
@@ -88,8 +93,19 @@ def _fetch_all_klines(conn: sqlite3.Connection, session: requests.Session, stock
             max_date_str = max(k["date"] for k in cached)
             max_date = date.fromisoformat(max_date_str)
             today = now_beijing().date()
-            # 盘中且缓存不含今日 Bar 才补拉；否则复用缓存（补拉后 max_date==today 即跳过，避免重复打 API）
-            if not is_trading_time() or max_date >= today:
+            if not is_trading_time():
+                # 非交易时段：直接复用缓存，不补拉
+                result[s.symbol] = cached
+                continue
+            # 交易时段
+            if max_date < today:
+                # 缓存尚未含今日 Bar：必须补拉（否则全天无今日行情）
+                stale_cache[s.symbol] = cached
+                needs_fetch.append(s.symbol)
+                continue
+            # 已含今日 Bar：仅当超过刷新 TTL 才补拉，否则复用缓存
+            last_fetch = _last_kline_fetch.get(s.symbol, 0.0)
+            if (now_beijing().timestamp() - last_fetch) < KLINE_REFRESH_TTL:
                 result[s.symbol] = cached
                 continue
             stale_cache[s.symbol] = cached
@@ -101,6 +117,7 @@ def _fetch_all_klines(conn: sqlite3.Connection, session: requests.Session, stock
     def _fetch_one(sym: str) -> tuple[str, list[dict] | None]:
         sess = _get_session()
         kline = fetch_kline(sess, sym, KLINE_FETCH_DAYS)
+        _last_kline_fetch[sym] = now_beijing().timestamp()
         return sym, kline
 
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -337,7 +354,8 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     gem_stocks = _filter_gem_stocks(raw)
 
     record_appearances(conn, [
-        {"symbol": s.symbol, "name": s.name, "percent": s.percent, "value": s.value}
+        {"symbol": s.symbol, "name": s.name, "percent": s.percent,
+         "value": s.value, "rank": s.rank}
         for s in gem_stocks
     ])
     session_state.update_list_presence({s.symbol for s in gem_stocks})

@@ -148,6 +148,11 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
     print(f"  小而美: 市值≤{int(MAX_MARKET_CAP/YI)}亿 股价≤{MAX_STOCK_PRICE}元")
     print(f"{'='*96}")
 
+    hdr = (f"  {_pad('排名',4,'r')} {_pad('变化',6,'r')} {_pad('源',4)} {_pad('名称',10)} "
+           f"{_pad('代码',12)} {_pad('现价',7,'r')} {_pad('涨幅',8,'r')} "
+           f"{_pad('趋势',14)} {_pad('5日累计',8,'r')} {_pad('量比',6,'r')} "
+           f"{_pad('评分',4,'r')} {_pad('增强',16)} {_pad('市值',8,'r')}")
+
     # 高确定性「精选」专区（用户每次只买 1-2 只，优先看这里）
     if picks:
         print(f"\n{ANSI['BOLD']}{ANSI['GREEN']}★ 精选（高确定性 Top{len(picks)}）{ANSI['RESET']}  (综合交叉验证+位置安全+强度+历史胜率)")
@@ -196,11 +201,6 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
                   f"{s.symbol:<12} {cur:>7} {pct_colored(s.percent)} "
                   f"{_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} "
                   f"{_pad(bonus_str,16)} {cap_str:>8}")
-
-    hdr = (f"  {_pad('排名',4,'r')} {_pad('变化',6,'r')} {_pad('源',4)} {_pad('名称',10)} "
-           f"{_pad('代码',12)} {_pad('现价',7,'r')} {_pad('涨幅',8,'r')} "
-           f"{_pad('趋势',14)} {_pad('5日累计',8,'r')} {_pad('量比',6,'r')} "
-           f"{_pad('评分',4,'r')} {_pad('增强',16)} {_pad('市值',8,'r')}")
 
     print(f"\n{ANSI['GREEN']}◆ 新面孔 — 底部异动 / 刚启动{ANSI['RESET']}  (找: 今日小涨+日线底部放量)")
     print(hdr)

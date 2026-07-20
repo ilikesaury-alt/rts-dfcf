@@ -15,6 +15,11 @@ def test_rank_monotonic():
     assert _rank([3, 1, 2]) == [3.0, 1.0, 2.0]
 
 
+def test_rank_tie_averaging():
+    # 相等值取平均秩：两个 2.0 并列，秩应为 (2+3)/2=2.5
+    assert _rank([2.0, 1.0, 2.0, 4.0]) == [2.5, 1.0, 2.5, 4.0]
+
+
 def test_ic_perfect_positive():
     # 完全正相关
     ic = _ic([1, 2, 3, 4, 5], [2, 4, 6, 8, 10])
@@ -45,6 +50,7 @@ def test_compute_outcome_returns_next_day_percent():
     }
     occ = compute_outcome(kline_map, "300999", "2026-05-28", 1.68)
     assert occ.next_day == -3.28
+    # fwd_3d 是第 3 个交易日(2026-06-02)的当日涨幅(0.5)，并非累计收益
     assert occ.fwd_3d == 0.5
 
 

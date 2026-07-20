@@ -396,6 +396,15 @@ V_PB_MA_DOWN = -10
 V_PB_SHRINK_YES = 10
 V_PB_SHRINK_MOD = 5
 V_PB_SHRINK_NO = -5
+
+# 回踩量能比阈值（分析端与验证端共用，避免口径矛盾）
+#   vol_ratio < PULLBACK_VOL_LOW        -> 极度缩量（确认）
+#   vol_ratio <= PULLBACK_VOL_HEALTHY   -> 健康缩量
+#   vol_ratio > PULLBACK_VOL_HIGH       -> 放量（非缩量，惩罚）
+# 中间带 (HEALTHY, HIGH] 视为中性，两端一致。
+PULLBACK_VOL_LOW = 0.4
+PULLBACK_VOL_HEALTHY = 0.9
+PULLBACK_VOL_HIGH = 1.3
 V_PB_SECTOR_HOT = 8
 V_PB_SECTOR_DEAD = -5
 V_PB_SECTOR_NEUTRAL = 0

@@ -308,6 +308,29 @@ _MINUTE_DATA_CACHE: dict[str, tuple[list[dict] | None, float]] = {}
 _MINUTE_DATA_CACHE_TTL = 120
 
 
+def _normalize_minute_item(raw) -> dict:
+    """Xueqiu chart/minute.json 返回的是数组（与 kline 同格式），需规整为 dict。
+
+    列序: [timestamp(ms), volume, avg_price, current, ...]
+    capital(大单资金) 不在分钟 bar 中，故恒为 0（分钟接口无该字段）。
+    """
+    if isinstance(raw, dict):
+        return raw
+    try:
+        ts = raw[0]
+        volume = raw[1]
+        avg_price = raw[2]
+        current = raw[3]
+    except (IndexError, TypeError):
+        return {"timestamp": 0, "volume": 0, "avg_price": 0.0, "current": 0.0}
+    return {
+        "timestamp": ts,
+        "volume": volume,
+        "avg_price": avg_price,
+        "current": current,
+    }
+
+
 def _fetch_minute_data(session: requests.Session, symbol: str) -> list[dict] | None:
     now = time.time()
     with _minute_data_cache_lock:
@@ -320,8 +343,9 @@ def _fetch_minute_data(session: requests.Session, symbol: str) -> list[dict] | N
         url = f"https://stock.xueqiu.com/v5/stock/chart/minute.json?symbol={symbol}&period=1d&_={ts_ms}"
         resp = _request_with_retry(session, url)
         d = resp.json()
-        items = d.get("data", {}).get("items", [])
-        if items and len(items) >= 10:
+        raw_items = d.get("data", {}).get("items", [])
+        if raw_items and len(raw_items) >= 10:
+            items = [_normalize_minute_item(it) for it in raw_items]
             with _minute_data_cache_lock:
                 _MINUTE_DATA_CACHE[symbol] = (items, now)
             return items

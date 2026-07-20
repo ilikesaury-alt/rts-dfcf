@@ -21,6 +21,7 @@ from scanner.config import (
     ST_OVERBOUGHT_KDJ, ST_OVERBOUGHT_KDJ_PENALTY,
     PULLBACK_20D_GAIN_WARN, PULLBACK_20D_GAIN_EXTREME,
     PULLBACK_20D_WARN_PENALTY, PULLBACK_20D_EXTREME_PENALTY,
+    PULLBACK_VOL_LOW, PULLBACK_VOL_HEALTHY, PULLBACK_VOL_HIGH,
     VOL_PEAK_LOOKBACK,
     VOL_PEAK_MOMENTUM_WARN,
     VOL_PEAK_NEW_FACE_MIN,
@@ -682,17 +683,17 @@ def _score_pullback_volume(vol_ratio: float, W: dict) -> tuple[int, dict]:
     score = 0
     dims: dict[str, int | float] = {}
 
-    if vol_ratio < 0.4:
+    if vol_ratio < PULLBACK_VOL_LOW:
         score += W["vol_low"]
         dims["pullback_volume"] = W["vol_low"]
-    elif vol_ratio <= 0.9:
+    elif vol_ratio <= PULLBACK_VOL_HEALTHY:
         score += W["vol_healthy"]
         dims["pullback_volume"] = W["vol_healthy"]
-    elif vol_ratio > 1.3:
+    elif vol_ratio > PULLBACK_VOL_HIGH:
         score += W["vol_surge"]
         dims["pullback_volume"] = W["vol_surge"]
     else:
-        # 0.9 < vol_ratio <= 1.3: moderate volume, neutral for pullback
+        # PULLBACK_VOL_HEALTHY < vol_ratio <= PULLBACK_VOL_HIGH: 中性量能
         dims["pullback_volume"] = 0
 
     return score, dims

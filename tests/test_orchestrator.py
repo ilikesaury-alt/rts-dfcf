@@ -227,3 +227,88 @@ class TestScoreStockKnownNewFace:
         assert nf is not None, "老股仅命中 new_face 不应被丢弃"
         assert nf.category == "known_new_face"
         assert mo is None and pb is None
+
+
+class TestFetchAllKlinesIntradayRefresh:
+
+    def _cached(self, today):
+        return [{"date": "2026-06-17", "close": 10.0}] + \
+               [{"date": today, "close": 10.5}] * 40
+
+    def test_trading_time_reuses_cache_within_ttl(self, monkeypatch):
+        import scanner.orchestrator as o
+        from scanner.models import StockInfo
+        from datetime import date
+
+        today = date.today().isoformat()
+        cached = self._cached(today)
+        monkeypatch.setattr(o, "get_cached_kline", lambda conn, sym: cached)
+        monkeypatch.setattr(o, "is_trading_time", lambda: True)
+        # last fetch 10s ago (within TTL)
+        o._last_kline_fetch["300001"] = o.now_beijing().timestamp() - 10
+        fetched = {}
+
+        def _fake_fetch(*a, **k):
+            fetched["called"] = True
+            return cached
+
+        monkeypatch.setattr(o, "fetch_kline", _fake_fetch)
+        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
+
+        res = o._fetch_all_klines(None, None, [StockInfo(symbol="300001", name="T", code="300001", percent=3.0, current=10.0, value=10000, rank_change=1000, rank=1)])
+        assert res["300001"] is cached
+        assert "called" not in fetched  # no refetch
+
+    def test_trading_time_refetches_after_ttl(self, monkeypatch):
+        import scanner.orchestrator as o
+        from scanner.models import StockInfo
+        from datetime import date
+
+        today = date.today().isoformat()
+        cached = self._cached(today)
+        monkeypatch.setattr(o, "get_cached_kline", lambda conn, sym: cached)
+        monkeypatch.setattr(o, "is_trading_time", lambda: True)
+        # last fetch 600s ago (past TTL)
+        o._last_kline_fetch["300001"] = o.now_beijing().timestamp() - 600
+        fetched = {}
+        fresh = [{"date": today, "close": 11.0}] * 45
+
+        def _fake_fetch(*a, **k):
+            fetched["called"] = True
+            return fresh
+
+        monkeypatch.setattr(o, "fetch_kline", _fake_fetch)
+        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
+
+        res = o._fetch_all_klines(None, None, [StockInfo(symbol="300001", name="T", code="300001", percent=3.0, current=10.0, value=10000, rank_change=1000, rank=1)])
+        assert "called" in fetched  # refetch triggered
+        assert res["300001"] is fresh
+
+    def test_trading_time_missing_today_bar_always_fetches(self, monkeypatch):
+        # 回归：盘中且缓存尚未含今日 Bar（max_date < today）必须补拉，
+        # 否则全天无今日行情（A3 条件反转 bug）。
+        import scanner.orchestrator as o
+        from scanner.models import StockInfo
+        from datetime import date, timedelta
+
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        cached = [{"date": yesterday, "close": 10.0}] * 40
+        monkeypatch.setattr(o, "get_cached_kline", lambda conn, sym: cached)
+        monkeypatch.setattr(o, "is_trading_time", lambda: True)
+        # 即便上次拉取在 TTL 内，缺少今日 Bar 也应强制补拉
+        o._last_kline_fetch["300001"] = o.now_beijing().timestamp() - 10
+        fetched = {}
+        fresh = [{"date": date.today().isoformat(), "close": 11.0}] * 45
+
+        def _fake_fetch(*a, **k):
+            fetched["called"] = True
+            return fresh
+
+        monkeypatch.setattr(o, "fetch_kline", _fake_fetch)
+        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
+
+        res = o._fetch_all_klines(None, None, [StockInfo(symbol="300001", name="T", code="300001", percent=3.0, current=10.0, value=10000, rank_change=1000, rank=1)])
+        assert "called" in fetched  # 必须补拉
+        assert res["300001"] is fresh
+
+

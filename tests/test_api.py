@@ -2,6 +2,8 @@ from unittest.mock import MagicMock, PropertyMock, patch
 
 from scanner.api import (
     _biaosheng_circuit_breaker,
+    _fetch_minute_data,
+    _normalize_minute_item,
     analyze_intraday,
     analyze_opening_strength,
     compute_surge_sentiment,
@@ -178,3 +180,39 @@ class TestEstimateLiveVolume:
         with patch("scanner.api._fetch_minute_data", return_value=None):
             vol = estimate_live_volume(MagicMock(), "300444")
         assert vol is None
+
+
+class TestNormalizeMinuteItem:
+
+    def test_raw_array_normalized_to_dict(self):
+        raw = [1609459200000, 500, 100.5, 101.0]
+        d = _normalize_minute_item(raw)
+        assert isinstance(d, dict)
+        assert d["volume"] == 500
+        assert d["current"] == 101.0
+        assert d["avg_price"] == 100.5
+
+    def test_dict_passthrough(self):
+        raw = {"current": 10.0, "volume": 1}
+        assert _normalize_minute_item(raw) is raw
+
+    def test_short_array_safe(self):
+        d = _normalize_minute_item([1])
+        assert d["current"] == 0.0
+
+
+class TestFetchMinuteDataRawArray:
+
+    def test_raw_array_items_yield_dicts(self):
+        raw_items = [[1609459200000 + i * 60000, 100, 10.0 + i, 10.0 + i] for i in range(30)]
+        fake_resp = MagicMock()
+        fake_resp.json.return_value = {"data": {"items": raw_items}}
+        with patch("scanner.api._request_with_retry", return_value=fake_resp):
+            items = _fetch_minute_data(MagicMock(), "300001")
+        assert items is not None
+        assert all(isinstance(it, dict) for it in items)
+        # 消费者按 dict 访问不应崩溃
+        score = analyze_intraday(MagicMock(), "300001")
+        assert isinstance(score, float)
+        opening = analyze_opening_strength(MagicMock(), "300001")
+        assert opening is not None

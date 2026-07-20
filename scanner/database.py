@@ -77,8 +77,12 @@ def record_appearances(conn: sqlite3.Connection, symbols: list[dict]):
     today = now_beijing().date().isoformat()
     rows = []
     for i, item in enumerate(symbols, 1):
+        # rank 优先用真实榜单排名；缺失时回退到过滤后列表的下标（仅兜底，不应发生）
+        rank = item.get("rank", i)
+        if rank is None:
+            rank = i
         rows.append((
-            item["symbol"], item["name"], today, i,
+            item["symbol"], item["name"], today, rank,
             item.get("percent", 0), item.get("value", 0),
         ))
     try:
@@ -109,8 +113,14 @@ def record_appearances(conn: sqlite3.Connection, symbols: list[dict]):
 def _n_trading_days_ago(n: int) -> str:
     cursor = now_beijing().date()
     trading_days = 0
+    # 上限保护：避免节假日数据缺失/损坏时 is_trading_day 永远为 False 导致死循环
+    max_iter = n * 3 + 30
+    iters = 0
     while trading_days < n:
         cursor -= timedelta(days=1)
+        iters += 1
+        if iters > max_iter:
+            break
         if is_trading_day(cursor):
             trading_days += 1
     return cursor.isoformat()
