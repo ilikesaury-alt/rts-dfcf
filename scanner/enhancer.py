@@ -23,6 +23,10 @@ from scanner.config import (
     MARKET_ENV_WEAK,
     MARKET_STRONG_THRESHOLD,
     MARKET_WEAK_THRESHOLD,
+    MCAP_BONUS_SMALL,
+    MCAP_BONUS_MID,
+    MCAP_SMALL_THRESHOLD,
+    MCAP_MID_THRESHOLD,
     SECTOR_CLUSTER_BONUS_2,
     SECTOR_CLUSTER_BONUS_3,
     SECTOR_CLUSTER_BONUS_4,
@@ -65,6 +69,7 @@ def apply_all_bonuses(
         _apply_turnover_bonus(c, market_caps)
         _apply_sentiment_bonus(c, sentiment_info)
         _apply_rps_bonus(c, rps_scores)
+        _apply_market_cap_bonus(c)
         _apply_list_momentum_bonus(c, list_streaks, conn)
         c.time_bonus = time_bonus
         _apply_gap_up_bonus(c)
@@ -120,6 +125,16 @@ def _apply_sentiment_bonus(c: Candidate, sentiment_info: dict):
 def _apply_rps_bonus(c: Candidate, rps_scores: dict[str, int]):
     if rps_scores:
         c.rps_bonus = rps_scores.get(c.stock.symbol, 0)
+
+
+def _apply_market_cap_bonus(c: Candidate):
+    mc = c.stock.market_cap
+    if mc <= 0:
+        return
+    if mc <= MCAP_SMALL_THRESHOLD:
+        c.market_cap_bonus = MCAP_BONUS_SMALL
+    elif mc <= MCAP_MID_THRESHOLD:
+        c.market_cap_bonus = MCAP_BONUS_MID
 
 
 def _apply_gap_up_bonus(c: Candidate):
@@ -208,6 +223,8 @@ def _record_dimensions(
     c.kline.dimensions["sector_bonus"] = c.sector_bonus
     c.kline.dimensions["live_vol_bonus"] = c.live_vol_bonus
     c.kline.dimensions["intraday_score"] = round(c.intraday_score, 1)
+    if c.market_cap_bonus != 0:
+        c.kline.dimensions["market_cap_bonus"] = c.market_cap_bonus
     if c.market_sentiment_bonus != 0:
         c.kline.dimensions["market_sentiment_bonus"] = c.market_sentiment_bonus
     if c.rps_bonus != 0:
@@ -266,7 +283,7 @@ def accumulate_final_score(c: Candidate, market_env_bonus: int, opening_scores: 
     total = (c.sector_bonus + c.live_vol_bonus
              + c.first_today_bonus + c.first_breakout_bonus
              + market_env_bonus + c.turnover_bonus + c.time_bonus
-             + c.market_sentiment_bonus + c.rps_bonus
+             + c.market_sentiment_bonus + c.rps_bonus + c.market_cap_bonus
              + c.list_momentum_bonus + opening_bonus
              + cross_source + c.gap_up_bonus)
     return total

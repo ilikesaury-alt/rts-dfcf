@@ -19,6 +19,7 @@ from scanner.config import (
     REFRESH_INTERVAL,
     now_beijing,
 )
+from scanner.backtest import backfill_outcomes
 from scanner.database import init_db, save_recommendations
 from scanner.display import display
 from scanner.feishu import push_feishu
@@ -137,6 +138,12 @@ def main():
                           f"{top_s.stock.percent:+.2f}% | RPS:{top_s.rps_bonus}")
 
                 save_recommendations(conn, new_faces, momentum + pullback_list + short_term_list)
+                try:
+                    n = backfill_outcomes(conn)
+                    if n:
+                        print(f"  📊 回填 {n} 条收益数据", end="", flush=True)
+                except Exception as e:
+                    print(f"    [!] 回填失败: {type(e).__name__}: {e}", flush=True)
 
             except requests.RequestException as e:
                 print(f"\n  [!] 网络错误: {e}")

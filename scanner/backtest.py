@@ -46,13 +46,14 @@ def _nth_trading_day_after(d: date, n: int) -> date | None:
     return cursor
 
 
-def _load_kline_map(conn: sqlite3.Connection) -> dict[str, dict[str, float]]:
-    """symbol -> {date: close_pct_of_that_day}."""
-    out: dict[str, dict[str, float]] = defaultdict(dict)
-    for sym, dt, pct in conn.execute(
-        "SELECT symbol, date, percent FROM daily_kline ORDER BY date"
+def _load_sym_kline(conn: sqlite3.Connection, symbol: str) -> dict[str, float]:
+    """{date: close_pct_of_that_day} for a single symbol."""
+    out: dict[str, float] = {}
+    for dt, pct in conn.execute(
+        "SELECT date, percent FROM daily_kline WHERE symbol=? ORDER BY date",
+        (symbol,),
     ).fetchall():
-        out[sym][dt] = pct
+        out[dt] = pct
     return out
 
 
@@ -93,15 +94,17 @@ def compute_outcome(
 
 def backfill_outcomes(conn: sqlite3.Connection, dry_run: bool = False) -> int:
     """回填 recommendations 的 N 日收益字段，返回更新行数。"""
-    kline_map = _load_kline_map(conn)
     rows = conn.execute(
         "SELECT id, symbol, date, percent, next_day_pct, fwd_3d, fwd_5d "
-        "FROM recommendations"
+        "FROM recommendations "
+        "WHERE next_day_pct IS NULL OR fwd_3d IS NULL OR fwd_5d IS NULL"
     ).fetchall()
+    if not rows:
+        return 0
+    needed_syms = {r[1] for r in rows}
+    kline_map = {sym: _load_sym_kline(conn, sym) for sym in needed_syms}
     updated = 0
     for rid, sym, dt, pct, ndp, f3, f5 in rows:
-        if ndp is not None and f3 is not None and f5 is not None:
-            continue
         occ = compute_outcome(kline_map, sym, dt, pct)
         new_ndp = occ.next_day if ndp is None else ndp
         new_f3 = occ.fwd_3d if f3 is None else f3
@@ -114,7 +117,7 @@ def backfill_outcomes(conn: sqlite3.Connection, dry_run: bool = False) -> int:
                     "WHERE id=?",
                     (new_ndp, new_f3, new_f5, rid),
                 )
-    if not dry_run:
+    if not dry_run and updated:
         conn.commit()
     return updated
 

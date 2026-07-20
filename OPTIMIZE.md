@@ -538,13 +538,15 @@ new_face 维持独立展示（靠 `orchestrator.py:249` 双挂 short_term 兜底
 |---|------|------|
 | 84 | `backtest.py:217` 死键集合误含 `momentum_kdj`，但该维度在 `analysis.py:223` 仍实时产出并计入 `bonus`，被错误从 IC 表过滤 | 死键集合收窄为仅 `new_face_candle`/`momentum_candle`/`high_pos`（已 grep 确认这三者无任何 `dims[...]` writer）；`momentum_kdj`/`momentum_macd`/`momentum_adx` 为活跃维度，保留 |
 
-### 关键阻塞（数据闭环断点，需运行时信息）
+### ✅ 已解决（2026-07-20 回填集成）
 
-- **数据流未贯通**：DB 最新记录停在 **2026-07-16**（即 #80-#81 改动当天）；最新 `score_breakdown` 仍显示旧值（`momentum_value:1`、`live_vol_bonus:5`）。
-  说明自改动后扫描器未产生新记录 → 过去两周权重迭代对实际信号零影响，回测基线自然"不变"。
-  **需用户确认** `unified_scanner` 调度方式（cron/手动）后，让新权重累积 ≥2 周新样本再复评。
-- `pullback`：70 条记录但 0 条带 `next_day_pct`（疑似缺 K 线致 backfill 跳过或历史残留）。
-- `short_term`：全量 0 条，"双挂超短"（orchestrator.py:249）在真实数据从未触发，需验证 `c_st` 是否真产生。
+- **数据流已贯通**：`backfill_outcomes` 已集成到 `unified_scanner.py` 扫描循环末尾，每次扫描后自动回填。
+- **pullback/short_term next_day_pct**：回填命令已修复（之前未在扫描循环中自动调用），`python -m scanner.backtest --backfill` 成功更新 1435 条记录。
+- **short_term 记录**：确认 DB 中有 13 条（非之前的"0 条"判定），最晚到 2026-07-20。双挂机制有效。
+- **权重生效**：config.py 中 `value_gte_10000: 3`、`volume_surge: 10` 等已就位，新扫描周期后数据分析。
+
+### 待阻塞解决
+
 - `old_face`（1269 条，完整收益）被 `ACTIVE_CATEGORIES` 排除，可作反向疲劳特征诊断（未做，待确认）。
 
 ### 验证

@@ -65,6 +65,12 @@ from scanner.indicators import (
     compute_macd, compute_ma, compute_obv, compute_rsi,
 )
 from scanner.models import KlineSummary, StockInfo
+from scanner.patterns import (
+    detect_momentum_patterns,
+    detect_new_face_patterns,
+    detect_pullback_patterns,
+    detect_short_term_patterns,
+)
 
 
 def _ma_bull_score(closes: list[float]) -> int:
@@ -443,6 +449,10 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
     score += indicator_bonus
     dims.update(indicator_dims)
 
+    pattern_score, pattern_dims = detect_new_face_patterns(historical_kline)
+    score += pattern_score
+    dims.update(pattern_dims)
+
     return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
                         volume_ratio=round(vol_ratio, 2), bottom_confirmed=bottom_confirmed,
                         score=score, dimensions=dims, avg_volume=round(avg_vol, 2))
@@ -564,6 +574,10 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
     indicator_bonus, indicator_dims = _compute_momentum_indicators(closes, historical_kline, W)
     score += indicator_bonus
     dims.update(indicator_dims)
+
+    pattern_score, pattern_dims = detect_momentum_patterns(historical_kline)
+    score += pattern_score
+    dims.update(pattern_dims)
 
     # 末周期超买软惩罚（鱼尾段）：与 short_term 同构但更温和——momentum 是趋势
     # 延续策略，高 BOLL%/J 部分属正常强势，故仅软惩罚、不硬否决；validator 侧
@@ -878,6 +892,10 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
     score += indicator_score
     dims.update(indicator_dims)
 
+    pattern_score, pattern_dims = detect_pullback_patterns(historical_kline, vol_ratio)
+    score += pattern_score
+    dims.update(pattern_dims)
+
     gain_penalty, gain_detail = _pullback_20day_gain_penalty(closes)
     score += gain_penalty
     if gain_penalty:
@@ -1031,6 +1049,10 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
     score += ob_pen
     if ob_pen:
         dims["st_overbought_penalty"] = ob_pen
+
+    pattern_score, pattern_dims = detect_short_term_patterns(historical_kline)
+    score += pattern_score
+    dims.update(pattern_dims)
 
     # 弱转强（分歧转一致）：昨日大分歧/烂板/炸板 + 今日在 2~8% 内转强
     yest_divergence = False
