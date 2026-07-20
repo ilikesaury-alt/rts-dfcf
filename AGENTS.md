@@ -15,17 +15,20 @@ unified_scanner.py        # Single entry point (dual-source fusion)
 scanner/
   orchestrator.py         # Core scan pipeline
   analysis.py             # Scoring engines (new_face, momentum, pullback, short_term)
-  validator.py            # Cross-validation (3-dim check per strategy, 1-dim for short_term)
+  validator.py            # Cross-validation per strategy
   config.py               # All thresholds and weights
   api.py                  # Xueqiu API calls (biaosheng, kline, market cap)
   ths_api.py              # Tonghuashun hot list API calls
   database.py             # SQLite CRUD (appearances, kline, recommendations)
   models.py               # StockInfo, Candidate, KlineSummary dataclasses
-  indicators.py           # RSI, KDJ, MACD computation
-  enhancer.py             # Bonus scoring (sector, sentiment, RPS, indicators)
+  indicators.py           # RSI, KDJ, MACD, ADX, ATR, OBV, Bollinger computation
+  patterns.py             # K-line pattern detection (detect_*_patterns)
+  enhancer.py             # Bonus scoring + accumulate_final_score
   candidate_pool.py       # ScanSession with list presence tracking
   rank_trend.py           # RankTracker with trajectory scoring
   sector.py               # Sector cluster detection
+  confidence.py           # High-confidence pick scoring (精选专区)
+  backtest.py             # Backtest / IC attribution framework
   trading_session.py      # Trading hours/holidays
   log_utils.py            # Log formatting utilities
 tests/                    # pytest test suite
@@ -43,11 +46,11 @@ tests/                    # pytest test suite
 
 - Scanner filters: GEM stocks only (300xxx), excludes ST/*ST, HK stocks, market cap >500亿, price >200元
 - Four strategies: new_face (bottom breakout), momentum (trend continuation), pullback (reversion), short_term (next-day sell)
-- Cross-validation (`validator.py`): each candidate must pass ≥2 of 3 independent dimensions before final acceptance (short_term uses ≥1 of 4 dimensions)
-  - **new_face**: indicator convergence (RSI<30 + MACD golden cross + KDJ K<20 & K>D), higher-low structure, sector resonance
-  - **momentum**: MA5>10>20 alignment (penalty -5 if broken), no RSI divergence, volume uniformity (5-day window)
-  - **pullback**: MA20 trending up (>+0.5%), volume shrinkage (<0.6x), sector still active (≥3 same-sector in list)
-  - **short_term**: vol_ratio ≥ 1.0 hard gate. Pass rule: 弱转强 (weak-to-strong) passes outright; otherwise requires ≥2 positive dims with ≥1 non-sector (rank/MA/weak) — sector cluster alone cannot pass (prevents sector-wide surge days flooding the list)
+- Cross-validation (`validator.py`): each candidate must pass ≥2 of its independent dimensions (pos_dims ≥ 2). short_term adds a "non-sector" constraint and 弱转强 override.
+  - **new_face**: requires ≥1 oversold signal (indicator convergence hit OR MACD bull divergence) AND pos_dims ≥ 2. Dimensions: convergence (RSI<30 + MACD golden cross + KDJ K<20 & K>D), higher-low structure, sector resonance, volume surge.
+  - **momentum**: MA5>10>20 alignment (EMA, penalty -5 if broken), no RSI divergence, volume uniformity (5-day window). pos_dims ≥ 2 required.
+  - **pullback**: MA20 trending up (>+0.5%), volume shrinkage (<0.6x), sector active (≥3 same-sector), bollinger touch. pos_dims ≥ 2 required.
+  - **short_term**: vol_ratio ≥ 1.0 hard gate. Pass rule: 弱转强 (weak-to-strong, st_weak_to_strong>0) passes outright; otherwise requires pos_dims ≥ 2 AND non_sector_pos ≥ 1 (rank/MA/weak — sector cluster alone cannot pass, prevents sector-wide surge days flooding the list). If overbought, 弱转强 loses its override privilege.
 - Priority chain: primary strategy attempted first; if cross-validation fails, falls through to next strategy
 
 ## Testing
@@ -84,26 +87,4 @@ Tests use pytest with helper factories `_stock()` and `_kline()` in `tests/test_
 6. 疲劳与风险 — 连续上榜天数/超买超卖/系统警告
 7. 综合评价 — 驱动逻辑 + 风险 + 位置判断
 
-## Code Review 流程
 
-当用户说 "全面审查项目代码" 时：
-
-### 第一步：读 REVIEW_STATUS.md + CODE_REVIEW_CHECKLIST.md
-- REVIEW_STATUS.md 告诉上次覆盖了什么、还缺什么
-- CODE_REVIEW_CHECKLIST.md 是结构化检查清单
-
-### 第二步：确定本次焦点
-- 优先选 ✅ 覆盖状态为 ❌ 的模块
-- 从 CODE_REVIEW_CHECKLIST.md 选 2-3 个维度
-- 如果所有模块都 ❌ 过，聚焦 OPTIMIZE.md 中 P0/P1 未修复项
-
-### 第三步：逐项检查
-按 CODE_REVIEW_CHECKLIST.md 逐项过，发现的问题按优先级标记：
-- 🔴 **P0** — 逻辑 bug（评分错误、数据错乱、空指针）→ 必须当次修
-- 🟡 **P1** — 质量改进（重复代码、异常处理不足）→ 记录到 OPTIMIZE.md
-- 🟢 **P2** — 工程优化（测试覆盖、配置迁移）→ 记录到 OPTIMIZE.md
-
-### 第四步：更新追踪文件
-- 🔴 问题当场修复（建 plan → 修 → 测试）
-- 🟡/🟢 问题追加到 OPTIMIZE.md
-- 更新 REVIEW_STATUS.md 覆盖状态和日志
