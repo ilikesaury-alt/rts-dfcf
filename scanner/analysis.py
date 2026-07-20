@@ -38,43 +38,33 @@ from scanner.config import (
     VOL_RANK_VOL_THRESHOLD,
     VOL_RANK_WEAK_PTS,
     VOL_RANK_WEAK_RC,
+    WEAK_FORM_MIN_DOWN_DAYS,
+    WEAK_FORM_MAX_ACCUM,
+    WEAK_FORM_MIN_ACCUM,
+    WEAK_FORM_MAX_TODAY_PCT,
+    WEAK_FORM_CRASH_THRESHOLD,
+    GAP_UP_STRONG,
+    GAP_UP_MEDIUM,
+    GAP_UP_WEAK,
+    GAP_UP_STRONG_PTS,
+    GAP_UP_MEDIUM_PTS,
+    GAP_UP_WEAK_PTS,
+    BOTTOM_MAX_LOSS,
+    BOTTOM_VOL_SURGE,
+    BOTTOM_NEAR_LOW_PCT,
+    CRASH_THRESHOLD,
+    RECENT_2_RETURN_THRESHOLD,
+    MOMENTUM_VOL_HEALTHY_MIN,
+    MOMENTUM_VOL_HEALTHY_MAX,
+    MA_BULL_3_TIER_SCORE,
+    MA_BULL_2_TIER_SCORE,
+    MA_BEAR_SCORE,
 )
 from scanner.indicators import (
     compute_adx, compute_atr, compute_bollinger_bands, compute_kdj,
     compute_macd, compute_ma, compute_obv, compute_rsi,
 )
 from scanner.models import KlineSummary, StockInfo
-
-# Weak-form filter thresholds
-_WEAK_FORM_MIN_DOWN_DAYS = 3
-_WEAK_FORM_MAX_ACCUM = 5
-_WEAK_FORM_MIN_ACCUM = -5
-_WEAK_FORM_MAX_TODAY_PCT = 3
-_WEAK_FORM_CRASH_THRESHOLD = -10
-
-# Gap-up thresholds
-_GAP_UP_STRONG = 2.0
-_GAP_UP_MEDIUM = 1.0
-_GAP_UP_WEAK = 0.5
-_GAP_UP_STRONG_PTS = 8
-_GAP_UP_MEDIUM_PTS = 5
-_GAP_UP_WEAK_PTS = 3
-
-# Bottom confirmation thresholds
-_BOTTOM_MAX_LOSS = -3.0
-_BOTTOM_VOL_SURGE = 1.5
-_BOTTOM_NEAR_LOW_PCT = 0.08
-
-# Crash detection thresholds
-_CRASH_THRESHOLD = -12.0
-_RECENT_2_RETURN_THRESHOLD = -3.0
-_MOMENTUM_VOL_HEALTHY_MIN = 0.7
-_MOMENTUM_VOL_HEALTHY_MAX = 2.0
-
-# MA alignment thresholds
-_MA_BULL_3_TIER_SCORE = 6
-_MA_BULL_2_TIER_SCORE = 3
-_MA_BEAR_SCORE = -3
 
 
 def _ma_bull_score(closes: list[float]) -> int:
@@ -90,10 +80,10 @@ def _ma_bull_score(closes: list[float]) -> int:
     if len(closes) >= 20:
         ma20 = compute_ma(closes, 20, ema=True)
         if ma20 is not None and ma5 > ma10 > ma20:
-            return _MA_BULL_3_TIER_SCORE
+            return MA_BULL_3_TIER_SCORE
     if ma5 > ma10:
-        return _MA_BULL_2_TIER_SCORE
-    return _MA_BEAR_SCORE
+        return MA_BULL_2_TIER_SCORE
+    return MA_BEAR_SCORE
 
 
 def _detect_gap_up(today_current: float, kline: list[dict], today_str: str | None = None) -> tuple[float, int]:
@@ -106,12 +96,12 @@ def _detect_gap_up(today_current: float, kline: list[dict], today_str: str | Non
     if yesterday_close is None or yesterday_close <= 0:
         return 0.0, 0
     gap_pct = (today_current - yesterday_close) / yesterday_close * 100
-    if gap_pct > _GAP_UP_STRONG:
-        return round(gap_pct, 2), _GAP_UP_STRONG_PTS
-    if gap_pct > _GAP_UP_MEDIUM:
-        return round(gap_pct, 2), _GAP_UP_MEDIUM_PTS
-    if gap_pct > _GAP_UP_WEAK:
-        return round(gap_pct, 2), _GAP_UP_WEAK_PTS
+    if gap_pct > GAP_UP_STRONG:
+        return round(gap_pct, 2), GAP_UP_STRONG_PTS
+    if gap_pct > GAP_UP_MEDIUM:
+        return round(gap_pct, 2), GAP_UP_MEDIUM_PTS
+    if gap_pct > GAP_UP_WEAK:
+        return round(gap_pct, 2), GAP_UP_WEAK_PTS
     return round(gap_pct, 2), 0
 
 
@@ -335,12 +325,12 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
 
     recent_5_pcts = pcts[-5:]
     down_days = sum(1 for p in recent_5_pcts if p < 0)
-    has_crash_day = any(p <= _WEAK_FORM_CRASH_THRESHOLD for p in recent_5_pcts)
+    has_crash_day = any(p <= WEAK_FORM_CRASH_THRESHOLD for p in recent_5_pcts)
     sum_5 = sum(recent_5_pcts)
     if (not has_crash_day
-            and down_days >= _WEAK_FORM_MIN_DOWN_DAYS
-            and _WEAK_FORM_MIN_ACCUM < sum_5 <= _WEAK_FORM_MAX_ACCUM
-            and today_pct < _WEAK_FORM_MAX_TODAY_PCT):
+            and down_days >= WEAK_FORM_MIN_DOWN_DAYS
+            and WEAK_FORM_MIN_ACCUM < sum_5 <= WEAK_FORM_MAX_ACCUM
+            and today_pct < WEAK_FORM_MAX_TODAY_PCT):
         return None
 
     if len(closes) >= 6:
@@ -359,9 +349,9 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
     vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
     vol_ratio = round(vol_ratio, 2)
     recent_3_pcts = pcts[-3:] if len(pcts) >= 3 else pcts
-    no_heavy_loss = all(p > _BOTTOM_MAX_LOSS for p in recent_3_pcts)
-    volume_surge = vol_ratio > _BOTTOM_VOL_SURGE
-    near_20d_low = (closes[-1] - min(closes[-20:])) / max(min(closes[-20:]), 0.01) < _BOTTOM_NEAR_LOW_PCT if len(closes) >= 20 else False
+    no_heavy_loss = all(p > BOTTOM_MAX_LOSS for p in recent_3_pcts)
+    volume_surge = vol_ratio > BOTTOM_VOL_SURGE
+    near_20d_low = (closes[-1] - min(closes[-20:])) / max(min(closes[-20:]), 0.01) < BOTTOM_NEAR_LOW_PCT if len(closes) >= 20 else False
     bottom_confirmed = no_heavy_loss and volume_surge and near_20d_low
 
     v_shape_reversal = (
@@ -524,13 +514,13 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
         trend = "加速启动"
 
     # Volume
-    if _MOMENTUM_VOL_HEALTHY_MIN < vol_ratio < _MOMENTUM_VOL_HEALTHY_MAX:
+    if MOMENTUM_VOL_HEALTHY_MIN < vol_ratio < MOMENTUM_VOL_HEALTHY_MAX:
         score += W["vol_healthy"]
         dims["momentum_volume"] = W["vol_healthy"]
-    elif vol_ratio >= _MOMENTUM_VOL_HEALTHY_MAX:
+    elif vol_ratio >= MOMENTUM_VOL_HEALTHY_MAX:
         score += W["vol_surge"]
         dims["momentum_volume"] = W["vol_surge"]
-    elif vol_ratio < _MOMENTUM_VOL_HEALTHY_MIN:
+    elif vol_ratio < MOMENTUM_VOL_HEALTHY_MIN:
         score += W["vol_low"]
         dims["momentum_volume"] = W["vol_low"]
 
@@ -541,9 +531,9 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
 
     # Crash check
     if len(pcts) >= 2:
-        has_crash_day = any(p <= _CRASH_THRESHOLD for p in pcts[-5:])
+        has_crash_day = any(p <= CRASH_THRESHOLD for p in pcts[-5:])
         recent_2_return = pcts[-2] + pcts[-1]
-        no_crash = not has_crash_day and recent_2_return > _RECENT_2_RETURN_THRESHOLD
+        no_crash = not has_crash_day and recent_2_return > RECENT_2_RETURN_THRESHOLD
     else:
         no_crash = True
     if no_crash:
@@ -556,7 +546,6 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
         dims["momentum_vol_rank"] = vol_rank
 
     gap_pct, gap_pts = _detect_gap_up(stock.current, kline, today_str)
-    score += gap_pts
     if gap_pts:
         dims["momentum_gap_up"] = gap_pts
 
@@ -696,7 +685,7 @@ def _check_crash_day(pcts: list, W: dict) -> tuple[bool, int, dict]:
     Returns:
         (has_crash_day, score, dimensions) tuple
     """
-    has_crash_day = any(p <= _CRASH_THRESHOLD for p in pcts[-5:])
+    has_crash_day = any(p <= CRASH_THRESHOLD for p in pcts[-5:])
     score = 0
     dims: dict[str, int | float] = {}
 

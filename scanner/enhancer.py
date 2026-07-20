@@ -268,5 +268,5 @@ def accumulate_final_score(c: Candidate, market_env_bonus: int, opening_scores: 
              + market_env_bonus + c.turnover_bonus + c.time_bonus
              + c.market_sentiment_bonus + c.rps_bonus
              + c.list_momentum_bonus + opening_bonus
-             + cross_source)
+             + cross_source + c.gap_up_bonus)
     return total

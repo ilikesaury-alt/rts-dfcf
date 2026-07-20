@@ -485,7 +485,6 @@ def _mo_is_overbought(closes: list[float], historical_kline: list[dict],
 
 def validate(cat: str, stock, kline_summary, closes: list[float],
              historical_kline: list[dict], clusters: dict[str, list[str]] | None = None,
-             list_presence: dict[str, int] | None = None
              ) -> tuple[bool, int, dict]:
     if cat in ("new_face", "known_new_face"):
         return validate_nf(stock, kline_summary, closes, historical_kline, clusters)

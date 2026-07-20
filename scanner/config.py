@@ -66,6 +66,38 @@ VOL_RANK_HIGH_ACCUM_OVERLAP_PENALTY = -10
 # MA bull extra bonus (pullback)
 MA_BULL_EXTRA_BONUS = 5
 
+# Analysis.py thresholds — previously hardcoded in analysis.py, centralized for tuning
+# Weak-form filter thresholds
+WEAK_FORM_MIN_DOWN_DAYS = 3
+WEAK_FORM_MAX_ACCUM = 5
+WEAK_FORM_MIN_ACCUM = -5
+WEAK_FORM_MAX_TODAY_PCT = 3
+WEAK_FORM_CRASH_THRESHOLD = -10
+
+# Gap-up thresholds
+GAP_UP_STRONG = 2.0
+GAP_UP_MEDIUM = 1.0
+GAP_UP_WEAK = 0.5
+GAP_UP_STRONG_PTS = 8
+GAP_UP_MEDIUM_PTS = 5
+GAP_UP_WEAK_PTS = 3
+
+# Bottom confirmation thresholds
+BOTTOM_MAX_LOSS = -3.0
+BOTTOM_VOL_SURGE = 1.5
+BOTTOM_NEAR_LOW_PCT = 0.08
+
+# Crash detection thresholds
+CRASH_THRESHOLD = -12.0
+RECENT_2_RETURN_THRESHOLD = -3.0
+MOMENTUM_VOL_HEALTHY_MIN = 0.7
+MOMENTUM_VOL_HEALTHY_MAX = 2.0
+
+# MA alignment scoring
+MA_BULL_3_TIER_SCORE = 6
+MA_BULL_2_TIER_SCORE = 3
+MA_BEAR_SCORE = -3
+
 # List momentum scoring (consecutive surge list appearances + rank trajectory)
 LIST_STREAK_BONUS_2 = 3
 LIST_STREAK_BONUS_3 = 5

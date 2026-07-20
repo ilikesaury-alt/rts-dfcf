@@ -21,7 +21,7 @@ class TestComputeConfidence:
     def test_overbought_excluded(self):
         # 鱼尾段超买（v_st_overbought / v_mo_overbought）-> 确定性归零、不进精选
         c = _c(dimensions={"v_st_overbought": True, "validation_bonus": 10})
-        conf = compute_confidence([c], conn=None, list_prescence={})
+        conf = compute_confidence([c], conn=None, list_presence={})
         assert conf[c.stock.symbol] == 0
         assert select_picks([c], conf) == []
 
@@ -29,19 +29,19 @@ class TestComputeConfidence:
         # 累计涨幅过高（>CONF_EXCLUDE_ACCUM）-> 鱼尾风险，硬排除
         c = _c(accumulated_pct=CONF_EXCLUDE_ACCUM + 5,
                 dimensions={"validation_bonus": 10, "momentum_no_crash": 1})
-        conf = compute_confidence([c], conn=None, list_prescence={})
+        conf = compute_confidence([c], conn=None, list_presence={})
         assert conf[c.stock.symbol] == 0
 
     def test_validation_bonus_zero_excluded(self):
         # validator 未给正共振（validation_bonus<=0）-> 未过交叉验证，硬排除
         c = _c(dimensions={"validation_bonus": 0, "momentum_no_crash": 1})
-        conf = compute_confidence([c], conn=None, list_prescence={})
+        conf = compute_confidence([c], conn=None, list_presence={})
         assert conf[c.stock.symbol] == 0
 
     def test_crash_day_excluded(self):
         # momentum 含 crash day（缺 momentum_no_crash）-> 硬排除
         c = _c(dimensions={"validation_bonus": 10})
-        conf = compute_confidence([c], conn=None, list_prescence={})
+        conf = compute_confidence([c], conn=None, list_presence={})
         assert conf[c.stock.symbol] == 0
 
     def test_cross_source_rps_boost(self):
@@ -58,7 +58,7 @@ class TestComputeConfidence:
         weak = _c(symbol="300002", accumulated_pct=18.0, volume_ratio=1.3,
                    dimensions={"validation_bonus": 10, "momentum_no_crash": 1})
         conf = compute_confidence([strong, weak], conn=None,
-                                 list_prescence={"300001": 2})
+                                 list_presence={"300001": 2})
         assert conf["300001"] > conf["300002"], \
             f"双源+多信号应高于单一弱信号: {conf}"
 
@@ -75,12 +75,12 @@ class TestComputeConfidence:
                               "opening_score": 2, "live_vol_bonus": 2,
                           }))
         conf = compute_confidence(cs, conn=None,
-                                 list_prescence={s.stock.symbol: 2 for s in cs})
+                                 list_presence={s.stock.symbol: 2 for s in cs})
         picks = select_picks(cs, conf)
         assert len(picks) == CONF_TOP_N, f"应只取 Top {CONF_TOP_N}, got {len(picks)}"
 
     def test_empty_shows_cash(self):
         # 无达标候选 -> picks 为空（display 层渲染"空仓"）
         c = _c(dimensions={"v_mo_overbought": True, "validation_bonus": 10})
-        conf = compute_confidence([c], conn=None, list_prescence={})
+        conf = compute_confidence([c], conn=None, list_presence={})
         assert select_picks([c], conf) == []

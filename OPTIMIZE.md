@@ -76,6 +76,48 @@
 
 ## 🟡 策略改进
 
+### 73. [优化] STRATEGY.md 文档与代码权重不一致 🟡 ✅
+
+- **位置**: `STRATEGY.md` 多处
+- **问题**: 6+ 处权重/阈值与实际代码不一致，误导维护者：
+  - 动量成交量 vol_healthy +10→+2, vol_low -5→-3
+  - 动量未修复大涨 +15→+13, crash 阈值 -7%→-12%
+  - 新面孔K线底部确认 +10→0（已清零）
+  - 新面孔累计涨幅 >=25%→-15 改为 >20% 硬拒绝
+  - 超短暴跌保护 无单日跌超5%→10%
+  - 超短交叉验证 pos_dims>=1→pos_dims>=2+non_sector>=1
+  - 老股上涨优先级 short_term>momentum→weak-to-short_term优先/否则momentum
+- **修复**: 2026-07-20 STRATEGY.md 同步修正所有过期值
+- **状态**: ✅ 已完成
+
+### 74. [优化] analysis.py 16个硬编码阈值未迁入config.py 🟡 ✅
+
+- **位置**: `scanner/analysis.py:48-77`（旧位置）
+- **问题**: 16个阈值（weak_form/gap_up/bottom/crash/ma_alignment）硬编码在analysis.py，调参需改两个文件
+- **修复**: 2026-07-20 全部迁入 `config.py` 集中管理，analysis.py 改为 import
+- **状态**: ✅ 已完成
+
+### 75. [优化] gap_up_bonus 计算但未累加进总分 🟡 ✅
+
+- **位置**: `scanner/enhancer.py:125-128` + `scanner/enhancer.py:262-271`
+- **问题**: `_apply_gap_up_bonus` 计算 `c.gap_up_bonus` 但 `accumulate_final_score` 未纳入 total
+- **修复**: 2026-07-20 在 `accumulate_final_score` 中加入 `c.gap_up_bonus`
+- **状态**: ✅ 已完成
+
+### 76. [优化] validator.py validate() 未使用 list_presence 参数 🟢 ✅
+
+- **位置**: `scanner/validator.py:486-488`
+- **问题**: `validate()` 函数签名含 `list_presence` 参数但从未使用
+- **修复**: 2026-07-20 删除未使用参数
+- **状态**: ✅ 已完成
+
+### 77. [优化] confidence.py 参数名拼写错误 list_prescence 🟢 ✅
+
+- **位置**: `scanner/confidence.py:47-54`
+- **问题**: `list_prescence` 拼写错误（应为 `list_presence`）
+- **修复**: 2026-07-20 修正拼写，同步更新 tests/test_confidence.py
+- **状态**: ✅ 已完成
+
 ### 8. [策略] 超短次日指标扩展（弱转强/小市值已落地，余下待做）
 
 - **已落地（2026-07-15）**: `analyze_short_term` 新增「弱转强（分歧转一致）」维度（昨日长上影+收盘弱/炸板 + 今日高开转强 → trend="弱转强"），并翻转市值为「小市值偏好」（流通市值≤100亿加分、100~300亿小加分、>300亿不加分）；`validate_short_term` 把弱转强作为第4个软维度放行。

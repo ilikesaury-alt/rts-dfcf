@@ -44,14 +44,14 @@ def _symbol_win_rate(conn: sqlite3.Connection, symbol: str) -> float | None:
 def compute_confidence(
     candidates: list,
     conn: sqlite3.Connection | None,
-    list_prescence: dict[str, int] | None = None,
+    list_presence: dict[str, int] | None = None,
 ) -> dict[str, int]:
     """对每个候选算 confidence 分，返回 {symbol: int}。
 
     candidates 元素为 Candidate dataclass（scanner.models）。
     硬排除项直接记 0（不进精选）；其余按信号软累加并 clamp 到 [0, 100]。
     """
-    list_prescence = list_prescence or {}
+    list_presence = list_presence or {}
     result: dict[str, int] = {}
 
     for c in candidates:
@@ -89,7 +89,7 @@ def compute_confidence(
         traj = rank_trajectory_score(sym)
         if traj > 0:
             score += min(traj, 6)  # 排名轨迹正向（最多 6）
-        if list_prescence.get(sym, 0) >= 2:
+        if list_presence.get(sym, 0) >= 2:
             score += 4  # 重复上榜（资金持续关注）
 
         # 2. 趋势/位置安全（+/-）

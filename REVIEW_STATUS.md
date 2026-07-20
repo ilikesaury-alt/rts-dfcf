@@ -13,10 +13,10 @@
 
 | 模块 | 状态 | 最后审查 | 覆盖维度 | 备注 |
 |------|------|---------|---------|------|
-| `analysis.py` | ✅ | 2026-07-16 | 策略逻辑/配置一致性/评分正确性 | 权重引用一致；硬拒绝完整；无双算/遗漏；P0-67 MA约定已统一 |
-| `config.py` | ✅ | 2026-07-15 | 配置一致性/孤立条目 | 权重字典与 analysis.py 匹配；V_ST_VOL_WEAK 死常量已删 |
-| `validator.py` | ✅ | 2026-07-16 | 策略逻辑/交叉验证 | 四策略维度对齐；门槛合理；P0-67 动量MA改EMA与analysis一致；V_ST_VOL_WEAK死分支已删 |
-| `enhancer.py` | ✅ | 2026-07-15 | 加分逻辑/数据流完整性 | accumulate_final_score 覆盖完整；intraday_score 确认未累加 |
+| `analysis.py` | ✅ | 2026-07-20 | 策略逻辑/配置一致性/评分正确性 | 权重引用一致；硬拒绝完整；无双算/遗漏；P0-67 MA约定已统一；硬编码阈值已迁入config.py |
+| `config.py` | ✅ | 2026-07-20 | 配置一致性/孤立条目 | 权重字典与 analysis.py 匹配；V_ST_VOL_WEAK 死常量已删；新增analysis.py阈值集中化 |
+| `validator.py` | ✅ | 2026-07-20 | 策略逻辑/交叉验证 | 四策略维度对齐；门槛合理；P0-67 动量MA改EMA与analysis一致；V_ST_VOL_WEAK死分支已删；清理未使用list_presence参数 |
+| `enhancer.py` | ✅ | 2026-07-20 | 加分逻辑/数据流完整性 | accumulate_final_score 覆盖完整；intraday_score 确认未累加；gap_up_bonus已纳入accumulate_final_score |
 | `orchestrator.py` | ✅ | 2026-07-13 | 策略逻辑/数据流/双源融合 | fallthrough 链正确；双源加分双算已修(P0-1) |
 | `cross_validation.py` | ✅ | 2026-07-13 | 错误处理/日期基准 | 日期基准统一 now_beijing(P1-1)；DB 查无异常已降级 |
 | `api.py` | ✅ | 2026-07-13 | 错误处理/熔断/缓存 | 熔断区分空响应与失败(P1-2)；turnover_rate 缺省(P1-3) |
@@ -81,6 +81,7 @@
 | 2026-07-15 | 子系统清理 + 主扫描器缺陷修复 | industry_chain(删除)/orchestrator.py/cross_validation.py/database.py/config.py | 🗑️ 移除整个产业链子系统(industry_chain/ + industry_chain_scanner.py)，清理 init_industry_chain_tables/chokepoint_recommendations 表/cross_validation 链依赖/Industry chain 配置块/文档；🔴 修复实时扫描 K 线永远少一天(orchestrator.py 盘中补拉今日 Bar)；🟡 双挂票 stock 级加分按 symbol 去重(排名不变) | 确认主扫描器市值过滤用真实 market_capital，热度值未当市值；热度当市值 bug 仅存在于已删的 industry_chain/pipeline.py:39 |
 | 2026-07-16 | 策略实现专项审查（P0 修复·第二轮） | analysis.py/validator.py + tests/test_validator.py | 🔴 修复超短 `st_weak_to_strong` 重复计分(P0-68)：`validate_short_term` 保留 wts 作门控维度(`pos_dims`)但不计入 `total`（已在分析分计 +8）；新增 `test_weak_to_strong_not_double_counted` 回归 | 295 测试全过；其余 3 策略验证维度均为 validator 独立重算两层信号，不受影响；`st_wts_gap`(+4) 单计正确 |
 | 2026-07-20 | 策略逻辑正确性/配置一致性/代码质量 | orchestrator.py/analysis.py | 🔴 修复超短候选丢失(P0-86)：`orchestrator.py:384` `if st:` 在 for 循环外，仅收集最后一个 stock 的 short_term 候选→移入循环内；🟡 清理 `analysis.py` 重复 `PULLBACK_20D_*` 导入 | 324 测试全过；此 bug 导致历史上 short_term 列表几乎为空（仅当最后一个 stock 恰好过超短时才有数据） |
+| 2026-07-20 | 文档同步/阈值集中化/死代码清理 | STRATEGY.md/analysis.py/config.py/enhancer.py/validator.py/confidence.py | 🟡 STRATEGY.md 6处权重/阈值与代码不一致已修正（动量成交量/未修复大涨/新面孔K线确认/超短暴跌保护/交叉验证/优先级）；🟡 16个analysis.py硬编码阈值迁入config.py集中化；🟡 gap_up_bonus纳入accumulate_final_score；🟡 validator.py清理未使用list_presence参数；🟢 confidence.py修正list_prescence拼写错误 | 324 测试全过；STRATEGY.md现在与代码实现一致 |
 
 ---
 
