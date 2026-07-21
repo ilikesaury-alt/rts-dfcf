@@ -107,9 +107,10 @@ def backfill_outcomes(conn: sqlite3.Connection, dry_run: bool = False) -> int:
     updated = 0
     for rid, sym, dt, pct, ndp, f3, f5 in rows:
         occ = compute_outcome(kline_map, sym, dt, pct)
-        new_ndp = occ.next_day if ndp is None else ndp
-        new_f3 = occ.fwd_3d if f3 is None else f3
-        new_f5 = occ.fwd_5d if f5 is None else f5
+        # 仅在新值非 None 时才覆盖，避免新值 None 覆盖已有有效 float 造成数据丢失
+        new_ndp = occ.next_day if ndp is None and occ.next_day is not None else ndp
+        new_f3 = occ.fwd_3d if f3 is None and occ.fwd_3d is not None else f3
+        new_f5 = occ.fwd_5d if f5 is None and occ.fwd_5d is not None else f5
         if (new_ndp != ndp) or (new_f3 != f3) or (new_f5 != f5):
             updated += 1
             if not dry_run:
@@ -125,7 +126,7 @@ def backfill_outcomes(conn: sqlite3.Connection, dry_run: bool = False) -> int:
 
 def _ic(values: list[float], returns: list[float]) -> float | None:
     """Rank IC：values 与 returns 的 spearman 近似（用秩相关系数）。"""
-    if len(values) < 5:
+    if len(values) < 5 or len(values) != len(returns):
         return None
     n = len(values)
     rv = _rank(values)
@@ -135,20 +136,22 @@ def _ic(values: list[float], returns: list[float]) -> float | None:
     cov = sum((rv[i] - mean_v) * (rr[i] - mean_r) for i in range(n))
     var_v = sum((x - mean_v) ** 2 for x in rv) ** 0.5
     var_r = sum((x - mean_r) ** 2 for x in rr) ** 0.5
-    if var_v == 0 or var_r == 0:
+    # 浮点判等改用阈值，避免累加误差导致本应短路的情况继续计算
+    if var_v < 1e-12 or var_r < 1e-12:
         return 0.0
     return cov / (var_v * var_r)
 
 
 def _rank(xs: list[float]) -> list[float]:
     # 标准秩：相等值取平均秩（tie-averaging），避免并列时 rank-IC 偏置
+    # 浮点判等改用 1e-9 阈值，避免浮点累加误差让本应并列的分数分到不同秩
     order = sorted(range(len(xs)), key=lambda i: xs[i])
     ranks = [0.0] * len(xs)
     i = 0
     n = len(order)
     while i < n:
         j = i
-        while j + 1 < n and xs[order[j + 1]] == xs[order[i]]:
+        while j + 1 < n and abs(xs[order[j + 1]] - xs[order[i]]) < 1e-9:
             j += 1
         avg = (i + j) / 2 + 1  # 平均秩（1-based）
         for k in range(i, j + 1):
@@ -169,13 +172,17 @@ class StrategyStat:
 
 
 def strategy_performance(
-    conn: sqlite3.Connection, metric: str = "next_day_pct"
+    conn: sqlite3.Connection, metric: str = "next_day_pct", days: int = 0
 ) -> list[StrategyStat]:
-    """按策略类别聚合表现。metric ∈ {next_day_pct, fwd_3d, fwd_5d}。"""
+    """按策略类别聚合表现。metric ∈ {next_day_pct, fwd_3d, fwd_5d}。
+
+    days > 0 时仅分析最近 N 天的推荐（基于 date 列过滤）。
+    """
+    date_filter = f"AND date >= date('now', '-{int(days)} days') " if days > 0 else ""
     rows = conn.execute(
         f"SELECT category, score, {metric} FROM recommendations "
         f"WHERE category IN ({','.join('?' * len(ACTIVE_CATEGORIES))}) "
-        f"AND {metric} IS NOT NULL",
+        f"AND {metric} IS NOT NULL {date_filter}",
         tuple(ACTIVE_CATEGORIES),
     ).fetchall()
 
@@ -218,21 +225,24 @@ class DimensionIC:
     avg_return_when_zero: float
 
 
-def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct") -> list[DimensionIC]:
+def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct", days: int = 0) -> list[DimensionIC]:
     """解析 score_breakdown，逐维度计算 IC。
 
     对每一条推荐记录，将每个维度视为「该维度是否加正分」，与收益做分组比较：
     - 维度值 > 0 组的均收益 vs 维度值 == 0 组，计算 rank IC。
     这能揭示哪些维度是「正 IC（加分越多收益越好）」还是「反指」。
+
+    days > 0 时仅分析最近 N 天的推荐。
     """
     # 已删除功能残留于历史 score_breakdown JSON，无对应评分代码，仅干扰阅读。
     dead_dim_keys = {
         "new_face_candle", "momentum_candle", "high_pos",
     }
+    date_filter = f"AND date >= date('now', '-{int(days)} days') " if days > 0 else ""
     rows = conn.execute(
         f"SELECT score_breakdown, {metric} FROM recommendations "
         f"WHERE category IN ({','.join('?' * len(ACTIVE_CATEGORIES))}) "
-        f"AND {metric} IS NOT NULL AND score_breakdown IS NOT NULL",
+        f"AND {metric} IS NOT NULL AND score_breakdown IS NOT NULL {date_filter}",
         tuple(ACTIVE_CATEGORIES),
     ).fetchall()
 
@@ -258,7 +268,8 @@ def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct") -> list
             continue
         ic = _ic(vals, dim_rets[dim]) or 0.0
         pos_rets = [dim_rets[dim][i] for i in range(len(vals)) if vals[i] > 0]
-        zero_rets = [dim_rets[dim][i] for i in range(len(vals)) if vals[i] == 0]
+        # 浮点判等改用阈值，避免累加误差使 zero_rets 恒为空
+        zero_rets = [dim_rets[dim][i] for i in range(len(vals)) if abs(vals[i]) < 1e-9]
         avg_pos = sum(pos_rets) / len(pos_rets) if pos_rets else float("nan")
         avg_zero = sum(zero_rets) / len(zero_rets) if zero_rets else float("nan")
         results.append(
@@ -274,14 +285,15 @@ def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct") -> list
     return results
 
 
-def print_report(conn: sqlite3.Connection, metric: str = "next_day_pct") -> None:
+def print_report(conn: sqlite3.Connection, metric: str = "next_day_pct", days: int = 0) -> None:
     print("=" * 70)
-    print(f"回测归因报告 (metric={metric})")
+    days_label = f", 最近{days}天" if days > 0 else ", 全部历史"
+    print(f"回测归因报告 (metric={metric}{days_label})")
     print("=" * 70)
 
     print("\n[1] 分策略表现")
     print(f"{'类别':<16}{'样本':>6}{'胜率':>8}{'均收益':>9}{'盈亏比':>8}{'IC':>8}{'均分':>8}")
-    for s in strategy_performance(conn, metric):
+    for s in strategy_performance(conn, metric, days=days):
         print(
             f"{s.category:<16}{s.count:>6}{s.win_rate*100:>7.1f}%"
             f"{s.avg_return:>9.2f}{s.profit_loss_ratio:>8.2f}"
@@ -290,7 +302,7 @@ def print_report(conn: sqlite3.Connection, metric: str = "next_day_pct") -> None
 
     print("\n[2] 分维度 IC（降序，正=加分越多收益越好）")
     print(f"{'维度':<28}{'样本':>6}{'IC':>8}{'加正分均收益':>14}{'零分均收益':>12}")
-    for d in dimension_ic(conn, metric):
+    for d in dimension_ic(conn, metric, days=days):
         ap = f"{d.avg_return_when_positive:.2f}" if d.avg_return_when_positive == d.avg_return_when_positive else "n/a"
         az = f"{d.avg_return_when_zero:.2f}" if d.avg_return_when_zero == d.avg_return_when_zero else "n/a"
         tag = "  <== 反指" if d.ic < -0.02 else ("  <== 强信号" if d.ic > 0.02 else "")
@@ -312,7 +324,7 @@ def main() -> None:
     if args.backfill:
         n = backfill_outcomes(conn, dry_run=args.dry_run)
         print(f"回填更新行数: {n}" + (" (dry-run)" if args.dry_run else ""))
-    print_report(conn, metric=args.metric)
+    print_report(conn, metric=args.metric, days=args.days)
     conn.close()
 
 

@@ -1,5 +1,4 @@
 import os
-from datetime import datetime
 
 from scanner.config import LOG_DIR, now_beijing
 from scanner.models import Candidate
@@ -13,7 +12,7 @@ def log_results(new_faces: list[Candidate], momentum: list[Candidate]):
     with open(log_file, "a", encoding="utf-8") as f:
         if is_new:
             f.write("时间,分类,名称,代码,现价,涨幅,趋势,5日累计,量比,评分,分时评分\n")
-        now = datetime.now().strftime("%H:%M:%S")
+        now = now_beijing().strftime("%H:%M:%S")
         for c in (new_faces + momentum):
             if c.is_stale:
                 continue

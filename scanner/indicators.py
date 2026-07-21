@@ -185,7 +185,8 @@ def compute_obv(closes: list[float], volumes: list[float]) -> dict | None:
             obv -= volumes[i]
         obv_history.append(obv)
     recent_5 = obv_history[-5:]
-    uptrend = all(recent_5[i] <= recent_5[i + 1] for i in range(len(recent_5) - 1))
-    downtrend = all(recent_5[i] >= recent_5[i + 1] for i in range(len(recent_5) - 1))
+    # 严格单调：uptrend 用 <，downtrend 用 >，平价序列两者都为 False，趋势为 0
+    uptrend = all(recent_5[i] < recent_5[i + 1] for i in range(len(recent_5) - 1))
+    downtrend = all(recent_5[i] > recent_5[i + 1] for i in range(len(recent_5) - 1))
     trend = 1 if uptrend else (-1 if downtrend else 0)
     return {"obv": obv, "obv_trend": trend}

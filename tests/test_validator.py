@@ -246,8 +246,8 @@ class TestValidateMomentum:
                           rank_change=1500, rank=10)
         passed, total, dims = validate_momentum(stock, None, closes, k[:-1], None)
         assert dims["v_mo_overbought"] is True, f"应判超买, dims={dims}"
-        # enhancer 标记逻辑（复刻）：以 v_mo_overbought 为准
-        flag = dims.get("mo_overbought_penalty") or True if dims.get("v_mo_overbought") else None
+        # enhancer 标记逻辑（复刻）：以 v_mo_overbought 为准，类型统一为 bool
+        flag = True if dims.get("v_mo_overbought") else None
         assert flag is not None
         # 轻度压制：total 应比非超买对照低 5（MO_OVERBOUGHT_VALIDATION_PENALTY）
         k2 = _kline([0.5, -0.3, 0.4, -0.2, 0.3] * 6, volumes=[1.0] * 30)
@@ -734,7 +734,8 @@ class TestValidateShortTerm:
         passed, total, dims = validate_short_term(stock, ks, closes, k[:-1], SEMICONDUCTOR_CLUSTER)
         assert dims["v_st_overbought"] is True, f"今日急拉应被 validator 判超买, dims={dims}"
         # enhancer 标记逻辑（复刻）：以 v_st_overbought 为准，不依赖 st_overbought_penalty
-        dims["st_overbought_flag"] = dims.get("st_overbought_penalty") or True
+        # 类型统一为 bool（与 enhancer.py 实际行为一致）
+        dims["st_overbought_flag"] = True
         assert dims["st_overbought_flag"] is not None
 
 

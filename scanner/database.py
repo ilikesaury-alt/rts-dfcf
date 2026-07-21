@@ -221,7 +221,7 @@ def _is_consecutive_trading_days(prev: date, curr: date) -> bool:
 def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: list, source: str | None = None):
     import json
     today = now_beijing().date().isoformat()
-    now = datetime.now().strftime("%H:%M:%S")
+    now = now_beijing().strftime("%H:%M:%S")
     for c in new_faces + momentum:
         try:
             existing = conn.execute(

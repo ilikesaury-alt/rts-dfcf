@@ -6,6 +6,7 @@ from datetime import datetime
 import requests
 
 from scanner.config import (
+    BEIJING_TZ,
     HEADERS,
     REQUEST_TIMEOUT,
     SENTIMENT_AVG_TOP10_BOILING,
@@ -199,7 +200,8 @@ def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[
         ts = item[0]
         result.append({
             "timestamp": ts,
-            "date": datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d"),
+            # 雪球时间戳按北京时间生成，必须用北京时区解析，否则非 UTC+8 部署日期错位
+            "date": datetime.fromtimestamp(ts / 1000, tz=BEIJING_TZ).strftime("%Y-%m-%d"),
             "open": item[2],
             "high": item[3],
             "low": item[4],
@@ -230,12 +232,19 @@ def _biaosheng_circuit_breaker(raw_items: list[dict], success: bool = True) -> l
         _biaosheng_cb["failures"] += 1
         fails = _biaosheng_cb["failures"]
 
-        if fails >= 3 and _biaosheng_cb["cached"]:
+        # 熔断条件：连续失败 >=3 次即进入熔断（无论缓存是否为空）。
+        # 旧逻辑要求缓存非空才熔断，启动后前 3 次失败（缓存空）时永不熔断，
+        # 持续请求已挂掉的 API 没有退避。
+        if fails >= 3:
             cooldown = min(60 * (2 ** (fails - 3)), 600)
             _biaosheng_cb["cooldown_until"] = now + cooldown
-            logger.warning("  [断路器] 飙升榜连续%d次失败, 进入%.0f秒熔断, 使用缓存数据",
+            if _biaosheng_cb["cached"]:
+                logger.warning("  [断路器] 飙升榜连续%d次失败, 进入%.0f秒熔断, 使用缓存数据",
+                               fails, cooldown)
+                return _biaosheng_cb["cached"]
+            logger.warning("  [断路器] 飙升榜连续%d次失败, 进入%.0f秒熔断（无缓存可用）",
                            fails, cooldown)
-            return _biaosheng_cb["cached"]
+            return []
 
         if _biaosheng_cb["cached"]:
             logger.info("  飙升榜获取失败, 返回缓存数据(%.0fs前)", now - _biaosheng_cb["last_ok"])

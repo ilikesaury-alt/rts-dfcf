@@ -1,9 +1,8 @@
 import os
-from datetime import datetime
 
 import wcwidth
 
-from scanner.config import MAX_MARKET_CAP, MAX_STOCK_PRICE, STALE_TIMEOUT_MINUTES, YI
+from scanner.config import MAX_MARKET_CAP, MAX_STOCK_PRICE, STALE_TIMEOUT_MINUTES, YI, now_beijing
 from scanner.models import Candidate
 
 if os.name == "nt":
@@ -40,7 +39,10 @@ def _rank_delta_str(symbol: str, current_rank: int, last_ranks: dict[str, int]) 
 
 
 def _vis_len(s: str) -> int:
-    return sum(wcwidth.wcwidth(c) or 1 for c in s)
+    # wcwidth.wcwidth 对 ANSI 转义字符（如 \x1b）返回 -1（控制字符），
+    # `-1 or 1` 在 Python 中返回 -1（truthy），导致宽度计算错误、列对齐错位。
+    # 用 max(0, ...) 确保控制字符贡献 0 宽度。
+    return sum(max(0, wcwidth.wcwidth(c)) for c in s)
 
 
 def _pad(s: str, width: int, align: str = "l") -> str:
@@ -56,7 +58,7 @@ def clear_screen():
 
 
 def fmt_time():
-    return datetime.now().strftime("%H:%M:%S")
+    return now_beijing().strftime("%H:%M:%S")
 
 
 def pct_colored(pct: float, width: int = 8) -> str:
@@ -125,7 +127,7 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
     if current_rank_map is None:
         current_rank_map = {}
     clear_screen()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
     if pullback_list is None:
         pullback_list = []
     if short_term_list is None:

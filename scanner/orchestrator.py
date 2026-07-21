@@ -450,13 +450,13 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
                       list_streaks=session_state.list_presence,
                       conn=conn)
 
-    extra_by_symbol: dict[str, int] = {}
-    for c in all_candidates:
-        if c.stock.symbol not in extra_by_symbol:
-            extra_by_symbol[c.stock.symbol] = accumulate_final_score(
-                c, market_env_bonus, opening_scores)
+    # 双挂候选（首板票同时挂 new_face + short_term）需各自独立计算 extra：
+    # accumulate_final_score 依赖 c.gap_up_bonus / c.list_momentum_bonus 等，
+    # 这些 bonus 在 apply_all_bonuses 中按 candidate 独立计算（如 _apply_gap_up_bonus
+    # 依据 c.category 选 key，_apply_list_momentum_bonus 依据 c.category 判 is_reversal）。
+    # 若复用同一 extra，short_term 桶会拿到 new_face 桶的 bonus，排名错位。
     for i, c in enumerate(all_candidates):
-        extra = extra_by_symbol[c.stock.symbol]
+        extra = accumulate_final_score(c, market_env_bonus, opening_scores)
         all_candidates[i] = dataclass_replace(c, score=c.score + extra)
 
     update_rank_history({s.symbol: s.rank for s in gem_stocks_filtered})

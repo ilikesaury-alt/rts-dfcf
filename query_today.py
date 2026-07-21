@@ -2,7 +2,7 @@ import argparse
 import json
 import sqlite3
 import sys
-from datetime import date, timedelta
+from datetime import timedelta
 
 sys.stdout.reconfigure(encoding='utf-8')
 
@@ -10,20 +10,19 @@ parser = argparse.ArgumentParser(description='查询今日推荐')
 parser.add_argument('--date', default=None, help='目标日期 (YYYY-MM-DD)，默认为昨日')
 args = parser.parse_args()
 
-from scanner.config import DB_PATH
+from scanner.config import DB_PATH, now_beijing
 
 conn = sqlite3.connect(DB_PATH)
-target_date = args.date or (date.today() - timedelta(days=1)).isoformat()
+target_date = args.date or (now_beijing().date() - timedelta(days=1)).isoformat()
 # Check columns
 cur = conn.execute("PRAGMA table_info(recommendations)")
 cols = cur.fetchall()
 col_names = [c[1] for c in cols]
-print('columns:', col_names)
 cur = conn.execute("SELECT * FROM recommendations r WHERE r.date = ? ORDER BY r.score DESC", (target_date,))
 rows = cur.fetchall()
 cur.close()
 conn.close()
-print(f'今日推荐: {len(rows)} 条')
+print(f'{target_date} 推荐: {len(rows)} 条')
 print()
 for r in rows:
     dims = {}

@@ -153,43 +153,51 @@ def main():
     args = parser.parse_args()
 
     conn = sqlite3.connect(DB_PATH)
+    try:
+        stocks = find_stock(conn, args.query)
+        if not stocks:
+            print(f"\n{red('[!] 未找到匹配的股票:')} {args.query}")
+            print("   提示: 试试输入完整股票代码(300319)或中文名称")
+            sys.exit(1)
 
-    stocks = find_stock(conn, args.query)
-    if not stocks:
-        print(f"\n{red('[!] 未找到匹配的股票:')} {args.query}")
-        print("   提示: 试试输入完整股票代码(300319)或中文名称")
-        conn.close()
-        sys.exit(1)
+        if len(stocks) > 1:
+            print(f"\n{yellow('找到多个匹配:')}")
+            for i, s in enumerate(stocks, 1):
+                print(f"  {i}. {s['name']} ({s['symbol']})")
+            print("   请使用更精确的名称重试")
+            sys.exit(1)
 
-    if len(stocks) > 1:
-        print(f"\n{yellow('找到多个匹配:')}")
-        for i, s in enumerate(stocks, 1):
-            print(f"  {i}. {s['name']} ({s['symbol']})")
-        print("   请使用更精确的名称重试")
-        conn.close()
-        sys.exit(1)
+        stock = stocks[0]
+        symbol = stock["symbol"]
+        name = stock["name"]
 
-    stock = stocks[0]
-    symbol = stock["symbol"]
-    name = stock["name"]
+        appearances = get_appearances(conn, symbol)
+        kline_data = get_cached_kline(conn, symbol)
+        recs = get_recommendations(conn, symbol)
+        sector = get_sector(conn, symbol)
+        consecutive_days = get_consecutive_appearance_days(conn, symbol)
 
-    appearances = get_appearances(conn, symbol)
-    kline_data = get_cached_kline(conn, symbol)
-    recs = get_recommendations(conn, symbol)
-    sector = get_sector(conn, symbol)
-    consecutive_days = get_consecutive_appearance_days(conn, symbol)
-
-    live_data = {}
-    if not args.quick and appearances:
-        try:
+        live_data = {}
+        if not args.quick and appearances:
             from scanner.api import make_session, fetch_market_caps_batch
             session = make_session()
-            caps = fetch_market_caps_batch(session, [symbol])
-            if symbol in caps:
-                live_data = caps[symbol]
-            session.close()
-        except Exception as e:
-            print(f"  [警告] 获取实时数据失败: {e}")
+            try:
+                caps = fetch_market_caps_batch(session, [symbol])
+                if symbol in caps:
+                    live_data = caps[symbol]
+            except Exception as e:
+                print(f"  [警告] 获取实时数据失败: {e}")
+            finally:
+                session.close()
+    except SystemExit:
+        raise
+    except Exception:
+        # 任何意外异常都需关闭 conn 后再抛出，避免连接泄漏
+        conn.close()
+        raise
+
+    # 以下是正常路径；若执行到末尾 finally 会关闭 conn。
+    # 若中间抛异常，上面 except 已 close。
 
     now = now_beijing()
     report_date = now.strftime("%Y-%m-%d %H:%M")
@@ -197,6 +205,14 @@ def main():
     closes = [k["close"] for k in (kline_data or [])]
     highs = [k["high"] for k in (kline_data or [])]
     lows = [k["low"] for k in (kline_data or [])]
+
+    # 技术指标默认值：当 K 线数据不足（<5 天）时第 3 节不会赋值，
+    # 第 7 节综合评价引用时需为 None，否则触发 NameError。
+    rsi_val = None
+    kdj_val = None
+    macd_val = None
+    boll_val = None
+    adx_val = None
     volumes = [k["volume"] for k in (kline_data or [])]
     pcts = [k["percent"] for k in (kline_data or [])]
 

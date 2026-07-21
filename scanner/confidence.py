@@ -93,8 +93,12 @@ def compute_confidence(
             score += 4  # 重复上榜（资金持续关注）
 
         # 2. 趋势/位置安全（+/-）
-        ma_bull = dims.get("momentum_ma_bull") or dims.get("v_pb_ma_trend")
-        if ma_bull and ma_bull > 0:
+        # 不能用 `or` 真值链：当第一项为 0（合法的"不加分"）时会跳到第二项；
+        # 且若 dim 是字符串会抛 TypeError。显式 None 检查更安全。
+        ma_bull = dims.get("momentum_ma_bull")
+        if ma_bull is None:
+            ma_bull = dims.get("v_pb_ma_trend")
+        if isinstance(ma_bull, (int, float)) and ma_bull > 0:
             score += 4
         # 累计涨幅黄金区间 10%~30% 最佳；过高已在上方硬排除
         if 10.0 <= accum <= 30.0:

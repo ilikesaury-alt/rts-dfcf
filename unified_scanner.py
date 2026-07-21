@@ -66,8 +66,13 @@ def main():
                 wait = seconds_until_next_session(now)
                 label = next_session_label(now)
                 print(f"\r  🌙 非交易时段 | {label} ({wait // 60}分后)  ", end="", flush=True)
-                for _ in range(min(wait, interval), 0, -60):
-                    time.sleep(60)
+                # 分段 sleep，每段最多 60 秒，剩余不足 60 秒时按实际剩余时间睡，
+                # 避免 wait<60 时仍睡 60 秒错过开盘第一分钟数据。
+                remaining = wait
+                while remaining > 0:
+                    sleep_secs = min(60, remaining)
+                    time.sleep(sleep_secs)
+                    remaining -= sleep_secs
                     if is_trading_time():
                         break
                 continue
@@ -160,6 +165,8 @@ def main():
         print("\n  👋 扫描器已停止")
     finally:
         conn.close()
+        xq_session.close()
+        ths_session.close()
 
 
 if __name__ == "__main__":

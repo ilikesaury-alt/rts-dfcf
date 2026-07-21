@@ -1,8 +1,6 @@
-from datetime import datetime
-
 import requests
 
-from scanner.config import FEISHU_KEYWORD, FEISHU_MIN_INTERVAL, FEISHU_WEBHOOK
+from scanner.config import FEISHU_KEYWORD, FEISHU_MIN_INTERVAL, FEISHU_WEBHOOK, now_beijing
 from scanner.models import Candidate
 
 _last_push_time: float = 0.0
@@ -19,7 +17,7 @@ def _build_card(
     current_rank_map: dict[str, int] | None = None,
     short_term_list: list[Candidate] | None = None,
 ) -> dict:
-    now = datetime.now().strftime("%H:%M")
+    now = now_beijing().strftime("%H:%M")
     if short_term_list is None:
         short_term_list = []
     all_c = new_faces + momentum + pullback_list + short_term_list
