@@ -11,7 +11,6 @@ from scanner.api import (
     compute_surge_sentiment,
     estimate_live_volume,
 )
-from scanner.ths_api import ths_normalize
 
 
 class TestComputeSurgeSentiment:
@@ -86,35 +85,41 @@ class TestBiaoshengCircuitBreaker:
         assert _biaosheng_cb["cooldown_until"] > 0
 
 
-class TestThsNormalize:
+class TestXueqiuHotCircuitBreaker:
 
-    def test_basic_fields(self):
-        item = {"code": "300999", "name": "测试", "rise_and_fall": 5.2,
-                "hot_rank_chg": 100, "order": 10, "market": 33,
-                "tag": {"concept_tag": ["芯片"], "popularity_tag": "热"}}
-        r = ths_normalize(item)
-        assert r["symbol"] == "SZ300999"
-        assert r["name"] == "测试"
-        assert r["percent"] == 5.2
-        assert r["rank_change"] == 100
-        assert r["rank"] == 10
-        assert r["source_tag"] == "tonghuashun"
-        assert r["concept_tags"] == ["芯片"]
+    def test_success_updates_cache(self):
+        from scanner.api import _xueqiu_hot_circuit_breaker
+        raw = [{"symbol": "300001"}]
+        r = _xueqiu_hot_circuit_breaker(raw, success=True)
+        assert r == raw
 
-    def test_sh_market(self):
-        item = {"code": "600000", "market": 17}
-        r = ths_normalize(item)
-        assert r["symbol"] == "SH600000"
+    def test_success_with_empty(self):
+        from scanner.api import _xueqiu_hot_circuit_breaker
+        r = _xueqiu_hot_circuit_breaker([], success=True)
+        assert r == []
 
-    def test_missing_code_returns_empty(self):
-        r = ths_normalize({"name": "no code"})
-        assert r == {}
+    def test_failure_returns_cached(self):
+        from scanner.api import _xueqiu_hot_circuit_breaker, _xueqiu_hot_cb
+        _xueqiu_hot_circuit_breaker([{"symbol": "300001"}], success=True)
+        r = _xueqiu_hot_circuit_breaker([], success=False)
+        assert r == [{"symbol": "300001"}]
 
-    def test_missing_tag(self):
-        item = {"code": "300001", "name": "A", "market": 33}
-        r = ths_normalize(item)
-        assert r["symbol"] == "SZ300001"
-        assert r["concept_tags"] == []
+    def test_failure_no_cache_returns_empty(self):
+        from scanner.api import _xueqiu_hot_circuit_breaker, _xueqiu_hot_cb
+        _xueqiu_hot_cb["cached"] = []
+        r = _xueqiu_hot_circuit_breaker([], success=False)
+        assert r == []
+
+    def test_three_failures_enters_cooldown(self):
+        from scanner.api import _xueqiu_hot_circuit_breaker, _xueqiu_hot_cb
+        _xueqiu_hot_cb["cached"] = [{"symbol": "300001"}]
+        _xueqiu_hot_cb["failures"] = 0
+        _xueqiu_hot_cb["cooldown_until"] = 0
+
+        for _ in range(3):
+            _xueqiu_hot_circuit_breaker([], success=False)
+
+        assert _xueqiu_hot_cb["cooldown_until"] > 0
 
 
 _minute_5_items = [

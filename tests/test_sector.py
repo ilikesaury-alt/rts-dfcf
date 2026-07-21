@@ -39,10 +39,3 @@ def test_computer():
 
 def test_unknown():
     assert classify_sector("某某股份") == "其他"
-
-
-def test_concept_hint_overrides_name():
-    # 名字无行业关键词，但同花顺概念标签含"半导体" → 用概念标签归类
-    assert classify_sector("某某股份", concept_hint="半导体器件") == "半导体"
-    # 概念标签为空时退化为名字匹配
-    assert classify_sector("医药生物", concept_hint="") == "医药"

@@ -185,19 +185,17 @@ def _try_candidate(stock: StockInfo, kline_summary: KlineSummary | None, categor
 
 
 def _cap_short_term_by_sector(short_term_list: list[Candidate],
-                             concept_map: dict[str, str] | None = None,
                              max_per_sector: int = SHORT_TERM_MAX_PER_SECTOR) -> list[Candidate]:
     """同板块数量上限：板块普涨日防止单板块淹没超短列表。
 
-    用与校验一致的 sector 分类（concept_map 优先），按 score 降序每组保留前
-    max_per_sector 只；其余从超短列表移除（仍可能经其它策略桶保留在 all_candidates）。
+    按 score 降序每组保留前 max_per_sector 只；其余从超短列表移除
+    （仍可能经其它策略桶保留在 all_candidates）。
     """
     if not max_per_sector or len(short_term_list) <= max_per_sector:
         return short_term_list
     by_sector: dict[str, list[Candidate]] = {}
     for c in short_term_list:
-        hint = concept_map.get(c.stock.symbol) if concept_map else None
-        sec = classify_sector(c.stock.name, concept_hint=hint)
+        sec = classify_sector(c.stock.name)
         by_sector.setdefault(sec, []).append(c)
     capped: list[Candidate] = []
     for group in by_sector.values():
@@ -344,8 +342,7 @@ def _compute_rps(candidates: list[Candidate],
 
 
 def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
-                  session: requests.Session,
-                  concept_map: dict[str, str] | None = None) -> tuple[
+                  session: requests.Session) -> tuple[
                       list[Candidate], list[Candidate], list[Candidate],
                       list[Candidate], list[Candidate], list[StockInfo],
                       int]:
@@ -388,7 +385,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
 
     klines = _fetch_all_klines(conn, session, gem_stocks_filtered)
 
-    clusters = get_sector_clusters(gem_stocks_filtered, concept_map=concept_map)
+    clusters = get_sector_clusters(gem_stocks_filtered)
 
     new_faces: list[Candidate] = []
     momentum: list[Candidate] = []
@@ -407,7 +404,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
             short_term_list.append(st)
 
     # 同板块上限：板块普涨日防止单板块淹没超短列表（P0-69 后再加一道闸）
-    short_term_list = _cap_short_term_by_sector(short_term_list, concept_map)
+    short_term_list = _cap_short_term_by_sector(short_term_list)
 
     all_candidates = new_faces + momentum + pullback_list + short_term_list
     for c in all_candidates:

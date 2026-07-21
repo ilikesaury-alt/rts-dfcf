@@ -78,8 +78,6 @@ def _source_tag(c: Candidate) -> str:
     tag = getattr(c.stock, "source_tag", "xueqiu")
     if tag == "both":
         return f"{ANSI['GREEN']}双{ANSI['RESET']}"
-    if tag == "tonghuashun":
-        return "同"
     return ""
 
 

@@ -48,24 +48,15 @@ SECTOR_SINGLE_KEYWORDS: dict[str, list[str]] = {
 }
 
 
-def classify_sector(name: str, concept_hint: str | None = None) -> str:
+def classify_sector(name: str) -> str:
     # 统一最长匹配：把多字与单字关键词合并，按关键词长度降序扫描，
     # 保证"电子"优先于"电"、"新能源车"优先于"新能源"，消除子串碰撞。
-    # concept_hint: 同花顺概念标签（更准确的概念板块名），优先用于匹配。
-    # 注意：hint 路径与 name 路径必须共用同一最长匹配逻辑，否则 hint 上的
-    # 子串碰撞（如"新能源"先于"新能源车"命中）会让更准确的同花顺标签误归类。
     pairs: list[tuple[str, str]] = []
     for sector, keywords in SECTOR_MULTI_KEYWORDS.items():
         pairs.extend((sector, kw) for kw in keywords)
     for sector, keywords in SECTOR_SINGLE_KEYWORDS.items():
         pairs.extend((sector, kw) for kw in keywords)
     pairs.sort(key=lambda x: -len(x[1]))
-    if concept_hint:
-        hint = concept_hint if isinstance(concept_hint, str) else ""
-        if hint:
-            for sector, kw in pairs:
-                if kw in hint:
-                    return sector
     for sector, kw in pairs:
         if kw in name:
             return sector
@@ -76,11 +67,10 @@ def classify_sector(name: str, concept_hint: str | None = None) -> str:
 SECTOR_KEYWORDS = SECTOR_MULTI_KEYWORDS
 
 
-def get_sector_clusters(stocks: list, concept_map: dict[str, str] | None = None) -> dict[str, list[str]]:
+def get_sector_clusters(stocks: list) -> dict[str, list[str]]:
     clusters: dict[str, list[str]] = {}
     for s in stocks:
-        hint = concept_map.get(s.symbol) if concept_map else None
-        sec = classify_sector(s.name, concept_hint=hint)
+        sec = classify_sector(s.name)
         if sec not in clusters:
             clusters[sec] = []
         clusters[sec].append(s.symbol)

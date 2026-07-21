@@ -1,17 +1,17 @@
 """
-雪球 + 同花顺 双源融合扫描器
+雪球双源融合扫描器（飙升榜 + 热搜榜）
 
-雪球为主数据源，同花顺仅做交叉校验：
+雪球为主数据源，热搜榜做交叉校验：
   - 同时出现在两个榜单 → 额外加分
-  - 仅雪球 → 正常参与分析
-  - 仅同花顺 → 不纳入候选
+  - 仅飙升榜 → 正常参与分析
+  - 仅热搜榜 → 不纳入候选
 """
 import sys
 import time
 
 import requests
 
-from scanner.api import fetch_biaosheng, make_session
+from scanner.api import fetch_biaosheng, fetch_xueqiu_hot_list, make_session
 from scanner.config import (
     CROSS_SOURCE_BONUS,
     DB_PATH,
@@ -25,7 +25,6 @@ from scanner.display import display
 from scanner.feishu import push_feishu
 from scanner.log_utils import log_results
 from scanner.orchestrator import scan_with_raw
-from scanner.ths_api import fetch_ths_hot_list, make_ths_session
 from scanner.trading_session import is_trading_time, next_session_label, seconds_until_next_session
 
 if sys.platform == "win32":
@@ -34,7 +33,7 @@ if sys.platform == "win32":
 
 _SOURCE_LABELS = {
     "xueqiu": "雪球",
-    "tonghuashun": "同花顺",
+    "both": "双榜",
 }
 
 
@@ -50,10 +49,9 @@ def main():
 
     conn = init_db()
     xq_session = make_session()
-    ths_session = make_ths_session()
 
-    print(f"  双源融合扫描器  |  每{interval}s刷新  |  DB: {DB_PATH}")
-    print(f"  主源: 雪球飙升榜  |  校验: 同花顺热股榜  |  双源一致额外 +{CROSS_SOURCE_BONUS} 分")
+    print(f"  雪球双源融合扫描器  |  每{interval}s刷新  |  DB: {DB_PATH}")
+    print(f"  主源: 飙升榜  |  校验: 热搜榜  |  双源一致额外 +{CROSS_SOURCE_BONUS} 分")
     print(f"  新面孔: 过去{NEW_FACE_LOOKBACK_DAYS}天未出现 = 新  |  交易时段: 09:30-11:30 / 13:00-15:00")
     print(f"  {'='*60}")
 
@@ -80,27 +78,22 @@ def main():
             try:
                 xq_raw = fetch_biaosheng(xq_session)
                 if not xq_raw:
-                    print(f"\r  [!] 雪球飙升榜数据为空，等待刷新...", end="", flush=True)
+                    print(f"\r  [!] 飙升榜数据为空，等待刷新...", end="", flush=True)
                     time.sleep(interval)
                     continue
 
-                ths_raw = fetch_ths_hot_list(ths_session)
-                ths_symbols = {i["symbol"] for i in (ths_raw or []) if i.get("symbol")}
-                # 同花顺概念标签 → 用于更精准的行业聚类（板块联动加分）
-                concept_map = {
-                    i["symbol"]: " ".join(i.get("concept_tags") or [])
-                    for i in (ths_raw or []) if i.get("symbol")
-                }
+                hot_list = fetch_xueqiu_hot_list(xq_session)
+                hot_symbols = {i["symbol"] for i in (hot_list or []) if i.get("symbol")}
 
                 for item in xq_raw:
                     sym = item.get("symbol", "")
-                    item["source_tag"] = "both" if sym in ths_symbols else "xueqiu"
+                    item["source_tag"] = "both" if sym in hot_symbols else "xueqiu"
 
                 both_count = sum(1 for i in xq_raw if i.get("source_tag") == "both")
-                print(f"\r  📡 雪球{len(xq_raw)}只 (双源{both_count}只)", end="", flush=True)
+                print(f"\r  📡 飙升榜{len(xq_raw)}只 (双榜{both_count}只)", end="", flush=True)
 
                 new_faces, momentum, pullback_list, short_term_list, stale_candidates, all_gem, filtered_large_cap = (
-                    scan_with_raw(xq_raw, conn, xq_session, concept_map=concept_map))
+                    scan_with_raw(xq_raw, conn, xq_session))
 
                 new_faces.sort(key=lambda x: -x.score)
                 momentum.sort(key=lambda x: -x.score)
@@ -165,7 +158,6 @@ def main():
     finally:
         conn.close()
         xq_session.close()
-        ths_session.close()
 
 
 if __name__ == "__main__":

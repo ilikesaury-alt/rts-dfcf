@@ -275,6 +275,64 @@ def fetch_biaosheng(session: requests.Session, size: int = 100) -> list[dict]:
         return _biaosheng_circuit_breaker([], success=False)
 
 
+_xueqiu_hot_cb = {"failures": 0, "last_ok": 0.0, "cached": [], "cooldown_until": 0.0}
+
+
+def _xueqiu_hot_circuit_breaker(raw_items: list[dict], success: bool = True) -> list[dict]:
+    now = time.time()
+    with _cache_lock:
+        if success:
+            _xueqiu_hot_cb["failures"] = 0
+            _xueqiu_hot_cb["cooldown_until"] = 0
+            _xueqiu_hot_cb["last_ok"] = now
+            if raw_items:
+                _xueqiu_hot_cb["cached"] = raw_items
+            return raw_items
+
+        _xueqiu_hot_cb["failures"] += 1
+        fails = _xueqiu_hot_cb["failures"]
+
+        if fails >= 3:
+            cooldown = min(60 * (2 ** (fails - 3)), 600)
+            _xueqiu_hot_cb["cooldown_until"] = now + cooldown
+            if _xueqiu_hot_cb["cached"]:
+                logger.warning("  [断路器] 热搜榜连续%d次失败, 进入%.0f秒熔断, 使用缓存数据",
+                               fails, cooldown)
+                return _xueqiu_hot_cb["cached"]
+            logger.warning("  [断路器] 热搜榜连续%d次失败, 进入%.0f秒熔断（无缓存可用）",
+                           fails, cooldown)
+            return []
+
+        if _xueqiu_hot_cb["cached"]:
+            logger.info("  热搜榜获取失败, 返回缓存数据(%.0fs前)", now - _xueqiu_hot_cb["last_ok"])
+            return _xueqiu_hot_cb["cached"]
+
+        return []
+
+
+def fetch_xueqiu_hot_list(session: requests.Session, size: int = 100) -> list[dict]:
+    """雪球热搜榜（按热度排序，用于与飙升榜交叉验证）"""
+    now = time.time()
+    with _cache_lock:
+        if now < _xueqiu_hot_cb["cooldown_until"]:
+            logger.info("  [断路器] 热搜榜熔断中(剩余%.0fs), 使用缓存数据",
+                        _xueqiu_hot_cb["cooldown_until"] - now)
+            return _xueqiu_hot_cb.get("cached") or []
+
+    ts = int(now * 1000)
+    url = (
+        f"https://stock.xueqiu.com/v5/stock/hot_stock/list.json"
+        f"?page=1&size={size}&order=desc&order_by=value&type=10&_={ts}&x=0.5"
+    )
+    try:
+        resp = _request_with_retry(session, url)
+        items = resp.json().get("data", {}).get("items", [])
+        return _xueqiu_hot_circuit_breaker(items, success=True)
+    except Exception as e:
+        logger.error("热搜榜获取失败: %s", e)
+        return _xueqiu_hot_circuit_breaker([], success=False)
+
+
 def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> dict[str, dict]:
     if not symbols:
         return {}

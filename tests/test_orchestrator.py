@@ -167,7 +167,7 @@ class TestCapShortTermBySector:
             self._st("300103", "医药C", 40),
             self._st("300104", "医药D", 70),
         ]
-        out = _cap_short_term_by_sector(group, concept_map=None, max_per_sector=2)
+        out = _cap_short_term_by_sector(group, max_per_sector=2)
         assert len(out) == 2
         # 高分优先：90、70 的保留
         syms = {c.stock.symbol for c in out}
@@ -180,22 +180,8 @@ class TestCapShortTermBySector:
             self._st("300201", "半导体B", 90),
             self._st("300301", "新能源C", 40),
         ]
-        out = _cap_short_term_by_sector(group, concept_map=None, max_per_sector=2)
+        out = _cap_short_term_by_sector(group, max_per_sector=2)
         assert len(out) == 3
-
-    def test_concept_hint_overrides_name(self):
-        from scanner.orchestrator import _cap_short_term_by_sector
-        # name 无板块关键词，但 concept_map 标记为医药 -> 仍计入医药组
-        group = [
-            self._st("300101", "Alpha", 60),
-            self._st("300102", "Beta", 90),
-            self._st("300103", "Gamma", 40),
-        ]
-        out = _cap_short_term_by_sector(
-            group, concept_map={"300101": "医药", "300102": "医药", "300103": "医药"},
-            max_per_sector=2,
-        )
-        assert len(out) == 2
 
 
 class TestScoreStockKnownNewFace:

@@ -8,7 +8,7 @@
 
 ## Project Structure
 
-A-share stock momentum scanner merging Xueqiu + Tonghuashun surge ranking APIs. Scores ChiNext (300xxx) stocks using "new face" / "momentum" / "pullback" / "short_term" strategies.
+A-share stock momentum scanner merging Xueqiu surge + hot stock ranking APIs. Scores ChiNext (300xxx) stocks using "new face" / "momentum" / "pullback" / "short_term" strategies.
 
 ```
 unified_scanner.py        # Single entry point (dual-source fusion)
@@ -17,8 +17,7 @@ scanner/
   analysis.py             # Scoring engines (new_face, momentum, pullback, short_term)
   validator.py            # Cross-validation per strategy
   config.py               # All thresholds and weights
-  api.py                  # Xueqiu API calls (biaosheng, kline, market cap)
-  ths_api.py              # Tonghuashun hot list API calls
+  api.py                  # Xueqiu API calls (biaosheng, hot_list, kline, market cap)
   database.py             # SQLite CRUD (appearances, kline, recommendations)
   models.py               # StockInfo, Candidate, KlineSummary dataclasses
   indicators.py           # RSI, KDJ, MACD, ADX, ATR, OBV, Bollinger computation

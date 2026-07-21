@@ -124,17 +124,6 @@ HEADERS = {
     "Referer": "https://xueqiu.com/",
 }
 
-THS_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "zh-CN,zh;q=0.9",
-    "Referer": "https://www.10jqka.com.cn/",
-}
-
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "scanner.db")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
