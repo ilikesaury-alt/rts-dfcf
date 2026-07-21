@@ -137,6 +137,8 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
     print(f"  创业板飙升榜监控  ({now})")
 
     all_c = new_faces + pure_momentum + pullback_list + short_term_list
+    # 双挂去重：同一 symbol 在多个桶出现时，仅在先展示的桶显示一次
+    displayed_syms: set[str] = set()
     sec_counts: dict[str, int] = {}
     for c_ in all_c:
         if c_.sector:
@@ -146,7 +148,18 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
     filter_info = f" | 过滤{filtered_large_cap}只" if filtered_large_cap else ""
     cap_count = sum(1 for c in all_c if c.market_cap > 0)
     cap_status = f"市值数据{cap_count}/{len(all_c)}" if all_c else "暂无候选"
-    print(f"  创业板共 {gem_total} 只 | 新{len(new_faces)}动{len(pure_momentum)}回{len(pullback_list)}超{len(short_term_list)}{filter_info} | {sec_line} | {cap_status} | 每{interval}s刷新")
+    pb_red = f"{ANSI['RED']}回{len(pullback_list)}{ANSI['RESET']}" if pullback_list else f"回{len(pullback_list)}"
+    # 大盘环境标签：从首个 candidate 的 dimensions 读取 market_env_bonus
+    env_bonus = 0
+    if all_c and all_c[0].kline:
+        env_bonus = all_c[0].kline.dimensions.get("market_env_bonus", 0) or 0
+    if env_bonus > 0:
+        env_tag = f" | {ANSI['GREEN']}[大盘强势]{ANSI['RESET']}"
+    elif env_bonus < 0:
+        env_tag = f" | {ANSI['RED']}[大盘弱势·谨慎]{ANSI['RESET']}"
+    else:
+        env_tag = " | [大盘中性]"
+    print(f"  创业板共 {gem_total} 只 | 新{len(new_faces)}动{len(pure_momentum)}{pb_red}超{len(short_term_list)}{filter_info} | {sec_line} | {cap_status} | 每{interval}s刷新{env_tag}")
     print(f"  小而美: 市值≤{int(MAX_MARKET_CAP/YI)}亿 股价≤{MAX_STOCK_PRICE}元")
     print(f"{'='*96}")
 
@@ -193,22 +206,32 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
         bonus_str = _bonus_tag(c)
         cap_str = _fmt_market_cap(c.market_cap)
         val_str = f"{s.value:.0f}" if s.value else "N/A"
+        # 风险标签：反指维度 + 历史大跌率
+        risk_parts = []
+        if c.risk_flags:
+            risk_parts.append(f"{ANSI['RED']}⚠{'/'.join(c.risk_flags)}{ANSI['RESET']}")
+        if c.hist_loss_rate is not None and c.hist_loss_rate >= 25:
+            risk_parts.append(f"{ANSI['RED']}[历史大跌率{c.hist_loss_rate:.0f}%]{ANSI['RESET']}")
+        risk_str = " ".join(risk_parts)
         if show_val:
             print(f"  {s.rank:>4} {delta_display} {_pad(src_tag,4)} {_pad(display_name,10)} "
                   f"{s.symbol:<12} {cur:>7} {pct_colored(s.percent)} "
                   f"{_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} "
-                  f"{_pad(bonus_str,16)} {cap_str:>8} {val_str:>6}")
+                  f"{_pad(bonus_str,16)} {cap_str:>8} {val_str:>6} {risk_str}")
         else:
             print(f"  {s.rank:>4} {delta_display} {_pad(src_tag,4)} {_pad(display_name,10)} "
                   f"{s.symbol:<12} {cur:>7} {pct_colored(s.percent)} "
                   f"{_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} "
-                  f"{_pad(bonus_str,16)} {cap_str:>8}")
+                  f"{_pad(bonus_str,16)} {cap_str:>8} {risk_str}")
 
     print(f"\n{ANSI['GREEN']}◆ 新面孔 — 底部异动 / 刚启动{ANSI['RESET']}  (找: 今日小涨+日线底部放量)")
     print(hdr)
     print(f"  {'-'*112}")
     if new_faces:
         for c in new_faces:
+            if c.stock.symbol in displayed_syms:
+                continue
+            displayed_syms.add(c.stock.symbol)
             icon = "★" if c.first_breakout_bonus else ("△" if c.category == "known_new_face" else "")
             _print_row(c, icon=icon)
     else:
@@ -219,21 +242,30 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
         print(hdr)
         print(f"  {'-'*112}")
         for c in pure_momentum:
+            if c.stock.symbol in displayed_syms:
+                continue
+            displayed_syms.add(c.stock.symbol)
             _print_row(c)
-
-    if pullback_list:
-        print(f"\n{ANSI['CYAN']}◆ 回调介入 — 强势股回踩{ANSI['RESET']}  (找: 近期动量+今日缩量回调)")
-        print(hdr)
-        print(f"  {'-'*112}")
-        for c in pullback_list:
-            _print_row(c, icon="○")
 
     if short_term_list:
         print(f"\n{ANSI['RED']}◆ 超短次日 — 今日涨明日卖{ANSI['RESET']}  (找: 涨2-8%+放量+板块活跃)")
         print(hdr)
         print(f"  {'-'*112}")
         for c in short_term_list:
+            if c.stock.symbol in displayed_syms:
+                continue
+            displayed_syms.add(c.stock.symbol)
             _print_row(c, icon="▸")
+
+    if pullback_list:
+        print(f"\n{ANSI['RED']}⚠️ 高风险监控 — 回调介入（历史大跌率35%，谨慎参考）{ANSI['RESET']}")
+        print(hdr)
+        print(f"  {'-'*112}")
+        for c in pullback_list:
+            if c.stock.symbol in displayed_syms:
+                continue
+            displayed_syms.add(c.stock.symbol)
+            _print_row(c, icon="⚠")
 
     if stale_candidates:
         print(f"\n{ANSI['YELLOW']}◆ 掉榜回顾 — 仍在观察 (保留{STALE_TIMEOUT_MINUTES}分钟){ANSI['RESET']}")

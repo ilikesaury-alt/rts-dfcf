@@ -47,6 +47,7 @@ from scanner.config import (
 )
 from scanner.database import (
     get_cached_kline,
+    get_loss_rates_batch,
     get_symbol_appearances,
     record_appearances,
     save_kline_to_db,
@@ -449,6 +450,16 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
                       sentiment_info=sentiment_info, rps_scores=rps_scores,
                       list_streaks=session_state.list_presence,
                       conn=conn)
+
+    # 历史大跌率标签：批量查询近 90 天推荐中次日<=-5% 占比，供 UI 风控参考
+    # 样本<3 不返回（get_loss_rates_batch 内部过滤），单次 SQL 避免 N 次查询
+    syms_for_loss = list({c.stock.symbol for c in all_candidates})
+    loss_rates = get_loss_rates_batch(conn, syms_for_loss)
+    if loss_rates:
+        for i, c in enumerate(all_candidates):
+            rate = loss_rates.get(c.stock.symbol)
+            if rate is not None:
+                all_candidates[i] = dataclass_replace(c, hist_loss_rate=rate)
 
     # 双挂候选（首板票同时挂 new_face + short_term）需各自独立计算 extra：
     # accumulate_final_score 依赖 c.gap_up_bonus / c.list_momentum_bonus 等，

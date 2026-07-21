@@ -74,6 +74,25 @@ def apply_all_bonuses(
         c.time_bonus = time_bonus
         _apply_gap_up_bonus(c)
         _record_dimensions(c, market_idx_pct, opening_scores)
+        _set_risk_flags(c)
+
+
+def _set_risk_flags(c: Candidate):
+    """对 IC<0 的反指维度设置风险标签，供 UI 显示⚠️标记。
+
+    基于回测 IC 归因：momentum_volume(-0.272)、new_face_bottom(-0.230)、
+    v_mo_divergence(-0.229)、turnover_bonus(-0.132) 均为反指。
+    不清零加分（基础评分维度清零会破坏策略逻辑），仅加风险标签供人工判断。
+    """
+    dims = c.kline.dimensions if c.kline else {}
+    if (dims.get("momentum_volume") or 0) > 0:
+        c.risk_flags.append("放量")
+    if (dims.get("new_face_bottom") or 0) > 0:
+        c.risk_flags.append("底部确认")
+    if (dims.get("v_mo_divergence") or 0) != 0:
+        c.risk_flags.append("背离")
+    if (dims.get("turnover_bonus") or 0) > 0:
+        c.risk_flags.append("高换手")
 
 
 def _apply_sector_bonus(c: Candidate, clusters: dict[str, list[str]]):

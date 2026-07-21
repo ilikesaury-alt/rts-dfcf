@@ -242,3 +242,27 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: li
             print(f"  [!] 保存推荐记录失败 {c.stock.symbol}: {e}")
     conn.commit()
 
+
+def get_loss_rates_batch(conn: sqlite3.Connection, symbols: list[str],
+                         lookback_days: int = 90) -> dict[str, float]:
+    """批量返回 {symbol: loss_rate}，loss_rate = 近 lookback_days 天推荐中次日跌幅<=-5% 的占比。
+
+    样本<3 的 symbol 不包含在返回结果中（避免小样本噪音）。
+    单次 SQL 查询，避免 N 次 DB 往返。
+    """
+    if not symbols:
+        return {}
+    placeholders = ",".join("?" * len(symbols))
+    try:
+        cur = conn.execute(
+            f"SELECT symbol, COUNT(*), SUM(CASE WHEN next_day_pct <= -5 THEN 1 ELSE 0 END) "
+            f"FROM recommendations WHERE symbol IN ({placeholders}) "
+            f"AND next_day_pct IS NOT NULL AND date >= date('now', ?) "
+            f"GROUP BY symbol",
+            (*symbols, f"-{lookback_days} days"),
+        )
+        return {row[0]: row[2] * 100 / row[1] for row in cur if row[1] >= 3}
+    except Exception as e:
+        logger.warning(f"get_loss_rates_batch failed: {e}")
+        return {}
+
