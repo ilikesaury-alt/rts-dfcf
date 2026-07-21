@@ -52,6 +52,7 @@ tests/                    # pytest test suite
   - **pullback**: MA20 trending up (>+0.5%), volume shrinkage (<0.6x), sector active (≥3 same-sector), bollinger touch. pos_dims ≥ 2 required.
   - **short_term**: vol_ratio ≥ 1.0 hard gate. Pass rule: 弱转强 (weak-to-strong, st_weak_to_strong>0) passes outright; otherwise requires pos_dims ≥ 2 AND non_sector_pos ≥ 1 (rank/MA/weak — sector cluster alone cannot pass, prevents sector-wide surge days flooding the list). If overbought, 弱转强 loses its override privilege.
 - Priority chain: primary strategy attempted first; if cross-validation fails, falls through to next strategy
+- Trend-label hard filter (`config.py:HIGH_RISK_TRENDS`): pullback candidates with trend "缩量回调" or "回踩整理" are rejected before scoring, as historical data shows these have avg next-day return < -2% (win rate 21-39%).
 
 ## Testing
 
