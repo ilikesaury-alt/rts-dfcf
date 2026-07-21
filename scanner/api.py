@@ -33,7 +33,10 @@ def _request_with_retry(session: requests.Session, url: str,
             resp = session.get(url, timeout=timeout or REQUEST_TIMEOUT)
 
             if resp.status_code == 429:
-                retry_after = int(resp.headers.get("Retry-After", "5"))
+                try:
+                    retry_after = int(resp.headers.get("Retry-After", "5"))
+                except (ValueError, TypeError):
+                    retry_after = 5
                 wait = min(retry_after, 30)
                 if attempt < max_retries - 1:
                     logger.warning("  限流(429) %s, 等待%d秒后重试", url[:60], wait)

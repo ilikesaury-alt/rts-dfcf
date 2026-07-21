@@ -282,7 +282,7 @@ def _pb_shrinkage(kline_summary) -> tuple[int, float]:
     #   <= PULLBACK_VOL_HEALTHY -> 健康缩量（+）
     #   <= PULLBACK_VOL_HIGH    -> 中性（0）
     #   >  PULLBACK_VOL_HIGH    -> 放量（非缩量，惩罚 -）
-    if vr < 0.6:
+    if vr < PULLBACK_VOL_LOW:
         return V_PB_SHRINK_YES, vr
     if vr <= PULLBACK_VOL_HEALTHY:
         return V_PB_SHRINK_MOD, vr
@@ -421,7 +421,7 @@ def validate_short_term(stock, kline_summary, closes: list[float],
     # 避免高位破轨股仅凭弱转强 + 共振拿下 inflated 验证分（如 300534 案例 +24）。
     if overbought:
         # 末周期超买：共振验证加分归零，弱转强不再直通，按标准门禁判定
-        return wts_bonus > 0 or (pos_dims >= 2 and non_sector_pos >= 1), 0, details
+        return pos_dims >= 2 and non_sector_pos >= 1, 0, details
 
     passed = wts_bonus > 0 or (pos_dims >= 2 and non_sector_pos >= 1)
     return passed, total, details

@@ -1,8 +1,11 @@
+import logging
 import sqlite3
 from datetime import date, datetime, timedelta
 
 from scanner.config import DB_PATH, now_beijing
 from scanner.trading_session import is_trading_day
+
+logger = logging.getLogger(__name__)
 
 
 def init_db() -> sqlite3.Connection:
@@ -120,6 +123,9 @@ def _n_trading_days_ago(n: int) -> str:
         cursor -= timedelta(days=1)
         iters += 1
         if iters > max_iter:
+            logger.warning("_n_trading_days_ago(%d): max_iter=%d 触发, "
+                           "回溯仅到达 %s (期望 ~%d 个交易日前), "
+                           "节假日数据可能缺失", n, max_iter, cursor, n)
             break
         if is_trading_day(cursor):
             trading_days += 1

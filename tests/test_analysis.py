@@ -377,7 +377,9 @@ class TestIndicatorIntegration:
         result = analyze_momentum(_stock(percent=4, rank_change=2000, value=12000), kline)
         assert result is not None
         assert "momentum_adx" in result.dimensions
-        assert result.dimensions["momentum_adx"] == 5
+        # 维度现在存储实际 ADX 值（非权重常量）
+        assert isinstance(result.dimensions["momentum_adx"], float)
+        assert result.dimensions["momentum_adx"] > 0
 
     def test_momentum_kdj_scoring(self):
         pcts = [1, 2, 3, 4, 5, 6, 5, 7, 6, 8]
@@ -522,7 +524,9 @@ class TestAnalyzeShortTerm:
             assert "st_rsi" in r.dimensions
         with patch("scanner.analysis.compute_rsi", return_value=85.0):
             r2 = analyze_short_term(_stock(percent=3.0, rank=5), kline)
-            assert "st_rsi" not in r2.dimensions  # >80 不应给加分
+            # RSI>80 时仍记录维度值（惩罚分项可见）
+            assert "st_rsi" in r2.dimensions
+            assert r2.dimensions["st_rsi"] == 85.0
 
     def test_kdj_range_5080(self):
         from unittest.mock import patch

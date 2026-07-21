@@ -301,7 +301,7 @@ class TestValidatePullbackHelpers:
 
     def test_shrinkage_yes(self):
         ks = KlineSummary(
-            trend="缩量回调", accumulated_pct=15.0, volume_ratio=0.5,
+            trend="缩量回调", accumulated_pct=15.0, volume_ratio=0.3,
             bottom_confirmed=True, score=20, avg_volume=1.0,
         )
         bonus, vr = _pb_shrinkage(ks)

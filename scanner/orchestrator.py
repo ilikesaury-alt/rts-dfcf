@@ -344,7 +344,8 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
                   session: requests.Session,
                   concept_map: dict[str, str] | None = None) -> tuple[
                       list[Candidate], list[Candidate], list[Candidate],
-                      list[Candidate], list[Candidate], list[StockInfo], int]:
+                      list[Candidate], list[Candidate], list[StockInfo],
+                      int, list[Candidate]]:
     global _session_state
     session_state = _session_state
     today = now_beijing().date().isoformat()
@@ -461,15 +462,23 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     stale_candidates = session_state.get_stale_candidates()
     session_state.update_stale_quotes(stale_candidates, market_caps)
 
+    # 高确定性「精选」：按 confidence 评分取 Top N（硬排除已在 confidence 内完成）
+    conf_map = compute_confidence(all_candidates, conn, session_state.list_presence)
+    for i, c in enumerate(all_candidates):
+        all_candidates[i] = dataclass_replace(c, confidence=conf_map.get(c.stock.symbol, 0))
+
+    # 分类列表必须从 all_candidates 重建，而非沿用旧对象引用——
+    # dataclass_replace 已创建新对象（含最终 score + confidence），
+    # 旧列表持有的仍是未累加 extra/未设 confidence 的过期对象。
+    new_faces = [c for c in all_candidates if c.category in ("new_face", "known_new_face")]
+    momentum = [c for c in all_candidates if c.category == "momentum"]
+    pullback_list = [c for c in all_candidates if c.category == "pullback"]
+    short_term_list = [c for c in all_candidates if c.category == "short_term"]
     new_faces.sort(key=lambda c: -c.score)
     momentum.sort(key=lambda c: -c.score)
     pullback_list.sort(key=lambda c: -c.score)
     short_term_list.sort(key=lambda c: -c.score)
 
-    # 高确定性「精选」：按 confidence 评分取 Top N（硬排除已在 confidence 内完成）
-    conf_map = compute_confidence(all_candidates, conn, session_state.list_presence)
-    for i, c in enumerate(all_candidates):
-        all_candidates[i] = dataclass_replace(c, confidence=conf_map.get(c.stock.symbol, 0))
     picks = select_picks(all_candidates, conf_map)
 
     return (new_faces, momentum, pullback_list, short_term_list,

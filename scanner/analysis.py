@@ -247,10 +247,9 @@ def _compute_momentum_indicators(closes: list[float], historical_kline: list[dic
     if adx_val is not None:
         if adx_val["adx"] > 25:
             bonus += W["adx_bonus"]
-            dims["momentum_adx"] = W["adx_bonus"]
         elif adx_val["adx"] < 20:
             bonus += W["adx_weak"]
-            dims["momentum_adx"] = W["adx_weak"]
+        dims["momentum_adx"] = round(adx_val["adx"], 1)
 
     # ATR/OBV 增量确认：波动率适中=趋势健康，过高=过热；OBV 上行=趋势资金确认
     highs = [k["high"] for k in historical_kline]
@@ -987,7 +986,7 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
         score += W["vol_low"]
         dims["st_volume"] = W["vol_low"]
 
-    has_crash = any(p <= -10 for p in pcts[-5:])
+    has_crash = any(p <= CRASH_THRESHOLD for p in pcts[-5:])
     if not has_crash:
         score += NO_CRASH_SAFE_BONUS
         dims["st_no_crash_safe"] = NO_CRASH_SAFE_BONUS
@@ -1026,6 +1025,7 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
             dims["st_rsi"] = round(rsi_val, 1)
         elif rsi_val > 80:
             score -= W["rsi_bonus"]
+            dims["st_rsi"] = round(rsi_val, 1)
 
     kdj_val = compute_kdj(
         [k["high"] for k in historical_kline],
