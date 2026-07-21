@@ -53,6 +53,5 @@ class Candidate:
     list_momentum_bonus: int = 0
     is_stale: bool = False
     stale_since: str = ""
-    confidence: int = 0  # 高确定性「精选」评分（0~100），由 confidence.py 计算
     risk_flags: list[str] = field(default_factory=list)  # 反指维度风险标签（IC<0 维度）
     hist_loss_rate: float | None = None  # 历史大跌率（近90天推荐中次日<=-5%占比），None=样本不足

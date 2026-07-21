@@ -120,8 +120,7 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             stale_candidates: list[Candidate] | None = None,
             pullback_list: list[Candidate] | None = None,
             current_rank_map: dict[str, int] | None = None,
-            short_term_list: list[Candidate] | None = None,
-            picks: list[Candidate] | None = None):
+            short_term_list: list[Candidate] | None = None):
     if last_ranks is None:
         last_ranks = {}
     if current_rank_map is None:
@@ -167,27 +166,6 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
            f"{_pad('代码',12)} {_pad('现价',7,'r')} {_pad('涨幅',8,'r')} "
            f"{_pad('趋势',14)} {_pad('5日累计',8,'r')} {_pad('量比',6,'r')} "
            f"{_pad('评分',4,'r')} {_pad('增强',16)} {_pad('市值',8,'r')}")
-
-    # 高确定性「精选」专区（用户每次只买 1-2 只，优先看这里）
-    if picks:
-        print(f"\n{ANSI['BOLD']}{ANSI['GREEN']}★ 精选（高确定性 Top{len(picks)}）{ANSI['RESET']}  (综合交叉验证+位置安全+强度+历史胜率)")
-        print(hdr)
-        print(f"  {'-'*112}")
-        for c in picks:
-            s = c.stock
-            k = c.kline
-            cur = f"{s.current:.2f}" if s.current else "N/A"
-            acc = f"{k.accumulated_pct:+.2f}%" if k else "N/A"
-            vr = f"{k.volume_ratio:.1f}x" if k else "N/A"
-            conf = c.confidence if hasattr(c, "confidence") else 0
-            conf_tag = f"{ANSI['BOLD']}{conf:>3}{ANSI['RESET']}"
-            bonus = _bonus_tag(c)
-            print(f"  {s.rank:>4} {_pad(_source_tag(c),4)} {_pad(f'★ {s.name}',10)} "
-                  f"{s.symbol:<12} {cur:>7} {pct_colored(s.percent)} "
-                  f"{_pad(k.trend if k else 'N/A',14)} {acc:>8} {vr:>6} "
-                  f"确定{conf_tag} {_pad(bonus,16)}")
-    else:
-        print(f"\n{ANSI['BOLD']}{ANSI['YELLOW']}★ 精选 —— 今日无高确定性机会，建议空仓等待{ANSI['RESET']}")
 
     def _print_row(c: Candidate, icon: str = "", show_val: bool = False):
         s = c.stock

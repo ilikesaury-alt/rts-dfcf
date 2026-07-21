@@ -99,7 +99,7 @@ def main():
                 both_count = sum(1 for i in xq_raw if i.get("source_tag") == "both")
                 print(f"\r  📡 雪球{len(xq_raw)}只 (双源{both_count}只)", end="", flush=True)
 
-                new_faces, momentum, pullback_list, short_term_list, stale_candidates, all_gem, filtered_large_cap, picks = (
+                new_faces, momentum, pullback_list, short_term_list, stale_candidates, all_gem, filtered_large_cap = (
                     scan_with_raw(xq_raw, conn, xq_session, concept_map=concept_map))
 
                 new_faces.sort(key=lambda x: -x.score)
@@ -111,8 +111,7 @@ def main():
                 display(new_faces, momentum, len(all_gem), interval,
                         filtered_large_cap=filtered_large_cap, last_ranks=last_ranks,
                         stale_candidates=stale_candidates, pullback_list=pullback_list,
-                        current_rank_map=current_rank_map, short_term_list=short_term_list,
-                        picks=picks)
+                        current_rank_map=current_rank_map, short_term_list=short_term_list)
                 log_results(new_faces, momentum + pullback_list + short_term_list)
                 if not args.no_feishu:
                     pushed = push_feishu(new_faces, momentum, pullback_list, stale_candidates,

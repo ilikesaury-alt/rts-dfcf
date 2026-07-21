@@ -252,11 +252,6 @@ ST_OVERBOUGHT_KDJ = 105           # KDJ J > 此值 = 极端超买（健康强趋
 ST_OVERBOUGHT_KDJ_PENALTY = -5
 MO_OVERBOUGHT_VALIDATION_PENALTY = -5  # 动量超买时验证分轻度压制（不硬否决）
 
-# 高确定性「精选」专区：confidence 评分与门禁（用户每次只买 1-2 只，需更高确定性）
-CONF_MIN = 40                 # confidence >= 此值才进精选池
-CONF_TOP_N = 2                 # 精选池最多展示 Top N
-CONF_EXCLUDE_ACCUM = 45.0     # 累计涨幅 > 此值（鱼尾风险）硬排除
-
 # Bonus constants
 CROSS_SOURCE_BONUS = 5
 FIRST_TODAY_BONUS = 3

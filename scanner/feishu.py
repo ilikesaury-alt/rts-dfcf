@@ -29,7 +29,18 @@ def _build_card(
     hot_secs = sorted(sec_cnt.items(), key=lambda x: -x[1])[:3]
     sec_line = " | ".join(f"{s}({n})" for s, n in hot_secs)
 
-    header_text = f"**{now}** | 🟢新{len(new_faces)} 📈动{len(momentum)} 🔄回{len(pullback_list)} 🔴超{len(short_term_list)}"
+    # 大盘环境标签：与 display.py 对齐，从首个 candidate 的 dimensions 读取
+    env_bonus = 0
+    if all_c and all_c[0].kline:
+        env_bonus = all_c[0].kline.dimensions.get("market_env_bonus", 0) or 0
+    if env_bonus > 0:
+        env_tag = " | 🟢大盘强势"
+    elif env_bonus < 0:
+        env_tag = " | 🔴大盘弱势·谨慎"
+    else:
+        env_tag = " | ⚪大盘中性"
+
+    header_text = f"**{now}** | 🟢新{len(new_faces)} 📈动{len(momentum)} 🔴超{len(short_term_list)} ⚠️回{len(pullback_list)}{env_tag}"
     if stale_candidates:
         header_text += f" ⏳掉{len(stale_candidates)}"
     if sec_line:
@@ -39,16 +50,43 @@ def _build_card(
         {"tag": "div", "text": {"tag": "lark_md", "content": header_text}},
     ]
 
+    # 顺序与 display.py 对齐：新面孔 → 动量 → 超短 → 回调（高风险区置末）
+    # pullback 标题加 ⚠️ 高风险警告（历史大跌率 35%，谨慎参考）
     sections = [
         ("🆕 新面孔", new_faces),
         ("📈 动量延续", momentum),
-        ("🔄 回调介入", pullback_list),
         ("🔴 超短次日", short_term_list),
+        ("⚠️ 高风险监控 — 回调介入（历史大跌率35%，谨慎参考）", pullback_list),
     ]
+
+    # 双挂去重：同一 symbol 在多个桶出现时，仅在先展示的桶显示一次
+    displayed_syms: set[str] = set()
+
+    def _fmt_row(c: Candidate, rank_str: str = "") -> str:
+        s = c.stock
+        rs = rank_str or f"{s.rank:>3}"
+        pct_str = f"+{s.percent:.1f}%" if s.percent >= 0 else f"{s.percent:.1f}%"
+        acc_val = c.kline.accumulated_pct if c.kline else None
+        acc_str = f"{acc_val:+.1f}%" if acc_val is not None else "N/A"
+        # 风险标签：反指维度 + 历史大跌率（与 display.py 对齐，飞书卡片用 emoji 而非 ANSI）
+        risk_parts = []
+        if c.risk_flags:
+            risk_parts.append(f"⚠{'/'.join(c.risk_flags)}")
+        if c.hist_loss_rate is not None and c.hist_loss_rate >= 25:
+            risk_parts.append(f"[历史大跌率{c.hist_loss_rate:.0f}%]")
+        risk_str = (" " + " ".join(risk_parts)) if risk_parts else ""
+        return f"`{rs} {s.name:<8} {s.symbol} {pct_str:>7} {acc_str:>7}  {c.score:>2}分{risk_str}`"
 
     first = True
     for title, items in sections:
-        if not items:
+        # 双挂去重：跳过已展示的 symbol
+        deduped = []
+        for c in items[:5]:
+            if c.stock.symbol in displayed_syms:
+                continue
+            displayed_syms.add(c.stock.symbol)
+            deduped.append(c)
+        if not deduped:
             continue
         if first:
             first = False
@@ -56,12 +94,8 @@ def _build_card(
         else:
             elements.append({"tag": "hr"})
         content = f"**{title}**\n"
-        for c in items[:5]:
-            s = c.stock
-            pct_str = f"+{s.percent:.1f}%" if s.percent >= 0 else f"{s.percent:.1f}%"
-            acc_val = c.kline.accumulated_pct if c.kline else None
-            acc_str = f"{acc_val:+.1f}%" if acc_val is not None else "N/A"
-            content += f"`{s.rank:>3} {s.name:<8} {s.symbol} {pct_str:>7} {acc_str:>7}  {c.score:>2}分`\n"
+        for c in deduped:
+            content += _fmt_row(c) + "\n"
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": content.rstrip("\n")}})
 
     if stale_candidates:
@@ -70,12 +104,9 @@ def _build_card(
         if current_rank_map is None:
             current_rank_map = {}
         for c in stale_candidates[:5]:
-            s = c.stock
-            rank_str = f"{current_rank_map.get(s.symbol, '—'):>3}" if isinstance(current_rank_map.get(s.symbol), int) else f"{'—':>3}"
-            pct_str = f"+{s.percent:.1f}%" if s.percent >= 0 else f"{s.percent:.1f}%"
-            acc_val = c.kline.accumulated_pct if c.kline else None
-            acc_str = f"{acc_val:+.1f}%" if acc_val is not None else "N/A"
-            content += f"`{rank_str} {s.name:<8} {s.symbol} {pct_str:>7} {acc_str:>7}  {c.score:>2}分`\n"
+            cur_rank = current_rank_map.get(c.stock.symbol)
+            rank_str = f"{cur_rank:>3}" if isinstance(cur_rank, int) else f"{'—':>3}"
+            content += _fmt_row(c, rank_str=rank_str) + "\n"
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": content.rstrip("\n")}})
 
     if not first or stale_candidates:
