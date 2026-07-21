@@ -323,6 +323,14 @@ FATIGUE_PENALTY_CAP = -15      # max fatigue penalty
 FATIGUE_ACCELERATE_PCT = 3     # today pct above this + healthy vol → acceleration bonus
 FATIGUE_ACCELERATE_BONUS_PER_DAY = 2  # bonus per streak day when accelerating
 
+# Trend-label hard filter: exclude trends with avg next-day return < -2%
+# Based on 2729 historical recommendations analysis
+# Only includes labels actually produced by current analysis.py
+HIGH_RISK_TRENDS: set[str] = {
+    "缩量回调",   # pullback: avg -2.09%, win 39.2%
+    "回踩整理",   # pullback: avg -3.89%, win 21.6%
+}
+
 # Time-based bonus thresholds (minutes since midnight)
 STALE_TIMEOUT_MINUTES = 30  # 掉榜后保留时长
 

@@ -27,6 +27,7 @@ from scanner.config import (
     FIRST_BREAKOUT_RANK_CHANGE,
     FIRST_BREAKOUT_VOL_RATIO,
     FIRST_TODAY_BONUS,
+    HIGH_RISK_TRENDS,
     KLINE_FETCH_DAYS,
     KLINE_MIN_LENGTH,
     MAX_MARKET_CAP,
@@ -162,6 +163,8 @@ def _try_candidate(stock: StockInfo, kline_summary: KlineSummary | None, categor
                    closes: list[float], historical: list[dict],
                    clusters: dict[str, list[str]] | None) -> Candidate | None:
     if kline_summary is None:
+        return None
+    if kline_summary.trend in HIGH_RISK_TRENDS:
         return None
     min_score = {
         "new_face": NEW_FACE_MIN_SCORE,
