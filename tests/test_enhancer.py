@@ -39,7 +39,7 @@ def _make_candidate(symbol="300999", name="测试", category="momentum",
 class TestComputeTimeBonus:
     def test_early_session(self):
         dt = datetime(2026, 6, 18, 10, 0)
-        assert compute_time_bonus(dt) == -5
+        assert compute_time_bonus(dt) == -2
 
     def test_mid_session(self):
         dt = datetime(2026, 6, 18, 13, 0)

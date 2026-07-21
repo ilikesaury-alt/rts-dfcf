@@ -91,14 +91,16 @@ _minute_data_cache_lock = threading.Lock()
 _market_index_cache: tuple[float | None, float] = (None, 0)
 
 _kline_cache: dict[str, tuple[list[dict] | None, float]] = {}
-_kline_cache_ttl = 600
+# TTL=0 禁用 API 层缓存：避免与 orchestrator.KLINE_REFRESH_TTL 双层叠加导致 K 线陈旧。
+# K 线新鲜度统一由 orchestrator 层 TTL 控制，补拉时真正发请求而非命中旧缓存。
+_kline_cache_ttl = 0
 
 
 def fetch_market_index(session: requests.Session) -> float | None:
     global _market_index_cache
     now = time.time()
     with _index_cache_lock:
-        if _market_index_cache[0] is not None and now - _market_index_cache[1] < 180:
+        if _market_index_cache[0] is not None and now - _market_index_cache[1] < 60:
             return _market_index_cache[0]
     try:
         ts_ms = int(time.time() * 1000)
@@ -209,8 +211,9 @@ def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[
             "volume": item[1],
             "percent": item[7],
         })
-    with _kline_cache_lock:
-        _kline_cache[symbol] = (result, now)
+    if _kline_cache_ttl > 0:
+        with _kline_cache_lock:
+            _kline_cache[symbol] = (result, now)
     return result
 
 
@@ -389,11 +392,13 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
 
 
 _INTRADAY_CACHE: dict[str, tuple[float | None, float]] = {}
-_INTRADAY_CACHE_TTL = 300
+# 300→120：分时强度评分 2 分钟刷新，让盘中异动更快反映到 intraday_score
+_INTRADAY_CACHE_TTL = 120
 _INTRADAY_CACHE_FAIL_TTL = 60
 
 _MINUTE_DATA_CACHE: dict[str, tuple[list[dict] | None, float]] = {}
-_MINUTE_DATA_CACHE_TTL = 120
+# 120→60：分时数据 1 分钟刷新，配合 opening_strength/live_volume 更及时
+_MINUTE_DATA_CACHE_TTL = 60
 
 
 def _normalize_minute_item(raw) -> dict:

@@ -75,7 +75,8 @@ _session_state = ScanSession()
 
 # 盘中今日 K 线刷新 TTL（秒）：盘中时段已缓存今日 bar 时，超过该时长仍强制补拉，
 # 避免整日复用早盘残次 bar（stock.current 实时价与缓存 close 脱节）。
-KLINE_REFRESH_TTL = 300
+# 300→120：缩短到 2 分钟，让盘中异动更快反映到 K 线打分（缓解"涨起来了才推"滞后）。
+KLINE_REFRESH_TTL = 120
 _last_kline_fetch: dict[str, float] = {}
 
 

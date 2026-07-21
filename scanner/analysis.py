@@ -480,7 +480,9 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
     else:
         accumulated = sum(pcts[-5:])
 
-    if accumulated < 10:
+    if accumulated < 7:
+        # 10→7：原 10% 门槛要求前期已有显著涨幅，今天刚启动的票无法进入 momentum 池。
+        # 7% 让"温和启动+今日加速"的票能进 momentum，validator 交叉验证仍会过滤假启动。
         return None
 
     volumes = [k["volume"] for k in kline]

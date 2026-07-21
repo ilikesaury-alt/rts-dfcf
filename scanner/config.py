@@ -320,7 +320,9 @@ STALE_TIMEOUT_MINUTES = 30  # 掉榜后保留时长
 
 EARLY_TRADE_CUTOFF = 10 * 60 + 30   # 10:30
 LATE_TRADE_START = 14 * 60           # 14:00
-EARLY_BONUS = -5
+# -5→-2：原 -5 会把刚过 MIN_SCORE 的早盘票压到门槛下，导致 9:30-10:30 票迟迟不推。
+# -2 保留早盘噪音轻度抑制，但不再系统性压杀早盘异动。
+EARLY_BONUS = -2
 LATE_BONUS = 3
 
 HOLIDAYS_FILE = os.path.join(BASE_DIR, "holidays.json")
