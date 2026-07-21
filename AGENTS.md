@@ -4,7 +4,7 @@
 
 - **Run scanner**: `python unified_scanner.py` (default 60s interval) or `python unified_scanner.py 120` (custom seconds)
 - **Run tests**: `python -m pytest tests/ -v`
-- **Single test**: `python -m pytest tests/test_analysis.py::test_new_face -v`
+- **Single test**: `python -m pytest tests/test_analysis.py::TestAnalysis::test_new_face_bollinger_oversold -v`
 
 ## Project Structure
 
@@ -27,9 +27,11 @@ scanner/
   candidate_pool.py       # ScanSession with list presence tracking
   rank_trend.py           # RankTracker with trajectory scoring
   sector.py               # Sector cluster detection
-  confidence.py           # High-confidence pick scoring (精选专区)
   backtest.py             # Backtest / IC attribution framework
   trading_session.py      # Trading hours/holidays
+  display.py              # Terminal display formatting (ANSI + wcwidth)
+  feishu.py               # Feishu webhook card push
+  utils.py                # Utility functions (is_gem, is_st, is_hk_stock)
   log_utils.py            # Log formatting utilities
 tests/                    # pytest test suite
 ```
@@ -56,7 +58,7 @@ tests/                    # pytest test suite
 
 ## Testing
 
-Tests use pytest with helper factories `_stock()` and `_kline()` in `tests/test_analysis.py` for creating mock data. No external services required.
+Tests use pytest with helper factories `_stock()` and `_kline()` in `tests/helpers.py` and `tests/test_analysis.py` for creating mock data. No external services required.
 
 ## Stock Report Tool
 
