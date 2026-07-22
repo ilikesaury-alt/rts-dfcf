@@ -345,7 +345,7 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
         accumulated = (closes[-1] - closes[-6]) / closes[-6] * 100
     else:
         accumulated = sum(pcts[-5:])
-    if accumulated < -8:
+    if accumulated < -10:
         return None
     if accumulated > 20:
         return None
