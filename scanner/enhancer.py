@@ -264,8 +264,7 @@ def _record_dimensions(
         c.kline.dimensions["turnover_bonus"] = c.turnover_bonus
     if c.category == "short_term" and c.kline.dimensions.get("v_st_overbought"):
         # 以 validator 决策为准（含今日急拉导致的超买），确保否决在报告中可见；
-        # 分析侧 st_overbought_penalty 可能为空（仅用历史 closes），故不依赖它。
-        # 类型统一为 bool：penalty 为 -5(int) 时旧代码会存 -5，下游 >0 判断行为反转。
+        # 分析侧不再做超买判定，统一由 validator 单点判断 + enhancer 标记。
         c.kline.dimensions["st_overbought_flag"] = True
     if c.category == "momentum" and c.kline.dimensions.get("v_mo_overbought"):
         # 同 short_term 逻辑：以 validator 决策为准，确保超买标记在报告中可见。

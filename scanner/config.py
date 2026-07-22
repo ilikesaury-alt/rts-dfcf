@@ -58,11 +58,6 @@ VOL_PEAK_NEW_FACE_PENALTY = -5   # new_face vol_peak < threshold → penalty
 VOL_PEAK_MOMENTUM_PENALTY = -8   # momentum vol_peak < threshold → penalty
 VOL_PEAK_PULLBACK_BONUS = 5     # pullback vol_peak < threshold → shrinkage bonus
 
-# Vol-rank + accumulated combo penalty
-VOL_RANK_HIGH_ACCUM_OVERLAP_MIN_RANK = 12
-VOL_RANK_HIGH_ACCUM_OVERLAP_MIN_ACCUM = 20
-VOL_RANK_HIGH_ACCUM_OVERLAP_PENALTY = -10
-
 # MA bull extra bonus (pullback)
 MA_BULL_EXTRA_BONUS = 5
 
@@ -224,7 +219,6 @@ SHORT_TERM_WEIGHTS: dict[str, int] = {
     "value_small_cap": 6,
     "value_mid_cap": 2,
     "st_weak_to_strong": 8,
-    "st_wts_gap": 4,
     "rsi_bonus": 3,
     "kdj_bonus": 3,
     "macd_bonus": 3,
@@ -233,13 +227,11 @@ SHORT_TERM_WEIGHTS: dict[str, int] = {
     "rank_top30": 3,
 }
 
-# 超短末周期（鱼尾段）超买防护：与分析侧软惩罚阈值保持一致。
-# 20日涨幅阈值/惩罚直接复用 PULLBACK_20D_GAIN_*（避免常量膨胀）。
+# 超短末周期（鱼尾段）超买防护：validator 单点判断阈值。
+# 20日涨幅阈值直接复用 PULLBACK_20D_GAIN_*（避免常量膨胀）。
+# 惩罚已移除：超买时仅靠 validator passed 门禁否决 + enhancer 标记，不再做 score 压制。
 ST_OVERBOUGHT_BOLL = 1.0          # BOLL %B > 此值 = 破上轨（高位）
-ST_OVERBOUGHT_BOLL_PENALTY = -5
 ST_OVERBOUGHT_KDJ = 105           # KDJ J > 此值 = 极端超买（健康强趋势 J 常 90~115，100 易误伤）
-ST_OVERBOUGHT_KDJ_PENALTY = -5
-MO_OVERBOUGHT_VALIDATION_PENALTY = -5  # 动量超买时验证分轻度压制（不硬否决）
 
 # Bonus constants
 CROSS_SOURCE_BONUS = 5
@@ -425,6 +417,7 @@ V_ST_MA_SUPPORT = 5
 V_ST_MA_BROKEN = -5
 
 # Pullback 20-day gain penalty (late-stage lifecycle protection)
+# PULLBACK_20D_GAIN_WARN/EXTREME 同时用于 validator 超买判定阈值。
 PULLBACK_20D_GAIN_WARN = 40       # 20-day gain > 40% → warn
 PULLBACK_20D_GAIN_EXTREME = 60    # 20-day gain > 60% → extreme
 PULLBACK_20D_WARN_PENALTY = -10

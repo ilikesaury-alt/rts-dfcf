@@ -190,31 +190,36 @@ class TestAnalyzeMomentum:
             })
         return klines
 
-    def test_momentum_overbought_boll_kdj_penalty(self):
-        # 鱼尾段（破上轨 + J>105）：分析侧应施加软惩罚，标记 mo_overbought_*。
+    def test_momentum_overbought_no_analysis_side_penalty(self):
+        # 超买防护已统一至 validator 单点：分析侧不再做软惩罚，不写入 mo_overbought_* 维度。
+        # validator._mo_is_overbought 负责判断 + enhancer 负责标记。
         k = self._overbought_kline([2])
         result = analyze_momentum(_stock(percent=4, rank_change=2000, value=12000, current=k[-1]["close"]), k)
         assert result is not None
-        assert "mo_overbought_boll" in result.dimensions, f"应标记 BOLL 破上轨, dims={result.dimensions}"
-        assert "mo_overbought_kdj" in result.dimensions, f"应标记 KDJ J 极端, dims={result.dimensions}"
-        assert result.dimensions.get("mo_overbought_penalty", 0) < 0, "超买软惩罚应为负分"
+        assert "mo_overbought_penalty" not in result.dimensions, \
+            f"分析侧不应再写入超买惩罚, dims={result.dimensions}"
+        assert "mo_overbought_boll" not in result.dimensions, \
+            f"分析侧不应再标记 BOLL 破上轨, dims={result.dimensions}"
+        assert "mo_overbought_kdj" not in result.dimensions, \
+            f"分析侧不应再标记 KDJ J 极端, dims={result.dimensions}"
 
-    def test_momentum_overbought_20d_extreme_penalty(self):
-        # 20日累计涨幅 > 60%（extreme）：应触发 mo_overbought_20d 软惩罚。
+    def test_momentum_overbought_20d_no_analysis_side_penalty(self):
+        # 20日累计涨幅 > 60%（extreme）：分析侧不再做软惩罚，validator 单点判断。
         k = self._overbought_kline([4, 5, 8, 3, 6], ramp=2.4)
         result = analyze_momentum(_stock(percent=4, rank_change=2000, value=12000, current=k[-1]["close"]), k)
         assert result is not None
-        assert "mo_overbought_20d" in result.dimensions, f"应标记 20日极值, dims={result.dimensions}"
-        assert result.dimensions["mo_overbought_20d"] > 60, "20日涨幅应 > 60%"
+        assert "mo_overbought_20d" not in result.dimensions, \
+            f"分析侧不应再标记 20日极值, dims={result.dimensions}"
+        assert "mo_overbought_penalty" not in result.dimensions, \
+            f"分析侧不应再写入超买惩罚, dims={result.dimensions}"
 
-    def test_momentum_moderate_no_20d_extreme_penalty(self):
-        # 对照：近期温和加速（accumulated>=10）但 20日涨幅 < 40% WARN，
-        # 不触发 20日极值惩罚（BOLL% 破上轨在健康动量中属正常强势，软惩罚可接受）。
+    def test_momentum_moderate_no_overbought_dims(self):
+        # 对照：温和主升浪，分析侧不写入任何超买维度（与超买票一致，统一由 validator 判断）。
         k = _kline([0] * 15 + [4, 4, 4, 4, 4, -2], volumes=[1.0] * 21)
         result = analyze_momentum(_stock(percent=4, rank_change=2000, value=12000), k)
         assert result is not None
         assert "mo_overbought_20d" not in result.dimensions, \
-            f"温和主升浪不应触发 20日极值惩罚, dims={result.dimensions}"
+            f"分析侧不应标记 20日极值, dims={result.dimensions}"
 
 
 class TestAnalyzePullback:
@@ -469,7 +474,8 @@ class TestAnalyzeShortTerm:
         result = analyze_short_term(_stock(percent=5.0, rank=5, current=11.5), kline)
         assert result is not None
         assert result.dimensions.get("st_weak_to_strong") == 8
-        assert result.dimensions.get("st_wts_gap") == 4   # 今日高开(gap_pts>0)
+        # st_wts_gap 已删除：弱转强 +8 已充分奖励，高开不再额外加分
+        assert "st_wts_gap" not in result.dimensions
         assert result.trend == "弱转强"
 
     def test_no_weak_to_strong_when_strong_close(self):
@@ -556,37 +562,42 @@ class TestAnalyzeShortTerm:
         passed, _, _ = validate_short_term(_stock(percent=3.0, rank=5), result, closes, kline, None)
         assert passed is False
 
-    def test_overbought_20d_gain_warn_penalty(self):
-        # 末周期：连续温和上涨使 20日累计涨幅落入 40%~60% 预警区间 → 软惩罚
+    def test_overbought_20d_gain_no_analysis_side_penalty(self):
+        # 超买防护已统一至 validator 单点：分析侧不再做软惩罚，不写入 st_overbought_* 维度。
+        # 连续温和上涨使 20日累计涨幅落入 40%~60% 预警区间，validator 侧判断超买。
         pcts = [2.0] * 25
         kline = _kline(pcts, volumes=[1.0] * 25)
         result = analyze_short_term(_stock(percent=3.0, rank=5), kline)
         assert result is not None
-        assert "st_overbought_20d" in result.dimensions
-        # 40%~60% → PULLBACK_20D_GAIN_WARN_PENALTY = -10（与 pullback 对齐）
-        assert result.dimensions["st_overbought_penalty"] < 0
-        # 仍远高于入选门槛，不会被软惩罚单独淘汰
-        assert result.score >= 15
+        assert "st_overbought_20d" not in result.dimensions, \
+            f"分析侧不应再标记 20日极值, dims={result.dimensions}"
+        assert "st_overbought_penalty" not in result.dimensions, \
+            f"分析侧不应再写入超买惩罚, dims={result.dimensions}"
 
-    def test_overbought_20d_gain_extreme_penalty(self):
-        # 20日累计 > 60% → 更重惩罚（-15）
+    def test_overbought_20d_extreme_no_analysis_side_penalty(self):
+        # 20日累计 > 60%：分析侧不再做软惩罚，validator 单点判断。
         pcts = [2.8] * 25
         kline = _kline(pcts, volumes=[1.0] * 25)
         result = analyze_short_term(_stock(percent=3.0, rank=5), kline)
         assert result is not None
-        assert "st_overbought_20d" in result.dimensions
+        assert "st_overbought_20d" not in result.dimensions, \
+            f"分析侧不应再标记 20日极值, dims={result.dimensions}"
+        assert "st_overbought_penalty" not in result.dimensions, \
+            f"分析侧不应再写入超买惩罚, dims={result.dimensions}"
 
-    def test_overbought_boll_kdj_penalty(self):
-        # 抛物线式拉升：破 BOLL 上轨(%B>1) + 20日巨幅获利盘 → 应触发末周期超买扣分
+    def test_overbought_boll_kdj_no_analysis_side_penalty(self):
+        # 抛物线式拉升：破 BOLL 上轨(%B>1) + 20日巨幅获利盘 → 分析侧不再做超买扣分
         pcts = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 5.0, 7.0, 8.0, 9.0] * 3
         kline = _kline(pcts, volumes=[1.0] * 30)
         result = analyze_short_term(_stock(percent=6.0, rank=5, current=kline[-1]["close"]), kline)
         assert result is not None
-        assert result.dimensions.get("st_overbought_boll") is not None
-        assert result.dimensions["st_overbought_penalty"] < 0
+        assert "st_overbought_boll" not in result.dimensions, \
+            f"分析侧不应再标记 BOLL 破上轨, dims={result.dimensions}"
+        assert "st_overbought_penalty" not in result.dimensions, \
+            f"分析侧不应再写入超买惩罚, dims={result.dimensions}"
 
-    def test_low_position_no_overbought_penalty(self):
-        # 低位横盘小幅波动：不触发任何末周期超买惩罚
+    def test_low_position_no_overbought_dims(self):
+        # 低位横盘小幅波动：分析侧不写入任何超买维度（统一由 validator 判断）
         pcts = [0.3, -0.2, 0.4, -0.3, 0.2] * 5
         kline = _kline(pcts, volumes=[1.0] * 25)
         result = analyze_short_term(_stock(percent=3.0, rank=5), kline)

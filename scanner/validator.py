@@ -44,7 +44,6 @@ from scanner.config import (
     V_ST_VOL_SURGE,
     ST_OVERBOUGHT_BOLL,
     ST_OVERBOUGHT_KDJ,
-    MO_OVERBOUGHT_VALIDATION_PENALTY,
     PULLBACK_20D_GAIN_WARN,
     PULLBACK_20D_GAIN_EXTREME,
 )
@@ -244,12 +243,10 @@ def validate_momentum(stock, kline_summary, closes: list[float],
 
     total = ma_bonus + div_bonus + vol_bonus
 
-    # 末周期超买（鱼尾段）：只标记 + 轻度压制验证分，不硬否决——momentum 是趋势
-    # 延续策略，高 BOLL%/J 部分属正常强势特征，硬否决会误杀仍处健康主升浪的动量股。
+    # 末周期超买（鱼尾段）：仅标记，不压制 total——硬否决交给标准 passed 门禁判定。
+    # momentum 是趋势延续策略，高 BOLL%/J 部分属正常强势特征，硬否决会误杀主升浪。
     overbought = _mo_is_overbought(closes, historical_kline, stock)
     details["v_mo_overbought"] = overbought
-    if overbought:
-        total += MO_OVERBOUGHT_VALIDATION_PENALTY
 
     # 中等处置：_mo_divergence 仅返回 0（无背离）或 -10（顶背离），从不计入正维度。
     # 因此出现顶背离时，候选必须通过「MA 多头 + 量能均匀」两个其它正维度（pos_dims>=2）才放行，

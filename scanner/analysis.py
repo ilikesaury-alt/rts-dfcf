@@ -17,8 +17,6 @@ from scanner.config import (
     NEW_FACE_WEIGHTS,
     PULLBACK_WEIGHTS,
     SHORT_TERM_WEIGHTS,
-    ST_OVERBOUGHT_BOLL, ST_OVERBOUGHT_BOLL_PENALTY,
-    ST_OVERBOUGHT_KDJ, ST_OVERBOUGHT_KDJ_PENALTY,
     PULLBACK_20D_GAIN_WARN, PULLBACK_20D_GAIN_EXTREME,
     PULLBACK_20D_WARN_PENALTY, PULLBACK_20D_EXTREME_PENALTY,
     PULLBACK_VOL_LOW, PULLBACK_VOL_HEALTHY, PULLBACK_VOL_HIGH,
@@ -29,9 +27,6 @@ from scanner.config import (
     VOL_PEAK_MOMENTUM_PENALTY,
     VOL_PEAK_PULLBACK_CONFIRM,
     VOL_PEAK_PULLBACK_BONUS,
-    VOL_RANK_HIGH_ACCUM_OVERLAP_MIN_RANK,
-    VOL_RANK_HIGH_ACCUM_OVERLAP_MIN_ACCUM,
-    VOL_RANK_HIGH_ACCUM_OVERLAP_PENALTY,
     VOL_RANK_MEDIUM_PTS,
     VOL_RANK_MEDIUM_RC,
     VOL_RANK_STRONG_PTS,
@@ -271,46 +266,6 @@ def _compute_momentum_indicators(closes: list[float], historical_kline: list[dic
     return bonus, dims
 
 
-def _momentum_overbought_penalty(closes: list[float], historical_kline: list[dict]
-                                  ) -> tuple[int, dict]:
-    """动量末周期超买软惩罚（鱼尾段）。
-
-    与 short_term 同构但更温和：momentum 是趋势延续策略，高 BOLL%/J 部分属
-    正常强势特征，故此处仅做软惩罚、不硬否决（硬门禁留给 validator 的标记/压制）。
-    注意：用历史 closes（不含今日），与 short_term 分析侧口径一致；
-    validator 侧会再 append stock.current 做更完整的超买判定。
-    """
-    pen = 0
-    dims: dict[str, float] = {}
-
-    if len(closes) >= 20:
-        boll = compute_bollinger_bands(closes)
-        if boll is not None and boll["b_pct"] > ST_OVERBOUGHT_BOLL:
-            pen += ST_OVERBOUGHT_BOLL_PENALTY
-            dims["mo_overbought_boll"] = round(boll["b_pct"], 2)
-
-    if len(closes) >= 9:
-        kdj_val = compute_kdj(
-            [k["high"] for k in historical_kline],
-            [k["low"] for k in historical_kline],
-            closes,
-        )
-        if kdj_val is not None and kdj_val["J"] > ST_OVERBOUGHT_KDJ:
-            pen += ST_OVERBOUGHT_KDJ_PENALTY
-            dims["mo_overbought_kdj"] = round(kdj_val["J"], 1)
-
-    if len(closes) >= 21:
-        gain_20d = (closes[-1] - closes[-21]) / closes[-21] * 100
-        if gain_20d > PULLBACK_20D_GAIN_EXTREME:
-            pen += PULLBACK_20D_EXTREME_PENALTY
-            dims["mo_overbought_20d"] = round(gain_20d, 1)
-        elif gain_20d > PULLBACK_20D_GAIN_WARN:
-            pen += PULLBACK_20D_WARN_PENALTY
-            dims["mo_overbought_20d"] = round(gain_20d, 1)
-
-    return pen, dims
-
-
 def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
                      today_str: str | None = None) -> KlineSummary | None:
     if not kline or len(kline) < 5:
@@ -430,8 +385,7 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
     score += vol_rank
     if vol_rank:
         dims["new_face_vol_rank"] = vol_rank
-    if vol_rank >= VOL_RANK_HIGH_ACCUM_OVERLAP_MIN_RANK and accumulated >= VOL_RANK_HIGH_ACCUM_OVERLAP_MIN_ACCUM:
-        score += VOL_RANK_HIGH_ACCUM_OVERLAP_PENALTY
+    # VOL_RANK_HIGH_ACCUM_OVERLAP 组合惩罚已删除：单一组合场景过拟合，无回测支撑。
 
     # new_face_gap_up 已清零：回测 IC=-0.180（n=136），高开在 new_face 次日多为
     # 冲高回落，不再对 new_face 加高开加分。momentum 侧保留（小样本另行评估）。
@@ -586,14 +540,8 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
     score += pattern_score
     dims.update(pattern_dims)
 
-    # 末周期超买软惩罚（鱼尾段）：与 short_term 同构但更温和——momentum 是趋势
-    # 延续策略，高 BOLL%/J 部分属正常强势，故仅软惩罚、不硬否决；validator 侧
-    # 再做标记 + 验证压制（仍保留 passed 门禁，不挡正常主升浪）。
-    ob_pen, ob_dims = _momentum_overbought_penalty(closes, historical_kline)
-    score += ob_pen
-    dims.update(ob_dims)
-    if ob_pen:
-        dims["mo_overbought_penalty"] = ob_pen
+    # 末周期超买判定已统一至 validator._mo_is_overbought 单点判断 + enhancer 标记，
+    # 分析侧不再做软惩罚（避免与 validator 口径不一致及双重计分）。
 
     return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
                         volume_ratio=round(vol_ratio, 2), bottom_confirmed=not has_crash_day,
@@ -1045,28 +993,8 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
             score += W["macd_bonus"]
             dims["st_macd"] = round(macd_val["histogram"], 4)
 
-    # 末周期超买防护（鱼尾段）：软惩罚，幅度克制以免单独把正常弱转强压到 <15。
-    # 真正的硬性否决由 validator 承担（超买时弱转强需非-sector 维度达标）。
-    ob_pen = 0
-    if len(closes) >= 20:
-        boll_ob = compute_bollinger_bands(closes)
-        if boll_ob is not None and boll_ob["b_pct"] > ST_OVERBOUGHT_BOLL:
-            ob_pen += ST_OVERBOUGHT_BOLL_PENALTY
-            dims["st_overbought_boll"] = round(boll_ob["b_pct"], 2)
-    if kdj_val is not None and kdj_val["J"] > ST_OVERBOUGHT_KDJ:
-        ob_pen += ST_OVERBOUGHT_KDJ_PENALTY
-        dims["st_overbought_kdj"] = round(kdj_val["J"], 1)
-    if len(closes) >= 21:
-        gain_20d = (closes[-1] - closes[-21]) / closes[-21] * 100
-        if gain_20d > PULLBACK_20D_GAIN_EXTREME:
-            ob_pen += PULLBACK_20D_EXTREME_PENALTY
-            dims["st_overbought_20d"] = round(gain_20d, 1)
-        elif gain_20d > PULLBACK_20D_GAIN_WARN:
-            ob_pen += PULLBACK_20D_WARN_PENALTY
-            dims["st_overbought_20d"] = round(gain_20d, 1)
-    score += ob_pen
-    if ob_pen:
-        dims["st_overbought_penalty"] = ob_pen
+    # 末周期超买判定已统一至 validator._st_is_overbought 单点判断 + enhancer 标记，
+    # 分析侧不再做软惩罚（避免与 validator 口径不一致及双重计分）。
 
     pattern_score, pattern_dims = detect_short_term_patterns(historical_kline)
     score += pattern_score
@@ -1091,9 +1019,7 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
     if yest_divergence:
         score += W["st_weak_to_strong"]
         dims["st_weak_to_strong"] = W["st_weak_to_strong"]
-        if gap_pts > 0:
-            score += W["st_wts_gap"]
-            dims["st_wts_gap"] = W["st_wts_gap"]
+        # st_wts_gap 已删除：弱转强 +8 已对该信号充分奖励，高开再加分属双重奖励。
         trend = "弱转强"
     else:
         trend = "放量启动" if vol_ratio > 1.3 else "温和放量" if vol_ratio > 1.0 else "缩量"

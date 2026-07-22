@@ -14,7 +14,6 @@ from scanner.config import (
     V_ST_RANK_TOP10,
     V_ST_SECTOR_HOT,
     V_ST_MA_SUPPORT,
-    MO_OVERBOUGHT_VALIDATION_PENALTY,
 )
 from scanner.models import KlineSummary, StockInfo
 from scanner.validator import (
@@ -237,8 +236,8 @@ class TestValidateMomentum:
         return klines
 
     def test_overbought_flagged_and_suppressed(self):
-        # 鱼尾段超买：v_mo_overbought=True，验证分被轻度压制(-5)；
-        # 但不硬否决（momentum 趋势延续，保留 passed 门禁）。
+        # 鱼尾段超买：v_mo_overbought=True，仅标记不压制 total；
+        # 不硬否决（momentum 趋势延续，保留 passed 门禁）。
         k = self._overbought_kline()
         closes = [c["close"] for c in k[:-1]]
         stock = StockInfo(symbol="300999", name="测试", code="300999",
@@ -249,7 +248,7 @@ class TestValidateMomentum:
         # enhancer 标记逻辑（复刻）：以 v_mo_overbought 为准，类型统一为 bool
         flag = True if dims.get("v_mo_overbought") else None
         assert flag is not None
-        # 轻度压制：total 应比非超买对照低 5（MO_OVERBOUGHT_VALIDATION_PENALTY）
+        # 超买不再压制 total：与非超买对照同等输入应得相同 total
         k2 = _kline([0.5, -0.3, 0.4, -0.2, 0.3] * 6, volumes=[1.0] * 30)
         closes2 = [c["close"] for c in k2[:-1]]
         stock_clean = StockInfo(symbol="300999", name="测试", code="300999",
@@ -257,8 +256,9 @@ class TestValidateMomentum:
                                 rank_change=1500, rank=10)
         _, total_clean, dims_clean = validate_momentum(stock_clean, None, closes2, k2[:-1], None)
         assert dims_clean["v_mo_overbought"] is False
-        assert total == total_clean + MO_OVERBOUGHT_VALIDATION_PENALTY, \
-            f"超买应压制 {MO_OVERBOUGHT_VALIDATION_PENALTY}, total={total}, clean={total_clean}"
+        # total 不再因超买而被压制（仅 MA/背离/量能三项之和）
+        assert total == dims["v_mo_ma"] + dims["v_mo_divergence"] + dims["v_mo_volume"], \
+            f"超买不再压制 total, total={total}, dims={dims}"
 
     def test_overbought_no_hard_veto(self):
         # 超买不应硬否决：若 MA/量能等正维度达标，passed 仍可为 True。
@@ -276,9 +276,9 @@ class TestValidateMomentum:
             passed, total, dims = validate_momentum(stock, None, closes, k[:-1], None)
             assert dims["v_mo_overbought"] is True
             assert passed, f"超买不应硬否决，正维度达标应通过, total={total}, dims={dims}"
-            # 超买仅轻度压制验证分（MA+量能 +10，减去 -5 超买惩罚 = 5），不归零、不硬否决
-            assert total == V.V_MO_MA_FULL + 5 + MO_OVERBOUGHT_VALIDATION_PENALTY, \
-                f"超买应轻度压制 -5, total={total}, dims={dims}"
+            # 超买仅标记不压制：total = MA + 背离 + 量能（无超买惩罚）
+            assert total == V.V_MO_MA_FULL + 5, \
+                f"超买不再压制 total, total={total}, dims={dims}"
         finally:
             V._mo_ma_alignment, V._mo_volume_uniformity = orig_ma, orig_vol
 
@@ -715,26 +715,24 @@ class TestValidateShortTerm:
         assert dims["v_st_overbought"] is False
         assert passed, f"非超买弱转强应直通, dims={dims}"
 
-    def test_overbought_flag_visible_when_analysis_penalty_zero(self):
-        # Review #1 回归：分析侧仅用历史 closes，今日急拉（stock.current 远离历史）
-        # 使 validator 判 overbought 但分析侧 st_overbought_penalty=0。此时否决仍须可见
-        # （enhancer 以 v_st_overbought 打 st_overbought_flag，而非依赖分析侧 penalty）。
+    def test_overbought_flag_visible_when_analysis_no_penalty(self):
+        # 超买防护统一至 validator 单点后：分析侧不再写 st_overbought_penalty，
+        # validator 仍应判超买并打 v_st_overbought 标记，enhancer 据此打 st_overbought_flag。
         k = _kline([0.3, -0.2, 0.4, -0.3, 0.2] * 5, volumes=[1.0] * 25)
         closes = [c["close"] for c in k[:-1]]
-        # 今日收盘远高于历史序列末端 → validator 端 BOLL/J 破阈值，但分析侧不感知
+        # 今日收盘远高于历史序列末端 → validator 端 BOLL/J 破阈值
         today_close = closes[-1] * 1.25
         ks = KlineSummary(
             trend="弱转强", accumulated_pct=5.0, volume_ratio=1.5,
             bottom_confirmed=False, score=18, avg_volume=1.0,
-            dimensions={"st_weak_to_strong": 8, "st_overbought_penalty": 0},
+            dimensions={"st_weak_to_strong": 8},
         )
         stock = StockInfo(symbol="300999", name="半导体测试", code="300999",
                           percent=20.0, current=today_close, value=8000,
                           rank_change=1500, rank=5)
         passed, total, dims = validate_short_term(stock, ks, closes, k[:-1], SEMICONDUCTOR_CLUSTER)
         assert dims["v_st_overbought"] is True, f"今日急拉应被 validator 判超买, dims={dims}"
-        # enhancer 标记逻辑（复刻）：以 v_st_overbought 为准，不依赖 st_overbought_penalty
-        # 类型统一为 bool（与 enhancer.py 实际行为一致）
+        # enhancer 标记逻辑（复刻）：以 v_st_overbought 为准，打 st_overbought_flag
         dims["st_overbought_flag"] = True
         assert dims["st_overbought_flag"] is not None
 
