@@ -1,4 +1,10 @@
 from scanner.config import (
+    PULLBACK_20D_GAIN_EXTREME,
+    PULLBACK_VOL_HEALTHY,
+    PULLBACK_VOL_HIGH,
+    PULLBACK_VOL_LOW,
+    ST_OVERBOUGHT_BOLL,
+    ST_OVERBOUGHT_KDJ,
     V_MO_DIVERGENCE_BEAR,
     V_MO_DIVERGENCE_NONE,
     V_MO_MA_FULL,
@@ -17,8 +23,8 @@ from scanner.config import (
     V_NF_SECTOR_STRONG,
     V_NF_SECTOR_WEAK,
     V_NF_VOLUME_CONFIRM,
-    V_PB_BOLLINGER_TOUCH,
     V_PB_BOLLINGER_MID,
+    V_PB_BOLLINGER_TOUCH,
     V_PB_MA_DOWN,
     V_PB_MA_FLAT,
     V_PB_MA_UP,
@@ -28,9 +34,6 @@ from scanner.config import (
     V_PB_SHRINK_MOD,
     V_PB_SHRINK_NO,
     V_PB_SHRINK_YES,
-    PULLBACK_VOL_LOW,
-    PULLBACK_VOL_HEALTHY,
-    PULLBACK_VOL_HIGH,
     V_ST_MA_BROKEN,
     V_ST_MA_SUPPORT,
     V_ST_RANK_LOW,
@@ -42,13 +45,13 @@ from scanner.config import (
     V_ST_SECTOR_WARM,
     V_ST_VOL_HEALTHY,
     V_ST_VOL_SURGE,
-    ST_OVERBOUGHT_BOLL,
-    ST_OVERBOUGHT_KDJ,
-    PULLBACK_20D_GAIN_WARN,
-    PULLBACK_20D_GAIN_EXTREME,
 )
 from scanner.indicators import (
-    compute_bollinger_bands, compute_kdj, compute_macd, compute_ma, compute_rsi,
+    compute_bollinger_bands,
+    compute_kdj,
+    compute_ma,
+    compute_macd,
+    compute_rsi,
 )
 from scanner.sector import classify_sector
 
@@ -77,7 +80,7 @@ def _nf_convergence(closes: list[float], historical_kline: list[dict]) -> tuple[
     divergence_bonus = V_NF_DIVERGENCE_BULL if _has_macd_bull_divergence(closes, macd) else 0
 
     if hits >= 3:
-        return V_NF_CONVERGE_STRONG + divergence_bonus, f"converge_3of3", hits
+        return V_NF_CONVERGE_STRONG + divergence_bonus, "converge_3of3", hits
     if hits >= 2:
         return V_NF_CONVERGE_PARTIAL + divergence_bonus, f"converge_{hits}of3", hits
     if divergence_bonus:
@@ -428,12 +431,13 @@ def validate_short_term(stock, kline_summary, closes: list[float],
     return passed, total, details
 
 
-def _st_is_overbought(closes: list[float], historical_kline: list[dict],
-                      stock: object) -> bool:
-    """判定超短候选是否处于末周期超买（鱼尾段）。
+def _is_overbought(closes: list[float], historical_kline: list[dict],
+                   stock: object) -> bool:
+    """判定候选是否处于末周期超买（鱼尾段）。
 
-    用历史 closes（不含今日）计算 BOLL %B / KDJ J / 20日涨幅 / RSI(14)，
+    用历史 closes（不含今日）计算 BOLL %B / KDJ J / 20日涨幅，
     并尽量把今日收盘并入以反映最新价（今日 bar 已在 historical_kline 之后）。
+    short_term 硬否决，momentum 仅标记不硬否决（由各自 validate 函数决定）。
     """
     series = list(closes)
     today_close = getattr(stock, "current", 0) or 0
@@ -462,40 +466,8 @@ def _st_is_overbought(closes: list[float], historical_kline: list[dict],
     return False
 
 
-def _mo_is_overbought(closes: list[float], historical_kline: list[dict],
-                       stock: object) -> bool:
-    """判定动量候选是否处于末周期超买（鱼尾段）。
-
-    与 _st_is_overbought 同构：用历史 closes（不含今日）计算 BOLL %B / KDJ J /
-    20日涨幅 / RSI，并尽量把今日收盘并入以反映最新价（今日 bar 已在
-    historical_kline 之后）。momentum 是趋势延续策略，超买只标记+压制，
-    不在此硬否决（硬门禁交给标准 passed 判定）。
-    """
-    series = list(closes)
-    today_close = getattr(stock, "current", 0) or 0
-    append_today = today_close > 0 and (not series or today_close != series[-1])
-    if append_today:
-        series.append(today_close)
-
-    if len(series) >= 20:
-        boll = compute_bollinger_bands(series)
-        if boll is not None and boll["b_pct"] > ST_OVERBOUGHT_BOLL:
-            return True
-    if len(series) >= 9:
-        today_ext = [today_close] if append_today else []
-        kdj = compute_kdj(
-            [k["high"] for k in historical_kline] + today_ext,
-            [k["low"] for k in historical_kline] + today_ext,
-            series,
-        )
-        if kdj is not None and kdj["J"] > ST_OVERBOUGHT_KDJ:
-            return True
-    # 20日涨幅口径与分析端一致：用历史 closes（不含今日）的 [-1] 与 [-21]
-    if len(closes) >= 21:
-        gain_20d = (closes[-1] - closes[-21]) / closes[-21] * 100
-        if gain_20d > PULLBACK_20D_GAIN_EXTREME:
-            return True
-    return False
+_st_is_overbought = _is_overbought
+_mo_is_overbought = _is_overbought
 
 
 def validate(cat: str, stock, kline_summary, closes: list[float],
