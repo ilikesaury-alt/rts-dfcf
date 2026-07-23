@@ -510,7 +510,7 @@ class TestAnalyzeShortTerm:
         # 原测试未含今日 bar 导致 accumulated 偏高，修正后用更深跌幅确保含今日仍为负
         pcts = [5, 5, 5, -3, -3, -3, -3, -3, -3]
         kline = _kline(pcts)
-        result = analyze_short_term(_stock(percent=1.0, rank=5), kline)
+        result = analyze_short_term(_stock(percent=3.0, rank=5), kline)
         assert result is not None
         assert result.dimensions["st_accumulated"] == -5
 
