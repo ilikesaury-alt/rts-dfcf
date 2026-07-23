@@ -225,13 +225,21 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: li
     for c in new_faces + momentum:
         try:
             existing = conn.execute(
-                "SELECT id FROM recommendations WHERE date = ? AND symbol = ? AND category = ? LIMIT 1",
+                "SELECT id, score FROM recommendations WHERE date = ? AND symbol = ? AND category = ? LIMIT 1",
                 (today, c.stock.symbol, c.category),
             ).fetchone()
-            if existing:
-                continue
             breakdown = json.dumps(c.kline.dimensions, ensure_ascii=False) if c.kline and c.kline.dimensions else None
             rec_source = source or getattr(c.stock, "source_tag", "unified")
+            if existing:
+                # 同日同股同策略已存在：仅当新分更高时更新（保留当日最高分用于回测归因）
+                if c.score > existing[1]:
+                    conn.execute(
+                        "UPDATE recommendations SET time = ?, score = ?, percent = ?, trend = ?, score_breakdown = ?, source = ? "
+                        "WHERE id = ?",
+                        (now, c.score, c.stock.percent, c.kline.trend if c.kline else None,
+                         breakdown, rec_source, existing[0]),
+                    )
+                continue
             conn.execute(
                 "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, trend, score_breakdown, source) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -257,7 +265,7 @@ def get_loss_rates_batch(conn: sqlite3.Connection, symbols: list[str],
         cur = conn.execute(
             f"SELECT symbol, COUNT(*), SUM(CASE WHEN next_day_pct <= -5 THEN 1 ELSE 0 END) "
             f"FROM recommendations WHERE symbol IN ({placeholders}) "
-            f"AND next_day_pct IS NOT NULL AND date >= date('now', ?) "
+            f"AND next_day_pct IS NOT NULL AND date >= date('now', 'localtime', ?) "
             f"GROUP BY symbol",
             (*symbols, f"-{lookback_days} days"),
         )

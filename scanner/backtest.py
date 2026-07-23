@@ -94,11 +94,14 @@ def compute_outcome(
 
 
 def backfill_outcomes(conn: sqlite3.Connection, dry_run: bool = False) -> int:
-    """回填 recommendations 的 N 日收益字段，返回更新行数。"""
+    """回填 recommendations 的 N 日收益字段，返回更新行数。
+
+    重新计算所有行的收益字段并覆盖（daily_kline 是最新数据，重算可纠正旧错误值），
+    但新值为 None 时不覆盖已有有效 float，避免 K 线临时缺失导致数据丢失。
+    """
     rows = conn.execute(
         "SELECT id, symbol, date, percent, next_day_pct, fwd_3d, fwd_5d "
-        "FROM recommendations "
-        "WHERE next_day_pct IS NULL OR fwd_3d IS NULL OR fwd_5d IS NULL"
+        "FROM recommendations"
     ).fetchall()
     if not rows:
         return 0
@@ -107,10 +110,10 @@ def backfill_outcomes(conn: sqlite3.Connection, dry_run: bool = False) -> int:
     updated = 0
     for rid, sym, dt, pct, ndp, f3, f5 in rows:
         occ = compute_outcome(kline_map, sym, dt, pct)
-        # 仅在新值非 None 时才覆盖，避免新值 None 覆盖已有有效 float 造成数据丢失
-        new_ndp = occ.next_day if ndp is None and occ.next_day is not None else ndp
-        new_f3 = occ.fwd_3d if f3 is None and occ.fwd_3d is not None else f3
-        new_f5 = occ.fwd_5d if f5 is None and occ.fwd_5d is not None else f5
+        # 新值非 None 时覆盖（纠正旧错误值）；新值 None 时保留已有值（防数据丢失）
+        new_ndp = occ.next_day if occ.next_day is not None else ndp
+        new_f3 = occ.fwd_3d if occ.fwd_3d is not None else f3
+        new_f5 = occ.fwd_5d if occ.fwd_5d is not None else f5
         if (new_ndp != ndp) or (new_f3 != f3) or (new_f5 != f5):
             updated += 1
             if not dry_run:
@@ -178,7 +181,7 @@ def strategy_performance(
 
     days > 0 时仅分析最近 N 天的推荐（基于 date 列过滤）。
     """
-    date_filter = f"AND date >= date('now', '-{int(days)} days') " if days > 0 else ""
+    date_filter = f"AND date >= date('now', 'localtime', '-{int(days)} days') " if days > 0 else ""
     rows = conn.execute(
         f"SELECT category, score, {metric} FROM recommendations "
         f"WHERE category IN ({','.join('?' * len(ACTIVE_CATEGORIES))}) "
@@ -238,7 +241,7 @@ def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct", days: i
     dead_dim_keys = {
         "new_face_candle", "momentum_candle", "high_pos",
     }
-    date_filter = f"AND date >= date('now', '-{int(days)} days') " if days > 0 else ""
+    date_filter = f"AND date >= date('now', 'localtime', '-{int(days)} days') " if days > 0 else ""
     rows = conn.execute(
         f"SELECT score_breakdown, {metric} FROM recommendations "
         f"WHERE category IN ({','.join('?' * len(ACTIVE_CATEGORIES))}) "

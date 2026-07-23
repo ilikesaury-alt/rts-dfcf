@@ -249,12 +249,17 @@ def _classify_category(stock: StockInfo, is_new: bool,
 
 def _filter_gem_stocks(raw: list[dict]) -> list[StockInfo]:
     gem_stocks: list[StockInfo] = []
+    seen_symbols: set[str] = set()
     for i, item in enumerate(raw, 1):
         symbol = item.get("symbol", "")
         code = item.get("code", "")
         name = item.get("name", "")
         if is_hk_stock(symbol) or not is_gem(code) or is_st(name):
             continue
+        # 去重：API 异常返回重复 symbol 时只保留首条，避免下游重复打分/显示
+        if symbol in seen_symbols:
+            continue
+        seen_symbols.add(symbol)
         gem_stocks.append(StockInfo(
             symbol=symbol, name=name, code=code,
             percent=item.get("percent") or 0.0,

@@ -298,6 +298,7 @@ FATIGUE_PENALTY_PER_DAY = -3   # penalty per streak day when fatigued
 FATIGUE_PENALTY_CAP = -15      # max fatigue penalty
 FATIGUE_ACCELERATE_PCT = 3     # today pct above this + healthy vol → acceleration bonus
 FATIGUE_ACCELERATE_BONUS_PER_DAY = 2  # bonus per streak day when accelerating
+FATIGUE_ACCELERATE_BONUS_CAP = 15     # max acceleration bonus（与 FATIGUE_PENALTY_CAP 对称）
 
 # Trend-label hard filter: exclude trends with avg next-day return < -2%
 # Based on 2729 historical recommendations analysis

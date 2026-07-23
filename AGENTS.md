@@ -52,8 +52,9 @@ tests/                    # pytest test suite
   - **momentum**: MA5>10>20 alignment (EMA, penalty -5 if broken), no RSI divergence, volume uniformity (5-day window). pos_dims ≥ 2 required.
   - **pullback**: MA20 trending up (>+0.5%), volume shrinkage (<0.6x), sector active (≥3 same-sector), bollinger touch. pos_dims ≥ 2 required.
   - **short_term**: vol_ratio ≥ 1.0 hard gate. Pass rule: 弱转强 (weak-to-strong, st_weak_to_strong>0) passes outright; otherwise requires pos_dims ≥ 2 AND non_sector_pos ≥ 1 (rank/MA/weak — sector cluster alone cannot pass, prevents sector-wide surge days flooding the list). If overbought, 弱转强 loses its override privilege.
-- Priority chain: primary strategy attempted first; if cross-validation fails, falls through to next strategy
-- Trend-label hard filter (`config.py:HIGH_RISK_TRENDS`): pullback candidates with trend "缩量回调" or "回踩整理" are rejected before scoring, as historical data shows these have avg next-day return < -2% (win rate 21-39%).
+- Scoring & classification: four strategies scored **in parallel** per stock, then `_classify_category` (orchestrator.py:216-247) picks the most fitting label by **price structure** (not attempt order). New stocks: new_face > short_term > momentum > pullback. Old stocks: today down → pullback; 弱转强 (weak-to-strong) → short_term; else momentum > short_term > pullback > known_new_face. New IPOs that pass both new_face and short_term are **dual-listed** to both buckets, each with independent `extra` bonus (orchestrator.py:300-311).
+- Same-sector cap: short_term list keeps top `SHORT_TERM_MAX_PER_SECTOR=2` per sector (sorted by score desc) to prevent sector-wide surge days flooding the list (orchestrator.py:196-213).
+- Trend-label hard filter (`config.py:HIGH_RISK_TRENDS`): currently only "回踩整理" is rejected before scoring (pullback: avg next-day -3.89%, win 21.6%). "缩量回调" was removed (avg -2.09%, win 39.2% — acceptable in candidate-pool context with MA support + mild pullback).
 
 ## Testing
 

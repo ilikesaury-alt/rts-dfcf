@@ -8,6 +8,7 @@ from scanner.config import (
     LATE_BONUS,
     LATE_TRADE_START,
     FATIGUE_ACCELERATE_BONUS_PER_DAY,
+    FATIGUE_ACCELERATE_BONUS_CAP,
     FATIGUE_ACCELERATE_PCT,
     FATIGUE_PENALTY_CAP,
     FATIGUE_PENALTY_PER_DAY,
@@ -198,9 +199,13 @@ def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None
                 c.kline.dimensions["fatigue"] = penalty
                 c.kline.dimensions["fatigue_detail"] = f"signals_{fatigue_signals}/3_streak_{streak}"
         elif accelerating:
-            streak_bonus = streak * FATIGUE_ACCELERATE_BONUS_PER_DAY
+            # 封顶：intraday_streak 是扫描次数（60s/次），cross_days 是交易日数，
+            # max 取大值后 streak 可能被 intraday_streak 主导（盘中累计可达 240）。
+            # 与 FATIGUE_PENALTY_CAP=-15 对称，加速奖励也设上限，避免分数膨胀。
+            streak_bonus = min(streak * FATIGUE_ACCELERATE_BONUS_PER_DAY,
+                               FATIGUE_ACCELERATE_BONUS_CAP)
             if c.kline:
-                c.kline.dimensions["fatigue"] = streak * FATIGUE_ACCELERATE_BONUS_PER_DAY
+                c.kline.dimensions["fatigue"] = streak_bonus
                 c.kline.dimensions["fatigue_detail"] = "accelerating"
         else:
             if streak >= 5:
