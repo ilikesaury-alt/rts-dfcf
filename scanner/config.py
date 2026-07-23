@@ -300,6 +300,20 @@ FATIGUE_ACCELERATE_PCT = 3     # today pct above this + healthy vol → accelera
 FATIGUE_ACCELERATE_BONUS_PER_DAY = 2  # bonus per streak day when accelerating
 FATIGUE_ACCELERATE_BONUS_CAP = 15     # max acceleration bonus（与 FATIGUE_PENALTY_CAP 对称）
 
+# ── 主力出货风险标签阈值 ──
+# 满足任一复合条件即标记"主力出货"，用于识别高位派发迹象
+DISTRIBUTION_ACCUM_HIGH = 20.0      # 累计涨幅高位阈值（放量滞涨/高换手超买场景）
+DISTRIBUTION_ACCUM_MID = 15.0       # 累计涨幅中高位阈值（高换手超买场景）
+DISTRIBUTION_ACCUM_PULLBACK = 10.0  # 冲高回落场景的累计涨幅下限
+DISTRIBUTION_VOL_RATIO = 2.0        # 量比阈值（放量滞涨场景）
+DISTRIBUTION_TODAY_PCT_LOW = 1.0    # 今日涨幅上限（滞涨判定）
+DISTRIBUTION_OPENING_STRONG = 4.0   # 开盘强度阈值（冲高回落场景，opening_score 范围 -5~5）
+DISTRIBUTION_INTRADAY_WEAK = 0.0    # 分时强度下限（冲高回落场景，intraday_score 范围 -10~10）
+
+# ── 涨幅过大风险标签阈值 ──
+# 累计涨幅超过此值时标记"涨幅过大"，提示追高风险
+OVERVALUED_ACCUM_THRESHOLD = 25.0
+
 # Trend-label hard filter: exclude trends with avg next-day return < -2%
 # Based on 2729 historical recommendations analysis
 # Only includes labels actually produced by current analysis.py

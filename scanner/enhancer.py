@@ -3,6 +3,13 @@ from datetime import datetime
 from scanner.config import (
     now_beijing,
     CROSS_SOURCE_BONUS,
+    DISTRIBUTION_ACCUM_HIGH,
+    DISTRIBUTION_ACCUM_MID,
+    DISTRIBUTION_ACCUM_PULLBACK,
+    DISTRIBUTION_INTRADAY_WEAK,
+    DISTRIBUTION_OPENING_STRONG,
+    DISTRIBUTION_TODAY_PCT_LOW,
+    DISTRIBUTION_VOL_RATIO,
     EARLY_BONUS,
     EARLY_TRADE_CUTOFF,
     LATE_BONUS,
@@ -28,6 +35,7 @@ from scanner.config import (
     MCAP_BONUS_MID,
     MCAP_SMALL_THRESHOLD,
     MCAP_MID_THRESHOLD,
+    OVERVALUED_ACCUM_THRESHOLD,
     SECTOR_CLUSTER_BONUS_2,
     SECTOR_CLUSTER_BONUS_3,
     SECTOR_CLUSTER_BONUS_4,
@@ -42,6 +50,12 @@ from scanner.config import (
     TURNOVER_HIGH,
     TURNOVER_LOW,
     TURNOVER_MEDIUM,
+    V_MO_DIVERGENCE_BEAR,
+    V_MO_MA_NONE,
+    V_MO_VOL_SPIKE,
+    V_PB_MA_DOWN,
+    V_PB_SHRINK_NO,
+    V_ST_MA_BROKEN,
 )
 from scanner.models import Candidate
 from scanner.rank_trend import rank_trajectory_score
@@ -79,21 +93,129 @@ def apply_all_bonuses(
 
 
 def _set_risk_flags(c: Candidate):
-    """对 IC<0 的反指维度设置风险标签，供 UI 显示⚠️标记。
+    """设置复合风险标签，供 UI 显示⚠️标记。
 
-    基于回测 IC 归因：momentum_volume(-0.272)、new_face_bottom(-0.230)、
-    v_mo_divergence(-0.229)、turnover_bonus(-0.132) 均为反指。
+    每个标签对应明确的交易决策含义，基于多字段组合判断而非单维 IC 反指。
     不清零加分（基础评分维度清零会破坏策略逻辑），仅加风险标签供人工判断。
     """
     dims = c.kline.dimensions if c.kline else {}
-    if (dims.get("momentum_volume") or 0) > 0:
-        c.risk_flags.append("放量")
-    if (dims.get("new_face_bottom") or 0) > 0:
-        c.risk_flags.append("底部确认")
-    if (dims.get("v_mo_divergence") or 0) != 0:
-        c.risk_flags.append("背离")
-    if (dims.get("turnover_bonus") or 0) > 0:
-        c.risk_flags.append("高换手")
+
+    # 超买：末周期鱼尾段（BOLL %B>1.0 或 KDJ J>105 或 20日涨幅>60%）
+    if dims.get("st_overbought_flag") or dims.get("mo_overbought_flag"):
+        c.risk_flags.append("超买")
+    # 疲劳：连续上榜后劲不足（fatigue 惩罚已触发）
+    if (dims.get("fatigue") or 0) < 0:
+        c.risk_flags.append("疲劳")
+    # 弱市：大盘涨幅<-1.0%
+    if (dims.get("market_env_bonus") or 0) < 0:
+        c.risk_flags.append("弱市")
+    # 主力出货：高位派发复合判断
+    if _detect_main_force_distribution(c, dims):
+        c.risk_flags.append("主力出货")
+    # 趋势破位：MA 破位合并标签（止损信号）
+    if _detect_trend_breakage(dims):
+        c.risk_flags.append("趋势破位")
+    # 涨幅过大：追高风险
+    if _detect_overvalued(c):
+        c.risk_flags.append("涨幅过大")
+    # 量价背离：量价不匹配（含顶背离）
+    if _detect_volume_price_divergence(c, dims):
+        c.risk_flags.append("量价背离")
+
+
+def _detect_main_force_distribution(c: Candidate, dims: dict) -> bool:
+    """识别主力高位派发迹象。
+
+    四种经典出货模式（满足任一即判定）：
+    1. 高位放量滞涨：累计涨幅大 + 量比高 + 今日几乎不涨（量价背离派发）
+    2. 高位高换手+超买：高位 + 高换手 + 超买（借势派发）
+    3. 冲高回落：开盘强势但分时走弱 + 已有累计涨幅（盘中冲高出货）
+    4. 爆量+顶背离：量能爆量 + 顶背离（经典量价顶背离派发）
+    """
+    accum = c.kline.accumulated_pct if c.kline else 0.0
+    vol_ratio = c.kline.volume_ratio if c.kline else 1.0
+    today_pct = c.stock.percent
+    opening = dims.get("opening_score")
+    intraday = c.intraday_score
+    overbought = bool(dims.get("st_overbought_flag") or dims.get("mo_overbought_flag"))
+
+    # 1. 高位放量滞涨
+    if (accum >= DISTRIBUTION_ACCUM_HIGH
+            and vol_ratio >= DISTRIBUTION_VOL_RATIO
+            and today_pct <= DISTRIBUTION_TODAY_PCT_LOW):
+        return True
+    # 2. 高位高换手+超买
+    if (accum >= DISTRIBUTION_ACCUM_MID
+            and c.turnover_bonus > 0
+            and overbought):
+        return True
+    # 3. 冲高回落（opening_score 范围 -5~5，intraday_score 范围 -10~10）
+    if (opening is not None
+            and opening >= DISTRIBUTION_OPENING_STRONG
+            and intraday < DISTRIBUTION_INTRADAY_WEAK
+            and accum >= DISTRIBUTION_ACCUM_PULLBACK):
+        return True
+    # 4. 爆量+顶背离（validator 判定的经典出货信号）
+    if (dims.get("v_mo_volume") == V_MO_VOL_SPIKE
+            and dims.get("v_mo_divergence") == V_MO_DIVERGENCE_BEAR):
+        return True
+    return False
+
+
+def _detect_trend_breakage(dims: dict) -> bool:
+    """识别 MA 趋势破位（止损信号）。
+
+    合并四种 MA 破位场景（满足任一即判定）：
+    - momentum MA 空头排列（v_mo_ma == V_MO_MA_NONE）
+    - pullback MA20 下行（v_pb_ma_trend == V_PB_MA_DOWN）
+    - short_term 跌破 MA5（v_st_ma == V_ST_MA_BROKEN）
+    - pullback MA 破位（pullback_ma_broken < 0）
+    """
+    if dims.get("v_mo_ma") == V_MO_MA_NONE:
+        return True
+    if dims.get("v_pb_ma_trend") == V_PB_MA_DOWN:
+        return True
+    if dims.get("v_st_ma") == V_ST_MA_BROKEN:
+        return True
+    if (dims.get("pullback_ma_broken") or 0) < 0:
+        return True
+    return False
+
+
+def _detect_overvalued(c: Candidate) -> bool:
+    """识别涨幅过大（追高风险）。
+
+    满足任一即判定：
+    - 累计涨幅 >= OVERVALUED_ACCUM_THRESHOLD
+    - pullback 20日涨幅过大惩罚已触发（pullback_20d_gain < 0）
+    - momentum 累计>=30% 惩罚已触发（momentum_accumulated <= -15）
+    """
+    accum = c.kline.accumulated_pct if c.kline else 0.0
+    if accum >= OVERVALUED_ACCUM_THRESHOLD:
+        return True
+    dims = c.kline.dimensions if c.kline else {}
+    if (dims.get("pullback_20d_gain") or 0) < 0:
+        return True
+    if (dims.get("momentum_accumulated") or 0) <= -15:
+        return True
+    return False
+
+
+def _detect_volume_price_divergence(c: Candidate, dims: dict) -> bool:
+    """识别量价背离（量价不匹配）。
+
+    满足任一即判定：
+    - 顶背离（v_mo_divergence == V_MO_DIVERGENCE_BEAR）：价格创新高但指标不创新高
+    - pullback 非缩量（v_pb_shrinkage == V_PB_SHRINK_NO）：回踩却不缩量，量价不匹配
+    - momentum 缩量（momentum_volume < 0）：动量延续却缩量，上涨动能不足
+    """
+    if dims.get("v_mo_divergence") == V_MO_DIVERGENCE_BEAR:
+        return True
+    if dims.get("v_pb_shrinkage") == V_PB_SHRINK_NO:
+        return True
+    if (dims.get("momentum_volume") or 0) < 0:
+        return True
+    return False
 
 
 def _apply_sector_bonus(c: Candidate, clusters: dict[str, list[str]]):
