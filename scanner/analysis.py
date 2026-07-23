@@ -885,10 +885,12 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
     pcts = [k["percent"] for k in historical_kline]
     closes = [k["close"] for k in historical_kline]
 
-    if len(closes) >= 6:
-        accumulated = (closes[-1] - closes[-6]) / closes[-6] * 100
+    # short_term 的 accumulated 包含今日 bar（与策略语义"今日异动"一致）
+    all_closes = [k["close"] for k in kline]
+    if len(all_closes) >= 6:
+        accumulated = (all_closes[-1] - all_closes[-6]) / all_closes[-6] * 100
     else:
-        accumulated = sum(pcts[-5:])
+        accumulated = sum(pcts[-5:]) + today_pct
 
     volumes = [k["volume"] for k in kline]
     vol_window = volumes[-11:-1] if len(volumes) >= 11 else volumes[:-1]

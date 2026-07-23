@@ -303,7 +303,8 @@ FATIGUE_ACCELERATE_BONUS_PER_DAY = 2  # bonus per streak day when accelerating
 # Based on 2729 historical recommendations analysis
 # Only includes labels actually produced by current analysis.py
 HIGH_RISK_TRENDS: set[str] = {
-    "缩量回调",   # pullback: avg -2.09%, win 39.2%
+    # "缩量回调" 已移除：avg -2.09% win 39.2% 在候选池场景可接受，
+    # 保留 MA 支撑 + 小幅回调的合理 pullback 候选。
     "回踩整理",   # pullback: avg -3.89%, win 21.6%
 }
 

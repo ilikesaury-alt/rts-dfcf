@@ -122,21 +122,28 @@ def _fetch_all_klines(conn: sqlite3.Connection, session: requests.Session, stock
         _last_kline_fetch[sym] = now_beijing().timestamp()
         return sym, kline
 
+    # 拉取阶段：仅采集数据，不写 DB（避免多线程并发写 SQLite）
+    fetched: dict[str, list[dict] | None] = {}
     with ThreadPoolExecutor(max_workers=8) as pool:
         fut_map = {pool.submit(_fetch_one, sym): sym for sym in needs_fetch}
         for fut in as_completed(fut_map):
             sym = fut_map[fut]
             try:
                 sym, kline = fut.result()
-                if kline:
-                    result[sym] = kline
-                    save_kline_to_db(conn, sym, kline)
-                elif sym in stale_cache:
-                    result[sym] = stale_cache[sym]
+                fetched[sym] = kline
             except Exception as e:
                 print(f"  [!] K线获取失败 {sym}: {e}")
-                if sym in stale_cache:
-                    result[sym] = stale_cache[sym]
+
+    # 写入阶段：主线程顺序写 DB，确保 SQLite 线程安全
+    for sym, kline in fetched.items():
+        if kline:
+            result[sym] = kline
+            try:
+                save_kline_to_db(conn, sym, kline)
+            except Exception as e:
+                print(f"  [!] K线写入DB失败 {sym}: {e}")
+        elif sym in stale_cache:
+            result[sym] = stale_cache[sym]
 
     for sym in needs_fetch:
         if sym not in result and sym in stale_cache:
@@ -179,9 +186,10 @@ def _try_candidate(stock: StockInfo, kline_summary: KlineSummary | None, categor
     passed, bonus, dims = validate(category, stock, kline_summary, closes, historical, clusters)
     if not passed:
         return None
-    kline_summary.score += bonus
-    kline_summary.dimensions["validation_bonus"] = bonus
-    kline_summary.dimensions.update(dims)
+    new_dims = dict(kline_summary.dimensions)
+    new_dims["validation_bonus"] = bonus
+    new_dims.update(dims)
+    kline_summary = dataclass_replace(kline_summary, score=kline_summary.score + bonus, dimensions=new_dims)
     return _build_candidate(stock, kline_summary, category, is_first_today, first_date, kline)
 
 

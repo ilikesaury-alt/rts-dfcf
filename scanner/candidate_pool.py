@@ -19,6 +19,8 @@ class ScanSession:
             self.seen_today.clear()
             self.today_pool.clear()
             self.list_presence.clear()
+            from scanner.rank_trend import tracker as _tracker
+            _tracker.reset()
             self.last_today = today_str
             return True
         return False

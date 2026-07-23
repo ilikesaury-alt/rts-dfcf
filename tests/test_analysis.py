@@ -506,10 +506,11 @@ class TestAnalyzeShortTerm:
         assert "st_value_mid" not in result.dimensions
 
     def test_accumulated_negative_penalty(self):
-        # 末段连续下跌使累计涨幅 < 0 → 应计 accum_lt_0 (-5)，而非漏记 0 分
-        pcts = [5, 5, 5, -2, -2, -2, -2, -2, -2]
+        # 末段连续暴跌使累计涨幅 < 0（含今日 bar） → 应计 accum_lt_0 (-5)
+        # 原测试未含今日 bar 导致 accumulated 偏高，修正后用更深跌幅确保含今日仍为负
+        pcts = [5, 5, 5, -3, -3, -3, -3, -3, -3]
         kline = _kline(pcts)
-        result = analyze_short_term(_stock(percent=3.0, rank=5), kline)
+        result = analyze_short_term(_stock(percent=1.0, rank=5), kline)
         assert result is not None
         assert result.dimensions["st_accumulated"] == -5
 

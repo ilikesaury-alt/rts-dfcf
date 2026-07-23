@@ -306,7 +306,7 @@ class TestTryCandidateHighRiskTrend:
         stock = StockInfo(symbol="SZ300001", name="Test", code="300001",
                           percent=5.0, current=10.0, value=10000,
                           rank_change=1000, rank=1)
-        kline_s = KlineSummary(trend="缩量回调", accumulated_pct=2.0,
+        kline_s = KlineSummary(trend="回踩整理", accumulated_pct=2.0,
                                 volume_ratio=1.5, bottom_confirmed=True,
                                 score=50, dimensions={}, avg_volume=1_000_000)
         result = o._try_candidate(stock, kline_s, "pullback",
@@ -327,8 +327,8 @@ class TestTryCandidateHighRiskTrend:
                                    True, "2026-07-21", [], [], [], None)
         # Should not be rejected by trend filter (may fail later validation, but not here)
         # We only care that the trend filter didn't block it
-        # The result might still be None due to other filters, so we check it wasn't
-        # rejected at the trend check by using a known-good trend
-        assert kline_s.trend not in {"缩量回调", "回踩整理"}
+        # The result might still be None due to other filters, so check "缩量回调"
+        # is no longer blocked (it was removed from HIGH_RISK_TRENDS)
+        assert kline_s.trend not in {"回踩整理"}
 
 
