@@ -16,11 +16,14 @@ def _build_card(
     filtered_large_cap: int = 0,
     current_rank_map: dict[str, int] | None = None,
     short_term_list: list[Candidate] | None = None,
+    rebound_list: list[Candidate] | None = None,
 ) -> dict:
     now = now_beijing().strftime("%H:%M")
     if short_term_list is None:
         short_term_list = []
-    all_c = new_faces + momentum + pullback_list + short_term_list
+    if rebound_list is None:
+        rebound_list = []
+    all_c = new_faces + momentum + pullback_list + rebound_list + short_term_list
 
     sec_cnt: dict[str, int] = {}
     for c in all_c:
@@ -40,7 +43,7 @@ def _build_card(
     else:
         env_tag = " | ⚪大盘中性"
 
-    header_text = f"**{now}** | 🟢新{len(new_faces)} 📈动{len(momentum)} 🔴超{len(short_term_list)} ⚠️回{len(pullback_list)}{env_tag}"
+    header_text = f"**{now}** | 🟢新{len(new_faces)} 📈动{len(momentum)} 🔄反{len(rebound_list)} 🔴超{len(short_term_list)} ⚠️回{len(pullback_list)}{env_tag}"
     if stale_candidates:
         header_text += f" ⏳掉{len(stale_candidates)}"
     if sec_line:
@@ -55,6 +58,7 @@ def _build_card(
     sections = [
         ("🆕 新面孔", new_faces),
         ("📈 动量延续", momentum),
+        ("🔄 超跌反弹 — 暴跌后企稳/反转", rebound_list),
         ("🔴 超短次日", short_term_list),
         ("⚠️ 高风险监控 — 回调介入（历史大跌率35%，谨慎参考）", pullback_list),
     ]
@@ -129,8 +133,10 @@ def _build_card(
 
 
 def _extract_symbols(new_faces: list[Candidate], momentum: list[Candidate],
-                     pullback_list: list[Candidate], short_term_list: list[Candidate]) -> set[str]:
-    return {c.stock.symbol for c in new_faces + momentum + pullback_list + short_term_list}
+                     pullback_list: list[Candidate], short_term_list: list[Candidate],
+                     rebound_list: list[Candidate] | None = None) -> set[str]:
+    rebound_list = rebound_list or []
+    return {c.stock.symbol for c in new_faces + momentum + pullback_list + rebound_list + short_term_list}
 
 
 def push_feishu(
@@ -142,6 +148,7 @@ def push_feishu(
     filtered_large_cap: int = 0,
     current_rank_map: dict[str, int] | None = None,
     short_term_list: list[Candidate] | None = None,
+    rebound_list: list[Candidate] | None = None,
 ) -> bool:
     global _last_push_time, _last_push_symbols
 
@@ -150,10 +157,12 @@ def push_feishu(
 
     if short_term_list is None:
         short_term_list = []
+    if rebound_list is None:
+        rebound_list = []
 
     import time
     now = time.time()
-    current_symbols = _extract_symbols(new_faces, momentum, pullback_list, short_term_list)
+    current_symbols = _extract_symbols(new_faces, momentum, pullback_list, short_term_list, rebound_list)
     has_change = current_symbols != _last_push_symbols
 
     if not has_change and (now - _last_push_time) < FEISHU_MIN_INTERVAL:
@@ -162,7 +171,7 @@ def push_feishu(
     try:
         card = _build_card(new_faces, momentum, pullback_list, stale_candidates,
                            gem_total, filtered_large_cap, current_rank_map,
-                           short_term_list)
+                           short_term_list, rebound_list)
         resp = requests.post(FEISHU_WEBHOOK,
                              json={"msg_type": "interactive", "card": card},
                              timeout=10)

@@ -206,13 +206,13 @@ class TestScoreStockKnownNewFace:
         stock = StockInfo(symbol="300001", name="Test", code="300001",
                           percent=3.0, current=10.0, value=10000,
                           rank_change=1000, rank=1)
-        nf, mo, pb, st = o._score_stock(
+        nf, mo, pb, rb, st = o._score_stock(
             stock, conn=None, klines={}, today="2026-06-18",
             session_state=ScanSession(), clusters=None,
         )
         assert nf is not None, "老股仅命中 new_face 不应被丢弃"
         assert nf.category == "known_new_face"
-        assert mo is None and pb is None
+        assert mo is None and pb is None and rb is None
 
 
 class TestFetchAllKlinesIntradayRefresh:

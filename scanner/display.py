@@ -118,7 +118,8 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             stale_candidates: list[Candidate] | None = None,
             pullback_list: list[Candidate] | None = None,
             current_rank_map: dict[str, int] | None = None,
-            short_term_list: list[Candidate] | None = None):
+            short_term_list: list[Candidate] | None = None,
+            rebound_list: list[Candidate] | None = None):
     if last_ranks is None:
         last_ranks = {}
     if current_rank_map is None:
@@ -129,11 +130,13 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
         pullback_list = []
     if short_term_list is None:
         short_term_list = []
+    if rebound_list is None:
+        rebound_list = []
 
     print(f"{'='*96}")
     print(f"  创业板飙升榜监控  ({now})")
 
-    all_c = new_faces + pure_momentum + pullback_list + short_term_list
+    all_c = new_faces + pure_momentum + pullback_list + rebound_list + short_term_list
     # 双挂去重：同一 symbol 在多个桶出现时，仅在先展示的桶显示一次
     displayed_syms: set[str] = set()
     sec_counts: dict[str, int] = {}
@@ -156,7 +159,7 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
         env_tag = f" | {ANSI['RED']}[大盘弱势·谨慎]{ANSI['RESET']}"
     else:
         env_tag = " | [大盘中性]"
-    print(f"  创业板共 {gem_total} 只 | 新{len(new_faces)}动{len(pure_momentum)}{pb_red}超{len(short_term_list)}{filter_info} | {sec_line} | {cap_status} | 每{interval}s刷新{env_tag}")
+    print(f"  创业板共 {gem_total} 只 | 新{len(new_faces)}动{len(pure_momentum)}{pb_red}反{len(rebound_list)}超{len(short_term_list)}{filter_info} | {sec_line} | {cap_status} | 每{interval}s刷新{env_tag}")
     print(f"  小而美: 市值≤{int(MAX_MARKET_CAP/YI)}亿 股价≤{MAX_STOCK_PRICE}元")
     print(f"{'='*96}")
 
@@ -223,6 +226,16 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             displayed_syms.add(c.stock.symbol)
             _print_row(c)
 
+    if rebound_list:
+        print(f"\n{ANSI['CYAN']}◆ 超跌反弹 — 暴跌后企稳/反转{ANSI['RESET']}  (找: 5日跌超15%+放量阳线+板块共振)")
+        print(hdr)
+        print(f"  {'-'*112}")
+        for c in rebound_list:
+            if c.stock.symbol in displayed_syms:
+                continue
+            displayed_syms.add(c.stock.symbol)
+            _print_row(c, icon="↗")
+
     if short_term_list:
         print(f"\n{ANSI['RED']}◆ 超短次日 — 今日涨明日卖{ANSI['RESET']}  (找: 涨2-8%+放量+板块活跃)")
         print(hdr)
@@ -270,5 +283,6 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
     print(f"\n{'-'*96}")
     print(f"  {ANSI['GREEN']}新面孔{ANSI['RESET']}: 底部放量启动+涨幅2-6%")
     print(f"  {ANSI['YELLOW']}动量延续{ANSI['RESET']}: 累计涨幅10%+今日温和上攻")
-    print(f"  {ANSI['CYAN']}回调介入{ANSI['RESET']}: 强势股回踩+缩量+未破位")
+    print(f"  {ANSI['CYAN']}超跌反弹{ANSI['RESET']}: 5日跌超15%+企稳阳线+放量反转")
     print(f"  {ANSI['RED']}超短次日{ANSI['RESET']}: 今日涨2-8%+放量+板块活跃+明日卖出")
+    print(f"  {ANSI['CYAN']}回调介入{ANSI['RESET']}: 强势股回踩+缩量+未破位")

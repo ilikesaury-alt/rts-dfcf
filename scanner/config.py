@@ -17,6 +17,7 @@ NEW_FACE_MIN_SCORE = 18
 MOMENTUM_MIN_SCORE = 16
 PULLBACK_MIN_SCORE = 18
 SHORT_TERM_MIN_SCORE = 15
+REBOUND_MIN_SCORE = 18
 
 YI = 100_000_000
 MAX_MARKET_CAP = 500 * YI
@@ -26,6 +27,12 @@ MAX_MOMENTUM_TODAY_PCT = 8
 PULLBACK_MAX_TODAY_PCT = 2.0
 SHORT_TERM_MIN_TODAY_PCT = 2.0
 SHORT_TERM_MAX_TODAY_PCT = 8.0
+# 超跌反弹：今日企稳阳线（温和涨幅），前期暴跌
+REBOUND_MIN_TODAY_PCT = 0.5
+REBOUND_MAX_TODAY_PCT = 8.0
+REBOUND_CRASH_THRESHOLD = -10.0      # 前5日内至少一日跌幅 ≤ 此值
+REBOUND_5D_DROP_THRESHOLD = -15.0    # 前5日累计跌幅 ≤ 此值
+REBOUND_NEAR_LOW_PCT = 0.10          # 收盘距20日低点 ≤ 此比例
 
 # 超短同板块数量上限：板块普涨日防止单板块淹没超短列表（P0-69 后再加一道闸）
 SHORT_TERM_MAX_PER_SECTOR = 2
@@ -227,11 +234,49 @@ SHORT_TERM_WEIGHTS: dict[str, int] = {
     "rank_top30": 3,
 }
 
+REBOUND_WEIGHTS: dict[str, int] = {
+    # 今日企稳阳线涨幅档（温和涨幅为主，避免追高）
+    "today_pct_0_5_2": 15,      # 0.5~2%：温和企稳
+    "today_pct_2_4": 18,        # 2~4%：明显企稳
+    "today_pct_4_6": 12,        # 4~6%：较强企稳
+    "today_pct_6_8": 5,         # 6~8%：涨幅偏大降权
+    # 超跌深度档（越深反弹空间越大）
+    "drop_15_20": 10,           # 前5日累计跌15~20%
+    "drop_20_30": 15,           # 跌20~30%
+    "drop_gte_30": 20,          # 跌≥30%
+    "crash_day_bonus": 5,       # 前5日有单日暴跌(≤-10%)额外加分
+    # 量能配合
+    "vol_healthy": 8,           # 量比1.0~2.0：正常企稳量能
+    "vol_surge": 12,            # 量比≥2.0：放量企稳（主力介入）
+    "vol_low": -3,              # 量比<0.8：缩量企稳不可信
+    # 技术面确认
+    "rsi_oversold": 8,          # RSI<30：超卖反弹
+    "rsi_mid": 3,               # RSI 30~50：低位企稳
+    "bollinger_lower": 5,       # 触及BOLL下轨
+    "v_shape": 8,               # V型反转特征（缩量低点+放量阳线）
+    # 板块/市值
+    "sector_active": 5,         # 同板块≥3只（板块共振）
+    "value_small_cap": 4,       # 小盘弹性大
+    "value_mid_cap": 2,
+}
+
 # 超短末周期（鱼尾段）超买防护：validator 单点判断阈值。
 # 20日涨幅阈值直接复用 PULLBACK_20D_GAIN_*（避免常量膨胀）。
 # 惩罚已移除：超买时仅靠 validator passed 门禁否决 + enhancer 标记，不再做 score 压制。
 ST_OVERBOUGHT_BOLL = 1.0          # BOLL %B > 此值 = 破上轨（高位）
 ST_OVERBOUGHT_KDJ = 105           # KDJ J > 此值 = 极端超买（健康强趋势 J 常 90~115，100 易误伤）
+
+# ── rebound 交叉验证常量 ──
+V_RB_OVERSOLD_STRONG = 8      # RSI<30 + KDJ J<0 / MACD翻红 ≥2 命中
+V_RB_OVERSOLD_PARTIAL = 4     # 仅1命中
+V_RB_VOL_SURGE = 6            # 量比≥2.0 放量企稳
+V_RB_VOL_HEALTHY = 4          # 量比1.0~2.0 正常企稳
+V_RB_VOL_LOW = -3             # 量比<1.0 缩量企稳不可信
+V_RB_SECTOR_ACTIVE = 4        # 同板块≥3只 板块共振
+V_RB_SECTOR_MOD = 2           # 同板块=2只 板块温和共振
+V_RB_PATTERN_STRONG = 6       # 暴跌后阳包阴（强反转信号）
+V_RB_PATTERN_HAMMER = 4       # 锤子线（低位承接）
+V_RB_PATTERN_3BULL = 3        # 3连阳企稳
 
 # Bonus constants
 CROSS_SOURCE_BONUS = 5

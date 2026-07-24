@@ -26,7 +26,7 @@ from scanner.trading_session import is_trading_day
 
 
 # 当前有效策略类别（过滤已废弃的 old_face / early_momentum）
-ACTIVE_CATEGORIES = {"new_face", "known_new_face", "momentum", "pullback", "short_term"}
+ACTIVE_CATEGORIES = {"new_face", "known_new_face", "momentum", "pullback", "rebound", "short_term"}
 
 
 @dataclass

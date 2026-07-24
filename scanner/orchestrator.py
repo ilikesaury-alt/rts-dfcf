@@ -6,7 +6,7 @@ from datetime import date
 
 import requests
 
-from scanner.analysis import analyze_momentum, analyze_new_face, analyze_pullback, analyze_short_term
+from scanner.analysis import analyze_momentum, analyze_new_face, analyze_pullback, analyze_rebound, analyze_short_term
 from scanner.validator import validate
 from scanner.api import (
     analyze_intraday,
@@ -35,6 +35,7 @@ from scanner.config import (
     NEW_FACE_LOOKBACK_DAYS,
     NEW_FACE_MIN_SCORE,
     PULLBACK_MIN_SCORE,
+    REBOUND_MIN_SCORE,
     SHORT_TERM_MIN_SCORE,
     SHORT_TERM_MAX_PER_SECTOR,
     RPS_BONUS_HIGH,
@@ -179,6 +180,7 @@ def _try_candidate(stock: StockInfo, kline_summary: KlineSummary | None, categor
         "known_new_face": NEW_FACE_MIN_SCORE,
         "momentum": MOMENTUM_MIN_SCORE,
         "pullback": PULLBACK_MIN_SCORE,
+        "rebound": REBOUND_MIN_SCORE,
         "short_term": SHORT_TERM_MIN_SCORE,
     }[category]
     if kline_summary.score < min_score:
@@ -215,12 +217,15 @@ def _cap_short_term_by_sector(short_term_list: list[Candidate],
 
 def _classify_category(stock: StockInfo, is_new: bool,
                        c_pb: Candidate | None, c_mo: Candidate | None,
-                       c_nf: Candidate | None, c_st: Candidate | None = None) -> str | None:
+                       c_nf: Candidate | None, c_st: Candidate | None = None,
+                       c_rb: Candidate | None = None) -> str | None:
     """按价格结构（而非尝试顺序）选最贴合的策略标签。"""
     today_pct = stock.percent
     if is_new:
         if c_nf is not None:
             return "new_face"
+        if c_rb is not None:
+            return "rebound"
         if c_st is not None:
             return "short_term"
         if c_mo is not None:
@@ -233,6 +238,9 @@ def _classify_category(stock: StockInfo, is_new: bool,
     # 仅过超短不过动量的票仍留超短（不丢票）。
     if c_pb is not None and today_pct <= 0:
         return "pullback"
+    # 超跌反弹：前期暴跌+今日企稳阳线，优先于动量/超短（场景互斥，避免反弹票被误归动量）
+    if c_rb is not None:
+        return "rebound"
     st_is_wts = c_st is not None and c_st.kline.dimensions.get("st_weak_to_strong", 0) > 0
     if c_st is not None and st_is_wts:
         return "short_term"
@@ -275,7 +283,8 @@ def _filter_gem_stocks(raw: list[dict]) -> list[StockInfo]:
 def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, list[dict] | None],
                  today: str, session_state: ScanSession,
                  clusters: dict[str, list[str]] | None = None
-                 ) -> tuple[Candidate | None, Candidate | None, Candidate | None, Candidate | None]:
+                 ) -> tuple[Candidate | None, Candidate | None, Candidate | None,
+                            Candidate | None, Candidate | None]:
     is_first_today = session_state.mark_seen(stock.symbol)
     app_history = get_symbol_appearances(conn, stock.symbol, NEW_FACE_LOOKBACK_DAYS)
     previous_dates = [a["date"] for a in app_history]
@@ -286,34 +295,39 @@ def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, l
     nk = analyze_new_face(stock, kline)
     mk = analyze_momentum(stock, kline)
     pk = analyze_pullback(stock, kline)
+    rk = analyze_rebound(stock, kline)
     sk = analyze_short_term(stock, kline)
 
     historical = [k for k in (kline or []) if k["date"] != today]
     closes = [k["close"] for k in historical]
 
-    # 四策略独立打分 + 各自交叉验证，再按价格结构选最贴合的标签
+    # 五策略独立打分 + 各自交叉验证，再按价格结构选最贴合的标签
     c_nf = _try_candidate(stock, nk, "new_face" if is_new else "known_new_face",
                           is_first_today, first_date, kline, closes, historical, clusters)
     c_mo = _try_candidate(stock, mk, "momentum",
                           is_first_today, first_date, kline, closes, historical, clusters)
     c_pb = _try_candidate(stock, pk, "pullback",
                           is_first_today, first_date, kline, closes, historical, clusters)
+    c_rb = _try_candidate(stock, rk, "rebound",
+                          is_first_today, first_date, kline, closes, historical, clusters)
     c_st = _try_candidate(stock, sk, "short_term",
                           is_first_today, first_date, kline, closes, historical, clusters)
 
-    category = _classify_category(stock, is_new, c_pb, c_mo, c_nf, c_st)
+    category = _classify_category(stock, is_new, c_pb, c_mo, c_nf, c_st, c_rb)
     if category == "short_term":
-        return None, None, None, c_st
+        return None, None, None, None, c_st
     if category in ("new_face", "known_new_face"):
         # 首板票若同时满足超短次日，双挂到超短列表（保留新面孔标签）
         if is_new and c_st is not None:
-            return c_nf, None, None, c_st
-        return c_nf, None, None, None
+            return c_nf, None, None, None, c_st
+        return c_nf, None, None, None, None
     if category == "momentum":
-        return None, c_mo, None, None
+        return None, c_mo, None, None, None
     if category == "pullback":
-        return None, None, c_pb, None
-    return None, None, None, None
+        return None, None, c_pb, None, None
+    if category == "rebound":
+        return None, None, None, c_rb, None
+    return None, None, None, None, None
 
 
 def _compute_rps(candidates: list[Candidate],
@@ -344,6 +358,10 @@ def _compute_rps(candidates: list[Candidate],
         total = len(sorted_by_accum)
         pctiles = [(rank + 1) * 100 // total for rank in sorted(range(total), key=lambda i: sorted_by_accum[i])]
     for c, pctile in zip(candidates, pctiles):
+        # 超跌反弹 accumulated 为负必落底部分位，RPS_LOW 惩罚违背策略初衷，豁免
+        if c.category == "rebound":
+            scores[c.stock.symbol] = 0
+            continue
         if pctile >= RPS_PCTILE_HIGH:
             scores[c.stock.symbol] = RPS_BONUS_HIGH
         elif pctile >= RPS_PCTILE_MEDIUM:
@@ -358,8 +376,8 @@ def _compute_rps(candidates: list[Candidate],
 def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
                   session: requests.Session) -> tuple[
                       list[Candidate], list[Candidate], list[Candidate],
-                      list[Candidate], list[Candidate], list[StockInfo],
-                      int]:
+                      list[Candidate], list[Candidate], list[Candidate],
+                      list[StockInfo], int]:
     global _session_state
     session_state = _session_state
     today = now_beijing().date().isoformat()
@@ -404,23 +422,26 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     new_faces: list[Candidate] = []
     momentum: list[Candidate] = []
     pullback_list: list[Candidate] = []
+    rebound_list: list[Candidate] = []
     short_term_list: list[Candidate] = []
 
     for stock in gem_stocks_filtered:
-        nf, mo, pb, st = _score_stock(stock, conn, klines, today, session_state, clusters)
+        nf, mo, pb, rb, st = _score_stock(stock, conn, klines, today, session_state, clusters)
         if nf:
             new_faces.append(nf)
         if mo:
             momentum.append(mo)
         if pb:
             pullback_list.append(pb)
+        if rb:
+            rebound_list.append(rb)
         if st:
             short_term_list.append(st)
 
     # 同板块上限：板块普涨日防止单板块淹没超短列表（P0-69 后再加一道闸）
     short_term_list = _cap_short_term_by_sector(short_term_list)
 
-    all_candidates = new_faces + momentum + pullback_list + short_term_list
+    all_candidates = new_faces + momentum + pullback_list + rebound_list + short_term_list
     for c in all_candidates:
         cap_data = market_caps.get(c.stock.symbol, {})
         c.market_cap = cap_data.get("market_cap", 0)
@@ -492,13 +513,15 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     new_faces = [c for c in all_candidates if c.category in ("new_face", "known_new_face")]
     momentum = [c for c in all_candidates if c.category == "momentum"]
     pullback_list = [c for c in all_candidates if c.category == "pullback"]
+    rebound_list = [c for c in all_candidates if c.category == "rebound"]
     short_term_list = [c for c in all_candidates if c.category == "short_term"]
     new_faces.sort(key=lambda c: -c.score)
     momentum.sort(key=lambda c: -c.score)
     pullback_list.sort(key=lambda c: -c.score)
+    rebound_list.sort(key=lambda c: -c.score)
     short_term_list.sort(key=lambda c: -c.score)
 
-    return (new_faces, momentum, pullback_list, short_term_list,
+    return (new_faces, momentum, pullback_list, rebound_list, short_term_list,
             stale_candidates, gem_stocks_filtered, filtered_large_cap)
 
 

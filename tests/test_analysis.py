@@ -1,8 +1,8 @@
 from scanner.analysis import (
-    analyze_momentum, analyze_new_face, analyze_pullback, analyze_short_term,
+    analyze_momentum, analyze_new_face, analyze_pullback, analyze_rebound, analyze_short_term,
     _score_today_pct,
 )
-from scanner.config import NEW_FACE_WEIGHTS, MOMENTUM_WEIGHTS
+from scanner.config import NEW_FACE_WEIGHTS, MOMENTUM_WEIGHTS, REBOUND_WEIGHTS, REBOUND_MIN_SCORE
 from scanner.models import StockInfo
 
 from tests.helpers import _kline
@@ -630,5 +630,87 @@ class TestScoreTodayPctDeadBranches:
         score, key, val = _score_today_pct(5.999, NEW_FACE_WEIGHTS, "new_face")
         assert key == "new_face_today_pct"
         assert val == NEW_FACE_WEIGHTS["today_pct_2_6"]
+
+
+class TestAnalyzeRebound:
+
+    def test_golden_path_returns_scored_candidate(self):
+        # 前5日累计跌-18%，含-12%暴跌日；今日企稳+3%
+        kline = _kline([1, -3, -12, -2, -3, 1, -2], volumes=[1.0] * 7)
+        result = analyze_rebound(_stock(percent=3.0), kline)
+        assert result is not None
+        assert result.score >= REBOUND_MIN_SCORE
+        assert "rebound_drop_depth" in result.dimensions
+        assert "rebound_crash_day" in result.dimensions
+
+    def test_pct_below_threshold_returns_none(self):
+        kline = _kline([1, -3, -12, -2, -3, 1, -2], volumes=[1.0] * 7)
+        assert analyze_rebound(_stock(percent=0.3), kline) is None
+
+    def test_pct_above_threshold_returns_none(self):
+        kline = _kline([1, -3, -12, -2, -3, 1, -2], volumes=[1.0] * 7)
+        assert analyze_rebound(_stock(percent=9.0), kline) is None
+
+    def test_short_kline_returns_none(self):
+        kline = _kline([-3, -12, -2])
+        assert analyze_rebound(_stock(percent=3.0), kline) is None
+
+    def test_none_kline_returns_none(self):
+        assert analyze_rebound(_stock(percent=3.0), None) is None
+
+    def test_insufficient_drop_returns_none(self):
+        # 前5日累计仅-8%，未达-15%超跌门槛
+        kline = _kline([-1, -2, -3, -1, -1, 1, -2], volumes=[1.0] * 7)
+        assert analyze_rebound(_stock(percent=3.0), kline) is None
+
+    def test_no_crash_day_returns_none(self):
+        # 前5日累计-16%但无单日暴跌(≤-10%)，属于阴跌而非超跌反弹
+        kline = _kline([-4, -3, -3, -3, -3, 1, -2], volumes=[1.0] * 7)
+        result = analyze_rebound(_stock(percent=3.0), kline)
+        assert result is None
+
+    def test_deep_drop_scores_higher(self):
+        # 前5日累计-25%（含-12%暴跌日），应比-18%得分更高
+        kline = _kline([1, -5, -12, -4, -5, 1, -2], volumes=[1.0] * 7)
+        deep = analyze_rebound(_stock(percent=3.0), kline)
+        shallow_kline = _kline([1, -3, -12, -2, -3, 1, -2], volumes=[1.0] * 7)
+        shallow = analyze_rebound(_stock(percent=3.0), shallow_kline)
+        assert deep is not None and shallow is not None
+        assert deep.dimensions["rebound_drop_depth"] > shallow.dimensions["rebound_drop_depth"]
+
+    def test_volume_surge_gives_bonus(self):
+        # 放量企稳（量比≥2.0）应比缩量得分更高
+        kline_surge = _kline([1, -3, -12, -2, -3, 1, -2], volumes=[1.0] * 6 + [3.0])
+        kline_normal = _kline([1, -3, -12, -2, -3, 1, -2], volumes=[1.0] * 7)
+        surge = analyze_rebound(_stock(percent=3.0), kline_surge)
+        normal = analyze_rebound(_stock(percent=3.0), kline_normal)
+        assert surge is not None and normal is not None
+        assert surge.dimensions["rebound_volume"] == REBOUND_WEIGHTS["vol_surge"]
+        assert normal.dimensions["rebound_volume"] == REBOUND_WEIGHTS["vol_healthy"]
+
+    def test_v_shape_reversal_detected(self):
+        # V型反转：5日跌<-15% + 放量>1.5x + 今日>2%
+        kline = _kline([1, -3, -12, -2, -3, 1, -2], volumes=[1.0] * 6 + [2.5])
+        result = analyze_rebound(_stock(percent=3.0), kline)
+        assert result is not None
+        assert "rebound_v_shape" in result.dimensions
+        assert result.trend == "超跌V反"
+
+    def test_low_position_trend_label(self):
+        # 低位企稳标签（无V型，近20日低点）
+        pcts = [0] * 18 + [-3, -12, -2, -3, 1, -2]
+        volumes = [1.0] * len(pcts)
+        kline = _kline(pcts, volumes=volumes)
+        result = analyze_rebound(_stock(percent=1.0), kline)
+        assert result is not None
+        assert result.trend in ("低位企稳", "放量反弹", "超跌企稳", "超跌V反")
+
+    def test_rsi_oversold_bonus(self):
+        # 大幅下跌应产生 RSI<30 超卖加分
+        kline = _kline([1, -3, -12, -2, -3, 1, -2], volumes=[1.0] * 7)
+        result = analyze_rebound(_stock(percent=3.0), kline)
+        assert result is not None
+        assert "rebound_rsi" in result.dimensions
+        assert result.dimensions["rebound_rsi"] < 30
 
 

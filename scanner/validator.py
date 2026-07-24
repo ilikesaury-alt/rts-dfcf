@@ -1,5 +1,6 @@
 from scanner.config import (
     PULLBACK_20D_GAIN_EXTREME,
+    PULLBACK_20D_GAIN_WARN,
     PULLBACK_VOL_HEALTHY,
     PULLBACK_VOL_HIGH,
     PULLBACK_VOL_LOW,
@@ -28,6 +29,16 @@ from scanner.config import (
     V_PB_MA_DOWN,
     V_PB_MA_FLAT,
     V_PB_MA_UP,
+    V_RB_OVERSOLD_PARTIAL,
+    V_RB_OVERSOLD_STRONG,
+    V_RB_PATTERN_3BULL,
+    V_RB_PATTERN_HAMMER,
+    V_RB_PATTERN_STRONG,
+    V_RB_SECTOR_ACTIVE,
+    V_RB_SECTOR_MOD,
+    V_RB_VOL_HEALTHY,
+    V_RB_VOL_LOW,
+    V_RB_VOL_SURGE,
     V_PB_SECTOR_DEAD,
     V_PB_SECTOR_HOT,
     V_PB_SECTOR_NEUTRAL,
@@ -344,6 +355,103 @@ def validate_pullback(stock, kline_summary, closes: list[float],
     return passed, total, details
 
 
+def _rb_oversold(closes: list[float], historical_kline: list[dict]) -> tuple[int, str]:
+    """超卖确认：RSI<30 或 KDJ J<0 或 MACD 柱翻红。"""
+    if len(closes) < 10:
+        return 0, "data_short"
+    rsi = compute_rsi(closes, period=6)
+    kdj = compute_kdj(
+        [k["high"] for k in historical_kline],
+        [k["low"] for k in historical_kline],
+        closes,
+    )
+    macd = compute_macd(closes)
+    hits = 0
+    if rsi is not None and rsi < 30:
+        hits += 1
+    if kdj is not None and kdj["J"] < 0:
+        hits += 1
+    if macd is not None and macd["histogram"] > 0 and macd["histogram_prev"] <= 0:
+        hits += 1
+    if hits >= 2:
+        return V_RB_OVERSOLD_STRONG, "oversold_strong"
+    if hits >= 1:
+        return V_RB_OVERSOLD_PARTIAL, "oversold_partial"
+    return 0, "oversold_weak"
+
+
+def _rb_volume(kline_summary) -> tuple[int, str]:
+    """量能确认：放量企稳优于缩量。"""
+    vr = kline_summary.volume_ratio
+    if vr >= 2.0:
+        return V_RB_VOL_SURGE, "vol_surge"
+    if vr >= 1.0:
+        return V_RB_VOL_HEALTHY, "vol_healthy"
+    return V_RB_VOL_LOW, "vol_low"
+
+
+def _rb_sector(name: str, clusters: dict[str, list[str]] | None) -> tuple[int, int]:
+    """板块共振确认。"""
+    if not clusters:
+        return 0, 0
+    sec = classify_sector(name)
+    count = len(clusters.get(sec, []))
+    if count >= 3:
+        return V_RB_SECTOR_ACTIVE, count
+    if count >= 2:
+        return V_RB_SECTOR_MOD, count
+    return 0, count
+
+
+def _rb_pattern(kline_summary) -> tuple[int, str]:
+    """形态确认：从 analyze_rebound 预计算的 dims 读取，避免重复检测。
+
+    形态分已在 analyze_rebound 的 score 中计入（detect_rebound_patterns），
+    此处仅作为 pos_dims 维度判定，不并入 validate total。
+    """
+    dims = kline_summary.dimensions if kline_summary else {}
+    if dims.get("rb_pattern_engulfing_crash"):
+        return V_RB_PATTERN_STRONG, "engulfing_crash"
+    if dims.get("rb_pattern_hammer"):
+        return V_RB_PATTERN_HAMMER, "hammer"
+    if dims.get("rb_pattern_3bull_stabilize"):
+        return V_RB_PATTERN_3BULL, "3bull_stabilize"
+    return 0, "no_pattern"
+
+
+def validate_rebound(stock, kline_summary, closes: list[float],
+                     historical_kline: list[dict], clusters: dict[str, list[str]] | None
+                     ) -> tuple[bool, int, dict]:
+    """超跌反弹交叉验证：4 维独立判断，pos_dims >= 2 通过。
+
+    维度：超卖确认 / 量能确认 / 板块共振 / 形态确认。
+    不设超买否决（rebound 场景本身在低位，超买概率低）。
+    """
+    os_bonus, os_detail = _rb_oversold(closes, historical_kline)
+    vol_bonus, vol_detail = _rb_volume(kline_summary)
+    sec_bonus, sec_count = _rb_sector(stock.name, clusters)
+    pat_bonus, pat_detail = _rb_pattern(kline_summary)
+
+    details: dict[str, int | float | str] = {
+        "v_rb_oversold": os_bonus,
+        "v_rb_oversold_detail": os_detail,
+        "v_rb_volume": vol_bonus,
+        "v_rb_volume_detail": vol_detail,
+        "v_rb_sector": sec_bonus,
+        "v_rb_sector_count": sec_count,
+        "v_rb_pattern": pat_bonus,
+        "v_rb_pattern_detail": pat_detail,
+    }
+
+    # 形态分已在 analyze_rebound 的 score 中计入（detect_rebound_patterns），
+    # 此处仅作为 pos_dims 维度判定，不再并入 total，避免重复计分。
+    total = os_bonus + vol_bonus + sec_bonus
+    pos_dims = sum(1 for b in (os_bonus, vol_bonus, sec_bonus, pat_bonus) if b > 0)
+    passed = pos_dims >= 2
+
+    return passed, total, details
+
+
 def validate_short_term(stock, kline_summary, closes: list[float],
                         historical_kline: list[dict], clusters: dict[str, list[str]] | None
                         ) -> tuple[bool, int, dict]:
@@ -479,6 +587,8 @@ def validate(cat: str, stock, kline_summary, closes: list[float],
         return validate_momentum(stock, kline_summary, closes, historical_kline, clusters)
     if cat == "pullback":
         return validate_pullback(stock, kline_summary, closes, historical_kline, clusters)
+    if cat == "rebound":
+        return validate_rebound(stock, kline_summary, closes, historical_kline, clusters)
     if cat == "short_term":
         return validate_short_term(stock, kline_summary, closes, historical_kline, clusters)
     return False, 0, {}

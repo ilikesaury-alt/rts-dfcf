@@ -5,6 +5,11 @@ from scanner.config import (
     MAX_MOMENTUM_TODAY_PCT,
     MAX_NEW_FACE_TODAY_PCT,
     PULLBACK_MAX_TODAY_PCT,
+    REBOUND_MIN_TODAY_PCT,
+    REBOUND_MAX_TODAY_PCT,
+    REBOUND_CRASH_THRESHOLD,
+    REBOUND_5D_DROP_THRESHOLD,
+    REBOUND_NEAR_LOW_PCT,
     SHORT_TERM_MIN_TODAY_PCT,
     SHORT_TERM_MAX_TODAY_PCT,
     ST_SMALL_CAP,
@@ -16,6 +21,7 @@ from scanner.config import (
     MOMENTUM_WEIGHTS,
     NEW_FACE_WEIGHTS,
     PULLBACK_WEIGHTS,
+    REBOUND_WEIGHTS,
     SHORT_TERM_WEIGHTS,
     PULLBACK_20D_GAIN_WARN, PULLBACK_20D_GAIN_EXTREME,
     PULLBACK_20D_WARN_PENALTY, PULLBACK_20D_EXTREME_PENALTY,
@@ -67,6 +73,7 @@ from scanner.patterns import (
     detect_momentum_patterns,
     detect_new_face_patterns,
     detect_pullback_patterns,
+    detect_rebound_patterns,
     detect_short_term_patterns,
 )
 
@@ -1028,4 +1035,145 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
 
     return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
                         volume_ratio=round(vol_ratio, 2), bottom_confirmed=False,
+                        score=score, dimensions=dims, avg_volume=round(avg_vol, 2))
+
+
+def analyze_rebound(stock: StockInfo, kline: list[dict] | None,
+                    today_str: str | None = None) -> KlineSummary | None:
+    """超跌反弹策略：识别暴跌后的企稳首阳。
+
+    与 new_face 的区别：new_face 要求 accumulated >= -10%（前期无大跌），
+    rebound 专门捕获 accumulated < -15% 的超跌后企稳阳线。
+    典型场景：连跌4-5日（含暴跌日）后出现温和放量阳线。
+    """
+    if not kline or len(kline) < 6:  # 至少6根：5日历史+今日
+        return None
+
+    W = REBOUND_WEIGHTS
+    today_pct = stock.percent
+
+    # 入池硬筛：今日企稳阳线（温和涨幅）
+    if today_pct < REBOUND_MIN_TODAY_PCT or today_pct > REBOUND_MAX_TODAY_PCT:
+        return None
+
+    today_str = today_str or now_beijing().date().isoformat()
+    historical_kline = [k for k in kline if k["date"] != today_str]
+    pcts = [k["percent"] for k in historical_kline]
+    closes = [k["close"] for k in historical_kline]
+
+    if len(pcts) < 5:
+        return None
+
+    # 前5日累计跌幅（超跌判定）
+    recent_5_pcts = pcts[-5:]
+    drop_5d = sum(recent_5_pcts)
+    if drop_5d > REBOUND_5D_DROP_THRESHOLD:  # 未超跌，不属于 rebound 场景
+        return None
+    # 前5日必须有暴跌日（区分"阴跌"与"超跌反弹"）
+    has_crash_day = any(p <= REBOUND_CRASH_THRESHOLD for p in recent_5_pcts)
+    if not has_crash_day:
+        return None
+
+    # 累计涨幅（供下游 enhancer 使用，rebound 的 accumulated 反映前期跌幅）
+    if len(closes) >= 6:
+        accumulated = (closes[-1] - closes[-6]) / closes[-6] * 100
+    else:
+        accumulated = sum(pcts[-5:])
+
+    # 量比
+    volumes = [k["volume"] for k in kline]
+    vol_window = volumes[-11:-1] if len(volumes) >= 11 else volumes[:-1]
+    avg_vol = sum(vol_window) / max(len(vol_window), 1)
+    today_vol = volumes[-1] if volumes else 0
+    vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
+    vol_ratio = round(vol_ratio, 2)
+
+    # 距20日低点比例（确认仍在低位区）
+    near_20d_low = False
+    if len(closes) >= 20:
+        low_20d = min(closes[-20:])
+        near_20d_low = (closes[-1] - low_20d) / max(low_20d, 0.01) < REBOUND_NEAR_LOW_PCT
+
+    dims: dict[str, int | float] = {}
+    score = 0
+
+    # 今日涨幅档
+    if today_pct < 2:
+        score += W["today_pct_0_5_2"]
+        dims["rebound_today_pct"] = W["today_pct_0_5_2"]
+    elif today_pct < 4:
+        score += W["today_pct_2_4"]
+        dims["rebound_today_pct"] = W["today_pct_2_4"]
+    elif today_pct < 6:
+        score += W["today_pct_4_6"]
+        dims["rebound_today_pct"] = W["today_pct_4_6"]
+    else:
+        score += W["today_pct_6_8"]
+        dims["rebound_today_pct"] = W["today_pct_6_8"]
+
+    # 超跌深度档
+    if drop_5d >= -20:
+        score += W["drop_15_20"]
+        dims["rebound_drop_depth"] = W["drop_15_20"]
+    elif drop_5d >= -30:
+        score += W["drop_20_30"]
+        dims["rebound_drop_depth"] = W["drop_20_30"]
+    else:
+        score += W["drop_gte_30"]
+        dims["rebound_drop_depth"] = W["drop_gte_30"]
+
+    # 暴跌日加分
+    dims["rebound_crash_day"] = W["crash_day_bonus"]
+    score += W["crash_day_bonus"]
+
+    # 量能配合
+    if vol_ratio >= 2.0:
+        score += W["vol_surge"]
+        dims["rebound_volume"] = W["vol_surge"]
+    elif vol_ratio >= 1.0:
+        score += W["vol_healthy"]
+        dims["rebound_volume"] = W["vol_healthy"]
+    else:
+        score += W["vol_low"]
+        dims["rebound_volume"] = W["vol_low"]
+
+    # 技术面确认：RSI 超卖
+    rsi_val = compute_rsi(closes, period=6)
+    if rsi_val is not None:
+        if rsi_val < 30:
+            score += W["rsi_oversold"]
+            dims["rebound_rsi"] = round(rsi_val, 1)
+        elif rsi_val < 50:
+            score += W["rsi_mid"]
+            dims["rebound_rsi"] = round(rsi_val, 1)
+
+    # BOLL 下轨支撑
+    boll = compute_bollinger_bands(closes)
+    if boll is not None and boll["b_pct"] < 0.1:
+        score += W["bollinger_lower"]
+        dims["rebound_bollinger"] = round(boll["b_pct"], 2)
+
+    # V型反转特征（前5日累计<-15% + 放量 + 今日>2%）
+    v_shape = (drop_5d < -15 and vol_ratio > 1.5 and today_pct > 2)
+    if v_shape:
+        score += W["v_shape"]
+        dims["rebound_v_shape"] = W["v_shape"]
+
+    # 形态加分（传入完整 kline，含今日 bar，检测今日反转信号）
+    pattern_score, pattern_dims = detect_rebound_patterns(kline)
+    score += pattern_score
+    dims.update(pattern_dims)
+
+    # 趋势标签
+    if v_shape:
+        trend = "超跌V反"
+    elif near_20d_low:
+        trend = "低位企稳"
+    elif vol_ratio >= 2.0:
+        trend = "放量反弹"
+    else:
+        trend = "超跌企稳"
+
+    return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
+                        volume_ratio=round(vol_ratio, 2), bottom_confirmed=near_20d_low,
                         score=score, dimensions=dims, avg_volume=round(avg_vol, 2))

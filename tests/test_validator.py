@@ -32,6 +32,7 @@ from scanner.validator import (
     validate_momentum,
     validate_nf,
     validate_pullback,
+    validate_rebound,
     validate_short_term,
 )
 
@@ -452,6 +453,22 @@ class TestValidateDispatch:
         )
         assert isinstance(passed, bool)
 
+    def test_dispatch_rebound(self):
+        pcts = [0] * 15 + [1, -3, -12, -2, -3, 1, -2]
+        k = _kline(pcts, volumes=[1.0] * len(pcts))
+        closes = [c["close"] for c in k[:-1]]
+        ks = KlineSummary(
+            trend="超跌V反", accumulated_pct=-18.0, volume_ratio=1.5,
+            bottom_confirmed=True, score=25, avg_volume=1.0,
+        )
+        passed, total, dims = validate(
+            "rebound", _stock(name="半导体测试"),
+            ks, closes, k[:-1], SEMICONDUCTOR_CLUSTER
+        )
+        assert isinstance(passed, bool)
+        assert isinstance(total, int)
+        assert "v_rb_oversold" in dims
+
 
 class TestValidateShortTerm:
 
@@ -772,4 +789,102 @@ class TestOverboughtLengthAlignment:
         stock = self._make_stock(closes[-1])  # 今日收盘已在序列
         result = _mo_is_overbought(closes, k[:-1], stock)
         assert isinstance(result, bool)
+
+
+class TestValidateRebound:
+
+    def test_passes_with_two_positive_dims(self):
+        # 超卖确认 + 量能确认 → pos_dims=2 → 通过
+        pcts = [0] * 15 + [1, -3, -12, -2, -3, 1, -2]
+        k = _kline(pcts, volumes=[1.0] * len(pcts))
+        closes = [c["close"] for c in k[:-1]]
+        ks = KlineSummary(
+            trend="超跌V反", accumulated_pct=-18.0, volume_ratio=1.5,
+            bottom_confirmed=True, score=25, avg_volume=1.0,
+        )
+        passed, total, dims = validate_rebound(
+            _stock(name="半导体测试"), ks, closes, k[:-1], SEMICONDUCTOR_CLUSTER
+        )
+        assert passed, f"应通过（2正维度），dims={dims}"
+        assert dims["v_rb_oversold"] > 0
+        assert dims["v_rb_volume"] > 0
+
+    def test_fails_with_insufficient_dims(self):
+        # 仅1正维度（量能），无超卖/板块/形态 → pos_dims=1 → 不通过
+        # 交替涨跌避免3连阳形态检测触发
+        pcts = [1, -1] * 13
+        k = _kline(pcts, volumes=[1.0] * 26)
+        closes = [c["close"] for c in k[:-1]]
+        ks = KlineSummary(
+            trend="超跌企稳", accumulated_pct=-18.0, volume_ratio=1.5,
+            bottom_confirmed=False, score=25, avg_volume=1.0,
+        )
+        passed, total, dims = validate_rebound(
+            _stock(name="测试"), ks, closes, k[:-1], None
+        )
+        assert not passed, f"仅1正维度不应通过, dims={dims}"
+
+    def test_volume_low_penalty(self):
+        # 量比<1.0 → vol_bonus 为负，不计入 pos_dims
+        pcts = [0] * 15 + [1, -3, -12, -2, -3, 1, -2]
+        k = _kline(pcts, volumes=[1.0] * len(pcts))
+        closes = [c["close"] for c in k[:-1]]
+        ks = KlineSummary(
+            trend="超跌企稳", accumulated_pct=-18.0, volume_ratio=0.5,
+            bottom_confirmed=True, score=25, avg_volume=1.0,
+        )
+        passed, total, dims = validate_rebound(
+            _stock(name="半导体测试"), ks, closes, k[:-1], SEMICONDUCTOR_CLUSTER
+        )
+        assert dims["v_rb_volume"] < 0, f"缩量应为负分, dims={dims}"
+
+    def test_sector_resonance_bonus(self):
+        # 同板块≥3只 → 板块共振加分
+        pcts = [0] * 15 + [1, -3, -12, -2, -3, 1, -2]
+        k = _kline(pcts, volumes=[1.0] * len(pcts))
+        closes = [c["close"] for c in k[:-1]]
+        ks = KlineSummary(
+            trend="超跌V反", accumulated_pct=-18.0, volume_ratio=1.5,
+            bottom_confirmed=True, score=25, avg_volume=1.0,
+        )
+        passed, total, dims = validate_rebound(
+            _stock(name="半导体测试"), ks, closes, k[:-1], SEMICONDUCTOR_CLUSTER
+        )
+        assert dims["v_rb_sector"] > 0
+        assert dims["v_rb_sector_count"] >= 3
+
+    def test_sector_mid_tier_bonus(self):
+        # 同板块=2只 → 中间档加分（Design-3 回归）
+        pcts = [0] * 15 + [1, -3, -12, -2, -3, 1, -2]
+        k = _kline(pcts, volumes=[1.0] * len(pcts))
+        closes = [c["close"] for c in k[:-1]]
+        ks = KlineSummary(
+            trend="超跌V反", accumulated_pct=-18.0, volume_ratio=1.5,
+            bottom_confirmed=True, score=25, avg_volume=1.0,
+            dimensions={"rb_pattern_engulfing_crash": 6},
+        )
+        cluster_2 = {"半导体": ["300001", "300002"]}
+        passed, total, dims = validate_rebound(
+            _stock(name="半导体测试"), ks, closes, k[:-1], cluster_2
+        )
+        assert dims["v_rb_sector"] > 0, "2只板块应有中间档加分"
+        assert dims["v_rb_sector_count"] == 2
+
+    def test_pattern_not_double_counted_in_total(self):
+        # BUG-1 回归：形态分不并入 validate total（已在 analyze_rebound 计入）
+        pcts = [0] * 15 + [1, -3, -12, -2, -3, 1, -2]
+        k = _kline(pcts, volumes=[1.0] * len(pcts))
+        closes = [c["close"] for c in k[:-1]]
+        # dims 含 engulfing 形态（+6），但 total 不应包含它
+        ks = KlineSummary(
+            trend="超跌V反", accumulated_pct=-18.0, volume_ratio=1.5,
+            bottom_confirmed=True, score=25, avg_volume=1.0,
+            dimensions={"rb_pattern_engulfing_crash": 6},
+        )
+        passed, total, dims = validate_rebound(
+            _stock(name="半导体测试"), ks, closes, k[:-1], SEMICONDUCTOR_CLUSTER
+        )
+        assert dims["v_rb_pattern"] > 0, "形态维度应被识别"
+        # total = os_bonus + vol_bonus + sec_bonus（不含 pat_bonus）
+        assert total == dims["v_rb_oversold"] + dims["v_rb_volume"] + dims["v_rb_sector"]
 

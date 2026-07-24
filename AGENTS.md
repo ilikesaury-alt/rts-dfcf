@@ -8,13 +8,13 @@
 
 ## Project Structure
 
-A-share stock momentum scanner merging Xueqiu surge + hot stock ranking APIs. Scores ChiNext (300xxx) stocks using "new face" / "momentum" / "pullback" / "short_term" strategies.
+A-share stock momentum scanner merging Xueqiu surge + hot stock ranking APIs. Scores ChiNext (300xxx) stocks using "new face" / "momentum" / "pullback" / "rebound" / "short_term" strategies.
 
 ```
 unified_scanner.py        # Single entry point (dual-source fusion)
 scanner/
   orchestrator.py         # Core scan pipeline
-  analysis.py             # Scoring engines (new_face, momentum, pullback, short_term)
+  analysis.py             # Scoring engines (new_face, momentum, pullback, rebound, short_term)
   validator.py            # Cross-validation per strategy
   config.py               # All thresholds and weights
   api.py                  # Xueqiu API calls (biaosheng, hot_list, kline, market cap)
@@ -46,15 +46,26 @@ tests/                    # pytest test suite
 ## Architecture Notes
 
 - Scanner filters: GEM stocks only (300xxx), excludes ST/*ST, HK stocks, market cap >500亿, price >200元
-- Four strategies: new_face (bottom breakout), momentum (trend continuation), pullback (reversion), short_term (next-day sell)
+- Five strategies: new_face (bottom breakout), momentum (trend continuation), pullback (reversion), rebound (oversold reversal), short_term (next-day sell)
 - Cross-validation (`validator.py`): each candidate must pass ≥2 of its independent dimensions (pos_dims ≥ 2). short_term adds a "non-sector" constraint and 弱转强 override.
   - **new_face**: requires ≥1 oversold signal (indicator convergence hit OR MACD bull divergence) AND pos_dims ≥ 2. Dimensions: convergence (RSI<30 + MACD golden cross + KDJ K<20 & K>D), higher-low structure, sector resonance, volume surge.
   - **momentum**: MA5>10>20 alignment (EMA, penalty -5 if broken), no RSI divergence, volume uniformity (5-day window). pos_dims ≥ 2 required.
   - **pullback**: MA20 trending up (>+0.5%), volume shrinkage (<0.6x), sector active (≥3 same-sector), bollinger touch. pos_dims ≥ 2 required.
+  - **rebound**: 5-day cumulative drop ≤ -15% AND at least one daily drop ≤ -10% (crash day), today's gain 0.5%~8% (stabilizing candle). pos_dims ≥ 2 required. No overbought veto (low-position scenario by design). Dimensions: oversold (RSI<30 / KDJ J<0 / MACD turn red), volume confirmation, sector resonance, pattern (engulfing/hammer/3-bull). Note: pattern score is computed once in `analyze_rebound` (via `detect_rebound_patterns`) and **not re-counted** in validator `total` — `_rb_pattern` only reads pre-computed dims for pos_dims gating.
   - **short_term**: vol_ratio ≥ 1.0 hard gate. Pass rule: 弱转强 (weak-to-strong, st_weak_to_strong>0) passes outright; otherwise requires pos_dims ≥ 2 AND non_sector_pos ≥ 1 (rank/MA/weak — sector cluster alone cannot pass, prevents sector-wide surge days flooding the list). If overbought, 弱转强 loses its override privilege.
-- Scoring & classification: four strategies scored **in parallel** per stock, then `_classify_category` (orchestrator.py:216-247) picks the most fitting label by **price structure** (not attempt order). New stocks: new_face > short_term > momentum > pullback. Old stocks: today down → pullback; 弱转强 (weak-to-strong) → short_term; else momentum > short_term > pullback > known_new_face. New IPOs that pass both new_face and short_term are **dual-listed** to both buckets, each with independent `extra` bonus (orchestrator.py:300-311).
-- Same-sector cap: short_term list keeps top `SHORT_TERM_MAX_PER_SECTOR=2` per sector (sorted by score desc) to prevent sector-wide surge days flooding the list (orchestrator.py:196-213).
+- Scoring & classification: five strategies scored **in parallel** per stock, then `_classify_category` (orchestrator.py:218-256) picks the most fitting label by **price structure** (not attempt order). New stocks: new_face > rebound > short_term > momentum > pullback. Old stocks: today down → pullback; rebound (crash + stabilizing) → rebound; 弱转强 (weak-to-strong) → short_term; else momentum > short_term > pullback > known_new_face. New IPOs that pass both new_face and short_term are **dual-listed** to both buckets, each with independent `extra` bonus (orchestrator.py:300-311).
+- RPS exemption: `rebound` candidates have negative `accumulated_pct` by definition and would always fall into the bottom percentile (RPS_LOW=-3 penalty). `_compute_rps` exempts `category=="rebound"` (returns 0) to avoid penalizing the strategy's core thesis.
+- Same-sector cap: short_term list keeps top `SHORT_TERM_MAX_PER_SECTOR=2` per sector (sorted by score desc) to prevent sector-wide surge days flooding the list (orchestrator.py:198-216).
 - Trend-label hard filter (`config.py:HIGH_RISK_TRENDS`): currently only "回踩整理" is rejected before scoring (pullback: avg next-day -3.89%, win 21.6%). "缩量回调" was removed (avg -2.09%, win 39.2% — acceptable in candidate-pool context with MA support + mild pullback).
+- Composite risk flags (`enhancer.py:_set_risk_flags`): candidates carry **stackable** risk labels (not single-dim reverse indicators). Seven tags with explicit trading-decision implications, centralized thresholds in `config.py:303-315`:
+  - **超买** (overbought): BOLL %B>1.0 or KDJ J>105 or 20-day gain>60% — chase-high risk
+  - **疲劳** (fatigue): `fatigue` penalty triggered — momentum waning after extended listing
+  - **弱市** (weak market): `market_env_bonus < 0` (index < -1.0%)
+  - **主力出货** (main force distribution): high-position distribution composite (high-accum + high-vol + flat-today / high-accum + high-turnover + overbought / opening-strong-intraday-weak / spike-vol + bear divergence)
+  - **趋势破位** (trend breakdown): MA bear alignment / MA20 decline / MA5 break / pullback MA broken — stop-loss signal
+  - **涨幅过大** (excessive gains): accumulated ≥ threshold / pullback 20d gain penalty / momentum accumulated penalty
+  - **量价背离** (volume-price divergence): volume-price mismatch including top divergence
+- Display layers (`display.py` / `feishu.py`): auto-concatenate `risk_flags` with `⚠` prefix; no per-tag rendering code needed. Rebound list renders in CYAN with `↗` icon between momentum and short_term sections.
 
 ## Testing
 
