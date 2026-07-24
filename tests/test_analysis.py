@@ -232,22 +232,21 @@ class TestAnalyzePullback:
         assert "pullback_today_pct" in result.dimensions
         assert "pullback_accumulated" in result.dimensions
 
-    def test_zero_to_two_pct_returns_scored(self):
+    def test_zero_pct_returns_scored(self):
+        # today_pct=0（平盘）属轻微回调，入池并取 today_neg1_0 档
         kline = _kline([1, 2, 1, 2, 3])
         result = analyze_pullback(_stock(percent=0), kline)
         assert result is not None
         assert "pullback_today_pct" in result.dimensions
         assert result.dimensions["pullback_today_pct"] == 10  # today_neg1_0 weight (0 falls in -1 < pct <= 0)
 
-        result = analyze_pullback(_stock(percent=1), kline)
-        assert result is not None
-        assert "pullback_today_pct" in result.dimensions
-        assert result.dimensions["pullback_today_pct"] == 5  # today_pos0_2 weight (0 < pct <= 2)
-
-        result = analyze_pullback(_stock(percent=2), kline)
-        assert result is not None
-        assert "pullback_today_pct" in result.dimensions
-        assert result.dimensions["pullback_today_pct"] == 5  # today_pos0_2 weight
+    def test_positive_pct_rejected(self):
+        # PULLBACK_MAX_TODAY_PCT=0.0：今日上涨不算回调，直接拒绝
+        kline = _kline([1, 1, 1, 2, 3], volumes=[1.0]*5)
+        assert analyze_pullback(_stock(percent=0.5), kline) is None
+        assert analyze_pullback(_stock(percent=1), kline) is None
+        assert analyze_pullback(_stock(percent=2), kline) is None
+        assert analyze_pullback(_stock(percent=2.5), kline) is None
 
     def test_short_kline_returns_none(self):
         kline = _kline([1, 2])
@@ -255,10 +254,6 @@ class TestAnalyzePullback:
 
     def test_none_kline_returns_none(self):
         assert analyze_pullback(_stock(percent=-2), None) is None
-
-    def test_over_2_pct_rejected(self):
-        kline = _kline([1, 1, 1, 2, 3], volumes=[1.0]*5)
-        assert analyze_pullback(_stock(percent=2.5), kline) is None
 
     def test_under_neg8_pct_rejected(self):
         kline = _kline([1, 1, 1, 2, 3], volumes=[1.0]*5)

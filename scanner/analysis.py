@@ -582,25 +582,24 @@ def _calc_pullback_base_metrics(kline: list[dict], today_str: str) -> tuple[list
 def _score_pullback_today_pct(today_pct: float, W: dict) -> tuple[int, dict]:
     """Score based on today's percentage change.
 
+    入池硬门已保证 today_pct <= 0（PULLBACK_MAX_TODAY_PCT=0.0），
+    故仅处理平盘/下跌档位。
+
     Returns:
         (score, dimensions) tuple
     """
     score = 0
     dims: dict[str, int | float] = {}
 
-    if today_pct <= 0:
-        if today_pct > -1:
-            score += W["today_neg1_0"]
-            dims["pullback_today_pct"] = W["today_neg1_0"]
-        elif today_pct > -3:
-            score += W["today_neg3_neg1"]
-            dims["pullback_today_pct"] = W["today_neg3_neg1"]
-        else:
-            score += W["today_neg5_neg3"]
-            dims["pullback_today_pct"] = W["today_neg5_neg3"]
+    if today_pct > -1:
+        score += W["today_neg1_0"]
+        dims["pullback_today_pct"] = W["today_neg1_0"]
+    elif today_pct > -3:
+        score += W["today_neg3_neg1"]
+        dims["pullback_today_pct"] = W["today_neg3_neg1"]
     else:
-        score += W["today_pos0_2"]
-        dims["pullback_today_pct"] = W["today_pos0_2"]
+        score += W["today_neg5_neg3"]
+        dims["pullback_today_pct"] = W["today_neg5_neg3"]
 
     return score, dims
 

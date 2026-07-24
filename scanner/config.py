@@ -24,7 +24,7 @@ MAX_MARKET_CAP = 500 * YI
 MAX_STOCK_PRICE = 200.0
 MAX_NEW_FACE_TODAY_PCT = 12
 MAX_MOMENTUM_TODAY_PCT = 8
-PULLBACK_MAX_TODAY_PCT = 2.0
+PULLBACK_MAX_TODAY_PCT = 0.0      # 仅今日平盘/下跌才算回调，消除 today∈(0,2] 死区
 SHORT_TERM_MIN_TODAY_PCT = 2.0
 SHORT_TERM_MAX_TODAY_PCT = 8.0
 # 超跌反弹：今日企稳阳线（温和涨幅），前期暴跌
@@ -189,7 +189,6 @@ MOMENTUM_WEIGHTS: dict[str, int] = {
 }
 
 PULLBACK_WEIGHTS: dict[str, int] = {
-    "today_pos0_2": 5,
     "today_neg1_0": 10,
     "today_neg3_neg1": 15,
     "today_neg5_neg3": 8,
