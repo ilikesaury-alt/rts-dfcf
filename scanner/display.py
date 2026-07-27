@@ -186,10 +186,21 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
         bonus_str = _bonus_tag(c)
         cap_str = _fmt_market_cap(c.market_cap)
         val_str = f"{s.value:.0f}" if s.value else "N/A"
-        # 风险标签：反指维度 + 历史大跌率
+        # 风险标签分级显示：硬信号（超买/主力出货/趋势破位）展开文字，
+        # 软信号（疲劳/弱市/涨幅过大/量价背离）折叠成 +N 角标，避免长串红字扰乱注意力。
+        HARD_RISK_FLAGS = {"超买", "主力出货", "趋势破位"}
         risk_parts = []
         if c.risk_flags:
-            risk_parts.append(f"{ANSI['RED']}⚠{'/'.join(c.risk_flags)}{ANSI['RESET']}")
+            hard = [f for f in c.risk_flags if f in HARD_RISK_FLAGS]
+            soft_count = len(c.risk_flags) - len(hard)
+            if hard:
+                risk_parts.append(f"{ANSI['RED']}⚠{'/'.join(hard)}{ANSI['RESET']}")
+            else:
+                # 无硬信号但有软信号：提示有软风险但不阻断
+                risk_parts.append(f"{ANSI['YELLOW']}⚠+{soft_count}{ANSI['RESET']}")
+            if soft_count and hard:
+                # 硬信号已展开时，软信号折叠成 +N
+                risk_parts[-1] = risk_parts[-1] + f"{ANSI['YELLOW']}+{soft_count}{ANSI['RESET']}"
         if c.hist_loss_rate is not None and c.hist_loss_rate >= 25:
             risk_parts.append(f"{ANSI['RED']}[历史大跌率{c.hist_loss_rate:.0f}%]{ANSI['RESET']}")
         risk_str = " ".join(risk_parts)

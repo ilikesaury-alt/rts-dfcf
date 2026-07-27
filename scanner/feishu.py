@@ -72,10 +72,20 @@ def _build_card(
         pct_str = f"+{s.percent:.1f}%" if s.percent >= 0 else f"{s.percent:.1f}%"
         acc_val = c.kline.accumulated_pct if c.kline else None
         acc_str = f"{acc_val:+.1f}%" if acc_val is not None else "N/A"
-        # 风险标签：反指维度 + 历史大跌率（与 display.py 对齐，飞书卡片用 emoji 而非 ANSI）
+        # 风险标签分级显示（与 display.py 对齐）：
+        # 硬信号（超买/主力出货/趋势破位）展开，软信号折叠成 +N
+        HARD_RISK_FLAGS = {"超买", "主力出货", "趋势破位"}
         risk_parts = []
         if c.risk_flags:
-            risk_parts.append(f"⚠{'/'.join(c.risk_flags)}")
+            hard = [f for f in c.risk_flags if f in HARD_RISK_FLAGS]
+            soft_count = len(c.risk_flags) - len(hard)
+            if hard:
+                tag = f"⚠{'/'.join(hard)}"
+                if soft_count:
+                    tag += f"+{soft_count}"
+                risk_parts.append(tag)
+            else:
+                risk_parts.append(f"⚠+{soft_count}")
         if c.hist_loss_rate is not None and c.hist_loss_rate >= 25:
             risk_parts.append(f"[历史大跌率{c.hist_loss_rate:.0f}%]")
         risk_str = (" " + " ".join(risk_parts)) if risk_parts else ""
