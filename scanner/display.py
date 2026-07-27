@@ -4,6 +4,7 @@ import wcwidth
 
 from scanner.config import MAX_MARKET_CAP, MAX_STOCK_PRICE, STALE_TIMEOUT_MINUTES, YI, now_beijing
 from scanner.models import Candidate
+from scanner.orchestrator import _session_state
 from scanner.picker import pick_top_candidates
 
 if os.name == "nt":
@@ -164,11 +165,12 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
     print(f"  小而美: 市值≤{int(MAX_MARKET_CAP/YI)}亿 股价≤{MAX_STOCK_PRICE}元")
     print(f"{'='*96}")
 
-    # 今日首选：从全量候选中机械选出 2 只，减少用户选择迷茫
-    top_picks = pick_top_candidates(all_c, top_n=2)
+    # 今日首选：从全天候选池（含掉榜30分钟内）中选出 2 只，减少抖动
+    pool_active = [c for c in _session_state.today_pool.values() if not c.is_stale]
+    top_picks = pick_top_candidates(pool_active, top_n=2)
     top_pick_syms = {p.candidate.stock.symbol for p in top_picks}
     if top_picks:
-        print(f"\n{ANSI['BOLD']}★ 今日2选（确定性优先，非预测）{ANSI['RESET']}")
+        print(f"\n{ANSI['BOLD']}★ 今日2选（全天候选池，减少抖动）{ANSI['RESET']}")
         for i, pick in enumerate(top_picks, 1):
             c = pick.candidate
             label = "首选" if i == 1 else "次选"

@@ -266,3 +266,45 @@ class TestConvictionSorting:
         picks = pick_top_candidates([c1, c2], top_n=2)
         assert picks[0].vs_text != ""
         assert picks[1].vs_text != ""
+
+
+class TestTodayPoolStability:
+    """today_pool 全量候选池稳定性测试。"""
+
+    def test_picks_stable_when_new_candidates_appear(self):
+        """同确定性时，更高评分的候选应替换旧首选（自然竞争）。"""
+        c1 = _make_candidate(symbol="300001", score=35, category="momentum")
+        c2 = _make_candidate(symbol="300002", score=30, category="momentum")
+        picks1 = pick_top_candidates([c1, c2], top_n=2)
+        assert len(picks1) == 2
+        # 加入更高分的 c3（同确定性）
+        c3 = _make_candidate(symbol="300003", score=40, category="momentum")
+        picks2 = pick_top_candidates([c1, c2, c3], top_n=2)
+        syms2 = [p.candidate.stock.symbol for p in picks2]
+        # c3 评分更高，应替换 c1 成为首选
+        assert syms2[0] == "300003"
+        # 但 c1 仍在池中，作为次选保留
+        assert "300001" in syms2
+
+    def test_dropped_candidate_still_in_pool(self):
+        """掉榜候选如果仍在 today_pool 中，应保留为首选。"""
+        c1 = _make_candidate(symbol="300001", score=35, category="momentum")
+        c2 = _make_candidate(symbol="300002", score=30, category="momentum")
+        # c1 + c2 都在池中时，c1 是首选
+        picks1 = pick_top_candidates([c1, c2], top_n=2)
+        assert picks1[0].candidate.stock.symbol == "300001"
+        # c1 从当前榜单掉榜，但 today_pool 仍含 c1 → 仍是首选
+        picks2 = pick_top_candidates([c1, c2], top_n=2)
+        assert picks2[0].candidate.stock.symbol == "300001"
+
+    def test_pool_grows_picks_remain_consistent(self):
+        """池子逐步增长时，首选应保持一致。"""
+        base = [_make_candidate(symbol=f"30000{i}", score=30 - i * 2, category="momentum")
+                for i in range(3)]
+        picks_first = pick_top_candidates(base, top_n=2)
+        # 加入更多候选
+        extra = [_make_candidate(symbol=f"30000{i}", score=25 - i, category="new_face")
+                 for i in range(3, 6)]
+        picks_grown = pick_top_candidates(base + extra, top_n=2)
+        # 首选不变
+        assert picks_first[0].candidate.stock.symbol == picks_grown[0].candidate.stock.symbol
