@@ -201,8 +201,6 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             if soft_count and hard:
                 # 硬信号已展开时，软信号折叠成 +N
                 risk_parts[-1] = risk_parts[-1] + f"{ANSI['YELLOW']}+{soft_count}{ANSI['RESET']}"
-        if c.hist_loss_rate is not None and c.hist_loss_rate >= 25:
-            risk_parts.append(f"{ANSI['RED']}[历史大跌率{c.hist_loss_rate:.0f}%]{ANSI['RESET']}")
         risk_str = " ".join(risk_parts)
         if show_val:
             print(f"  {s.rank:>4} {delta_display} {_pad(src_tag,4)} {_pad(display_name,10)} "

@@ -86,8 +86,6 @@ def _build_card(
                 risk_parts.append(tag)
             else:
                 risk_parts.append(f"⚠+{soft_count}")
-        if c.hist_loss_rate is not None and c.hist_loss_rate >= 25:
-            risk_parts.append(f"[历史大跌率{c.hist_loss_rate:.0f}%]")
         risk_str = (" " + " ".join(risk_parts)) if risk_parts else ""
         return f"`{rs} {s.name:<8} {s.symbol} {pct_str:>7} {acc_str:>7}  {c.score:>2}分{risk_str}`"
 
