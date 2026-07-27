@@ -176,6 +176,8 @@ def validate_nf(stock, kline_summary, closes: list[float],
     oversold_signal = conv_hits >= 1 or conv_detail == "macd_bull_divergence"
     passed = oversold_signal and pos_dims >= 2
 
+    details["_pos_dims"] = pos_dims
+    details["_max_dims"] = 3
     return passed, total, details
 
 
@@ -268,6 +270,8 @@ def validate_momentum(stock, kline_summary, closes: list[float],
     pos_dims = sum(1 for b in (ma_bonus, div_bonus, vol_bonus) if b > 0)
     passed = pos_dims >= 2
 
+    details["_pos_dims"] = pos_dims
+    details["_max_dims"] = 3
     return passed, total, details
 
 
@@ -352,6 +356,8 @@ def validate_pullback(stock, kline_summary, closes: list[float],
     pos_dims = sum(1 for b in (ma_bonus, shr_bonus, sec_bonus, boll_bonus) if b > 0)
     passed = pos_dims >= 2
 
+    details["_pos_dims"] = pos_dims
+    details["_max_dims"] = 4
     return passed, total, details
 
 
@@ -449,6 +455,8 @@ def validate_rebound(stock, kline_summary, closes: list[float],
     pos_dims = sum(1 for b in (os_bonus, vol_bonus, sec_bonus, pat_bonus) if b > 0)
     passed = pos_dims >= 2
 
+    details["_pos_dims"] = pos_dims
+    details["_max_dims"] = 4
     return passed, total, details
 
 
@@ -533,9 +541,13 @@ def validate_short_term(stock, kline_summary, closes: list[float],
         # wts_bonus 不应再作为通过维度，故从 pos_dims / non_sector_pos 中剔除。
         pos_dims_no_wts = sum(1 for b in (sec_bonus, rank_bonus, ma_bonus) if b > 0)
         non_sector_pos_no_wts = sum(1 for b in (rank_bonus, ma_bonus) if b > 0)
+        details["_pos_dims"] = pos_dims_no_wts
+        details["_max_dims"] = 3
         return pos_dims_no_wts >= 2 and non_sector_pos_no_wts >= 1, 0, details
 
     passed = wts_bonus > 0 or (pos_dims >= 2 and non_sector_pos >= 1)
+    details["_pos_dims"] = pos_dims
+    details["_max_dims"] = 4
     return passed, total, details
 
 

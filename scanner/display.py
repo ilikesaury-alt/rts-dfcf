@@ -4,6 +4,7 @@ import wcwidth
 
 from scanner.config import MAX_MARKET_CAP, MAX_STOCK_PRICE, STALE_TIMEOUT_MINUTES, YI, now_beijing
 from scanner.models import Candidate
+from scanner.picker import pick_top_candidates
 
 if os.name == "nt":
     import ctypes
@@ -163,6 +164,27 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
     print(f"  小而美: 市值≤{int(MAX_MARKET_CAP/YI)}亿 股价≤{MAX_STOCK_PRICE}元")
     print(f"{'='*96}")
 
+    # 今日首选：从全量候选中机械选出 2 只，减少用户选择迷茫
+    top_picks = pick_top_candidates(all_c, top_n=2)
+    top_pick_syms = {p.candidate.stock.symbol for p in top_picks}
+    if top_picks:
+        print(f"\n{ANSI['BOLD']}★ 今日2选（确定性优先，非预测）{ANSI['RESET']}")
+        for i, pick in enumerate(top_picks, 1):
+            c = pick.candidate
+            label = "首选" if i == 1 else "次选"
+            stars = "★" * pick.conviction + "☆" * (5 - pick.conviction)
+            print(f"  {ANSI['GREEN']}★{ANSI['RESET']} {label}: {c.stock.name}({c.stock.symbol}) "
+                  f"{ANSI['BOLD']}{stars}{ANSI['RESET']} 确定性")
+            if pick.signals:
+                print(f"    驱动: {' | '.join(pick.signals)}")
+            if not c.risk_flags:
+                print(f"    注意: 无风险标签")
+            else:
+                print(f"    注意: {ANSI['RED']}{'/'.join(c.risk_flags)}{ANSI['RESET']}")
+            if pick.vs_text:
+                print(f"    vs {'次选' if i == 1 else '首选'}: {pick.vs_text}")
+        print(f"{'-'*96}")
+
     hdr = (f"  {_pad('排名',4,'r')} {_pad('变化',6,'r')} {_pad('源',4)} {_pad('名称',10)} "
            f"{_pad('代码',12)} {_pad('现价',7,'r')} {_pad('涨幅',8,'r')} "
            f"{_pad('趋势',14)} {_pad('5日累计',8,'r')} {_pad('量比',6,'r')} "
@@ -171,7 +193,9 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
     def _print_row(c: Candidate, icon: str = "", show_val: bool = False):
         s = c.stock
         k = c.kline
-        display_name = f"{icon} {s.name}" if icon else s.name
+        # 今日首选标记：在名称前加 ★（无 ANSI 色，避免 _vis_len 误算导致列错位）
+        pick_mark = "★ " if s.symbol in top_pick_syms else ""
+        display_name = f"{pick_mark}{icon} {s.name}" if icon else f"{pick_mark}{s.name}"
         cur = f"{s.current:.2f}" if s.current else "N/A"
         acc = f"{k.accumulated_pct:+.2f}%" if k else "N/A"
         vr = f"{k.volume_ratio:.1f}x" if k else "N/A"

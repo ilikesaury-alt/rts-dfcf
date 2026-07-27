@@ -28,6 +28,7 @@ scanner/
   sector.py               # Sector cluster detection
   backtest.py             # Backtest / IC attribution framework
   trading_session.py      # Trading hours/holidays
+  picker.py               # 今日首选选择器 (mechanical top-2 picker, display-only)
   display.py              # Terminal display formatting (ANSI + wcwidth)
   feishu.py               # Feishu webhook card push
   utils.py                # Utility functions (is_gem, is_st, is_hk_stock)
@@ -66,6 +67,7 @@ tests/                    # pytest test suite
   - **涨幅过大** (excessive gains): accumulated ≥ threshold / pullback 20d gain penalty / momentum accumulated penalty
   - **量价背离** (volume-price divergence): volume-price mismatch including top divergence
 - Display layers (`display.py` / `feishu.py`): auto-concatenate `risk_flags` with `⚠` prefix; no per-tag rendering code needed. Rebound list renders in CYAN with `↗` icon between momentum and short_term sections.
+- Today's top picks (`picker.py`): mechanical top-2 selector that applies documented trading discipline — weak market → momentum-only, blocks candidates with `超买`/`主力出货`/`趋势破位` flags, orders by strategy priority (momentum > new_face > pullback > rebound > short_term) then score, and diversifies the 2nd pick across sectors. Display-only aid to reduce selection cognitive load; does not influence scoring or push to Feishu.
 
 ## Testing
 
