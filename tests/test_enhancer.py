@@ -9,6 +9,8 @@ from scanner.enhancer import (
     _apply_sector_bonus,
     _apply_sentiment_bonus,
     _apply_turnover_bonus,
+    _detect_main_force_distribution,
+    _set_risk_flags,
     _record_dimensions,
     compute_market_env_bonus,
     compute_time_bonus,
@@ -399,3 +401,57 @@ class TestRecordDimensions:
         c = _make_candidate()
         c.kline = None
         _record_dimensions(c, 1.0, {})
+
+
+# ============================================================
+# 主力出货标签闪烁修复（intraday_score / today_pct 带宽阈值）
+# ============================================================
+
+class TestMainForceDistributionFlicker:
+    """验证"主力出货"标签在阈值附近不反复触发/消失。
+
+    场景：久之洋类票 —— 累计涨幅够、开盘强势，intraday_score 在 0 附近震荡。
+    修复前 intraday < 0.0 触发，-0.3 触发 / +0.5 消失 / -0.2 再触发。
+    修复后 intraday < -1.0 才触发，0 附近的噪声不再导致闪烁。
+    """
+
+    def _make_dist_candidate(self, intraday_score=None, today_pct=0.0,
+                             accumulated=15.0, opening_score=5.0):
+        c = _make_candidate(accumulated_pct=accumulated, percent=today_pct)
+        c.kline.dimensions["opening_score"] = opening_score
+        if intraday_score is not None:
+            c.intraday_score = intraday_score
+            c.kline.dimensions["intraday_score"] = intraday_score
+        return c
+
+    def test_intraday_near_zero_no_flicker(self):
+        """intraday_score 在 0 附近震荡（-0.5 ~ +0.5）不应触发主力出货。"""
+        for intra in [-0.5, -0.3, 0.0, 0.3, 0.5]:
+            c = self._make_dist_candidate(intraday_score=intra, today_pct=0.0)
+            assert not _detect_main_force_distribution(c, c.kline.dimensions), \
+                f"intraday={intra} 不应触发主力出货（0 附近为中性，非走弱）"
+
+    def test_intraday_clearly_weak_triggers(self):
+        """intraday_score 明确走弱（<-1.0）应触发主力出货。"""
+        c = self._make_dist_candidate(intraday_score=-1.5, today_pct=0.0)
+        assert _detect_main_force_distribution(c, c.kline.dimensions)
+
+    def test_today_pct_near_threshold_no_flicker(self):
+        """模式1（放量滞涨）：today_pct 在 0.5%~1.0% 过渡区不应反复触发。"""
+        # accum=20, vol_ratio=2.0 满足模式1其他条件，仅 today_pct 变化
+        c = _make_candidate(accumulated_pct=20.0, percent=0.8, volume_ratio=2.0)
+        assert not _detect_main_force_distribution(c, c.kline.dimensions), \
+            "today_pct=0.8% 在过渡区（0.5~1.0），不应触发滞涨"
+
+    def test_today_pct_clearly_flat_triggers(self):
+        """模式1：today_pct 明确滞涨（<0.5%）应触发。"""
+        c = _make_candidate(accumulated_pct=20.0, percent=0.3, volume_ratio=2.0)
+        assert _detect_main_force_distribution(c, c.kline.dimensions)
+
+    def test_risk_flags_stable_across_flicker(self):
+        """端到端：intraday 在 0 附近震荡时 risk_flags 不含"主力出货"。"""
+        for intra in [-0.4, 0.0, 0.4]:
+            c = self._make_dist_candidate(intraday_score=intra, today_pct=0.0)
+            _set_risk_flags(c)
+            assert "主力出货" not in c.risk_flags, \
+                f"intraday={intra} 时不应闪烁出'主力出货'标签"

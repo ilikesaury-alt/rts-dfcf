@@ -61,7 +61,7 @@ tests/                    # pytest test suite
   - **超买** (overbought): BOLL %B>1.0 or KDJ J>105 or 20-day gain>60% — chase-high risk
   - **疲劳** (fatigue): `fatigue` penalty triggered — momentum waning after extended listing
   - **弱市** (weak market): `market_env_bonus < 0` (index < -1.0%)
-  - **主力出货** (main force distribution): high-position distribution composite (high-accum + high-vol + flat-today / high-accum + high-turnover + overbought / opening-strong-intraday-weak / spike-vol + bear divergence)
+  - **主力出货** (main force distribution): high-position distribution composite (high-accum + high-vol + flat-today / high-accum + high-turnover + overbought / opening-strong-intraday-weak / spike-vol + bear divergence). Anti-flicker: `intraday_score` threshold is -1.0 (not 0.0) and `today_pct` threshold is 0.5% (not 1.0%) to prevent label flapping when real-time data oscillates near the boundary.
   - **趋势破位** (trend breakdown): MA bear alignment / MA20 decline / MA5 break / pullback MA broken — stop-loss signal
   - **涨幅过大** (excessive gains): accumulated ≥ threshold / pullback 20d gain penalty / momentum accumulated penalty
   - **量价背离** (volume-price divergence): volume-price mismatch including top divergence

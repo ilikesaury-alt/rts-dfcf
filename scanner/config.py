@@ -350,9 +350,13 @@ DISTRIBUTION_ACCUM_HIGH = 20.0      # 累计涨幅高位阈值（放量滞涨/�
 DISTRIBUTION_ACCUM_MID = 15.0       # 累计涨幅中高位阈值（高换手超买场景）
 DISTRIBUTION_ACCUM_PULLBACK = 10.0  # 冲高回落场景的累计涨幅下限
 DISTRIBUTION_VOL_RATIO = 2.0        # 量比阈值（放量滞涨场景）
-DISTRIBUTION_TODAY_PCT_LOW = 1.0    # 今日涨幅上限（滞涨判定）
+# 滞涨判定用带宽阈值避免闪烁：today_pct 在 1.0% 附近震荡时不应反复触发/消失。
+# 0.5% 以下才算明确滞涨（1.0%~0.5% 为过渡区，不触发）。
+DISTRIBUTION_TODAY_PCT_LOW = 0.5
 DISTRIBUTION_OPENING_STRONG = 4.0   # 开盘强度阈值（冲高回落场景，opening_score 范围 -5~5）
-DISTRIBUTION_INTRADAY_WEAK = 0.0    # 分时强度下限（冲高回落场景，intraday_score 范围 -10~10）
+# 分时走弱判定用负带宽避免闪烁：intraday_score 在 0 附近震荡时不应反复触发/消失。
+# intraday_score 范围 -10~10，0 只是中性，<-1.0 才算明确分时转弱。
+DISTRIBUTION_INTRADAY_WEAK = -1.0
 
 # ── 涨幅过大风险标签阈值 ──
 # 累计涨幅超过此值时标记"涨幅过大"，提示追高风险

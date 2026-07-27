@@ -379,6 +379,8 @@ python unified_scanner.py 60    # 每1分钟（盘中最密集）
 | **涨幅过大** | 累计涨幅超阈值 / pullback 20日涨幅惩罚 / momentum 累计惩罚 | 顶部风险 |
 | **量价背离** | 量价不匹配（含顶背离） | 上涨乏力警告 |
 
+> **防闪烁设计**：模式3「冲高回落」依赖实时分时数据（`intraday_score`），模式1「放量滞涨」依赖实时涨幅（`today_pct`），两者在阈值附近会因盘中波动反复触发/消失（如久之洋案例）。修复方案：`DISTRIBUTION_INTRADAY_WEAK` 从 0.0 收紧到 -1.0（0 附近为中性，非走弱），`DISTRIBUTION_TODAY_PCT_LOW` 从 1.0% 收紧到 0.5%（0.5%~1.0% 为过渡区不触发）。其他标签均基于日级数据（K线/validator），无闪烁风险。
+
 > 标签可叠加（如 `⚠超买/主力出货`）。显示层（`display.py` / `feishu.py`）自动拼接 `risk_flags`，无需为每个标签写渲染代码。rebound 候选因场景本身在低位，超买/涨幅过大/主力出货标签天然不会触发（均检查正累计涨幅阈值）。
 
 ---
@@ -875,3 +877,4 @@ momentum 首选的原因：趋势是已发生事实（累计≥7%+均线多头�
 | 34 | RPS 惩罚反弹股（accumulated 为负必落底部分位）| `_compute_rps` 对 `category=="rebound"` 豁免返回 0 |
 | 35 | `_rb_sector` 缺中间档（2只=0只）| 新增 `V_RB_SECTOR_MOD=2`，2只同板块给温和共振分 |
 | 36 | pullback today∈(0,2] 死区（入池但分类走 momentum/nf，永不归 pullback）| `PULLBACK_MAX_TODAY_PCT` 收紧 2.0→0.0，移除 `today_pos0_2` 死档位 |
+| 37 | "主力出货"标签闪烁（久之洋案例：intraday 在 0 附近震荡反复触发/消失）| 模式3 `DISTRIBUTION_INTRADAY_WEAK` 0.0→-1.0；模式1 `DISTRIBUTION_TODAY_PCT_LOW` 1.0→0.5，加带宽避免盘中数据噪声 |
