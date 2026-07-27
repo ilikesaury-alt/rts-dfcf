@@ -486,14 +486,3 @@ PULLBACK_20D_GAIN_WARN = 40       # 20-day gain > 40% → warn
 PULLBACK_20D_GAIN_EXTREME = 60    # 20-day gain > 60% → extreme
 PULLBACK_20D_WARN_PENALTY = -10
 PULLBACK_20D_EXTREME_PENALTY = -15
-
-# Conviction score thresholds (picker)
-# Point-based: each factor contributes raw points, sum → star rating (1-5)
-# Factor max points: validation_depth=25, risk_clarity=25, volume=10, sector=10 → total 70
-CONVICTION_STAR_THRESHOLDS = [18, 32, 48, 60]  # <18→1★, <32→2★, <48→3★, <60→4★, >=60→5★
-CONVICTION_WEIGHTS = {
-    "validation_depth": 25,   # pos_dims / max_dims * 25
-    "risk_clarity": 25,       # 0 flags=25, 1=12, 2+=0
-    "volume_confirm": 10,     # live_vol_bonus > 0 → 10, else 0
-    "sector_support": 10,     # sector_bonus > 0 → 10, else 0
-}
