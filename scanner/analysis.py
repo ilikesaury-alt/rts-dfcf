@@ -175,9 +175,9 @@ def _compute_new_face_indicators(closes: list[float], historical_kline: list[dic
             bonus += W["kdj_bonus"]
         dims["new_face_kdj"] = round(kdj_val["J"], 1)
     if macd_val is not None:
+        # MACD 金叉信号：仅 histogram 由负转正那一刻加分（底部反转确认）。
+        # 移除"macd>signal 持续加分"：金叉后高位票继续加分被 IC=-0.261（n=17）标记为反指。
         if macd_val["histogram"] > 0 and macd_val["histogram_prev"] <= 0:
-            bonus += W["macd_bonus"]
-        if macd_val["macd"] > macd_val["signal"]:
             bonus += W["macd_bonus"]
         dims["new_face_macd"] = round(macd_val["histogram"], 4)
 
@@ -239,8 +239,9 @@ def _compute_momentum_indicators(closes: list[float], historical_kline: list[dic
             bonus += W["kdj_bonus"] // 2
         dims["momentum_kdj"] = round(kdj_val["J"], 1)
     if macd_val is not None:
-        if macd_val["histogram"] > 0:
-            bonus += W["macd_bonus"]
+        # MACD 红柱加分逻辑（近30天 IC=-0.143，histogram 越大次日越差）：
+        # 旧逻辑 histogram>0 无条件 +3，导致顶部大红柱反而加分最多——已移除。
+        # 现仅在红柱增长时 +3（趋势加速），红柱缩短时 -3（动能衰竭）。
         if macd_val["histogram"] > 0 and macd_val["histogram"] > macd_val["histogram_prev"]:
             bonus += W["macd_bonus"]
         elif macd_val["histogram"] > 0 and macd_val["histogram"] < macd_val["histogram_prev"]:

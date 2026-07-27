@@ -6,7 +6,7 @@ from datetime import date
 
 import requests
 
-from scanner.analysis import analyze_momentum, analyze_new_face, analyze_pullback, analyze_rebound, analyze_short_term
+from scanner.analysis import analyze_momentum, analyze_new_face, analyze_rebound, analyze_short_term
 from scanner.validator import validate
 from scanner.api import (
     analyze_intraday,
@@ -34,7 +34,6 @@ from scanner.config import (
     MOMENTUM_MIN_SCORE,
     NEW_FACE_LOOKBACK_DAYS,
     NEW_FACE_MIN_SCORE,
-    PULLBACK_MIN_SCORE,
     REBOUND_MIN_SCORE,
     SHORT_TERM_MIN_SCORE,
     SHORT_TERM_MAX_PER_SECTOR,
@@ -179,7 +178,6 @@ def _try_candidate(stock: StockInfo, kline_summary: KlineSummary | None, categor
         "new_face": NEW_FACE_MIN_SCORE,
         "known_new_face": NEW_FACE_MIN_SCORE,
         "momentum": MOMENTUM_MIN_SCORE,
-        "pullback": PULLBACK_MIN_SCORE,
         "rebound": REBOUND_MIN_SCORE,
         "short_term": SHORT_TERM_MIN_SCORE,
     }[category]
@@ -216,11 +214,14 @@ def _cap_short_term_by_sector(short_term_list: list[Candidate],
 
 
 def _classify_category(stock: StockInfo, is_new: bool,
-                       c_pb: Candidate | None, c_mo: Candidate | None,
+                       c_mo: Candidate | None,
                        c_nf: Candidate | None, c_st: Candidate | None = None,
                        c_rb: Candidate | None = None) -> str | None:
-    """按价格结构（而非尝试顺序）选最贴合的策略标签。"""
-    today_pct = stock.percent
+    """按价格结构（而非尝试顺序）选最贴合的策略标签。
+
+    pullback 已下线（2026-07-27 backtest: 23.9% 胜率），c_pb 参数移除。
+    恢复时需重新加回 c_pb 参数与下方注释分支。
+    """
     if is_new:
         if c_nf is not None:
             return "new_face"
@@ -230,14 +231,10 @@ def _classify_category(stock: StockInfo, is_new: bool,
             return "short_term"
         if c_mo is not None:
             return "momentum"
-        if c_pb is not None:
-            return "pullback"
         return None
-    # 老股：今日下跌优先归回调；上涨时弱转强优先归超短，
+    # 老股：超跌企稳优先归反弹；弱转强优先归超短；
     # 其它"非弱转强超短合格票"若同时过动量则归动量（避免掏空动量桶），
     # 仅过超短不过动量的票仍留超短（不丢票）。
-    if c_pb is not None and today_pct <= 0:
-        return "pullback"
     # 超跌反弹：前期暴跌+今日企稳阳线，优先于动量/超短（场景互斥，避免反弹票被误归动量）
     if c_rb is not None:
         return "rebound"
@@ -248,8 +245,6 @@ def _classify_category(stock: StockInfo, is_new: bool,
         return "momentum"
     if c_st is not None:
         return "short_term"
-    if c_pb is not None:
-        return "pullback"
     if c_nf is not None:
         return "known_new_face"
     return None
@@ -294,26 +289,24 @@ def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, l
 
     nk = analyze_new_face(stock, kline)
     mk = analyze_momentum(stock, kline)
-    pk = analyze_pullback(stock, kline)
     rk = analyze_rebound(stock, kline)
     sk = analyze_short_term(stock, kline)
 
     historical = [k for k in (kline or []) if k["date"] != today]
     closes = [k["close"] for k in historical]
 
-    # 五策略独立打分 + 各自交叉验证，再按价格结构选最贴合的标签
+    # 四策略独立打分 + 各自交叉验证，再按价格结构选最贴合的标签
+    # pullback 已下线（2026-07-27 backtest: 23.9% 胜率），不再调用 analyze_pullback
     c_nf = _try_candidate(stock, nk, "new_face" if is_new else "known_new_face",
                           is_first_today, first_date, kline, closes, historical, clusters)
     c_mo = _try_candidate(stock, mk, "momentum",
-                          is_first_today, first_date, kline, closes, historical, clusters)
-    c_pb = _try_candidate(stock, pk, "pullback",
                           is_first_today, first_date, kline, closes, historical, clusters)
     c_rb = _try_candidate(stock, rk, "rebound",
                           is_first_today, first_date, kline, closes, historical, clusters)
     c_st = _try_candidate(stock, sk, "short_term",
                           is_first_today, first_date, kline, closes, historical, clusters)
 
-    category = _classify_category(stock, is_new, c_pb, c_mo, c_nf, c_st, c_rb)
+    category = _classify_category(stock, is_new, c_mo, c_nf, c_st, c_rb)
     if category == "short_term":
         return None, None, None, None, c_st
     if category in ("new_face", "known_new_face"):
@@ -323,8 +316,6 @@ def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, l
         return c_nf, None, None, None, None
     if category == "momentum":
         return None, c_mo, None, None, None
-    if category == "pullback":
-        return None, None, c_pb, None, None
     if category == "rebound":
         return None, None, None, c_rb, None
     return None, None, None, None, None

@@ -96,27 +96,21 @@ class TestClassifyCategory:
     def test_new_stock_prefers_new_face(self):
         from scanner.orchestrator import _classify_category
         c_nf = _make_candidate("300001")
-        assert _classify_category(self._stock(5), True, None, None, c_nf) == "new_face"
-
-    def test_known_stock_down_day_is_pullback(self):
-        from scanner.orchestrator import _classify_category
-        c_pb = _make_candidate("300001", score=20)
-        assert _classify_category(self._stock(-2), False, c_pb, None, None) == "pullback"
+        assert _classify_category(self._stock(5), True, None, c_nf) == "new_face"
 
     def test_known_stock_up_day_prefers_momentum(self):
         from scanner.orchestrator import _classify_category
-        c_pb = _make_candidate("300001")
         c_mo = _make_candidate("300002")
-        assert _classify_category(self._stock(3), False, c_pb, c_mo, None) == "momentum"
+        assert _classify_category(self._stock(3), False, c_mo, None) == "momentum"
 
     def test_known_stock_only_new_face_fallback(self):
         from scanner.orchestrator import _classify_category
         c_nf = _make_candidate("300001")
-        assert _classify_category(self._stock(3), False, None, None, c_nf) == "known_new_face"
+        assert _classify_category(self._stock(3), False, None, c_nf) == "known_new_face"
 
     def test_no_candidate(self):
         from scanner.orchestrator import _classify_category
-        assert _classify_category(self._stock(3), False, None, None, None) is None
+        assert _classify_category(self._stock(3), False, None, None) is None
 
     def test_known_stock_up_day_weak_to_strong_prefers_short_term(self):
         from scanner.orchestrator import _classify_category
@@ -124,32 +118,26 @@ class TestClassifyCategory:
         c_st = _make_candidate("300002",
                                kline_dims={"st_weak_to_strong": 8})
         # 弱转强超短即便同时过动量也优先归超短
-        assert _classify_category(self._stock(3), False, None, c_mo, c_st, c_st) == "short_term"
+        assert _classify_category(self._stock(3), False, c_mo, None, c_st) == "short_term"
 
     def test_known_stock_up_day_non_wts_short_term_falls_to_momentum(self):
         from scanner.orchestrator import _classify_category
         c_mo = _make_candidate("300001")
         c_st = _make_candidate("300002")
         # 非弱转强超短合格票若同时过动量 → 归动量（避免掏空动量桶）
-        assert _classify_category(self._stock(3), False, None, c_mo, c_st, c_st) == "momentum"
+        assert _classify_category(self._stock(3), False, c_mo, None, c_st) == "momentum"
 
     def test_known_stock_up_day_non_wts_short_term_only_stays_short_term(self):
         from scanner.orchestrator import _classify_category
         c_st = _make_candidate("300002")
         # 仅过非弱转强超短、不过动量 → 仍留超短（不丢票）
-        assert _classify_category(self._stock(3), False, None, None, c_st, c_st) == "short_term"
-
-    def test_known_stock_down_day_ignores_short_term(self):
-        from scanner.orchestrator import _classify_category
-        c_pb = _make_candidate("300001", score=20)
-        c_st = _make_candidate("300002")
-        assert _classify_category(self._stock(-2), False, c_pb, None, None, c_st) == "pullback"
+        assert _classify_category(self._stock(3), False, None, None, c_st) == "short_term"
 
     def test_new_stock_prefers_short_term_over_momentum(self):
         from scanner.orchestrator import _classify_category
         c_mo = _make_candidate("300001")
         c_st = _make_candidate("300002")
-        assert _classify_category(self._stock(5), True, None, c_mo, None, c_st) == "short_term"
+        assert _classify_category(self._stock(5), True, c_mo, None, c_st) == "short_term"
 
 
 class TestCapShortTermBySector:
@@ -197,7 +185,6 @@ class TestScoreStockKnownNewFace:
                           avg_volume=1_000_000)
         monkeypatch.setattr(o, "analyze_new_face", lambda *a, **k: ks)
         monkeypatch.setattr(o, "analyze_momentum", lambda *a, **k: None)
-        monkeypatch.setattr(o, "analyze_pullback", lambda *a, **k: None)
         monkeypatch.setattr(o, "validate", lambda *a, **k: (True, 0, {}))
         # 返回非空历史 -> is_new=False
         monkeypatch.setattr(o, "get_symbol_appearances",
@@ -309,7 +296,7 @@ class TestTryCandidateHighRiskTrend:
         kline_s = KlineSummary(trend="回踩整理", accumulated_pct=2.0,
                                 volume_ratio=1.5, bottom_confirmed=True,
                                 score=50, dimensions={}, avg_volume=1_000_000)
-        result = o._try_candidate(stock, kline_s, "pullback",
+        result = o._try_candidate(stock, kline_s, "momentum",
                                    True, "2026-07-21", [], [], [], None)
         assert result is None
 
@@ -323,7 +310,7 @@ class TestTryCandidateHighRiskTrend:
         kline_s = KlineSummary(trend="破位回调", accumulated_pct=2.0,
                                 volume_ratio=1.5, bottom_confirmed=True,
                                 score=50, dimensions={}, avg_volume=1_000_000)
-        result = o._try_candidate(stock, kline_s, "pullback",
+        result = o._try_candidate(stock, kline_s, "momentum",
                                    True, "2026-07-21", [], [], [], None)
         # Should not be rejected by trend filter (may fail later validation, but not here)
         # We only care that the trend filter didn't block it

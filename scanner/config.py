@@ -15,7 +15,7 @@ NEW_FACE_LOOKBACK_DAYS = 3
 # Normal mode thresholds
 NEW_FACE_MIN_SCORE = 18
 MOMENTUM_MIN_SCORE = 16
-PULLBACK_MIN_SCORE = 18
+PULLBACK_MIN_SCORE = 18  # 保留常量供 analyze_pullback 测试使用，orchestrator 已下线 pullback
 SHORT_TERM_MIN_SCORE = 15
 REBOUND_MIN_SCORE = 18
 

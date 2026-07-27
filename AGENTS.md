@@ -46,7 +46,7 @@ tests/                    # pytest test suite
 ## Architecture Notes
 
 - Scanner filters: GEM stocks only (300xxx), excludes ST/*ST, HK stocks, market cap >500亿, price >200元
-- Five strategies: new_face (bottom breakout), momentum (trend continuation), pullback (reversion), rebound (oversold reversal), short_term (next-day sell)
+- Five strategies: new_face (bottom breakout), momentum (trend continuation), ~~pullback (reversion)~~ [disabled 2026-07-27: 23.9% win rate over 30d, code removed from orchestrator, `analyze_pullback` retained for tests], rebound (oversold reversal), short_term (next-day sell)
 - Cross-validation (`validator.py`): each candidate must pass ≥2 of its independent dimensions (pos_dims ≥ 2). short_term adds a "non-sector" constraint and 弱转强 override.
   - **new_face**: requires ≥1 oversold signal (indicator convergence hit OR MACD bull divergence) AND pos_dims ≥ 2. Dimensions: convergence (RSI<30 + MACD golden cross + KDJ K<20 & K>D), higher-low structure, sector resonance, volume surge.
   - **momentum**: MA5>10>20 alignment (EMA, penalty -5 if broken), no RSI divergence, volume uniformity (5-day window). pos_dims ≥ 2 required.
