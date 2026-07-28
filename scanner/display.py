@@ -2,7 +2,9 @@ import os
 
 import wcwidth
 
-from scanner.config import MAX_MARKET_CAP, MAX_STOCK_PRICE, STALE_TIMEOUT_MINUTES, TRACK_RECOMMENDATION_DAYS, YI, now_beijing
+from scanner.config import (MAX_MARKET_CAP, MAX_STOCK_PRICE, STALE_TIMEOUT_MINUTES,
+                             TRACK_DISPLAY_BUY_MAX, TRACK_DISPLAY_WATCH_MAX,
+                             TRACK_RECOMMENDATION_DAYS, YI, now_beijing)
 from scanner.models import Candidate
 from scanner.orchestrator import _session_state
 
@@ -292,13 +294,11 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
                 print(f"  {'—':>4} {'—':>6} {'—':>4} {_pad(display_name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {_pad(score_visible,4,'r')}")
 
     if tracked_recs:
-        print(f"\n{ANSI['CYAN']}◆ 历史推荐跟踪 — 近{TRACK_RECOMMENDATION_DAYS}日推荐回调到买点{ANSI['RESET']}")
-        print(f"  {'—'*108}")
-        print(f"  {_pad('推荐日',10)} {_pad('名称',10)} {_pad('代码',12)} {_pad('策略',14)} "
-              f"{_pad('状态',8)} {_pad('信号',4,'r')} {_pad('今日涨幅',10,'r')} "
-              f"{_pad('累计收益',10,'r')} {_pad('买点信号',30)}")
-        print(f"  {'-'*108}")
-        for t in tracked_recs[:15]:
+        # 拆成高确信"到买点"与补充"观察中"两段，各自封顶，避免列表过长
+        buy = [t for t in tracked_recs if t.status == "到买点"]
+        watch = [t for t in tracked_recs if t.status == "观察中"]
+
+        def _tracked_row(t):
             today_str = pct_colored(t.today_pct)
             cum_str = f"{t.cum_return:+.1f}%"
             if t.cum_return >= 5:
@@ -316,6 +316,22 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             signals_str = "/".join(t.signals) if t.signals else ""
             print(f"  {t.rec_date} {_pad(t.name,10)} {t.symbol:<12} {_pad(t.rec_category,14)} "
                   f"{status_display} {t.buy_signals:>4} {today_str} {cum_display} {signals_str}")
+
+        print(f"\n{ANSI['CYAN']}◆ 历史推荐跟踪 — 近{TRACK_RECOMMENDATION_DAYS}日推荐回调到买点{ANSI['RESET']}")
+        print(f"  {'—'*108}")
+        print(f"  {_pad('推荐日',10)} {_pad('名称',10)} {_pad('代码',12)} {_pad('策略',14)} "
+              f"{_pad('状态',8)} {_pad('信号',4,'r')} {_pad('今日涨幅',10,'r')} "
+              f"{_pad('累计收益',10,'r')} {_pad('买点信号',30)}")
+        print(f"  {'-'*108}")
+        # 优先展示高确信"到买点"
+        for t in buy[:TRACK_DISPLAY_BUY_MAX]:
+            _tracked_row(t)
+        # 到买点不足时才用"观察中"补充，且同样封顶，防止列表过长
+        if len(buy) < TRACK_DISPLAY_BUY_MAX:
+            for t in watch[:TRACK_DISPLAY_WATCH_MAX]:
+                _tracked_row(t)
+        elif watch:
+            print(f"  {ANSI['YELLOW']}  · 另有 {len(watch)} 只观察中（已省略，回调结构不充分）{ANSI['RESET']}")
 
     print(f"\n{'-'*96}")
     print(f"  {ANSI['GREEN']}新面孔{ANSI['RESET']}: 底部放量启动+涨幅2-6%")

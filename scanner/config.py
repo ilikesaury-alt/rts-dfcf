@@ -403,8 +403,15 @@ TRACK_BOLL_MID_PCT = 3.0         # 距 BOLL 中轨±此值内 → 位置合理
 TRACK_MA20_SLOPE_MIN = 0.5       # MA20 日涨幅>此值 → 上行（百分比）
 # 状态分类阈值
 TRACK_STATUS_BUY = 4             # 信号数≥此值 → "到买点"
-TRACK_STATUS_WATCH = 2           # 信号数≥此值 → "观察中"，否则 "未到买点"（过滤）
+# 观察中门槛由 2 提到 3：原 2 个信号极易由同源指标（MA20支撑/未破位/BOLL中轨
+# 三者本质都是"价格在均线附近"）一次凑齐，导致大量横盘票涌入观察列表、噪声过大。
+# 提到 3 后"观察中"需更实质的回调结构才出现。
+TRACK_STATUS_WATCH = 3           # 信号数≥此值 → "观察中"，否则 "未到买点"（过滤）
 TRACK_KLINE_REFRESH_LOOPS = 5    # 每 N 轮给跟踪票拉一次 K 线（节流）
+# 历史推荐跟踪显示上限（避免列表过长）：高确信"到买点"优先，封顶后
+# 仅有少量到买点时"观察中"才作为补充尾部显示，且同样封顶。
+TRACK_DISPLAY_BUY_MAX = 10       # "到买点"最多显示条数
+TRACK_DISPLAY_WATCH_MAX = 5      # "观察中"补充最多显示条数
 
 EARLY_TRADE_CUTOFF = 10 * 60 + 30   # 10:30
 LATE_TRADE_START = 14 * 60           # 14:00

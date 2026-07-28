@@ -51,27 +51,27 @@ def test_evaluate_none_kline():
 
 
 def test_evaluate_perfect_buy_point():
-    """构造完美买点：缓慢上涨后回调到 MA20 附近、缩量。
+    """构造真实回调买点：缓慢上涨后浅回调到 MA20 上方、末 2 日缩量。
 
-    预期触发：未破位、RSI合理、BOLL中轨、MACD未死叉 等
+    回调深度需让 close 落入 MA20/BOLL 中轨 3% 带内（未破位 + BOLL中轨），
+    且缩量信号需"仅末 2 日缩、前 5 日均量正常"才触发（全缩量会被均量稀释）。
+    预期 ≥3 信号 → 观察中（真实回调买点的典型状态）。
     """
     n = 30
-    # 前 25 根缓慢上涨建立趋势，后 5 根回调到 MA20 附近
     prices = [10.0 * (1.005 ** i) for i in range(25)]
-    # 后 5 根小幅回调（让 close 接近 MA20）
+    # 后 5 根浅回调（0.5%/日，close 仍在 MA20 上方）
     for i in range(5):
-        prices.append(prices[-1] * 0.998)
-
-    # 后 5 根缩量
-    volumes = [10000.0] * 25 + [5000.0] * 5
+        prices.append(prices[-1] * 0.995)
+    # 仅末 2 日缩量，前 5 日均量保持正常 → 缩量信号可触发
+    volumes = [10000.0] * 28 + [4000.0] * 2
 
     kline = _make_kline(n=n, prices=prices, volumes=volumes)
     status, count, signals = _evaluate_buy_signals(kline)
 
-    # 应该触发多个信号（至少未破位+MACD未死叉+BOLL中轨）
-    assert count >= 2, f"预期至少 2 个信号，实际 {count}: {signals}"
+    assert count >= 3, f"预期至少 3 个信号，实际 {count}: {signals}"
     assert "未破位" in signals  # close 仍 > MA20
-    assert status in ("到买点", "观察中")
+    assert "缩量" in signals
+    assert status == "观察中"
 
 
 def test_evaluate_broken_trend():
@@ -137,7 +137,7 @@ def test_status_threshold_buy():
 
     if count >= 4:
         assert status == "到买点"
-    elif count >= 2:
+    elif count >= 3:
         assert status == "观察中"
     else:
         assert status == ""
@@ -184,3 +184,27 @@ def test_no_shrinkage_signal():
     _, _, signals = _evaluate_buy_signals(kline)
 
     assert "缩量" not in signals
+
+
+def test_status_classification_thresholds():
+    """状态分类随 TRACK_STATUS_WATCH 收敛：>=4 到买点，>=3 观察中，<3 过滤。
+
+    回归：TRACK_STATUS_WATCH 由 2 提到 3 后，"贴着 MA20 横盘"这种只凑齐
+    2 个同源信号（MA20支撑/未破位/BOLL中轨）的票不再进入观察列表，
+    避免历史推荐跟踪板块条目过多。
+    """
+    n = 30
+    prices = [10.0 * (1.005 ** i) for i in range(25)]
+    for i in range(5):
+        prices.append(prices[-1] * 0.999)
+    volumes = [10000.0] * 25 + [4000.0] * 5  # 缩量
+
+    kline = _make_kline(n=n, prices=prices, volumes=volumes)
+    status, count, _ = _evaluate_buy_signals(kline)
+
+    if count >= 4:
+        assert status == "到买点"
+    elif count >= 3:
+        assert status == "观察中"
+    else:
+        assert status == ""
