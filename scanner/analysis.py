@@ -64,10 +64,8 @@ from scanner.config import (
     MA_BULL_2_TIER_SCORE,
     MA_BEAR_SCORE,
 )
-from scanner.indicators import (
-    compute_adx, compute_atr, compute_bollinger_bands, compute_kdj,
-    compute_macd, compute_ma, compute_obv, compute_rsi,
-)
+from scanner.indicators import compute_ma
+from scanner.features import build_features
 from scanner.models import KlineSummary, StockInfo
 from scanner.patterns import (
     detect_momentum_patterns,
@@ -78,20 +76,24 @@ from scanner.patterns import (
 )
 
 
-def _ma_bull_score(closes: list[float]) -> int:
+def _ma_bull_score(closes: list[float], feats: dict | None = None) -> int:
     # 使用 EMA（从最近 N 根收盘价播种），创业板高波动下比 SMA 噪声更小。
     # 注意：与 compute_macd 内部 EMA（从 closes[0] 播种）并非同一序列，
     # 此处仅用于 MA 多头结构判定，与 MACD 指标分属不同用途。
-    if len(closes) < 10:
-        return 0
-    ma5 = compute_ma(closes, 5, ema=True)
-    ma10 = compute_ma(closes, 10, ema=True)
+    if feats is not None:
+        ma5 = feats.get("ma5_ema")
+        ma10 = feats.get("ma10_ema")
+        ma20 = feats.get("ma20_ema")
+    else:
+        if len(closes) < 10:
+            return 0
+        ma5 = compute_ma(closes, 5, ema=True)
+        ma10 = compute_ma(closes, 10, ema=True)
+        ma20 = compute_ma(closes, 20, ema=True) if len(closes) >= 20 else None
     if ma5 is None or ma10 is None:
         return 0
-    if len(closes) >= 20:
-        ma20 = compute_ma(closes, 20, ema=True)
-        if ma20 is not None and ma5 > ma10 > ma20:
-            return MA_BULL_3_TIER_SCORE
+    if ma20 is not None and ma5 > ma10 > ma20:
+        return MA_BULL_3_TIER_SCORE
     if ma5 > ma10:
         return MA_BULL_2_TIER_SCORE
     return MA_BEAR_SCORE
@@ -132,28 +134,46 @@ def _vol_peak_ratio(volumes: list[float], lookback: int = VOL_PEAK_LOOKBACK) -> 
     return volumes[-1] / peak if peak > 0 else 1.0
 
 
+def _band_score(value: float, bands: list[tuple[float, str]], W: dict,
+                default_key: str | None = None) -> int:
+    """升序阶梯打分：bands 为 [(上界, 权重键), ...]（上界递增）。
+
+    返回首个满足 value < 上界 的 W[权重键]；都不满足时返回 W[default_key] 或 0。
+    用于收口各策略中"按区间取权重"的重复 if/elif 阶梯。
+    """
+    for upper, key in bands:
+        if value < upper:
+            return W[key]
+    return W[default_key] if default_key is not None else 0
+
+
 def _score_today_pct(today_pct: float, W: dict, prefix: str) -> tuple[int, str, int]:
     # 调用方已显式处理 today_pct >= 6（走 today_pct_6_8 / today_pct_gt_8），
     # 故本函数仅覆盖 < 6 区间，不存在对未定义权重键 today_pct_6_7 / today_pct_7_12 的引用。
-    if today_pct < 0.5:
-        return W["today_pct_lt_0_5"], f"{prefix}_today_pct", W["today_pct_lt_0_5"]
-    elif today_pct < 1:
-        return W["today_pct_0_5_1"], f"{prefix}_today_pct", W["today_pct_0_5_1"]
-    elif today_pct < 2:
-        return W["today_pct_1_2"], f"{prefix}_today_pct", W["today_pct_1_2"]
-    else:  # 2 <= today_pct < 6
-        return W["today_pct_2_6"], f"{prefix}_today_pct", W["today_pct_2_6"]
+    score = _band_score(
+        today_pct,
+        [(0.5, "today_pct_lt_0_5"), (1, "today_pct_0_5_1"), (2, "today_pct_1_2")],
+        W, default_key="today_pct_2_6",
+    )
+    return score, f"{prefix}_today_pct", score
 
 
 
 def _compute_new_face_indicators(closes: list[float], historical_kline: list[dict],
-                                 W: dict) -> tuple[int, dict]:
+                                 W: dict, feats: dict | None = None) -> tuple[int, dict]:
     """New face specific indicator scoring (oversold reversal signals)."""
-    rsi_val = compute_rsi(closes, period=6)
-    rsi14_val = compute_rsi(closes, period=14)
-    kdj_val = compute_kdj([k["high"] for k in historical_kline],
-                          [k["low"] for k in historical_kline], closes)
-    macd_val = compute_macd(closes)
+    if feats is None:
+        highs = [k["high"] for k in historical_kline]
+        lows = [k["low"] for k in historical_kline]
+        volumes = [k["volume"] for k in historical_kline]
+        feats = build_features(closes, highs, lows, volumes)
+    rsi_val = feats["rsi6"]
+    rsi14_val = feats["rsi14"]
+    kdj_val = feats.get("kdj")
+    macd_val = feats["macd"]
+    boll = feats["boll"]
+    atr = feats.get("atr")
+    obv = feats.get("obv")
 
     bonus = 0
     dims: dict[str, float] = {}
@@ -181,22 +201,16 @@ def _compute_new_face_indicators(closes: list[float], historical_kline: list[dic
             bonus += W["macd_bonus"]
         dims["new_face_macd"] = round(macd_val["histogram"], 4)
 
-    boll = compute_bollinger_bands(closes)
     if boll is not None and boll["b_pct"] < 0:
         bonus += W["bollinger_oversold"]
         dims["new_face_bollinger"] = round(boll["b_pct"], 2)
 
     # ATR/OBV 增量确认：低波动蓄势 + OBV 未转负（底背离资金吸筹）
-    highs = [k["high"] for k in historical_kline]
-    lows = [k["low"] for k in historical_kline]
-    volumes = [k["volume"] for k in historical_kline]
-    atr = compute_atr(highs, lows, closes, period=14)
     if atr is not None and closes:
         atr_pct = atr / closes[-1] * 100
         dims["new_face_atr_pct"] = round(atr_pct, 2)
         if atr_pct < 3:
             bonus += W["atr_contraction"]
-    obv = compute_obv(closes, volumes)
     if obv is not None:
         dims["new_face_obv_trend"] = obv["obv_trend"]
         if obv["obv_trend"] >= 0:
@@ -206,16 +220,19 @@ def _compute_new_face_indicators(closes: list[float], historical_kline: list[dic
 
 
 def _compute_momentum_indicators(closes: list[float], historical_kline: list[dict],
-                                 W: dict) -> tuple[int, dict]:
+                                 W: dict, feats: dict | None = None) -> tuple[int, dict]:
     """Momentum specific indicator scoring (trend confirmation signals)."""
-    rsi_val = compute_rsi(closes, period=6)
-    kdj_val = compute_kdj([k["high"] for k in historical_kline],
-                          [k["low"] for k in historical_kline], closes)
-    macd_val = compute_macd(closes)
-    adx_val = compute_adx(
-        [k["high"] for k in historical_kline],
-        [k["low"] for k in historical_kline], closes,
-    )
+    if feats is None:
+        highs = [k["high"] for k in historical_kline]
+        lows = [k["low"] for k in historical_kline]
+        volumes = [k["volume"] for k in historical_kline]
+        feats = build_features(closes, highs, lows, volumes)
+    rsi_val = feats["rsi6"]
+    kdj_val = feats.get("kdj")
+    macd_val = feats["macd"]
+    adx_val = feats.get("adx")
+    atr = feats.get("atr")
+    obv = feats.get("obv")
 
     bonus = 0
     dims: dict[str, float] = {}
@@ -255,10 +272,6 @@ def _compute_momentum_indicators(closes: list[float], historical_kline: list[dic
         dims["momentum_adx"] = round(adx_val["adx"], 1)
 
     # ATR/OBV 增量确认：波动率适中=趋势健康，过高=过热；OBV 上行=趋势资金确认
-    highs = [k["high"] for k in historical_kline]
-    lows = [k["low"] for k in historical_kline]
-    volumes = [k["volume"] for k in historical_kline]
-    atr = compute_atr(highs, lows, closes, period=14)
     if atr is not None and closes:
         atr_pct = atr / closes[-1] * 100
         dims["momentum_atr_pct"] = round(atr_pct, 2)
@@ -266,7 +279,6 @@ def _compute_momentum_indicators(closes: list[float], historical_kline: list[dic
             bonus += W["atr_healthy"]
         elif atr_pct > 10:
             bonus += W["atr_overheated"]
-    obv = compute_obv(closes, volumes)
     if obv is not None and obv["obv_trend"] == 1:
         bonus += W["obv_uptrend"]
         dims["momentum_obv_trend"] = obv["obv_trend"]
@@ -275,7 +287,8 @@ def _compute_momentum_indicators(closes: list[float], historical_kline: list[dic
 
 
 def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
-                     today_str: str | None = None) -> KlineSummary | None:
+                     today_str: str | None = None,
+                     features: dict | None = None) -> KlineSummary | None:
     if not kline or len(kline) < 5:
         return None
 
@@ -312,6 +325,13 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
         return None
     if accumulated > 20:
         return None
+
+    feats = features if features is not None else build_features(
+        closes,
+        [k["high"] for k in historical_kline],
+        [k["low"] for k in historical_kline],
+        [k["volume"] for k in historical_kline],
+    )
 
     volumes = [k["volume"] for k in kline]
     vol_window = volumes[-11:-1] if len(volumes) >= 11 else volumes[:-1]
@@ -404,12 +424,12 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
         score += W["value_gte_5000"]
         dims["new_face_value"] = W["value_gte_5000"]
 
-    ma_bull = _ma_bull_score(closes)
+    ma_bull = _ma_bull_score(closes, feats)
     score += ma_bull
     if ma_bull:
         dims["new_face_ma_bull"] = ma_bull
 
-    indicator_bonus, indicator_dims = _compute_new_face_indicators(closes, historical_kline, W)
+    indicator_bonus, indicator_dims = _compute_new_face_indicators(closes, historical_kline, W, feats)
     score += indicator_bonus
     dims.update(indicator_dims)
 
@@ -423,7 +443,8 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
 
 
 def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
-                     today_str: str | None = None) -> KlineSummary | None:
+                     today_str: str | None = None,
+                     features: dict | None = None) -> KlineSummary | None:
     if not kline or len(kline) < 5:
         return None
 
@@ -441,6 +462,13 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
         accumulated = (closes[-1] - closes[-6]) / closes[-6] * 100
     else:
         accumulated = sum(pcts[-5:])
+
+    feats = features if features is not None else build_features(
+        closes,
+        [k["high"] for k in historical_kline],
+        [k["low"] for k in historical_kline],
+        [k["volume"] for k in historical_kline],
+    )
 
     if accumulated < 7:
         # 10→7：原 10% 门槛要求前期已有显著涨幅，今天刚启动的票无法进入 momentum 池。
@@ -539,12 +567,12 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
         score += W["value_gte_5000"]
         dims["momentum_value"] = W["value_gte_5000"]
 
-    ma_bull = _ma_bull_score(closes)
+    ma_bull = _ma_bull_score(closes, feats)
     score += ma_bull
     if ma_bull:
         dims["momentum_ma_bull"] = ma_bull
 
-    indicator_bonus, indicator_dims = _compute_momentum_indicators(closes, historical_kline, W)
+    indicator_bonus, indicator_dims = _compute_momentum_indicators(closes, historical_kline, W, feats)
     score += indicator_bonus
     dims.update(indicator_dims)
 
@@ -615,23 +643,12 @@ def _score_pullback_accumulated(accumulated: float, W: dict) -> tuple[int, dict]
     Returns:
         (score, dimensions) tuple
     """
-    score = 0
-    dims: dict[str, int | float] = {}
-
-    if accumulated < 10:
-        score += W["accum_5_10"]
-        dims["pullback_accumulated"] = W["accum_5_10"]
-    elif accumulated < 20:
-        score += W["accum_10_20"]
-        dims["pullback_accumulated"] = W["accum_10_20"]
-    elif accumulated < 30:
-        score += W["accum_20_30"]
-        dims["pullback_accumulated"] = W["accum_20_30"]
-    else:
-        score += W["accum_gte_30"]
-        dims["pullback_accumulated"] = W["accum_gte_30"]
-
-    return score, dims
+    score = _band_score(
+        accumulated,
+        [(10, "accum_5_10"), (20, "accum_10_20"), (30, "accum_20_30")],
+        W, default_key="accum_gte_30",
+    )
+    return score, {"pullback_accumulated": score}
 
 
 def _score_pullback_volume(vol_ratio: float, W: dict) -> tuple[int, dict]:
@@ -731,21 +748,24 @@ def _analyze_pullback_ma(closes: list, W: dict) -> dict:
 
 
 def _score_pullback_indicators(closes: list, historical_kline: list[dict],
-                               W: dict) -> tuple[int, dict]:
+                               W: dict, feats: dict | None = None) -> tuple[int, dict]:
     """Score based on technical indicators (RSI, MACD, KDJ, Bollinger).
 
     Returns:
         (score, dimensions) tuple
     """
+    if feats is None:
+        highs = [k["high"] for k in historical_kline]
+        lows = [k["low"] for k in historical_kline]
+        volumes = [k["volume"] for k in historical_kline]
+        feats = build_features(closes, highs, lows, volumes)
+    rsi_val = feats["rsi6"]
+    macd_val = feats["macd"]
+    kdj_val = feats.get("kdj")
+    boll = feats["boll"]
+
     score = 0
     dims: dict[str, int | float] = {}
-
-    rsi_val = compute_rsi(closes, period=6)
-    macd_val = compute_macd(closes)
-    kdj_val = compute_kdj(
-        [k["high"] for k in historical_kline],
-        [k["low"] for k in historical_kline], closes,
-    )
 
     if rsi_val is not None:
         if rsi_val < 30:
@@ -766,7 +786,6 @@ def _score_pullback_indicators(closes: list, historical_kline: list[dict],
         score += W["kdj_bonus"]
         dims["pullback_kdj"] = round(kdj_val["J"], 1)
 
-    boll = compute_bollinger_bands(closes)
     if boll is not None:
         dist_to_mid = abs(closes[-1] - boll["middle"]) / max(boll["middle"], 0.01) * 100
         if dist_to_mid < 0.5:
@@ -807,7 +826,8 @@ def _classify_pullback_trend(ma_support: bool, ma_broken: bool, today_pct: float
 
 
 def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
-                     today_str: str | None = None) -> KlineSummary | None:
+                     today_str: str | None = None,
+                     features: dict | None = None) -> KlineSummary | None:
     if not kline or len(kline) < 5:
         return None
 
@@ -821,6 +841,13 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
 
     if accumulated < 5:
         return None
+
+    feats = features if features is not None else build_features(
+        closes,
+        [k["high"] for k in historical_kline],
+        [k["low"] for k in historical_kline],
+        [k["volume"] for k in historical_kline],
+    )
 
     score = 0
     dims: dict[str, int | float] = {}
@@ -859,7 +886,7 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
         score += W["rank_top30"]
         dims["pullback_rank"] = W["rank_top30"]
 
-    indicator_score, indicator_dims = _score_pullback_indicators(closes, historical_kline, W)
+    indicator_score, indicator_dims = _score_pullback_indicators(closes, historical_kline, W, feats)
     score += indicator_score
     dims.update(indicator_dims)
 
@@ -881,7 +908,8 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
 
 
 def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
-                       today_str: str | None = None) -> KlineSummary | None:
+                       today_str: str | None = None,
+                       features: dict | None = None) -> KlineSummary | None:
     if not kline or len(kline) < 5:
         return None
 
@@ -895,6 +923,13 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
     historical_kline = [k for k in kline if k["date"] != today_str]
     pcts = [k["percent"] for k in historical_kline]
     closes = [k["close"] for k in historical_kline]
+
+    feats = features if features is not None else build_features(
+        closes,
+        [k["high"] for k in historical_kline],
+        [k["low"] for k in historical_kline],
+        [k["volume"] for k in historical_kline],
+    )
 
     # short_term 的 accumulated 包含今日 bar（与策略语义"今日异动"一致）
     all_closes = [k["close"] for k in kline]
@@ -984,7 +1019,7 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
         score += W["rank_top30"]
         dims["st_rank"] = W["rank_top30"]
 
-    rsi_val = compute_rsi(closes, period=6)
+    rsi_val = feats["rsi6"]
     if rsi_val is not None:
         if 50 <= rsi_val < 70:
             score += W["rsi_bonus"]
@@ -993,17 +1028,13 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
             score -= W["rsi_bonus"]
             dims["st_rsi"] = round(rsi_val, 1)
 
-    kdj_val = compute_kdj(
-        [k["high"] for k in historical_kline],
-        [k["low"] for k in historical_kline],
-        closes,
-    )
+    kdj_val = feats.get("kdj")
     if kdj_val is not None:
         if kdj_val["K"] > kdj_val["D"] and 50 <= kdj_val["K"] <= 80 and kdj_val["J"] < 100:
             score += W["kdj_bonus"]
             dims["st_kdj"] = round(kdj_val["J"], 1)
 
-    macd_val = compute_macd(closes)
+    macd_val = feats["macd"]
     if macd_val is not None:
         if macd_val["histogram"] > 0:
             score += W["macd_bonus"]
@@ -1046,7 +1077,8 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
 
 
 def analyze_rebound(stock: StockInfo, kline: list[dict] | None,
-                    today_str: str | None = None) -> KlineSummary | None:
+                    today_str: str | None = None,
+                    features: dict | None = None) -> KlineSummary | None:
     """超跌反弹策略：识别暴跌后的企稳首阳。
 
     与 new_face 的区别：new_face 要求 accumulated >= -10%（前期无大跌），
@@ -1146,7 +1178,13 @@ def analyze_rebound(stock: StockInfo, kline: list[dict] | None,
         dims["rebound_volume"] = W["vol_low"]
 
     # 技术面确认：RSI 超卖
-    rsi_val = compute_rsi(closes, period=6)
+    feats = features if features is not None else build_features(
+        closes,
+        [k["high"] for k in historical_kline],
+        [k["low"] for k in historical_kline],
+        [k["volume"] for k in historical_kline],
+    )
+    rsi_val = feats["rsi6"]
     if rsi_val is not None:
         if rsi_val < 30:
             score += W["rsi_oversold"]
@@ -1156,7 +1194,7 @@ def analyze_rebound(stock: StockInfo, kline: list[dict] | None,
             dims["rebound_rsi"] = round(rsi_val, 1)
 
     # BOLL 下轨支撑
-    boll = compute_bollinger_bands(closes)
+    boll = feats["boll"]
     if boll is not None and boll["b_pct"] < 0.1:
         score += W["bollinger_lower"]
         dims["rebound_bollinger"] = round(boll["b_pct"], 2)

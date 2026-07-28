@@ -535,11 +535,12 @@ class TestAnalyzeShortTerm:
         from unittest.mock import patch
 
         kline = _kline([2, 3, 4, 3, 5, 2, 3])
-        with patch("scanner.analysis.compute_rsi", return_value=60.0) as m:
+        with patch("scanner.features.compute_rsi", return_value=60.0) as m:
             r = analyze_short_term(_stock(percent=3.0, rank=5), kline)
-            assert m.call_args.kwargs.get("period") == 6
+            # build_features 会同时算 RSI(6)/RSI(14)，确认其中存在 period=6 的调用
+            assert any(len(c.args) > 1 and c.args[1] == 6 for c in m.call_args_list)
             assert "st_rsi" in r.dimensions
-        with patch("scanner.analysis.compute_rsi", return_value=85.0):
+        with patch("scanner.features.compute_rsi", return_value=85.0):
             r2 = analyze_short_term(_stock(percent=3.0, rank=5), kline)
             # RSI>80 时仍记录维度值（惩罚分项可见）
             assert "st_rsi" in r2.dimensions
@@ -549,13 +550,13 @@ class TestAnalyzeShortTerm:
         from unittest.mock import patch
 
         kline = _kline([2, 3, 4, 3, 5, 2, 3])
-        with patch("scanner.analysis.compute_kdj", return_value={"K": 60.0, "D": 50.0, "J": 55.0}):
+        with patch("scanner.features.compute_kdj", return_value={"K": 60.0, "D": 50.0, "J": 55.0}):
             r = analyze_short_term(_stock(percent=3.0, rank=5), kline)
             assert "st_kdj" in r.dimensions
-        with patch("scanner.analysis.compute_kdj", return_value={"K": 90.0, "D": 50.0, "J": 55.0}):
+        with patch("scanner.features.compute_kdj", return_value={"K": 90.0, "D": 50.0, "J": 55.0}):
             r2 = analyze_short_term(_stock(percent=3.0, rank=5), kline)
             assert "st_kdj" not in r2.dimensions  # K>80 不加分
-        with patch("scanner.analysis.compute_kdj", return_value={"K": 40.0, "D": 50.0, "J": 55.0}):
+        with patch("scanner.features.compute_kdj", return_value={"K": 40.0, "D": 50.0, "J": 55.0}):
             r3 = analyze_short_term(_stock(percent=3.0, rank=5), kline)
             assert "st_kdj" not in r3.dimensions  # K<D 不加分
 

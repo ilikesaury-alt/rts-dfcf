@@ -61,23 +61,24 @@ from scanner.indicators import (
     compute_bollinger_bands,
     compute_kdj,
     compute_ma,
-    compute_macd,
     compute_rsi,
 )
+from scanner.features import build_features
 from scanner.sector import classify_sector
 
 
-def _nf_convergence(closes: list[float], historical_kline: list[dict]) -> tuple[int, str, int]:
+def _nf_convergence(closes: list[float], historical_kline: list[dict],
+                    feats: dict | None = None) -> tuple[int, str, int]:
     if len(closes) < 10:
         return 0, "data_short", 0
 
-    rsi = compute_rsi(closes, period=6)
-    macd = compute_macd(closes)
-    kdj = compute_kdj(
-        [k["high"] for k in historical_kline],
-        [k["low"] for k in historical_kline],
-        closes,
-    )
+    if feats is None:
+        highs = [k["high"] for k in historical_kline]
+        lows = [k["low"] for k in historical_kline]
+        feats = build_features(closes, highs, lows)
+    rsi = feats["rsi6"]
+    macd = feats["macd"]
+    kdj = feats.get("kdj")
 
     hits = 0
 
@@ -149,9 +150,14 @@ def _nf_volume_surge(kline_summary) -> tuple[int, str]:
 
 
 def validate_nf(stock, kline_summary, closes: list[float],
-                historical_kline: list[dict], clusters: dict[str, list[str]] | None
+                historical_kline: list[dict], clusters: dict[str, list[str]] | None,
+                feats: dict | None = None
                 ) -> tuple[bool, int, dict]:
-    conv_bonus, conv_detail, conv_hits = _nf_convergence(closes, historical_kline)
+    if feats is None:
+        highs = [k["high"] for k in historical_kline]
+        lows = [k["low"] for k in historical_kline]
+        feats = build_features(closes, highs, lows)
+    conv_bonus, conv_detail, conv_hits = _nf_convergence(closes, historical_kline, feats)
     hl_bonus, hl_detail = _nf_higher_low(closes)
     sec_bonus, sec_count = _nf_sector(stock.name, clusters)
     vol_bonus, vol_detail = _nf_volume_surge(kline_summary)
@@ -181,30 +187,34 @@ def validate_nf(stock, kline_summary, closes: list[float],
     return passed, total, details
 
 
-def _mo_ma_alignment(closes: list[float]) -> tuple[int, str]:
+def _mo_ma_alignment(closes: list[float], feats: dict | None = None) -> tuple[int, str]:
     # 与 analysis._ma_bull_score 统一使用 EMA 约定，消除「分析加分 / 验证剔除」脱节。
-    if len(closes) < 10:
-        return V_MO_MA_NONE, "data_short"
-
-    ma5 = compute_ma(closes, 5, ema=True)
-    ma10 = compute_ma(closes, 10, ema=True)
+    if feats is None:
+        if len(closes) < 10:
+            return V_MO_MA_NONE, "data_short"
+        ma5 = compute_ma(closes, 5, ema=True)
+        ma10 = compute_ma(closes, 10, ema=True)
+        ma20 = compute_ma(closes, 20, ema=True) if len(closes) >= 20 else None
+    else:
+        ma5 = feats.get("ma5_ema")
+        ma10 = feats.get("ma10_ema")
+        ma20 = feats.get("ma20_ema")
     if ma5 is None or ma10 is None:
         return V_MO_MA_NONE, "data_short"
 
-    if len(closes) >= 20:
-        ma20 = compute_ma(closes, 20, ema=True)
-        if ma20 is not None and ma5 > ma10 > ma20:
-            return V_MO_MA_FULL, "ma_full_5gt10gt20"
+    if ma20 is not None and ma5 > ma10 > ma20:
+        return V_MO_MA_FULL, "ma_full_5gt10gt20"
     if ma5 > ma10:
         return V_MO_MA_PARTIAL, "ma_partial_5gt10"
     return V_MO_MA_NONE, "ma_none"
 
 
-def _mo_divergence(closes: list[float], historical_kline: list[dict]) -> tuple[int, str]:
+def _mo_divergence(closes: list[float], historical_kline: list[dict],
+                   feats: dict | None = None) -> tuple[int, str]:
     if len(closes) < 10:
         return V_MO_DIVERGENCE_NONE, "data_short"
 
-    rsi = compute_rsi(closes, period=6)
+    rsi = feats["rsi6"] if feats is not None else compute_rsi(closes, period=6)
     if rsi is None:
         return V_MO_DIVERGENCE_NONE, "rsi_na"
 
@@ -242,10 +252,15 @@ def _mo_volume_uniformity(historical_kline: list[dict]) -> tuple[int, str]:
 
 
 def validate_momentum(stock, kline_summary, closes: list[float],
-                      historical_kline: list[dict], clusters: dict[str, list[str]] | None
+                      historical_kline: list[dict], clusters: dict[str, list[str]] | None,
+                      feats: dict | None = None
                       ) -> tuple[bool, int, dict]:
-    ma_bonus, ma_detail = _mo_ma_alignment(closes)
-    div_bonus, div_detail = _mo_divergence(closes, historical_kline)
+    if feats is None:
+        highs = [k["high"] for k in historical_kline]
+        lows = [k["low"] for k in historical_kline]
+        feats = build_features(closes, highs, lows)
+    ma_bonus, ma_detail = _mo_ma_alignment(closes, feats)
+    div_bonus, div_detail = _mo_divergence(closes, historical_kline, feats)
     vol_bonus, vol_detail = _mo_volume_uniformity(historical_kline)
 
     details: dict[str, int | float | str] = {
@@ -275,12 +290,16 @@ def validate_momentum(stock, kline_summary, closes: list[float],
     return passed, total, details
 
 
-def _pb_ma_trend(closes: list[float]) -> tuple[int, str]:
+def _pb_ma_trend(closes: list[float], feats: dict | None = None) -> tuple[int, str]:
     if len(closes) < 25:
         return 0, "data_short"
 
-    ma20_now = sum(closes[-20:]) / 20
-    ma20_prev = sum(closes[-25:-5]) / 20
+    if feats is not None and feats.get("ma20_sma") is not None and feats.get("ma20_sma_prev") is not None:
+        ma20_now = feats["ma20_sma"]
+        ma20_prev = feats["ma20_sma_prev"]
+    else:
+        ma20_now = sum(closes[-20:]) / 20
+        ma20_prev = sum(closes[-25:-5]) / 20
     change_pct = (ma20_now - ma20_prev) / max(ma20_prev, 0.01) * 100
 
     if change_pct > 0.5:
@@ -316,10 +335,10 @@ def _pb_sector(name: str, clusters: dict[str, list[str]] | None) -> tuple[int, i
     return V_PB_SECTOR_NEUTRAL, count
 
 
-def _pb_bollinger_touch(closes: list[float]) -> tuple[int, str]:
+def _pb_bollinger_touch(closes: list[float], feats: dict | None = None) -> tuple[int, str]:
     if len(closes) < 20:
         return 0, "data_short"
-    boll = compute_bollinger_bands(closes)
+    boll = feats["boll"] if (feats is not None and feats.get("boll") is not None) else compute_bollinger_bands(closes)
     if boll is None:
         return 0, "bb_na"
     current = closes[-1]
@@ -333,12 +352,15 @@ def _pb_bollinger_touch(closes: list[float]) -> tuple[int, str]:
 
 
 def validate_pullback(stock, kline_summary, closes: list[float],
-                      historical_kline: list[dict], clusters: dict[str, list[str]] | None
+                      historical_kline: list[dict], clusters: dict[str, list[str]] | None,
+                      feats: dict | None = None
                       ) -> tuple[bool, int, dict]:
-    ma_bonus, ma_detail = _pb_ma_trend(closes)
+    if feats is None:
+        feats = build_features(closes)
+    ma_bonus, ma_detail = _pb_ma_trend(closes, feats)
     shr_bonus, shr_vr = _pb_shrinkage(kline_summary)
     sec_bonus, sec_count = _pb_sector(stock.name, clusters)
-    boll_bonus, boll_detail = _pb_bollinger_touch(closes)
+    boll_bonus, boll_detail = _pb_bollinger_touch(closes, feats)
 
     details: dict[str, int | float | str] = {
         "v_pb_ma_trend": ma_bonus,
@@ -361,17 +383,18 @@ def validate_pullback(stock, kline_summary, closes: list[float],
     return passed, total, details
 
 
-def _rb_oversold(closes: list[float], historical_kline: list[dict]) -> tuple[int, str]:
+def _rb_oversold(closes: list[float], historical_kline: list[dict],
+                feats: dict | None = None) -> tuple[int, str]:
     """超卖确认：RSI<30 或 KDJ J<0 或 MACD 柱翻红。"""
     if len(closes) < 10:
         return 0, "data_short"
-    rsi = compute_rsi(closes, period=6)
-    kdj = compute_kdj(
-        [k["high"] for k in historical_kline],
-        [k["low"] for k in historical_kline],
-        closes,
-    )
-    macd = compute_macd(closes)
+    if feats is None:
+        highs = [k["high"] for k in historical_kline]
+        lows = [k["low"] for k in historical_kline]
+        feats = build_features(closes, highs, lows)
+    rsi = feats["rsi6"]
+    kdj = feats.get("kdj")
+    macd = feats["macd"]
     hits = 0
     if rsi is not None and rsi < 30:
         hits += 1
@@ -426,14 +449,19 @@ def _rb_pattern(kline_summary) -> tuple[int, str]:
 
 
 def validate_rebound(stock, kline_summary, closes: list[float],
-                     historical_kline: list[dict], clusters: dict[str, list[str]] | None
+                     historical_kline: list[dict], clusters: dict[str, list[str]] | None,
+                     feats: dict | None = None
                      ) -> tuple[bool, int, dict]:
     """超跌反弹交叉验证：4 维独立判断，pos_dims >= 2 通过。
 
     维度：超卖确认 / 量能确认 / 板块共振 / 形态确认。
     不设超买否决（rebound 场景本身在低位，超买概率低）。
     """
-    os_bonus, os_detail = _rb_oversold(closes, historical_kline)
+    if feats is None:
+        highs = [k["high"] for k in historical_kline]
+        lows = [k["low"] for k in historical_kline]
+        feats = build_features(closes, highs, lows)
+    os_bonus, os_detail = _rb_oversold(closes, historical_kline, feats)
     vol_bonus, vol_detail = _rb_volume(kline_summary)
     sec_bonus, sec_count = _rb_sector(stock.name, clusters)
     pat_bonus, pat_detail = _rb_pattern(kline_summary)
@@ -461,7 +489,8 @@ def validate_rebound(stock, kline_summary, closes: list[float],
 
 
 def validate_short_term(stock, kline_summary, closes: list[float],
-                        historical_kline: list[dict], clusters: dict[str, list[str]] | None
+                        historical_kline: list[dict], clusters: dict[str, list[str]] | None,
+                        feats: dict | None = None
                         ) -> tuple[bool, int, dict]:
     # 硬门禁：量比 < 1.0 直接淘汰（超短必须放量）。软维度为下方 4 项。
     # 放行条件（P0-sector 单维度刷屏修复）：弱转强直接放行；否则要求 ≥2 正维度
@@ -592,15 +621,16 @@ _mo_is_overbought = _is_overbought
 
 def validate(cat: str, stock, kline_summary, closes: list[float],
              historical_kline: list[dict], clusters: dict[str, list[str]] | None = None,
+             feats: dict | None = None,
              ) -> tuple[bool, int, dict]:
     if cat in ("new_face", "known_new_face"):
-        return validate_nf(stock, kline_summary, closes, historical_kline, clusters)
+        return validate_nf(stock, kline_summary, closes, historical_kline, clusters, feats)
     if cat == "momentum":
-        return validate_momentum(stock, kline_summary, closes, historical_kline, clusters)
+        return validate_momentum(stock, kline_summary, closes, historical_kline, clusters, feats)
     if cat == "pullback":
-        return validate_pullback(stock, kline_summary, closes, historical_kline, clusters)
+        return validate_pullback(stock, kline_summary, closes, historical_kline, clusters, feats)
     if cat == "rebound":
-        return validate_rebound(stock, kline_summary, closes, historical_kline, clusters)
+        return validate_rebound(stock, kline_summary, closes, historical_kline, clusters, feats)
     if cat == "short_term":
-        return validate_short_term(stock, kline_summary, closes, historical_kline, clusters)
+        return validate_short_term(stock, kline_summary, closes, historical_kline, clusters, feats)
     return False, 0, {}

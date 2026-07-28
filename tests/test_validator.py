@@ -199,9 +199,9 @@ class TestValidateMomentum:
 
         # 背离 + MA 多头 + 量能均匀 → 仍通过
         monkeypatch.setattr("scanner.validator._mo_divergence",
-                            lambda c, h: (-10, "bear_divergence"))
+                            lambda c, h, f=None: (-10, "bear_divergence"))
         monkeypatch.setattr("scanner.validator._mo_ma_alignment",
-                            lambda c: (V_MO_MA_FULL, "full"))
+                            lambda c, f=None: (V_MO_MA_FULL, "full"))
         monkeypatch.setattr("scanner.validator._mo_volume_uniformity",
                             lambda h: (5, "uniform"))
         passed, total, dims = validate_momentum(_stock(), None, closes, k[:-1], None)
@@ -209,7 +209,7 @@ class TestValidateMomentum:
 
         # 背离 + MA 破位 + 量能爆量 → 不通过
         monkeypatch.setattr("scanner.validator._mo_ma_alignment",
-                            lambda c: (0, "broken"))
+                            lambda c, f=None: (0, "broken"))
         monkeypatch.setattr("scanner.validator._mo_volume_uniformity",
                             lambda h: (-8, "spike"))
         passed2, total2, dims2 = validate_momentum(_stock(), None, closes, k[:-1], None)
@@ -271,7 +271,7 @@ class TestValidateMomentum:
         # 用 monkeypatch 风格的正维度组合：MA 多头 + 量能均匀
         import scanner.validator as V
         orig_ma, orig_vol = V._mo_ma_alignment, V._mo_volume_uniformity
-        V._mo_ma_alignment = lambda c: (V.V_MO_MA_FULL, "full")
+        V._mo_ma_alignment = lambda c, f=None: (V.V_MO_MA_FULL, "full")
         V._mo_volume_uniformity = lambda h: (5, "uniform")
         try:
             passed, total, dims = validate_momentum(stock, None, closes, k[:-1], None)

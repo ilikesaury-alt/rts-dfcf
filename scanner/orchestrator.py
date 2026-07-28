@@ -8,6 +8,7 @@ import requests
 
 from scanner.analysis import analyze_momentum, analyze_new_face, analyze_pullback, analyze_rebound, analyze_short_term
 from scanner.validator import validate
+from scanner.features import build_features
 from scanner.api import (
     analyze_intraday,
     analyze_opening_strength,
@@ -178,7 +179,8 @@ def _build_candidate(stock: StockInfo, kline_summary: KlineSummary | None, categ
 def _try_candidate(stock: StockInfo, kline_summary: KlineSummary | None, category: str,
                    is_first_today: bool, first_date: str, kline: list[dict] | None,
                    closes: list[float], historical: list[dict],
-                   clusters: dict[str, list[str]] | None) -> Candidate | None:
+                   clusters: dict[str, list[str]] | None,
+                   feats: dict | None = None) -> Candidate | None:
     if kline_summary is None:
         return None
     if kline_summary.trend in HIGH_RISK_TRENDS:
@@ -193,7 +195,7 @@ def _try_candidate(stock: StockInfo, kline_summary: KlineSummary | None, categor
     }[category]
     if kline_summary.score < min_score:
         return None
-    passed, bonus, dims = validate(category, stock, kline_summary, closes, historical, clusters)
+    passed, bonus, dims = validate(category, stock, kline_summary, closes, historical, clusters, feats)
     if not passed:
         return None
     new_dims = dict(kline_summary.dimensions)
@@ -300,27 +302,34 @@ def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, l
     is_new = len(previous_dates) == 0
     first_date = previous_dates[0] if previous_dates else today
     kline = klines.get(stock.symbol)
-
-    nk = analyze_new_face(stock, kline)
-    mk = analyze_momentum(stock, kline)
-    rk = analyze_rebound(stock, kline)
-    sk = analyze_short_term(stock, kline)
-    pk = analyze_pullback(stock, kline)
-
     historical = [k for k in (kline or []) if k["date"] != today]
     closes = [k["close"] for k in historical]
 
+    # 统一特征抽取一次，下发给 5 路 analyze_* 与 validate，避免每只股票重复计算指标
+    feats = None
+    if len(closes) >= 5:
+        highs = [k["high"] for k in historical]
+        lows = [k["low"] for k in historical]
+        volumes = [k["volume"] for k in historical]
+        feats = build_features(closes, highs, lows, volumes)
+
+    nk = analyze_new_face(stock, kline, features=feats)
+    mk = analyze_momentum(stock, kline, features=feats)
+    rk = analyze_rebound(stock, kline, features=feats)
+    sk = analyze_short_term(stock, kline, features=feats)
+    pk = analyze_pullback(stock, kline, features=feats)
+
     # 五策略独立打分 + 各自交叉验证，再按价格结构选最贴合的标签
     c_nf = _try_candidate(stock, nk, "new_face" if is_new else "known_new_face",
-                          is_first_today, first_date, kline, closes, historical, clusters)
+                          is_first_today, first_date, kline, closes, historical, clusters, feats)
     c_mo = _try_candidate(stock, mk, "momentum",
-                          is_first_today, first_date, kline, closes, historical, clusters)
+                          is_first_today, first_date, kline, closes, historical, clusters, feats)
     c_rb = _try_candidate(stock, rk, "rebound",
-                          is_first_today, first_date, kline, closes, historical, clusters)
+                          is_first_today, first_date, kline, closes, historical, clusters, feats)
     c_st = _try_candidate(stock, sk, "short_term",
-                          is_first_today, first_date, kline, closes, historical, clusters)
+                          is_first_today, first_date, kline, closes, historical, clusters, feats)
     c_pb = _try_candidate(stock, pk, "pullback",
-                          is_first_today, first_date, kline, closes, historical, clusters)
+                          is_first_today, first_date, kline, closes, historical, clusters, feats)
 
     category = _classify_category(stock, is_new, c_mo, c_nf, c_st, c_rb, c_pb)
     if category == "short_term":
