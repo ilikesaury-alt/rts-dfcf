@@ -265,8 +265,13 @@ REBOUND_WEIGHTS: dict[str, int] = {
 # 超短末周期（鱼尾段）超买防护：validator 单点判断阈值。
 # 20日涨幅阈值直接复用 PULLBACK_20D_GAIN_*（避免常量膨胀）。
 # 惩罚已移除：超买时仅靠 validator passed 门禁否决 + enhancer 标记，不再做 score 压制。
-ST_OVERBOUGHT_BOLL = 1.0          # BOLL %B > 此值 = 破上轨（高位）
-ST_OVERBOUGHT_KDJ = 105           # KDJ J > 此值 = 极端超买（健康强趋势 J 常 90~115，100 易误伤）
+# 2026-07-28 收紧：原 BOLL=1.0 / KDJ=105 在强势股主升浪中几乎必中（健康强趋势 J 常 90~115，
+# 单日大涨即破上轨），导致"超买"标签沦为废话、短炒票全民告警。改为仅"极端超买"才触发：
+#   - BOLL %B > 1.10：明显脱离上轨（而非刚触碰）
+#   - KDJ J > 115：超过健康强趋势上限（90~115）
+# 20日涨幅>60% 维持（ genuinely 过热），三项仍任一即判（否决用，宁可漏放不可误杀主升浪）。
+ST_OVERBOUGHT_BOLL = 1.10         # BOLL %B > 此值 = 明显破上轨（极端高位）
+ST_OVERBOUGHT_KDJ = 115           # KDJ J > 此值 = 极端超买（健康强趋势 J 常 90~115，旧 105 误伤）
 
 # ── rebound 交叉验证常量 ──
 V_RB_OVERSOLD_STRONG = 8      # RSI<30 + KDJ J<0 / MACD翻红 ≥2 命中
@@ -348,11 +353,13 @@ FATIGUE_ACCELERATE_BONUS_PER_DAY = 2  # bonus per streak day when accelerating
 FATIGUE_ACCELERATE_BONUS_CAP = 15     # max acceleration bonus（与 FATIGUE_PENALTY_CAP 对称）
 
 # ── 主力出货风险标签阈值 ──
-# 满足任一复合条件即标记"主力出货"，用于识别高位派发迹象
-DISTRIBUTION_ACCUM_HIGH = 20.0      # 累计涨幅高位阈值（放量滞涨/高换手超买场景）
-DISTRIBUTION_ACCUM_MID = 15.0       # 累计涨幅中高位阈值（高换手超买场景）
-DISTRIBUTION_ACCUM_PULLBACK = 10.0  # 冲高回落场景的累计涨幅下限
-DISTRIBUTION_VOL_RATIO = 2.0        # 量比阈值（放量滞涨场景）
+# 满足任一复合条件即标记"主力出货"，用于识别高位派发迹象。
+# 2026-07-28 收紧：原 Rule 2（高位高换手+超买）仅要求换手率>5% + 宽松超买，
+# 几乎把所有活跃强势股都打成"主力出货"。改为高确信条件，且依赖已收紧的极端超买。
+DISTRIBUTION_ACCUM_HIGH = 20.0      # 累计涨幅高位阈值（放量滞涨场景）
+DISTRIBUTION_ACCUM_MID = 15.0       # 累计涨幅中高位阈值（高换手超买场景，需配合 genuine 过热换手）
+DISTRIBUTION_ACCUM_PULLBACK = 15.0  # 冲高回落场景的累计涨幅下限（原 10 → 15，提升确信度）
+DISTRIBUTION_VOL_RATIO = 2.5        # 量比阈值（放量滞涨场景，原 2.0 → 2.5，需更明确放量）
 # 滞涨判定用带宽阈值避免闪烁：today_pct 在 1.0% 附近震荡时不应反复触发/消失。
 # 0.5% 以下才算明确滞涨（1.0%~0.5% 为过渡区，不触发）。
 DISTRIBUTION_TODAY_PCT_LOW = 0.5
@@ -360,6 +367,8 @@ DISTRIBUTION_OPENING_STRONG = 4.0   # 开盘强度阈值（冲高回落场景，
 # 分时走弱判定用负带宽避免闪烁：intraday_score 在 0 附近震荡时不应反复触发/消失。
 # intraday_score 范围 -10~10，0 只是中性，<-1.0 才算明确分时转弱。
 DISTRIBUTION_INTRADAY_WEAK = -1.0
+# 主力出货 Rule 2 的换手率门槛：要求"真正过热"而非单纯活跃。
+# enhancer 中以 c.turnover_bonus < 0 判定（turnover_rate > TURNOVER_HIGH=20%，即派发级过热）。
 
 # ── 涨幅过大风险标签阈值 ──
 # 累计涨幅超过此值时标记"涨幅过大"，提示追高风险

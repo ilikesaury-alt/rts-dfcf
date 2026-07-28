@@ -332,9 +332,12 @@ python unified_scanner.py 60    # 每1分钟（盘中最密集）
 
 | 指标 | 阈值 | 说明 |
 |------|------|------|
-| BOLL %B | > 1.0（`ST_OVERBOUGHT_BOLL`） | 破上轨，高位风险 |
-| KDJ J | > 105（`ST_OVERBOUGHT_KDJ`） | 极端超买（健康强趋势 J 常 90~115，100 易误伤） |
+| BOLL %B | > 1.10（`ST_OVERBOUGHT_BOLL`） | 明显破上轨（极端高位，非刚触碰） |
+| KDJ J | > 115（`ST_OVERBOUGHT_KDJ`） | 极端超买（健康强趋势 J 常 90~115，旧 105 误伤主升浪） |
 | 20日涨幅 | > 60%（`PULLBACK_20D_GAIN_EXTREME`） | 阶段涨幅翻倍见顶风险 |
+
+> 2026-07-28 收紧：原 BOLL=1.0 / KDJ=105 在强势股主升浪中近乎必中（单日大涨即破上轨、J 常驻 90~115），
+> 导致"超买"标签沦为废话、短炒票全民告警。改为仅"极端超买"才触发，使标签重新具备信号意义。
 
 > validator 判定超买后：仅打 `v_st_overbought` / `v_mo_overbought` 标记，enhancer 据此打 `st_overbought_flag` / `mo_overbought_flag` 供 UI 显示。
 > short_term 超买时弱转强不再直通（需 non_sector 维度达标）；momentum 超买仅标记不硬否决（保留 passed 门禁）。

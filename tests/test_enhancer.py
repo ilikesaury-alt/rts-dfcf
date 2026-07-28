@@ -438,14 +438,14 @@ class TestMainForceDistributionFlicker:
 
     def test_today_pct_near_threshold_no_flicker(self):
         """模式1（放量滞涨）：today_pct 在 0.5%~1.0% 过渡区不应反复触发。"""
-        # accum=20, vol_ratio=2.0 满足模式1其他条件，仅 today_pct 变化
-        c = _make_candidate(accumulated_pct=20.0, percent=0.8, volume_ratio=2.0)
+        # accum=20, vol_ratio=2.6 满足模式1其他条件（>2.5 阈值），仅 today_pct 变化
+        c = _make_candidate(accumulated_pct=20.0, percent=0.8, volume_ratio=2.6)
         assert not _detect_main_force_distribution(c, c.kline.dimensions), \
             "today_pct=0.8% 在过渡区（0.5~1.0），不应触发滞涨"
 
     def test_today_pct_clearly_flat_triggers(self):
-        """模式1：today_pct 明确滞涨（<0.5%）应触发。"""
-        c = _make_candidate(accumulated_pct=20.0, percent=0.3, volume_ratio=2.0)
+        """模式1：today_pct 明确滞涨（<0.5%）+ 明显放量（量比≥2.5）应触发。"""
+        c = _make_candidate(accumulated_pct=20.0, percent=0.3, volume_ratio=2.6)
         assert _detect_main_force_distribution(c, c.kline.dimensions)
 
     def test_risk_flags_stable_across_flicker(self):
@@ -455,3 +455,51 @@ class TestMainForceDistributionFlicker:
             _set_risk_flags(c)
             assert "主力出货" not in c.risk_flags, \
                 f"intraday={intra} 时不应闪烁出'主力出货'标签"
+
+
+# ============================================================
+# 2026-07-28 风险标签收敛回归：避免"全民告警"误伤正常强势股
+# ============================================================
+
+class TestRiskFlagTightening:
+    """验证收紧后：活跃强势股不再被乱贴'超买'/'主力出货'，
+    仅真正高位派发（genuine 过热换手 + 极端超买）才标'主力出货'。
+    """
+
+    def test_healthy_momentum_no_false_tags(self):
+        """正常强势动量票（涨 8%、累计 12%、换手活跃但不过热、无超买旗）不应被贴标签。"""
+        c = _make_candidate(category="momentum", percent=8.0,
+                            accumulated_pct=12.0, volume_ratio=1.5)
+        c.turnover_bonus = 3  # 换手 5~10%，活跃但非过热（>0 且非 <0）
+        # 无 st/mo overbought 旗、无其它风险维度
+        _set_risk_flags(c)
+        assert "超买" not in c.risk_flags, f"正常强势票不应标超买, flags={c.risk_flags}"
+        assert "主力出货" not in c.risk_flags, f"正常强势票不应标主力出货, flags={c.risk_flags}"
+
+    def test_distribution_rule2_needs_overheated_turnover(self):
+        """主力出货 Rule 2：累计≥15% + 超买旗，但换手仅'活跃'(>0 非过热) 不应触发。"""
+        c = _make_candidate(category="momentum", accumulated_pct=18.0,
+                            volume_ratio=1.5)
+        c.turnover_bonus = 3  # 换手 5~10%：活跃但 < 20%（非过热）
+        c.kline.dimensions["mo_overbought_flag"] = True  # 已收紧的极端超买旗
+        assert not _detect_main_force_distribution(c, c.kline.dimensions), \
+            "Rule 2 仅活跃换手(>0)不应判出货，需 turnover_bonus<0（过热）"
+
+    def test_distribution_rule2_triggers_on_overheated_turnover(self):
+        """主力出货 Rule 2：累计≥15% + 极端超买 + 真正过热换手(>20%) 应触发。"""
+        c = _make_candidate(category="momentum", accumulated_pct=18.0,
+                            volume_ratio=1.5)
+        c.turnover_bonus = -3  # 换手 > 20%：genuine 派发级过热
+        c.kline.dimensions["mo_overbought_flag"] = True
+        assert _detect_main_force_distribution(c, c.kline.dimensions), \
+            "Rule 2 过热换手 + 极端超买应判出货"
+
+    def test_low_turnover_high_accum_not_distribution(self):
+        """累计很高但换手低迷（无放量），不应被'高位高换手'规则误判。"""
+        c = _make_candidate(category="momentum", accumulated_pct=20.0,
+                            volume_ratio=1.2)
+        c.turnover_bonus = 0  # 换手 ≤5%：低迷
+        c.kline.dimensions["mo_overbought_flag"] = True
+        assert not _detect_main_force_distribution(c, c.kline.dimensions), \
+            "高累计+低迷换手不应判主力出货（无放量派发特征）"
+

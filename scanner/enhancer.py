@@ -139,14 +139,16 @@ def _detect_main_force_distribution(c: Candidate, dims: dict) -> bool:
     intraday = c.intraday_score
     overbought = bool(dims.get("st_overbought_flag") or dims.get("mo_overbought_flag"))
 
-    # 1. 高位放量滞涨
+    # 1. 高位放量滞涨：累计高位 + 明显放量（量比≥2.5）+ 今日几乎不涨（量价背离派发）
     if (accum >= DISTRIBUTION_ACCUM_HIGH
             and vol_ratio >= DISTRIBUTION_VOL_RATIO
             and today_pct <= DISTRIBUTION_TODAY_PCT_LOW):
         return True
-    # 2. 高位高换手+超买
+    # 2. 高位高换手+超买：累计≥15% + 真正过热换手（turnover>20% → turnover_bonus<0）
+    #    + 已收紧的"极端超买"。原逻辑仅要求换手>5%（活跃常态）+ 宽松超买，
+    #    把任何活跃强势股都误判为出货，2026-07-28 收紧为 genuine 派发级条件。
     if (accum >= DISTRIBUTION_ACCUM_MID
-            and c.turnover_bonus > 0
+            and c.turnover_bonus < 0
             and overbought):
         return True
     # 3. 冲高回落（opening_score 范围 -5~5，intraday_score 范围 -10~10）

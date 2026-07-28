@@ -58,10 +58,10 @@ tests/                    # pytest test suite
 - Same-sector cap: short_term list keeps top `SHORT_TERM_MAX_PER_SECTOR=2` per sector (sorted by score desc) to prevent sector-wide surge days flooding the list (orchestrator.py:198-216).
 - Trend-label hard filter (`config.py:HIGH_RISK_TRENDS`): currently only "回踩整理" is rejected before scoring (pullback: avg next-day -3.89%, win 21.6%). "缩量回调" was removed (avg -2.09%, win 39.2% — acceptable in candidate-pool context with MA support + mild pullback).
 - Composite risk flags (`enhancer.py:_set_risk_flags`): candidates carry **stackable** risk labels (not single-dim reverse indicators). Seven tags with explicit trading-decision implications, centralized thresholds in `config.py:303-315`:
-  - **超买** (overbought): BOLL %B>1.0 or KDJ J>105 or 20-day gain>60% — chase-high risk
+  - **超买** (overbought): BOLL %B>1.10 or KDJ J>115 or 20-day gain>60% — extreme chase-high risk (收紧自 1.0/105：旧阈值在强势股主升浪中近乎必中，导致"全民超买"误报)
   - **疲劳** (fatigue): `fatigue` penalty triggered — momentum waning after extended listing
   - **弱市** (weak market): `market_env_bonus < 0` (index < -1.0%)
-  - **主力出货** (main force distribution): high-position distribution composite (high-accum + high-vol + flat-today / high-accum + high-turnover + overbought / opening-strong-intraday-weak / spike-vol + bear divergence). Anti-flicker: `intraday_score` threshold is -1.0 (not 0.0) and `today_pct` threshold is 0.5% (not 1.0%) to prevent label flapping when real-time data oscillates near the boundary.
+  - **主力出货** (main force distribution): high-position distribution composite (high-accum + high-vol-ratio≥2.5 + flat-today / high-accum + **genuine overheated turnover >20% (turnover_bonus<0)** + extreme-overbought / opening-strong-intraday-weak + accum≥15% / spike-vol + bear divergence). 2026-07-28 收紧：原 Rule 2 仅要求换手>5%（活跃常态）+ 宽松超买，几乎把所有活跃强势股误判为出货；现要求 genuine 过热换手 + 已收紧的极端超买。Anti-flicker: `intraday_score` threshold is -1.0 (not 0.0) and `today_pct` threshold is 0.5% (not 1.0%) to prevent label flapping when real-time data oscillates near the boundary.
   - **趋势破位** (trend breakdown): MA bear alignment / MA20 decline / MA5 break / pullback MA broken — stop-loss signal
   - **涨幅过大** (excessive gains): accumulated ≥ threshold / pullback 20d gain penalty / momentum accumulated penalty
   - **量价背离** (volume-price divergence): volume-price mismatch including top divergence
