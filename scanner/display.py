@@ -294,7 +294,8 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
                 print(f"  {'—':>4} {'—':>6} {'—':>4} {_pad(display_name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {_pad(score_visible,4,'r')}")
 
     if tracked_recs:
-        # 拆成高确信"到买点"与补充"观察中"两段，各自封顶，避免列表过长
+        # 只显示高确信"到买点"；"观察中"默认隐藏（TRACK_DISPLAY_WATCH_MAX=0），
+        # 需要时把该常量改回 >0 可恢复补充尾部。
         buy = [t for t in tracked_recs if t.status == "到买点"]
         watch = [t for t in tracked_recs if t.status == "观察中"]
 
@@ -323,14 +324,14 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
               f"{_pad('状态',8)} {_pad('信号',4,'r')} {_pad('今日涨幅',10,'r')} "
               f"{_pad('累计收益',10,'r')} {_pad('买点信号',30)}")
         print(f"  {'-'*108}")
-        # 优先展示高确信"到买点"
+        # 仅展示高确信"到买点"
         for t in buy[:TRACK_DISPLAY_BUY_MAX]:
             _tracked_row(t)
-        # 到买点不足时才用"观察中"补充，且同样封顶，防止列表过长
-        if len(buy) < TRACK_DISPLAY_BUY_MAX:
+        # 仅当配置允许（TRACK_DISPLAY_WATCH_MAX > 0）且到买点不足时，才补充"观察中"尾部
+        if TRACK_DISPLAY_WATCH_MAX > 0 and len(buy) < TRACK_DISPLAY_BUY_MAX:
             for t in watch[:TRACK_DISPLAY_WATCH_MAX]:
                 _tracked_row(t)
-        elif watch:
+        elif TRACK_DISPLAY_WATCH_MAX > 0 and watch:
             print(f"  {ANSI['YELLOW']}  · 另有 {len(watch)} 只观察中（已省略，回调结构不充分）{ANSI['RESET']}")
 
     print(f"\n{'-'*96}")

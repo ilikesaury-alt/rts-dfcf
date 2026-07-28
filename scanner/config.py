@@ -422,10 +422,11 @@ TRACK_STATUS_BUY = 4             # 信号数≥此值 → "到买点"
 # 提到 3 后"观察中"需更实质的回调结构才出现。
 TRACK_STATUS_WATCH = 3           # 信号数≥此值 → "观察中"，否则 "未到买点"（过滤）
 TRACK_KLINE_REFRESH_LOOPS = 5    # 每 N 轮给跟踪票拉一次 K 线（节流）
-# 历史推荐跟踪显示上限（避免列表过长）：高确信"到买点"优先，封顶后
-# 仅有少量到买点时"观察中"才作为补充尾部显示，且同样封顶。
+# 历史推荐跟踪显示上限（避免列表过长）：只显示高确信"到买点"，
+# "观察中"默认不显示（TRACK_DISPLAY_WATCH_MAX=0）。若想恢复观察中补充尾部，
+# 把该值改回 >0（如 5）即可，display 会自动追加并封顶。
 TRACK_DISPLAY_BUY_MAX = 10       # "到买点"最多显示条数
-TRACK_DISPLAY_WATCH_MAX = 5      # "观察中"补充最多显示条数
+TRACK_DISPLAY_WATCH_MAX = 0      # "观察中"补充最多显示条数（0 = 不显示，只看到买点）
 
 EARLY_TRADE_CUTOFF = 10 * 60 + 30   # 10:30
 LATE_TRADE_START = 14 * 60           # 14:00
