@@ -460,9 +460,13 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
     if today_pct > MAX_MOMENTUM_TODAY_PCT:
         return None
 
-    # 今日涨幅 >= 6% 由显式分支处理（对齐 STRATEGY.md：6~8%→+5；>8% 已被上游门限跳过），
+    # 今日涨幅 >= 6% 由显式分支处理（对齐 STRATEGY.md：6~8%→+5；8~10%→+3），
     # 不进入 _score_today_pct，避免其 today_pct_6_7 / today_pct_7_12 分支被覆盖却仍被读取。
-    if today_pct >= 6:
+    if today_pct >= 8:
+        today_score = W["today_pct_8_10"]
+        today_dim_key = "momentum_today_pct"
+        today_dim_val = today_score
+    elif today_pct >= 6:
         today_score = W["today_pct_6_8"]
         today_dim_key = "momentum_today_pct"
         today_dim_val = today_score
@@ -909,7 +913,10 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
     score = 0
     dims: dict[str, int | float] = {}
 
-    if today_pct >= 6:
+    if today_pct >= 8:
+        score += W["today_pct_8_12"]
+        dims["st_today_pct"] = W["today_pct_8_12"]
+    elif today_pct >= 6:
         score += W["today_pct_6_8"]
         dims["st_today_pct"] = W["today_pct_6_8"]
     elif today_pct >= 4:
@@ -1043,8 +1050,9 @@ def analyze_rebound(stock: StockInfo, kline: list[dict] | None,
     """超跌反弹策略：识别暴跌后的企稳首阳。
 
     与 new_face 的区别：new_face 要求 accumulated >= -10%（前期无大跌），
-    rebound 专门捕获 accumulated < -15% 的超跌后企稳阳线。
-    典型场景：连跌4-5日（含暴跌日）后出现温和放量阳线。
+    rebound 专门捕获 5日累计跌幅 ≤ -10% 的超跌后企稳阳线。
+    典型场景：连跌4-5日（含暴跌日）后出现温和放量阳线；
+    或阴跌企稳（无单日暴跌但累计跌 10-15%，P0-1 放宽）。
     """
     if not kline or len(kline) < 6:  # 至少6根：5日历史+今日
         return None
@@ -1065,14 +1073,13 @@ def analyze_rebound(stock: StockInfo, kline: list[dict] | None,
         return None
 
     # 前5日累计跌幅（超跌判定）
+    # P0-1: 阈值从 -15 放宽到 -10，覆盖"阴跌企稳"场景（无暴跌日但累计跌 10-15%）
     recent_5_pcts = pcts[-5:]
     drop_5d = sum(recent_5_pcts)
     if drop_5d > REBOUND_5D_DROP_THRESHOLD:  # 未超跌，不属于 rebound 场景
         return None
-    # 前5日必须有暴跌日（区分"阴跌"与"超跌反弹"）
+    # 暴跌日作为加分项（不再硬要求）：有暴跌日 = 典型超跌反弹，无 = 阴跌企稳
     has_crash_day = any(p <= REBOUND_CRASH_THRESHOLD for p in recent_5_pcts)
-    if not has_crash_day:
-        return None
 
     # 累计涨幅（供下游 enhancer 使用，rebound 的 accumulated 反映前期跌幅）
     if len(closes) >= 6:
@@ -1122,9 +1129,10 @@ def analyze_rebound(stock: StockInfo, kline: list[dict] | None,
         score += W["drop_gte_30"]
         dims["rebound_drop_depth"] = W["drop_gte_30"]
 
-    # 暴跌日加分
-    dims["rebound_crash_day"] = W["crash_day_bonus"]
-    score += W["crash_day_bonus"]
+    # 暴跌日加分（仅当有暴跌日时；阴跌企稳场景不加分）
+    if has_crash_day:
+        dims["rebound_crash_day"] = W["crash_day_bonus"]
+        score += W["crash_day_bonus"]
 
     # 量能配合
     if vol_ratio >= 2.0:
@@ -1165,7 +1173,9 @@ def analyze_rebound(stock: StockInfo, kline: list[dict] | None,
     dims.update(pattern_dims)
 
     # 趋势标签
-    if v_shape:
+    if not has_crash_day and drop_5d > REBOUND_CRASH_THRESHOLD * 1.5:
+        trend = "阴跌企稳"
+    elif v_shape:
         trend = "超跌V反"
     elif near_20d_low:
         trend = "低位企稳"

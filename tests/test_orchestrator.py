@@ -193,7 +193,7 @@ class TestScoreStockKnownNewFace:
         stock = StockInfo(symbol="300001", name="Test", code="300001",
                           percent=3.0, current=10.0, value=10000,
                           rank_change=1000, rank=1)
-        nf, mo, pb, rb, st = o._score_stock(
+        nf, mo, pb, rb, st, _pb = o._score_stock(
             stock, conn=None, klines={}, today="2026-06-18",
             session_state=ScanSession(), clusters=None,
         )

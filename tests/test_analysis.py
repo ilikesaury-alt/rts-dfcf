@@ -146,10 +146,17 @@ class TestAnalyzeMomentum:
         assert result is not None
         assert result.dimensions["momentum_today_pct"] == 5
 
-    def test_today_pct_gt_8_skipped(self):
-        # STRATEGY.md: 动量 >8% 直接跳过
+    def test_today_pct_8_10_accepted(self):
+        # P1-2: 动量 8~10% 现在接受（原 >8% 跳过已放宽到 >10%）
         kline = _kline([2, 2, 2, 2, 2])
-        assert analyze_momentum(_stock(percent=9), kline) is None
+        result = analyze_momentum(_stock(percent=9, rank_change=2000, value=12000), kline)
+        assert result is not None
+        assert result.dimensions["momentum_today_pct"] == 3
+
+    def test_today_pct_gt_10_skipped(self):
+        # P1-2: 动量 >10% 直接跳过（上限从 8 放宽到 10）
+        kline = _kline([2, 2, 2, 2, 2])
+        assert analyze_momentum(_stock(percent=11), kline) is None
 
     def test_today_pct_lt_0_5_scores_five(self):
         # STRATEGY.md: 动量 <1% → +5（含 <0.5%）
@@ -426,9 +433,17 @@ class TestAnalyzeShortTerm:
         assert analyze_short_term(_stock(percent=1.0), kline) is None
         assert analyze_short_term(_stock(percent=0), kline) is None
 
-    def test_pct_above_8_returns_none(self):
+    def test_pct_above_12_returns_none(self):
+        # P1-1: 上限从 8 放宽到 12，9% 现在接受，>12% 才拒绝
         kline = _kline([5, 3, 6, 2, 4])
-        assert analyze_short_term(_stock(percent=9.0), kline) is None
+        assert analyze_short_term(_stock(percent=13.0), kline) is None
+
+    def test_pct_8_12_accepted(self):
+        # P1-1: 8~12% 档位验证
+        kline = _kline([5, 3, 6, 2, 4])
+        result = analyze_short_term(_stock(percent=9.0, rank_change=2000, value=12000), kline)
+        assert result is not None
+        assert result.dimensions["st_today_pct"] == 8
 
     def test_short_kline_returns_none(self):
         kline = _kline([5, 3, 6])
@@ -654,15 +669,17 @@ class TestAnalyzeRebound:
         assert analyze_rebound(_stock(percent=3.0), None) is None
 
     def test_insufficient_drop_returns_none(self):
-        # 前5日累计仅-8%，未达-15%超跌门槛
+        # 前5日累计仅-8%，未达-10%超跌门槛（P0-1: 阈值从-15放宽到-10）
         kline = _kline([-1, -2, -3, -1, -1, 1, -2], volumes=[1.0] * 7)
         assert analyze_rebound(_stock(percent=3.0), kline) is None
 
-    def test_no_crash_day_returns_none(self):
-        # 前5日累计-16%但无单日暴跌(≤-10%)，属于阴跌而非超跌反弹
+    def test_no_crash_day_yields_yin_die_stabilize(self):
+        # P0-1: 前5日累计-16%但无单日暴跌(≤-10%)，属"阴跌企稳"场景，现在接受
         kline = _kline([-4, -3, -3, -3, -3, 1, -2], volumes=[1.0] * 7)
         result = analyze_rebound(_stock(percent=3.0), kline)
-        assert result is None
+        assert result is not None, "阴跌企稳场景（无暴跌日但累计跌>10%）应进入 rebound"
+        assert result.trend == "阴跌企稳"
+        assert "rebound_crash_day" not in result.dimensions, "无暴跌日不应加 crash_day_bonus"
 
     def test_deep_drop_scores_higher(self):
         # 前5日累计-25%（含-12%暴跌日），应比-18%得分更高

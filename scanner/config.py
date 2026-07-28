@@ -23,15 +23,16 @@ YI = 100_000_000
 MAX_MARKET_CAP = 500 * YI
 MAX_STOCK_PRICE = 200.0
 MAX_NEW_FACE_TODAY_PCT = 12
-MAX_MOMENTUM_TODAY_PCT = 8
+MAX_MOMENTUM_TODAY_PCT = 10  # P1-2: 8→10，让 9-10% 加速票能进 momentum（主升浪中段）
 PULLBACK_MAX_TODAY_PCT = 0.0      # 仅今日平盘/下跌才算回调，消除 today∈(0,2] 死区
 SHORT_TERM_MIN_TODAY_PCT = 2.0
-SHORT_TERM_MAX_TODAY_PCT = 8.0
+SHORT_TERM_MAX_TODAY_PCT = 12.0  # P1-1: 8→12，覆盖 8-12% 强势股（创业板涨停 20% 仍排除）
 # 超跌反弹：今日企稳阳线（温和涨幅），前期暴跌
 REBOUND_MIN_TODAY_PCT = 0.5
 REBOUND_MAX_TODAY_PCT = 8.0
-REBOUND_CRASH_THRESHOLD = -10.0      # 前5日内至少一日跌幅 ≤ 此值
-REBOUND_5D_DROP_THRESHOLD = -15.0    # 前5日累计跌幅 ≤ 此值
+REBOUND_CRASH_THRESHOLD = -10.0      # 前5日内至少一日跌幅 ≤ 此值（有暴跌日额外加分）
+REBOUND_5D_DROP_THRESHOLD = -10.0    # 前5日累计跌幅 ≤ 此值即进入 rebound 评估
+                                      # -10~-15% 无暴跌日 = 阴跌企稳场景（P0-1 修复）
 REBOUND_NEAR_LOW_PCT = 0.10          # 收盘距20日低点 ≤ 此比例
 
 # 超短同板块数量上限：板块普涨日防止单板块淹没超短列表（P0-69 后再加一道闸）
@@ -169,6 +170,7 @@ MOMENTUM_WEIGHTS: dict[str, int] = {
     "today_pct_0_5_1": 5,
     "today_pct_lt_0_5": 5,
     "today_pct_6_8": 5,
+    "today_pct_8_10": 3,   # P1-2: 新增 8-10% 档（加速赶顶风险，进一步降权）
     "accum_10_15": 15,
     "accum_15_20": 10,
     "accum_20_30": 5,
@@ -214,6 +216,7 @@ SHORT_TERM_WEIGHTS: dict[str, int] = {
     "today_pct_2_4": 15,
     "today_pct_4_6": 20,
     "today_pct_6_8": 12,
+    "today_pct_8_12": 8,   # P1-1: 新增 8-12% 档（涨幅偏大降权，但仍可入选）
     "accum_5_10": 10,
     "accum_10_15": 15,
     "accum_15_20": 8,
