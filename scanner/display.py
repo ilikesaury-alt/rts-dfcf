@@ -2,7 +2,7 @@ import os
 
 import wcwidth
 
-from scanner.config import MAX_MARKET_CAP, MAX_STOCK_PRICE, STALE_TIMEOUT_MINUTES, YI, now_beijing
+from scanner.config import MAX_MARKET_CAP, MAX_STOCK_PRICE, STALE_TIMEOUT_MINUTES, TRACK_RECOMMENDATION_DAYS, YI, now_beijing
 from scanner.models import Candidate
 from scanner.orchestrator import _session_state
 
@@ -120,7 +120,8 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             pullback_list: list[Candidate] | None = None,
             current_rank_map: dict[str, int] | None = None,
             short_term_list: list[Candidate] | None = None,
-            rebound_list: list[Candidate] | None = None):
+            rebound_list: list[Candidate] | None = None,
+            tracked_recs: list = None):
     if last_ranks is None:
         last_ranks = {}
     if current_rank_map is None:
@@ -289,6 +290,32 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
                       f"{_pad(trend_tag,14)} {acc:>8} {vr:>6} {_pad(score_visible,4,'r')}")
             else:
                 print(f"  {'—':>4} {'—':>6} {'—':>4} {_pad(display_name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {_pad(score_visible,4,'r')}")
+
+    if tracked_recs:
+        print(f"\n{ANSI['CYAN']}◆ 历史推荐跟踪 — 近{TRACK_RECOMMENDATION_DAYS}日推荐回调到买点{ANSI['RESET']}")
+        print(f"  {'—'*108}")
+        print(f"  {_pad('推荐日',10)} {_pad('名称',10)} {_pad('代码',12)} {_pad('策略',14)} "
+              f"{_pad('状态',8)} {_pad('信号',4,'r')} {_pad('今日涨幅',10,'r')} "
+              f"{_pad('累计收益',10,'r')} {_pad('买点信号',30)}")
+        print(f"  {'-'*108}")
+        for t in tracked_recs[:15]:
+            today_str = pct_colored(t.today_pct)
+            cum_str = f"{t.cum_return:+.1f}%"
+            if t.cum_return >= 5:
+                cum_color = ANSI["GREEN"]
+            elif t.cum_return <= -5:
+                cum_color = ANSI["RED"]
+            else:
+                cum_color = ""
+            cum_display = f"{cum_color}{cum_str:>10}{ANSI['RESET']}" if cum_color else f"{cum_str:>10}"
+            # 状态着色：到买点绿色，观察中黄色
+            if t.status == "到买点":
+                status_display = f"{ANSI['GREEN']}{_pad(t.status,8)}{ANSI['RESET']}"
+            else:
+                status_display = f"{ANSI['YELLOW']}{_pad(t.status,8)}{ANSI['RESET']}"
+            signals_str = "/".join(t.signals) if t.signals else ""
+            print(f"  {t.rec_date} {_pad(t.name,10)} {t.symbol:<12} {_pad(t.rec_category,14)} "
+                  f"{status_display} {t.buy_signals:>4} {today_str} {cum_display} {signals_str}")
 
     print(f"\n{'-'*96}")
     print(f"  {ANSI['GREEN']}新面孔{ANSI['RESET']}: 底部放量启动+涨幅2-6%")

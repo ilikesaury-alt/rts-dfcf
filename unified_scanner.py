@@ -25,6 +25,7 @@ from scanner.display import display
 from scanner.feishu import push_feishu
 from scanner.log_utils import log_results
 from scanner.orchestrator import scan_with_raw
+from scanner.tracker import track_recent_recommendations
 from scanner.trading_session import is_trading_time, next_session_label, seconds_until_next_session
 
 if sys.platform == "win32":
@@ -102,11 +103,17 @@ def main():
                 short_term_list.sort(key=lambda x: -x.score)
 
                 current_rank_map = {s.symbol: s.rank for s in all_gem}
+                # 历史推荐跟踪：查近5天推荐的实时表现
+                try:
+                    tracked = track_recent_recommendations(conn, xq_session)
+                except Exception as e:
+                    tracked = []
+                    print(f"  [!] 历史推荐跟踪失败: {e}")
                 display(new_faces, momentum, len(all_gem), interval,
                         filtered_large_cap=filtered_large_cap, last_ranks=last_ranks,
                         stale_candidates=stale_candidates, pullback_list=pullback_list,
                         current_rank_map=current_rank_map, short_term_list=short_term_list,
-                        rebound_list=rebound_list)
+                        rebound_list=rebound_list, tracked_recs=tracked)
                 log_results(new_faces, momentum + pullback_list + rebound_list + short_term_list)
                 if not args.no_feishu:
                     pushed = push_feishu(new_faces, momentum, pullback_list, stale_candidates,

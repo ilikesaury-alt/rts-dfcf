@@ -274,3 +274,43 @@ def get_loss_rates_batch(conn: sqlite3.Connection, symbols: list[str],
         logger.warning(f"get_loss_rates_batch failed: {e}")
         return {}
 
+
+def get_recent_recommendations(conn: sqlite3.Connection,
+                               lookback_days: int = 5,
+                               exclude_today: bool = True) -> list[dict]:
+    """查询近 N 个交易日的推荐记录（去重：同股取最新推荐日的最高分）。
+
+    返回每只票在最近推荐日的记录（同日内取最高分，跨日取最新日）。
+    用于 tracker 模块持续跟踪历史推荐的后续表现。
+    """
+    today = now_beijing().date().isoformat()
+    lookback = _n_trading_days_ago(lookback_days)
+    query = (
+        "SELECT symbol, name, category, score, percent, date "
+        "FROM recommendations WHERE date >= ? "
+    )
+    params: list = [lookback]
+    if exclude_today:
+        query += "AND date < ? "
+        params.append(today)
+    query += "ORDER BY date DESC, score DESC"
+    try:
+        cur = conn.execute(query, params)
+        rows = cur.fetchall()
+    except Exception as e:
+        logger.warning(f"get_recent_recommendations failed: {e}")
+        return []
+    # 去重：同 symbol 取首条（最新日期+最高分）
+    seen: set[str] = set()
+    result: list[dict] = []
+    for r in rows:
+        sym = r[0]
+        if sym in seen:
+            continue
+        seen.add(sym)
+        result.append({
+            "symbol": sym, "name": r[1], "category": r[2],
+            "score": r[3], "percent": r[4] or 0.0, "date": r[5],
+        })
+    return result
+

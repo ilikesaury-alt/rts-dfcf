@@ -376,6 +376,26 @@ HIGH_RISK_TRENDS: set[str] = {
 
 # Time-based bonus thresholds (minutes since midnight)
 STALE_TIMEOUT_MINUTES = 30  # 掉榜后保留时长
+TRACK_RECOMMENDATION_DAYS = 5  # 历史推荐跟踪窗口（交易日）
+
+# ── 历史推荐跟踪 — 买点信号识别阈值 ──
+# 跟踪场景核心：找"推荐后回调到买点"的票，不是简单展示全部历史推荐
+# 硬过滤：排除不能买的（大涨追高/已错过/暴跌失效）
+TRACK_FILTER_TODAY_HIGH = 5.0    # 今日涨幅≥此值 → 过滤（不追高）
+TRACK_FILTER_TODAY_LOW = -5.0    # 今日跌幅≥此值 → 过滤（可能破位）
+TRACK_FILTER_CUM_HIGH = 10.0     # 累计收益≥此值 → 过滤（已错过）
+TRACK_FILTER_CUM_LOW = -10.0     # 累计收益≤此值 → 过滤（信号失效）
+# 买点信号阈值（满足条件计 1 分，信号数决定状态分类）
+TRACK_MA20_SUPPORT_PCT = 3.0     # |close-MA20|/MA20 < 此值 且 MA20 上行 → MA20 支撑
+TRACK_VOL_SHRINK_RATIO = 0.8     # vol_ratio < 此值 → 缩量回调
+TRACK_RSI_LOW = 30               # RSI 合理区下限
+TRACK_RSI_HIGH = 50              # RSI 合理区上限（回落但不超卖）
+TRACK_BOLL_MID_PCT = 3.0         # 距 BOLL 中轨±此值内 → 位置合理
+TRACK_MA20_SLOPE_MIN = 0.5       # MA20 日涨幅>此值 → 上行（百分比）
+# 状态分类阈值
+TRACK_STATUS_BUY = 4             # 信号数≥此值 → "到买点"
+TRACK_STATUS_WATCH = 2           # 信号数≥此值 → "观察中"，否则 "未到买点"（过滤）
+TRACK_KLINE_REFRESH_LOOPS = 5    # 每 N 轮给跟踪票拉一次 K 线（节流）
 
 EARLY_TRADE_CUTOFF = 10 * 60 + 30   # 10:30
 LATE_TRADE_START = 14 * 60           # 14:00
