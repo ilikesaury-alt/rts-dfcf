@@ -2,6 +2,7 @@ from datetime import datetime
 
 from scanner.candidate_pool import ScanSession
 from scanner.models import Candidate, KlineSummary, StockInfo
+from scanner.orchestrator import _candidate_excluded_by_risk
 
 
 def _make_candidate(symbol: str, score: int = 20, kline_dims: dict | None = None,
@@ -317,5 +318,42 @@ class TestTryCandidateHighRiskTrend:
         # The result might still be None due to other filters, so check "缩量回调"
         # is no longer blocked (it was removed from HIGH_RISK_TRENDS)
         assert kline_s.trend not in {"回踩整理"}
+
+
+class TestRiskFlagHardFilter:
+    """风险标签硬排除：主力出货/趋势破位 命中即移出推荐，其余标签保留为展示警告。"""
+
+    def _cand(self, risk_flags: list[str]) -> Candidate:
+        c = _make_candidate("300999")
+        c.risk_flags = list(risk_flags)
+        return c
+
+    def test_main_force_distribution_excluded(self):
+        assert _candidate_excluded_by_risk(self._cand(["主力出货"]))
+
+    def test_trend_breakage_excluded(self):
+        assert _candidate_excluded_by_risk(self._cand(["趋势破位"]))
+
+    def test_both_excluded(self):
+        assert _candidate_excluded_by_risk(self._cand(["主力出货", "趋势破位"]))
+
+    def test_weak_market_not_excluded(self):
+        # 弱市是展示型警告，不应硬过滤
+        assert not _candidate_excluded_by_risk(self._cand(["弱市"]))
+
+    def test_overbought_not_excluded(self):
+        # 超买维持现状（仅 short_term 条件性否决），不应在此硬过滤
+        assert not _candidate_excluded_by_risk(self._cand(["超买"]))
+
+    def test_volume_divergence_not_excluded(self):
+        # 用户要求仅留 主力出货+趋势破位，量价背离不硬过滤
+        assert not _candidate_excluded_by_risk(self._cand(["量价背离"]))
+
+    def test_multiple_warning_flags_not_excluded(self):
+        # 涨幅过大 + 疲劳 + 弱市 等展示型标签组合，仍保留
+        assert not _candidate_excluded_by_risk(self._cand(["涨幅过大", "疲劳", "弱市"]))
+
+    def test_no_flags_not_excluded(self):
+        assert not _candidate_excluded_by_risk(self._cand([]))
 
 

@@ -383,6 +383,20 @@ HIGH_RISK_TRENDS: set[str] = {
     "回踩整理",   # pullback: avg -3.89%, win 21.6%
 }
 
+# ── 风险标签硬排除集合 ──
+# 命中即直接从所有推荐列表移除（推荐输出只保留可买票）。
+# 仅纳入"卖出/止损"级信号：
+#   - 主力出货：高位派发，明确的卖出信号
+#   - 趋势破位：MA 破位，止损信号
+# 其余标签保留为展示型警告（不在此过滤）：
+#   - 超买：上下文语义（仅 short_term 条件性否决，其余策略展示）
+#   - 涨幅过大 / 疲劳 / 弱市：追高/后劲不足/大盘环境提示
+#   - 量价背离：含轻度负面（回踩却不缩量），不足以单独排除
+RISK_FLAGS_HARD_FILTER: set[str] = {
+    "主力出货",
+    "趋势破位",
+}
+
 # Time-based bonus thresholds (minutes since midnight)
 STALE_TIMEOUT_MINUTES = 30  # 掉榜后保留时长
 TRACK_RECOMMENDATION_DAYS = 5  # 历史推荐跟踪窗口（交易日）

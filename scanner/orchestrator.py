@@ -44,6 +44,7 @@ from scanner.config import (
     RPS_PCTILE_HIGH,
     RPS_PCTILE_LOW,
     RPS_PCTILE_MEDIUM,
+    RISK_FLAGS_HARD_FILTER,
 )
 from scanner.database import (
     get_cached_kline,
@@ -515,6 +516,16 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     stale_candidates = session_state.get_stale_candidates()
     session_state.update_stale_quotes(stale_candidates, market_caps)
 
+    # 风险硬过滤：命中"卖出/止损"级标签（主力出货/趋势破位）的候选直接移出推荐列表。
+    # 此步在 update_pool/update_stale 之后执行，不影响候选池掉榜与排名历史，
+    # 仅作用于最终对外展示的推荐列表，确保推荐输出只含可买票。
+    excluded_by_risk = [c for c in all_candidates if _candidate_excluded_by_risk(c)]
+    if excluded_by_risk:
+        _names = "、".join(f"{c.stock.name}({c.stock.symbol})" for c in excluded_by_risk[:8])
+        _more = f" 等{len(excluded_by_risk)}只" if len(excluded_by_risk) > 8 else ""
+        print(f"  [风险过滤] {len(excluded_by_risk)} 只命中硬排除标签，已移出推荐：{_names}{_more}")
+    all_candidates = [c for c in all_candidates if not _candidate_excluded_by_risk(c)]
+
     # 分类列表必须从 all_candidates 重建，而非沿用旧对象引用——
     # dataclass_replace 已创建新对象（含最终 score），
     # 旧列表持有的仍是未累加 extra 的过期对象。
@@ -531,6 +542,18 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
 
     return (new_faces, momentum, pullback_list, rebound_list, short_term_list,
             stale_candidates, gem_stocks_filtered, filtered_large_cap)
+
+
+def _candidate_excluded_by_risk(c: Candidate) -> bool:
+    """命中硬排除风险标签的候选不进入推荐列表。
+
+    集合见 config.RISK_FLAGS_HARD_FILTER（主力出货 / 趋势破位），
+    二者均为明确的卖出 / 止损信号。其余标签（超买 / 涨幅过大 / 疲劳 /
+    弱市 / 量价背离）保留为展示型警告，不在此过滤。
+    """
+    if not c.risk_flags:
+        return False
+    return bool(set(c.risk_flags) & RISK_FLAGS_HARD_FILTER)
 
 
 def _parallel_fetch(pool: ThreadPoolExecutor, base_session: requests.Session,
