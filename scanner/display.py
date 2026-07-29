@@ -299,6 +299,11 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             else:
                 print(f"  {'—':>4} {'—':>6} {'—':>4} {_pad(display_name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {_pad(score_visible,4,'r')}")
 
+    display_priority(new_faces, pure_momentum,
+                     pullback_list=pullback_list,
+                     rebound_list=rebound_list,
+                     short_term_list=short_term_list)
+
     if tracked_recs:
         # 只显示高确信"到买点"；"观察中"默认隐藏（TRACK_DISPLAY_WATCH_MAX=0），
         # 需要时把该常量改回 >0 可恢复补充尾部。
@@ -350,3 +355,76 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
     print(f"  {ANSI['CYAN']}超跌反弹{ANSI['RESET']}: 5日跌超15%+企稳阳线+放量反转")
     print(f"  {ANSI['RED']}超短次日{ANSI['RESET']}: 今日涨2-8%+放量+板块活跃+明日卖出")
     print(f"  {ANSI['CYAN']}回调介入{ANSI['RESET']}: 强势股回踩+缩量+未破位")
+
+
+def display_priority(new_faces: list[Candidate], pure_momentum: list[Candidate],
+                     pullback_list: list[Candidate] | None = None,
+                     rebound_list: list[Candidate] | None = None,
+                     short_term_list: list[Candidate] | None = None):
+    """按策略优先级 + 评分降序整合展示所有推荐，方便选股。"""
+    if pullback_list is None:
+        pullback_list = []
+    if short_term_list is None:
+        short_term_list = []
+    if rebound_list is None:
+        rebound_list = []
+
+    CAT_PRIORITY = {
+        "known_new_face": 0, "rebound": 1, "new_face": 2,
+        "momentum": 3, "short_term": 4, "pullback": 5,
+    }
+    CAT_LABEL = {
+        "known_new_face": "NEW", "rebound": "RBD", "new_face": "NEW",
+        "momentum": "MOM", "short_term": "ST", "pullback": "PB",
+    }
+    CAT_COLOR = {
+        "known_new_face": ANSI["GREEN"], "rebound": ANSI["CYAN"], "new_face": ANSI["GREEN"],
+        "momentum": ANSI["YELLOW"], "short_term": ANSI["RED"], "pullback": ANSI["RED"],
+    }
+    SUGGEST = {
+        0: f"{ANSI['GREEN']}推荐{ANSI['RESET']}",
+        1: f"{ANSI['CYAN']}推荐{ANSI['RESET']}",
+        2: f"参考",
+        3: f"参考",
+        4: f"{ANSI['RED']}回避{ANSI['RESET']}",
+        5: f"{ANSI['RED']}回避{ANSI['RESET']}",
+    }
+
+    all_c = new_faces + pure_momentum + pullback_list + rebound_list + short_term_list
+    scored = []
+    seen: set[str] = set()
+    for c in all_c:
+        if c.stock.symbol in seen:
+            continue
+        seen.add(c.stock.symbol)
+        pri = CAT_PRIORITY.get(c.category, 99)
+        scored.append((pri, -c.score, c))
+    scored.sort(key=lambda x: (x[0], x[1]))
+
+    print(f"\n{ANSI['BOLD']}◆ 综合排序 — 策略优先级+评分降序{ANSI['RESET']}")
+    hdr = (f"  {_pad('#',3,'r')} {_pad('代码',12)} {_pad('名称',10)} "
+           f"{_pad('策略',5)} {_pad('评分',4,'r')} {_pad('涨幅',8,'r')} "
+           f"{_pad('排名',4,'r')} {_pad('建议',6)}")
+    print(hdr)
+    print(f"  {'-'*60}")
+    for i, (pri, neg_score, c) in enumerate(scored, 1):
+        s = c.stock
+        k = c.kline
+        cat = c.category
+        label = CAT_LABEL.get(cat, cat)
+        color = CAT_COLOR.get(cat, "")
+        label_display = f"{color}{label}{ANSI['RESET']}"
+        rank_str = f"{s.rank}" if s.rank else "N/A"
+        prom_str = ""
+        if c.prominence_labels:
+            tags = " ".join(c.prominence_labels)
+            prom_str = f" {ANSI['CYAN']}│{tags}│{ANSI['RESET']}"
+        risk_str = ""
+        if c.risk_flags:
+            risk_str = f" {ANSI['YELLOW']}⚠{ANSI['RESET']}"
+        print(f"  {i:3d}  {s.symbol:<12} {_pad(s.name,10)} "
+              f"{label_display:>5} {c.score:4d} {pct_colored(s.percent)} "
+              f"{rank_str:>4}{prom_str}{risk_str}")
+    print(f"  {'-'*60}")
+    print(f"  {SUGGEST[0]} → {ANSI['GREEN']}新面孔{ANSI['RESET']}/{ANSI['CYAN']}超跌反弹{ANSI['RESET']}  |  {ANSI['GREEN']}参考{ANSI['RESET']} → 动量/新面孔低分  |  {ANSI['RED']}回避{ANSI['RESET']} → 超短/回调(负期望)")
+    print(f"  {ANSI['CYAN']}↻{ANSI['RESET']} 辨识度高(近5日上榜≥3次均排名≤70)  {ANSI['YELLOW']}⚠{ANSI['RESET']} 带有风险标签")
