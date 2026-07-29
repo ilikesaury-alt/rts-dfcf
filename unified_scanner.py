@@ -111,8 +111,8 @@ def main():
                     print(f"  [!] 历史推荐跟踪失败: {e}")
                 display(new_faces, momentum, len(all_gem), interval,
                         filtered_large_cap=filtered_large_cap, last_ranks=last_ranks,
-                        stale_candidates=stale_candidates, pullback_list=pullback_list,
-                        current_rank_map=current_rank_map, short_term_list=short_term_list,
+                        pullback_list=pullback_list,
+                        short_term_list=short_term_list,
                         rebound_list=rebound_list, tracked_recs=tracked,
                         conn=conn)
                 log_results(new_faces, momentum + pullback_list + rebound_list + short_term_list)

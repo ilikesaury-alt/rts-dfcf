@@ -5,7 +5,6 @@ import wcwidth
 from scanner.config import (
     MAX_MARKET_CAP,
     MAX_STOCK_PRICE,
-    STALE_TIMEOUT_MINUTES,
     TRACK_DISPLAY_BUY_MAX,
     TRACK_DISPLAY_WATCH_MAX,
     TRACK_RECOMMENDATION_DAYS,
@@ -128,17 +127,13 @@ def _fmt_market_cap(cap: float) -> str:
 def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             gem_total: int, interval: int, filtered_large_cap: int = 0,
             last_ranks: dict[str, int] | None = None,
-            stale_candidates: list[Candidate] | None = None,
             pullback_list: list[Candidate] | None = None,
-            current_rank_map: dict[str, int] | None = None,
             short_term_list: list[Candidate] | None = None,
             rebound_list: list[Candidate] | None = None,
             tracked_recs: list = None,
             conn=None):
     if last_ranks is None:
         last_ranks = {}
-    if current_rank_map is None:
-        current_rank_map = {}
     clear_screen()
     now = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
     if pullback_list is None:
@@ -286,30 +281,6 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             displayed_syms.add(c.stock.symbol)
             _print_row(c, icon="⚠")
 
-    if stale_candidates:
-        print(f"\n{ANSI['YELLOW']}◆ 掉榜回顾 — 仍在观察 (保留{STALE_TIMEOUT_MINUTES}分钟){ANSI['RESET']}")
-        print(hdr)
-        print(f"  {'-'*108}")
-        for c in stale_candidates:
-            s = c.stock
-            display_name = f"○ {s.name}"
-            cur = f"{s.current:.2f}" if s.current else "N/A"
-            acc = f"{c.kline.accumulated_pct:+.2f}%" if c.kline else "N/A"
-            vr = f"{c.kline.volume_ratio:.1f}x" if c.kline else "N/A"
-            score_visible = str(c.score)
-            trend_tag = c.kline.trend if c.kline else "N/A"
-            if s.symbol in current_rank_map:
-                current_rank = current_rank_map[s.symbol]
-                delta_text, delta_color = _rank_delta_str(s.symbol, current_rank, last_ranks)
-                delta_display = (f"{delta_color}{_pad(delta_text,6,'r')}{ANSI['RESET']}"
-                                 if delta_color else _pad(delta_text,6,'r'))
-                src_tag = _source_tag(c)
-                print(f"  {current_rank:>4} {delta_display} {_pad(src_tag,4)} {_pad(display_name,10)} "
-                      f"{s.symbol:<12} {cur:>7} {pct_colored(s.percent)} "
-                      f"{_pad(trend_tag,14)} {acc:>8} {vr:>6} {_pad(score_visible,4,'r')}")
-            else:
-                print(f"  {'—':>4} {'—':>6} {'—':>4} {_pad(display_name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {_pad(score_visible,4,'r')}")
-
     display_priority(conn)
 
     if tracked_recs:
@@ -356,13 +327,6 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
                 _tracked_row(t)
         elif TRACK_DISPLAY_WATCH_MAX > 0 and watch:
             print(f"  {ANSI['YELLOW']}  · 另有 {len(watch)} 只观察中（已省略，回调结构不充分）{ANSI['RESET']}")
-
-    print(f"\n{'-'*96}")
-    print(f"  {ANSI['GREEN']}新面孔{ANSI['RESET']}: 底部放量启动+涨幅2-6%")
-    print(f"  {ANSI['YELLOW']}动量延续{ANSI['RESET']}: 累计涨幅10%+今日温和上攻")
-    print(f"  {ANSI['CYAN']}超跌反弹{ANSI['RESET']}: 5日跌超15%+企稳阳线+放量反转")
-    print(f"  {ANSI['RED']}超短次日{ANSI['RESET']}: 今日涨2-8%+放量+板块活跃+明日卖出")
-    print(f"  {ANSI['CYAN']}回调介入{ANSI['RESET']}: 强势股回踩+缩量+未破位")
 
 
 def display_priority(conn=None):
