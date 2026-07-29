@@ -143,8 +143,8 @@ def track_recent_recommendations(conn, session, lookback_days: int = TRACK_RECOM
         except Exception:
             pass
 
-    # 排序：买点信号数降序 → 累计收益升序（回调深的优先）
-    result.sort(key=lambda x: (-x.buy_signals, x.cum_return))
+    # 排序：辨识度优先 → 买点信号数降序 → 累计收益升序（回调深的优先）
+    result.sort(key=lambda x: (not bool(x.prominence_labels), -x.buy_signals, x.cum_return))
     return result
 
 

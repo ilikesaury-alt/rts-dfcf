@@ -71,7 +71,7 @@ class TestScanSession:
         later = datetime(2026, 6, 18, 11, 0)
         stale = ss.get_stale_candidates(later)
         assert len(stale) == 0
-        assert "300001" not in ss.today_pool
+        assert "300001" in ss.today_pool  # 不再物理删除，reset_if_new_day 统一清理
 
     def test_stale_candidates_sorted_by_score(self):
         ss = ScanSession()

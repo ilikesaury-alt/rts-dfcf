@@ -299,10 +299,7 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             else:
                 print(f"  {'—':>4} {'—':>6} {'—':>4} {_pad(display_name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {_pad(score_visible,4,'r')}")
 
-    display_priority(new_faces, pure_momentum,
-                     pullback_list=pullback_list,
-                     rebound_list=rebound_list,
-                     short_term_list=short_term_list)
+    display_priority()
 
     if tracked_recs:
         # 只显示高确信"到买点"；"观察中"默认隐藏（TRACK_DISPLAY_WATCH_MAX=0），
@@ -357,17 +354,10 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
     print(f"  {ANSI['CYAN']}回调介入{ANSI['RESET']}: 强势股回踩+缩量+未破位")
 
 
-def display_priority(new_faces: list[Candidate], pure_momentum: list[Candidate],
-                     pullback_list: list[Candidate] | None = None,
-                     rebound_list: list[Candidate] | None = None,
-                     short_term_list: list[Candidate] | None = None):
-    """按策略优先级 + 评分降序整合展示所有推荐，方便选股。"""
-    if pullback_list is None:
-        pullback_list = []
-    if short_term_list is None:
-        short_term_list = []
-    if rebound_list is None:
-        rebound_list = []
+def display_priority():
+    """从 session 池中取今日所有进入过推荐的票，按策略优先级+评分降序展示。"""
+    if not _session_state.today_pool:
+        return
 
     CAT_PRIORITY = {
         "known_new_face": 0, "rebound": 1, "new_face": 2,
@@ -384,16 +374,15 @@ def display_priority(new_faces: list[Candidate], pure_momentum: list[Candidate],
     SUGGEST = {
         0: f"{ANSI['GREEN']}推荐{ANSI['RESET']}",
         1: f"{ANSI['CYAN']}推荐{ANSI['RESET']}",
-        2: f"参考",
-        3: f"参考",
+        2: "参考",
+        3: "参考",
         4: f"{ANSI['RED']}回避{ANSI['RESET']}",
         5: f"{ANSI['RED']}回避{ANSI['RESET']}",
     }
 
-    all_c = new_faces + pure_momentum + pullback_list + rebound_list + short_term_list
-    scored = []
     seen: set[str] = set()
-    for c in all_c:
+    scored = []
+    for c in _session_state.today_pool.values():
         if c.stock.symbol in seen:
             continue
         seen.add(c.stock.symbol)
@@ -401,7 +390,7 @@ def display_priority(new_faces: list[Candidate], pure_momentum: list[Candidate],
         scored.append((pri, -c.score, c))
     scored.sort(key=lambda x: (x[0], x[1]))
 
-    print(f"\n{ANSI['BOLD']}◆ 综合排序 — 策略优先级+评分降序{ANSI['RESET']}")
+    print(f"\n{ANSI['BOLD']}◆ 综合排序 — 今日所有推荐 按策略优先级+评分降序{ANSI['RESET']}")
     hdr = (f"  {_pad('#',3,'r')} {_pad('代码',12)} {_pad('名称',10)} "
            f"{_pad('策略',5)} {_pad('评分',4,'r')} {_pad('涨幅',8,'r')} "
            f"{_pad('排名',4,'r')} {_pad('建议',6)}")

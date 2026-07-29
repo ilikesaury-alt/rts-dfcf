@@ -64,15 +64,15 @@ class ScanSession:
         now = now or now_beijing()
         stale_cutoff = now - timedelta(minutes=STALE_TIMEOUT_MINUTES)
         result: list[Candidate] = []
-        for sym, c in list(self.today_pool.items()):
+        for c in self.today_pool.values():
             if c.is_stale:
                 stale_dt = datetime.fromisoformat(c.stale_since).replace(tzinfo=now.tzinfo)
                 if stale_dt >= stale_cutoff:
                     result.append(c)
-                else:
-                    self.today_pool.pop(sym, None)
         result.sort(key=lambda c: -c.score)
         return result
+
+
 
     def update_stale_quotes(self, stale: list[Candidate], market_caps: dict[str, dict]):
         for c in stale:
