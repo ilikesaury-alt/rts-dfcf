@@ -134,7 +134,7 @@ def track_recent_recommendations(conn, session, lookback_days: int = TRACK_RECOM
         try:
             cnt = count_recent_appearances(conn, sym, PROMINENCE_LOOKBACK_DAYS)
             if cnt >= PROMINENCE_REPEAT_THRESHOLD:
-                result[-1].prominence_labels.append("反复上榜")
+                result[-1].prominence_labels.append("\u21bb")
         except Exception:
             pass
 

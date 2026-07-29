@@ -102,7 +102,7 @@ def _compute_prominence_labels(c: Candidate, conn):
     try:
         cnt = count_recent_appearances(conn, c.stock.symbol, PROMINENCE_LOOKBACK_DAYS)
         if cnt >= PROMINENCE_REPEAT_THRESHOLD:
-            c.prominence_labels.append("反复上榜")
+            c.prominence_labels.append("\u21bb")
     except Exception:
         pass
 
