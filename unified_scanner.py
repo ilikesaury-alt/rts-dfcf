@@ -113,7 +113,8 @@ def main():
                         filtered_large_cap=filtered_large_cap, last_ranks=last_ranks,
                         stale_candidates=stale_candidates, pullback_list=pullback_list,
                         current_rank_map=current_rank_map, short_term_list=short_term_list,
-                        rebound_list=rebound_list, tracked_recs=tracked)
+                        rebound_list=rebound_list, tracked_recs=tracked,
+                        conn=conn)
                 log_results(new_faces, momentum + pullback_list + rebound_list + short_term_list)
                 if not args.no_feishu:
                     pushed = push_feishu(new_faces, momentum, pullback_list, stale_candidates,

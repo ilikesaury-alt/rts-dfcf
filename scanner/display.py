@@ -2,9 +2,17 @@ import os
 
 import wcwidth
 
-from scanner.config import (MAX_MARKET_CAP, MAX_STOCK_PRICE, STALE_TIMEOUT_MINUTES,
-                             TRACK_DISPLAY_BUY_MAX, TRACK_DISPLAY_WATCH_MAX,
-                             TRACK_RECOMMENDATION_DAYS, YI, now_beijing)
+from scanner.config import (
+    MAX_MARKET_CAP,
+    MAX_STOCK_PRICE,
+    STALE_TIMEOUT_MINUTES,
+    TRACK_DISPLAY_BUY_MAX,
+    TRACK_DISPLAY_WATCH_MAX,
+    TRACK_RECOMMENDATION_DAYS,
+    YI,
+    now_beijing,
+)
+from scanner.database import get_today_recommendations
 from scanner.models import Candidate
 from scanner.orchestrator import _session_state
 
@@ -123,7 +131,8 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             current_rank_map: dict[str, int] | None = None,
             short_term_list: list[Candidate] | None = None,
             rebound_list: list[Candidate] | None = None,
-            tracked_recs: list = None):
+            tracked_recs: list = None,
+            conn=None):
     if last_ranks is None:
         last_ranks = {}
     if current_rank_map is None:
@@ -299,7 +308,7 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             else:
                 print(f"  {'—':>4} {'—':>6} {'—':>4} {_pad(display_name,10)} {s.symbol:<12} {cur:>7} {pct_colored(s.percent)} {_pad(trend_tag,14)} {acc:>8} {vr:>6} {_pad(score_visible,4,'r')}")
 
-    display_priority()
+    display_priority(conn)
 
     if tracked_recs:
         # 只显示高确信"到买点"；"观察中"默认隐藏（TRACK_DISPLAY_WATCH_MAX=0），
@@ -354,9 +363,13 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
     print(f"  {ANSI['CYAN']}回调介入{ANSI['RESET']}: 强势股回踩+缩量+未破位")
 
 
-def display_priority():
-    """从 session 池中取今日所有进入过推荐的票，按策略优先级+评分降序展示。"""
-    if not _session_state.today_pool:
+def display_priority(conn=None):
+    """从本地数据库读取今日所有进入过推荐的票，按策略优先级+评分降序展示。"""
+    if conn is None:
+        return
+
+    today_recs = get_today_recommendations(conn)
+    if not today_recs:
         return
 
     CAT_PRIORITY = {
@@ -380,40 +393,48 @@ def display_priority():
         5: f"{ANSI['RED']}回避{ANSI['RESET']}",
     }
 
-    seen: set[str] = set()
-    scored = []
-    for c in _session_state.today_pool.values():
-        if c.stock.symbol in seen:
-            continue
-        seen.add(c.stock.symbol)
-        pri = CAT_PRIORITY.get(c.category, 99)
-        scored.append((pri, -c.score, c))
-    scored.sort(key=lambda x: (x[0], x[1]))
+    for entry in today_recs:
+        pool_c = _session_state.today_pool.get(entry["symbol"])
+        entry["_candidate"] = pool_c
+
+    scored = sorted(today_recs, key=lambda x: (CAT_PRIORITY.get(x["category"], 99), -x["score"]))
 
     print(f"\n{ANSI['BOLD']}◆ 综合排序 — 今日所有推荐 按策略优先级+评分降序{ANSI['RESET']}")
     hdr = (f"  {_pad('#',3,'r')} {_pad('代码',12)} {_pad('名称',10)} "
            f"{_pad('策略',5)} {_pad('评分',4,'r')} {_pad('涨幅',8,'r')} "
-           f"{_pad('排名',4,'r')} {_pad('建议',6)}")
+           f"{_pad('现价',7,'r')} {_pad('排名',4,'r')} {_pad('时间',6)} {_pad('建议',6)}")
     print(hdr)
-    print(f"  {'-'*60}")
-    for i, (pri, neg_score, c) in enumerate(scored, 1):
-        s = c.stock
-        k = c.kline
-        cat = c.category
-        label = CAT_LABEL.get(cat, cat)
-        color = CAT_COLOR.get(cat, "")
-        label_display = f"{color}{label}{ANSI['RESET']}"
-        rank_str = f"{s.rank}" if s.rank else "N/A"
-        prom_str = ""
-        if c.prominence_labels:
-            tags = " ".join(c.prominence_labels)
-            prom_str = f" {ANSI['CYAN']}│{tags}│{ANSI['RESET']}"
-        risk_str = ""
-        if c.risk_flags:
-            risk_str = f" {ANSI['YELLOW']}⚠{ANSI['RESET']}"
-        print(f"  {i:3d}  {s.symbol:<12} {_pad(s.name,10)} "
-              f"{label_display:>5} {c.score:4d} {pct_colored(s.percent)} "
-              f"{rank_str:>4}{prom_str}{risk_str}")
-    print(f"  {'-'*60}")
+    print(f"  {'-'*78}")
+    for i, entry in enumerate(scored, 1):
+        c = entry["_candidate"]
+        if c:
+            s = c.stock
+            label = CAT_LABEL.get(c.category, c.category)
+            color = CAT_COLOR.get(c.category, "")
+            label_display = f"{color}{label}{ANSI['RESET']}"
+            rank_str = f"{s.rank}" if s.rank else "N/A"
+            price_str = f"{s.current:.2f}" if s.current else "—"
+            pct = s.percent
+            prom_str = ""
+            if c.prominence_labels:
+                tags = " ".join(c.prominence_labels)
+                prom_str = f" {ANSI['CYAN']}│{tags}│{ANSI['RESET']}"
+            risk_str = ""
+            if c.risk_flags:
+                risk_str = f" {ANSI['YELLOW']}⚠{ANSI['RESET']}"
+        else:
+            label = CAT_LABEL.get(entry["category"], entry["category"])
+            color = CAT_COLOR.get(entry["category"], "")
+            label_display = f"{color}{label}{ANSI['RESET']}"
+            rank_str = f"{entry['live_rank']}" if entry.get("live_rank") else "—"
+            price_str = "—"
+            pct = entry.get("live_percent", 0.0)
+            prom_str = ""
+            risk_str = ""
+        first_time = entry.get("first_time", entry.get("time", ""))[:5]
+        print(f"  {i:3d}  {entry['symbol']:<12} {_pad(entry['name'],10)} "
+              f"{label_display:>5} {entry['score']:4d} {pct_colored(pct)} "
+              f"{price_str:>7} {rank_str:>4} {_pad(first_time,6)}{prom_str}{risk_str}")
+    print(f"  {'-'*78}")
     print(f"  {SUGGEST[0]} → {ANSI['GREEN']}新面孔{ANSI['RESET']}/{ANSI['CYAN']}超跌反弹{ANSI['RESET']}  |  {ANSI['GREEN']}参考{ANSI['RESET']} → 动量/新面孔低分  |  {ANSI['RED']}回避{ANSI['RESET']} → 超短/回调(负期望)")
     print(f"  {ANSI['CYAN']}↻{ANSI['RESET']} 辨识度高(近5日上榜≥3次均排名≤70)  {ANSI['YELLOW']}⚠{ANSI['RESET']} 带有风险标签")

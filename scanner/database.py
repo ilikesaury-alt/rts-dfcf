@@ -326,3 +326,63 @@ def get_recent_recommendations(conn: sqlite3.Connection,
         })
     return result
 
+
+def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
+    """查询今日所有进入过推荐列表的票（去重，保留最高分）。
+
+    返回列表未排序，每项包含：
+      symbol, name, category, score, trend, first_time,
+      live_percent (from appearances), live_rank (from appearances)
+    """
+    today = now_beijing().date().isoformat()
+    try:
+        rows = conn.execute(
+            "SELECT symbol, name, category, score, trend, time "
+            "FROM recommendations WHERE date = ? ORDER BY score DESC",
+            (today,),
+        ).fetchall()
+    except Exception as e:
+        logger.warning(f"get_today_recommendations failed: {e}")
+        return []
+
+    seen: dict[str, dict] = {}
+    for r in rows:
+        sym = r[0]
+        if sym not in seen:
+            seen[sym] = {
+                "symbol": sym,
+                "name": r[1],
+                "category": r[2],
+                "score": r[3],
+                "trend": r[4],
+                "time": r[5],
+            }
+
+    try:
+        ft_rows = conn.execute(
+            "SELECT symbol, MIN(time) FROM recommendations WHERE date = ? GROUP BY symbol",
+            (today,),
+        ).fetchall()
+        first_time_map = {r[0]: r[1] for r in ft_rows}
+    except Exception as e:
+        logger.warning(f"get_today_recommendations MIN(time) failed: {e}")
+        first_time_map = {}
+    for sym in seen:
+        seen[sym]["first_time"] = first_time_map.get(sym, seen[sym].get("time", ""))
+
+    try:
+        app_rows = conn.execute(
+            "SELECT symbol, percent, rank FROM appearances WHERE date = ?",
+            (today,),
+        ).fetchall()
+    except Exception as e:
+        logger.warning(f"get_today_recommendations appearances query failed: {e}")
+        app_rows = []
+    app_map = {r[0]: {"percent": r[1], "rank": r[2]} for r in app_rows}
+    for sym, entry in seen.items():
+        a = app_map.get(sym, {})
+        entry["live_percent"] = a.get("percent", 0.0)
+        entry["live_rank"] = a.get("rank")
+
+    return list(seen.values())
+
