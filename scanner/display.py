@@ -383,12 +383,17 @@ def display_priority(conn=None):
     print(f"  {'-'*78}")
     for i, entry in enumerate(scored, 1):
         c = entry["_candidate"]
+        # 标签/优先级/建议列统一用 entry["category"]（与排序口径一致），
+        # 不用 c.category：双挂票的 today_pool 按 symbol 覆盖会拿到 short_term 候选，
+        # 而 DB 保留的是最高分行的 category（可能是 new_face），两者不一致会导致
+        # 排到 new_face 档却显示 ST 标签 + 回避建议的矛盾。
+        cat = entry["category"]
         if c:
             s = c.stock
-            label = CAT_LABEL.get(c.category, c.category)
-            color = CAT_COLOR.get(c.category, "")
+            label = CAT_LABEL.get(cat, cat)
+            color = CAT_COLOR.get(cat, "")
             label_display = f"{color}{label}{ANSI['RESET']}"
-            priority = CAT_PRIORITY.get(c.category, 99)
+            priority = CAT_PRIORITY.get(cat, 99)
             rank_str = f"{s.rank}" if s.rank else "N/A"
             price_str = f"{s.current:.2f}" if s.current else "—"
             pct = s.percent
@@ -400,10 +405,10 @@ def display_priority(conn=None):
             if c.risk_flags:
                 risk_str = f" {ANSI['YELLOW']}⚠{ANSI['RESET']}"
         else:
-            label = CAT_LABEL.get(entry["category"], entry["category"])
-            color = CAT_COLOR.get(entry["category"], "")
+            label = CAT_LABEL.get(cat, cat)
+            color = CAT_COLOR.get(cat, "")
             label_display = f"{color}{label}{ANSI['RESET']}"
-            priority = CAT_PRIORITY.get(entry["category"], 99)
+            priority = CAT_PRIORITY.get(cat, 99)
             rank_str = f"{entry['live_rank']}" if entry.get("live_rank") else "—"
             price_str = "—"
             pct = entry.get("live_percent", 0.0)

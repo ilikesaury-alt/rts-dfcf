@@ -21,7 +21,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-from scanner.config import DB_PATH
+from scanner.config import DB_PATH, now_beijing
 from scanner.trading_session import is_trading_day
 
 
@@ -39,10 +39,14 @@ class Outcome:
 def _nth_trading_day_after(d: date, n: int) -> date | None:
     """Return the date n trading days after d (exclusive of d)."""
     cursor = d
+    # max_iter 安全上限：防止 holidays.json 损坏导致 while 无限循环
+    # 正常情况每次 while 最多跳周末+假期(≤3天)，n*10 足够冗余
+    max_iter = max(n * 10, 365)
     for _ in range(n):
         cursor += timedelta(days=1)
-        while not is_trading_day(cursor):
+        while not is_trading_day(cursor) and max_iter > 0:
             cursor += timedelta(days=1)
+            max_iter -= 1
     return cursor
 
 
@@ -181,12 +185,20 @@ def strategy_performance(
 
     days > 0 时仅分析最近 N 天的推荐（基于 date 列过滤）。
     """
-    date_filter = f"AND date >= date('now', 'localtime', '-{int(days)} days') " if days > 0 else ""
+    # 用 Beijing UTC+8 计算截止日，避免服务器本地时区导致日期偏移
+    # （'localtime' 修饰符依赖服务器时区，违反项目硬约束）
+    params = list(ACTIVE_CATEGORIES)
+    if days > 0:
+        cutoff = (now_beijing() - timedelta(days=days)).date().isoformat()
+        date_filter = "AND date >= ? "
+        params.append(cutoff)
+    else:
+        date_filter = ""
     rows = conn.execute(
         f"SELECT category, score, {metric} FROM recommendations "
         f"WHERE category IN ({','.join('?' * len(ACTIVE_CATEGORIES))}) "
         f"AND {metric} IS NOT NULL {date_filter}",
-        tuple(ACTIVE_CATEGORIES),
+        tuple(params),
     ).fetchall()
 
     by_cat: dict[str, list[tuple[int, float]]] = defaultdict(list)
@@ -241,12 +253,19 @@ def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct", days: i
     dead_dim_keys = {
         "new_face_candle", "momentum_candle", "high_pos",
     }
-    date_filter = f"AND date >= date('now', 'localtime', '-{int(days)} days') " if days > 0 else ""
+    # 用 Beijing UTC+8 计算截止日，避免服务器本地时区导致日期偏移
+    params = list(ACTIVE_CATEGORIES)
+    if days > 0:
+        cutoff = (now_beijing() - timedelta(days=days)).date().isoformat()
+        date_filter = "AND date >= ? "
+        params.append(cutoff)
+    else:
+        date_filter = ""
     rows = conn.execute(
         f"SELECT score_breakdown, {metric} FROM recommendations "
         f"WHERE category IN ({','.join('?' * len(ACTIVE_CATEGORIES))}) "
         f"AND {metric} IS NOT NULL AND score_breakdown IS NOT NULL {date_filter}",
-        tuple(ACTIVE_CATEGORIES),
+        tuple(params),
     ).fetchall()
 
     # dim -> (list_of_dim_value, list_of_return)
