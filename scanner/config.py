@@ -431,7 +431,7 @@ TRACK_DISPLAY_WATCH_MAX = 0      # "观察中"补充最多显示条数（0 = 不
 # 辨识度标签 — 反复上榜
 PROMINENCE_LOOKBACK_DAYS = 5     # 回溯 N 个交易日
 PROMINENCE_REPEAT_THRESHOLD = 3  # 出现 ≥ N 天 → "↻"
-PROMINENCE_MAX_AVG_RANK = 50    # 近 N 日平均排名 ≤ 此值
+PROMINENCE_MAX_AVG_RANK = 70    # 近 N 日平均排名 ≤ 此值
 
 EARLY_TRADE_CUTOFF = 10 * 60 + 30   # 10:30
 LATE_TRADE_START = 14 * 60           # 14:00
