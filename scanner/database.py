@@ -2,7 +2,13 @@ import logging
 import sqlite3
 from datetime import date, datetime, timedelta
 
-from scanner.config import DB_PATH, now_beijing
+from scanner.config import (
+    DB_PATH,
+    PROMINENCE_LOOKBACK_DAYS,
+    PROMINENCE_MAX_AVG_RANK,
+    PROMINENCE_REPEAT_THRESHOLD,
+    now_beijing,
+)
 from scanner.trading_session import is_trading_day
 
 logger = logging.getLogger(__name__)
@@ -228,6 +234,55 @@ def count_recent_appearances(conn: sqlite3.Connection, symbol: str, lookback_day
         (symbol, lookback, today),
     )
     return cur.fetchone()[0]
+
+
+def get_prominence_map(conn: sqlite3.Connection, symbols: list[str]) -> dict[str, bool]:
+    """批量查询哪些 symbol 满足辨识度条件（↻）。
+
+    逻辑与 enhancer._compute_prominence_labels 完全一致：
+      近 PROMINENCE_LOOKBACK_DAYS 个交易日内出现 ≥ PROMINENCE_REPEAT_THRESHOLD 天，
+      且历史日（不含今日）平均排名 ≤ PROMINENCE_MAX_AVG_RANK。
+    单次 SQL 批查，避免 N+1。
+    """
+    if not symbols:
+        return {}
+    lookback_rank = _n_trading_days_ago(PROMINENCE_LOOKBACK_DAYS)
+    lookback_count = _n_trading_days_ago(PROMINENCE_LOOKBACK_DAYS - 1)
+    today = now_beijing().date().isoformat()
+    placeholders = ",".join("?" * len(symbols))
+    try:
+        rows = conn.execute(
+            f"SELECT symbol, date, rank FROM appearances "
+            f"WHERE symbol IN ({placeholders}) AND date >= ? AND date <= ?",
+            (*symbols, lookback_rank, today),
+        ).fetchall()
+    except Exception as e:
+        logger.warning(f"get_prominence_map failed: {e}")
+        return {}
+
+    by_sym: dict[str, dict] = {}
+    for sym, dt, rank in rows:
+        if sym not in by_sym:
+            by_sym[sym] = {"dates": set(), "rank_list": []}
+        by_sym[sym]["dates"].add(dt)
+        by_sym[sym]["rank_list"].append((dt, rank))
+
+    result: dict[str, bool] = {}
+    for sym in symbols:
+        info = by_sym.get(sym)
+        if not info:
+            result[sym] = False
+            continue
+        count_dates = {d for d in info["dates"] if d >= lookback_count}
+        if len(count_dates) < PROMINENCE_REPEAT_THRESHOLD:
+            result[sym] = False
+            continue
+        valid_ranks = [r for d, r in info["rank_list"] if d < today and r is not None and r > 0]
+        if not valid_ranks:
+            result[sym] = False
+            continue
+        result[sym] = sum(valid_ranks) / len(valid_ranks) <= PROMINENCE_MAX_AVG_RANK
+    return result
 
 
 def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: list, source: str | None = None):

@@ -12,7 +12,7 @@ from scanner.config import (
     YI,
     now_beijing,
 )
-from scanner.database import get_today_recommendations
+from scanner.database import get_prominence_map, get_today_recommendations
 from scanner.models import Candidate
 from scanner.orchestrator import _session_state
 
@@ -397,6 +397,16 @@ def display_priority(conn=None):
         pool_c = _session_state.today_pool.get(entry["symbol"])
         entry["_candidate"] = pool_c
 
+    prom_syms = [e["symbol"] for e in today_recs if not e["_candidate"]]
+    if prom_syms:
+        prom_map = get_prominence_map(conn, prom_syms)
+    else:
+        prom_map = {}
+    for entry in today_recs:
+        if entry["_candidate"]:
+            continue
+        entry["_prominent"] = prom_map.get(entry["symbol"], False)
+
     scored = sorted(today_recs, key=lambda x: (CAT_PRIORITY.get(x["category"], 99), -x["score"]))
 
     print(f"\n{ANSI['BOLD']}◆ 综合排序 — 今日所有推荐 按策略优先级+评分降序{ANSI['RESET']}")
@@ -430,6 +440,8 @@ def display_priority(conn=None):
             price_str = "—"
             pct = entry.get("live_percent", 0.0)
             prom_str = ""
+            if entry.get("_prominent"):
+                prom_str = f" {ANSI['CYAN']}│↻│{ANSI['RESET']}"
             risk_str = ""
         first_time = entry.get("first_time", entry.get("time", ""))[:5]
         print(f"  {i:3d}  {entry['symbol']:<12} {_pad(entry['name'],10)} "
