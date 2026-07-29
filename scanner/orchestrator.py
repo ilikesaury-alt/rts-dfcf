@@ -87,6 +87,7 @@ def _fetch_all_klines(conn: sqlite3.Connection, session: requests.Session, stock
     result: dict[str, list[dict] | None] = {}
     needs_fetch: list[str] = []
     stale_cache: dict[str, list[dict]] = {}
+    today = now_beijing().date()
 
     for s in stocks:
         cached = get_cached_kline(conn, s.symbol)
@@ -97,7 +98,6 @@ def _fetch_all_klines(conn: sqlite3.Connection, session: requests.Session, stock
                 continue
             max_date_str = max(k["date"] for k in cached)
             max_date = date.fromisoformat(max_date_str)
-            today = now_beijing().date()
             if not is_trading_time():
                 # 非交易时段：直接复用缓存，不补拉
                 result[s.symbol] = cached
@@ -140,7 +140,13 @@ def _fetch_all_klines(conn: sqlite3.Connection, session: requests.Session, stock
     # 写入阶段：主线程顺序写 DB，确保 SQLite 线程安全
     for sym, kline in fetched.items():
         if kline:
-            result[sym] = kline
+            if sym in stale_cache:
+                merged = {k["date"]: k for k in stale_cache[sym]}
+                for k in kline:
+                    merged[k["date"]] = k
+                result[sym] = sorted(merged.values(), key=lambda x: x["date"])
+            else:
+                result[sym] = kline
             try:
                 save_kline_to_db(conn, sym, kline)
             except Exception as e:

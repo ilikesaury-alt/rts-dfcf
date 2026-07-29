@@ -256,7 +256,9 @@ class TestFetchAllKlinesIntradayRefresh:
 
         res = o._fetch_all_klines(None, None, [StockInfo(symbol="300001", name="T", code="300001", percent=3.0, current=10.0, value=10000, rank_change=1000, rank=1)])
         assert "called" in fetched  # refetch triggered
-        assert res["300001"] is fresh
+        assert res["300001"] is not None
+        # merge 后结果包含 stale_cache + API 数据，不再是同一对象
+        assert res["300001"][-1]["close"] == 11.0
 
     def test_trading_time_missing_today_bar_always_fetches(self, monkeypatch):
         # 回归：盘中且缓存尚未含今日 Bar（max_date < today）必须补拉，
@@ -283,7 +285,11 @@ class TestFetchAllKlinesIntradayRefresh:
 
         res = o._fetch_all_klines(None, None, [StockInfo(symbol="300001", name="T", code="300001", percent=3.0, current=10.0, value=10000, rank_change=1000, rank=1)])
         assert "called" in fetched  # 必须补拉
-        assert res["300001"] is fresh
+        assert res["300001"] is not None
+        # merge 后 40 条旧日期 → 1 条(key 相同), 45 条今日 → 1 条 = 2 条
+        assert len(res["300001"]) == 2
+        assert res["300001"][-1]["close"] == 11.0
+        assert res["300001"][-1]["date"] == o.date.today().isoformat()
 
 
 class TestTryCandidateHighRiskTrend:

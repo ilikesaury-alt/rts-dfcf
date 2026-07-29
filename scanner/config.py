@@ -340,7 +340,7 @@ RPS_PCTILE_LOW = 30
 
 # K-line fetch configuration
 KLINE_FETCH_DAYS = 45     # Number of days to fetch from API
-KLINE_MIN_LENGTH = 34     # Minimum kline bars required for analysis
+KLINE_MIN_LENGTH = 32     # Minimum kline bars required for analysis
 
 # Fatigue detection for multi-day list appearances
 FATIGUE_PRICE_WARN_ACCUM = 8    # 5-day accum below this after 3+ days → price fatigue
