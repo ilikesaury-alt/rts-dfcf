@@ -9,6 +9,7 @@ def _tracked(status: str, name: str, symbol: str) -> SimpleNamespace:
         rec_date="07-28", name=name, symbol=symbol, rec_category="new_face",
         status=status, buy_signals=4, today_pct=1.2, cum_return=-2.0,
         signals=["未破位", "BOLL中轨", "缩量"],
+        prominence_labels=[],
     )
 
 

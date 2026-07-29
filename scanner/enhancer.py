@@ -4,6 +4,8 @@ from scanner.config import (
     now_beijing,
     CROSS_SOURCE_BONUS,
     DISTRIBUTION_ACCUM_HIGH,
+    PROMINENCE_LOOKBACK_DAYS,
+    PROMINENCE_REPEAT_THRESHOLD,
     DISTRIBUTION_ACCUM_MID,
     DISTRIBUTION_ACCUM_PULLBACK,
     DISTRIBUTION_INTRADAY_WEAK,
@@ -57,6 +59,7 @@ from scanner.config import (
     V_PB_SHRINK_NO,
     V_ST_MA_BROKEN,
 )
+from scanner.database import count_recent_appearances
 from scanner.models import Candidate
 from scanner.rank_trend import rank_trajectory_score
 from scanner.sector import classify_sector
@@ -90,6 +93,18 @@ def apply_all_bonuses(
         _apply_gap_up_bonus(c)
         _record_dimensions(c, market_idx_pct, opening_scores)
         _set_risk_flags(c)
+        _compute_prominence_labels(c, conn)
+
+
+def _compute_prominence_labels(c: Candidate, conn):
+    if not conn:
+        return
+    try:
+        cnt = count_recent_appearances(conn, c.stock.symbol, PROMINENCE_LOOKBACK_DAYS)
+        if cnt >= PROMINENCE_REPEAT_THRESHOLD:
+            c.prominence_labels.append("反复上榜")
+    except Exception:
+        pass
 
 
 def _set_risk_flags(c: Candidate):

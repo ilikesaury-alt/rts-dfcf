@@ -218,6 +218,18 @@ def _is_consecutive_trading_days(prev: date, curr: date) -> bool:
     return True
 
 
+def count_recent_appearances(conn: sqlite3.Connection, symbol: str, lookback_days: int = 10) -> int:
+    """Count distinct appearance days for a symbol in the last N trading days (including today)."""
+    from scanner.config import now_beijing as _now
+    lookback = _n_trading_days_ago(lookback_days - 1)
+    today = _now().date().isoformat()
+    cur = conn.execute(
+        "SELECT COUNT(DISTINCT date) FROM appearances WHERE symbol = ? AND date >= ? AND date <= ?",
+        (symbol, lookback, today),
+    )
+    return cur.fetchone()[0]
+
+
 def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: list, source: str | None = None):
     import json
     today = now_beijing().date().isoformat()

@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from scanner.api import fetch_kline, fetch_market_caps_batch
 from scanner.config import (
     KLINE_FETCH_DAYS,
+    PROMINENCE_LOOKBACK_DAYS,
+    PROMINENCE_REPEAT_THRESHOLD,
     TRACK_BOLL_MID_PCT,
     TRACK_FILTER_CUM_HIGH,
     TRACK_FILTER_CUM_LOW,
@@ -28,7 +30,8 @@ from scanner.config import (
     TRACK_VOL_SHRINK_RATIO,
     now_beijing,
 )
-from scanner.database import get_cached_kline, get_recent_recommendations, save_kline_to_db
+from scanner.database import (count_recent_appearances, get_cached_kline,
+                               get_recent_recommendations, save_kline_to_db)
 from scanner.indicators import compute_bollinger_bands, compute_macd, compute_ma, compute_rsi
 
 
@@ -47,6 +50,7 @@ class TrackedRec:
     status: str = ""       # "到买点" / "观察中"
     buy_signals: int = 0   # 买点信号数
     signals: list[str] = field(default_factory=list)  # 具体信号列表
+    prominence_labels: list[str] = field(default_factory=list)  # 辨识度标签
 
 
 # 模块级计数器：每 N 轮给跟踪票拉一次 K 线（节流）
@@ -126,6 +130,13 @@ def track_recent_recommendations(conn, session, lookback_days: int = TRACK_RECOM
             cum_return=cum_return,
             status=status, buy_signals=buy_signals, signals=signals,
         ))
+        # 辨识度标签
+        try:
+            cnt = count_recent_appearances(conn, sym, PROMINENCE_LOOKBACK_DAYS)
+            if cnt >= PROMINENCE_REPEAT_THRESHOLD:
+                result[-1].prominence_labels.append("反复上榜")
+        except Exception:
+            pass
 
     # 排序：买点信号数降序 → 累计收益升序（回调深的优先）
     result.sort(key=lambda x: (-x.buy_signals, x.cum_return))

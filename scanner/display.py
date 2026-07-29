@@ -205,16 +205,22 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
                 # 硬信号已展开时，软信号折叠成 +N
                 risk_parts[-1] = risk_parts[-1] + f"{ANSI['YELLOW']}+{soft_count}{ANSI['RESET']}"
         risk_str = " ".join(risk_parts)
+        # 辨识度标签
+        prom_str = ""
+        if c.prominence_labels:
+            tags = " ".join(c.prominence_labels)
+            prom_str = f"{ANSI['CYAN']}│{tags}│{ANSI['RESET']}"
+        full_risk = f"{prom_str} {risk_str}" if prom_str else risk_str
         if show_val:
             print(f"  {s.rank:>4} {delta_display} {_pad(src_tag,4)} {_pad(display_name,10)} "
                   f"{s.symbol:<12} {cur:>7} {pct_colored(s.percent)} "
                   f"{_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} "
-                  f"{_pad(bonus_str,16)} {cap_str:>8} {val_str:>6} {risk_str}")
+                  f"{_pad(bonus_str,16)} {cap_str:>8} {val_str:>6} {full_risk}")
         else:
             print(f"  {s.rank:>4} {delta_display} {_pad(src_tag,4)} {_pad(display_name,10)} "
                   f"{s.symbol:<12} {cur:>7} {pct_colored(s.percent)} "
                   f"{_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} "
-                  f"{_pad(bonus_str,16)} {cap_str:>8} {risk_str}")
+                  f"{_pad(bonus_str,16)} {cap_str:>8} {full_risk}")
 
     print(f"\n{ANSI['GREEN']}◆ 新面孔 — 底部异动 / 刚启动{ANSI['RESET']}  (找: 今日小涨+日线底部放量)")
     print(hdr)
@@ -315,8 +321,12 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             else:
                 status_display = f"{ANSI['YELLOW']}{_pad(t.status,8)}{ANSI['RESET']}"
             signals_str = "/".join(t.signals) if t.signals else ""
+            prom_str = ""
+            if t.prominence_labels:
+                tags = " ".join(t.prominence_labels)
+                prom_str = f" {ANSI['CYAN']}│{tags}│{ANSI['RESET']}"
             print(f"  {t.rec_date} {_pad(t.name,10)} {t.symbol:<12} {_pad(t.rec_category,14)} "
-                  f"{status_display} {t.buy_signals:>4} {today_str} {cum_display} {signals_str}")
+                  f"{status_display} {t.buy_signals:>4} {today_str} {cum_display} {signals_str}{prom_str}")
 
         print(f"\n{ANSI['CYAN']}◆ 历史推荐跟踪 — 近{TRACK_RECOMMENDATION_DAYS}日推荐回调到买点{ANSI['RESET']}")
         print(f"  {'—'*108}")
