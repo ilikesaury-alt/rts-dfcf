@@ -12,6 +12,7 @@ A-share stock momentum scanner merging Xueqiu surge + hot stock ranking APIs. Sc
 
 ```
 unified_scanner.py        # Single entry point (dual-source fusion)
+stock_report.py           # Individual stock deep-dive report tool
 scanner/
   orchestrator.py         # Core scan pipeline
   analysis.py             # Scoring engines (new_face, momentum, pullback, rebound, short_term)
@@ -22,9 +23,11 @@ scanner/
   models.py               # StockInfo, Candidate, KlineSummary dataclasses
   indicators.py           # RSI, KDJ, MACD, ADX, ATR, OBV, Bollinger computation
   patterns.py             # K-line pattern detection (detect_*_patterns)
+  features.py             # Unified feature extraction (build_features)
   enhancer.py             # Bonus scoring + accumulate_final_score
   candidate_pool.py       # ScanSession with list presence tracking
   rank_trend.py           # RankTracker with trajectory scoring
+  tracker.py              # History recommendation tracking (buy-point detection)
   sector.py               # Sector cluster detection
   backtest.py             # Backtest / IC attribution framework
   trading_session.py      # Trading hours/holidays
@@ -53,11 +56,11 @@ tests/                    # pytest test suite
   - **pullback**: today_pct ≤ 0 (flat/down day only; PULLBACK_MAX_TODAY_PCT=0.0 eliminates the (0,2] dead zone), accumulated ≥ 5%, MA20 trending up (>+0.5%), volume shrinkage (<0.6x), sector active (≥3 same-sector), bollinger touch. pos_dims ≥ 2 required.
   - **rebound**: 5-day cumulative drop ≤ -10% (P0-1: relaxed from -15% on 2026-07-28 to cover "阴跌企稳" scenario where drop is 10-15% without crash day), crash day (≤-10%) is now a bonus (not hard gate), today's gain 0.5%~8% (stabilizing candle). pos_dims ≥ 2 required. No overbought veto (low-position scenario by design). Dimensions: oversold (RSI<30 / KDJ J<0 / MACD turn red), volume confirmation, sector resonance, pattern (engulfing/hammer/3-bull). Note: pattern score is computed once in `analyze_rebound` (via `detect_rebound_patterns`) and **not re-counted** in validator `total` — `_rb_pattern` only reads pre-computed dims for pos_dims gating.
   - **short_term**: vol_ratio ≥ 1.0 hard gate. Pass rule: 弱转强 (weak-to-strong, st_weak_to_strong>0) passes outright; otherwise requires pos_dims ≥ 2 AND non_sector_pos ≥ 1 (rank/MA/weak — sector cluster alone cannot pass, prevents sector-wide surge days flooding the list). If overbought, 弱转强 loses its override privilege. today_pct upper bound is 12% (P1-1: relaxed from 8% on 2026-07-28 to cover 8-12% strong stocks; 8-12% tier scores +8).
-- Scoring & classification: five strategies scored **in parallel** per stock, then `_classify_category` (orchestrator.py:216-256) picks the most fitting label by **price structure** (not attempt order). New stocks: new_face > rebound > short_term > momentum > pullback. Old stocks: rebound (crash + stabilizing) → rebound; 弱转强 (weak-to-strong) → short_term; momentum > short_term > known_new_face > pullback. pullback is mutually exclusive with other strategies (today_pct≤0 vs >0), placed last as high-risk monitor. New IPOs that pass both new_face and short_term are **dual-listed** to both buckets, each with independent `extra` bonus (orchestrator.py:300-311).
+- Scoring & classification: five strategies scored **in parallel** per stock, then `_classify_category` (orchestrator.py:234-272) picks the most fitting label by **price structure** (not attempt order). New stocks: new_face > rebound > short_term > momentum > pullback. Old stocks: rebound (crash + stabilizing) → rebound; 弱转强 (weak-to-strong) → short_term; momentum > short_term > known_new_face > pullback. pullback is mutually exclusive with other strategies (today_pct≤0 vs >0), placed last as high-risk monitor. New IPOs that pass both new_face and short_term are **dual-listed** to both buckets, each with independent `extra` bonus (orchestrator.py:341-354).
 - RPS exemption: `rebound` candidates have negative `accumulated_pct` by definition and would always fall into the bottom percentile (RPS_LOW=-3 penalty). `_compute_rps` exempts `category=="rebound"` (returns 0) to avoid penalizing the strategy's core thesis.
-- Same-sector cap: short_term list keeps top `SHORT_TERM_MAX_PER_SECTOR=2` per sector (sorted by score desc) to prevent sector-wide surge days flooding the list (orchestrator.py:198-216).
+- Same-sector cap: short_term list keeps top `SHORT_TERM_MAX_PER_SECTOR=2` per sector (sorted by score desc) to prevent sector-wide surge days flooding the list (orchestrator.py:214-231).
 - Trend-label hard filter (`config.py:HIGH_RISK_TRENDS`): currently only "回踩整理" is rejected before scoring (pullback: avg next-day -3.89%, win 21.6%). "缩量回调" was removed (avg -2.09%, win 39.2% — acceptable in candidate-pool context with MA support + mild pullback).
-- Composite risk flags (`enhancer.py:_set_risk_flags`): candidates carry **stackable** risk labels (not single-dim reverse indicators). Seven tags with explicit trading-decision implications, centralized thresholds in `config.py:303-315`. **HARD FILTER labels** (`config.py:RISK_FLAGS_HARD_FILTER` = {主力出货, 趋势破位}) hit → removed from ALL recommendation lists at the orchestrator list-assembly stage (display/feishu receive clean lists automatically; only buyable stocks remain). Remaining tags stay display-only warnings.
+- Composite risk flags (`enhancer.py:_set_risk_flags`): candidates carry **stackable** risk labels (not single-dim reverse indicators). Seven tags with explicit trading-decision implications, centralized thresholds in `config.py:355-398`. **HARD FILTER labels** (`config.py:RISK_FLAGS_HARD_FILTER` = {主力出货, 趋势破位}) hit → removed from ALL recommendation lists at the orchestrator list-assembly stage (display/feishu receive clean lists automatically; only buyable stocks remain). Remaining tags stay display-only warnings.
   - **超买** (overbought): BOLL %B>1.10 or KDJ J>115 or 20-day gain>60% — extreme chase-high risk (收紧自 1.0/105：旧阈值在强势股主升浪中近乎必中，导致"全民超买"误报)
   - **疲劳** (fatigue): `fatigue` penalty triggered — momentum waning after extended listing
   - **弱市** (weak market): `market_env_bonus < 0` (index < -1.0%)
