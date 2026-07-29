@@ -429,8 +429,8 @@ TRACK_DISPLAY_BUY_MAX = 10       # "到买点"最多显示条数
 TRACK_DISPLAY_WATCH_MAX = 0      # "观察中"补充最多显示条数（0 = 不显示，只看到买点）
 
 # 辨识度标签 — 反复上榜
-PROMINENCE_LOOKBACK_DAYS = 10    # 回溯 N 个交易日
-PROMINENCE_REPEAT_THRESHOLD = 3  # 出现 ≥ N 天 → "反复上榜"
+PROMINENCE_LOOKBACK_DAYS = 5     # 回溯 N 个交易日
+PROMINENCE_REPEAT_THRESHOLD = 3  # 出现 ≥ N 天 → "↻"
 
 EARLY_TRADE_CUTOFF = 10 * 60 + 30   # 10:30
 LATE_TRADE_START = 14 * 60           # 14:00
