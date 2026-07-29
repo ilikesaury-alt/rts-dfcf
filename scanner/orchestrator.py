@@ -250,6 +250,10 @@ def _classify_category(stock: StockInfo, is_new: bool,
             return "short_term"
         if c_mo is not None:
             return "momentum"
+        # 新股今日平/跌（前4策略都要求 today_pct>0），但累计上涨+缩量回调，
+        # 归 pullback 高风险监控（与老股分支一致，填补强势回踩真空）
+        if c_pb is not None:
+            return "pullback"
         return None
     # 老股：超跌企稳优先归反弹；弱转强优先归超短；
     # 其它"非弱转强超短合格票"若同时过动量则归动量（避免掏空动量桶），
@@ -355,11 +359,16 @@ def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, l
 
 
 def _compute_rps(candidates: list[Candidate],
-                 baseline: list[float] | None = None) -> dict[str, int]:
+                 baseline: list[float] | None = None,
+                 accum_map: dict[str, float] | None = None) -> dict[str, int]:
     """计算 RPS 相对强弱加分。
 
     baseline: 全 GEM 监控集的累计涨幅列表（排名基准）。若提供，候选在其中排名，
     恢复 RPS「相对全市场强弱」本意；若不提供则退化为候选池内排名（旧行为）。
+    accum_map: 候选 symbol → 历史5日累计涨幅（排除今日）。用于统一 RPS 口径：
+    short_term 的 c.kline.accumulated_pct 包含今日（策略语义），与 baseline
+    （排除今日）口径不一致，会导致百分位偏高。传入 accum_map 后所有候选用统一
+    历史口径，与 baseline 一致。
     """
     scores: dict[str, int] = {}
     # 双挂票（同代码出现在多个桶）只计一次排名，避免拉高 total 扭曲分位
@@ -368,7 +377,13 @@ def _compute_rps(candidates: list[Candidate],
     candidates = uniq
     if len(candidates) < 2:
         return {c.stock.symbol: 0 for c in candidates}
-    cand_accum = [c.kline.accumulated_pct if c.kline else 0 for c in candidates]
+    # 优先使用 accum_map 中的统一口径；回退到 c.kline.accumulated_pct
+    cand_accum = []
+    for c in candidates:
+        if accum_map is not None and c.stock.symbol in accum_map:
+            cand_accum.append(accum_map[c.stock.symbol])
+        else:
+            cand_accum.append(c.kline.accumulated_pct if c.kline else 0)
     if baseline:
         base_sorted = sorted(baseline)
         base_total = len(base_sorted)
@@ -462,9 +477,6 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         if st:
             short_term_list.append(st)
 
-    # 同板块上限：板块普涨日防止单板块淹没超短列表（P0-69 后再加一道闸）
-    short_term_list = _cap_short_term_by_sector(short_term_list)
-
     all_candidates = new_faces + momentum + pullback_list + rebound_list + short_term_list
     for c in all_candidates:
         cap_data = market_caps.get(c.stock.symbol, {})
@@ -474,7 +486,11 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     rps_scores: dict[str, int] = {}
     # RPS 基准：全 GEM 监控集（过滤后、含未入选候选）的 5 日累计涨幅列表，
     # 使 RPS 表达「相对全市场强弱」而非仅在已涨票中比谁涨得多。
+    # 口径统一为"历史5日累计"（排除今日），与 new_face/momentum/pullback/rebound
+    # 的 c.kline.accumulated_pct 一致。short_term 的 accumulated 包含今日
+    # （策略语义），需通过 accum_map 覆盖为历史口径，避免百分位偏高。
     rps_baseline: list[float] = []
+    accum_map: dict[str, float] = {}  # symbol → 历史5日累计涨幅（排除今日）
     for s in gem_stocks_filtered:
         kl = klines.get(s.symbol)
         if not kl:
@@ -484,7 +500,17 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         if len(closes) >= 6:
             acc = (closes[-1] - closes[-6]) / closes[-6] * 100
             rps_baseline.append(acc)
-    rps_scores.update(_compute_rps(all_candidates, baseline=rps_baseline))
+    # 为所有候选构建历史口径 accumulated（与 baseline 一致）
+    for c in all_candidates:
+        kl = klines.get(c.stock.symbol)
+        if not kl:
+            continue
+        hist = [k for k in kl if k["date"] != today]
+        closes = [k["close"] for k in hist]
+        if len(closes) >= 6:
+            accum_map[c.stock.symbol] = (closes[-1] - closes[-6]) / closes[-6] * 100
+    rps_scores.update(_compute_rps(all_candidates, baseline=rps_baseline,
+                                  accum_map=accum_map))
 
     intraday_scores: dict[str, float | None] = {}
     opening_scores: dict[str, float | None] = {}
@@ -554,6 +580,12 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     pullback_list.sort(key=lambda c: -c.score)
     rebound_list.sort(key=lambda c: -c.score)
     short_term_list.sort(key=lambda c: -c.score)
+
+    # 同板块上限：板块普涨日防止单板块淹没超短列表。
+    # 必须在 apply_all_bonuses + accumulate_final_score 之后执行：
+    # list_momentum_bonus(±15) 等大额 bonus 会反转同板块内排名，
+    # 若在 bonus 之前裁剪会保留错误的候选（bug 修复）。
+    short_term_list = _cap_short_term_by_sector(short_term_list)
 
     return (new_faces, momentum, pullback_list, rebound_list, short_term_list,
             stale_candidates, gem_stocks_filtered, filtered_large_cap)

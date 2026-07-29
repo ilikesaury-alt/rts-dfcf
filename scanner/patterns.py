@@ -30,20 +30,29 @@ def _is_bullish_candle(o: float, c: float) -> bool:
 # 共享原语：算法只实现一次，下游按策略组合
 # ----------------------------------------------------------------------------
 
-def _bullish_engulfing(latest: dict, prev: dict, require_crash: bool = False) -> bool:
+def _bullish_engulfing(latest: dict, prev: dict, require_crash: bool = False,
+                      prev_prev_close: float | None = None) -> bool:
     """阳包阴：今日阳线实体完全覆盖昨日阴线实体。
 
     require_crash=True 时额外要求昨日为暴跌(收盘跌幅<= -5%)，用于超跌反弹的
-    "暴跌后吞没" 变体。
+    "暴跌后吞没" 变体。此时需传入 prev_prev_close（前日收盘）以计算昨日日内跌幅；
+    若未传入则退化为实体涨跌幅判定（兼容旧调用方，但有跳空失真风险）。
     """
     ho, hc = latest["open"], latest["close"]
     po, pc = prev["open"], prev["close"]
     if not (_is_bullish_candle(ho, hc) and not _is_bullish_candle(po, pc)):
         return False
-    if hc <= prev["high"] or ho >= pc:
+    # 实体吞没：今收>昨开（实体顶>实体顶）且 今开<昨收（实体底<实体底）
+    # 用 po 而非 prev["high"]，后者要求超过昨日最高价，过严，会漏判长上影线的实体吞没
+    if hc <= po or ho >= pc:
         return False
     if require_crash:
-        prev_pct = (pc - po) / po * 100 if po > 0 else 0
+        # 日内跌幅（收盘对收盘）才是"暴跌"的标准定义；
+        # 实体涨跌幅 (pc-po)/po 在跳空时严重失真（高开低走被误判为暴跌）
+        if prev_prev_close is not None and prev_prev_close > 0:
+            prev_pct = (pc - prev_prev_close) / prev_prev_close * 100
+        else:
+            prev_pct = (pc - po) / po * 100 if po > 0 else 0
         if prev_pct > -5:
             return False
     return True
@@ -173,8 +182,11 @@ def detect_rebound_patterns(kline: list[dict]) -> tuple[int, dict]:
     dims: dict[str, int] = {}
     latest = kline[-1]   # 今日
     prev = kline[-2]     # 昨日
+    # 传入前日收盘用于计算昨日日内跌幅，避免实体涨跌幅在跳空时失真
+    prev_prev_close = kline[-3]["close"] if len(kline) >= 3 else None
 
-    if _bullish_engulfing(latest, prev, require_crash=True):
+    if _bullish_engulfing(latest, prev, require_crash=True,
+                          prev_prev_close=prev_prev_close):
         score += 6
         dims["rb_pattern_engulfing_crash"] = 6
     elif _hammer(latest):

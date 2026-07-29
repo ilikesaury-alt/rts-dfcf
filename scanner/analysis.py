@@ -522,15 +522,15 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
         trend = "加速启动"
 
     # Volume
-    if MOMENTUM_VOL_HEALTHY_MIN < vol_ratio < MOMENTUM_VOL_HEALTHY_MAX:
-        score += W["vol_healthy"]
-        dims["momentum_volume"] = W["vol_healthy"]
-    elif vol_ratio >= MOMENTUM_VOL_HEALTHY_MAX:
-        score += W["vol_surge"]
-        dims["momentum_volume"] = W["vol_surge"]
-    elif vol_ratio < MOMENTUM_VOL_HEALTHY_MIN:
+    if vol_ratio < MOMENTUM_VOL_HEALTHY_MIN:
         score += W["vol_low"]
         dims["momentum_volume"] = W["vol_low"]
+    elif vol_ratio < MOMENTUM_VOL_HEALTHY_MAX:
+        score += W["vol_healthy"]
+        dims["momentum_volume"] = W["vol_healthy"]
+    else:
+        score += W["vol_surge"]
+        dims["momentum_volume"] = W["vol_surge"]
 
     vol_peak = _vol_peak_ratio(volumes)
     if vol_peak < VOL_PEAK_MOMENTUM_WARN:
@@ -728,11 +728,14 @@ def _analyze_pullback_ma(closes: list, W: dict) -> dict:
             result["ma_broken"] = True
             result["score"] += W["ma_broken"]
             result["dimensions"]["pullback_ma_broken"] = W["ma_broken"]
-        ma5 = sum(closes[-5:]) / 5
-        if result["ma10"] is not None and ma5 > result["ma10"] and result["ma10"] > ma20:
-            result["ma_bull_extra"] = MA_BULL_EXTRA_BONUS
-            result["score"] += result["ma_bull_extra"]
-            result["dimensions"]["pullback_ma_bull"] = result["ma_bull_extra"]
+        # ma_bull_extra 仅在未破位时计算：close<ma20 与 ma5>ma10>ma20 同时成立是矛盾信号
+        # （破位时 MA 多头排列是 MA 滞后导致的假象，不应给多头加分）
+        if not result["ma_broken"]:
+            ma5 = sum(closes[-5:]) / 5
+            if result["ma10"] is not None and ma5 > result["ma10"] and result["ma10"] > ma20:
+                result["ma_bull_extra"] = MA_BULL_EXTRA_BONUS
+                result["score"] += result["ma_bull_extra"]
+                result["dimensions"]["pullback_ma_bull"] = result["ma_bull_extra"]
     elif len(closes) >= 10:
         if result["ma_support"] and result["ma10"] is not None:
             ma5 = sum(closes[-5:]) / 5
@@ -817,7 +820,7 @@ def _classify_pullback_trend(ma_support: bool, ma_broken: bool, today_pct: float
     Returns:
         Trend classification string
     """
-    if ma_support and not ma_broken and (-5 < today_pct < 0):
+    if ma_support and not ma_broken and (-5 < today_pct <= 0):
         return "缩量回调"
     elif ma_broken:
         return "破位回调"

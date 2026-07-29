@@ -38,8 +38,10 @@ def seconds_until_next_session(now: datetime | None = None) -> int:
 
 def _seconds_until_next_trading_day(now: datetime) -> int:
     cursor = now.date() + timedelta(days=1)
-    while not is_trading_day(cursor):
+    max_iter = 365  # 安全上限：防止 holidays.json 损坏导致无限循环
+    while not is_trading_day(cursor) and max_iter > 0:
         cursor += timedelta(days=1)
+        max_iter -= 1
     return int((datetime.combine(cursor, MORNING_START, now.tzinfo) - now).total_seconds())
 
 
@@ -62,6 +64,8 @@ def next_session_label(now: datetime | None = None) -> str:
 
 def _next_trading_day_label(now: datetime) -> str:
     cursor = now.date() + timedelta(days=1)
-    while not is_trading_day(cursor):
+    max_iter = 365  # 安全上限：防止 holidays.json 损坏导致无限循环
+    while not is_trading_day(cursor) and max_iter > 0:
         cursor += timedelta(days=1)
+        max_iter -= 1
     return f"下次交易 {cursor.isoformat()} 09:30"

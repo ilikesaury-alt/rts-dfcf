@@ -90,8 +90,9 @@ def record_appearances(conn: sqlite3.Connection, symbols: list[dict]):
         rank = item.get("rank", i)
         if rank is None:
             rank = i
+        # symbol/name 用 .get() 容错：API 偶发返回缺字段时不应整批写入失败
         rows.append((
-            item["symbol"], item["name"], today, rank,
+            item.get("symbol", ""), item.get("name", ""), today, rank,
             item.get("percent", 0), item.get("value", 0),
         ))
     try:
@@ -105,6 +106,10 @@ def record_appearances(conn: sqlite3.Connection, symbols: list[dict]):
         conn.commit()
     except Exception as e:
         print(f"  [!] 批量写入appearances失败: {e}, 逐行回退写入")
+        try:
+            conn.rollback()  # 事务失败后必须回滚，否则后续 execute 会报"cannot start a transaction within a transaction"
+        except Exception:
+            pass
         for row in rows:
             try:
                 conn.execute(
@@ -328,13 +333,16 @@ def get_loss_rates_batch(conn: sqlite3.Connection, symbols: list[str],
     if not symbols:
         return {}
     placeholders = ",".join("?" * len(symbols))
+    # 用 Beijing UTC+8 计算截止日，避免服务器本地时区导致日期偏移
+    # （'localtime' 修饰符依赖服务器时区，违反项目硬约束）
+    cutoff = (now_beijing() - timedelta(days=lookback_days)).date().isoformat()
     try:
         cur = conn.execute(
             f"SELECT symbol, COUNT(*), SUM(CASE WHEN next_day_pct <= -5 THEN 1 ELSE 0 END) "
             f"FROM recommendations WHERE symbol IN ({placeholders}) "
-            f"AND next_day_pct IS NOT NULL AND date >= date('now', 'localtime', ?) "
+            f"AND next_day_pct IS NOT NULL AND date >= ? "
             f"GROUP BY symbol",
-            (*symbols, f"-{lookback_days} days"),
+            (*symbols, cutoff),
         )
         return {row[0]: row[2] * 100 / row[1] for row in cur if row[1] >= 3}
     except Exception as e:

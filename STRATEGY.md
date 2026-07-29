@@ -12,6 +12,16 @@
 > - **P1-2 momentum 上限放宽**：`MAX_MOMENTUM_TODAY_PCT` 8→10，新增 8-10% 档位（+3分），让 9-10% 加速票能进 momentum（主升浪中段）。
 > - **P1-3 K线失败汇总**：`_fetch_all_klines` 末尾打印缺失数量和代码预览，避免静默丢弃。
 
+> **2026-07-29 严重 Bug 修复**（代码审查发现 7 关键 + 5 次要 bug）：
+> - **B1 pullback 平日误过滤**：`_classify_pullback_trend` 用 `today_pct < 0`（严格<0），平日（today_pct=0）落入"回踩整理"被 `HIGH_RISK_TRENDS` 过滤。修复为 `<= 0`，恢复平日回踩候选。
+> - **B2 板块裁剪基于部分分数**：`_cap_short_term_by_sector` 在 `apply_all_bonuses` 之前执行，`list_momentum_bonus`(±15) 等 bonus 会反转同板块内排名。修复为移到所有 bonus 累加之后。
+> - **B3 RPS 口径不一致**：short_term 的 `accumulated_pct` 包含今日（策略语义），但 RPS baseline 排除今日，导致 short_term 候选百分位偏高。修复为 `_compute_rps` 新增 `accum_map` 参数，所有候选用统一历史口径。
+> - **B4 时区违反 UTC+8 约束**：`get_loss_rates_batch` 用 `date('now','localtime',?)` 依赖服务器时区。修复为 `now_beijing()` 参数化。
+> - **B5 阳包阴判定过严**：`_bullish_engulfing` 用 `prev["high"]`（昨日最高价）而非 `po`（昨日开盘价），长上影线场景漏判。修复为标准实体吞没 `hc <= po`。
+> - **B6 require_crash 跳空失真**：暴跌判定用实体涨跌幅 `(pc-po)/po`，跳空时严重失真。修复为日内跌幅（需 `prev_prev_close`），`len(kline)<3` 时回退兼容。
+> - **B7 新股分支缺 pullback**：`_classify_category` 新股分支无 pullback fallback，今日平/跌的新股 pullback 候选被静默丢弃。修复为补 fallback 分支。
+> - 次要：trading_session while 循环加 max_iter=365；record_appearances 用 .get() 容错 + rollback；vol_ratio==0.7 边界落空改为 if/elif/else 链；pullback ma_broken 与 ma_bull_extra 互斥。
+
 ## 核心思路
 
 利用雪球飙升榜的实时排名变化（双源融合：飙升榜 + 热搜榜），锁定创业板（300xxx）中**资金刚刚介入、涨幅尚未到位**的个股，区分两种操作模式：
@@ -232,7 +242,7 @@ python unified_scanner.py 60    # 每1分钟（盘中最密集）
 
 ### RPS 相对强弱（2026-06-18 新增）
 
-在候选池内按策略类别（新面孔 / 动量分别排名）计算 5 日累计涨幅的百分位排名：
+在候选池内计算 5 日累计涨幅的百分位排名。基准为全 GEM 监控集（含未入选候选）的历史5日累计涨幅分布，使 RPS 表达"相对全市场强弱"而非仅在已涨票中比谁涨得多。
 
 | 百分位 | 加分 | 含义 |
 |:------:|:----:|------|
@@ -241,7 +251,8 @@ python unified_scanner.py 60    # 每1分钟（盘中最密集）
 | 30% ~ 60% | 0 | 中性 |
 | < 30% | **-3** | 相对强度弱，优先考虑强者 |
 
-> 排名按策略分层：新面孔之间互比，动量之间互比，避免动量（累计≥7%）天然碾压新面孔（累计可能为负）。
+> **口径统一（2026-07-29 修复）**：所有候选用 `accum_map`（历史5日累计涨幅，排除今日）参与 RPS 排名，与 baseline 口径一致。short_term 的 `c.kline.accumulated_pct` 仍包含今日 bar（策略语义，供评分维度用），但 RPS 排名时被 `accum_map` 覆盖，避免百分位偏高。其他4策略的 `accumulated_pct` 本就用历史 closes，无需覆盖。
+> **rebound 豁免**：rebound 候选 accumulated 为负必落底部分位，`_compute_rps` 对 `category=="rebound"` 返回 0 豁免，避免违背策略初衷。
 > 分数在 `Candidate.rps_bonus` 字段，各维度数量 < 2 时不生效。
 
 ### 技术指标信号（2026-06-18 新增）
@@ -656,7 +667,7 @@ A 股存在"超跌反弹"模式：个股因利空/情绪宣泄出现 5 日内累
 | | RSI(6) 30 ~ 50 | +3 | 低位企稳 |
 | **BOLL 下轨** | BOLL %B < 0.1 | +5 | 触及下轨支撑 |
 | **V型反转** | 5日跌 < -15% + 量比 > 1.5 + 今日 > 2% | +8 | V 型反转特征 |
-| **形态** | 暴跌后阳包阴（昨暴跌 + 今日阳线吞没） | +6 | 强反转信号 |
+| **形态** | 暴跌后阳包阴（昨暴跌 + 今日阳线实体吞没昨日阴线实体） | +6 | 强反转信号 |
 | | 锤子线（下影 > 实体2倍） | +4 | 低位承接 |
 | | 3连阳企稳（含今日，收盘递增） | +3 | 企稳确认 |
 
@@ -707,6 +718,10 @@ rebound 候选 `accumulated_pct` 必为负（前期暴跌），在 `_compute_rps
 ### 形态检测说明
 
 `detect_rebound_patterns` 接收**完整 kline**（含今日 bar），用 `kline[-1]`=今日 / `kline[-2]`=昨日检测反转信号。**与其他策略的 `detect_*_patterns`（接收 `historical_kline` 不含今日）不同**——反弹信号的核心是"今日阳线吞没昨日暴跌阴线"，必须包含今日 bar。
+
+**阳包阴判定（2026-07-29 修复）**：
+- 实体吞没：`hc > po`（今收>昨开，实体顶>实体顶）且 `ho < pc`（今开<昨收，实体底<实体底）。原代码误用 `prev["high"]`（昨日最高价）导致长上影线场景漏判，已修正为 `po`（昨日开盘价）。
+- `require_crash` 暴跌判定：用**日内跌幅**（`(prev_close - prev_prev_close) / prev_prev_close`，需 `kline[-3]`）替代实体涨跌幅 `(pc-po)/po`。原代码在跳空时失真（高开低走被误判为暴跌），已修正。`len(kline) < 3` 时回退到实体涨跌幅（兼容）。
 
 ---
 
@@ -905,3 +920,14 @@ momentum 首选的原因：趋势是已发生事实（累计≥7%+均线多头�
 | 40 | short_term 上限 8% 漏掉 8-12% 强势股 | P1-1: `SHORT_TERM_MAX_TODAY_PCT` 8→12，新增 `today_pct_8_12` 档位（+8分） |
 | 41 | momentum 上限 8% 漏掉 9-10% 加速票（主升浪中段）| P1-2: `MAX_MOMENTUM_TODAY_PCT` 8→10，新增 `today_pct_8_10` 档位（+3分） |
 | 42 | K线获取失败静默丢弃（盘中 API 抖动可能整批丢失）| P1-3: `_fetch_all_klines` 末尾打印缺失数量和代码预览，避免静默丢弃 |
+| 43 | pullback 平日（today_pct=0）误过滤（`-5 < today_pct < 0` 严格<0 落入"回踩整理"被 HIGH_RISK_TRENDS 过滤）| B1: 改为 `<= 0`，恢复平日回踩候选 |
+| 44 | `_cap_short_term_by_sector` 在 bonus 前裁剪（list_momentum_bonus 等大额 bonus 后反转同板块内排名）| B2: cap 移到 `apply_all_bonuses` + `accumulate_final_score` 之后 |
+| 45 | RPS 口径不一致（short_term accumulated 含今日，baseline 排除今日，百分位偏高）| B3: `_compute_rps` 新增 `accum_map` 参数，所有候选用统一历史口径 |
+| 46 | `get_loss_rates_batch` 时区用 `'localtime'` 依赖服务器时区（违反 UTC+8 硬约束）| B4: 改用 `now_beijing()` 参数化 |
+| 47 | 阳包阴判定用 `prev["high"]` 而非 `po`（长上影线场景漏判）| B5: 改为标准实体吞没 `hc <= po` |
+| 48 | `require_crash` 用实体涨跌幅（跳空时失真：高开低走被误判为暴跌）| B6: 改用日内跌幅（需 `prev_prev_close`），`len(kline)<3` 回退兼容 |
+| 49 | 新股分支缺 pullback fallback（今日平/跌的新股 pullback 候选被静默丢弃）| B7: 补 pullback fallback 分支 |
+| 50 | trading_session while 循环无 max_iter（holidays.json 损坏时无限挂起）| 加 `max_iter=365` 安全上限 |
+| 51 | `record_appearances` 在 try 外抛 KeyError + 批量失败无 rollback | 改 `.get()` 容错 + 失败时 `rollback()` |
+| 52 | `vol_ratio==0.7` 边界落空（三支 if/elif 都不命中）| 改为 `< MIN` / `< MAX` / `else` 链 |
+| 53 | pullback `ma_broken`(-10) 与 `ma_bull_extra`(+5) 可同时触发（矛盾信号）| `ma_bull_extra` 加 `if not ma_broken` 互斥 |

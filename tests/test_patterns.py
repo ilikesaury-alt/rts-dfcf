@@ -22,13 +22,15 @@ class TestDetectNewFacePatterns:
         assert dims["nf_pattern_engulfing"] == 5
 
     def test_engulfing_strict_cover(self):
+        # 实体吞没：今收>昨开(51.5>51) 且 今开<昨收(48<49)，即实体覆盖
+        # 不再要求 close>prev_high（那是最高价覆盖，过严）
         k = [
             {"open": 51, "close": 49, "high": 52, "low": 48},
             {"open": 48, "close": 51.5, "high": 52.0, "low": 47.5},
         ]
         score, dims = detect_new_face_patterns(k)
-        assert score == 0, "close must > prev_high=52"
-        assert dims == {}
+        assert score == 5, "body engulfing: hc>po and ho<pc"
+        assert dims["nf_pattern_engulfing"] == 5
 
     def test_hammer(self):
         k = [
