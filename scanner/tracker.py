@@ -13,6 +13,7 @@ from scanner.api import fetch_kline, fetch_market_caps_batch
 from scanner.config import (
     KLINE_FETCH_DAYS,
     PROMINENCE_LOOKBACK_DAYS,
+    PROMINENCE_MAX_AVG_RANK,
     PROMINENCE_REPEAT_THRESHOLD,
     TRACK_BOLL_MID_PCT,
     TRACK_FILTER_CUM_HIGH,
@@ -30,8 +31,8 @@ from scanner.config import (
     TRACK_VOL_SHRINK_RATIO,
     now_beijing,
 )
-from scanner.database import (count_recent_appearances, get_cached_kline,
-                               get_recent_recommendations, save_kline_to_db)
+from scanner.database import (count_recent_appearances, get_cached_kline, get_recent_recommendations,
+                               get_symbol_appearances, save_kline_to_db)
 from scanner.indicators import compute_bollinger_bands, compute_macd, compute_ma, compute_rsi
 
 
@@ -132,9 +133,13 @@ def track_recent_recommendations(conn, session, lookback_days: int = TRACK_RECOM
         ))
         # 辨识度标签
         try:
+            recs = get_symbol_appearances(conn, sym, PROMINENCE_LOOKBACK_DAYS)
+            valid_ranks = [r["rank"] for r in recs if r.get("rank") and r["rank"] > 0]
             cnt = count_recent_appearances(conn, sym, PROMINENCE_LOOKBACK_DAYS)
-            if cnt >= PROMINENCE_REPEAT_THRESHOLD:
-                result[-1].prominence_labels.append("\u21bb")
+            if cnt >= PROMINENCE_REPEAT_THRESHOLD and valid_ranks:
+                avg_rank = sum(valid_ranks) / len(valid_ranks)
+                if avg_rank <= PROMINENCE_MAX_AVG_RANK:
+                    result[-1].prominence_labels.append("\u21bb")
         except Exception:
             pass
 

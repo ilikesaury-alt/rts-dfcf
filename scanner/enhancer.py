@@ -5,6 +5,7 @@ from scanner.config import (
     CROSS_SOURCE_BONUS,
     DISTRIBUTION_ACCUM_HIGH,
     PROMINENCE_LOOKBACK_DAYS,
+    PROMINENCE_MAX_AVG_RANK,
     PROMINENCE_REPEAT_THRESHOLD,
     DISTRIBUTION_ACCUM_MID,
     DISTRIBUTION_ACCUM_PULLBACK,
@@ -59,7 +60,7 @@ from scanner.config import (
     V_PB_SHRINK_NO,
     V_ST_MA_BROKEN,
 )
-from scanner.database import count_recent_appearances
+from scanner.database import count_recent_appearances, get_symbol_appearances
 from scanner.models import Candidate
 from scanner.rank_trend import rank_trajectory_score
 from scanner.sector import classify_sector
@@ -100,9 +101,13 @@ def _compute_prominence_labels(c: Candidate, conn):
     if not conn:
         return
     try:
+        recs = get_symbol_appearances(conn, c.stock.symbol, PROMINENCE_LOOKBACK_DAYS)
+        valid_ranks = [r["rank"] for r in recs if r.get("rank") and r["rank"] > 0]
         cnt = count_recent_appearances(conn, c.stock.symbol, PROMINENCE_LOOKBACK_DAYS)
-        if cnt >= PROMINENCE_REPEAT_THRESHOLD:
-            c.prominence_labels.append("\u21bb")
+        if cnt >= PROMINENCE_REPEAT_THRESHOLD and valid_ranks:
+            avg_rank = sum(valid_ranks) / len(valid_ranks)
+            if avg_rank <= PROMINENCE_MAX_AVG_RANK:
+                c.prominence_labels.append("\u21bb")
     except Exception:
         pass
 
