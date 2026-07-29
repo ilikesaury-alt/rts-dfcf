@@ -72,7 +72,9 @@ def fmt_time():
     return now_beijing().strftime("%H:%M:%S")
 
 
-def pct_colored(pct: float, width: int = 8) -> str:
+def pct_colored(pct: float | None, width: int = 8) -> str:
+    if pct is None:
+        pct = 0.0
     s = f"{pct:+.2f}%"
     if pct >= 9:
         c = ANSI["RED"]
@@ -377,7 +379,7 @@ def display_priority(conn=None):
         "momentum": 3, "short_term": 4, "pullback": 5,
     }
     CAT_LABEL = {
-        "known_new_face": "NEW", "rebound": "RBD", "new_face": "NEW",
+        "known_new_face": "kNF", "rebound": "RBD", "new_face": "NEW",
         "momentum": "MOM", "short_term": "ST", "pullback": "PB",
     }
     CAT_COLOR = {
@@ -422,6 +424,7 @@ def display_priority(conn=None):
             label = CAT_LABEL.get(c.category, c.category)
             color = CAT_COLOR.get(c.category, "")
             label_display = f"{color}{label}{ANSI['RESET']}"
+            priority = CAT_PRIORITY.get(c.category, 99)
             rank_str = f"{s.rank}" if s.rank else "N/A"
             price_str = f"{s.current:.2f}" if s.current else "—"
             pct = s.percent
@@ -436,6 +439,7 @@ def display_priority(conn=None):
             label = CAT_LABEL.get(entry["category"], entry["category"])
             color = CAT_COLOR.get(entry["category"], "")
             label_display = f"{color}{label}{ANSI['RESET']}"
+            priority = CAT_PRIORITY.get(entry["category"], 99)
             rank_str = f"{entry['live_rank']}" if entry.get("live_rank") else "—"
             price_str = "—"
             pct = entry.get("live_percent", 0.0)
@@ -443,10 +447,13 @@ def display_priority(conn=None):
             if entry.get("_prominent"):
                 prom_str = f" {ANSI['CYAN']}│↻│{ANSI['RESET']}"
             risk_str = ""
+        # 建议列：按策略优先级映射（推荐/参考/回避），SUGGEST 含 ANSI 需用 _pad 对齐
+        suggest_str = SUGGEST.get(priority, "")
         first_time = entry.get("first_time", entry.get("time", ""))[:5]
+        # label_display 含 ANSI 码，用 _pad 按可见宽度对齐（:>5 会按含 ANSI 的字符串长度计算，错位）
         print(f"  {i:3d}  {entry['symbol']:<12} {_pad(entry['name'],10)} "
-              f"{label_display:>5} {entry['score']:4d} {pct_colored(pct)} "
-              f"{price_str:>7} {rank_str:>4} {_pad(first_time,6)}{prom_str}{risk_str}")
+              f"{_pad(label_display,5,'r')} {entry['score']:4d} {pct_colored(pct)} "
+              f"{price_str:>7} {rank_str:>4} {_pad(first_time,6)} {_pad(suggest_str,6)}{prom_str}{risk_str}")
     print(f"  {'-'*78}")
-    print(f"  {SUGGEST[0]} → {ANSI['GREEN']}新面孔{ANSI['RESET']}/{ANSI['CYAN']}超跌反弹{ANSI['RESET']}  |  {ANSI['GREEN']}参考{ANSI['RESET']} → 动量/新面孔低分  |  {ANSI['RED']}回避{ANSI['RESET']} → 超短/回调(负期望)")
+    print(f"  {SUGGEST[0]} → {ANSI['GREEN']}kNF(已知新面孔){ANSI['RESET']}/{ANSI['CYAN']}RBD(超跌反弹){ANSI['RESET']}  |  参考 → {ANSI['YELLOW']}MOM(动量){ANSI['RESET']}/NEW(新面孔)  |  {SUGGEST[4]} → ST(超短)/PB(回调,负期望)")
     print(f"  {ANSI['CYAN']}↻{ANSI['RESET']} 辨识度高(近5日上榜≥3次均排名≤70)  {ANSI['YELLOW']}⚠{ANSI['RESET']} 带有风险标签")
