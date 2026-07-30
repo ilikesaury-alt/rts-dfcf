@@ -4,11 +4,18 @@
 基于 recommendations 表（推荐记录）与 daily_kline 表（历史K线）计算：
 
 1. 结果回填（backfill_outcomes）：用 daily_kline 推导推荐后 N 日收益，
-   回填 recommendations.next_day_pct / fwd_3d / fwd_5d。
+   回填 recommendations 的收益字段：
+   - next_day_pct / fwd_3d / fwd_5d：单日涨幅口径（旧，次日/第3/第5日当日涨幅）
+   - cum_2d / cum_3d：累计收益口径（新，T+0 close 到 T+N close 累计涨幅）
 2. 分策略表现（strategy_performance）：按 category 聚合胜率、盈亏比、
    平均收益、IC（评分 vs 收益的相关性）。
 3. 分维度 IC（dimension_ic）：解析 score_breakdown JSON，逐维度计算
    IC，输出"正 IC 维度 / 反指维度"表，指导权重调整。
+
+口径选择：
+- 用户操作「当日买入，次日 10 点卖出」→ 无分钟数据时仍用 next_day_pct 近似
+- 用户操作「持有 2-3 天卖出」→ **应优先使用 cum_2d / cum_3d**（累计收益）
+- IC 决策应优先基于 cum_2d / cum_3d，而非 next_day_pct（口径错配会误导）
 
 本模块不进入实时扫描路径，仅通过 `python -m scanner.backtest` 运行。
 """
@@ -34,6 +41,10 @@ class Outcome:
     next_day: float | None = None
     fwd_3d: float | None = None
     fwd_5d: float | None = None
+    # 累计收益：匹配用户「持有 2-3 天卖出」的真实操作
+    # 公式：(close[T+N] - close[T]) / close[T] * 100
+    cum_2d: float | None = None
+    cum_3d: float | None = None
 
 
 def _nth_trading_day_after(d: date, n: int) -> date | None:
@@ -50,50 +61,73 @@ def _nth_trading_day_after(d: date, n: int) -> date | None:
     return cursor
 
 
-def _load_sym_kline(conn: sqlite3.Connection, symbol: str) -> dict[str, float]:
-    """{date: close_pct_of_that_day} for a single symbol."""
-    out: dict[str, float] = {}
-    for dt, pct in conn.execute(
-        "SELECT date, percent FROM daily_kline WHERE symbol=? ORDER BY date",
+def _load_sym_kline(conn: sqlite3.Connection, symbol: str) -> dict[str, dict[str, float]]:
+    """{date: {"close": float, "percent": float}} for a single symbol.
+
+    同时返回 close 和 percent：
+    - percent 用于单日涨幅指标（next_day_pct / fwd_3d / fwd_5d）
+    - close 用于累计收益指标（cum_2d / cum_3d）
+    """
+    out: dict[str, dict[str, float]] = {}
+    for dt, close, pct in conn.execute(
+        "SELECT date, close, percent FROM daily_kline WHERE symbol=? ORDER BY date",
         (symbol,),
     ).fetchall():
-        out[dt] = pct
+        out[dt] = {"close": close, "percent": pct}
     return out
 
 
 def compute_outcome(
-    kline_map: dict[str, dict[str, float]],
+    kline_map: dict[str, dict[str, dict[str, float]]],
     symbol: str,
     rec_date: str,
     rec_percent: float,
 ) -> Outcome:
     """推导推荐后收益。
 
-    - next_day: 推荐日次一交易日涨幅（与现有 next_day_pct 口径一致）
-    - fwd_3d: 推荐日之后第 3 个交易日的"当日涨幅"（代理指标，非累计收益）
-    - fwd_5d: 推荐日之后第 5 个交易日的"当日涨幅"（代理指标，非累计收益）
+    单日涨幅指标（旧口径）：
+    - next_day: 推荐日次一交易日涨幅（percent 字段）
+    - fwd_3d / fwd_5d: 推荐日之后第 3/5 个交易日的"当日涨幅"（代理，非累计）
 
-    注意：当前数据库仅存每日 percent（当日涨幅），无法还原绝对价格序列，
-    因此无法计算相对推荐日收盘的真实累计收益。fwd_3d/fwd_5d 实为第 N 个
-    交易日的单日涨幅代理，IC/胜率归因时应按此口径解读，勿与累计收益混淆。
+    累计收益指标（新口径，匹配用户「持有 2-3 天卖出」操作）：
+    - cum_2d: (close[T+2] - close[T]) / close[T] * 100
+    - cum_3d: (close[T+3] - close[T]) / close[T] * 100
+
+    旧口径仍保留用于向后兼容与对照；IC 决策应优先使用 cum_2d / cum_3d。
     """
     sym_kl = kline_map.get(symbol)
     if not sym_kl or rec_date not in sym_kl:
         return Outcome()
     rec_dt = date.fromisoformat(rec_date)
+    rec_bar = sym_kl[rec_date]
+    rec_close = rec_bar.get("close")
     out = Outcome()
 
+    # 单日涨幅（旧口径）
     nxt = _nth_trading_day_after(rec_dt, 1)
     if nxt and nxt.isoformat() in sym_kl:
-        out.next_day = sym_kl[nxt.isoformat()]
+        out.next_day = sym_kl[nxt.isoformat()].get("percent")
 
-    # fwd_3d / fwd_5d 仅为第 N 交易日当日涨幅（代理），见上方 docstring 口径说明
     d3 = _nth_trading_day_after(rec_dt, 3)
     if d3 and d3.isoformat() in sym_kl:
-        out.fwd_3d = sym_kl[d3.isoformat()]
+        out.fwd_3d = sym_kl[d3.isoformat()].get("percent")
     d5 = _nth_trading_day_after(rec_dt, 5)
     if d5 and d5.isoformat() in sym_kl:
-        out.fwd_5d = sym_kl[d5.isoformat()]
+        out.fwd_5d = sym_kl[d5.isoformat()].get("percent")
+
+    # 累计收益（新口径）：需推荐日 close + T+N close
+    if rec_close is not None and rec_close > 0:
+        d2 = _nth_trading_day_after(rec_dt, 2)
+        if d2 and d2.isoformat() in sym_kl:
+            close_n = sym_kl[d2.isoformat()].get("close")
+            if close_n is not None:
+                out.cum_2d = (close_n - rec_close) / rec_close * 100
+        d3 = _nth_trading_day_after(rec_dt, 3)
+        if d3 and d3.isoformat() in sym_kl:
+            close_n = sym_kl[d3.isoformat()].get("close")
+            if close_n is not None:
+                out.cum_3d = (close_n - rec_close) / rec_close * 100
+
     return out
 
 
@@ -104,7 +138,7 @@ def backfill_outcomes(conn: sqlite3.Connection, dry_run: bool = False) -> int:
     但新值为 None 时不覆盖已有有效 float，避免 K 线临时缺失导致数据丢失。
     """
     rows = conn.execute(
-        "SELECT id, symbol, date, percent, next_day_pct, fwd_3d, fwd_5d "
+        "SELECT id, symbol, date, percent, next_day_pct, fwd_3d, fwd_5d, cum_2d, cum_3d "
         "FROM recommendations"
     ).fetchall()
     if not rows:
@@ -112,19 +146,21 @@ def backfill_outcomes(conn: sqlite3.Connection, dry_run: bool = False) -> int:
     needed_syms = {r[1] for r in rows}
     kline_map = {sym: _load_sym_kline(conn, sym) for sym in needed_syms}
     updated = 0
-    for rid, sym, dt, pct, ndp, f3, f5 in rows:
+    for rid, sym, dt, pct, ndp, f3, f5, c2, c3 in rows:
         occ = compute_outcome(kline_map, sym, dt, pct)
         # 新值非 None 时覆盖（纠正旧错误值）；新值 None 时保留已有值（防数据丢失）
         new_ndp = occ.next_day if occ.next_day is not None else ndp
         new_f3 = occ.fwd_3d if occ.fwd_3d is not None else f3
         new_f5 = occ.fwd_5d if occ.fwd_5d is not None else f5
-        if (new_ndp != ndp) or (new_f3 != f3) or (new_f5 != f5):
+        new_c2 = occ.cum_2d if occ.cum_2d is not None else c2
+        new_c3 = occ.cum_3d if occ.cum_3d is not None else c3
+        if (new_ndp != ndp) or (new_f3 != f3) or (new_f5 != f5) or (new_c2 != c2) or (new_c3 != c3):
             updated += 1
             if not dry_run:
                 conn.execute(
-                    "UPDATE recommendations SET next_day_pct=?, fwd_3d=?, fwd_5d=? "
-                    "WHERE id=?",
-                    (new_ndp, new_f3, new_f5, rid),
+                    "UPDATE recommendations SET next_day_pct=?, fwd_3d=?, fwd_5d=?, "
+                    "cum_2d=?, cum_3d=? WHERE id=?",
+                    (new_ndp, new_f3, new_f5, new_c2, new_c3, rid),
                 )
     if not dry_run and updated:
         conn.commit()
@@ -181,7 +217,10 @@ class StrategyStat:
 def strategy_performance(
     conn: sqlite3.Connection, metric: str = "next_day_pct", days: int = 0
 ) -> list[StrategyStat]:
-    """按策略类别聚合表现。metric ∈ {next_day_pct, fwd_3d, fwd_5d}。
+    """按策略类别聚合表现。metric ∈ {next_day_pct, fwd_3d, fwd_5d, cum_2d, cum_3d}。
+
+    - next_day_pct / fwd_3d / fwd_5d：单日涨幅口径（旧）
+    - cum_2d / cum_3d：累计收益口径（新，匹配用户「持有 2-3 天卖出」操作）
 
     days > 0 时仅分析最近 N 天的推荐（基于 date 列过滤）。
     """
@@ -337,7 +376,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="创业板扫描策略回测归因")
     parser.add_argument("--days", type=int, default=0, help="仅分析最近 N 天的推荐（0=全部）")
     parser.add_argument("--metric", default="next_day_pct",
-                        choices=["next_day_pct", "fwd_3d", "fwd_5d"])
+                        choices=["next_day_pct", "fwd_3d", "fwd_5d", "cum_2d", "cum_3d"])
     parser.add_argument("--backfill", action="store_true", help="回填 N 日收益字段")
     parser.add_argument("--dry-run", action="store_true", help="回填预览不写库")
     args = parser.parse_args()

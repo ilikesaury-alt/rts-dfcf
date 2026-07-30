@@ -74,6 +74,12 @@ def init_db() -> sqlite3.Connection:
     cols = {row[1] for row in cur.fetchall()}
     if "source" not in cols:
         conn.execute("ALTER TABLE recommendations ADD COLUMN source TEXT DEFAULT 'xueqiu'")
+    # 累计收益字段：匹配用户「持有 2-3 天卖出」的真实操作
+    # next_day_pct 是单日涨幅，cum_2d/cum_3d 是 T+0 close 到 T+N close 的累计涨幅
+    if "cum_2d" not in cols:
+        conn.execute("ALTER TABLE recommendations ADD COLUMN cum_2d REAL")
+    if "cum_3d" not in cols:
+        conn.execute("ALTER TABLE recommendations ADD COLUMN cum_3d REAL")
     try:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_source ON recommendations(source)")
     except Exception:

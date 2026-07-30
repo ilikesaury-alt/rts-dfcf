@@ -115,7 +115,7 @@ def _compute_prominence_labels(c: Candidate, conn):
 def _set_risk_flags(c: Candidate):
     """设置复合风险标签，供 UI 显示⚠️标记。
 
-    每个标签对应明确的交易决策含义，基于多字段组合判断而非单维 IC 反指。
+    每个标签对应明确的交易决策含义，基于多字段组合判断。
     不清零加分（基础评分维度清零会破坏策略逻辑），仅加风险标签供人工判断。
     """
     dims = c.kline.dimensions if c.kline else {}

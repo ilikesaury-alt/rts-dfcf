@@ -204,7 +204,7 @@ def _compute_new_face_indicators(closes: list[float], historical_kline: list[dic
         dims["new_face_kdj"] = round(kdj_val["J"], 1)
     if macd_val is not None:
         # MACD 金叉信号：仅 histogram 由负转正那一刻加分（底部反转确认）。
-        # 移除"macd>signal 持续加分"：金叉后高位票继续加分被 IC=-0.261（n=17）标记为反指。
+        # 不对"macd>signal 持续加分"：金叉后高位票继续加分会强化追高。
         if macd_val["histogram"] > 0 and macd_val["histogram_prev"] <= 0:
             bonus += W["macd_bonus"]
         dims["new_face_macd"] = round(macd_val["histogram"], 4)
@@ -264,9 +264,9 @@ def _compute_momentum_indicators(closes: list[float], historical_kline: list[dic
             bonus += W["kdj_bonus"] // 2
         dims["momentum_kdj"] = round(kdj_val["J"], 1)
     if macd_val is not None:
-        # MACD 红柱加分逻辑（近30天 IC=-0.143，histogram 越大次日越差）：
-        # 旧逻辑 histogram>0 无条件 +3，导致顶部大红柱反而加分最多——已移除。
-        # 现仅在红柱增长时 +3（趋势加速），红柱缩短时 -3（动能衰竭）。
+        # MACD 红柱加分逻辑：
+        # 仅在红柱增长时 +3（趋势加速），红柱缩短时 -3（动能衰竭）。
+        # 不对 histogram>0 无条件加分，避免顶部大红柱反而加分最多。
         if macd_val["histogram"] > 0 and macd_val["histogram"] > macd_val["histogram_prev"]:
             bonus += W["macd_bonus"]
         elif macd_val["histogram"] > 0 and macd_val["histogram"] < macd_val["histogram_prev"]:
@@ -422,9 +422,8 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
     if vol_rank:
         dims["new_face_vol_rank"] = vol_rank
     # VOL_RANK_HIGH_ACCUM_OVERLAP 组合惩罚已删除：单一组合场景过拟合，无回测支撑。
-
-    # new_face_gap_up 已清零：回测 IC=-0.180（n=136），高开在 new_face 次日多为
-    # 冲高回落，不再对 new_face 加高开加分。momentum 侧保留（小样本另行评估）。
+    # new_face_gap_up 不再对 new_face 加高开加分（高开次日多为冲高回落）。
+    # momentum 侧保留 gap_up 维度（小样本另行评估）。
     if stock.value >= 10000:
         score += W["value_gte_10000"]
         dims["new_face_value"] = W["value_gte_10000"]

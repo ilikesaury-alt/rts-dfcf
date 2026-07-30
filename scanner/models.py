@@ -53,6 +53,6 @@ class Candidate:
     list_momentum_bonus: int = 0
     is_stale: bool = False
     stale_since: str = ""
-    risk_flags: list[str] = field(default_factory=list)  # 反指维度风险标签（IC<0 维度）
+    risk_flags: list[str] = field(default_factory=list)  # 复合风险标签（超买/出货/破位等）
     prominence_labels: list[str] = field(default_factory=list)  # 辨识度标签（反复上榜等）
     hist_loss_rate: float | None = None  # 历史大跌率（近90天推荐中次日<=-5%占比），None=样本不足

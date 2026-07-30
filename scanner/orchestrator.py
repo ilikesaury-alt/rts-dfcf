@@ -240,6 +240,9 @@ def _classify_category(stock: StockInfo, is_new: bool,
 
     P0-2: pullback 恢复为"高风险监控"类别，填补强势回踩真空。
     pullback 与其它策略互斥（today_pct<=0 vs >0），不会抢占主列表。
+    P0-3 (2026-07-30): pullback 下线（回测 cum_2d 均亏 -8.33%，胜率 15.8%，
+    所有维度均亏损，无保留价值）。_classify_category 不再返回 "pullback"，
+    analyze_pullback 仍保留用于未来恢复，但不再进入分类候选。
     """
     if is_new:
         if c_nf is not None:
@@ -250,10 +253,7 @@ def _classify_category(stock: StockInfo, is_new: bool,
             return "short_term"
         if c_mo is not None:
             return "momentum"
-        # 新股今日平/跌（前4策略都要求 today_pct>0），但累计上涨+缩量回调，
-        # 归 pullback 高风险监控（与老股分支一致，填补强势回踩真空）
-        if c_pb is not None:
-            return "pullback"
+        # pullback 已下线（P0-3）：新股今日平/跌的票不再有分类候选
         return None
     # 老股：超跌企稳优先归反弹；弱转强优先归超短；
     # 其它"非弱转强超短合格票"若同时过动量则归动量（避免掏空动量桶），
@@ -270,9 +270,7 @@ def _classify_category(stock: StockInfo, is_new: bool,
         return "short_term"
     if c_nf is not None:
         return "known_new_face"
-    # 强势回踩：前期累计涨+今日回调+缩量，归 pullback 高风险监控
-    if c_pb is not None:
-        return "pullback"
+    # pullback 已下线（P0-3）：强势回踩票不再有分类候选
     return None
 
 

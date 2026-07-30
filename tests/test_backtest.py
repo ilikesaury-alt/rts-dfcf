@@ -39,19 +39,25 @@ def test_nth_trading_day_after_skips_weekend():
 
 
 def test_compute_outcome_returns_next_day_percent():
+    # kline_map 新格式：{date: {"close": float, "percent": float}}
+    # close 用于累计收益（cum_2d/cum_3d），percent 用于单日涨幅（next_day/fwd_3d/fwd_5d）
     kline_map = {
         "300999": {
-            "2026-05-28": 1.68,
-            "2026-05-29": -3.28,
-            "2026-06-01": 2.0,
-            "2026-06-02": 0.5,
-            "2026-06-03": 1.1,
+            "2026-05-28": {"close": 10.0, "percent": 1.68},
+            "2026-05-29": {"close": 9.67, "percent": -3.28},
+            "2026-06-01": {"close": 9.86, "percent": 2.0},
+            "2026-06-02": {"close": 9.91, "percent": 0.5},
+            "2026-06-03": {"close": 10.02, "percent": 1.1},
         }
     }
     occ = compute_outcome(kline_map, "300999", "2026-05-28", 1.68)
     assert occ.next_day == -3.28
     # fwd_3d 是第 3 个交易日(2026-06-02)的当日涨幅(0.5)，并非累计收益
     assert occ.fwd_3d == 0.5
+    # cum_2d: (close[T+2] - close[T]) / close[T] * 100
+    # T+2 = 2026-06-01, close=9.86; rec_close=10.0
+    assert occ.cum_2d is not None
+    assert abs(occ.cum_2d - ((9.86 - 10.0) / 10.0 * 100)) < 1e-9
 
 
 def test_compute_outcome_missing_returns_none():

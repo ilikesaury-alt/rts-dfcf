@@ -161,8 +161,6 @@ NEW_FACE_WEIGHTS: dict[str, int] = {
     "atr_contraction": 2,
     "obv_not_negative": 2,
 }
-# NOTE: new_face_kdj 已降权（3->1）。回测 IC=-0.184 但 n=30（小样本），
-# 仅弱化不消除，待累积样本后再评估是否清零。
 
 MOMENTUM_WEIGHTS: dict[str, int] = {
     "today_pct_2_6": 20,
