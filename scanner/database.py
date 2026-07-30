@@ -400,7 +400,7 @@ def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
     today = now_beijing().date().isoformat()
     try:
         rows = conn.execute(
-            "SELECT symbol, name, category, score, trend, time "
+            "SELECT symbol, name, category, score, trend, time, percent "
             "FROM recommendations WHERE date = ? ORDER BY score DESC",
             (today,),
         ).fetchall()
@@ -419,6 +419,7 @@ def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
                 "score": r[3],
                 "trend": r[4],
                 "time": r[5],
+                "percent": r[6] or 0.0,
             }
 
     try:

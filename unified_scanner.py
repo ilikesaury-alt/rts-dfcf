@@ -20,7 +20,7 @@ from scanner.config import (
     now_beijing,
 )
 from scanner.backtest import backfill_outcomes
-from scanner.database import init_db, save_recommendations
+from scanner.database import get_today_recommendations, init_db, save_recommendations
 from scanner.display import display
 from scanner.feishu import push_feishu
 from scanner.log_utils import log_results
@@ -93,7 +93,7 @@ def main():
                 both_count = sum(1 for i in xq_raw if i.get("source_tag") == "both")
                 print(f"\r  📡 飙升榜{len(xq_raw)}只 (双榜{both_count}只)", end="", flush=True)
 
-                new_faces, momentum, pullback_list, rebound_list, short_term_list, stale_candidates, all_gem, filtered_large_cap = (
+                new_faces, momentum, pullback_list, rebound_list, short_term_list, stale_candidates, all_gem, filtered_large_cap, current_quotes = (
                     scan_with_raw(xq_raw, conn, xq_session))
 
                 new_faces.sort(key=lambda x: -x.score)
@@ -103,6 +103,21 @@ def main():
                 short_term_list.sort(key=lambda x: -x.score)
 
                 current_rank_map = {s.symbol: s.rank for s in all_gem}
+
+                # 为综合推荐补拉今日曾推荐但不在 current_quotes 中的票的实时行情
+                live_quotes: dict[str, dict] = {}
+                live_quotes.update(current_quotes)
+                try:
+                    today_recs = get_today_recommendations(conn)
+                    today_syms = {r["symbol"] for r in today_recs}
+                    missing = list(today_syms - set(current_quotes.keys()))
+                    if missing:
+                        extra = fetch_market_caps_batch(xq_session, missing)
+                        for sym, d in extra.items():
+                            live_quotes[sym] = {"percent": d.get("percent", 0.0), "current": d.get("current", 0.0)}
+                except Exception as e:
+                    print(f"  [!] 补拉推荐票行情失败: {e}")
+
                 # 历史推荐跟踪：查近5天推荐的实时表现
                 try:
                     tracked = track_recent_recommendations(conn, xq_session)
@@ -114,7 +129,7 @@ def main():
                         pullback_list=pullback_list,
                         short_term_list=short_term_list,
                         rebound_list=rebound_list, tracked_recs=tracked,
-                        conn=conn)
+                        conn=conn, live_quotes=live_quotes)
                 log_results(new_faces, momentum + pullback_list + rebound_list + short_term_list)
                 if not args.no_feishu:
                     pushed = push_feishu(new_faces, momentum, pullback_list, stale_candidates,

@@ -131,7 +131,7 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             short_term_list: list[Candidate] | None = None,
             rebound_list: list[Candidate] | None = None,
             tracked_recs: list = None,
-            conn=None):
+            conn=None, live_quotes: dict[str, dict] | None = None):
     if last_ranks is None:
         last_ranks = {}
     clear_screen()
@@ -281,7 +281,7 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             displayed_syms.add(c.stock.symbol)
             _print_row(c, icon="⚠")
 
-    display_priority(conn)
+    display_priority(conn, live_quotes=live_quotes)
 
     if tracked_recs:
         # 只显示高确信"到买点"；"观察中"默认隐藏（TRACK_DISPLAY_WATCH_MAX=0），
@@ -329,8 +329,11 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             print(f"  {ANSI['YELLOW']}  · 另有 {len(watch)} 只观察中（已省略，回调结构不充分）{ANSI['RESET']}")
 
 
-def display_priority(conn=None):
-    """从本地数据库读取今日所有进入过推荐的票，按策略优先级+评分降序展示。"""
+def display_priority(conn=None, live_quotes: dict[str, dict] | None = None):
+    """从本地数据库读取今日所有进入过推荐的票，按策略优先级+评分降序展示。
+
+    live_quotes: {symbol: {percent, current}} 实时行情覆盖，优先于候选池和数据库数据。
+    """
     if conn is None:
         return
 
@@ -362,6 +365,16 @@ def display_priority(conn=None):
     for entry in today_recs:
         pool_c = _session_state.today_pool.get(entry["symbol"])
         entry["_candidate"] = pool_c
+
+    if live_quotes:
+        for entry in today_recs:
+            q = live_quotes.get(entry["symbol"])
+            if q is not None:
+                entry["live_percent"] = q.get("percent", 0.0)
+                entry["live_current"] = q.get("current", 0.0)
+                q_rank = q.get("rank")
+                if q_rank is not None:
+                    entry["live_rank"] = q_rank
 
     prom_syms = [e["symbol"] for e in today_recs if not e["_candidate"]]
     if prom_syms:
@@ -410,8 +423,9 @@ def display_priority(conn=None):
             label_display = f"{color}{label}{ANSI['RESET']}"
             priority = CAT_PRIORITY.get(cat, 99)
             rank_str = f"{entry['live_rank']}" if entry.get("live_rank") else "—"
-            price_str = "—"
-            pct = entry.get("live_percent", 0.0)
+            live_cur = entry.get("live_current", 0.0)
+            price_str = f"{live_cur:.2f}" if live_cur else "—"
+            pct = entry.get("live_percent") or entry.get("percent", 0.0)
             prom_str = ""
             if entry.get("_prominent"):
                 prom_str = f" {ANSI['CYAN']}│↻│{ANSI['RESET']}"

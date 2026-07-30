@@ -416,7 +416,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
                   session: requests.Session) -> tuple[
                       list[Candidate], list[Candidate], list[Candidate],
                       list[Candidate], list[Candidate], list[Candidate],
-                      list[StockInfo], int]:
+                      list[StockInfo], int, dict]:
     global _session_state
     session_state = _session_state
     today = now_beijing().date().isoformat()
@@ -587,8 +587,14 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     # 若在 bonus 之前裁剪会保留错误的候选（bug 修复）。
     short_term_list = _cap_short_term_by_sector(short_term_list)
 
+    current_quotes = {
+        sym: {"percent": d.get("percent", 0.0), "current": d.get("current", 0.0)}
+        for sym, d in market_caps.items()
+    }
+
     return (new_faces, momentum, pullback_list, rebound_list, short_term_list,
-            stale_candidates, gem_stocks_filtered, filtered_large_cap)
+            stale_candidates, gem_stocks_filtered, filtered_large_cap,
+            current_quotes)
 
 
 def _candidate_excluded_by_risk(c: Candidate) -> bool:
