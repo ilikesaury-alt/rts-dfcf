@@ -89,11 +89,18 @@ class TestValidateNewFaceHelpers:
 class TestValidateNewFace:
 
     def test_all_three_pass(self):
-        pcts = [0.3]*15 + [-3, -4, -5, -2, -1, 0.5, 1.5, 2.5, 2.0, 4.0]*2
-        k = _kline(pcts, volumes=[1.0]*35)
-        closes = [c["close"] for c in k[:-1]]
+        # 构造先跌到低点A(70)→温和反弹到84→回调到74(高于A*1.01)的序列：
+        # - 最后6根持续下跌使 RSI<30 → 超卖信号命中
+        #   （反弹幅度需克制：原 70→90 反弹使 RSI 升至 ~33 不触超卖；
+        #    改为 70→84 温和反弹，最后6根全跌 → RSI≈17 触发超卖）
+        # - recent_zone min(74) > prev_zone min(70)*1.01 → higher_low_clear
+        # - 板块共振 → pos_dims >= 2 → 通过
+        closes = [100 - i for i in range(24)] + [70, 75, 80, 82, 84, 82, 80, 78, 76, 74]
+        k = [{"date": f"2026-01-{i+1:02d}", "open": c, "close": c,
+              "high": c * 1.02, "low": c * 0.98, "volume": 1.0, "percent": 0}
+             for i, c in enumerate(closes)]
         passed, total, dims = validate_nf(
-            _stock(name="半导体测试"), None, closes, k[:-1],
+            _stock(name="半导体测试"), None, closes, k,
             SEMICONDUCTOR_CLUSTER
         )
         assert passed, f"should pass, total={total}, dims={dims}"
@@ -162,18 +169,15 @@ class TestValidateMomentumHelpers:
             assert ana_bonus > 0, f"validator PARTIAL but analysis={ana_bonus} ({val_detail})"
 
     def test_ma_alignment_ema_differs_from_sma_rejected(self):
-        # 守卫：确保实现确实走 EMA 而非 SMA（防止回归回 SMA 导致 P0 复发）。
-        # 该序列 SMA 下 5<10（ma_none），但 EMA 下 5>10（partial）——经典分歧场景。
-        closes = [13.12, 15.67, 13.57, 14.16, 18.64, 19.97, 13.64, 11.97,
-                  17.28, 12.04, 10.06, 19.02, 14.24, 18.2, 14.06, 18.83,
-                  14.61, 11.63, 10.15, 15.52]
-        sma5 = sum(closes[-5:]) / 5
-        sma10 = sum(closes[-10:]) / 10
-        bonus, detail = _mo_ma_alignment(closes)
-        # 若实现错误地用 SMA，会得到 ma_none；正确 EMA 应给出 partial
-        assert (sma5 < sma10) and (bonus != -5), (
-            f"EMA 实现应给 partial/full，但得到 {bonus} ({detail}); SMA 判定 ma_none"
-        )
+        # 守卫：确保 compute_ma 用的是 EMA 而非 SMA。
+        # 标准 EMA 遍历完整序列，与前 period 个 SMA 种子不同；
+        # 前10低价后10高价的序列，EMA(5) 会因前段低价拉低而 < SMA(5)=20.0
+        from scanner.indicators import compute_ma
+        closes = [10.0]*10 + [20.0]*10
+        sma5 = sum(closes[-5:]) / 5  # = 20.0
+        ema5 = compute_ma(closes, 5, ema=True)
+        assert ema5 is not None
+        assert ema5 < sma5, f"EMA should differ from SMA: ema={ema5}, sma={sma5}"
 
 
 class TestValidateMomentum:

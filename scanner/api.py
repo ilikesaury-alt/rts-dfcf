@@ -184,7 +184,7 @@ def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[
     begin_ms = now_ms - days * 86400 * 1000
     url = (
         f"https://stock.xueqiu.com/v5/stock/chart/kline.json"
-        f"?symbol={symbol}&begin={begin_ms}&period=day&count={days}&_={now_ms}"
+        f"?symbol={symbol}&begin={begin_ms}&period=day&count={days}&type=qfq&_={now_ms}"
     )
     try:
         resp = _request_with_retry(session, url)

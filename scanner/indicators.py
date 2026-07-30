@@ -28,15 +28,18 @@ def compute_ma(closes: list[float], period: int, ema: bool = False) -> float | N
     EMA is preferred for high-volatility GEM stocks (less noise than SMA),
     and aligns with the EMA used inside MACD so the whole indicator stack
     uses one moving-average convention.
+
+    标准 EMA 实现：遍历完整序列（非仅最后 period 个值），种子用前 period 个的 SMA，
+    alpha=2/(period+1)。与 compute_macd 内部 EMA 口径一致。
     """
     if len(closes) < period:
         return None
-    window = closes[-period:]
     if not ema:
-        return sum(window) / period
+        return sum(closes[-period:]) / period
+    # 标准 EMA：种子 = 前 period 个的 SMA，遍历完整序列递推
     m = 2 / (period + 1)
-    result = window[0]
-    for v in window[1:]:
+    result = sum(closes[:period]) / period
+    for v in closes[period:]:
         result = (v - result) * m + result
     return result
 
@@ -55,12 +58,19 @@ def compute_kdj(highs: list[float], lows: list[float],
         else:
             rsv = (closes[i] - ll) / (hh - ll) * 100
             rsv_list.append(rsv)
+    # 保留完整 K/D 序列以输出 prev_K/prev_D，支持金叉时刻判定
     k, d = 50.0, 50.0
+    k_history, d_history = [k], [d]
     for rsv in rsv_list:
         k = (k_smooth - 1) / k_smooth * k + (1 / k_smooth) * rsv
         d = (d_smooth - 1) / d_smooth * d + (1 / d_smooth) * k
+        k_history.append(k)
+        d_history.append(d)
     j = 3 * k - 2 * d
-    return {"K": round(k, 2), "D": round(d, 2), "J": round(j, 2)}
+    return {
+        "K": round(k, 2), "D": round(d, 2), "J": round(j, 2),
+        "prev_K": round(k_history[-2], 2), "prev_D": round(d_history[-2], 2),
+    }
 
 
 def compute_macd(closes: list[float], fast: int = 12,
@@ -117,8 +127,6 @@ def compute_adx(highs: list[float], lows: list[float],
     plus_di = _smooth(plus_dm_list, period)
     minus_di = _smooth(minus_dm_list, period)
 
-    di_sum = plus_di[-1] + minus_di[-1]
-    dx = abs(plus_di[-1] - minus_di[-1]) / max(di_sum, 0.001) * 100
     adx_list = _smooth([
         abs(p - m) / max(p + m, 0.001) * 100
         for p, m in zip(plus_di, minus_di)

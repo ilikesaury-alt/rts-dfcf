@@ -189,8 +189,16 @@ def _compute_new_face_indicators(closes: list[float], historical_kline: list[dic
         bonus += W["rsi14_oversold_bonus"]
         dims["new_face_rsi14"] = round(rsi14_val, 1)
     if kdj_val is not None:
-        if kdj_val["K"] < 20 and kdj_val["K"] > kdj_val["D"]:
-            bonus += W["kdj_bonus"]
+        if kdj_val["K"] < 20:
+            prev_k = kdj_val.get("prev_K")
+            prev_d = kdj_val.get("prev_D")
+            if prev_k is not None and prev_d is not None:
+                # 金叉时刻：前日 K<=D，今日 K>D（避免金叉后持续加分）
+                golden_cross = prev_k <= prev_d and kdj_val["K"] > kdj_val["D"]
+            else:
+                golden_cross = kdj_val["K"] > kdj_val["D"]
+            if golden_cross:
+                bonus += W["kdj_bonus"]
         if kdj_val["J"] < 0:
             bonus += W["kdj_bonus"]
         dims["new_face_kdj"] = round(kdj_val["J"], 1)

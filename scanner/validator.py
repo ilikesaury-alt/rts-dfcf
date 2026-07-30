@@ -86,8 +86,17 @@ def _nf_convergence(closes: list[float], historical_kline: list[dict],
         hits += 1
     if macd is not None and macd["histogram"] > 0 and macd["histogram_prev"] <= 0:
         hits += 1
-    if kdj is not None and kdj["K"] < 20 and kdj["K"] > kdj["D"]:
-        hits += 1
+    if kdj is not None and kdj["K"] < 20:
+        prev_k = kdj.get("prev_K")
+        prev_d = kdj.get("prev_D")
+        if prev_k is not None and prev_d is not None:
+            # 金叉时刻：前日 K<=D，今日 K>D（避免金叉后持续加分）
+            golden_cross = prev_k <= prev_d and kdj["K"] > kdj["D"]
+        else:
+            # 兼容旧数据/mock：仅判 K>D
+            golden_cross = kdj["K"] > kdj["D"]
+        if golden_cross:
+            hits += 1
 
     divergence_bonus = V_NF_DIVERGENCE_BULL if _has_macd_bull_divergence(closes, macd) else 0
 
@@ -101,15 +110,57 @@ def _nf_convergence(closes: list[float], historical_kline: list[dict],
 
 
 def _has_macd_bull_divergence(closes: list[float], macd: dict | None) -> bool:
-    if macd is None or len(closes) < 15:
+    """真正的 MACD 底背离：价格创新低，但 histogram 未创新低（动能收敛）。
+
+    标准底背离三条件：
+    1. 现低点 < 前低点（价格创新低）
+    2. 现低点处 histogram > 前低点处 histogram（动能收敛）
+    3. 现低点处 histogram < 0（在零轴下方，标准底背离要求）
+    """
+    if macd is None or len(closes) < 34:  # slow+signal-1 = 34
         return False
-    recent_low = min(closes[-5:])
-    prev_low = min(closes[-10:-5])
-    if recent_low >= prev_low:
+
+    # 计算完整 histogram 序列（与 compute_macd 内部 EMA 逻辑一致）
+    def _ema_seq(data, period):
+        m = 2 / (period + 1)
+        result = [data[0]]
+        for v in data[1:]:
+            result.append((v - result[-1]) * m + result[-1])
+        return result
+
+    ema_f = _ema_seq(closes, 12)
+    ema_s = _ema_seq(closes, 26)
+    macd_line = [f - s for f, s in zip(ema_f, ema_s)]
+    signal_line = _ema_seq(macd_line, 9)
+    histogram = [m - s for m, s in zip(macd_line, signal_line)]
+
+    # 寻找两个价格低点：现低（最近5日）和前低（5-20日前窗口）
+    n = len(closes)
+    recent_start = max(34, n - 5)
+    recent_low_idx = recent_start
+    for i in range(recent_start, n):
+        if closes[i] < closes[recent_low_idx]:
+            recent_low_idx = i
+
+    prev_start = max(34, recent_low_idx - 20)
+    prev_end = max(34, recent_low_idx - 5)
+    if prev_end <= prev_start:
         return False
-    if macd["histogram"] > macd["histogram_prev"] and macd["histogram_prev"] < 0:
-        return True
-    return False
+    prev_low_idx = prev_start
+    for i in range(prev_start + 1, prev_end):
+        if closes[i] < closes[prev_low_idx]:
+            prev_low_idx = i
+
+    # 条件1：价格创新低
+    if closes[recent_low_idx] >= closes[prev_low_idx]:
+        return False
+    # 条件2：histogram 未创新低（动能收敛）
+    if histogram[recent_low_idx] <= histogram[prev_low_idx]:
+        return False
+    # 条件3：当前 histogram 在零轴下方
+    if histogram[recent_low_idx] >= 0:
+        return False
+    return True
 
 
 def _nf_higher_low(closes: list[float]) -> tuple[int, str]:
@@ -209,27 +260,98 @@ def _mo_ma_alignment(closes: list[float], feats: dict | None = None) -> tuple[in
     return V_MO_MA_NONE, "ma_none"
 
 
+def _rsi_seq(closes: list[float], period: int = 6) -> list[float]:
+    """计算 RSI 完整序列（Wilder 平滑），rsi_list[i] 对应 closes[period+i]。"""
+    if len(closes) < period + 1:
+        return []
+    gains, losses = 0.0, 0.0
+    for i in range(1, period + 1):
+        diff = closes[i] - closes[i - 1]
+        if diff > 0:
+            gains += diff
+        else:
+            losses -= diff
+    avg_gain = gains / period
+    avg_loss = losses / period
+    rsi_list: list[float] = []
+    if avg_loss == 0:
+        rsi_list.append(100.0)
+    else:
+        rs = avg_gain / avg_loss
+        rsi_list.append(100.0 - 100.0 / (1.0 + rs))
+    for i in range(period + 1, len(closes)):
+        diff = closes[i] - closes[i - 1]
+        gain = diff if diff > 0 else 0
+        loss = -diff if diff < 0 else 0
+        avg_gain = (avg_gain * (period - 1) + gain) / period
+        avg_loss = (avg_loss * (period - 1) + loss) / period
+        if avg_loss == 0:
+            rsi_list.append(100.0)
+        else:
+            rs = avg_gain / avg_loss
+            rsi_list.append(100.0 - 100.0 / (1.0 + rs))
+    return rsi_list
+
+
 def _mo_divergence(closes: list[float], historical_kline: list[dict],
                    feats: dict | None = None) -> tuple[int, str]:
-    if len(closes) < 10:
+    """RSI 顶背离：价格创新高，但 RSI 未创新高（动能衰竭）。
+
+    标准顶背离两条件：
+    1. 现高点 > 前高点（价格创新高）
+    2. 现高点处 RSI < 前高点处 RSI（动能衰竭）
+    """
+    if len(closes) < 15:
         return V_MO_DIVERGENCE_NONE, "data_short"
 
-    rsi = feats["rsi6"] if feats is not None else compute_rsi(closes, period=6)
-    if rsi is None:
+    rsi_period = 6
+    rsi_list = _rsi_seq(closes, rsi_period)
+    if len(rsi_list) < 10:
         return V_MO_DIVERGENCE_NONE, "rsi_na"
 
-    if len(closes) >= 5:
-        price_high_now = max(closes[-3:])
-        price_high_before = max(closes[-8:-3])
-        price_up = price_high_now > price_high_before
+    n = len(closes)
+    # 现高：最近5日最高点
+    recent_start = max(rsi_period + 1, n - 5)
+    recent_high_idx = recent_start
+    for i in range(recent_start, n):
+        if closes[i] > closes[recent_high_idx]:
+            recent_high_idx = i
 
-        if price_up and len(closes) >= 15:
-            rsi_minus_1 = compute_rsi(closes[:-1], period=6)
-            rsi_minus_2 = compute_rsi(closes[:-2], period=6)
-            rsi_vals = [v for v in [rsi_minus_2, rsi_minus_1] if v is not None]
-            rsi_vals = rsi_vals[-2:] if len(rsi_vals) >= 2 else []
-            if len(rsi_vals) == 2 and rsi_vals[-1] < rsi_vals[-2] * 0.95:
-                return V_MO_DIVERGENCE_BEAR, "bear_divergence"
+    # 前高：5-20日前窗口最高点
+    prev_start = max(rsi_period + 1, recent_high_idx - 20)
+    prev_end = max(rsi_period + 1, recent_high_idx - 5)
+    if prev_end <= prev_start:
+        return V_MO_DIVERGENCE_NONE, "no_prev_high"
+    prev_high_idx = prev_start
+    for i in range(prev_start + 1, prev_end):
+        if closes[i] > closes[prev_high_idx]:
+            prev_high_idx = i
+
+    # 条件1：价格创新高
+    if closes[recent_high_idx] <= closes[prev_high_idx]:
+        return V_MO_DIVERGENCE_NONE, "no_new_high"
+
+    # 条件2：RSI 未创新高（rsi_list[i-period] 对应 closes[i]）
+    rsi_recent = rsi_list[recent_high_idx - rsi_period]
+    rsi_prev = rsi_list[prev_high_idx - rsi_period]
+
+    if rsi_recent < rsi_prev:
+        return V_MO_DIVERGENCE_BEAR, "rsi_bear_divergence"
+
+    # 条件3：OBV 顶背离（价升量减=资金流出）
+    # OBV 序列与 closes 对齐，比较两个价格高点处的 OBV 值
+    if historical_kline and len(historical_kline) >= len(closes):
+        volumes = [k.get("volume", 0) for k in historical_kline[:len(closes)]]
+        obv_seq = [0]
+        for i in range(1, len(closes)):
+            if closes[i] > closes[i - 1]:
+                obv_seq.append(obv_seq[-1] + volumes[i])
+            elif closes[i] < closes[i - 1]:
+                obv_seq.append(obv_seq[-1] - volumes[i])
+            else:
+                obv_seq.append(obv_seq[-1])
+        if obv_seq[recent_high_idx] < obv_seq[prev_high_idx]:
+            return V_MO_DIVERGENCE_BEAR, "obv_bear_divergence"
 
     return V_MO_DIVERGENCE_NONE, "no_divergence"
 
