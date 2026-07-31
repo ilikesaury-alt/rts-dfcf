@@ -8,6 +8,10 @@ def now_beijing() -> datetime:
     """Return current datetime in Beijing timezone (UTC+8)."""
     return datetime.now(BEIJING_TZ)
 
+# 数据源策略："auto"（雪球优先+AKShare兜底）/ "xueqiu" / "akshare"
+# 通过环境变量 RTS_DATA_SOURCE 可覆盖，用于雪球反爬封禁时强制切换。
+DATA_SOURCE = os.environ.get("RTS_DATA_SOURCE", "auto")
+
 REFRESH_INTERVAL = 60
 REQUEST_TIMEOUT = 15
 NEW_FACE_LOOKBACK_DAYS = 3

@@ -9,7 +9,6 @@
 """
 from dataclasses import dataclass, field
 
-from scanner.api import fetch_kline, fetch_market_caps_batch
 from scanner.config import (
     KLINE_FETCH_DAYS,
     PROMINENCE_LOOKBACK_DAYS,
@@ -58,7 +57,7 @@ class TrackedRec:
 _loop_count: int = 0
 
 
-def track_recent_recommendations(conn, session, lookback_days: int = TRACK_RECOMMENDATION_DAYS) -> list[TrackedRec]:
+def track_recent_recommendations(conn, adapter, lookback_days: int = TRACK_RECOMMENDATION_DAYS) -> list[TrackedRec]:
     """查询近 N 天推荐，基于指标判断买点状态。
 
     流程：
@@ -77,7 +76,7 @@ def track_recent_recommendations(conn, session, lookback_days: int = TRACK_RECOM
         return []
 
     symbols = [r["symbol"] for r in recs]
-    quotes = fetch_market_caps_batch(session, symbols)
+    quotes = adapter.fetch_market_caps_batch(symbols)
 
     # 每 N 轮给跟踪票拉一次 K 线并写入 DB（节流，避免每轮都拉）
     refresh_kline = (_loop_count % TRACK_KLINE_REFRESH_LOOPS == 1)
@@ -96,7 +95,7 @@ def track_recent_recommendations(conn, session, lookback_days: int = TRACK_RECOM
         rec_close = _get_rec_day_close(kline, r["date"])
         if rec_close <= 0:
             # DB 无 K 线，尝试拉一次
-            kline = _fetch_and_save_kline(conn, session, sym)
+            kline = _fetch_and_save_kline(conn, adapter, sym)
             rec_close = _get_rec_day_close(kline, r["date"])
             if rec_close <= 0:
                 continue
@@ -114,7 +113,7 @@ def track_recent_recommendations(conn, session, lookback_days: int = TRACK_RECOM
 
         # 节流刷新 K 线（用于指标计算的最新数据）
         if refresh_kline:
-            fresh = _fetch_and_save_kline(conn, session, sym)
+            fresh = _fetch_and_save_kline(conn, adapter, sym)
             if fresh:
                 kline = fresh
 
@@ -225,10 +224,10 @@ def _evaluate_buy_signals(kline: list[dict] | None) -> tuple[str, int, list[str]
     return status, count, signals
 
 
-def _fetch_and_save_kline(conn, session, symbol: str) -> list[dict] | None:
+def _fetch_and_save_kline(conn, adapter, symbol: str) -> list[dict] | None:
     """拉取 K 线并写入 DB。失败时返回 None。"""
     try:
-        kline = fetch_kline(session, symbol, KLINE_FETCH_DAYS)
+        kline = adapter.fetch_kline(symbol, KLINE_FETCH_DAYS)
         if kline:
             save_kline_to_db(conn, symbol, kline)
         return kline

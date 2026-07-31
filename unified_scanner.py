@@ -11,7 +11,7 @@ import time
 
 import requests
 
-from scanner.api import fetch_biaosheng, fetch_xueqiu_hot_list, make_session
+from scanner.data_source import get_adapter
 from scanner.config import (
     CROSS_SOURCE_BONUS,
     DB_PATH,
@@ -49,7 +49,7 @@ def main():
     interval = max(60, args.interval)
 
     conn = init_db()
-    xq_session = make_session()
+    adapter = get_adapter()
 
     print(f"  雪球双源融合扫描器  |  每{interval}s刷新  |  DB: {DB_PATH}")
     print(f"  主源: 飙升榜  |  校验: 热搜榜  |  双源一致额外 +{CROSS_SOURCE_BONUS} 分")
@@ -77,13 +77,13 @@ def main():
                 continue
 
             try:
-                xq_raw = fetch_biaosheng(xq_session)
+                xq_raw = adapter.fetch_biaosheng()
                 if not xq_raw:
                     print(f"\r  [!] 飙升榜数据为空，等待刷新...", end="", flush=True)
                     time.sleep(interval)
                     continue
 
-                hot_list = fetch_xueqiu_hot_list(xq_session)
+                hot_list = adapter.fetch_hot_list()
                 hot_symbols = {i["symbol"] for i in (hot_list or []) if i.get("symbol")}
 
                 for item in xq_raw:
@@ -94,7 +94,7 @@ def main():
                 print(f"\r  📡 飙升榜{len(xq_raw)}只 (双榜{both_count}只)", end="", flush=True)
 
                 new_faces, momentum, pullback_list, rebound_list, short_term_list, stale_candidates, all_gem, filtered_large_cap, current_quotes = (
-                    scan_with_raw(xq_raw, conn, xq_session))
+                    scan_with_raw(xq_raw, conn, adapter))
 
                 new_faces.sort(key=lambda x: -x.score)
                 momentum.sort(key=lambda x: -x.score)
@@ -112,7 +112,7 @@ def main():
                     today_syms = {r["symbol"] for r in today_recs}
                     missing = list(today_syms - set(current_quotes.keys()))
                     if missing:
-                        extra = fetch_market_caps_batch(xq_session, missing)
+                        extra = adapter.fetch_market_caps_batch(missing)
                         for sym, d in extra.items():
                             live_quotes[sym] = {"percent": d.get("percent", 0.0), "current": d.get("current", 0.0)}
                 except Exception as e:
@@ -120,7 +120,7 @@ def main():
 
                 # 历史推荐跟踪：查近5天推荐的实时表现
                 try:
-                    tracked = track_recent_recommendations(conn, xq_session)
+                    tracked = track_recent_recommendations(conn, adapter)
                 except Exception as e:
                     tracked = []
                     print(f"  [!] 历史推荐跟踪失败: {e}")
@@ -189,7 +189,6 @@ def main():
         print("\n  👋 扫描器已停止")
     finally:
         conn.close()
-        xq_session.close()
 
 
 if __name__ == "__main__":

@@ -225,14 +225,14 @@ class TestFetchAllKlinesIntradayRefresh:
         o._last_kline_fetch["300001"] = o.now_beijing().timestamp() - 10
         fetched = {}
 
-        def _fake_fetch(*a, **k):
-            fetched["called"] = True
-            return cached
+        class _FakeAdapter:
+            def fetch_kline(self, symbol, days=15):
+                fetched["called"] = True
+                return cached
 
-        monkeypatch.setattr(o, "fetch_kline", _fake_fetch)
         monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
 
-        res = o._fetch_all_klines(None, None, [StockInfo(symbol="300001", name="T", code="300001", percent=3.0, current=10.0, value=10000, rank_change=1000, rank=1)])
+        res = o._fetch_all_klines(None, _FakeAdapter(), [StockInfo(symbol="300001", name="T", code="300001", percent=3.0, current=10.0, value=10000, rank_change=1000, rank=1)])
         assert res["300001"] is cached
         assert "called" not in fetched  # no refetch
 
@@ -250,14 +250,14 @@ class TestFetchAllKlinesIntradayRefresh:
         fetched = {}
         fresh = [{"date": today, "close": 11.0}] * 45
 
-        def _fake_fetch(*a, **k):
-            fetched["called"] = True
-            return fresh
+        class _FakeAdapter:
+            def fetch_kline(self, symbol, days=15):
+                fetched["called"] = True
+                return fresh
 
-        monkeypatch.setattr(o, "fetch_kline", _fake_fetch)
         monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
 
-        res = o._fetch_all_klines(None, None, [StockInfo(symbol="300001", name="T", code="300001", percent=3.0, current=10.0, value=10000, rank_change=1000, rank=1)])
+        res = o._fetch_all_klines(None, _FakeAdapter(), [StockInfo(symbol="300001", name="T", code="300001", percent=3.0, current=10.0, value=10000, rank_change=1000, rank=1)])
         assert "called" in fetched  # refetch triggered
         assert res["300001"] is not None
         # merge 后结果包含 stale_cache + API 数据，不再是同一对象
@@ -279,14 +279,14 @@ class TestFetchAllKlinesIntradayRefresh:
         fetched = {}
         fresh = [{"date": date.today().isoformat(), "close": 11.0}] * 45
 
-        def _fake_fetch(*a, **k):
-            fetched["called"] = True
-            return fresh
+        class _FakeAdapter:
+            def fetch_kline(self, symbol, days=15):
+                fetched["called"] = True
+                return fresh
 
-        monkeypatch.setattr(o, "fetch_kline", _fake_fetch)
         monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
 
-        res = o._fetch_all_klines(None, None, [StockInfo(symbol="300001", name="T", code="300001", percent=3.0, current=10.0, value=10000, rank_change=1000, rank=1)])
+        res = o._fetch_all_klines(None, _FakeAdapter(), [StockInfo(symbol="300001", name="T", code="300001", percent=3.0, current=10.0, value=10000, rank_change=1000, rank=1)])
         assert "called" in fetched  # 必须补拉
         assert res["300001"] is not None
         # merge 后 40 条旧日期 → 1 条(key 相同), 45 条今日 → 1 条 = 2 条
@@ -390,10 +390,14 @@ class TestFetchAllKlinesTodayBarWarning:
         monkeypatch.setattr("scanner.orchestrator.now_beijing",
                             lambda: datetime(2026, 7, 31, 10, 0))
         monkeypatch.setattr("scanner.orchestrator.get_cached_kline", lambda conn, sym: cached)
-        monkeypatch.setattr("scanner.orchestrator.fetch_kline", lambda sess, sym, days: None)
+
+        class _FakeAdapter:
+            def fetch_kline(self, symbol, days=15):
+                return None
+
         monkeypatch.setattr("scanner.orchestrator.save_kline_to_db", lambda *a, **k: None)
 
-        result = _fetch_all_klines(conn, object(), [self._stock()])
+        result = _fetch_all_klines(conn, _FakeAdapter(), [self._stock()])
         captured = capsys.readouterr().out
         assert "今日K线缺失" in captured
         assert "300999" in captured
@@ -407,10 +411,14 @@ class TestFetchAllKlinesTodayBarWarning:
         monkeypatch.setattr("scanner.orchestrator.now_beijing",
                             lambda: datetime(2026, 7, 31, 10, 0))
         monkeypatch.setattr("scanner.orchestrator.get_cached_kline", lambda conn, sym: cached)
-        monkeypatch.setattr("scanner.orchestrator.fetch_kline", lambda sess, sym, days: None)
+
+        class _FakeAdapter:
+            def fetch_kline(self, symbol, days=15):
+                return None
+
         monkeypatch.setattr("scanner.orchestrator.save_kline_to_db", lambda *a, **k: None)
 
-        _fetch_all_klines(conn, object(), [self._stock()])
+        _fetch_all_klines(conn, _FakeAdapter(), [self._stock()])
         captured = capsys.readouterr().out
         assert "今日K线缺失" not in captured
 

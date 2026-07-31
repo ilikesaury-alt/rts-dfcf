@@ -14,9 +14,6 @@ from scanner.api import (
     analyze_opening_strength,
     compute_surge_sentiment,
     estimate_live_volume,
-    fetch_kline,
-    fetch_market_caps_batch,
-    fetch_market_index,
     make_session,
 )
 from scanner.candidate_pool import ScanSession
@@ -83,7 +80,7 @@ KLINE_REFRESH_TTL = 120
 _last_kline_fetch: dict[str, float] = {}
 
 
-def _fetch_all_klines(conn: sqlite3.Connection, session: requests.Session, stocks: list[StockInfo]) -> dict[str, list[dict] | None]:
+def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo]) -> dict[str, list[dict] | None]:
     result: dict[str, list[dict] | None] = {}
     needs_fetch: list[str] = []
     stale_cache: dict[str, list[dict]] = {}
@@ -119,23 +116,16 @@ def _fetch_all_klines(conn: sqlite3.Connection, session: requests.Session, stock
     if not needs_fetch:
         return result
 
-    def _fetch_one(sym: str) -> tuple[str, list[dict] | None]:
-        sess = _get_session()
-        kline = fetch_kline(sess, sym, KLINE_FETCH_DAYS)
-        _last_kline_fetch[sym] = now_beijing().timestamp()
-        return sym, kline
-
-    # 拉取阶段：仅采集数据，不写 DB（避免多线程并发写 SQLite）
+    # 拉取阶段：串行调 adapter（D4: AKShare 非线程安全，adapter 层统一串行）。
+    # 雪球模式性能影响可接受——K 线有 KLINE_REFRESH_TTL=120s 缓存，多数周期命中缓存跳过拉取。
     fetched: dict[str, list[dict] | None] = {}
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        fut_map = {pool.submit(_fetch_one, sym): sym for sym in needs_fetch}
-        for fut in as_completed(fut_map):
-            sym = fut_map[fut]
-            try:
-                sym, kline = fut.result()
-                fetched[sym] = kline
-            except Exception as e:
-                print(f"  [!] K线获取失败 {sym}: {e}")
+    for sym in needs_fetch:
+        try:
+            kline = adapter.fetch_kline(sym, KLINE_FETCH_DAYS)
+            _last_kline_fetch[sym] = now_beijing().timestamp()
+            fetched[sym] = kline
+        except Exception as e:
+            print(f"  [!] K线获取失败 {sym}: {e}")
 
     # 写入阶段：主线程顺序写 DB，确保 SQLite 线程安全
     for sym, kline in fetched.items():
@@ -423,7 +413,7 @@ def _compute_rps(candidates: list[Candidate],
 
 
 def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
-                  session: requests.Session) -> tuple[
+                  adapter) -> tuple[
                       list[Candidate], list[Candidate], list[Candidate],
                       list[Candidate], list[Candidate], list[Candidate],
                       list[StockInfo], int, dict]:
@@ -444,7 +434,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
 
     stale_syms = list(sym for sym, c in session_state.today_pool.items() if c.is_stale)
     mc_syms = list(set(s.symbol for s in gem_stocks) | set(stale_syms))
-    market_caps = fetch_market_caps_batch(session, mc_syms) if mc_syms else {}
+    market_caps = adapter.fetch_market_caps_batch(mc_syms) if mc_syms else {}
 
     gem_stocks_filtered: list[StockInfo] = []
     filtered_large_cap = 0
@@ -464,7 +454,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
             continue
         gem_stocks_filtered.append(s)
 
-    klines = _fetch_all_klines(conn, session, gem_stocks_filtered)
+    klines = _fetch_all_klines(conn, adapter, gem_stocks_filtered)
 
     clusters = get_sector_clusters(gem_stocks_filtered)
 
@@ -528,10 +518,10 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
 
     if all_candidates:
         with ThreadPoolExecutor(max_workers=6) as pool:
-            _parallel_fetch(pool, session, all_candidates,
+            _parallel_fetch(pool, all_candidates,
                             intraday_scores, opening_scores, live_volumes)
 
-    market_idx_pct = fetch_market_index(session)
+    market_idx_pct = adapter.fetch_market_index()
     market_env_bonus = compute_market_env_bonus(market_idx_pct)
     time_bonus = compute_time_bonus()
 
@@ -619,7 +609,7 @@ def _candidate_excluded_by_risk(c: Candidate) -> bool:
     return bool(set(c.risk_flags) & RISK_FLAGS_HARD_FILTER)
 
 
-def _parallel_fetch(pool: ThreadPoolExecutor, base_session: requests.Session,
+def _parallel_fetch(pool: ThreadPoolExecutor,
                     candidates: list[Candidate],
                     intraday_scores: dict[str, float | None],
                     opening_scores: dict[str, float | None],
