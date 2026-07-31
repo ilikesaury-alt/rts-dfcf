@@ -74,6 +74,35 @@ from scanner.patterns import (
     detect_rebound_patterns,
     detect_short_term_patterns,
 )
+from scanner.trading_session import trading_minutes_elapsed
+
+# 盘中把今日部分量能投影为全天量能的最大倍数（9:31 开盘瞬间量能爆表时封顶）
+MAX_VOL_PROJECTION = 10.0
+
+
+def _compute_volume_metrics(kline: list[dict], today_str: str,
+                            now=None) -> tuple[float, float]:
+    """统一计算 vol_ratio 与 avg_volume（各 analyze_* 共用，分析/验证端口径一致）。
+
+    早盘偏置修复：当末根 bar 是今日盘中部分量能时，按已交易分钟数投影为全天量能
+    （today_vol * 240 / elapsed，上限 MAX_VOL_PROJECTION），避免 vol_ratio 天然 <1.0。
+    - 无今日 bar（末根为昨日全天量）→ 不投影
+    - 已收盘 / 开盘前（elapsed>=240 或 elapsed<=0）→ 不投影
+    - 收盘后今日 bar 已是完整量能，投影倍数恒为 1.0，行为不变
+    """
+    volumes = [k["volume"] for k in kline]
+    vol_window = volumes[-11:-1] if len(volumes) >= 11 else volumes[:-1]
+    avg_vol = sum(vol_window) / max(len(vol_window), 1)
+    today_vol = volumes[-1] if volumes else 0
+
+    if kline and kline[-1]["date"] == today_str and avg_vol > 0:
+        elapsed = trading_minutes_elapsed(now)
+        if 0 < elapsed < 240:
+            factor = min(240 / elapsed, MAX_VOL_PROJECTION)
+            today_vol = today_vol * factor
+
+    vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
+    return round(vol_ratio, 2), round(avg_vol, 2)
 
 
 def _ma_bull_score(closes: list[float], feats: dict | None = None) -> int:
@@ -341,12 +370,8 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
         [k["volume"] for k in historical_kline],
     )
 
+    vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str)
     volumes = [k["volume"] for k in kline]
-    vol_window = volumes[-11:-1] if len(volumes) >= 11 else volumes[:-1]
-    avg_vol = sum(vol_window) / max(len(vol_window), 1)
-    today_vol = volumes[-1] if volumes else 0
-    vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
-    vol_ratio = round(vol_ratio, 2)
     recent_3_pcts = pcts[-3:] if len(pcts) >= 3 else pcts
     no_heavy_loss = all(p > BOTTOM_MAX_LOSS for p in recent_3_pcts)
     volume_surge = vol_ratio > BOTTOM_VOL_SURGE
@@ -482,12 +507,8 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
         # 7% 让"温和启动+今日加速"的票能进 momentum，validator 交叉验证仍会过滤假启动。
         return None
 
+    vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str)
     volumes = [k["volume"] for k in kline]
-    vol_window = volumes[-11:-1] if len(volumes) >= 11 else volumes[:-1]
-    avg_vol = sum(vol_window) / max(len(vol_window), 1)
-    today_vol = volumes[-1] if volumes else 0
-    vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
-    vol_ratio = round(vol_ratio, 2)
 
     score = 0
     dims: dict[str, int | float] = {}
@@ -610,11 +631,8 @@ def _calc_pullback_base_metrics(kline: list[dict], today_str: str) -> tuple[list
     else:
         accumulated = sum(pcts[-5:])
 
+    vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str)
     volumes = [k["volume"] for k in kline]
-    vol_window = volumes[-11:-1] if len(volumes) >= 11 else volumes[:-1]
-    avg_vol = sum(vol_window) / max(len(vol_window), 1)
-    today_vol = volumes[-1] if volumes else 0
-    vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
 
     return pcts, closes, accumulated, vol_ratio, avg_vol, historical_kline, volumes
 
@@ -948,12 +966,7 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
     else:
         accumulated = sum(pcts[-5:]) + today_pct
 
-    volumes = [k["volume"] for k in kline]
-    vol_window = volumes[-11:-1] if len(volumes) >= 11 else volumes[:-1]
-    avg_vol = sum(vol_window) / max(len(vol_window), 1)
-    today_vol = volumes[-1] if volumes else 0
-    vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
-    vol_ratio = round(vol_ratio, 2)
+    vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str)
 
     score = 0
     dims: dict[str, int | float] = {}
@@ -1130,12 +1143,7 @@ def analyze_rebound(stock: StockInfo, kline: list[dict] | None,
         accumulated = sum(pcts[-5:])
 
     # 量比
-    volumes = [k["volume"] for k in kline]
-    vol_window = volumes[-11:-1] if len(volumes) >= 11 else volumes[:-1]
-    avg_vol = sum(vol_window) / max(len(vol_window), 1)
-    today_vol = volumes[-1] if volumes else 0
-    vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
-    vol_ratio = round(vol_ratio, 2)
+    vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str)
 
     # 距20日低点比例（确认仍在低位区）
     near_20d_low = False

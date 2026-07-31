@@ -358,7 +358,7 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None):
         1: f"{ANSI['CYAN']}推荐{ANSI['RESET']}",
         2: "参考",
         3: "参考",
-        4: f"{ANSI['RED']}回避{ANSI['RESET']}",
+        4: f"{ANSI['RED']}超短{ANSI['RESET']}",
         5: f"{ANSI['RED']}回避{ANSI['RESET']}",
     }
 
@@ -438,5 +438,7 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None):
               f"{_pad(label_display,5,'r')} {entry['score']:4d} {pct_colored(pct)} "
               f"{price_str:>7} {rank_str:>4} {_pad(first_time,6)} {_pad(suggest_str,6)}{prom_str}{risk_str}")
     print(f"  {'-'*78}")
-    print(f"  {SUGGEST[0]} → {ANSI['GREEN']}kNF(已知新面孔){ANSI['RESET']}/{ANSI['CYAN']}RBD(超跌反弹){ANSI['RESET']}  |  参考 → {ANSI['YELLOW']}MOM(动量){ANSI['RESET']}/NEW(新面孔)  |  {SUGGEST[4]} → ST(超短)/PB(回调,负期望)")
+    print(f"  {SUGGEST[0]} → {ANSI['GREEN']}kNF(已知新面孔){ANSI['RESET']}/{ANSI['CYAN']}RBD(超跌反弹){ANSI['RESET']}"
+          f"  |  参考 → {ANSI['YELLOW']}MOM(动量){ANSI['RESET']}/NEW(新面孔)"
+          f"  |  {SUGGEST[4]} → ST(超短次日卖)  |  {SUGGEST[5]} → PB(回调,负期望)")
     print(f"  {ANSI['CYAN']}↻{ANSI['RESET']} 辨识度高(近5日上榜≥3次均排名≤70)  {ANSI['YELLOW']}⚠{ANSI['RESET']} 带有风险标签")

@@ -1,8 +1,11 @@
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 from scanner.candidate_pool import ScanSession
 from scanner.models import Candidate, KlineSummary, StockInfo
-from scanner.orchestrator import _candidate_excluded_by_risk
+from scanner.orchestrator import (
+    _candidate_excluded_by_risk,
+    _fetch_all_klines,
+)
 
 
 def _make_candidate(symbol: str, score: int = 20, kline_dims: dict | None = None,
@@ -361,5 +364,54 @@ class TestRiskFlagHardFilter:
 
     def test_no_flags_not_excluded(self):
         assert not _candidate_excluded_by_risk(self._cand([]))
+
+
+class TestFetchAllKlinesTodayBarWarning:
+    """盘中 K 线缺今日 bar 时应打印可见警告（旧缓存评分，下次刷新重试）。"""
+
+    def _kline(self, n: int, end_date: str) -> list[dict]:
+        base = date.fromisoformat(end_date)
+        return [
+            {"date": (base - timedelta(days=(n - 1) - i)).isoformat(),
+             "open": 10.0, "close": 10.0, "high": 10.2, "low": 9.8,
+             "volume": 1000, "percent": 0.0}
+            for i in range(n)
+        ]
+
+    def _stock(self, symbol: str = "300999") -> StockInfo:
+        return StockInfo(symbol=symbol, name="测试", code=symbol,
+                         percent=5.0, current=10.0, value=10000,
+                         rank_change=1000, rank=1)
+
+    def test_missing_today_bar_warns(self, monkeypatch, capsys):
+        conn = None
+        cached = self._kline(40, "2026-07-30")
+        monkeypatch.setattr("scanner.orchestrator.is_trading_time", lambda *a, **k: True)
+        monkeypatch.setattr("scanner.orchestrator.now_beijing",
+                            lambda: datetime(2026, 7, 31, 10, 0))
+        monkeypatch.setattr("scanner.orchestrator.get_cached_kline", lambda conn, sym: cached)
+        monkeypatch.setattr("scanner.orchestrator.fetch_kline", lambda sess, sym, days: None)
+        monkeypatch.setattr("scanner.orchestrator.save_kline_to_db", lambda *a, **k: None)
+
+        result = _fetch_all_klines(conn, object(), [self._stock()])
+        captured = capsys.readouterr().out
+        assert "今日K线缺失" in captured
+        assert "300999" in captured
+        assert "旧缓存评分" in captured
+        assert result["300999"] is cached
+
+    def test_full_today_bar_no_warning(self, monkeypatch, capsys):
+        conn = None
+        cached = self._kline(40, "2026-07-31")
+        monkeypatch.setattr("scanner.orchestrator.is_trading_time", lambda *a, **k: True)
+        monkeypatch.setattr("scanner.orchestrator.now_beijing",
+                            lambda: datetime(2026, 7, 31, 10, 0))
+        monkeypatch.setattr("scanner.orchestrator.get_cached_kline", lambda conn, sym: cached)
+        monkeypatch.setattr("scanner.orchestrator.fetch_kline", lambda sess, sym, days: None)
+        monkeypatch.setattr("scanner.orchestrator.save_kline_to_db", lambda *a, **k: None)
+
+        _fetch_all_klines(conn, object(), [self._stock()])
+        captured = capsys.readouterr().out
+        assert "今日K线缺失" not in captured
 
 

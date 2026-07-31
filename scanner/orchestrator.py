@@ -165,6 +165,18 @@ def _fetch_all_klines(conn: sqlite3.Connection, session: requests.Session, stock
         suffix = f" 等{len(missing)}只" if len(missing) > 5 else ""
         print(f"  [!] K线数据缺失{len(missing)}只: {preview}{suffix}（已跳过评分，下次刷新重试）")
 
+    # C修复: 盘中已有 K 线但缺今日 bar 的票（静默回退旧缓存会基于昨日数据打分）。
+    # 仅交易时段统计——收盘后缺今日 bar 属正常，避免噪音。下次周期 max_date<today 仍会强制补拉。
+    if is_trading_time():
+        today_bar_missing = [
+            sym for sym, kl in result.items()
+            if kl and max(k["date"] for k in kl) < today.isoformat()
+        ]
+        if today_bar_missing:
+            preview = ", ".join(today_bar_missing[:5])
+            suffix = f" 等{len(today_bar_missing)}只" if len(today_bar_missing) > 5 else ""
+            print(f"  [!] 今日K线缺失{len(today_bar_missing)}只: {preview}{suffix}（旧缓存评分，下次刷新重试）")
+
     return result
 
 

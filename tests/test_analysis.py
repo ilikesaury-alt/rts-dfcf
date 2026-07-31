@@ -1,6 +1,8 @@
+from datetime import datetime
+
 from scanner.analysis import (
     analyze_momentum, analyze_new_face, analyze_pullback, analyze_rebound, analyze_short_term,
-    _score_today_pct,
+    _compute_volume_metrics, _score_today_pct,
 )
 from scanner.config import NEW_FACE_WEIGHTS, MOMENTUM_WEIGHTS, REBOUND_WEIGHTS, REBOUND_MIN_SCORE
 from scanner.models import StockInfo
@@ -725,5 +727,65 @@ class TestAnalyzeRebound:
         assert result is not None
         assert "rebound_rsi" in result.dimensions
         assert result.dimensions["rebound_rsi"] < 30
+
+
+class TestComputeVolumeMetrics:
+    """早盘量比投影：盘中部分量能按已交易分钟数放大为全天量能。"""
+
+    def _kline_with_today(self, today_vol=0.5):
+        # 末根日期 2026-01-06 视为"今日"，前5根为历史全天量
+        return _kline([2, 1, -1, 2, 4, 3], volumes=[1.0, 1.0, 1.0, 1.0, 1.0, today_vol])
+
+    def test_no_projection_when_elapsed_zero(self):
+        kline = self._kline_with_today(today_vol=0.5)
+        ratio, avg = _compute_volume_metrics(kline, "2026-01-06",
+                                             now=datetime(2026, 6, 18, 9, 29))
+        assert ratio == 0.5
+        assert avg == 1.0
+
+    def test_projects_morning_volume(self):
+        # 09:55 → elapsed=25，投影倍数 = min(240/25, 10) = 9.6
+        kline = self._kline_with_today(today_vol=0.5)
+        ratio, avg = _compute_volume_metrics(kline, "2026-01-06",
+                                             now=datetime(2026, 6, 18, 9, 55))
+        assert ratio == round(0.5 * 9.6, 2)
+        assert avg == 1.0
+
+    def test_projection_capped_at_10x(self):
+        # 09:31 → elapsed=1，原始倍数 240 被上限 10 截断
+        kline = self._kline_with_today(today_vol=0.5)
+        ratio, avg = _compute_volume_metrics(kline, "2026-01-06",
+                                             now=datetime(2026, 6, 18, 9, 31))
+        assert ratio == 5.0
+
+    def test_first_minute_projects_at_same_factor_as_second(self):
+        # 09:30:00（首分钟 elapsed=1）与 09:31:00（elapsed=1）投影倍数一致，无跳变
+        kline = self._kline_with_today(today_vol=0.5)
+        r_open, _ = _compute_volume_metrics(kline, "2026-01-06",
+                                            now=datetime(2026, 6, 18, 9, 30))
+        r_next, _ = _compute_volume_metrics(kline, "2026-01-06",
+                                            now=datetime(2026, 6, 18, 9, 31))
+        assert r_open == r_next == 5.0
+
+    def test_no_projection_after_close(self):
+        # 收盘后 elapsed=240 → 不投影
+        kline = self._kline_with_today(today_vol=0.5)
+        ratio, avg = _compute_volume_metrics(kline, "2026-01-06",
+                                             now=datetime(2026, 6, 18, 15, 1))
+        assert ratio == 0.5
+
+    def test_no_projection_when_no_today_bar(self):
+        # 末根日期非今日 → 视为昨日全天量，不投影
+        kline = _kline([2, 1, -1, 2, 4], volumes=[1.0, 1.0, 1.0, 1.0, 0.5])
+        ratio, avg = _compute_volume_metrics(kline, "2026-01-06",
+                                             now=datetime(2026, 6, 18, 9, 55))
+        assert ratio == 0.5
+
+    def test_afternoon_projection(self):
+        # 14:00 → elapsed=180，投影倍数 = 240/180
+        kline = self._kline_with_today(today_vol=1.5)
+        ratio, avg = _compute_volume_metrics(kline, "2026-01-06",
+                                             now=datetime(2026, 6, 18, 14, 0))
+        assert ratio == round(1.5 * 240 / 180, 2)
 
 

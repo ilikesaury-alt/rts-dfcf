@@ -19,6 +19,27 @@ def is_trading_time(now: datetime | None = None) -> bool:
     return (MORNING_START <= t <= MORNING_END) or (AFTERNOON_START <= t <= AFTERNOON_END)
 
 
+def trading_minutes_elapsed(now: datetime | None = None) -> int:
+    """当日已开盘交易分钟数（收盘后=240，开盘前/非交易日=0）。
+
+    09:30-11:30 → 1~120（首分钟计为 1，避免投影倍数跳变）；午休 11:30-13:00 → 120；
+    13:00-15:00 → 120~240。用于把盘中部分量能投影为全天量能，消除早盘 vol_ratio 天然偏低偏置。
+    """
+    now = now or now_beijing()
+    if not is_trading_day(now.date()):
+        return 0
+    t = now.time()
+    if t < MORNING_START:
+        return 0
+    if t <= MORNING_END:
+        return max(int((now - datetime.combine(now.date(), MORNING_START, now.tzinfo)).total_seconds() // 60), 1)
+    if t < AFTERNOON_START:
+        return 120
+    if t <= AFTERNOON_END:
+        return 120 + int((now - datetime.combine(now.date(), AFTERNOON_START, now.tzinfo)).total_seconds() // 60)
+    return 240
+
+
 def seconds_until_next_session(now: datetime | None = None) -> int:
     now = now or now_beijing()
     today = now.date()
