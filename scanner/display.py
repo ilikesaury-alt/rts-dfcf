@@ -14,6 +14,7 @@ from scanner.config import (
 from scanner.database import get_prominence_map, get_today_recommendations
 from scanner.models import Candidate
 from scanner.orchestrator import _session_state
+from scanner.sector import classify_sector
 
 if os.name == "nt":
     import ctypes
@@ -390,12 +391,13 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None):
 
     print(f"\n{ANSI['BOLD']}◆ 综合排序 — 今日所有推荐 按策略优先级+评分降序{ANSI['RESET']}")
     hdr = (f"  {_pad('#',3,'r')} {_pad('代码',12)} {_pad('名称',10)} "
-           f"{_pad('策略',5)} {_pad('评分',4,'r')} {_pad('涨幅',8,'r')} "
+           f"{_pad('板块',6)} {_pad('策略',5)} {_pad('评分',4,'r')} {_pad('涨幅',8,'r')} "
            f"{_pad('现价',7,'r')} {_pad('排名',4,'r')} {_pad('时间',6)} {_pad('建议',6)}")
     print(hdr)
-    print(f"  {'-'*78}")
+    print(f"  {'-'*86}")
     for i, entry in enumerate(scored, 1):
         c = entry["_candidate"]
+        sector = classify_sector(entry["name"])
         # 标签/优先级/建议列统一用 entry["category"]（与排序口径一致），
         # 不用 c.category：双挂票的 today_pool 按 symbol 覆盖会拿到 short_term 候选，
         # 而 DB 保留的是最高分行的 category（可能是 new_face），两者不一致会导致
@@ -403,6 +405,8 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None):
         cat = entry["category"]
         if c:
             s = c.stock
+            if c.sector:
+                sector = c.sector
             label = CAT_LABEL.get(cat, cat)
             color = CAT_COLOR.get(cat, "")
             label_display = f"{color}{label}{ANSI['RESET']}"
@@ -435,9 +439,9 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None):
         first_time = entry.get("first_time", entry.get("time", ""))[:5]
         # label_display 含 ANSI 码，用 _pad 按可见宽度对齐（:>5 会按含 ANSI 的字符串长度计算，错位）
         print(f"  {i:3d}  {entry['symbol']:<12} {_pad(entry['name'],10)} "
-              f"{_pad(label_display,5,'r')} {entry['score']:4d} {pct_colored(pct)} "
+              f"{_pad(sector,6)} {_pad(label_display,5,'r')} {entry['score']:4d} {pct_colored(pct)} "
               f"{price_str:>7} {rank_str:>4} {_pad(first_time,6)} {_pad(suggest_str,6)}{prom_str}{risk_str}")
-    print(f"  {'-'*78}")
+    print(f"  {'-'*86}")
     print(f"  {SUGGEST[0]} → {ANSI['GREEN']}kNF(已知新面孔){ANSI['RESET']}/{ANSI['CYAN']}RBD(超跌反弹){ANSI['RESET']}"
           f"  |  参考 → {ANSI['YELLOW']}MOM(动量){ANSI['RESET']}/NEW(新面孔)"
           f"  |  {SUGGEST[4]} → ST(超短次日卖)  |  {SUGGEST[5]} → PB(回调,负期望)")
