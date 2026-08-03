@@ -1,6 +1,5 @@
 from scanner.config import (
     PULLBACK_20D_GAIN_EXTREME,
-    PULLBACK_20D_GAIN_WARN,
     PULLBACK_VOL_HEALTHY,
     PULLBACK_VOL_HIGH,
     PULLBACK_VOL_LOW,
@@ -29,6 +28,12 @@ from scanner.config import (
     V_PB_MA_DOWN,
     V_PB_MA_FLAT,
     V_PB_MA_UP,
+    V_PB_SECTOR_DEAD,
+    V_PB_SECTOR_HOT,
+    V_PB_SECTOR_NEUTRAL,
+    V_PB_SHRINK_MOD,
+    V_PB_SHRINK_NO,
+    V_PB_SHRINK_YES,
     V_RB_OVERSOLD_PARTIAL,
     V_RB_OVERSOLD_STRONG,
     V_RB_PATTERN_3BULL,
@@ -39,12 +44,6 @@ from scanner.config import (
     V_RB_VOL_HEALTHY,
     V_RB_VOL_LOW,
     V_RB_VOL_SURGE,
-    V_PB_SECTOR_DEAD,
-    V_PB_SECTOR_HOT,
-    V_PB_SECTOR_NEUTRAL,
-    V_PB_SHRINK_MOD,
-    V_PB_SHRINK_NO,
-    V_PB_SHRINK_YES,
     V_ST_MA_BROKEN,
     V_ST_MA_SUPPORT,
     V_ST_RANK_LOW,
@@ -57,13 +56,12 @@ from scanner.config import (
     V_ST_VOL_HEALTHY,
     V_ST_VOL_SURGE,
 )
+from scanner.features import build_features
 from scanner.indicators import (
     compute_bollinger_bands,
     compute_kdj,
     compute_ma,
-    compute_rsi,
 )
-from scanner.features import build_features
 from scanner.sector import classify_sector
 
 
@@ -706,8 +704,9 @@ def _is_overbought(closes: list[float], historical_kline: list[dict],
                    stock: object) -> bool:
     """判定候选是否处于末周期超买（鱼尾段）。
 
-    用历史 closes（不含今日）计算 BOLL %B / KDJ J / 20日涨幅，
-    并尽量把今日收盘并入以反映最新价（今日 bar 已在 historical_kline 之后）。
+    BOLL %B 用 closes + 今日收盘（series，反映最新价）；
+    KDJ J 只算纯历史 bar（今日急拉会污染 J，见下方注释）；
+    20日涨幅用历史 closes（不含今日）。
     short_term 硬否决，momentum 仅标记不硬否决（由各自 validate 函数决定）。
     """
     series = list(closes)
@@ -720,12 +719,16 @@ def _is_overbought(closes: list[float], historical_kline: list[dict],
         boll = compute_bollinger_bands(series)
         if boll is not None and boll["b_pct"] > ST_OVERBOUGHT_BOLL:
             return True
-    if len(series) >= 9:
-        today_ext = [today_close] if append_today else []
+    # KDJ 只算历史 bar：原逻辑把 today_close 同时塞进 high/low，产生 (high==low)
+    # 的人造 bar，污染 J 值（今日急拉时易误判超买）。改用纯历史序列，
+    # 长度天然与 closes / historical_kline 对齐。
+    # 注意：调用方必须保证 closes 与 historical_kline 同长（不含今日），
+    # 否则 compute_kdj 内 max() 可能取到空切片。
+    if len(closes) >= 9:
         kdj = compute_kdj(
-            [k["high"] for k in historical_kline] + today_ext,
-            [k["low"] for k in historical_kline] + today_ext,
-            series,
+            [k["high"] for k in historical_kline],
+            [k["low"] for k in historical_kline],
+            closes,
         )
         if kdj is not None and kdj["J"] > ST_OVERBOUGHT_KDJ:
             return True

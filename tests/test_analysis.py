@@ -1,12 +1,16 @@
 from datetime import datetime
 
 from scanner.analysis import (
-    analyze_momentum, analyze_new_face, analyze_pullback, analyze_rebound, analyze_short_term,
-    _compute_volume_metrics, _score_today_pct,
+    _compute_volume_metrics,
+    _score_today_pct,
+    analyze_momentum,
+    analyze_new_face,
+    analyze_pullback,
+    analyze_rebound,
+    analyze_short_term,
 )
-from scanner.config import NEW_FACE_WEIGHTS, MOMENTUM_WEIGHTS, REBOUND_WEIGHTS, REBOUND_MIN_SCORE
+from scanner.config import MOMENTUM_WEIGHTS, NEW_FACE_WEIGHTS, REBOUND_MIN_SCORE, REBOUND_WEIGHTS
 from scanner.models import StockInfo
-
 from tests.helpers import _kline
 
 
@@ -752,14 +756,14 @@ class TestComputeVolumeMetrics:
         assert avg == 1.0
 
     def test_projection_capped_at_10x(self):
-        # 09:31 → elapsed=1，原始倍数 240 被上限 10 截断
+        # 09:31 → elapsed=1，原始倍数 240/1=240 被上限 10 截断
         kline = self._kline_with_today(today_vol=0.5)
         ratio, avg = _compute_volume_metrics(kline, "2026-01-06",
                                              now=datetime(2026, 6, 18, 9, 31))
         assert ratio == 5.0
 
     def test_first_minute_projects_at_same_factor_as_second(self):
-        # 09:30:00（首分钟 elapsed=1）与 09:31:00（elapsed=1）投影倍数一致，无跳变
+        # 09:30:00（首分钟 elapsed=1）与 09:31:00（elapsed=1）投影倍数一致,无跳变
         kline = self._kline_with_today(today_vol=0.5)
         r_open, _ = _compute_volume_metrics(kline, "2026-01-06",
                                             now=datetime(2026, 6, 18, 9, 30))

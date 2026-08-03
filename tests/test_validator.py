@@ -1,23 +1,20 @@
-from tests.helpers import _kline  # noqa: E402
-
 from scanner.config import (
     V_MO_MA_FULL,
     V_MO_MA_NONE,
-    V_MO_MA_PARTIAL,
     V_NF_HL_CLEAR,
     V_NF_HL_FAIL,
     V_NF_SECTOR_STRONG,
     V_PB_SHRINK_NO,
     V_PB_SHRINK_YES,
-    V_ST_VOL_SURGE,
-    V_ST_VOL_HEALTHY,
+    V_ST_MA_SUPPORT,
     V_ST_RANK_TOP10,
     V_ST_SECTOR_HOT,
-    V_ST_MA_SUPPORT,
+    V_ST_VOL_HEALTHY,
+    V_ST_VOL_SURGE,
 )
 from scanner.models import KlineSummary, StockInfo
 from scanner.validator import (
-    validate,
+    _is_overbought,
     _mo_divergence,
     _mo_is_overbought,
     _mo_ma_alignment,
@@ -26,15 +23,17 @@ from scanner.validator import (
     _nf_higher_low,
     _nf_sector,
     _pb_ma_trend,
-    _pb_shrinkage,
     _pb_sector,
+    _pb_shrinkage,
     _st_is_overbought,
+    validate,
     validate_momentum,
     validate_nf,
     validate_pullback,
     validate_rebound,
     validate_short_term,
 )
+from tests.helpers import _kline  # noqa: E402
 
 
 def _stock(name="测试"):
@@ -793,6 +792,32 @@ class TestOverboughtLengthAlignment:
         stock = self._make_stock(closes[-1])  # 今日收盘已在序列
         result = _mo_is_overbought(closes, k[:-1], stock)
         assert isinstance(result, bool)
+
+    def test_kdj_uses_historical_only_no_artificial_bar(self, monkeypatch):
+        """FIX BUG-4：KDJ 超买判定只接收历史 bar，今日关闭不被同时塞进 high/low。
+
+        原实现把 today_close 同时追加为 high/low 产生 (high==low) 人造 bar，污染 J。
+        该测试直接断言 compute_kdj 收到的是纯历史序列（长度 == closes）。
+        """
+        import scanner.validator as vmod
+
+        k = _kline([2, 1, -1, 2, 4, 3, 2, 1, 2, 3, 4, 5][:12], volumes=[1.0] * 12)
+        closes = [c["close"] for c in k[:-1]]
+        hist = k[:-1]
+        stock = self._make_stock(closes[-1] * 1.5)  # 今日急拉，原实现会造 high==low bar
+
+        captured = {}
+        def _fake_kdj(highs, lows, closes_seq):
+            captured["highs"] = highs
+            captured["lows"] = lows
+            captured["closes"] = closes_seq
+            return {"K": 50.0, "D": 50.0, "J": 60.0}
+        monkeypatch.setattr(vmod, "compute_kdj", _fake_kdj)
+        # 让 BOLL 分支不提前返回（用当前序列后仍震荡，b_pct 不超阈值则不 return）
+        _is_overbought(closes, hist, stock)
+        assert len(captured["highs"]) == len(hist)
+        assert len(captured["lows"]) == len(hist)
+        assert len(captured["closes"]) == len(closes)
 
 
 class TestValidateRebound:

@@ -221,7 +221,12 @@ def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[
 
 
 # Circuit breaker state for biaosheng
-_biaosheng_cb = {"failures": 0, "last_ok": 0.0, "cached": [], "cooldown_until": 0.0}
+_biaosheng_cb = {"failures": 0, "last_ok": 0.0, "cached": [], "cooldown_until": 0.0, "stale_warned": False}
+
+
+def _warn_stale_cached(name: str, seconds: float) -> None:
+    """获取失败返回陈旧榜单 → 终端醒目告警（一次/冷却期），否则下游无感知。"""
+    print(f"  [!] {name} 获取失败，使用 {int(seconds)} 秒前缓存榜单（信号可能失真）", flush=True)
 
 
 def _biaosheng_circuit_breaker(raw_items: list[dict], success: bool = True) -> list[dict]:
@@ -231,6 +236,7 @@ def _biaosheng_circuit_breaker(raw_items: list[dict], success: bool = True) -> l
             _biaosheng_cb["failures"] = 0
             _biaosheng_cb["cooldown_until"] = 0
             _biaosheng_cb["last_ok"] = now
+            _biaosheng_cb["stale_warned"] = False
             if raw_items:
                 _biaosheng_cb["cached"] = raw_items
             return raw_items
@@ -247,6 +253,9 @@ def _biaosheng_circuit_breaker(raw_items: list[dict], success: bool = True) -> l
             if _biaosheng_cb["cached"]:
                 logger.warning("  [断路器] 飙升榜连续%d次失败, 进入%.0f秒熔断, 使用缓存数据",
                                fails, cooldown)
+                if not _biaosheng_cb["stale_warned"]:
+                    _biaosheng_cb["stale_warned"] = True
+                    _warn_stale_cached("飙升榜", now - _biaosheng_cb["last_ok"])
                 return _biaosheng_cb["cached"]
             logger.warning("  [断路器] 飙升榜连续%d次失败, 进入%.0f秒熔断（无缓存可用）",
                            fails, cooldown)
@@ -254,6 +263,9 @@ def _biaosheng_circuit_breaker(raw_items: list[dict], success: bool = True) -> l
 
         if _biaosheng_cb["cached"]:
             logger.info("  飙升榜获取失败, 返回缓存数据(%.0fs前)", now - _biaosheng_cb["last_ok"])
+            if not _biaosheng_cb["stale_warned"]:
+                _biaosheng_cb["stale_warned"] = True
+                _warn_stale_cached("飙升榜", now - _biaosheng_cb["last_ok"])
             return _biaosheng_cb["cached"]
 
         return []
@@ -446,7 +458,11 @@ def _fetch_minute_data(session: requests.Session, symbol: str) -> list[dict] | N
         resp = _request_with_retry(session, url)
         d = resp.json()
         raw_items = d.get("data", {}).get("items", [])
-        if raw_items and len(raw_items) >= 10:
+        # 10→2：开盘前 ~9:40 前不足 10 根分时 bar，原硬门会令 opening_strength /
+        # intraday / live_volume 在开盘关键窗口整体静默，错失早盘动量触发。
+        # 放宽到 >=2 后 intraday(>=2) / live_volume(>=1) 约 9:32 起可用；
+        # opening_strength 仍需 >=6（自身 len() 兜底），约 9:36 起生效。
+        if raw_items and len(raw_items) >= 2:
             items = [_normalize_minute_item(it) for it in raw_items]
             with _minute_data_cache_lock:
                 _MINUTE_DATA_CACHE[symbol] = (items, now)

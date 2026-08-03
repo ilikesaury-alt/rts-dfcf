@@ -1,38 +1,58 @@
-from scanner.config import now_beijing
-
 from scanner.config import (
+    BOTTOM_MAX_LOSS,
+    BOTTOM_NEAR_LOW_PCT,
+    BOTTOM_VOL_SURGE,
+    CRASH_THRESHOLD,
+    GAP_UP_MEDIUM,
+    GAP_UP_MEDIUM_PTS,
+    GAP_UP_STRONG,
+    GAP_UP_STRONG_PTS,
+    GAP_UP_WEAK,
+    GAP_UP_WEAK_PTS,
+    MA_BEAR_SCORE,
+    MA_BULL_2_TIER_SCORE,
+    MA_BULL_3_TIER_SCORE,
     MA_BULL_EXTRA_BONUS,
     MAX_MOMENTUM_TODAY_PCT,
     MAX_NEW_FACE_TODAY_PCT,
-    PULLBACK_MAX_TODAY_PCT,
-    REBOUND_MIN_TODAY_PCT,
-    REBOUND_MAX_TODAY_PCT,
-    REBOUND_CRASH_THRESHOLD,
-    REBOUND_5D_DROP_THRESHOLD,
-    REBOUND_NEAR_LOW_PCT,
-    SHORT_TERM_MIN_TODAY_PCT,
-    SHORT_TERM_MAX_TODAY_PCT,
-    ST_SMALL_CAP,
-    ST_MID_CAP,
-    ST_DIVERGE_UPPER_SHADOW,
-    ST_DIVERGE_CLOSE_WEAK,
-    ST_BOMB_HIGH,
-    ST_BOMB_CLOSE,
+    MOMENTUM_VOL_HEALTHY_MAX,
+    MOMENTUM_VOL_HEALTHY_MIN,
     MOMENTUM_WEIGHTS,
     NEW_FACE_WEIGHTS,
+    NO_CRASH_SAFE_BONUS,
+    PULLBACK_20D_EXTREME_PENALTY,
+    PULLBACK_20D_GAIN_EXTREME,
+    PULLBACK_20D_GAIN_WARN,
+    PULLBACK_20D_WARN_PENALTY,
+    PULLBACK_MAX_TODAY_PCT,
+    PULLBACK_VOL_HEALTHY,
+    PULLBACK_VOL_HIGH,
+    PULLBACK_VOL_LOW,
     PULLBACK_WEIGHTS,
+    REBOUND_5D_DROP_THRESHOLD,
+    REBOUND_CRASH_THRESHOLD,
+    REBOUND_MAX_TODAY_PCT,
+    REBOUND_MIN_TODAY_PCT,
+    REBOUND_NEAR_LOW_PCT,
     REBOUND_WEIGHTS,
+    RECENT_2_RETURN_THRESHOLD,
+    RECENT_2D_BONUS,
+    SHORT_TERM_MAX_TODAY_PCT,
+    SHORT_TERM_MIN_TODAY_PCT,
     SHORT_TERM_WEIGHTS,
-    PULLBACK_20D_GAIN_WARN, PULLBACK_20D_GAIN_EXTREME,
-    PULLBACK_20D_WARN_PENALTY, PULLBACK_20D_EXTREME_PENALTY,
-    PULLBACK_VOL_LOW, PULLBACK_VOL_HEALTHY, PULLBACK_VOL_HIGH,
+    ST_BOMB_CLOSE,
+    ST_BOMB_HIGH,
+    ST_DIVERGE_CLOSE_WEAK,
+    ST_DIVERGE_UPPER_SHADOW,
+    ST_MID_CAP,
+    ST_SMALL_CAP,
     VOL_PEAK_LOOKBACK,
+    VOL_PEAK_MOMENTUM_PENALTY,
     VOL_PEAK_MOMENTUM_WARN,
     VOL_PEAK_NEW_FACE_MIN,
     VOL_PEAK_NEW_FACE_PENALTY,
-    VOL_PEAK_MOMENTUM_PENALTY,
-    VOL_PEAK_PULLBACK_CONFIRM,
     VOL_PEAK_PULLBACK_BONUS,
+    VOL_PEAK_PULLBACK_CONFIRM,
     VOL_RANK_MEDIUM_PTS,
     VOL_RANK_MEDIUM_RC,
     VOL_RANK_STRONG_PTS,
@@ -40,32 +60,15 @@ from scanner.config import (
     VOL_RANK_VOL_THRESHOLD,
     VOL_RANK_WEAK_PTS,
     VOL_RANK_WEAK_RC,
-    WEAK_FORM_MIN_DOWN_DAYS,
-    WEAK_FORM_MAX_ACCUM,
-    WEAK_FORM_MIN_ACCUM,
-    WEAK_FORM_MAX_TODAY_PCT,
     WEAK_FORM_CRASH_THRESHOLD,
-    GAP_UP_STRONG,
-    GAP_UP_MEDIUM,
-    GAP_UP_WEAK,
-    GAP_UP_STRONG_PTS,
-    GAP_UP_MEDIUM_PTS,
-    GAP_UP_WEAK_PTS,
-    BOTTOM_MAX_LOSS,
-    BOTTOM_VOL_SURGE,
-    BOTTOM_NEAR_LOW_PCT,
-    CRASH_THRESHOLD,
-    RECENT_2_RETURN_THRESHOLD,
-    NO_CRASH_SAFE_BONUS,
-    RECENT_2D_BONUS,
-    MOMENTUM_VOL_HEALTHY_MIN,
-    MOMENTUM_VOL_HEALTHY_MAX,
-    MA_BULL_3_TIER_SCORE,
-    MA_BULL_2_TIER_SCORE,
-    MA_BEAR_SCORE,
+    WEAK_FORM_MAX_ACCUM,
+    WEAK_FORM_MAX_TODAY_PCT,
+    WEAK_FORM_MIN_ACCUM,
+    WEAK_FORM_MIN_DOWN_DAYS,
+    now_beijing,
 )
-from scanner.indicators import compute_ma
 from scanner.features import build_features
+from scanner.indicators import compute_ma
 from scanner.models import KlineSummary, StockInfo
 from scanner.patterns import (
     detect_momentum_patterns,
@@ -76,7 +79,10 @@ from scanner.patterns import (
 )
 from scanner.trading_session import trading_minutes_elapsed
 
-# 盘中把今日部分量能投影为全天量能的最大倍数（9:31 开盘瞬间量能爆表时封顶）
+# 盘中把今日部分量能投影为全天量能的最大倍数（9:31 开盘瞬间量能爆表时封顶）。
+# 保持 10：A股量能呈 U 型（开盘聚集），普通票前5分钟约占全天 5%，投影 5%×10=0.5
+# 仍低于 short_term 1.0 硬门；若提到 24，普通票 09:35-09:54 会投影至 1.2 误入池。
+# 真正爆量票（早盘速率≥2x 正常）在 cap=10 下仍可达 0.5~1.0+，不会被封顶压制。
 MAX_VOL_PROJECTION = 10.0
 
 
@@ -1070,7 +1076,7 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
     score += pattern_score
     dims.update(pattern_dims)
 
-    # 弱转强（分歧转一致）：昨日大分歧/烂板/炸板 + 今日在 2~8% 内转强
+    # 昨日大分歧/烂板/炸板 + 今日在 2~8% 内转强（弱转强）
     yest_divergence = False
     if len(historical_kline) >= 2:
         yest = historical_kline[-1]
@@ -1085,7 +1091,6 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
             prev_close = historical_kline[-2].get("close", 0)
             if prev_close > 0 and (yh / prev_close - 1) >= ST_BOMB_HIGH and (yc / prev_close - 1) < ST_BOMB_CLOSE:
                 yest_divergence = True  # 曾触板但收盘大回落 = 炸板/烂板
-    gap_pct, gap_pts = _detect_gap_up(stock.current, kline, today_str)
     if yest_divergence:
         score += W["st_weak_to_strong"]
         dims["st_weak_to_strong"] = W["st_weak_to_strong"]
