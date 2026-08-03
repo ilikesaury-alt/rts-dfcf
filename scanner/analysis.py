@@ -13,6 +13,12 @@ from scanner.config import (
     MA_BULL_2_TIER_SCORE,
     MA_BULL_3_TIER_SCORE,
     MA_BULL_EXTRA_BONUS,
+    MOMENTUM_LAUNCH_ACCUM_MAX,
+    MOMENTUM_LAUNCH_ACCUM_MIN,
+    MOMENTUM_LAUNCH_TODAY_MAX,
+    MOMENTUM_LAUNCH_TODAY_MIN,
+    MOMENTUM_LAUNCH_VOL,
+    MOMENTUM_LAUNCH_WORD,
     MAX_MOMENTUM_TODAY_PCT,
     MAX_NEW_FACE_TODAY_PCT,
     MOMENTUM_VOL_HEALTHY_MAX,
@@ -77,6 +83,7 @@ from scanner.patterns import (
     detect_rebound_patterns,
     detect_short_term_patterns,
 )
+from scanner.validator import _mo_divergence
 from scanner.trading_session import trading_minutes_elapsed
 
 # 盘中把今日部分量能投影为全天量能的最大倍数（9:31 开盘瞬间量能爆表时封顶）。
@@ -508,13 +515,60 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
         [k["volume"] for k in historical_kline],
     )
 
-    if accumulated < 7:
-        # 10→7：原 10% 门槛要求前期已有显著涨幅，今天刚启动的票无法进入 momentum 池。
-        # 7% 让"温和启动+今日加速"的票能进 momentum，validator 交叉验证仍会过滤假启动。
-        return None
-
     vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str)
     volumes = [k["volume"] for k in kline]
+
+    # ── "首次启动" 子模式 ──
+    # 累计涨幅尚低（0~7%，还没跑起来）+ 今日 3.5~8% 放量启动 + MA 转多头：
+    # 提前 1-2 天进 momentum 池（目标区间 4-6% 为数据最佳带：cum3d +9.46%）。
+    # 缩量(vol<1.5)/MA空头/有顶背离 一律不放行，交给 validator pos_dims≥2 再过滤一次。
+    if MOMENTUM_LAUNCH_ACCUM_MIN <= accumulated < MOMENTUM_LAUNCH_ACCUM_MAX:
+        is_launch = (
+            MOMENTUM_LAUNCH_TODAY_MIN <= today_pct <= MOMENTUM_LAUNCH_TODAY_MAX
+            and vol_ratio >= MOMENTUM_LAUNCH_VOL
+            and _ma_bull_score(closes, feats) >= MA_BULL_2_TIER_SCORE
+        )
+        if is_launch:
+            div_bonus, div_detail = _mo_divergence(closes, historical_kline, feats)
+            if div_bonus < 0:  # 有顶背离：放弃首日启动（动能衰竭）
+                return None
+            score = MOMENTUM_WEIGHTS["today_pct_6_8"] + MOMENTUM_WEIGHTS["accum_10_15"]
+            dims: dict[str, int | float] = {
+                "momentum_today_pct": MOMENTUM_WEIGHTS["today_pct_6_8"],
+                "momentum_accumulated": MOMENTUM_WEIGHTS["accum_10_15"],
+                "momentum_volume": MOMENTUM_WEIGHTS["vol_healthy"],
+                "momentum_first_launch": 1,
+                "momentum_vol_ratio": round(vol_ratio, 2),
+            }
+            score += MOMENTUM_WEIGHTS["vol_healthy"]
+            ma_boost = _ma_bull_score(closes, feats)
+            score += ma_boost
+            dims["momentum_ma_bull"] = ma_boost
+            ind_bonus, ind_dims = _compute_momentum_indicators(closes, historical_kline, W, feats)
+            score += ind_bonus
+            dims.update(ind_dims)
+            if stock.value >= 10000:
+                score += W["value_gte_10000"]
+                dims["momentum_value"] = W["value_gte_10000"]
+            elif stock.value >= 5000:
+                score += W["value_gte_5000"]
+                dims["momentum_value"] = W["value_gte_5000"]
+            return KlineSummary(
+                trend=MOMENTUM_LAUNCH_WORD,
+                accumulated_pct=round(accumulated, 2),
+                volume_ratio=round(vol_ratio, 2),
+                bottom_confirmed=True,
+                score=score,
+                dimensions=dims,
+                avg_volume=round(avg_vol, 2),
+            )
+
+    if accumulated < MOMENTUM_LAUNCH_ACCUM_MIN:
+        return None
+    if accumulated < MOMENTUM_LAUNCH_ACCUM_MAX:
+        # launch 区间 [0,7)：若上方的"首次启动"分支未命中（非放量/MA空头/非3.5-8%），
+        # 维持原行为——刚启动但结构未确认的票不能进 momentum 池。
+        return None
 
     score = 0
     dims: dict[str, int | float] = {}

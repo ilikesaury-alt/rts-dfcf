@@ -166,6 +166,17 @@ NEW_FACE_WEIGHTS: dict[str, int] = {
     "obv_not_negative": 2,
 }
 
+# ── momentum "首次启动" 子模式 ──
+# 目标：今日 4-6%（下限3.5%）放量启动 + 累计涨幅尚低（0~7%）的票，
+# 提前 1-2 天进 momentum 池，不必等涨到 6-10% 才上榜。
+# 数据：momentum 4-6% 带 cum2d +6.56% / cum3d +9.46%, 胜率 49%；2-4% 全策略负收益为噪音。
+MOMENTUM_LAUNCH_ACCUM_MIN = 0.0
+MOMENTUM_LAUNCH_ACCUM_MAX = 7.0
+MOMENTUM_LAUNCH_TODAY_MIN = 3.5
+MOMENTUM_LAUNCH_TODAY_MAX = 8.0
+MOMENTUM_LAUNCH_VOL = 1.5       # 放量启动门槛（压掉缩量假阳）
+MOMENTUM_LAUNCH_WORD = "启动首日"
+
 MOMENTUM_WEIGHTS: dict[str, int] = {
     "today_pct_2_6": 20,
     "today_pct_1_2": 10,

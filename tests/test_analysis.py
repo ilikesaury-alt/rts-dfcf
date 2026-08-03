@@ -226,6 +226,28 @@ class TestAnalyzeMomentum:
         assert "mo_overbought_penalty" not in result.dimensions, \
             f"分析侧不应再写入超买惩罚, dims={result.dimensions}"
 
+    def test_first_launch_hit_low_accumulated(self):
+        # 首次启动：累计涨幅还低(~2%) + 今日4.5% + 放量(1.6) + MA转多头 → 命中 momentum
+        pcts = [0.3] * 12 + [0.4, 0.5, 0.5]
+        kline = _kline(pcts, volumes=[1.0] * 14 + [1.6])
+        result = analyze_momentum(_stock(percent=4.5, rank_change=2000, value=12000), kline)
+        assert result is not None
+        assert result.dimensions.get("momentum_first_launch") == 1
+        assert result.trend == "启动首日"
+        assert result.accumulated_pct < 7.0
+
+    def test_first_launch_reject_shrink_volume(self):
+        # 首次启动硬门：缩量(vol<1.5) → 拒收（假阳）
+        pcts = [0.3] * 12 + [0.4, 0.5, 0.5]
+        kline = _kline(pcts, volumes=[1.0] * 15)
+        assert analyze_momentum(_stock(percent=4.5, rank_change=2000, value=12000), kline) is None
+
+    def test_first_launch_reject_low_today_pct(self):
+        # 首次启动但今日涨幅跌破 3.5% 下限 → 拒收（2-4% 假启动噪音区）
+        pcts = [0.3] * 12 + [0.4, 0.5, 0.5]
+        kline = _kline(pcts, volumes=[1.0] * 14 + [1.6])
+        assert analyze_momentum(_stock(percent=2.5, rank_change=2000, value=12000), kline) is None
+
     def test_momentum_moderate_no_overbought_dims(self):
         # 对照：温和主升浪，分析侧不写入任何超买维度（与超买票一致，统一由 validator 判断）。
         k = _kline([0] * 15 + [4, 4, 4, 4, 4, -2], volumes=[1.0] * 21)
