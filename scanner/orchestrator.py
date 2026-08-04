@@ -17,6 +17,7 @@ from scanner.api import (
     make_session,
 )
 from scanner.candidate_pool import ScanSession
+from scanner.concept import compute_driving_concepts
 from scanner.config import (
     now_beijing,
     YI,
@@ -586,6 +587,19 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     # list_momentum_bonus(±15) 等大额 bonus 会反转同板块内排名，
     # 若在 bonus 之前裁剪会保留错误的候选（bug 修复）。
     short_term_list = _cap_short_term_by_sector(short_term_list)
+
+    # 综合排序「板块」列：计算当前推动概念（东财 F10 概念归属 + 今日飙升池聚合）。
+    # 仅影响展示，不参与任何打分。首次拉取缺失缓存，之后 DB/进程缓存零网络开销。
+    try:
+        driving_map = compute_driving_concepts(
+            conn,
+            [c.stock.symbol for c in all_candidates],
+            gem_stocks_filtered,
+        )
+        for c in all_candidates:
+            c.driving_concept = driving_map.get(c.stock.symbol, "")
+    except Exception as e:
+        print(f"  [!] 驱动概念计算失败: {type(e).__name__}: {e}")
 
     current_quotes = {
         sym: {"percent": d.get("percent", 0.0), "current": d.get("current", 0.0)}

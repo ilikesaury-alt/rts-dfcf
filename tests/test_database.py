@@ -60,7 +60,8 @@ def memory_db():
             fwd_3d REAL,
             fwd_5d REAL,
             score_breakdown TEXT,
-            source TEXT DEFAULT 'xueqiu'
+            source TEXT DEFAULT 'xueqiu',
+            concept TEXT
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_date ON appearances(date)")
@@ -184,3 +185,23 @@ class TestSaveRecommendations:
             "SELECT COUNT(*) FROM recommendations"
         ).fetchone()[0]
         assert count == 1
+
+    def test_save_persists_driving_concept(self, memory_db):
+        stock = StockInfo(symbol="300001", name="Test", code="300001",
+                          percent=5.0, current=10.0, value=10000,
+                          rank_change=1000, rank=1)
+        kline_summary = KlineSummary(trend="底部启动", accumulated_pct=2.0,
+                                      volume_ratio=1.5, bottom_confirmed=True,
+                                      score=20, dimensions={"new_face_today_pct": 20},
+                                      avg_volume=1_000_000)
+        candidate = Candidate(stock=stock, category="new_face", score=20,
+                              reason="底部启动", kline=kline_summary,
+                              first_seen="09:30", driving_concept="华为概念")
+
+        save_recommendations(memory_db, [candidate], [])
+
+        row = memory_db.execute(
+            "SELECT concept FROM recommendations WHERE symbol = '300001'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "华为概念"

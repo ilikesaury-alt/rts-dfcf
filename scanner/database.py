@@ -67,6 +67,13 @@ def init_db() -> sqlite3.Connection:
             updated TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS concept_cache (
+            symbol TEXT PRIMARY KEY,
+            concepts TEXT NOT NULL,
+            updated TEXT NOT NULL
+        )
+    """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_date ON appearances(date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_sym ON appearances(symbol)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_date ON recommendations(date)")
@@ -80,6 +87,10 @@ def init_db() -> sqlite3.Connection:
         conn.execute("ALTER TABLE recommendations ADD COLUMN cum_2d REAL")
     if "cum_3d" not in cols:
         conn.execute("ALTER TABLE recommendations ADD COLUMN cum_3d REAL")
+    # 推动概念：综合排序「板块」列展示用（保存时由 orchestrator 写入），
+    # 避免掉榜/重启后因 today_pool 缺失回退成"其他"
+    if "concept" not in cols:
+        conn.execute("ALTER TABLE recommendations ADD COLUMN concept TEXT")
     try:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_source ON recommendations(source)")
     except Exception:
@@ -308,21 +319,22 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: li
             ).fetchone()
             breakdown = json.dumps(c.kline.dimensions, ensure_ascii=False) if c.kline and c.kline.dimensions else None
             rec_source = source or getattr(c.stock, "source_tag", "unified")
+            concept = getattr(c, "driving_concept", "") or ""
             if existing:
                 # 同日同股同策略已存在：仅当新分更高时更新（保留当日最高分用于回测归因）
                 if c.score > existing[1]:
                     conn.execute(
-                        "UPDATE recommendations SET time = ?, score = ?, percent = ?, trend = ?, score_breakdown = ?, source = ? "
+                        "UPDATE recommendations SET time = ?, score = ?, percent = ?, trend = ?, score_breakdown = ?, source = ?, concept = ? "
                         "WHERE id = ?",
                         (now, c.score, c.stock.percent, c.kline.trend if c.kline else None,
-                         breakdown, rec_source, existing[0]),
+                         breakdown, rec_source, concept, existing[0]),
                     )
                 continue
             conn.execute(
-                "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, trend, score_breakdown, source) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, trend, score_breakdown, source, concept) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (today, now, c.stock.symbol, c.stock.name, c.category,
-                 c.score, c.stock.percent, c.kline.trend if c.kline else None, breakdown, rec_source),
+                 c.score, c.stock.percent, c.kline.trend if c.kline else None, breakdown, rec_source, concept),
             )
         except Exception as e:
             print(f"  [!] 保存推荐记录失败 {c.stock.symbol}: {e}")
@@ -406,7 +418,7 @@ def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
     today = now_beijing().date().isoformat()
     try:
         rows = conn.execute(
-            "SELECT symbol, name, category, score, trend, time, percent "
+            "SELECT symbol, name, category, score, trend, time, percent, concept "
             "FROM recommendations WHERE date = ? ORDER BY score DESC",
             (today,),
         ).fetchall()
@@ -426,6 +438,7 @@ def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
                 "trend": r[4],
                 "time": r[5],
                 "percent": r[6] or 0.0,
+                "concept": r[7] or "",
             }
 
     try:
@@ -455,4 +468,55 @@ def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
         entry["live_rank"] = a.get("rank")
 
     return list(seen.values())
+
+
+def get_concepts_cache(conn: sqlite3.Connection, symbols: list[str], ttl_days: int = 7) -> dict[str, list[str]]:
+    """批量读取 concept_cache，返回 {symbol: [concept, ...]}。
+
+    仅返回 updated 距今不超过 ttl_days 的条目（过期视为缺失，交由上游重新拉取）。
+    """
+    if not symbols:
+        return {}
+    placeholders = ",".join("?" * len(symbols))
+    cutoff = (now_beijing() - timedelta(days=ttl_days)).isoformat()
+    try:
+        rows = conn.execute(
+            f"SELECT symbol, concepts FROM concept_cache "
+            f"WHERE symbol IN ({placeholders}) AND updated >= ?",
+            (*symbols, cutoff),
+        ).fetchall()
+    except Exception as e:
+        logger.warning(f"get_concepts_cache failed: {e}")
+        return {}
+    import json
+    result: dict[str, list[str]] = {}
+    for sym, concepts in rows:
+        try:
+            parsed = json.loads(concepts)
+            if isinstance(parsed, list):
+                result[sym] = [str(c) for c in parsed]
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return result
+
+
+def save_concepts_cache(conn: sqlite3.Connection, concepts_map: dict[str, list[str]]):
+    """批量写入 concept_cache（INSERT OR REPLACE），只在有数据时覆盖。"""
+    if not concepts_map:
+        return
+    import json
+    now = now_beijing().isoformat()
+    try:
+        conn.executemany(
+            "INSERT OR REPLACE INTO concept_cache (symbol, concepts, updated) VALUES (?, ?, ?)",
+            [(sym, json.dumps(concepts, ensure_ascii=False), now)
+             for sym, concepts in concepts_map.items()],
+        )
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"save_concepts_cache failed: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 

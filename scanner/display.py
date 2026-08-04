@@ -61,6 +61,18 @@ def _pad(s: str, width: int, align: str = "l") -> str:
     return f"{' ' * pad}{s}" if align == "r" else f"{s}{' ' * pad}"
 
 
+def _trunc(s: str, width: int) -> str:
+    """按可见宽度截断（中文全角按 2 列计），超长时尾部补 …。"""
+    if _vis_len(s) <= width:
+        return s
+    out = ""
+    for ch in s:
+        if _vis_len(out) + max(0, wcwidth.wcwidth(ch)) > width - 1:
+            break
+        out += ch
+    return out + "…"
+
+
 def clear_screen():
     if os.name == "nt":
         os.system("cls")
@@ -391,10 +403,10 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None):
 
     print(f"\n{ANSI['BOLD']}◆ 综合排序 — 今日所有推荐 按策略优先级+评分降序{ANSI['RESET']}")
     hdr = (f"  {_pad('#',3,'r')} {_pad('代码',12)} {_pad('名称',10)} "
-           f"{_pad('板块',6)} {_pad('策略',5)} {_pad('评分',4,'r')} {_pad('涨幅',8,'r')} "
+           f"{_pad('板块',14)} {_pad('策略',5)} {_pad('评分',4,'r')} {_pad('涨幅',8,'r')} "
            f"{_pad('现价',7,'r')} {_pad('排名',4,'r')} {_pad('时间',6)} {_pad('建议',6)}")
     print(hdr)
-    print(f"  {'-'*86}")
+    print(f"  {'-'*92}")
     for i, entry in enumerate(scored, 1):
         c = entry["_candidate"]
         sector = classify_sector(entry["name"])
@@ -403,10 +415,17 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None):
         # 而 DB 保留的是最高分行的 category（可能是 new_face），两者不一致会导致
         # 排到 new_face 档却显示 ST 标签 + 回避建议的矛盾。
         cat = entry["category"]
+        # 板块列优先级：推荐时落库的推动概念 > 当前池候选的推动概念 > 分类板块 > 名称关键词
+        db_concept = (entry.get("concept") or "").strip()
+        if db_concept:
+            sector = db_concept
+        elif c:
+            if c.driving_concept:
+                sector = c.driving_concept
+            elif c.sector:
+                sector = c.sector
         if c:
             s = c.stock
-            if c.sector:
-                sector = c.sector
             label = CAT_LABEL.get(cat, cat)
             color = CAT_COLOR.get(cat, "")
             label_display = f"{color}{label}{ANSI['RESET']}"
@@ -439,9 +458,9 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None):
         first_time = entry.get("first_time", entry.get("time", ""))[:5]
         # label_display 含 ANSI 码，用 _pad 按可见宽度对齐（:>5 会按含 ANSI 的字符串长度计算，错位）
         print(f"  {i:3d}  {entry['symbol']:<12} {_pad(entry['name'],10)} "
-              f"{_pad(sector,6)} {_pad(label_display,5,'r')} {entry['score']:4d} {pct_colored(pct)} "
+              f"{_pad(_trunc(sector,14),14)} {_pad(label_display,5,'r')} {entry['score']:4d} {pct_colored(pct)} "
               f"{price_str:>7} {rank_str:>4} {_pad(first_time,6)} {_pad(suggest_str,6)}{prom_str}{risk_str}")
-    print(f"  {'-'*86}")
+    print(f"  {'-'*92}")
     print(f"  {SUGGEST[0]} → {ANSI['GREEN']}kNF(已知新面孔){ANSI['RESET']}/{ANSI['CYAN']}RBD(超跌反弹){ANSI['RESET']}"
           f"  |  参考 → {ANSI['YELLOW']}MOM(动量){ANSI['RESET']}/NEW(新面孔)"
           f"  |  {SUGGEST[4]} → ST(超短次日卖)  |  {SUGGEST[5]} → PB(回调,负期望)")
