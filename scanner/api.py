@@ -7,7 +7,9 @@ import requests
 
 from scanner.config import (
     BEIJING_TZ,
+    CACHE_MAX_ENTRIES,
     HEADERS,
+    REQUEST_CONNECT_TIMEOUT,
     REQUEST_TIMEOUT,
     SENTIMENT_AVG_TOP10_BOILING,
     SENTIMENT_AVG_TOP10_COOL,
@@ -26,12 +28,13 @@ logger = logging.getLogger(__name__)
 
 def _request_with_retry(session: requests.Session, url: str,
                         max_retries: int = 3, base_delay: float = 1.0,
-                        timeout: int | None = None) -> requests.Response:
+                        timeout: int | tuple | None = None) -> requests.Response:
     last_exc = None
     for attempt in range(max_retries):
         try:
             _throttle()
-            resp = session.get(url, timeout=timeout or REQUEST_TIMEOUT)
+            # (connect, read) 双段超时：connect 短超时避免连不上挂死拖垮整轮扫描
+            resp = session.get(url, timeout=timeout or (REQUEST_CONNECT_TIMEOUT, REQUEST_TIMEOUT))
 
             if resp.status_code == 429:
                 try:
@@ -83,6 +86,19 @@ def _throttle(min_interval: float = 0.15):
         _last_api_call = now + wait
     if wait > 0:
         time.sleep(wait)
+
+
+def _cache_put(cache: dict, key, value, max_entries: int = CACHE_MAX_ENTRIES):
+    """带上限的进程内缓存写入：超限时淘汰最旧条目，防止长跑内存无限增长。
+
+    dict 保持插入序，`pop(next(iter(cache)))` 淘汰最早插入的 key。
+    调用方需自行持有对应锁。
+    """
+    if key in cache:
+        cache.pop(key)
+    cache[key] = value
+    while len(cache) > max_entries:
+        cache.pop(next(iter(cache)))
 
 
 _cache_lock = threading.Lock()
@@ -216,7 +232,7 @@ def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[
         })
     if _kline_cache_ttl > 0:
         with _kline_cache_lock:
-            _kline_cache[symbol] = (result, now)
+            _cache_put(_kline_cache, symbol, (result, now))
     return result
 
 
@@ -465,15 +481,15 @@ def _fetch_minute_data(session: requests.Session, symbol: str) -> list[dict] | N
         if raw_items and len(raw_items) >= 2:
             items = [_normalize_minute_item(it) for it in raw_items]
             with _minute_data_cache_lock:
-                _MINUTE_DATA_CACHE[symbol] = (items, now)
+                _cache_put(_MINUTE_DATA_CACHE, symbol, (items, now))
             return items
         with _minute_data_cache_lock:
-            _MINUTE_DATA_CACHE[symbol] = (None, now)
+            _cache_put(_MINUTE_DATA_CACHE, symbol, (None, now))
         return None
     except Exception as e:
         print(f"  [!] 获取分时数据失败 {symbol}: {e}")
         with _minute_data_cache_lock:
-            _MINUTE_DATA_CACHE[symbol] = (None, now)
+            _cache_put(_MINUTE_DATA_CACHE, symbol, (None, now))
         return None
 
 
@@ -540,7 +556,7 @@ def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
     items = _fetch_minute_data(session, symbol)
     if not items or len(items) < 2:
         with _intraday_cache_lock:
-            _INTRADAY_CACHE[symbol] = (None, now)
+            _cache_put(_INTRADAY_CACHE, symbol, (None, now))
         return None
 
     try:
@@ -609,10 +625,10 @@ def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
 
         score = max(-10.0, min(10.0, score))
         with _intraday_cache_lock:
-            _INTRADAY_CACHE[symbol] = (score, now)
+            _cache_put(_INTRADAY_CACHE, symbol, (score, now))
         return score
     except Exception as e:
         print(f"  [!] 分析分时强度失败 {symbol}: {e}")
         with _intraday_cache_lock:
-            _INTRADAY_CACHE[symbol] = (None, now)
+            _cache_put(_INTRADAY_CACHE, symbol, (None, now))
         return None

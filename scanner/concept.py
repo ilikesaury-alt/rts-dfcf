@@ -22,6 +22,7 @@ from scanner.config import (
     CONCEPT_NOISE_BOARDS,
     CONCEPT_NOISE_BOARD_SUFFIXES,
     CONCEPT_CACHE_TTL_DAYS,
+    CACHE_MAX_ENTRIES,
 )
 from scanner.database import get_concepts_cache, save_concepts_cache
 from scanner.sector import classify_sector
@@ -43,6 +44,15 @@ _EM_HEADERS = {
 _concept_ttl_cache: dict[str, tuple[list[str], float]] = {}
 _concept_lock = threading.Lock()
 _CONCEPT_PROCESS_TTL = 300  # 5 分钟
+
+
+def _cache_put(cache: dict, key, value):
+    """带上限写入（调用方持有 _concept_lock）：超限淘汰最旧，防长跑内存膨胀。"""
+    if key in cache:
+        cache.pop(key)
+    cache[key] = value
+    while len(cache) > CACHE_MAX_ENTRIES:
+        cache.pop(next(iter(cache)))
 
 
 def _is_noise_board(name: str) -> bool:
@@ -128,7 +138,7 @@ def _collect_concepts(conn, symbols: list[str]) -> dict[str, list[str]]:
         if sym in db and db[sym]:
             result[sym] = db[sym]
             with _concept_lock:
-                _concept_ttl_cache[sym] = (db[sym], now)
+                _cache_put(_concept_ttl_cache, sym, (db[sym], now))
         else:
             still_missing.append(sym)
 
@@ -138,7 +148,7 @@ def _collect_concepts(conn, symbols: list[str]) -> dict[str, list[str]]:
         for sym, boards in fetched.items():
             result[sym] = boards
             with _concept_lock:
-                _concept_ttl_cache[sym] = (boards, now)
+                _cache_put(_concept_ttl_cache, sym, (boards, now))
     return result
 
 

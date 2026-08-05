@@ -15,7 +15,10 @@ logger = logging.getLogger(__name__)
 
 
 def init_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    # timeout=10 / busy_timeout=10000：与其他工具并发访问时短暂锁竞争不抛异常，等待后重试。
+    # 扫描器主线程独占写，但 stock_report/backtest 等独立进程可能同时读写。
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
+    conn.execute("PRAGMA busy_timeout=10000")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS appearances (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

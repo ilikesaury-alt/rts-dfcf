@@ -3,8 +3,18 @@
 ## Quick Commands
 
 - **Run scanner**: `python unified_scanner.py` (default 60s interval) or `python unified_scanner.py 120` (custom seconds)
+- **Crash-proof run**: `python unified_scanner.py --supervise` (父进程拉起子进程，崩溃后指数退避自动重启；重启事件写入 `logs/supervisor.log`)
 - **Run tests**: `python -m pytest tests/ -v`
 - **Single test**: `python -m pytest tests/test_analysis.py::TestAnalysis::test_new_face_bollinger_oversold -v`
+
+## Long-Run Robustness (P-robust)
+
+- 主循环整个迭代体（含非交易时段等待、倒计时打印）被 `try/except` 保护，任何意外异常打印告警 + 写入 `logs/scanner_error.log` 后自动续跑，不杀进程。
+- 每轮 `SELECT 1` DB 健康检查，连接损坏/锁死自动重建。
+- 输出管道关闭/终端异常时 stdout 降级到 devnull（`_silence_stdout`），不崩溃。
+- K 线串行拉取有 `KLINE_FETCH_DEADLINE=45s` 限时：API 故障时超时即停止补拉、剩余票回退旧缓存，单轮扫描有界不假死。
+- `_request_with_retry` 用 `(REQUEST_CONNECT_TIMEOUT=5, REQUEST_TIMEOUT=15)` 双段超时，连不上的主机不再长时间挂起。
+- 进程内缓存（`_MINUTE_DATA_CACHE`/`_INTRADAY_CACHE`/`_concept_ttl_cache`/`_last_kline_fetch`）上限 `CACHE_MAX_ENTRIES=2000`，超限淘汰最旧，防长跑内存膨胀。
 
 ## Project Structure
 

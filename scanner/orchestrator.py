@@ -21,12 +21,14 @@ from scanner.concept import compute_driving_concepts
 from scanner.config import (
     now_beijing,
     YI,
+    CACHE_MAX_ENTRIES,
     FIRST_BREAKOUT_BONUS,
     FIRST_BREAKOUT_RANK_CHANGE,
     FIRST_BREAKOUT_VOL_RATIO,
     FIRST_TODAY_BONUS,
     HIGH_RISK_TRENDS,
     KLINE_FETCH_DAYS,
+    KLINE_FETCH_DEADLINE,
     KLINE_MIN_LENGTH,
     MAX_MARKET_CAP,
     MAX_STOCK_PRICE,
@@ -119,14 +121,26 @@ def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo]
 
     # 拉取阶段：串行调 adapter（D4: AKShare 非线程安全，adapter 层统一串行）。
     # 雪球模式性能影响可接受——K 线有 KLINE_REFRESH_TTL=120s 缓存，多数周期命中缓存跳过拉取。
+    # P-robust: KLINE_FETCH_DEADLINE 限时——API 故障时单只 15s×3 重试会让串行拉取假死数十分钟，
+    # 超时后停止补拉，剩余票回退旧缓存（下方 stale_cache 兜底），保证单轮扫描有界。
+    deadline = now_beijing().timestamp() + KLINE_FETCH_DEADLINE
     fetched: dict[str, list[dict] | None] = {}
-    for sym in needs_fetch:
+    deadline_skipped = 0
+    for i, sym in enumerate(needs_fetch):
+        if now_beijing().timestamp() >= deadline:
+            # 含当前这只在内，所有尚未拉取的票
+            deadline_skipped = len(needs_fetch) - i
+            break
         try:
             kline = adapter.fetch_kline(sym, KLINE_FETCH_DAYS)
             _last_kline_fetch[sym] = now_beijing().timestamp()
+            if len(_last_kline_fetch) > CACHE_MAX_ENTRIES:
+                _last_kline_fetch.pop(next(iter(_last_kline_fetch)))
             fetched[sym] = kline
         except Exception as e:
             print(f"  [!] K线获取失败 {sym}: {e}")
+    if deadline_skipped:
+        print(f"  [!] K线补拉超时（>{KLINE_FETCH_DEADLINE}s），剩余{deadline_skipped}只回退旧缓存")
 
     # 写入阶段：主线程顺序写 DB，确保 SQLite 线程安全
     for sym, kline in fetched.items():

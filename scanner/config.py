@@ -14,7 +14,14 @@ DATA_SOURCE = os.environ.get("RTS_DATA_SOURCE", "auto")
 
 REFRESH_INTERVAL = 60
 REQUEST_TIMEOUT = 15
+# 连接超时（秒）：与 REQUEST_TIMEOUT 组成 (connect, read) 元组，
+# 避免连不上的主机在 connect 阶段长时间挂起拖垮整个扫描周期。
+REQUEST_CONNECT_TIMEOUT = 5
 NEW_FACE_LOOKBACK_DAYS = 3
+
+# 单轮 K 线串行拉取 deadline（秒）：超过即停止补拉，剩余票回退旧缓存。
+# 防止 API 故障时串行重试让单轮扫描假死数十分钟。
+KLINE_FETCH_DEADLINE = 45
 
 # Normal mode thresholds
 NEW_FACE_MIN_SCORE = 18
@@ -378,6 +385,17 @@ RPS_PCTILE_LOW = 30
 # K-line fetch configuration
 KLINE_FETCH_DAYS = 45     # Number of days to fetch from API
 KLINE_MIN_LENGTH = 32     # Minimum kline bars required for analysis
+
+# ── 长跑健壮性：内存缓存上限 ──
+# 按 symbol 累积的进程内缓存超过该条数时淘汰最旧条目，防止数周运行后内存缓慢膨胀。
+# 2000 条远超 A 股活跃标的数量（飙升榜 100 只 + 候选池），正常不会触发淘汰。
+CACHE_MAX_ENTRIES = 2000
+
+# ── 崩溃自动重启（--supervise）──
+SUPERVISE_RESTART_DELAY = 10        # 重启基础延迟（秒），失败后指数退避
+SUPERVISE_RESTART_MAX_DELAY = 300   # 退避封顶（秒）
+SUPERVISE_RESET_AFTER_SECONDS = 600 # 子进程存活超过此秒数则重置退避计数
+SUPERVISE_LOG_FILE = os.path.join(LOG_DIR, "supervisor.log")
 
 # Fatigue detection for multi-day list appearances
 FATIGUE_PRICE_WARN_ACCUM = 8    # 5-day accum below this after 3+ days → price fatigue
