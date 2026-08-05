@@ -394,9 +394,11 @@ def _compute_rps(candidates: list[Candidate],
             return lo * 100 // base_total
         pctiles = [_pctile(v) for v in cand_accum]
     else:
-        sorted_by_accum = sorted(cand_accum)
-        total = len(sorted_by_accum)
-        pctiles = [(rank + 1) * 100 // total for rank in sorted(range(total), key=lambda i: sorted_by_accum[i])]
+        total = len(cand_accum)
+        order = sorted(range(total), key=lambda i: cand_accum[i])
+        pctiles = [0] * total
+        for rank, i in enumerate(order):
+            pctiles[i] = (rank + 1) * 100 // total
     for c, pctile in zip(candidates, pctiles):
         # 超跌反弹 accumulated 为负必落底部分位，RPS_LOW 惩罚违背策略初衷，豁免
         if c.category == "rebound":

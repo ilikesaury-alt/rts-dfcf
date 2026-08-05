@@ -423,3 +423,89 @@ class TestFetchAllKlinesTodayBarWarning:
         assert "今日K线缺失" not in captured
 
 
+class TestComputeRps:
+    """RPS 相对强弱加分：baseline 口径 + 无 baseline 回退 + rebound 豁免。
+
+    回归：无 baseline 回退分支曾按列表顺序而非累计涨幅分位分配奖励
+    （sorted_by_accum[i] 作排序键 = 单调 → 恒等置换，最强票拿 LOW）。
+    """
+
+    def _cand(self, symbol: str, acc: float, category: str = "new_face") -> Candidate:
+        stock = StockInfo(symbol=symbol, name="Test", code=symbol,
+                          percent=5.0, current=10.0, value=10000,
+                          rank_change=1000, rank=1)
+        kline_s = KlineSummary(trend="t", accumulated_pct=acc,
+                               volume_ratio=1.5, bottom_confirmed=True,
+                               score=20, dimensions={}, avg_volume=1_000_000)
+        return Candidate(stock=stock, category=category, score=20,
+                         reason="t", kline=kline_s, first_seen="09:30")
+
+    def test_baseline_branch_percentile_in_baseline(self):
+        from scanner.config import (RPS_BONUS_HIGH, RPS_BONUS_LOW,
+                                    RPS_BONUS_MEDIUM)
+        from scanner.orchestrator import _compute_rps
+        baseline = [0.0, 5.0, 8.0, 10.0, 12.0, 15.0, 20.0, 30.0]
+        cands = [
+            self._cand("300001", 12.0),  # lo=5 -> 62 -> MEDIUM
+            self._cand("300002", 5.0),   # lo=2 -> 25 -> LOW
+            self._cand("300003", 25.0),  # lo=7 -> 87 -> HIGH
+        ]
+        scores = _compute_rps(cands, baseline=baseline)
+        assert scores["300001"] == RPS_BONUS_MEDIUM
+        assert scores["300002"] == RPS_BONUS_LOW
+        assert scores["300003"] == RPS_BONUS_HIGH
+
+    def test_empty_baseline_fallback_orders_by_accum(self):
+        # 回归：最强票必须拿 HIGH，最弱票拿 LOW（此前按列表顺序反了）
+        from scanner.config import (RPS_BONUS_HIGH, RPS_BONUS_LOW,
+                                    RPS_BONUS_MEDIUM)
+        from scanner.orchestrator import _compute_rps
+        cands = [
+            self._cand("300001", 10.0),
+            self._cand("300002", 5.0),
+            self._cand("300003", 8.0),
+            self._cand("300004", 3.0),
+        ]
+        scores = _compute_rps(cands, baseline=[])
+        # pctiles: 100 / 50 / 75 / 25  -> HIGH / 中性 / MEDIUM / LOW
+        assert scores["300001"] == RPS_BONUS_HIGH
+        assert scores["300002"] == 0
+        assert scores["300003"] == RPS_BONUS_MEDIUM
+        assert scores["300004"] == RPS_BONUS_LOW
+
+    def test_rebound_exempt_from_rps(self):
+        from scanner.orchestrator import _compute_rps
+        cands = [
+            self._cand("300001", 10.0),
+            self._cand("300002", -12.0, category="rebound"),
+        ]
+        scores = _compute_rps(cands, baseline=[])
+        assert scores["300002"] == 0  # 超跌反弹豁免 RPS 惩罚
+
+    def test_accum_map_overrides_kline(self):
+        # short_term 的 kline.accumulated_pct 含今日 bar，accum_map 用历史口径覆盖
+        from scanner.config import RPS_BONUS_LOW, RPS_BONUS_MEDIUM
+        from scanner.orchestrator import _compute_rps
+        baseline = [0.0, 5.0, 8.0, 10.0, 12.0, 15.0, 20.0, 30.0]
+        cands = [
+            self._cand("300001", 50.0, category="short_term"),  # kline 50 但被覆盖为 5.0
+            self._cand("300002", 15.0),  # lo=6 -> 75 -> MEDIUM
+        ]
+        scores = _compute_rps(cands, baseline=baseline,
+                              accum_map={"300001": 5.0})
+        # 历史口径 5.0 -> 25 -> LOW（若未覆盖则 50 -> 100 -> HIGH）
+        assert scores["300001"] == RPS_BONUS_LOW
+        assert scores["300002"] == RPS_BONUS_MEDIUM
+
+    def test_dual_listed_symbol_counted_once(self):
+        # 双挂票（同代码出现在多个桶）只计一次，避免拉高 total 扭曲分位
+        from scanner.orchestrator import _compute_rps
+        cands = [
+            self._cand("300001", 10.0, category="new_face"),
+            self._cand("300001", 10.0, category="short_term"),
+            self._cand("300002", 5.0),
+        ]
+        scores = _compute_rps(cands, baseline=[])
+        assert set(scores) == {"300001", "300002"}
+
+
