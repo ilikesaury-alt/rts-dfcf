@@ -404,9 +404,9 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None):
     print(f"\n{ANSI['BOLD']}◆ 综合排序 — 今日所有推荐 按策略优先级+评分降序{ANSI['RESET']}")
     hdr = (f"  {_pad('#',3,'r')} {_pad('代码',12)} {_pad('名称',10)} "
            f"{_pad('板块',14)} {_pad('策略',5)} {_pad('评分',4,'r')} {_pad('涨幅',8,'r')} "
-           f"{_pad('现价',7,'r')} {_pad('排名',4,'r')} {_pad('时间',6)} {_pad('建议',6)}")
+           f"{_pad('5日累计',8,'r')} {_pad('现价',7,'r')} {_pad('排名',4,'r')} {_pad('时间',6)} {_pad('建议',6)}")
     print(hdr)
-    print(f"  {'-'*92}")
+    print(f"  {'-'*100}")
     for i, entry in enumerate(scored, 1):
         c = entry["_candidate"]
         sector = classify_sector(entry["name"])
@@ -456,10 +456,20 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None):
         # 建议列：按策略优先级映射（推荐/参考/回避），SUGGEST 含 ANSI 需用 _pad 对齐
         suggest_str = SUGGEST.get(priority, "")
         first_time = entry.get("first_time", entry.get("time", ""))[:5]
+        # 5日累计涨幅：优先用候选池的 kline 数据（与上方各策略桶口径一致），否则用 DB 落库值
+        accum_val = None
+        if c and c.kline:
+            accum_val = c.kline.accumulated_pct
+        elif entry.get("accumulated_pct") is not None:
+            accum_val = entry["accumulated_pct"]
+        if accum_val is None:
+            accum_str = "—"
+        else:
+            accum_str = f"{accum_val:+.2f}%"
         # label_display 含 ANSI 码，用 _pad 按可见宽度对齐（:>5 会按含 ANSI 的字符串长度计算，错位）
         print(f"  {i:3d}  {entry['symbol']:<12} {_pad(entry['name'],10)} "
               f"{_pad(_trunc(sector,14),14)} {_pad(label_display,5,'r')} {entry['score']:4d} {pct_colored(pct)} "
-              f"{price_str:>7} {rank_str:>4} {_pad(first_time,6)} {_pad(suggest_str,6)}{prom_str}{risk_str}")
+              f"{accum_str:>8} {price_str:>7} {rank_str:>4} {_pad(first_time,6)} {_pad(suggest_str,6)}{prom_str}{risk_str}")
     print(f"  {'-'*92}")
     print(f"  {SUGGEST[0]} → {ANSI['GREEN']}kNF(已知新面孔){ANSI['RESET']}/{ANSI['CYAN']}RBD(超跌反弹){ANSI['RESET']}"
           f"  |  参考 → {ANSI['YELLOW']}MOM(动量){ANSI['RESET']}/NEW(新面孔)"

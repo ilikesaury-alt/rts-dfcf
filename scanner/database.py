@@ -91,6 +91,10 @@ def init_db() -> sqlite3.Connection:
     # 避免掉榜/重启后因 today_pool 缺失回退成"其他"
     if "concept" not in cols:
         conn.execute("ALTER TABLE recommendations ADD COLUMN concept TEXT")
+    # 5日累计涨幅：综合排序「5日累计」列展示用（保存时写入），
+    # 避免掉榜/重启后因 today_pool 缺失无法显示
+    if "accumulated_pct" not in cols:
+        conn.execute("ALTER TABLE recommendations ADD COLUMN accumulated_pct REAL")
     try:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_source ON recommendations(source)")
     except Exception:
@@ -320,21 +324,22 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: li
             breakdown = json.dumps(c.kline.dimensions, ensure_ascii=False) if c.kline and c.kline.dimensions else None
             rec_source = source or getattr(c.stock, "source_tag", "unified")
             concept = getattr(c, "driving_concept", "") or ""
+            accumulated = c.kline.accumulated_pct if c.kline else None
             if existing:
                 # 同日同股同策略已存在：仅当新分更高时更新（保留当日最高分用于回测归因）
                 if c.score > existing[1]:
                     conn.execute(
-                        "UPDATE recommendations SET time = ?, score = ?, percent = ?, trend = ?, score_breakdown = ?, source = ?, concept = ? "
+                        "UPDATE recommendations SET time = ?, score = ?, percent = ?, trend = ?, score_breakdown = ?, source = ?, concept = ?, accumulated_pct = ? "
                         "WHERE id = ?",
                         (now, c.score, c.stock.percent, c.kline.trend if c.kline else None,
-                         breakdown, rec_source, concept, existing[0]),
+                         breakdown, rec_source, concept, accumulated, existing[0]),
                     )
                 continue
             conn.execute(
-                "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, trend, score_breakdown, source, concept) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, trend, score_breakdown, source, concept, accumulated_pct) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (today, now, c.stock.symbol, c.stock.name, c.category,
-                 c.score, c.stock.percent, c.kline.trend if c.kline else None, breakdown, rec_source, concept),
+                 c.score, c.stock.percent, c.kline.trend if c.kline else None, breakdown, rec_source, concept, accumulated),
             )
         except Exception as e:
             print(f"  [!] 保存推荐记录失败 {c.stock.symbol}: {e}")
@@ -418,7 +423,7 @@ def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
     today = now_beijing().date().isoformat()
     try:
         rows = conn.execute(
-            "SELECT symbol, name, category, score, trend, time, percent, concept "
+            "SELECT symbol, name, category, score, trend, time, percent, concept, accumulated_pct "
             "FROM recommendations WHERE date = ? ORDER BY score DESC",
             (today,),
         ).fetchall()
@@ -439,6 +444,7 @@ def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
                 "time": r[5],
                 "percent": r[6] or 0.0,
                 "concept": r[7] or "",
+                "accumulated_pct": r[8],
             }
 
     try:
