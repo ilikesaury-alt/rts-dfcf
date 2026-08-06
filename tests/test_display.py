@@ -1,7 +1,9 @@
 """历史推荐跟踪显示：默认只显示"到买点"，"观察中"隐藏（TRACK_DISPLAY_WATCH_MAX=0）。"""
+import sqlite3
 from types import SimpleNamespace
 
 import scanner.display as disp_mod
+from scanner.config import now_beijing
 from scanner.models import Candidate, KlineSummary, StockInfo
 
 
@@ -86,3 +88,44 @@ def test_market_extra_str_zt_kept():
     s = disp_mod._market_extra_str(c)
     assert "▲" in s
     assert "连2炸1" in s
+
+
+# ── 综合排序资金流图标：DB 快照回退（重启/掉榜后仍显示）──
+def _rec_db():
+    conn = sqlite3.connect(":memory:")
+    conn.execute("""CREATE TABLE appearances (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, name TEXT NOT NULL,
+        date TEXT NOT NULL, rank INTEGER, percent REAL, value REAL, UNIQUE(symbol, date))""")
+    conn.execute("""CREATE TABLE recommendations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, time TEXT NOT NULL,
+        symbol TEXT NOT NULL, name TEXT NOT NULL, category TEXT NOT NULL, score INTEGER NOT NULL,
+        percent REAL, trend TEXT, next_day_pct REAL, fwd_3d REAL, fwd_5d REAL,
+        score_breakdown TEXT, source TEXT DEFAULT 'xueqiu', concept TEXT, accumulated_pct REAL)""")
+    conn.execute("""CREATE TABLE market_extra_cache (
+        symbol TEXT NOT NULL, date TEXT NOT NULL, data_type TEXT NOT NULL,
+        payload_json TEXT NOT NULL, updated TEXT NOT NULL, PRIMARY KEY(symbol, data_type))""")
+    return conn
+
+
+def test_display_priority_fund_flow_icon_from_db(capsys):
+    """综合排序在候选池缺失（重启/掉榜）时，从 market_extra_cache 读取资金流图标。"""
+    conn = _rec_db()
+    today = now_beijing().date().isoformat()
+    conn.executemany(
+        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [(today, "13:00", "SZ300001", "有数据", "momentum", 60, 2.0),
+         (today, "13:00", "SZ300002", "无数据", "momentum", 55, 1.0)],
+    )
+    conn.execute(
+        "INSERT INTO market_extra_cache (symbol, date, data_type, payload_json, updated) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("SZ300001", today, "fund_flow", '{"main_pct": 6.0, "main_net": 1e7}', now_beijing().isoformat()),
+    )
+    conn.commit()
+    disp_mod.display_priority(conn)
+    out = capsys.readouterr().out
+    line1 = next(l for l in out.splitlines() if "SZ300001" in l)
+    line2 = next(l for l in out.splitlines() if "SZ300002" in l)
+    assert "▲" in line1
+    assert "▲" not in line2

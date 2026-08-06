@@ -183,6 +183,32 @@ class TestCollect:
         assert saved.get("fund_flow", {}).get("SZ300001", {}).get("main_net") == 123456789.0
         assert net.calls == 1, "资金流全市场只拉一次"
 
+    def test_complete_fetch_saves_full_market(self, monkeypatch):
+        """完整拉取：保存全市场快照（含非当前候选），保证重启/掉榜后展示层可读。"""
+        monkeypatch.setattr(me, "get_market_extra_cache", lambda *a, **k: {})
+        saved = {}
+        monkeypatch.setattr(me, "save_market_extra_cache", lambda conn, m, dt: saved.update({dt: dict(m)}))
+        monkeypatch.setattr(me, "fetch_fund_flow_rank",
+                            lambda: {"300001": {"main_net": 1e7, "main_pct": 8.5, "super_net": 0},
+                                     "300999": {"main_net": -1e7, "main_pct": -3.0, "super_net": 0}})
+        monkeypatch.setattr(me, "_last_ff_partial", False)
+        result = me.collect_market_extra(None, ["SZ300001"], include_zt=False)
+        assert "SZ300001" in result
+        assert "SZ300999" in saved.get("fund_flow", {}), "完整拉取应保存全市场快照（含非候选）"
+
+    def test_partial_fetch_saves_candidates_only(self, monkeypatch):
+        """超时部分结果：只保存当前缺失候选，不把不完整数据当快照冻结。"""
+        monkeypatch.setattr(me, "get_market_extra_cache", lambda *a, **k: {})
+        saved = {}
+        monkeypatch.setattr(me, "save_market_extra_cache", lambda conn, m, dt: saved.update({dt: dict(m)}))
+        monkeypatch.setattr(me, "fetch_fund_flow_rank",
+                            lambda: {"300001": {"main_net": 1e7, "main_pct": 8.5, "super_net": 0},
+                                     "300999": {"main_net": 1e7, "main_pct": 8.5, "super_net": 0}})
+        monkeypatch.setattr(me, "_last_ff_partial", True)
+        result = me.collect_market_extra(None, ["SZ300001"], include_zt=False)
+        assert "SZ300999" not in saved.get("fund_flow", {}), "部分结果不应保存非候选快照"
+        assert "SZ300001" in saved.get("fund_flow", {})
+
     def test_db_hit_skips_fetch(self, monkeypatch):
         fake = FakeAk()
         monkeypatch.setattr(me, "_get_ak", lambda: fake)

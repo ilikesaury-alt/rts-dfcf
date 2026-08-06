@@ -14,7 +14,7 @@ from scanner.config import (
     YI,
     now_beijing,
 )
-from scanner.database import get_prominence_map, get_today_recommendations
+from scanner.database import get_market_extra_cache, get_prominence_map, get_today_recommendations
 from scanner.models import Candidate
 from scanner.orchestrator import _session_state
 from scanner.sector import classify_sector
@@ -162,6 +162,13 @@ _FUND_FLOW_ICON = {
 }
 
 
+def _fund_flow_icon_str(ff_pct) -> str:
+    """主力净占比 → 5 档图标（ANSI 着色）；无数据返回空串。"""
+    if ff_pct is None:
+        return ""
+    return _FUND_FLOW_ICON.get(fund_flow_signal(float(ff_pct)), "")
+
+
 def _market_extra_str(c: Candidate) -> str:
     """行情增强标记：主力资金流强弱图标 + 连板/炸板（无数据返回空串）。
 
@@ -172,7 +179,7 @@ def _market_extra_str(c: Candidate) -> str:
     parts = []
     ff_pct = dims.get("fund_flow_main_pct")
     if ff_pct is not None:
-        icon = _FUND_FLOW_ICON.get(fund_flow_signal(float(ff_pct)))
+        icon = _fund_flow_icon_str(ff_pct)
         if icon:
             parts.append(icon)
     zt_lb = dims.get("zt_lianban")
@@ -458,6 +465,17 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None):
             continue
         entry["_prominent"] = prom_map.get(entry["symbol"], False)
 
+    # 资金流图标：从 market_extra_cache 直接读当日资金流，不依赖当前进程 today_pool。
+    # 候选存在时优先用其扫描时的最新维度，否则（重启/掉榜/扫描时拉取失败）回退到 DB
+    # 保存的全市场快照——避免综合排序大量行因进程重启丢失资金流图标。
+    flow_pct_map: dict[str, float] = {}
+    try:
+        ff_db = get_market_extra_cache(conn, list({e["symbol"] for e in today_recs}), "fund_flow")
+        flow_pct_map = {sym: (payload.get("main_pct") if payload else None)
+                        for sym, payload in ff_db.items()}
+    except Exception:
+        flow_pct_map = {}
+
     scored = sorted(today_recs, key=lambda x: (CAT_PRIORITY.get(x["category"], 99), -x["score"]))
 
     print(f"\n{ANSI['BOLD']}◆ 综合排序 — 今日所有推荐 按策略优先级+评分降序{ANSI['RESET']}")
@@ -526,9 +544,22 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None):
         else:
             accum_str = f"{accum_val:+.2f}%"
         # label_display 含 ANSI 码，用 _pad 按可见宽度对齐（:>5 会按含 ANSI 的字符串长度计算，错位）
+        extra_str = ""
+        if c:
+            extra_str = _market_extra_str(c)
+            ff_pct = c.kline.dimensions.get("fund_flow_main_pct") if c.kline else None
+            if ff_pct is None:
+                icon = _fund_flow_icon_str(flow_pct_map.get(entry["symbol"]))
+                if icon:
+                    extra_str = f"{extra_str} {icon}".strip()
+        else:
+            icon = _fund_flow_icon_str(flow_pct_map.get(entry["symbol"]))
+            if icon:
+                extra_str = icon
+        extra_suffix = f" {extra_str}" if extra_str else ""
         print(f"  {i:3d}  {entry['symbol']:<12} {_pad(entry['name'],10)} "
               f"{_pad(_trunc(sector,14),14)} {_pad(label_display,5,'r')} {entry['score']:4d} {pct_colored(pct)} "
-              f"{accum_str:>8} {price_str:>7} {rank_str:>4} {_pad(first_time,6)} {_pad(suggest_str,6)}{prom_str}{risk_str}")
+              f"{accum_str:>8} {price_str:>7} {rank_str:>4} {_pad(first_time,6)} {_pad(suggest_str,6)}{prom_str}{risk_str}{extra_suffix}")
     print(f"  {'-'*92}")
     print(f"  {SUGGEST[0]} → {ANSI['GREEN']}kNF(已知新面孔){ANSI['RESET']}/{ANSI['CYAN']}RBD(超跌反弹){ANSI['RESET']}"
           f"  |  参考 → {ANSI['YELLOW']}MOM(动量){ANSI['RESET']}/NEW(新面孔)"

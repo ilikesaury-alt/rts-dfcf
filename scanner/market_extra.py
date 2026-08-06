@@ -98,6 +98,10 @@ def _cache_put(cache: dict, key, value):
 _zt_cache: dict[str, tuple[dict, float]] = {}
 _ff_cache: dict[str, tuple[dict, float]] = {}
 _extra_lock = threading.Lock()
+# 最近一次全市场资金流拉取是否超时（部分结果）。完整拉取时把全市场快照全部
+# 落库，保证重启/掉榜后任一 symbol 的资金流数据仍可读；部分结果只存候选，
+# 避免把不完整数据当快照冻结。
+_last_ff_partial: bool = False
 
 
 def _today_key() -> str:
@@ -280,15 +284,19 @@ def fetch_fund_flow_rank() -> dict[str, dict]:
     cached = _cache_hit(_ff_cache, FUND_FLOW_TTL_SEC, key)
     if cached is not None:
         return cached
+    global _last_ff_partial
     try:
         result, timed_out = _fetch_fund_flow_bounded(FUND_FLOW_FETCH_TIMEOUT)
         if timed_out:
+            _last_ff_partial = True
             print(f"  [!] 个股资金流拉取超时，已获取 {len(result)} 只（部分数据），下一轮扫描重试补全")
             _cache_put_all(_ff_cache, result, key, ttl=FUND_FLOW_PARTIAL_TTL_SEC)
         else:
+            _last_ff_partial = False
             _cache_put_all(_ff_cache, result, key)
         return result
     except Exception as e:
+        _last_ff_partial = True
         print(f"  [!] 个股资金流获取失败: {e}")
         _cache_put_all(_ff_cache, {}, key)  # 短退避：TTL 内不重复重试，避免每轮刷屏/轰击
         return {}
@@ -377,7 +385,13 @@ def collect_market_extra(conn, symbols: list[str],
             fetched = fetch_fund_flow_rank()
             if fetched:
                 mapped = {_ak_to_xq(code): payload for code, payload in fetched.items()}
-                save_map = {sym: mapped[sym] for sym in miss_flow if sym in mapped}
+                if _last_ff_partial:
+                    # 超时部分结果：只存当前缺失候选，避免把不完整数据当快照冻结
+                    save_map = {sym: mapped[sym] for sym in miss_flow if sym in mapped}
+                else:
+                    # 完整全市场快照：全部落库。这样当日任一 symbol（含已掉榜/重启前
+                    # 推荐过的票）都能在展示层读到资金流数据，而非只有当前候选有。
+                    save_map = mapped
                 if save_map:
                     save_market_extra_cache(conn, save_map, _FUND_FLOW)
                 for sym in miss_flow:
@@ -389,8 +403,9 @@ def collect_market_extra(conn, symbols: list[str],
 
 def reset_extra_cache():
     """重置进程内缓存（仅用于测试）。"""
-    global _ak
+    global _ak, _last_ff_partial
     with _extra_lock:
         _zt_cache.clear()
         _ff_cache.clear()
     _ak = None
+    _last_ff_partial = False
