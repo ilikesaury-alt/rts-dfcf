@@ -324,6 +324,15 @@ def get_prominence_map(conn: sqlite3.Connection, symbols: list[str]) -> dict[str
     return result
 
 
+def is_prominent(conn: sqlite3.Connection, symbol: str) -> bool:
+    """单只股票是否满足辨识度条件（↻）。
+
+    复用 get_prominence_map 批量实现（避免 enhancer/tracker 各自维护逐股 N+1 拷贝
+    导致的口径漂移），供 enhancer._compute_prominence_labels 与 tracker 调用。
+    """
+    return get_prominence_map(conn, [symbol]).get(symbol, False)
+
+
 def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: list, source: str | None = None):
     import json
     today = now_beijing().date().isoformat()

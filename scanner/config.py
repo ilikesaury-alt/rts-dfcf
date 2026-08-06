@@ -190,6 +190,9 @@ FUND_OUTFLOW_NET_PCT = -8.0       # 主力净流出占比 ≤-8% → 「资金�
 # 资金流图标强档阈值：与「资金流出」标签同源（负值取绝对值），避免两处分别改造成漂移
 FUND_FLOW_MAIN_PCT_EXTREME = -FUND_OUTFLOW_NET_PCT
 ZT_ZHA_BAN_MIN = 1                # 炸板次数 ≥1 且今日曾涨停 → 「炸板」标签
+# 展示层「硬信号」风险标签（display/feishu 共用）：展开文字显示；软信号折叠成 +N 角标。
+# 注意与 RISK_FLAGS_HARD_FILTER（硬过滤，命中即从推荐列表移除）不同——此处仅影响展示分级。
+RISK_FLAGS_DISPLAY_HARD = {"超买", "主力出货", "趋势破位"}
 
 # ── 概念板块数据源（东财 F10）─
 CONCEPT_API_TIMEOUT = 8          # 单只个股概念拉取超时（秒）
@@ -650,17 +653,24 @@ PULLBACK_20D_GAIN_EXTREME = 60    # 20-day gain > 60% → extreme
 PULLBACK_20D_WARN_PENALTY = -10
 PULLBACK_20D_EXTREME_PENALTY = -15
 
-# ── 综合排序展示优先级与操作建议（2026-08-06 数据驱动重排）──
+# ── 综合排序展示优先级与操作建议（2026-08-07 复核重排）──
 # CAT_DISPLAY_PRIORITY：仅决定综合排序「类别分组展示顺序」，与操作建议解耦。
-# 依据 recommendations 历史 cum_3d（3日持有口径）全期表现重排：
-#   rebound(+4.73) > momentum(+2.58) > short_term(-0.82) > known_new_face(-0.44)
-#   > new_face(-1.61) > pullback(-7.14, 已下线)
-# known_new_face 由原榜首(0)下移至 3：其类别内 score IC 为负（高分反而更差，-0.199），
-# 霸榜会让列表顶部最不可靠。new_face（胜率 34.5% 最大桶）压至倒数第二。
+# 校准依据（recommendations 历史 cum_3d / next_day 双口径 + 全期/近期双窗口）：
+#   - 全期（库内约60个交易日）：rebound(+4.74) > momentum(+2.58) > short_term(-0.82)
+#     > known_new_face(-0.44) > new_face(-1.61) > pullback(-7.14, 已下线)
+#   - 近30天 cum_3d：rebound(+4.74) > short_term(-0.82) > new_face(-4.07)
+#     > momentum(-4.92) ≈ known_new_face(-4.92) > pullback(-7.44)
+#   - 近30天 next_day：rebound(+3.45) > known_new_face(+0.87) > short_term(-0.58)
+#     > new_face(-0.98) > momentum(-1.20) > pullback(-5.63)
+# 2026-08-07 调整：short_term 上移至 1（两口径均稳定、IC 正效、近30天唯一接近打平）；
+# momentum 由 1 下调至 2（近30天 cum_3d -4.92 垫底且 next_day 亦负，动量策略弱市天然脆弱；
+# 但全期 +2.58 仍居第 2，故只下调一位折中，不按单一近期窗口过度反应）。
+# known_new_face 维持 3：next_day 近期 +0.87 系"次日冲高"，cum_3d -4.92 为 3 日高开低走，
+# 且 score IC 反指（-0.134/-0.179 双口径），类别内分数不可靠，不置顶。
 # 用 `python -m scanner.backtest --ranking` 校准此顺序，人工复核后更新。
 CAT_DISPLAY_PRIORITY = {
     "known_new_face": 3, "rebound": 0, "new_face": 4,
-    "momentum": 1, "short_term": 2, "pullback": 5,
+    "momentum": 2, "short_term": 1, "pullback": 5,
 }
 
 # SUGGEST_BY_CAT：操作建议按类别独立映射（与优先级解耦，语义不变）。

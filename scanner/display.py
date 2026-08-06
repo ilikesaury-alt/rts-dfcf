@@ -9,6 +9,7 @@ from scanner.config import (
     FUND_FLOW_MAIN_PCT_WEAK,
     MAX_MARKET_CAP,
     MAX_STOCK_PRICE,
+    RISK_FLAGS_DISPLAY_HARD,
     SUGGEST_BY_CAT,
     TRACK_DISPLAY_BUY_MAX,
     TRACK_DISPLAY_WATCH_MAX,
@@ -155,6 +156,23 @@ def fund_flow_signal(main_pct: float | None) -> str:
     return "neutral"
 
 
+def split_risk_flags(risk_flags: list[str]) -> tuple[list[str], int]:
+    """风险标签分级：返回 (硬信号列表, 软信号数量)。
+
+    硬信号（RISK_FLAGS_DISPLAY_HARD：超买/主力出货/趋势破位）展开文字显示，
+    软信号折叠成 +N 角标。display/feishu 共用，避免两处各自维护阈值集合。
+    """
+    hard = [f for f in risk_flags if f in RISK_FLAGS_DISPLAY_HARD]
+    return hard, len(risk_flags) - len(hard)
+
+
+def _render_prominence(prominence_labels: list[str] | None) -> str:
+    """辨识度标签（↻ 等）渲染；空列表返回空串。返回段无前导空格，分隔由调用方处理。"""
+    if not prominence_labels:
+        return ""
+    return f"{ANSI['CYAN']}│{' '.join(prominence_labels)}│{ANSI['RESET']}"
+
+
 _FUND_FLOW_ICON = {
     "strong_in": f"{ANSI['GREEN']}▲▲{ANSI['RESET']}",
     "in": f"{ANSI['GREEN']}▲{ANSI['RESET']}",
@@ -277,25 +295,19 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
         val_str = f"{s.value:.0f}" if s.value else "N/A"
         # 风险标签分级显示：硬信号（超买/主力出货/趋势破位）展开文字，
         # 软信号（疲劳/弱市/涨幅过大/量价背离）折叠成 +N 角标，避免长串红字扰乱注意力。
-        HARD_RISK_FLAGS = {"超买", "主力出货", "趋势破位"}
+        hard, soft_count = split_risk_flags(c.risk_flags)
         risk_parts = []
-        if c.risk_flags:
-            hard = [f for f in c.risk_flags if f in HARD_RISK_FLAGS]
-            soft_count = len(c.risk_flags) - len(hard)
-            if hard:
-                risk_parts.append(f"{ANSI['RED']}⚠{'/'.join(hard)}{ANSI['RESET']}")
-            else:
-                # 无硬信号但有软信号：提示有软风险但不阻断
-                risk_parts.append(f"{ANSI['YELLOW']}⚠+{soft_count}{ANSI['RESET']}")
-            if soft_count and hard:
+        if hard:
+            risk_parts.append(f"{ANSI['RED']}⚠{'/'.join(hard)}{ANSI['RESET']}")
+            if soft_count:
                 # 硬信号已展开时，软信号折叠成 +N
-                risk_parts[-1] = risk_parts[-1] + f"{ANSI['YELLOW']}+{soft_count}{ANSI['RESET']}"
+                risk_parts[0] += f"{ANSI['YELLOW']}+{soft_count}{ANSI['RESET']}"
+        elif soft_count:
+            # 无硬信号但有软信号：提示有软风险但不阻断
+            risk_parts.append(f"{ANSI['YELLOW']}⚠+{soft_count}{ANSI['RESET']}")
         risk_str = " ".join(risk_parts)
         # 辨识度标签
-        prom_str = ""
-        if c.prominence_labels:
-            tags = " ".join(c.prominence_labels)
-            prom_str = f"{ANSI['CYAN']}│{tags}│{ANSI['RESET']}"
+        prom_str = _render_prominence(c.prominence_labels)
         full_risk = f"{prom_str} {risk_str}" if prom_str else risk_str
         extra_str = _market_extra_str(c)
         extra_suffix = f" {extra_str}" if extra_str else ""
@@ -494,9 +506,11 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
         if ff is None:
             ff = flow_pct_map.get(entry["symbol"])
         prominent = bool(c.prominence_labels) if c else prom_map.get(entry["symbol"], False)
-        if ff is not None and ff <= FUND_FLOW_MAIN_PCT_WEAK:
+        # 档位阈值复用 fund_flow_signal 5 档映射（与图标/评分同源），避免独立比较漂移
+        sig = fund_flow_signal(ff)
+        if sig in ("out", "strong_out"):
             return 2
-        if prominent or (ff is not None and ff >= FUND_FLOW_MAIN_PCT_STRONG):
+        if prominent or sig in ("in", "strong_in"):
             return 0
         return 1
 
@@ -551,25 +565,20 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
             live_rank = c.stock.rank
         price_str = f"{live_cur:.2f}" if live_cur else "—"
         rank_str = f"{live_rank}" if live_rank else "—"
-        if c:
-            label = CAT_LABEL.get(cat, cat)
-            color = CAT_COLOR.get(cat, "")
-            label_display = f"{color}{label}{ANSI['RESET']}"
-            prom_str = ""
-            if c.prominence_labels:
-                tags = " ".join(c.prominence_labels)
-                prom_str = f" {ANSI['CYAN']}│{tags}│{ANSI['RESET']}"
-            risk_str = ""
-            if c.risk_flags:
-                risk_str = f" {ANSI['YELLOW']}⚠{ANSI['RESET']}"
-        else:
-            label = CAT_LABEL.get(cat, cat)
-            color = CAT_COLOR.get(cat, "")
-            label_display = f"{color}{label}{ANSI['RESET']}"
-            prom_str = ""
-            if entry.get("_prominent"):
-                prom_str = f" {ANSI['CYAN']}│↻│{ANSI['RESET']}"
-            risk_str = ""
+        label_display = f"{CAT_COLOR.get(cat, '')}{CAT_LABEL.get(cat, cat)}{ANSI['RESET']}"
+        prom_labels = c.prominence_labels if c else (["↻"] if entry.get("_prominent") else [])
+        prom_raw = _render_prominence(prom_labels)
+        prom_str = f" {prom_raw}" if prom_raw else ""
+        # 风险标记：掉榜行 DB 无 risk_flags；候选行用与 _print_row 相同的分级渲染
+        risk_str = ""
+        if c and c.risk_flags:
+            hard, soft_count = split_risk_flags(c.risk_flags)
+            if hard:
+                risk_str = f" {ANSI['RED']}⚠{'/'.join(hard)}{ANSI['RESET']}"
+                if soft_count:
+                    risk_str += f"{ANSI['YELLOW']}+{soft_count}{ANSI['RESET']}"
+            elif soft_count:
+                risk_str = f" {ANSI['YELLOW']}⚠+{soft_count}{ANSI['RESET']}"
         # 建议列：按类别独立映射（与展示优先级解耦），SUGGEST_BY_CAT 含 ANSI 需用 _pad 对齐
         suggest_str = SUGGEST_BY_CAT.get(cat, "")
         first_time = entry.get("first_time", entry.get("time", ""))[:5]
@@ -588,14 +597,13 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
         if c:
             extra_str = _market_extra_str(c)
             ff_pct = c.kline.dimensions.get("fund_flow_main_pct") if c.kline else None
-            if ff_pct is None:
-                icon = _fund_flow_icon_str(flow_pct_map.get(entry["symbol"]))
-                if icon:
-                    extra_str = f"{extra_str} {icon}".strip()
         else:
+            ff_pct = None
+        if ff_pct is None:
+            # 扫描时无资金流维度（掉榜/拉取失败）回退 DB 快照图标
             icon = _fund_flow_icon_str(flow_pct_map.get(entry["symbol"]))
             if icon:
-                extra_str = icon
+                extra_str = f"{extra_str} {icon}".strip() if extra_str else icon
         extra_suffix = f" {extra_str}" if extra_str else ""
         print(f"  {i:3d}  {entry['symbol']:<12} {_pad(entry['name'],10)} "
               f"{_pad(_trunc(sector,14),14)} {_pad(label_display,5,'r')} {entry['score']:4d} {pct_colored(pct)} "

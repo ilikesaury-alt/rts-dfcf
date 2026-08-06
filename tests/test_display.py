@@ -205,7 +205,7 @@ def test_display_priority_rank_map_for_dropped(monkeypatch, capsys):
     assert "42" in line
 
 
-# ── 综合排序分组顺序（2026-08-06 重排：rebound > momentum > short_term > known_new_face > new_face > pullback）──
+# ── 综合排序分组顺序（2026-08-07 复核：rebound > short_term > momentum > known_new_face > new_face > pullback）──
 def _insert_rec_cat(conn, symbol: str, name: str, category: str, score: int):
     today = now_beijing().date().isoformat()
     conn.execute(
@@ -217,7 +217,7 @@ def _insert_rec_cat(conn, symbol: str, name: str, category: str, score: int):
 
 
 def test_display_priority_new_group_order(monkeypatch, capsys):
-    """综合排序按 CAT_DISPLAY_PRIORITY 分组：即使 kNF 分数最高也排到 rebound/momentum 之后。"""
+    """综合排序按 CAT_DISPLAY_PRIORITY 分组：即使 kNF 分数最高也排到 rebound/short_term 之后。"""
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300001", "新面孔", "new_face", 80)
     _insert_rec_cat(conn, "SZ300002", "已知新", "known_new_face", 90)
@@ -229,7 +229,7 @@ def test_display_priority_new_group_order(monkeypatch, capsys):
     out = capsys.readouterr().out
     lines = [l for l in out.splitlines() if "SZ30000" in l]
     assert len(lines) == 5
-    order = ["SZ300003", "SZ300004", "SZ300005", "SZ300002", "SZ300001"]
+    order = ["SZ300003", "SZ300005", "SZ300004", "SZ300002", "SZ300001"]
     for i, sym in enumerate(order):
         assert sym in lines[i], f"{sym} 应在第 {i} 行，实际顺序: {lines}"
 
@@ -285,7 +285,8 @@ def test_display_priority_tier_front_cross_category(monkeypatch, capsys):
     out = capsys.readouterr().out
     lines = [l for l in out.splitlines() if "SZ30000" in l]
     assert len(lines) == 3
-    order = ["SZ300002", "SZ300003", "SZ300004"]
+    # 档0 内按 CAT_DISPLAY_PRIORITY：short_term(1) < momentum(2)，超短置前在前
+    order = ["SZ300003", "SZ300002", "SZ300004"]
     for i, sym in enumerate(order):
         assert sym in lines[i], f"{sym} 应在第 {i} 行，实际: {lines}"
 

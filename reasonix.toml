@@ -1,0 +1,2 @@
+[permissions]
+allow = ["Bash=python -m pytest tests/ -q --co 2>$null | Select-Object -Last 5; Get-ChildItem tests -Name"]

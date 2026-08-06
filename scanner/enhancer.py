@@ -4,9 +4,6 @@ from scanner.config import (
     now_beijing,
     CROSS_SOURCE_BONUS,
     DISTRIBUTION_ACCUM_HIGH,
-    PROMINENCE_LOOKBACK_DAYS,
-    PROMINENCE_MAX_AVG_RANK,
-    PROMINENCE_REPEAT_THRESHOLD,
     DISTRIBUTION_ACCUM_MID,
     DISTRIBUTION_ACCUM_PULLBACK,
     DISTRIBUTION_INTRADAY_WEAK,
@@ -69,7 +66,7 @@ from scanner.config import (
     ZT_LIANBAN_GT3_PENALTY,
     ZT_ZHA_BAN_MIN,
 )
-from scanner.database import count_recent_appearances, get_symbol_appearances
+from scanner.database import is_prominent
 from scanner.models import Candidate
 from scanner.rank_trend import rank_trajectory_score
 from scanner.sector import classify_sector
@@ -113,13 +110,9 @@ def _compute_prominence_labels(c: Candidate, conn):
     if not conn:
         return
     try:
-        recs = get_symbol_appearances(conn, c.stock.symbol, PROMINENCE_LOOKBACK_DAYS)
-        valid_ranks = [r["rank"] for r in recs if r.get("rank") and r["rank"] > 0]
-        cnt = count_recent_appearances(conn, c.stock.symbol, PROMINENCE_LOOKBACK_DAYS)
-        if cnt >= PROMINENCE_REPEAT_THRESHOLD and valid_ranks:
-            avg_rank = sum(valid_ranks) / len(valid_ranks)
-            if avg_rank <= PROMINENCE_MAX_AVG_RANK:
-                c.prominence_labels.append("\u21bb")
+        # 统一走 database.is_prominent（复用 get_prominence_map 批量实现，口径一致）
+        if is_prominent(conn, c.stock.symbol):
+            c.prominence_labels.append("\u21bb")
     except Exception:
         pass
 
