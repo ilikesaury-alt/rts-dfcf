@@ -142,7 +142,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "scanner.db")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 
-# ── 行情增强数据（涨停池 + 个股资金流，AKShare 东财接口）──
+# ── 行情增强数据（涨停池 AKShare + 个股资金流自实现直连 push2delay）──
 # 开关：环境变量可覆盖（RTS_ENABLE_ZT_POOL / RTS_ENABLE_FUND_FLOW），0/1/false/true
 def _env_flag(name: str, default: bool) -> bool:
     v = os.environ.get(name)
@@ -152,14 +152,25 @@ def _env_flag(name: str, default: bool) -> bool:
 
 ENABLE_ZT_POOL = _env_flag("RTS_ENABLE_ZT_POOL", True)          # 涨停池
 ENABLE_FUND_FLOW = _env_flag("RTS_ENABLE_FUND_FLOW", True)      # 个股资金流
+# 资金流 API host：默认 push2delay（与 akshare 的 push2 相同 clist API）。
+# push2.eastmoney.com 在本机网络直连/代理均不可达（连接被重置），push2delay 可达
+# （数据可能延迟约15分钟）。网络可直连 push2 的环境可用 RTS_FUND_FLOW_HOST 切回。
+def _env_str(name: str, default: str) -> str:
+    v = os.environ.get(name)
+    return v.strip() if v and v.strip() else default
+
+FUND_FLOW_HOST = _env_str("RTS_FUND_FLOW_HOST", "push2delay.eastmoney.com")
 # 盘中刷新间隔（进程内缓存 TTL + DB 缓存盘中新鲜度共用）：扫描期内数据
 # 过期后视为缺失，触发重拉，实现"盘中每 5 分钟更新"（而非全天冻结首次快照）
 ZT_POOL_TTL_SEC = 300
 FUND_FLOW_TTL_SEC = 300
+# 资金流超时部分结果的进程缓存 TTL：仅缓存一扫描周期，下一轮重试补全缺页，
+# 避免"超时拿到的部分数据"被冻结 5 分钟造成静默缺数据
+FUND_FLOW_PARTIAL_TTL_SEC = 60
 # 单次拉取限时：AKShare 内部请求可能无 timeout（涨停池）或全市场分页很慢
-# （资金流约 50+ 请求）。限时保护 60s 扫描循环不被外部 host 挂死。
+# （资金流约 53 页，6 线程并行实测 ~17s）。限时保护 60s 扫描循环不被外部 host 挂死。
 ZT_POOL_FETCH_TIMEOUT = 20        # 涨停池单次拉取上限（秒）
-FUND_FLOW_FETCH_TIMEOUT = 30      # 资金流全市场分页拉取上限（秒）
+FUND_FLOW_FETCH_TIMEOUT = 30      # 资金流全市场分页拉取上限（秒，超时返回已收集部分）
 # 资金流评分阈值（主力净流入净占比 %）
 FUND_FLOW_MAIN_PCT_STRONG = 5.0   # 主力净占比 ≥5% → 加分
 FUND_FLOW_MAIN_PCT_WEAK = -5.0    # 主力净占比 ≤-5% → 扣分

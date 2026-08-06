@@ -1,31 +1,34 @@
 """行情增强数据源（涨停池 + 个股资金流）。
 
-基于 AKShare 东财接口，为候选股补充主力资金流向与涨停/连板信息，
-作为新增评分维度与风险标签的输入（不影响现有打分逻辑，失败静默降级）。
-
-数据源：
-- 涨停池   `ak.stock_zt_pool_em(date)`        全市场 1 次请求/轮
-- 资金流   `ak.stock_individual_fund_flow_rank` 全市场 1 次请求/轮（今日主力净流入）
-  资金流接口 host（push2.eastmoney.com）在网络代理环境下可能不可达，
-  本模块严格 fail-soft：任何失败返回空 dict + 打印告警，绝不影响主扫描。
+数据源（均东财）：
+- 涨停池   akshare `stock_zt_pool_em(date)`            全市场 1 次请求/轮
+- 资金流   自实现直连东财 clist API（push2delay.eastmoney.com）全市场分页拉取，
+           主因 akshare `stock_individual_fund_flow_rank` 硬编码 host
+           push2.eastmoney.com 在本机网络直连/代理均不可达；push2delay 提供相同
+           API 且可达（数据可能延迟约15分钟）。host 可用 RTS_FUND_FLOW_HOST 覆盖。
 
 与 concept.py 相同的可靠性模式：
-- lazy import akshare（未安装时自动禁用，返回空）
+- lazy import akshare（仅涨停池依赖；未安装时自动禁用，返回空）
 - 进程内 TTL 缓存（按交易日键、线程安全、带上限淘汰）→ DB 缓存（当日 +
   盘中新鲜度）→ 拉取落库
-- 单次拉取带限时（_bounded_call），失败缓存空结果短退避，绝不阻塞扫描循环
+- 拉取带限时/分页 deadline，失败缓存空结果短退避，绝不阻塞扫描循环
 - 符号格式转换复用 data_source 的 _ak_to_xq（300001 → SZ300001）
 """
 import logging
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import requests as _requests
 
 from scanner.config import (
     CACHE_MAX_ENTRIES,
     ENABLE_FUND_FLOW,
     ENABLE_ZT_POOL,
     FUND_FLOW_FETCH_TIMEOUT,
+    FUND_FLOW_HOST,
+    FUND_FLOW_PARTIAL_TTL_SEC,
     FUND_FLOW_TTL_SEC,
     ZT_POOL_FETCH_TIMEOUT,
     ZT_POOL_TTL_SEC,
@@ -39,6 +42,25 @@ logger = logging.getLogger(__name__)
 _ZT_POOL = "zt_pool"
 _FUND_FLOW = "fund_flow"
 
+# 东财 clist 请求头（与 concept.py _EM_HEADERS 同风格：浏览器 UA + Referer）
+_EM_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    "Referer": "https://emweb.securities.eastmoney.com/",
+}
+
+# 资金流 clist API：与 akshare stock_individual_fund_flow_rank("今日") 同参数。
+# 字段码：f12=代码, f62=主力净流入净额, f184=主力净流入净占比, f66=超大单净流入净额
+_FUND_FLOW_FIELDS = "f12,f14,f2,f3,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,f204,f205,f124"
+_FUND_FLOW_FS = ("m:0+t:6+f:!2,m:0+t:13+f:!2,m:0+t:80+f:!2,m:1+t:2+f:!2,"
+                 "m:1+t:23+f:!2,m:0+t:7+f:!2,m:1+t:3+f:!2")
+_FUND_FLOW_PAGE_SIZE = 100
+
 _ak = None
 _ak_lock = threading.Lock()
 
@@ -46,7 +68,7 @@ _ak_lock = threading.Lock()
 def _get_ak():
     """lazy import akshare；不可用返回 None（上层按空数据降级）。
 
-    顺带禁用 tqdm 进度条（资金流接口全市场分页会向 stderr 打印进度，
+    顺带禁用 tqdm 进度条（akshare 部分接口向 stderr 打印进度，
     在 supervised 长跑模式下污染日志）。
     """
     global _ak
@@ -59,7 +81,7 @@ def _get_ak():
                 import akshare  # noqa: PLC0415
                 _ak = akshare
             except Exception as e:  # ImportError 等
-                logger.warning("AKShare 不可用，行情增强数据禁用: %s", e)
+                logger.warning("AKShare 不可用，涨停池数据禁用: %s", e)
                 _ak = False
     return _ak if _ak is not False else None
 
@@ -85,14 +107,18 @@ def _today_key() -> str:
 def _cache_hit(cache: dict, ttl: float, key: str) -> dict | None:
     with _extra_lock:
         entry = cache.get(key)
-        if entry and time.time() - entry[1] < ttl:
-            return entry[0]
+        if entry:
+            # 第三条记录写入时的自定义 TTL（None 用调用方默认 ttl）
+            eff_ttl = entry[2] if len(entry) > 2 and entry[2] is not None else ttl
+            if time.time() - entry[1] < eff_ttl:
+                return entry[0]
         return None
 
 
-def _cache_put_all(cache: dict, data: dict, key: str, now: float | None = None):
+def _cache_put_all(cache: dict, data: dict, key: str, now: float | None = None,
+                   ttl: float | None = None):
     with _extra_lock:
-        _cache_put(cache, key, (data, now if now is not None else time.time()))
+        _cache_put(cache, key, (data, now if now is not None else time.time(), ttl))
 
 
 def _bounded_call(fn, timeout: float):
@@ -154,34 +180,113 @@ def fetch_zt_pool(today: str | None = None) -> dict[str, dict]:
         return {}
 
 
+def _collect_fund_flow(box: dict, deadline: float) -> dict:
+    """并行分页拉取全市场个股今日资金流，结果实时写入 box["value"]（超时可得部分）。
+
+    服务端 pz 封顶 100（实测 200/500/1000 仍返回 100 行），全市场约 5292 只 →
+    53 页，串行太慢，故按 6 线程并行拉页。每页 timeout=10，页间检查 deadline：
+    超时取消未开始任务并返回已收集部分。网络/解析异常该页返回空继续。
+    返回 {6位代码: {main_net, main_pct, super_net}}。
+    """
+    result: dict[str, dict] = {}
+    if time.time() > deadline:
+        box["value"] = result
+        return result
+    base = {
+        "fid": "f62", "po": "1", "pz": str(_FUND_FLOW_PAGE_SIZE), "np": "1",
+        "fltt": "2", "invt": "2", "ut": "b2884a393a59ad64002292a3e90d46a5",
+        "fs": _FUND_FLOW_FS, "fields": _FUND_FLOW_FIELDS,
+    }
+    url = f"https://{FUND_FLOW_HOST}/api/qt/clist/get"
+
+    def _page(pn: int):
+        p = dict(base)
+        p["pn"] = str(pn)
+        try:
+            resp = _requests.get(url, params=p, timeout=10, headers=_EM_HEADERS)
+            j = resp.json()
+            data = j.get("data") if isinstance(j, dict) else None
+            if not isinstance(data, dict):
+                return [], None
+            return data.get("diff") or [], data.get("total")
+        except Exception:
+            return [], None
+
+    def _absorb(diff):
+        for row in diff:
+            if not isinstance(row, dict):
+                continue
+            code = str(row.get("f12") or "").strip()
+            if not code:
+                continue
+            result[code] = {
+                "main_net": _num(row, "f62"),
+                "main_pct": _num(row, "f184"),
+                "super_net": _num(row, "f66"),
+            }
+
+    first, total = _page(1)
+    if first:
+        _absorb(first)
+    box["value"] = dict(result)  # 首页后即可读到部分结果
+    total = total or len(first)
+    total_pages = max(1, -(-total // _FUND_FLOW_PAGE_SIZE))
+    if total_pages <= 1:
+        return result
+    remaining = list(range(2, total_pages + 1))
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futs = {pool.submit(_page, pn): pn for pn in remaining}
+        for fut in as_completed(futs):
+            if time.time() > deadline:
+                for f in futs:
+                    f.cancel()
+                break
+            diff, _ = fut.result()
+            _absorb(diff or [])
+            box["value"] = dict(result)
+    return result
+
+
+def _fetch_fund_flow_bounded(timeout: float) -> tuple[dict, bool]:
+    """daemon 线程内执行并行拉取，join(timeout) 到点即返回 (已收集部分, 是否超时)。
+
+    不抛错：网络异常在 _page 内被吞掉 → 空/部分结果；超时由调用方按部分结果处理。
+    """
+    box: dict = {"value": {}}
+
+    def _run():
+        try:
+            _collect_fund_flow(box, time.time() + timeout)
+        except BaseException as e:  # noqa: BLE001
+            box["error"] = e
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+    if "error" in box:
+        raise box["error"]
+    return box.get("value", {}), t.is_alive()
+
+
 def fetch_fund_flow_rank() -> dict[str, dict]:
-    """拉取全市场个股今日资金流（东财），返回 {6位代码: {main_net, main_pct, super_net}}。
+    """拉取全市场个股今日资金流（东财 push2delay），返回 {6位代码: {main_net, main_pct, super_net}}。
 
     main_net = 今日主力净流入额（元），main_pct = 今日主力净流入净占比（%），
-    super_net = 今日超大单净流入额（元）。失败打印告警、缓存空结果短退避并返回 {}（软降级）。
+    super_net = 今日超大单净流入额（元）。超时返回已收集部分（告警 + 只缓存
+    FUND_FLOW_PARTIAL_TTL_SEC，下一轮扫描重试补全缺页）；彻底失败打印告警、
+    缓存空结果短退避并返回 {}（软降级）。
     """
     key = _today_key()
     cached = _cache_hit(_ff_cache, FUND_FLOW_TTL_SEC, key)
     if cached is not None:
         return cached
-    ak = _get_ak()
-    if ak is None:
-        return {}
     try:
-        df = _bounded_call(lambda: ak.stock_individual_fund_flow_rank(indicator="今日"),
-                           FUND_FLOW_FETCH_TIMEOUT)
-        result: dict[str, dict] = {}
-        if df is not None and not df.empty:
-            for _, row in df.iterrows():
-                code = str(row["代码"]).strip()
-                if not code:
-                    continue
-                result[code] = {
-                    "main_net": float(_num(row, "今日主力净流入-净额") or 0),
-                    "main_pct": float(_num(row, "今日主力净流入-净占比") or 0),
-                    "super_net": float(_num(row, "今日超大单净流入-净额") or 0),
-                }
-        _cache_put_all(_ff_cache, result, key)
+        result, timed_out = _fetch_fund_flow_bounded(FUND_FLOW_FETCH_TIMEOUT)
+        if timed_out:
+            print(f"  [!] 个股资金流拉取超时，已获取 {len(result)} 只（部分数据），下一轮扫描重试补全")
+            _cache_put_all(_ff_cache, result, key, ttl=FUND_FLOW_PARTIAL_TTL_SEC)
+        else:
+            _cache_put_all(_ff_cache, result, key)
         return result
     except Exception as e:
         print(f"  [!] 个股资金流获取失败: {e}")
