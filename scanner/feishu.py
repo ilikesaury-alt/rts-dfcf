@@ -1,6 +1,7 @@
 import requests
 
 from scanner.config import FEISHU_KEYWORD, FEISHU_MIN_INTERVAL, FEISHU_WEBHOOK, now_beijing
+from scanner.display import fund_flow_signal
 from scanner.models import Candidate
 
 _last_push_time: float = 0.0
@@ -87,13 +88,20 @@ def _build_card(
             else:
                 risk_parts.append(f"⚠+{soft_count}")
         risk_str = (" " + " ".join(risk_parts)) if risk_parts else ""
-        # 行情增强标记：主力净流入净占比 + 连板（仅在有数据时显示）
+        # 行情增强标记：主力资金流强弱图标（5 档，与 display.py 同规则）+ 连板（仅在有数据时显示）
         dims = c.kline.dimensions if c.kline else {}
         extra_parts = []
         ff_pct = dims.get("fund_flow_main_pct")
         if ff_pct is not None:
-            mark = "🟢" if (dims.get("fund_flow_main_net") or 0) >= 0 else "🟡"
-            extra_parts.append(f"{mark}{ff_pct:+.0f}%")
+            mark = {
+                "strong_in": "🟢🟢",
+                "in": "🟢",
+                "neutral": "⚪",
+                "out": "🔴",
+                "strong_out": "🔴🔴",
+            }.get(fund_flow_signal(float(ff_pct)))
+            if mark:
+                extra_parts.append(mark)
         if dims.get("zt_lianban"):
             extra_parts.append(f"📈{dims['zt_lianban']}板")
         extra_str = (" " + " ".join(extra_parts)) if extra_parts else ""

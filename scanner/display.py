@@ -3,6 +3,9 @@ import os
 import wcwidth
 
 from scanner.config import (
+    FUND_FLOW_MAIN_PCT_EXTREME,
+    FUND_FLOW_MAIN_PCT_STRONG,
+    FUND_FLOW_MAIN_PCT_WEAK,
     MAX_MARKET_CAP,
     MAX_STOCK_PRICE,
     TRACK_DISPLAY_BUY_MAX,
@@ -132,23 +135,46 @@ def _bonus_tag(c: Candidate) -> str:
     return " ".join(parts) if parts else ""
 
 
-def _market_extra_str(c: Candidate) -> str:
-    """行情增强标记：主力净流入净占比 + 连板/炸板（无数据返回空串）。
+def fund_flow_signal(main_pct: float | None) -> str:
+    """主力净占比 → 强弱档位（与 enhancer 加分/资金流出标签阈值同源）。
 
+    返回 strong_in / in / neutral / out / strong_out；无数据返回 ""。
+    """
+    if main_pct is None:
+        return ""
+    if main_pct >= FUND_FLOW_MAIN_PCT_EXTREME:
+        return "strong_in"
+    if main_pct >= FUND_FLOW_MAIN_PCT_STRONG:
+        return "in"
+    if main_pct <= -FUND_FLOW_MAIN_PCT_EXTREME:
+        return "strong_out"
+    if main_pct <= FUND_FLOW_MAIN_PCT_WEAK:
+        return "out"
+    return "neutral"
+
+
+_FUND_FLOW_ICON = {
+    "strong_in": f"{ANSI['GREEN']}▲▲{ANSI['RESET']}",
+    "in": f"{ANSI['GREEN']}▲{ANSI['RESET']}",
+    "neutral": f"{ANSI['YELLOW']}◇{ANSI['RESET']}",
+    "out": f"{ANSI['RED']}▼{ANSI['RESET']}",
+    "strong_out": f"{ANSI['RED']}▼▼{ANSI['RESET']}",
+}
+
+
+def _market_extra_str(c: Candidate) -> str:
+    """行情增强标记：主力资金流强弱图标 + 连板/炸板（无数据返回空串）。
+
+    资金流用 fund_flow_signal 5 档图标替代原「资+x.x% ±xxx万」文本；
     展示型信息，追加在行尾可变区，不参与固定列对齐。
     """
     dims = c.kline.dimensions if c.kline else {}
     parts = []
     ff_pct = dims.get("fund_flow_main_pct")
-    ff_net = dims.get("fund_flow_main_net")
     if ff_pct is not None:
-        color = ANSI["GREEN"] if (ff_net or 0) >= 0 else ANSI["YELLOW"]
-        parts.append(f"{color}资{ff_pct:+.1f}%{ANSI['RESET']}")
-        wan = (ff_net or 0) / 10000
-        if abs(wan) >= 10000:
-            parts.append(f"{color}{wan/10000:+.1f}亿{ANSI['RESET']}")
-        elif abs(wan) >= 100:
-            parts.append(f"{color}{wan:+.0f}万{ANSI['RESET']}")
+        icon = _FUND_FLOW_ICON.get(fund_flow_signal(float(ff_pct)))
+        if icon:
+            parts.append(icon)
     zt_lb = dims.get("zt_lianban")
     zt_zb = dims.get("zt_zhaban")
     if zt_lb:

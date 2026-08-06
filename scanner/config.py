@@ -174,6 +174,7 @@ FUND_FLOW_FETCH_TIMEOUT = 30      # 资金流全市场分页拉取上限（秒�
 # 资金流评分阈值（主力净流入净占比 %）
 FUND_FLOW_MAIN_PCT_STRONG = 5.0   # 主力净占比 ≥5% → 加分
 FUND_FLOW_MAIN_PCT_WEAK = -5.0    # 主力净占比 ≤-5% → 扣分
+# FUND_FLOW_MAIN_PCT_EXTREME 定义见下方「风险标签阈值」——与 FUND_OUTFLOW_NET_PCT 同源，避免档位漂移
 FUND_FLOW_BONUS_STRONG = 5
 FUND_FLOW_BONUS_WEAK = -3
 # 连板评分：连板数（今日涨停池涨停统计口径）加分/追高降权
@@ -182,6 +183,8 @@ ZT_LIANBAN_BONUS_3 = 8
 ZT_LIANBAN_GT3_PENALTY = -5       # ≥4 板追高降权
 # 风险标签阈值
 FUND_OUTFLOW_NET_PCT = -8.0       # 主力净流出占比 ≤-8% → 「资金流出」标签
+# 资金流图标强档阈值：与「资金流出」标签同源（负值取绝对值），避免两处分别改造成漂移
+FUND_FLOW_MAIN_PCT_EXTREME = -FUND_OUTFLOW_NET_PCT
 ZT_ZHA_BAN_MIN = 1                # 炸板次数 ≥1 且今日曾涨停 → 「炸板」标签
 
 # ── 概念板块数据源（东财 F10）─
