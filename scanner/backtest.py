@@ -346,6 +346,122 @@ def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct", days: i
     return results
 
 
+@dataclass
+class RankCategoryStat:
+    """综合排序类别优先级校准用的单类别表现统计。"""
+    category: str
+    count: int
+    avg_return: float
+    win_rate: float
+    ic: float
+
+
+# 样本量低于此值视为不可靠（小样本均值噪声大，校准需谨慎）
+RANK_MIN_SAMPLE = 20
+
+
+def rank_category_stats(conn: sqlite3.Connection, metric: str = "cum_3d", days: int = 0) -> list[RankCategoryStat]:
+    """各现役类别在给定口径下的表现（按均收益降序）。
+
+    metric ∈ {cum_2d, cum_3d, next_day_pct, ...}。days > 0 时仅用最近 N 天推荐。
+    类别内 IC 为 IC(score → return)，用于识别「分数反指」的类别（IC 为负）。
+    """
+    params = list(ACTIVE_CATEGORIES)
+    if days > 0:
+        cutoff = (now_beijing() - timedelta(days=days)).date().isoformat()
+        date_filter = "AND date >= ? "
+        params.append(cutoff)
+    else:
+        date_filter = ""
+    rows = conn.execute(
+        f"SELECT category, score, {metric} FROM recommendations "
+        f"WHERE category IN ({','.join('?' * len(ACTIVE_CATEGORIES))}) "
+        f"AND {metric} IS NOT NULL {date_filter}",
+        tuple(params),
+    ).fetchall()
+
+    by: dict[str, list[tuple[int, float]]] = defaultdict(list)
+    for cat, score, ret in rows:
+        by[cat].append((score, ret))
+
+    stats: list[RankCategoryStat] = []
+    for cat, pairs in by.items():
+        rets = [p[1] for p in pairs]
+        scores = [p[0] for p in pairs]
+        ic = _ic(scores, rets) or 0.0
+        stats.append(
+            RankCategoryStat(
+                category=cat,
+                count=len(pairs),
+                avg_return=sum(rets) / len(rets),
+                win_rate=sum(1 for r in rets if r > 0) / len(rets),
+                ic=ic,
+            )
+        )
+    stats.sort(key=lambda s: -s.avg_return)
+    return stats
+
+
+def suggest_priority(stats: list[RankCategoryStat]) -> list[str]:
+    """按均收益降序给出建议类别展示优先级（供人工复核后更新 CAT_DISPLAY_PRIORITY）。"""
+    return [s.category for s in sorted(stats, key=lambda s: -s.avg_return)]
+
+
+def print_ranking_report(conn: sqlite3.Connection, metric: str = "cum_3d", recent_days: int = 30) -> None:
+    """综合排序类别优先级校准报告。
+
+    同时展示全期与近期两个窗口：全期样本大但混入历史配置，近期反映当前市场环境但样本小。
+    建议优先级 = 按近期均收益排序；近期样本不足（<RANK_MIN_SAMPLE）时回退全期值，仍不足则打 ⚠。
+    """
+    from scanner.config import CAT_DISPLAY_PRIORITY
+
+    full = rank_category_stats(conn, metric, days=0)
+    recent = rank_category_stats(conn, metric, days=recent_days)
+    full_map = {s.category: s for s in full}
+    recent_map = {s.category: s for s in recent}
+
+    current_order = sorted(CAT_DISPLAY_PRIORITY, key=CAT_DISPLAY_PRIORITY.get)
+
+    def _pick(cat: str) -> RankCategoryStat:
+        # 近期样本足够用近期；否则用全期；再否则用近期并打标
+        if cat in recent_map and recent_map[cat].count >= RANK_MIN_SAMPLE:
+            return recent_map[cat]
+        if cat in full_map and full_map[cat].count >= RANK_MIN_SAMPLE:
+            return full_map[cat]
+        return recent_map.get(cat) or full_map.get(cat)
+
+    repr_stats = []
+    for cat in sorted(set(list(full_map) + list(recent_map))):
+        s = _pick(cat)
+        if s is not None:
+            repr_stats.append(s)
+    suggested = suggest_priority(repr_stats)
+
+    print("=" * 70)
+    print(f"综合排序类别优先级校准 (metric={metric}, 近期窗口={recent_days}天)")
+    print("=" * 70)
+    print(f"[当前 config 顺序]  " + " > ".join(current_order))
+    print(f"[建议优先级]       " + " > ".join(suggested))
+
+    print(f"\n[各类别表现]（按建议用的口径降序；近期样本不足回退全期）")
+    print(f"{'类别':<16}{'窗口':>6}{'样本':>6}{'均收益':>9}{'胜率':>8}{'IC(score)':>10}  备注")
+    for s in sorted(repr_stats, key=lambda x: -x.avg_return):
+        src = "近期" if (s.category in recent_map and recent_map[s.category].count >= RANK_MIN_SAMPLE) else ("全期" if (s.category in full_map and full_map[s.category].count >= RANK_MIN_SAMPLE) else "近期*")
+        note = ""
+        if s.ic < -0.05:
+            note = "<== 反指(分数越高越差)"
+        elif s.ic > 0.05:
+            note = "<== 分数正效"
+        if s.count < RANK_MIN_SAMPLE:
+            note = (note + " [样本不足]" if note else "[样本不足]")
+        print(f"{s.category:<16}{src:>6}{s.count:>6}{s.avg_return:>9.2f}{s.win_rate*100:>7.1f}%"
+              f"{s.ic:>10.3f}  {note}")
+
+    diff = [c for c in current_order if c in suggested and current_order.index(c) != suggested.index(c)]
+    print(f"\n[与当前差异] " + ("无，顺序一致" if not diff else " ".join(f"{c}(当前{c}→建议{suggested.index(c)})" for c in diff)))
+    print("确认后人工更新 config.CAT_DISPLAY_PRIORITY")
+
+
 def print_report(conn: sqlite3.Connection, metric: str = "next_day_pct", days: int = 0) -> None:
     print("=" * 70)
     days_label = f", 最近{days}天" if days > 0 else ", 全部历史"
@@ -377,6 +493,8 @@ def main() -> None:
     parser.add_argument("--days", type=int, default=0, help="仅分析最近 N 天的推荐（0=全部）")
     parser.add_argument("--metric", default="next_day_pct",
                         choices=["next_day_pct", "fwd_3d", "fwd_5d", "cum_2d", "cum_3d"])
+    parser.add_argument("--ranking", action="store_true",
+                        help="综合排序类别优先级校准报告（默认 cum_3d，近期30天窗口）")
     parser.add_argument("--backfill", action="store_true", help="回填 N 日收益字段")
     parser.add_argument("--dry-run", action="store_true", help="回填预览不写库")
     args = parser.parse_args()
@@ -385,7 +503,10 @@ def main() -> None:
     if args.backfill:
         n = backfill_outcomes(conn, dry_run=args.dry_run)
         print(f"回填更新行数: {n}" + (" (dry-run)" if args.dry_run else ""))
-    print_report(conn, metric=args.metric, days=args.days)
+    if args.ranking:
+        print_ranking_report(conn, metric=args.metric, recent_days=args.days or 30)
+    else:
+        print_report(conn, metric=args.metric, days=args.days)
     conn.close()
 
 

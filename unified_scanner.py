@@ -178,7 +178,8 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                         pullback_list=pullback_list,
                         short_term_list=short_term_list,
                         rebound_list=rebound_list, tracked_recs=tracked,
-                        conn=conn, live_quotes=live_quotes)
+                        conn=conn, live_quotes=live_quotes,
+                        rank_map=current_rank_map)
                 log_results(new_faces, momentum + pullback_list + rebound_list + short_term_list)
                 if not no_feishu:
                     pushed = push_feishu(new_faces, momentum, pullback_list, stale_candidates,

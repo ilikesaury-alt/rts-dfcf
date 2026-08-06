@@ -5,7 +5,11 @@ from scanner.backtest import (
     _ic,
     _nth_trading_day_after,
     _rank,
+    RankCategoryStat,
     compute_outcome,
+    print_ranking_report,
+    rank_category_stats,
+    suggest_priority,
     strategy_performance,
     dimension_ic,
 )
@@ -103,3 +107,109 @@ def test_dimension_ic_keeps_live_momentum_kdj():
     dims = {d.dimension for d in dimension_ic(conn, "next_day_pct")}
     assert "momentum_kdj" in dims
     conn.close()
+
+
+def _ranking_db():
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE recommendations "
+        "(date TEXT, category TEXT, score REAL, cum_3d REAL)"
+    )
+    return conn
+
+
+def test_rank_category_stats_sorts_by_avg_and_filters_unknown():
+    conn = _ranking_db()
+    rows = [
+        ("2026-07-01", "momentum", 50, 2.0),
+        ("2026-07-01", "momentum", 40, -1.0),
+        ("2026-07-01", "momentum", 45, 3.0),  # momentum avg = 4/3
+        ("2026-07-01", "new_face", 30, -2.0),  # new_face avg = -2.0
+        ("2026-07-01", "pullback", 20, -9.0),  # 离线类别仍参与归因
+        ("2026-07-01", "foo", 99, 9.0),  # 非 ACTIVE_CATEGORIES，应被过滤
+    ]
+    conn.executemany(
+        "INSERT INTO recommendations (date, category, score, cum_3d) VALUES (?,?,?,?)",
+        rows,
+    )
+    conn.commit()
+    stats = rank_category_stats(conn, "cum_3d", days=0)
+    cats = [s.category for s in stats]
+    assert "foo" not in cats
+    assert "pullback" in cats  # 保留离线类别数据用于校准
+    assert cats == ["momentum", "new_face", "pullback"]
+    m = stats[0]
+    assert m.count == 3
+    assert abs(m.avg_return - 4.0 / 3.0) < 1e-9
+    assert m.win_rate == 2.0 / 3.0
+
+
+def test_rank_category_stats_recent_window_filters_by_date():
+    from datetime import timedelta
+
+    from scanner.config import now_beijing
+
+    today = now_beijing().date()
+    in_window_1 = (today - timedelta(days=1)).isoformat()
+    in_window_2 = (today - timedelta(days=3)).isoformat()
+    outside = (today - timedelta(days=30)).isoformat()
+    conn = _ranking_db()
+    rows = [
+        (in_window_1, "momentum", 50, 2.0),
+        (in_window_2, "momentum", 40, -1.0),
+        (outside, "momentum", 45, 8.0),  # 在窗口外
+    ]
+    conn.executemany(
+        "INSERT INTO recommendations (date, category, score, cum_3d) VALUES (?,?,?,?)",
+        rows,
+    )
+    conn.commit()
+    stats = rank_category_stats(conn, "cum_3d", days=5)
+    assert len(stats) == 1
+    assert stats[0].count == 2
+    assert abs(stats[0].avg_return - 0.5) < 1e-9
+
+
+def test_rank_category_stats_metric_is_cum_3d():
+    # 默认口径为 cum_3d（3日持有收益），与排序决策一致
+    conn = _ranking_db()
+    rows = [
+        ("2026-07-01", "momentum", 50, 2.5),
+        ("2026-07-01", "momentum", 40, -0.5),
+    ]
+    conn.executemany(
+        "INSERT INTO recommendations (date, category, score, cum_3d) VALUES (?,?,?,?)",
+        rows,
+    )
+    conn.commit()
+    stats = rank_category_stats(conn)
+    assert len(stats) == 1
+    assert abs(stats[0].avg_return - 1.0) < 1e-9
+
+
+def test_suggest_priority_sorts_desc_by_avg():
+    stats = [
+        RankCategoryStat("new_face", 100, -1.0, 0.3, 0.0),
+        RankCategoryStat("rebound", 15, 4.0, 0.6, 0.1),
+        RankCategoryStat("momentum", 50, 1.0, 0.4, 0.1),
+    ]
+    assert suggest_priority(stats) == ["rebound", "momentum", "new_face"]
+
+
+def test_ranking_report_runs_without_gbk_crash(capsys):
+    conn = _ranking_db()
+    rows = [
+        ("2026-07-01", "momentum", 50, 2.0),
+        ("2026-07-01", "momentum", 40, -1.0),
+        ("2026-07-01", "new_face", 30, -2.0),
+    ]
+    conn.executemany(
+        "INSERT INTO recommendations (date, category, score, cum_3d) VALUES (?,?,?,?)",
+        rows,
+    )
+    conn.commit()
+    print_ranking_report(conn, metric="cum_3d", recent_days=0)
+    out = capsys.readouterr().out
+    assert "momentum" in out
+    assert "new_face" in out
+    assert "样本不足" in out

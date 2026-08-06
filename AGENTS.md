@@ -83,6 +83,8 @@ tests/                    # pytest test suite
   - **涨幅过大** (excessive gains): accumulated ≥ threshold / pullback 20d gain penalty / momentum accumulated penalty
   - **量价背离** (volume-price divergence): volume-price mismatch including top divergence
 - Display layers (`display.py` / `feishu.py`): auto-concatenate `risk_flags` with `⚠` prefix; no per-tag rendering code needed. Rebound list renders in CYAN with `↗` icon between momentum and short_term sections.
+- 综合排序分组顺序（2026-08-06 重排，`config.py:CAT_DISPLAY_PRIORITY`）: **rebound > momentum > short_term > known_new_face > new_face > pullback**。依据 recommendations 表 cum_3d（3日持有收益，与回测口径一致）实测：原排序 kNF 居首但 score IC=-0.199（反指），当日排名#1 的票均 cum3d -3.46/胜率34% 最差。**建议列与优先级解耦**（`config.py:SUGGEST_BY_CAT`）：`CAT_DISPLAY_PRIORITY` 只决定展示顺序；kNF/rebound→「推荐」、new_face/momentum→「参考」、short_term→「超短」、pullback→「回避」。**校准工具**：`python -m scanner.backtest --ranking [--days N]` 输出全期+近期(默认30天)双窗口各类别均收益/胜率/IC，按近期均收益给建议顺序（近期样本<`RANK_MIN_SAMPLE=20` 回退全期并打「样本不足」），人工复核后更新 `CAT_DISPLAY_PRIORITY`。kNF 仅整体下移、不做类别内反向排序（分数 IC 反指未在类别内逆转，避免在历史配置下的类别内排序不可靠）。
+- 综合排序档位置顶（2026-08-06，`display.py:display_priority`）: 排序键 `(档位, CAT_DISPLAY_PRIORITY, -score)`，档位主键**跨类别全局生效**。档0置前 = 辨识度(↻) 或 主力净流入 ≥ `FUND_FLOW_MAIN_PCT_STRONG`(5%)；档2劣后 = 净流出 ≤ `FUND_FLOW_MAIN_PCT_WEAK`(-5%)（**覆盖辨识度**）；其余档1普通。档内次键仍为类别优先级→评分降序。档位只改排序，不改评分列/不落库/不影响策略桶与回测。数据源与展示一致：资金流候选用扫描维度、否则回退 DB 快照 `flow_pct_map`；辨识度候选用 `c.prominence_labels`、掉榜行用 `get_prominence_map`——掉榜行 DB score 不含这些字段，展示层统一分档避免同表两套口径。
 
 ## Testing
 

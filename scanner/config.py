@@ -177,6 +177,10 @@ FUND_FLOW_MAIN_PCT_WEAK = -5.0    # 主力净占比 ≤-5% → 扣分
 # FUND_FLOW_MAIN_PCT_EXTREME 定义见下方「风险标签阈值」——与 FUND_OUTFLOW_NET_PCT 同源，避免档位漂移
 FUND_FLOW_BONUS_STRONG = 5
 FUND_FLOW_BONUS_WEAK = -3
+# 综合排序「档位置顶」（2026-08-06，display.py:_sort_tier）：
+# 排序键 (档位, CAT_DISPLAY_PRIORITY, -score)。档位阈值与上方资金流评分常量同源——
+# 强流入 ≥ FUND_FLOW_MAIN_PCT_STRONG 置前、强流出 ≤ FUND_FLOW_MAIN_PCT_WEAK 劣后（覆盖辨识度）。
+# 仅综合排序展示层，不改最终评分/不落库/不影响策略桶与回测。
 # 连板评分：连板数（今日涨停池涨停统计口径）加分/追高降权
 ZT_LIANBAN_BONUS_2 = 5
 ZT_LIANBAN_BONUS_3 = 8
@@ -645,3 +649,27 @@ PULLBACK_20D_GAIN_WARN = 40       # 20-day gain > 40% → warn
 PULLBACK_20D_GAIN_EXTREME = 60    # 20-day gain > 60% → extreme
 PULLBACK_20D_WARN_PENALTY = -10
 PULLBACK_20D_EXTREME_PENALTY = -15
+
+# ── 综合排序展示优先级与操作建议（2026-08-06 数据驱动重排）──
+# CAT_DISPLAY_PRIORITY：仅决定综合排序「类别分组展示顺序」，与操作建议解耦。
+# 依据 recommendations 历史 cum_3d（3日持有口径）全期表现重排：
+#   rebound(+4.73) > momentum(+2.58) > short_term(-0.82) > known_new_face(-0.44)
+#   > new_face(-1.61) > pullback(-7.14, 已下线)
+# known_new_face 由原榜首(0)下移至 3：其类别内 score IC 为负（高分反而更差，-0.199），
+# 霸榜会让列表顶部最不可靠。new_face（胜率 34.5% 最大桶）压至倒数第二。
+# 用 `python -m scanner.backtest --ranking` 校准此顺序，人工复核后更新。
+CAT_DISPLAY_PRIORITY = {
+    "known_new_face": 3, "rebound": 0, "new_face": 4,
+    "momentum": 1, "short_term": 2, "pullback": 5,
+}
+
+# SUGGEST_BY_CAT：操作建议按类别独立映射（与优先级解耦，语义不变）。
+# 值含 ANSI 颜色码，由 display 端渲染；排序位置变化不影响建议。
+SUGGEST_BY_CAT = {
+    "known_new_face": "\033[92m推荐\033[0m",
+    "rebound": "\033[96m推荐\033[0m",
+    "new_face": "参考",
+    "momentum": "参考",
+    "short_term": "\033[91m超短\033[0m",
+    "pullback": "\033[91m回避\033[0m",
+}

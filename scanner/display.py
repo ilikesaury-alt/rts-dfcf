@@ -3,11 +3,13 @@ import os
 import wcwidth
 
 from scanner.config import (
+    CAT_DISPLAY_PRIORITY,
     FUND_FLOW_MAIN_PCT_EXTREME,
     FUND_FLOW_MAIN_PCT_STRONG,
     FUND_FLOW_MAIN_PCT_WEAK,
     MAX_MARKET_CAP,
     MAX_STOCK_PRICE,
+    SUGGEST_BY_CAT,
     TRACK_DISPLAY_BUY_MAX,
     TRACK_DISPLAY_WATCH_MAX,
     TRACK_RECOMMENDATION_DAYS,
@@ -208,7 +210,8 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             short_term_list: list[Candidate] | None = None,
             rebound_list: list[Candidate] | None = None,
             tracked_recs: list = None,
-            conn=None, live_quotes: dict[str, dict] | None = None):
+            conn=None, live_quotes: dict[str, dict] | None = None,
+            rank_map: dict[str, int] | None = None):
     if last_ranks is None:
         last_ranks = {}
     clear_screen()
@@ -360,7 +363,7 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             displayed_syms.add(c.stock.symbol)
             _print_row(c, icon="⚠")
 
-    display_priority(conn, live_quotes=live_quotes)
+    display_priority(conn, live_quotes=live_quotes, rank_map=rank_map)
 
     if tracked_recs:
         # 只显示高确信"到买点"；"观察中"默认隐藏（TRACK_DISPLAY_WATCH_MAX=0），
@@ -408,10 +411,14 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             print(f"  {ANSI['YELLOW']}  · 另有 {len(watch)} 只观察中（已省略，回调结构不充分）{ANSI['RESET']}")
 
 
-def display_priority(conn=None, live_quotes: dict[str, dict] | None = None):
-    """从本地数据库读取今日所有进入过推荐的票，按策略优先级+评分降序展示。
+def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
+                     rank_map: dict[str, int] | None = None):
+    """从本地数据库读取今日所有进入过推荐的票，按档位(辨识度/资金流)+展示优先级(CAT_DISPLAY_PRIORITY)+评分降序展示。
 
     live_quotes: {symbol: {percent, current}} 实时行情覆盖，优先于候选池和数据库数据。
+    rank_map: {symbol: 飙升榜排名} 当前扫描的榜单排名，为掉榜/重启行补实时排名。
+    排序键 = (档位, CAT_DISPLAY_PRIORITY, -score)：档0置前(辨识度或净流入≥5%) < 档1普通 <
+    档2劣后(净流出≤-5%，覆盖辨识度)。档位只影响排序，不改评分列/不落库。
     """
     if conn is None:
         return
@@ -420,10 +427,6 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None):
     if not today_recs:
         return
 
-    CAT_PRIORITY = {
-        "known_new_face": 0, "rebound": 1, "new_face": 2,
-        "momentum": 3, "short_term": 4, "pullback": 5,
-    }
     CAT_LABEL = {
         "known_new_face": "kNF", "rebound": "RBD", "new_face": "NEW",
         "momentum": "MOM", "short_term": "ST", "pullback": "PB",
@@ -431,14 +434,6 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None):
     CAT_COLOR = {
         "known_new_face": ANSI["GREEN"], "rebound": ANSI["CYAN"], "new_face": ANSI["GREEN"],
         "momentum": ANSI["YELLOW"], "short_term": ANSI["RED"], "pullback": ANSI["RED"],
-    }
-    SUGGEST = {
-        0: f"{ANSI['GREEN']}推荐{ANSI['RESET']}",
-        1: f"{ANSI['CYAN']}推荐{ANSI['RESET']}",
-        2: "参考",
-        3: "参考",
-        4: f"{ANSI['RED']}超短{ANSI['RESET']}",
-        5: f"{ANSI['RED']}回避{ANSI['RESET']}",
     }
 
     for entry in today_recs:
@@ -449,11 +444,23 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None):
         for entry in today_recs:
             q = live_quotes.get(entry["symbol"])
             if q is not None:
+                # live_quote_available：标记该行拿到了本次实时批量行情（live_percent=0.0
+                # 是合法的 0.00%，不能当作缺失；get_today_recommendations 默认填 0.0 需区分）。
+                entry["live_quote_available"] = True
                 entry["live_percent"] = q.get("percent", 0.0)
                 entry["live_current"] = q.get("current", 0.0)
                 q_rank = q.get("rank")
                 if q_rank is not None:
                     entry["live_rank"] = q_rank
+
+    # 排名实时覆盖：live_quotes（batch/quote）不含 rank，用当前飙升榜排名补上，
+    # 使综合排序「排名」列对仍在上榜的票实时可见（掉榜/重启行此前恒为 —）。
+    if rank_map:
+        for entry in today_recs:
+            if entry.get("live_rank") is None:
+                r = rank_map.get(entry["symbol"])
+                if r is not None:
+                    entry["live_rank"] = r
 
     prom_syms = [e["symbol"] for e in today_recs if not e["_candidate"]]
     if prom_syms:
@@ -476,9 +483,28 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None):
     except Exception:
         flow_pct_map = {}
 
-    scored = sorted(today_recs, key=lambda x: (CAT_PRIORITY.get(x["category"], 99), -x["score"]))
+    # 档位置顶（2026-08-06）：排序键 (档位, 类别优先级, -score)，跨类别全局生效。
+    # 档0置前 = 辨识度(↻) 或 主力净流入 ≥ FUND_FLOW_MAIN_PCT_STRONG；档2劣后 = 净流出
+    # ≤ FUND_FLOW_MAIN_PCT_WEAK（覆盖辨识度）；其余档1普通。只改排序，不改评分列/不落库。
+    # 数据源与展示图标一致：资金流候选用扫描维度、否则回退 DB 快照 flow_pct_map；辨识度
+    # 候选用扫描时标签、掉榜行用 prom_map——掉榜行 DB score 不含这些字段，展示层统一分档。
+    def _sort_tier(entry):
+        c = entry["_candidate"]
+        ff = c.kline.dimensions.get("fund_flow_main_pct") if c and c.kline else None
+        if ff is None:
+            ff = flow_pct_map.get(entry["symbol"])
+        prominent = bool(c.prominence_labels) if c else prom_map.get(entry["symbol"], False)
+        if ff is not None and ff <= FUND_FLOW_MAIN_PCT_WEAK:
+            return 2
+        if prominent or (ff is not None and ff >= FUND_FLOW_MAIN_PCT_STRONG):
+            return 0
+        return 1
 
-    print(f"\n{ANSI['BOLD']}◆ 综合排序 — 今日所有推荐 按策略优先级+评分降序{ANSI['RESET']}")
+    scored = sorted(today_recs, key=lambda x: (_sort_tier(x),
+                                               CAT_DISPLAY_PRIORITY.get(x["category"], 99),
+                                               -x["score"]))
+
+    print(f"\n{ANSI['BOLD']}◆ 综合排序 — 今日所有推荐 按档位(辨识度/资金流)+类别优先级+评分降序{ANSI['RESET']}")
     hdr = (f"  {_pad('#',3,'r')} {_pad('代码',12)} {_pad('名称',10)} "
            f"{_pad('板块',14)} {_pad('策略',5)} {_pad('评分',4,'r')} {_pad('涨幅',8,'r')} "
            f"{_pad('5日累计',8,'r')} {_pad('现价',7,'r')} {_pad('排名',4,'r')} {_pad('时间',6)} {_pad('建议',6)}")
@@ -501,15 +527,34 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None):
                 sector = c.driving_concept
             elif c.sector:
                 sector = c.sector
+        # 涨幅/现价/排名统一回退链：实时行情(live_quotes/rank_map) → 候选池当前扫描快照 →
+        # appearances(DB) → 推荐时落库值。此前 live_quotes 仅在无候选行生效，候选行走扫描快照，
+        # 导致同一张表内实时性不一致。live_quote_available 标记本次拿到实时批量行情。
+        if entry.get("live_quote_available"):
+            pct = entry.get("live_percent")
+            if pct is None:
+                pct = 0.0
+            live_cur = entry.get("live_current", 0.0)
+            live_rank = entry.get("live_rank")
+        elif c:
+            pct = c.stock.percent
+            live_cur = c.stock.current
+            live_rank = c.stock.rank
+        else:
+            pct = entry.get("live_percent") or entry.get("percent", 0.0)
+            live_cur = 0.0
+            live_rank = entry.get("live_rank")
+        # 实时行情不含 rank/current（batch/quote 无 rank 字段）时，回退候选快照。
+        if not live_cur and c and c.stock.current:
+            live_cur = c.stock.current
+        if not live_rank and c and c.stock.rank:
+            live_rank = c.stock.rank
+        price_str = f"{live_cur:.2f}" if live_cur else "—"
+        rank_str = f"{live_rank}" if live_rank else "—"
         if c:
-            s = c.stock
             label = CAT_LABEL.get(cat, cat)
             color = CAT_COLOR.get(cat, "")
             label_display = f"{color}{label}{ANSI['RESET']}"
-            priority = CAT_PRIORITY.get(cat, 99)
-            rank_str = f"{s.rank}" if s.rank else "N/A"
-            price_str = f"{s.current:.2f}" if s.current else "—"
-            pct = s.percent
             prom_str = ""
             if c.prominence_labels:
                 tags = " ".join(c.prominence_labels)
@@ -521,17 +566,12 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None):
             label = CAT_LABEL.get(cat, cat)
             color = CAT_COLOR.get(cat, "")
             label_display = f"{color}{label}{ANSI['RESET']}"
-            priority = CAT_PRIORITY.get(cat, 99)
-            rank_str = f"{entry['live_rank']}" if entry.get("live_rank") else "—"
-            live_cur = entry.get("live_current", 0.0)
-            price_str = f"{live_cur:.2f}" if live_cur else "—"
-            pct = entry.get("live_percent") or entry.get("percent", 0.0)
             prom_str = ""
             if entry.get("_prominent"):
                 prom_str = f" {ANSI['CYAN']}│↻│{ANSI['RESET']}"
             risk_str = ""
-        # 建议列：按策略优先级映射（推荐/参考/回避），SUGGEST 含 ANSI 需用 _pad 对齐
-        suggest_str = SUGGEST.get(priority, "")
+        # 建议列：按类别独立映射（与展示优先级解耦），SUGGEST_BY_CAT 含 ANSI 需用 _pad 对齐
+        suggest_str = SUGGEST_BY_CAT.get(cat, "")
         first_time = entry.get("first_time", entry.get("time", ""))[:5]
         # 5日累计涨幅：优先用候选池的 kline 数据（与上方各策略桶口径一致），否则用 DB 落库值
         accum_val = None
@@ -561,7 +601,11 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None):
               f"{_pad(_trunc(sector,14),14)} {_pad(label_display,5,'r')} {entry['score']:4d} {pct_colored(pct)} "
               f"{accum_str:>8} {price_str:>7} {rank_str:>4} {_pad(first_time,6)} {_pad(suggest_str,6)}{prom_str}{risk_str}{extra_suffix}")
     print(f"  {'-'*92}")
-    print(f"  {SUGGEST[0]} → {ANSI['GREEN']}kNF(已知新面孔){ANSI['RESET']}/{ANSI['CYAN']}RBD(超跌反弹){ANSI['RESET']}"
-          f"  |  参考 → {ANSI['YELLOW']}MOM(动量){ANSI['RESET']}/NEW(新面孔)"
-          f"  |  {SUGGEST[4]} → ST(超短次日卖)  |  {SUGGEST[5]} → PB(回调,负期望)")
+    print(f"  {SUGGEST_BY_CAT['known_new_face']} → {ANSI['GREEN']}kNF(已知新面孔){ANSI['RESET']}"
+          f"  |  {SUGGEST_BY_CAT['rebound']} → {ANSI['CYAN']}RBD(超跌反弹){ANSI['RESET']}"
+          f"  |  {SUGGEST_BY_CAT['new_face']} → NEW(新面孔)"
+          f"  |  {SUGGEST_BY_CAT['momentum']} → {ANSI['YELLOW']}MOM(动量){ANSI['RESET']}"
+          f"  |  {SUGGEST_BY_CAT['short_term']} → ST(超短次日卖)"
+          f"  |  {SUGGEST_BY_CAT['pullback']} → PB(回调,负期望)")
     print(f"  {ANSI['CYAN']}↻{ANSI['RESET']} 辨识度高(近5日上榜≥3次均排名≤70)  {ANSI['YELLOW']}⚠{ANSI['RESET']} 带有风险标签")
+    print(f"  排序档位: ▲▲/▲(净流入≥5%) 或 ↻ → 置前  |  ▼/▼▼(净流出≤-5%) → 劣后  |  其余 → 普通")

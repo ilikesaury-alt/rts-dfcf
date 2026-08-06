@@ -1,5 +1,6 @@
 """历史推荐跟踪显示：默认只显示"到买点"，"观察中"隐藏（TRACK_DISPLAY_WATCH_MAX=0）。"""
 import sqlite3
+from datetime import timedelta
 from types import SimpleNamespace
 
 import scanner.display as disp_mod
@@ -129,3 +130,233 @@ def test_display_priority_fund_flow_icon_from_db(capsys):
     line2 = next(l for l in out.splitlines() if "SZ300002" in l)
     assert "▲" in line1
     assert "▲" not in line2
+
+
+# ── 综合排序实时行情覆盖：live_quotes 对所有行优先（候选/非候选一致）──
+def _cand_in_pool(symbol: str, pct: float, cur: float, rank: int) -> Candidate:
+    k = KlineSummary(trend="", accumulated_pct=0.0, volume_ratio=1.0,
+                     bottom_confirmed=False, score=50, dimensions={})
+    return Candidate(
+        stock=StockInfo(symbol=symbol, name="测试", code=symbol[-6:], percent=pct,
+                        current=cur, value=1e8, rank_change=0, rank=rank),
+        category="momentum", score=60, reason="", kline=k)
+
+
+def _insert_rec(conn, symbol: str, name: str, percent: float):
+    today = now_beijing().date().isoformat()
+    conn.execute(
+        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (today, "13:00", symbol, name, "momentum", 60, percent),
+    )
+    conn.commit()
+
+
+def test_display_priority_live_quotes_overrides_candidate(monkeypatch, capsys):
+    """候选行也优先使用 live_quotes 实时行情（此前仅无候选行生效）。"""
+    conn = _rec_db()
+    _insert_rec(conn, "SZ300001", "候选票", 2.0)
+    cand = _cand_in_pool("SZ300001", 1.5, 10.0, 5)
+    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={"SZ300001": cand}))
+    disp_mod.display_priority(conn, live_quotes={"SZ300001": {"percent": 3.2, "current": 10.5}})
+    out = capsys.readouterr().out
+    line = next(l for l in out.splitlines() if "SZ300001" in l)
+    assert "+3.20%" in line
+    assert "10.50" in line
+    assert "+1.50%" not in line
+    assert "+2.00%" not in line
+
+
+def test_display_priority_live_quotes_overrides_db_for_dropped(monkeypatch, capsys):
+    """掉榜行（无候选）用 live_quotes 实时行情，优于 DB 落库值。"""
+    conn = _rec_db()
+    _insert_rec(conn, "SZ300002", "掉榜票", 1.0)
+    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
+    disp_mod.display_priority(conn, live_quotes={"SZ300002": {"percent": 4.5, "current": 20.0}})
+    out = capsys.readouterr().out
+    line = next(l for l in out.splitlines() if "SZ300002" in l)
+    assert "+4.50%" in line
+    assert "20.00" in line
+    assert "+1.00%" not in line
+
+
+def test_display_priority_candidate_fallback_when_no_live(monkeypatch, capsys):
+    """无 live_quotes 时，候选行回退到候选池扫描快照（含排名）。"""
+    conn = _rec_db()
+    _insert_rec(conn, "SZ300001", "候选票", 2.0)
+    cand = _cand_in_pool("SZ300001", 1.5, 10.0, 5)
+    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={"SZ300001": cand}))
+    disp_mod.display_priority(conn)
+    out = capsys.readouterr().out
+    line = next(l for l in out.splitlines() if "SZ300001" in l)
+    assert "+1.50%" in line
+    assert "10.00" in line
+    assert "N/A" not in line  # 候选有 rank，应显示 5 而非 N/A
+
+
+def test_display_priority_rank_map_for_dropped(monkeypatch, capsys):
+    """掉榜/重启行（无候选）的排名由当前飙升榜 rank_map 补上（此前恒为 —）。"""
+    conn = _rec_db()
+    _insert_rec(conn, "SZ300002", "掉榜票", 1.0)
+    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
+    disp_mod.display_priority(conn, rank_map={"SZ300002": 42})
+    out = capsys.readouterr().out
+    line = next(l for l in out.splitlines() if "SZ300002" in l)
+    assert "42" in line
+
+
+# ── 综合排序分组顺序（2026-08-06 重排：rebound > momentum > short_term > known_new_face > new_face > pullback）──
+def _insert_rec_cat(conn, symbol: str, name: str, category: str, score: int):
+    today = now_beijing().date().isoformat()
+    conn.execute(
+        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (today, "13:00", symbol, name, category, score, 1.0),
+    )
+    conn.commit()
+
+
+def test_display_priority_new_group_order(monkeypatch, capsys):
+    """综合排序按 CAT_DISPLAY_PRIORITY 分组：即使 kNF 分数最高也排到 rebound/momentum 之后。"""
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "新面孔", "new_face", 80)
+    _insert_rec_cat(conn, "SZ300002", "已知新", "known_new_face", 90)
+    _insert_rec_cat(conn, "SZ300003", "反弹", "rebound", 50)
+    _insert_rec_cat(conn, "SZ300004", "动量", "momentum", 70)
+    _insert_rec_cat(conn, "SZ300005", "超短", "short_term", 60)
+    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
+    disp_mod.display_priority(conn)
+    out = capsys.readouterr().out
+    lines = [l for l in out.splitlines() if "SZ30000" in l]
+    assert len(lines) == 5
+    order = ["SZ300003", "SZ300004", "SZ300005", "SZ300002", "SZ300001"]
+    for i, sym in enumerate(order):
+        assert sym in lines[i], f"{sym} 应在第 {i} 行，实际顺序: {lines}"
+
+
+def test_display_priority_suggestion_decoupled(monkeypatch, capsys):
+    """建议列与优先级解耦：new_face 位次垫底仍显示「参考」，kNF/rebound 显示「推荐」，short_term 显示「超短」。"""
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "新面孔", "new_face", 80)
+    _insert_rec_cat(conn, "SZ300002", "已知新", "known_new_face", 90)
+    _insert_rec_cat(conn, "SZ300003", "反弹", "rebound", 50)
+    _insert_rec_cat(conn, "SZ300004", "超短", "short_term", 60)
+    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
+    disp_mod.display_priority(conn)
+    out = capsys.readouterr().out
+    lines = {sym: next(l for l in out.splitlines() if sym in l)
+             for sym in ["SZ300001", "SZ300002", "SZ300003", "SZ300004"]}
+    assert "推荐" in lines["SZ300002"]  # known_new_face
+    assert "推荐" in lines["SZ300003"]  # rebound
+    assert "参考" in lines["SZ300001"]  # new_face 位次虽低仍参考，非回避
+    assert "超短" in lines["SZ300004"]  # short_term
+    assert "回避" not in lines["SZ300001"]
+
+
+# ── 综合排序档位置顶（2026-08-06）：排序键 (档位, 类别优先级, -score) ──
+# 档0置前 = 辨识度(↻) 或 主力净流入≥5%；档2劣后 = 净流出≤-5%（覆盖辨识度）；其余档1普通。
+def _cand_tier(symbol: str, score: int, category: str = "momentum",
+               fund_flow: float | None = None, prominent: bool = False) -> Candidate:
+    dims = {}
+    if fund_flow is not None:
+        dims["fund_flow_main_pct"] = fund_flow
+    k = KlineSummary(trend="", accumulated_pct=0.0, volume_ratio=1.0,
+                     bottom_confirmed=False, score=score, dimensions=dims)
+    c = Candidate(
+        stock=StockInfo(symbol=symbol, name="测试", code=symbol[-6:], percent=1.0,
+                        current=10.0, value=1e8, rank_change=0, rank=1),
+        category=category, score=score, reason="", kline=k)
+    if prominent:
+        c.prominence_labels.append("↻")
+    return c
+
+
+def test_display_priority_tier_front_cross_category(monkeypatch, capsys):
+    """跨类别置顶：ST 置前票(档0)排在 MOM 普通高分票(档1)之前；档0 内仍按类别优先级+评分。"""
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300002", "动量置前", "momentum", 80)
+    _insert_rec_cat(conn, "SZ300003", "超短置前", "short_term", 90)
+    _insert_rec_cat(conn, "SZ300004", "普通动量", "momentum", 125)
+    pool = {"SZ300002": _cand_tier("SZ300002", 80, prominent=True),
+            "SZ300003": _cand_tier("SZ300003", 90, category="short_term", prominent=True),
+            "SZ300004": _cand_tier("SZ300004", 125)}
+    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
+    disp_mod.display_priority(conn)
+    out = capsys.readouterr().out
+    lines = [l for l in out.splitlines() if "SZ30000" in l]
+    assert len(lines) == 3
+    order = ["SZ300002", "SZ300003", "SZ300004"]
+    for i, sym in enumerate(order):
+        assert sym in lines[i], f"{sym} 应在第 {i} 行，实际: {lines}"
+
+
+def test_display_priority_tier_front_within_category(monkeypatch, capsys):
+    """同类别内：低分辨识度票(档0)排在普通高分票(档1)之前，不靠分数翻盘。"""
+    conn = _rec_db()
+    _insert_rec(conn, "SZ300001", "置前票", 1.0)   # momentum score 60
+    _insert_rec_cat(conn, "SZ300002", "高分普通票", "momentum", 150)
+    pool = {"SZ300001": _cand_tier("SZ300001", 60, prominent=True),
+            "SZ300002": _cand_tier("SZ300002", 150)}
+    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
+    disp_mod.display_priority(conn)
+    out = capsys.readouterr().out
+    lines = [l for l in out.splitlines() if "SZ30000" in l]
+    assert "SZ300001" in lines[0], f"辨识度票(60)应排在普通高分票(150)之前: {lines}"
+    assert "SZ300002" in lines[1]
+
+
+def test_display_priority_tier_strong_inflow_front(monkeypatch, capsys):
+    """强资金流置前：净流入≥5% 的低分票(档0)排在普通高分票(档1)之前。"""
+    conn = _rec_db()
+    _insert_rec(conn, "SZ300001", "流入票", 1.0)
+    _insert_rec_cat(conn, "SZ300002", "普通票", "momentum", 65)
+    pool = {"SZ300001": _cand_tier("SZ300001", 55, fund_flow=6.0),
+            "SZ300002": _cand_tier("SZ300002", 65)}
+    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
+    disp_mod.display_priority(conn)
+    out = capsys.readouterr().out
+    lines = [l for l in out.splitlines() if "SZ30000" in l]
+    assert "SZ300001" in lines[0], f"强流入票(55)应排在普通票(65)之前: {lines}"
+    assert "SZ300002" in lines[1]
+
+
+def test_display_priority_tier_outflow_last_overrides_prominence(monkeypatch, capsys):
+    """净流出强制劣后：高分辨识度+流出票(档2)排到普通票(档1)之后。"""
+    conn = _rec_db()
+    _insert_rec(conn, "SZ300001", "流出置前", 1.0)  # momentum score 60
+    _insert_rec_cat(conn, "SZ300002", "普通票", "momentum", 50)
+    pool = {"SZ300001": _cand_tier("SZ300001", 100, fund_flow=-6.0, prominent=True),
+            "SZ300002": _cand_tier("SZ300002", 50)}
+    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
+    disp_mod.display_priority(conn)
+    out = capsys.readouterr().out
+    lines = [l for l in out.splitlines() if "SZ30000" in l]
+    assert "SZ300002" in lines[0], f"普通票(50)应排在辨识度+流出票(100)之前: {lines}"
+    assert "SZ300001" in lines[1]
+
+
+def test_display_priority_tier_db_source_for_dropped(monkeypatch, capsys):
+    """掉榜行（无候选）统一分档：资金流从 market_extra_cache、辨识度从 appearances。"""
+    conn = _rec_db()
+    today = now_beijing().date()
+    for i in range(5):
+        d = (today - timedelta(days=i)).isoformat()
+        conn.execute(
+            "INSERT INTO appearances (symbol, name, date, rank) VALUES (?, ?, ?, ?)",
+            ("SZ300001", "辨识票", d, 40 + i),
+        )
+    _insert_rec(conn, "SZ300001", "辨识票", 1.0)  # momentum score 60
+    _insert_rec_cat(conn, "SZ300002", "普通票", "momentum", 90)
+    conn.execute(
+        "INSERT INTO market_extra_cache (symbol, date, data_type, payload_json, updated) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("SZ300001", today.isoformat(), "fund_flow", '{"main_pct": 6.0, "main_net": 1e7}',
+         now_beijing().isoformat()),
+    )
+    conn.commit()
+    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
+    disp_mod.display_priority(conn)
+    out = capsys.readouterr().out
+    lines = [l for l in out.splitlines() if "SZ30000" in l]
+    assert "SZ300001" in lines[0], f"掉榜置前票(60,档0)应排在普通票(90,档1)之前: {lines}"
+    assert "SZ300002" in lines[1]
