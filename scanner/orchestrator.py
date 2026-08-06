@@ -500,6 +500,16 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         c.market_cap = cap_data.get("market_cap", 0)
         c.circ_market_cap = cap_data.get("circ_market_cap", 0)
 
+    # 行情增强数据（涨停池 + 个股资金流）：全市场各 1 次请求，失败软降级为空。
+    # 必须在 apply_all_bonuses 前收集，供资金流/连板加分与风险标签使用。
+    market_extra: dict = {}
+    try:
+        from scanner.market_extra import collect_market_extra
+        market_extra = collect_market_extra(
+            conn, [c.stock.symbol for c in all_candidates])
+    except Exception as e:
+        print(f"  [!] 行情增强数据收集失败（忽略，不影响扫描）: {e}")
+
     rps_scores: dict[str, int] = {}
     # RPS 基准：全 GEM 监控集（过滤后、含未入选候选）的 5 日累计涨幅列表，
     # 使 RPS 表达「相对全市场强弱」而非仅在已涨票中比谁涨得多。
@@ -547,6 +557,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
                       clusters, market_idx_pct, time_bonus,
                       sentiment_info=sentiment_info, rps_scores=rps_scores,
                       list_streaks=session_state.list_presence,
+                      market_extra=market_extra,
                       conn=conn)
 
     # 历史大跌率标签：批量查询近 90 天推荐中次日<=-5% 占比，供 UI 风控参考

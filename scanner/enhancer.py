@@ -15,6 +15,11 @@ from scanner.config import (
     DISTRIBUTION_VOL_RATIO,
     EARLY_BONUS,
     EARLY_TRADE_CUTOFF,
+    FUND_FLOW_BONUS_STRONG,
+    FUND_FLOW_BONUS_WEAK,
+    FUND_FLOW_MAIN_PCT_STRONG,
+    FUND_FLOW_MAIN_PCT_WEAK,
+    FUND_OUTFLOW_NET_PCT,
     LATE_BONUS,
     LATE_TRADE_START,
     FATIGUE_ACCELERATE_BONUS_PER_DAY,
@@ -59,6 +64,10 @@ from scanner.config import (
     V_PB_MA_DOWN,
     V_PB_SHRINK_NO,
     V_ST_MA_BROKEN,
+    ZT_LIANBAN_BONUS_2,
+    ZT_LIANBAN_BONUS_3,
+    ZT_LIANBAN_GT3_PENALTY,
+    ZT_ZHA_BAN_MIN,
 )
 from scanner.database import count_recent_appearances, get_symbol_appearances
 from scanner.models import Candidate
@@ -79,6 +88,7 @@ def apply_all_bonuses(
     sentiment_info: dict = None,
     rps_scores: dict[str, int] = None,
     list_streaks: dict[str, int] = None,
+    market_extra: dict = None,
     conn=None,
 ):
     for c in candidates:
@@ -92,6 +102,8 @@ def apply_all_bonuses(
         _apply_list_momentum_bonus(c, list_streaks, conn)
         c.time_bonus = time_bonus
         _apply_gap_up_bonus(c)
+        _apply_fund_flow_bonus(c, market_extra)
+        _apply_zt_bonus(c, market_extra)
         _record_dimensions(c, market_idx_pct, opening_scores)
         _set_risk_flags(c)
         _compute_prominence_labels(c, conn)
@@ -141,6 +153,12 @@ def _set_risk_flags(c: Candidate):
     # 量价背离：量价不匹配（含顶背离）
     if _detect_volume_price_divergence(c, dims):
         c.risk_flags.append("量价背离")
+    # 资金流出：主力净流出占比超阈值（展示型警告，非硬过滤）
+    if (dims.get("fund_flow_main_pct") or 0) <= FUND_OUTFLOW_NET_PCT:
+        c.risk_flags.append("资金流出")
+    # 炸板：今日曾涨停但盘中炸板（封板未稳，追高/筹码松动风险，展示型警告）
+    if (dims.get("zt_zhaban") or 0) >= ZT_ZHA_BAN_MIN:
+        c.risk_flags.append("炸板")
 
 
 def _detect_main_force_distribution(c: Candidate, dims: dict) -> bool:
@@ -307,6 +325,46 @@ def _apply_gap_up_bonus(c: Candidate):
         c.gap_up_bonus = c.kline.dimensions.get(gap_key, 0)
 
 
+def _apply_fund_flow_bonus(c: Candidate, market_extra: dict):
+    """主力资金流评分：主力净流入占比 ≥阈值加分，净流出明显扣分。
+
+    原始数据写入 dimensions（fund_flow_*），供展示与 backtest dimension_ic 归因。
+    无数据（market_extra 缺失/该票无记录）时零影响。
+    """
+    entry = ((market_extra or {}).get(c.stock.symbol, {}) or {}).get("fund_flow")
+    if not entry or not c.kline:
+        return
+    main_pct = float(entry.get("main_pct") or 0.0)
+    c.kline.dimensions["fund_flow_main_pct"] = round(main_pct, 2)
+    c.kline.dimensions["fund_flow_main_net"] = float(entry.get("main_net") or 0.0)
+    c.kline.dimensions["fund_flow_super_net"] = float(entry.get("super_net") or 0.0)
+    if main_pct >= FUND_FLOW_MAIN_PCT_STRONG:
+        c.fund_flow_bonus = FUND_FLOW_BONUS_STRONG
+    elif main_pct <= FUND_FLOW_MAIN_PCT_WEAK:
+        c.fund_flow_bonus = FUND_FLOW_BONUS_WEAK
+
+
+def _apply_zt_bonus(c: Candidate, market_extra: dict):
+    """涨停池评分：连板数加分（动量/超短），≥4 板追高降权。
+
+    连板信息也写入 dimensions（zt_*），供展示与风险标签使用。
+    """
+    entry = ((market_extra or {}).get(c.stock.symbol, {}) or {}).get("zt")
+    if not entry or not c.kline:
+        return
+    lianban = int(entry.get("lianban") or 0)
+    c.kline.dimensions["zt_lianban"] = lianban
+    c.kline.dimensions["zt_zhaban"] = int(entry.get("zhaban") or 0)
+    c.kline.dimensions["zt_industry"] = str(entry.get("industry") or "")
+    if c.category in ("momentum", "short_term"):
+        if lianban >= 4:
+            c.zt_lianban_bonus = ZT_LIANBAN_GT3_PENALTY
+        elif lianban == 3:
+            c.zt_lianban_bonus = ZT_LIANBAN_BONUS_3
+        elif lianban == 2:
+            c.zt_lianban_bonus = ZT_LIANBAN_BONUS_2
+
+
 def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None, conn=None):
     intraday_streak = (list_streaks or {}).get(c.stock.symbol, 0)
     if conn:
@@ -411,6 +469,10 @@ def _record_dimensions(
             c.kline.dimensions["market_env_bonus"] = MARKET_ENV_WEAK
     if c.turnover_bonus:
         c.kline.dimensions["turnover_bonus"] = c.turnover_bonus
+    if c.fund_flow_bonus:
+        c.kline.dimensions["fund_flow_bonus"] = c.fund_flow_bonus
+    if c.zt_lianban_bonus:
+        c.kline.dimensions["zt_lianban_bonus"] = c.zt_lianban_bonus
     if c.category == "short_term" and c.kline.dimensions.get("v_st_overbought"):
         # 以 validator 决策为准（含今日急拉导致的超买），确保否决在报告中可见；
         # 分析侧不再做超买判定，统一由 validator 单点判断 + enhancer 标记。
@@ -453,5 +515,6 @@ def accumulate_final_score(c: Candidate, market_env_bonus: int, opening_scores: 
              + market_env_bonus + c.turnover_bonus + c.time_bonus
              + c.market_sentiment_bonus + c.rps_bonus + c.market_cap_bonus
              + c.list_momentum_bonus + opening_bonus
-             + cross_source + c.gap_up_bonus)
+             + cross_source + c.gap_up_bonus
+             + c.fund_flow_bonus + c.zt_lianban_bonus)
     return total

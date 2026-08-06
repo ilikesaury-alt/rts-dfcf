@@ -39,6 +39,7 @@ scanner/
   rank_trend.py           # RankTracker with trajectory scoring
   tracker.py              # History recommendation tracking (buy-point detection)
   sector.py               # Sector cluster detection
+  market_extra.py         # 行情增强数据层（涨停池 + 个股资金流，AKShare）
   backtest.py             # Backtest / IC attribution framework
   trading_session.py      # Trading hours/holidays
   display.py              # Terminal display formatting (ANSI + wcwidth)
@@ -50,7 +51,7 @@ tests/                    # pytest test suite
 
 ## Key Facts
 
-- **Database**: SQLite at `scanner.db` (auto-created). Tables: appearances, daily_kline, recommendations, sector_cache
+- **Database**: SQLite at `scanner.db` (auto-created). Tables: appearances, daily_kline, recommendations, sector_cache, concept_cache, market_extra_cache
 - **Python version**: 3.12+ (uses f-strings, dataclasses, type hints)
 - **Dependencies**: `requests`, `wcwidth` (see `requirements.txt`)
 - **Trading hours**: Auto-sleeps outside 09:30-11:30 / 13:00-15:00 on trading days
@@ -70,6 +71,7 @@ tests/                    # pytest test suite
 - RPS exemption: `rebound` candidates have negative `accumulated_pct` by definition and would always fall into the bottom percentile (RPS_LOW=-3 penalty). `_compute_rps` exempts `category=="rebound"` (returns 0) to avoid penalizing the strategy's core thesis.
 - RPS 口径统一：所有候选用 `accum_map`（历史5日累计涨幅，排除今日）参与 RPS 排名，与 baseline（全 GEM 监控集历史5日累计）口径一致。short_term 的 `c.kline.accumulated_pct` 仍包含今日 bar（策略语义，供评分维度用），但 RPS 排名时被 `accum_map` 覆盖，避免百分位偏高（2026-07-29 修复）。
 - K线新鲜度 (2026-07-31): 交易时段内扫描时若候选股缺今日 bar，orchestrator 会统计并打印 `今日K线缺失N只` 警告（`_fetch_all_klines`），缺 bar 的股票用旧缓存评分、下次周期（KLINE_REFRESH_TTL=120s）重试补拉；非交易时段不警告。早盘扫描若出现"上榜多、推荐 0"请先查此警告——short_term 量比按投影口径仍需今日 bar。
+- 行情增强数据 (2026-08-06, `market_extra.py`): 涨停池 + 个股资金流（AKShare 东财，开关 `RTS_ENABLE_ZT_POOL`/`RTS_ENABLE_FUND_FLOW`，默认开）。**盘中新鲜度**：进程缓存 + DB 缓存共用 `ZT_POOL_TTL_SEC`/`FUND_FLOW_TTL_SEC=300s`，DB 条目按 `updated` 距今超过该 TTL 视为过期重拉（`get_market_extra_cache(..., intraday_ttl_sec)`）——避免首次扫描快照全天冻结；`stock_report` 不传 ttl 参数读取当日任意旧数据。**限时**：单次拉取走 `_bounded_call`（daemon 线程 + join(timeout)，`ZT_POOL_FETCH_TIMEOUT=20s`/`FUND_FLOW_FETCH_TIMEOUT=30s`），AKShare 内部无 timeout 的请求（涨停池）与全市场分页（资金流 ~50+ 请求）都不会挂死 60s 扫描循环。**失败短退避**：拉取失败缓存空结果到 TTL，避免每轮扫描重复轰击死 host / 刷屏告警（资金流 host push2.eastmoney.com 在代理环境下实测不可达）。**评分**：主力净占比 ≥5% → `fund_flow_bonus=+5`、≤-5% → -3；连板 2/3 板 → momentum/short_term +5/+8、≥4 板追高 -5（new_face 不参与）。**风险标签**：「资金流出」（净占比 ≤-8%）与「炸板」（炸板次数≥1）为展示型，不入 `RISK_FLAGS_HARD_FILTER`。
 - Same-sector cap: short_term list keeps top `SHORT_TERM_MAX_PER_SECTOR=2` per sector (sorted by **final** score desc, after all bonuses applied) to prevent sector-wide surge days flooding the list (orchestrator.py:216-233). Cap 必须在 `apply_all_bonuses` + `accumulate_final_score` 之后执行——`list_momentum_bonus`(±15) 等大额 bonus 会反转同板块内排名，若在 bonus 前裁剪会保留错误候选（2026-07-29 修复）。
 - Trend-label hard filter (`config.py:HIGH_RISK_TRENDS`): currently only "回踩整理" is rejected before scoring (pullback: avg next-day -3.89%, win 21.6%). "缩量回调" was removed (avg -2.09%, win 39.2% — acceptable in candidate-pool context with MA support + mild pullback).
 - Composite risk flags (`enhancer.py:_set_risk_flags`): candidates carry **stackable** risk labels (not single-dim reverse indicators). Seven tags with explicit trading-decision implications, centralized thresholds in `config.py:357-400`. **HARD FILTER labels** (`config.py:RISK_FLAGS_HARD_FILTER` = {主力出货, 趋势破位}) hit → removed from ALL recommendation lists at the orchestrator list-assembly stage (display/feishu receive clean lists automatically; only buyable stocks remain). Remaining tags stay display-only warnings.

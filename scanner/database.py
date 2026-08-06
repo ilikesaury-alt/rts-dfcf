@@ -77,6 +77,16 @@ def init_db() -> sqlite3.Connection:
             updated TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS market_extra_cache (
+            symbol TEXT NOT NULL,
+            date TEXT NOT NULL,
+            data_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            updated TEXT NOT NULL,
+            PRIMARY KEY(symbol, data_type)
+        )
+    """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_date ON appearances(date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_sym ON appearances(symbol)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_date ON recommendations(date)")
@@ -524,6 +534,68 @@ def save_concepts_cache(conn: sqlite3.Connection, concepts_map: dict[str, list[s
         conn.commit()
     except Exception as e:
         logger.warning(f"save_concepts_cache failed: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
+def get_market_extra_cache(conn: sqlite3.Connection, symbols: list[str],
+                           data_type: str, intraday_ttl_sec: int | None = None) -> dict[str, dict]:
+    """批量读取 market_extra_cache，返回 {symbol: payload_dict}。
+
+    仅返回 date 为今天的条目。intraday_ttl_sec 提供时，仅返回 updated 距今
+    不超过该秒数的条目（盘中刷新用，过期视为缺失交由上游重拉）；不提供则
+    返回当天全部可用条目（stock_report 等读旧数据的场景）。
+    data_type 区分 zt_pool / fund_flow。
+    """
+    if not symbols:
+        return {}
+    placeholders = ",".join("?" * len(symbols))
+    today = now_beijing().date().isoformat()
+    cutoff = (now_beijing() - timedelta(seconds=intraday_ttl_sec)).isoformat() \
+        if intraday_ttl_sec else None
+    sql = (f"SELECT symbol, payload_json FROM market_extra_cache "
+           f"WHERE symbol IN ({placeholders}) AND data_type = ? AND date = ?")
+    params: tuple = (*symbols, data_type, today)
+    if cutoff:
+        sql += " AND updated >= ?"
+        params = (*params, cutoff)
+    try:
+        rows = conn.execute(sql, params).fetchall()
+    except Exception as e:
+        logger.warning(f"get_market_extra_cache failed: {e}")
+        return {}
+    import json
+    result: dict[str, dict] = {}
+    for sym, payload in rows:
+        try:
+            parsed = json.loads(payload)
+            if isinstance(parsed, dict):
+                result[sym] = parsed
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return result
+
+
+def save_market_extra_cache(conn: sqlite3.Connection, data_map: dict[str, dict],
+                            data_type: str):
+    """批量写入 market_extra_cache（INSERT OR REPLACE，按 symbol+data_type 覆盖）。"""
+    if not data_map:
+        return
+    import json
+    today = now_beijing().date().isoformat()
+    now = now_beijing().isoformat()
+    try:
+        conn.executemany(
+            "INSERT OR REPLACE INTO market_extra_cache (symbol, date, data_type, payload_json, updated) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [(sym, today, data_type, json.dumps(payload, ensure_ascii=False), now)
+             for sym, payload in data_map.items()],
+        )
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"save_market_extra_cache failed: {e}")
         try:
             conn.rollback()
         except Exception:

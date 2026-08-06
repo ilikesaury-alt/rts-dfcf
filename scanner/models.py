@@ -51,6 +51,8 @@ class Candidate:
     rps_bonus: int = 0
     market_cap_bonus: int = 0
     list_momentum_bonus: int = 0
+    fund_flow_bonus: int = 0      # 主力资金净流入加分（行情增强，enhancer）
+    zt_lianban_bonus: int = 0     # 涨停连板加分/追高降权（行情增强，enhancer）
     is_stale: bool = False
     stale_since: str = ""
     risk_flags: list[str] = field(default_factory=list)  # 复合风险标签（超买/出货/破位等）

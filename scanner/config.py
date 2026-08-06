@@ -142,6 +142,37 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "scanner.db")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 
+# ── 行情增强数据（涨停池 + 个股资金流，AKShare 东财接口）──
+# 开关：环境变量可覆盖（RTS_ENABLE_ZT_POOL / RTS_ENABLE_FUND_FLOW），0/1/false/true
+def _env_flag(name: str, default: bool) -> bool:
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "on")
+
+ENABLE_ZT_POOL = _env_flag("RTS_ENABLE_ZT_POOL", True)          # 涨停池
+ENABLE_FUND_FLOW = _env_flag("RTS_ENABLE_FUND_FLOW", True)      # 个股资金流
+# 盘中刷新间隔（进程内缓存 TTL + DB 缓存盘中新鲜度共用）：扫描期内数据
+# 过期后视为缺失，触发重拉，实现"盘中每 5 分钟更新"（而非全天冻结首次快照）
+ZT_POOL_TTL_SEC = 300
+FUND_FLOW_TTL_SEC = 300
+# 单次拉取限时：AKShare 内部请求可能无 timeout（涨停池）或全市场分页很慢
+# （资金流约 50+ 请求）。限时保护 60s 扫描循环不被外部 host 挂死。
+ZT_POOL_FETCH_TIMEOUT = 20        # 涨停池单次拉取上限（秒）
+FUND_FLOW_FETCH_TIMEOUT = 30      # 资金流全市场分页拉取上限（秒）
+# 资金流评分阈值（主力净流入净占比 %）
+FUND_FLOW_MAIN_PCT_STRONG = 5.0   # 主力净占比 ≥5% → 加分
+FUND_FLOW_MAIN_PCT_WEAK = -5.0    # 主力净占比 ≤-5% → 扣分
+FUND_FLOW_BONUS_STRONG = 5
+FUND_FLOW_BONUS_WEAK = -3
+# 连板评分：连板数（今日涨停池涨停统计口径）加分/追高降权
+ZT_LIANBAN_BONUS_2 = 5
+ZT_LIANBAN_BONUS_3 = 8
+ZT_LIANBAN_GT3_PENALTY = -5       # ≥4 板追高降权
+# 风险标签阈值
+FUND_OUTFLOW_NET_PCT = -8.0       # 主力净流出占比 ≤-8% → 「资金流出」标签
+ZT_ZHA_BAN_MIN = 1                # 炸板次数 ≥1 且今日曾涨停 → 「炸板」标签
+
 # ── 概念板块数据源（东财 F10）─
 CONCEPT_API_TIMEOUT = 8          # 单只个股概念拉取超时（秒）
 CONCEPT_CACHE_TTL_DAYS = 7       # concept_cache 缓存天数（概念归属低频变动，7 天足够新鲜）

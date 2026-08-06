@@ -87,7 +87,17 @@ def _build_card(
             else:
                 risk_parts.append(f"⚠+{soft_count}")
         risk_str = (" " + " ".join(risk_parts)) if risk_parts else ""
-        return f"`{rs} {s.name:<8} {s.symbol} {pct_str:>7} {acc_str:>7}  {c.score:>2}分{risk_str}`"
+        # 行情增强标记：主力净流入净占比 + 连板（仅在有数据时显示）
+        dims = c.kline.dimensions if c.kline else {}
+        extra_parts = []
+        ff_pct = dims.get("fund_flow_main_pct")
+        if ff_pct is not None:
+            mark = "🟢" if (dims.get("fund_flow_main_net") or 0) >= 0 else "🟡"
+            extra_parts.append(f"{mark}{ff_pct:+.0f}%")
+        if dims.get("zt_lianban"):
+            extra_parts.append(f"📈{dims['zt_lianban']}板")
+        extra_str = (" " + " ".join(extra_parts)) if extra_parts else ""
+        return f"`{rs} {s.name:<8} {s.symbol} {pct_str:>7} {acc_str:>7}  {c.score:>2}分{risk_str}{extra_str}`"
 
     first = True
     for title, items in sections:

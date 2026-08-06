@@ -469,6 +469,31 @@ def main():
                 avg_rank = sum(ranks) / len(ranks)
                 print(f"  平均排名: {avg_rank:.0f}")
 
+        # 行情增强（涨停池/资金流）：只读 market_extra_cache，不发起网络请求
+        try:
+            from scanner.database import get_market_extra_cache
+            extra_lines = []
+            zt = get_market_extra_cache(conn, [symbol], "zt_pool").get(symbol)
+            ff = get_market_extra_cache(conn, [symbol], "fund_flow").get(symbol)
+            if zt:
+                extra_lines.append(
+                    f"涨停池: 连板{zt.get('lianban', 0)} 统计{zt.get('zt_stat', '-')} "
+                    f"炸板{zt.get('zhaban', 0)} 行业{zt.get('industry', '-')}")
+            if ff:
+                main_net = ff.get("main_net", 0) or 0
+                main_pct = ff.get("main_pct", 0) or 0
+                super_net = ff.get("super_net", 0) or 0
+                cfn = green if main_net >= 0 else red
+                extra_lines.append(
+                    f"主力净流入: {cfn(f'{main_net/1e8:+.2f}亿 ({main_pct:+.2f}%)')} | "
+                    f"超大单: {cfn(f'{super_net/1e8:+.2f}亿')}")
+            if extra_lines:
+                print("\n  行情增强:")
+                for line in extra_lines:
+                    print(f"    {line}")
+        except Exception:
+            pass
+
         # ── Section 6: 疲劳与风险 ──
         print_section("6. 疲劳与风险")
         fatigue_signals = []

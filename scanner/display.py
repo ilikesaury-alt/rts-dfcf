@@ -125,6 +125,37 @@ def _bonus_tag(c: Candidate) -> str:
         parts.append(f"H{c.turnover_bonus:+d}")
     if c.list_momentum_bonus:
         parts.append(f"L{c.list_momentum_bonus:+d}")
+    if c.fund_flow_bonus:
+        parts.append(f"F{c.fund_flow_bonus:+d}")
+    if c.zt_lianban_bonus:
+        parts.append(f"Z{c.zt_lianban_bonus:+d}")
+    return " ".join(parts) if parts else ""
+
+
+def _market_extra_str(c: Candidate) -> str:
+    """行情增强标记：主力净流入净占比 + 连板/炸板（无数据返回空串）。
+
+    展示型信息，追加在行尾可变区，不参与固定列对齐。
+    """
+    dims = c.kline.dimensions if c.kline else {}
+    parts = []
+    ff_pct = dims.get("fund_flow_main_pct")
+    ff_net = dims.get("fund_flow_main_net")
+    if ff_pct is not None:
+        color = ANSI["GREEN"] if (ff_net or 0) >= 0 else ANSI["YELLOW"]
+        parts.append(f"{color}资{ff_pct:+.1f}%{ANSI['RESET']}")
+        wan = (ff_net or 0) / 10000
+        if abs(wan) >= 10000:
+            parts.append(f"{color}{wan/10000:+.1f}亿{ANSI['RESET']}")
+        elif abs(wan) >= 100:
+            parts.append(f"{color}{wan:+.0f}万{ANSI['RESET']}")
+    zt_lb = dims.get("zt_lianban")
+    zt_zb = dims.get("zt_zhaban")
+    if zt_lb:
+        if zt_zb:
+            parts.append(f"{ANSI['YELLOW']}连{zt_lb}炸{zt_zb}{ANSI['RESET']}")
+        else:
+            parts.append(f"{ANSI['RED']}连{zt_lb}板{ANSI['RESET']}")
     return " ".join(parts) if parts else ""
 
 
@@ -230,16 +261,18 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             tags = " ".join(c.prominence_labels)
             prom_str = f"{ANSI['CYAN']}│{tags}│{ANSI['RESET']}"
         full_risk = f"{prom_str} {risk_str}" if prom_str else risk_str
+        extra_str = _market_extra_str(c)
+        extra_suffix = f" {extra_str}" if extra_str else ""
         if show_val:
             print(f"  {s.rank:>4} {delta_display} {_pad(src_tag,4)} {_pad(display_name,10)} "
                   f"{s.symbol:<12} {cur:>7} {pct_colored(s.percent)} "
                   f"{_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} "
-                  f"{_pad(bonus_str,16)} {cap_str:>8} {val_str:>6} {full_risk}")
+                  f"{_pad(bonus_str,16)} {cap_str:>8} {val_str:>6} {full_risk}{extra_suffix}")
         else:
             print(f"  {s.rank:>4} {delta_display} {_pad(src_tag,4)} {_pad(display_name,10)} "
                   f"{s.symbol:<12} {cur:>7} {pct_colored(s.percent)} "
                   f"{_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} "
-                  f"{_pad(bonus_str,16)} {cap_str:>8} {full_risk}")
+                  f"{_pad(bonus_str,16)} {cap_str:>8} {full_risk}{extra_suffix}")
 
     print(f"\n{ANSI['GREEN']}◆ 新面孔 — 底部异动 / 刚启动{ANSI['RESET']}  (找: 今日小涨+日线底部放量)")
     print(hdr)

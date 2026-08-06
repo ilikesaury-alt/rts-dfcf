@@ -3,12 +3,14 @@ from unittest.mock import patch
 
 from scanner.enhancer import (
     _apply_gap_up_bonus,
+    _apply_fund_flow_bonus,
     _apply_live_vol_bonus,
     _apply_list_momentum_bonus,
     _apply_rps_bonus,
     _apply_sector_bonus,
     _apply_sentiment_bonus,
     _apply_turnover_bonus,
+    _apply_zt_bonus,
     _detect_main_force_distribution,
     _set_risk_flags,
     _record_dimensions,
@@ -502,4 +504,100 @@ class TestRiskFlagTightening:
         c.kline.dimensions["mo_overbought_flag"] = True
         assert not _detect_main_force_distribution(c, c.kline.dimensions), \
             "高累计+低迷换手不应判主力出货（无放量派发特征）"
+
+
+# ============================================================
+# 行情增强 bonus：资金流 / 涨停连板（2026-08-06 新增）
+# ============================================================
+
+class TestApplyFundFlowBonus:
+    @staticmethod
+    def _flow(c, main_pct, main_net, super_net):
+        return {c.stock.symbol: {"fund_flow": {"main_pct": main_pct,
+                                                "main_net": main_net,
+                                                "super_net": super_net}}}
+
+    def test_strong_inflow(self):
+        c = _make_candidate()
+        _apply_fund_flow_bonus(c, self._flow(c, 8.5, 123456789.0, 6e7))
+        assert c.fund_flow_bonus == 5
+        assert c.kline.dimensions.get("fund_flow_main_pct") == 8.5
+        assert c.kline.dimensions.get("fund_flow_main_net") == 123456789.0
+
+    def test_weak_outflow(self):
+        c = _make_candidate()
+        _apply_fund_flow_bonus(c, self._flow(c, -6.0, -1e8, -2e7))
+        assert c.fund_flow_bonus == -3
+
+    def test_neutral(self):
+        c = _make_candidate()
+        _apply_fund_flow_bonus(c, self._flow(c, 2.0, 1e6, 0))
+        assert c.fund_flow_bonus == 0
+
+    def test_no_flow(self):
+        c = _make_candidate()
+        _apply_fund_flow_bonus(c, None)
+        assert c.fund_flow_bonus == 0
+
+
+class TestApplyZtBonus:
+    @staticmethod
+    def _zt(c, lianban, zhaban, industry="软件"):
+        return {c.stock.symbol: {"zt": {"lianban": lianban, "zhaban": zhaban,
+                                        "industry": industry}}}
+
+    def test_3board_momentum(self):
+        c = _make_candidate(category="momentum")
+        _apply_zt_bonus(c, self._zt(c, 3, 0))
+        assert c.zt_lianban_bonus == 8
+        assert c.kline.dimensions.get("zt_lianban") == 3
+
+    def test_2board_short_term(self):
+        c = _make_candidate(category="short_term")
+        _apply_zt_bonus(c, self._zt(c, 2, 1))
+        assert c.zt_lianban_bonus == 5
+
+    def test_over4_board_penalty(self):
+        c = _make_candidate(category="momentum")
+        _apply_zt_bonus(c, self._zt(c, 4, 0))
+        assert c.zt_lianban_bonus == -5
+
+    def test_new_face_ignored(self):
+        c = _make_candidate(category="new_face")
+        _apply_zt_bonus(c, self._zt(c, 3, 0))
+        assert c.zt_lianban_bonus == 0
+
+
+class TestMarketExtraRiskFlags:
+    def test_fund_outflow_flag(self):
+        c = _make_candidate()
+        _apply_fund_flow_bonus(c, {c.stock.symbol: {"fund_flow": {
+            "main_pct": -9.0, "main_net": -2e8, "super_net": -5e7}}})
+        _set_risk_flags(c)
+        assert "资金流出" in c.risk_flags
+
+    def test_no_outflow_flag_on_moderate(self):
+        c = _make_candidate()
+        _apply_fund_flow_bonus(c, {c.stock.symbol: {"fund_flow": {
+            "main_pct": -4.0, "main_net": -5e7, "super_net": -1e7}}})
+        _set_risk_flags(c)
+        assert "资金流出" not in c.risk_flags
+
+    def test_zhaban_flag(self):
+        c = _make_candidate()
+        _apply_zt_bonus(c, {c.stock.symbol: {"zt": {
+            "lianban": 1, "zhaban": 2, "industry": "软件"}}})
+        _set_risk_flags(c)
+        assert "炸板" in c.risk_flags
+        assert "资金流出" not in c.risk_flags
+
+
+class TestAccumulateWithMarketExtra:
+    def test_total_includes_bonuses(self):
+        c = _make_candidate()
+        c.sector_bonus = 2
+        c.fund_flow_bonus = 5
+        c.zt_lianban_bonus = 8
+        result = accumulate_final_score(c, 0, {})
+        assert result == 15
 
