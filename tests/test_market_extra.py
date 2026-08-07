@@ -164,6 +164,58 @@ class TestFetchFundFlow:
         assert result["300003"]["main_net"] == 123456789.0
         assert result["300003"]["main_pct"] == 8.5
         assert box["value"] == result
+        assert box.get("done") is True, "完整拉取应标记完成（供外层区分完整/部分快照）"
+
+    def test_deadline_partial_marks_not_done(self, monkeypatch):
+        # 多页拉到一半超时：取消剩余任务，box["done"] 不置位 → 外层按部分快照处理
+        import threading
+        import time as _t
+
+        pages = {pn: {"rc": 0, "data": {"total": 500, "diff": _ff_rows(f"30000{i}")}}
+                 for i, pn in enumerate([1, 2, 3, 4, 5], start=1)}
+        box = {}
+        calls = 0
+        calls_lock = threading.Lock()
+
+        def _slow_get(*a, **k):
+            nonlocal calls
+            with calls_lock:
+                calls += 1
+            pn = int(k.get("params", {}).get("pn", "1"))
+            if pn >= 2:
+                _t.sleep(0.2)  # 后续页阻塞，保证超过极短 deadline
+            return FakeResp(pages.get(pn, {"rc": 0, "data": {"total": 0, "diff": []}}))
+
+        monkeypatch.setattr(me._requests, "get", _slow_get)
+        result = me._collect_fund_flow(box, _t.time() + 0.001)
+        assert box.get("done") is not True, "超时部分拉取不得标记完成"
+        assert set(result) == {"300001"}, "仅首页已收集，后续页被取消"
+
+    def test_bounded_flags_partial_when_thread_done_but_incomplete(self, monkeypatch):
+        # 回归：线程在 join 超时前恰好跑完内部 deadline，_collect_fund_flow 未标记
+        # done → _fetch_fund_flow_bounded 必须仍判为超时（部分结果），不得当完整快照。
+        import time as _t
+
+        def _collect_that_finishes_early(box_, deadline):
+            box_["value"] = {"300001": {"main_net": 1.0, "main_pct": 2.0, "super_net": 0}}
+            return box_["value"]  # 不置 box_["done"] → 模拟内部超时提前收工
+
+        monkeypatch.setattr(me, "_collect_fund_flow", _collect_that_finishes_early)
+        value, timed_out = me._fetch_fund_flow_bounded(0.01)
+        assert timed_out is True, "线程提前结束但未标记完成 → 仍应按部分结果处理"
+        assert value == {"300001": {"main_net": 1.0, "main_pct": 2.0, "super_net": 0}}
+
+    def test_bounded_complete_not_timed_out(self, monkeypatch):
+        import time as _t
+
+        def _collect_done(box_, deadline):
+            box_["value"] = {"300001": {"main_net": 1.0, "main_pct": 2.0, "super_net": 0}}
+            box_["done"] = True
+            return box_["value"]
+
+        monkeypatch.setattr(me, "_collect_fund_flow", _collect_done)
+        _, timed_out = me._fetch_fund_flow_bounded(0.01)
+        assert timed_out is False, "显式标记完成 → 判定为完整快照"
 
 
 class TestCollect:

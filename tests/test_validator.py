@@ -124,6 +124,28 @@ class TestValidateNewFace:
         assert not passed, f"无超卖信号不应通过 new_face，dims={dims}"
         assert dims["v_nf_convergence_hits"] == 0
 
+    def test_pos_dims_counts_volume_dim(self):
+        # 回归：pos_dims 漏算量能维度（仅 conv+hl+sec 3 项）。
+        # 现在维度=4（convergence/higher_low/sector/volume），_max_dims 同步为 4。
+        # 构造量能充足场景，校验 _max_dims 与维度总数一致。
+        closes = [100 - i for i in range(24)] + [70, 75, 80, 82, 84, 82, 80, 78, 76, 74]
+        k = [{"date": f"2026-01-{i+1:02d}", "open": c, "close": c,
+              "high": c * 1.02, "low": c * 0.98, "volume": 1.0, "percent": 0}
+             for i, c in enumerate(closes)]
+        from scanner.models import KlineSummary
+        ksum = KlineSummary(
+            trend="unknown",
+            accumulated_pct=closes[-1] / closes[-11] * 100 - 100,
+            volume_ratio=1.5,
+            bottom_confirmed=True,
+            score=0,
+        )
+        passed, total, dims = validate_nf(
+            _stock(name="半导体测试"), ksum, closes, k,
+            SEMICONDUCTOR_CLUSTER
+        )
+        assert dims["_max_dims"] == 4, f"max_dims 应为 4，got {dims['_max_dims']}"
+
 
 class TestValidateMomentumHelpers:
 
@@ -177,6 +199,33 @@ class TestValidateMomentumHelpers:
         ema5 = compute_ma(closes, 5, ema=True)
         assert ema5 is not None
         assert ema5 < sma5, f"EMA should differ from SMA: ema={ema5}, sma={sma5}"
+
+    def test_ma_alignment_data_short_is_neutral_not_bear(self):
+        # 回归：数据不足（<10 根 / ma5/ma10 缺失）不得返回 V_MO_MA_NONE。
+        # 否则 enhancer._detect_trend_breakage 会把"无足够样本"误判为"趋势破位"
+        # 硬过滤，新股/短历史票会被踢出所有推荐列表。
+        from scanner.config import V_MO_MA_NONE
+        bonus, detail = _mo_ma_alignment([10.0, 11.0, 12.0])
+        assert detail == "data_short"
+        assert bonus != V_MO_MA_NONE, "data_short 必须中性处理，不得当空头证据"
+        assert bonus == 0
+
+    def test_ma_alignment_feats_missing_ma_neutral(self):
+        # feats 提供但 ma5/ma10 缺失（同 data_short 路径）→ 中性，不判空头
+        from scanner.config import V_MO_MA_NONE
+        bonus, detail = _mo_ma_alignment([1.0]*15, feats={})
+        assert detail == "data_short"
+        assert bonus != V_MO_MA_NONE
+        assert bonus == 0
+
+    def test_ma_alignment_genuine_bear_still_none(self):
+        # 数据充足时的真实空头排列（ma5 <= ma10）仍返回 V_MO_MA_NONE，
+        # 确保数据不足豁免没有把真正的破位信号一并豁免掉。
+        from scanner.config import V_MO_MA_NONE
+        closes = [100 - i for i in range(25)]
+        bonus, detail = _mo_ma_alignment(closes)
+        assert detail == "ma_none"
+        assert bonus == V_MO_MA_NONE
 
 
 class TestValidateMomentum:

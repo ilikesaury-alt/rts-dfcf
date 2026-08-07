@@ -232,3 +232,56 @@ class TestFetchMinuteDataRawArray:
         assert isinstance(score, float)
         opening = analyze_opening_strength(MagicMock(), "300001")
         assert opening is not None
+
+
+class TestFetchListSoftErrorCircuitBreaker:
+    """软错误（HTTP 200 但 data 缺失/为空）必须按失败计，不得重置熔断计数。"""
+
+    def _fake_resp(self, payload):
+        r = MagicMock()
+        r.json.return_value = payload
+        return r
+
+    def test_biaosheng_empty_data_not_success(self):
+        from scanner.api import fetch_biaosheng, _biaosheng_cb
+        _biaosheng_cb["failures"] = 0
+        _biaosheng_cb["cooldown_until"] = 0
+        _biaosheng_cb["cached"] = []
+        resp = self._fake_resp({"error_code": 40016, "error_description": "too many requests"})
+        with patch("scanner.api._request_with_retry", return_value=resp):
+            r = fetch_biaosheng(MagicMock(), 100)
+        assert r == []
+        assert _biaosheng_cb["failures"] == 1, "软错误应按失败计，熔断计数递增"
+
+    def test_biaosheng_real_data_is_success(self):
+        from scanner.api import fetch_biaosheng, _biaosheng_cb
+        _biaosheng_cb["failures"] = 0
+        _biaosheng_cb["cooldown_until"] = 0
+        _biaosheng_cb["cached"] = []
+        resp = self._fake_resp({"data": {"items": [{"symbol": "SZ300001"}]}})
+        with patch("scanner.api._request_with_retry", return_value=resp):
+            r = fetch_biaosheng(MagicMock(), 100)
+        assert r == [{"symbol": "SZ300001"}]
+        assert _biaosheng_cb["failures"] == 0, "正常数据重置失败计数"
+
+    def test_hot_list_empty_data_not_success(self):
+        from scanner.api import fetch_xueqiu_hot_list, _xueqiu_hot_cb
+        _xueqiu_hot_cb["failures"] = 0
+        _xueqiu_hot_cb["cooldown_until"] = 0
+        _xueqiu_hot_cb["cached"] = []
+        resp = self._fake_resp({"error_code": 40016})
+        with patch("scanner.api._request_with_retry", return_value=resp):
+            r = fetch_xueqiu_hot_list(MagicMock(), 100)
+        assert r == []
+        assert _xueqiu_hot_cb["failures"] == 1, "软错误应按失败计，熔断计数递增"
+
+    def test_hot_list_real_data_is_success(self):
+        from scanner.api import fetch_xueqiu_hot_list, _xueqiu_hot_cb
+        _xueqiu_hot_cb["failures"] = 0
+        _xueqiu_hot_cb["cooldown_until"] = 0
+        _xueqiu_hot_cb["cached"] = []
+        resp = self._fake_resp({"data": {"items": [{"symbol": "SZ300002"}]}})
+        with patch("scanner.api._request_with_retry", return_value=resp):
+            r = fetch_xueqiu_hot_list(MagicMock(), 100)
+        assert r == [{"symbol": "SZ300002"}]
+        assert _xueqiu_hot_cb["failures"] == 0, "正常数据重置失败计数"

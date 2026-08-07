@@ -365,20 +365,27 @@ def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None
         cross_days = get_consecutive_appearance_days(conn, c.stock.symbol)
     else:
         cross_days = 0
-    streak = max(cross_days, intraday_streak)
+    # streak 以"交易日"计：cross_days 是历史连续上榜天数（不含今日），
+    # intraday_streak 是本次盘中连续扫描次数（60s/次），仅作为"今日上榜"=+1 天。
+    # 绝不能把扫描次数当天数：盘中可达 240，max() 取大后疲劳/加速评分恒饱和 ±15。
+    streak = cross_days + (1 if intraday_streak >= 1 else 0)
     traj = rank_trajectory_score(c.stock.symbol)
     rank = c.stock.rank
     streak_bonus = 0
 
     if streak >= FATIGUE_STREAK_MIN:
-        # 底部反转（new_face）本就期望低 accumulated，跳过价格疲劳信号以免误罚
-        is_reversal = c.category in ("new_face", "known_new_face")
+        # 底部反转类本就期望低 accumulated，跳过价格疲劳信号以免误罚。
+        # new_face/known_new_face：新面孔底部突破；comeback 反转变体：掉榜 5 日跌≤-8% 后企稳，
+        # 负累计是策略核心前提，按价格判疲劳等于惩罚策略本身（与 RPS 豁免同理）。
+        is_reversal = c.category in ("new_face", "known_new_face", "comeback")
         fatigue_signals = 0
         if c.kline and c.kline.accumulated_pct < FATIGUE_PRICE_WARN_ACCUM and not is_reversal:
             fatigue_signals += 1
         if c.kline and c.kline.volume_ratio < FATIGUE_VOL_WARN_RATIO:
             fatigue_signals += 1
-        if traj < 2:
+        # 仅真实下行轨迹（trajectory_score < 0）算疲劳信号；
+        # 0=历史不足 2 个快照（每日开盘 tracker.reset 后）不算，避免全量误判疲劳。
+        if traj < 0:
             fatigue_signals += 1
 
         today_pct = c.stock.percent

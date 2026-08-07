@@ -302,7 +302,14 @@ def fetch_biaosheng(session: requests.Session, size: int = 100) -> list[dict]:
     )
     try:
         resp = _request_with_retry(session, url)
-        items = resp.json().get("data", {}).get("items", [])
+        j = resp.json()
+        data = j.get("data") if isinstance(j, dict) else None
+        items = (data or {}).get("items", []) if isinstance(data, dict) else []
+        # 软错误（HTTP 200 但 data 缺失/为空）：视为失败走熔断退避，
+        # 避免每次扫描重置熔断计数、持续轰击已挂掉的接口。
+        if not items:
+            logger.warning("飙升榜返回空 data（软错误），按失败处理")
+            return _biaosheng_circuit_breaker([], success=False)
         return _biaosheng_circuit_breaker(items, success=True)
     except Exception as e:
         logger.error("飙升榜获取失败: %s", e)
@@ -360,7 +367,12 @@ def fetch_xueqiu_hot_list(session: requests.Session, size: int = 100) -> list[di
     )
     try:
         resp = _request_with_retry(session, url)
-        items = resp.json().get("data", {}).get("items", [])
+        j = resp.json()
+        data = j.get("data") if isinstance(j, dict) else None
+        items = (data or {}).get("items", []) if isinstance(data, dict) else []
+        if not items:
+            logger.warning("热搜榜返回空 data（软错误），按失败处理")
+            return _xueqiu_hot_circuit_breaker([], success=False)
         return _xueqiu_hot_circuit_breaker(items, success=True)
     except Exception as e:
         logger.error("热搜榜获取失败: %s", e)

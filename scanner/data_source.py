@@ -246,7 +246,31 @@ class FallbackAdapter:
         raise RuntimeError("无可用数据源")
 
     def fetch_kline(self, symbol: str, days: int = 15) -> list[dict] | None:
-        return self._call("fetch_kline", symbol, days)
+        """雪球 K 线失败时降级到 AKShare 补拉。
+
+        api.fetch_kline 内部吞异常返回 None（网络失败/无数据），不会抛给
+        _call，导致原 FallbackAdapter 的"仅异常降级"策略对 K 线形同死代码。
+        这里显式处理：primary 返回 None 时视为失败，尝试 secondary 兜底。
+        """
+        if self._use_primary:
+            try:
+                result = self._primary.fetch_kline(symbol, days)
+                if result is not None:
+                    return result
+                if self._secondary:
+                    logger.warning("%s.fetch_kline 返回空，降级到 %s 补拉 %s",
+                                   self._primary.name, self._secondary.name, symbol)
+                    return self._secondary.fetch_kline(symbol, days)
+                return None
+            except Exception as e:
+                if self._secondary:
+                    logger.warning("%s.fetch_kline 异常: %s，降级到 %s",
+                                   self._primary.name, e, self._secondary.name)
+                    return self._secondary.fetch_kline(symbol, days)
+                raise
+        elif self._secondary:
+            return self._secondary.fetch_kline(symbol, days)
+        raise RuntimeError("无可用数据源")
 
     def fetch_biaosheng(self, size: int = 100) -> list[dict]:
         return self._call("fetch_biaosheng", size)

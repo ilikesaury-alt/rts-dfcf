@@ -54,12 +54,17 @@ def _get_existing_kline_dates(conn: sqlite3.Connection, symbol: str) -> set[str]
 
 
 def _expected_date_range(rec_dates: list[str], days: int) -> set[str]:
-    """根据推荐日期推算需要补全的日期窗口。
+    """根据推荐日期推算需要补全的日期窗口（仅交易日）。
 
     策略：取最早推荐日 -7 天 至 最晚推荐日 + 10 天，
     确保覆盖 next_day / fwd_3d / fwd_5d 的回测窗口。
+
+    必须只含交易日：daily_kline 表只存交易日 bar，日历日（周末/节假日）
+    永远不会被写入，若混入 expected 则 missing 永不收敛，脚本每天全量重拉。
     """
     from datetime import date, timedelta
+
+    from scanner.trading_session import is_trading_day
 
     first = date.fromisoformat(rec_dates[0])
     last = date.fromisoformat(rec_dates[-1])
@@ -72,7 +77,8 @@ def _expected_date_range(rec_dates: list[str], days: int) -> set[str]:
     result = set()
     cursor = start
     while cursor <= end:
-        result.add(cursor.isoformat())
+        if is_trading_day(cursor):
+            result.add(cursor.isoformat())
         cursor += timedelta(days=1)
     return result
 

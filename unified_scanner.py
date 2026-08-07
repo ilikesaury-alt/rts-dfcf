@@ -27,6 +27,8 @@ from scanner.config import (
     NEW_FACE_LOOKBACK_DAYS,
     REFRESH_INTERVAL,
     SUPERVISE_LOG_FILE,
+    SUPERVISE_CHILD_TIMEOUT,
+    SUPERVISE_CHILD_GRACE,
     SUPERVISE_RESTART_DELAY,
     SUPERVISE_RESTART_MAX_DELAY,
     SUPERVISE_RESET_AFTER_SECONDS,
@@ -50,6 +52,29 @@ _SOURCE_LABELS = {
 }
 
 _STDOUT_SILENCED = False
+
+# 子进程心跳文件：父进程 supervisor 据此判定子进程是否假死（冻结）。
+# 非 --supervise 直跑时也写（无害），保证 watchdog 语义统一。
+HEARTBEAT_FILE = os.path.join(LOG_DIR, "scanner_heartbeat")
+
+
+def _touch_heartbeat():
+    """子进程心跳：主循环每轮更新文件 mtime，供父进程 watchdog 判定假死。"""
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        # touch() 创建（若不存在）或更新 mtime，等价于原 open("a")+os.utime，更简洁。
+        from pathlib import Path
+        Path(HEARTBEAT_FILE).touch()
+    except Exception:
+        pass
+
+
+def _heartbeat_age() -> float | None:
+    """心跳文件距今秒数；文件不存在返回 None（子进程尚未写任何心跳）。"""
+    try:
+        return time.time() - os.path.getmtime(HEARTBEAT_FILE)
+    except OSError:
+        return None
 
 
 def _silence_stdout():
@@ -116,6 +141,7 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     # 避免 wait<60 时仍睡 60 秒错过开盘第一分钟数据。
                     remaining = wait
                     while remaining > 0:
+                        _touch_heartbeat()
                         sleep_secs = min(60, remaining)
                         time.sleep(sleep_secs)
                         remaining -= sleep_secs
@@ -123,6 +149,7 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                             break
                     continue
 
+                _touch_heartbeat()
                 conn = _ensure_conn(conn)
 
                 xq_raw = adapter.fetch_biaosheng()
@@ -274,8 +301,57 @@ def _should_restart(exit_code: int) -> bool:
     return exit_code != 0
 
 
+def _wait_or_kill(proc, grace: int = SUPERVISE_CHILD_GRACE) -> int:
+    """轮询子进程：正常退出返回 exit code；心跳超时判定假死 → kill 返回 -9。
+
+    原实现用 subprocess.run(cmd) 阻塞等待，子进程冻结（网络栈/DB 锁死等
+    无法被主循环 try/except 兜住的挂起）时父进程永挂、无法重启。
+    现改为：Popen + 每 5s poll + 心跳 mtime 监控，超时强杀视为崩溃重启。
+
+    启动宽限期 grace：Popen 后的 grace 秒内不判心跳超时，原因有二：
+      1) 子进程完成导入/建连需要时间，宽限内无论心跳文件状态（含父进程刚清理的
+         陈旧文件）都不强杀，避免与子进程首拍 touch 竞态；
+      2) 宽限期满后若 age is None（从未写过心跳）→ 视为启动即冻结，同样强杀，
+         不留"冻结于启动、父进程永久等待"的死角。
+    """
+    loop_start = time.time()
+    while True:
+        code = proc.poll()
+        if code is not None:
+            return code
+        # 宽限期内只 poll/sleep，不判心跳，给子进程启动与首拍留时间。
+        if time.time() - loop_start > grace:
+            age = _heartbeat_age()
+            if age is None:
+                _supervise_log(f"子进程启动超 {grace}s 仍未写心跳，判定启动冻结，强制终止")
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=10)
+                except Exception:
+                    pass
+                return -9
+            if age > SUPERVISE_CHILD_TIMEOUT:
+                _supervise_log(f"子进程心跳超时({int(age)}s)，判定假死，强制终止")
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=10)
+                except Exception:
+                    pass
+                return -9
+        try:
+            time.sleep(5)
+        except KeyboardInterrupt:
+            raise
+
+
 def _supervise(interval: int, no_feishu: bool) -> int:
-    """父进程监督模式：拉起子进程，崩溃（非 0 退出）后指数退避重启。"""
+    """父进程监督模式：拉起子进程，崩溃（非 0 退出）或心跳超时（假死）后指数退避重启。"""
     import subprocess
 
     delay = SUPERVISE_RESTART_DELAY
@@ -284,15 +360,26 @@ def _supervise(interval: int, no_feishu: bool) -> int:
         start = time.time()
         _supervise_log(f"启动子进程: {' '.join(cmd)}")
         try:
-            proc = subprocess.run(cmd)
+            # 启动前清理上一轮可能残留的陈旧心跳文件：其旧 mtime 会让父进程在
+            # 首轮 poll 即判"心跳超时"并强杀刚启动的健康子进程，导致重启死循环。
+            # 清理后 _heartbeat_age() 返回 None，直至新子进程写出首个心跳。
+            try:
+                os.remove(HEARTBEAT_FILE)
+            except OSError:
+                pass
+            proc = subprocess.Popen(cmd)
+            code = _wait_or_kill(proc)
         except KeyboardInterrupt:
             _supervise_log("收到中断，停止监督")
+            try:
+                proc.kill()
+            except Exception:
+                pass
             return 0
         except Exception as e:
             _supervise_log(f"启动子进程失败: {e}")
             time.sleep(delay)
             continue
-        code = proc.returncode
         uptime = time.time() - start
         _supervise_log(f"子进程退出 code={code} uptime={int(uptime)}s")
         if not _should_restart(code):

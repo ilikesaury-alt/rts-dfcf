@@ -92,8 +92,9 @@ class TestSuperviseLoop:
 
         from unified_scanner import _supervise
 
-        results = [MagicMock(returncode=1), MagicMock(returncode=0)]
-        with patch("subprocess.run", side_effect=results), \
+        procs = [MagicMock(), MagicMock()]  # 崩溃(1) → 重启 → 干净退出(0)
+        with patch("subprocess.Popen", side_effect=procs), \
+             patch("unified_scanner._wait_or_kill", side_effect=[1, 0]), \
              patch("unified_scanner.time.sleep") as mock_sleep, \
              patch("unified_scanner._supervise_log"):
             code = _supervise(60, no_feishu=True)
@@ -106,13 +107,30 @@ class TestSuperviseLoop:
 
         from unified_scanner import _supervise
 
-        results = [MagicMock(returncode=0)]
-        with patch("subprocess.run", side_effect=results), \
+        procs = [MagicMock()]
+        with patch("subprocess.Popen", side_effect=procs), \
+             patch("unified_scanner._wait_or_kill", return_value=0), \
              patch("unified_scanner.time.sleep") as mock_sleep, \
              patch("unified_scanner._supervise_log"):
             code = _supervise(60, no_feishu=False)
         assert code == 0
         assert mock_sleep.call_count == 0
+
+    def test_frozen_child_killed_via_heartbeat(self):
+        from unittest.mock import MagicMock
+
+        from unified_scanner import _wait_or_kill
+
+        proc = MagicMock()
+        proc.poll.return_value = None  # 永不退出
+        with patch("unified_scanner.SUPERVISE_CHILD_TIMEOUT", 1), \
+             patch.object(proc, "kill") as mock_kill, \
+             patch("unified_scanner._heartbeat_age", return_value=999), \
+             patch("unified_scanner.time.sleep") as mock_sleep, \
+             patch("unified_scanner._supervise_log"):
+            code = _wait_or_kill(proc)
+        assert code == -9
+        mock_kill.assert_called_once()
 
 
 def _stock(symbol: str, rank: int = 1) -> StockInfo:

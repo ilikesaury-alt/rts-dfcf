@@ -95,6 +95,24 @@ from scanner.trading_session import trading_minutes_elapsed
 MAX_VOL_PROJECTION = 10.0
 
 
+def _project_today_vol(kline: list[dict], today_str: str, now=None) -> float:
+    """今日盘中部分量能投影为全天量能（与 _compute_volume_metrics 同口径）。
+
+    无今日 bar / 已收盘 / 开盘前 → 不投影（返回末根原始量能）。
+    供 _compute_volume_metrics 与 _vol_peak_ratio 共用，保证 vol_ratio 与
+    vol_peak 早盘口径一致（此前 _vol_peak_ratio 用裸今日量，早盘必吃 -5/-8 惩罚）。
+    """
+    if not kline:
+        return 0.0
+    today_vol = kline[-1]["volume"]
+    if kline[-1]["date"] == today_str:
+        elapsed = trading_minutes_elapsed(now)
+        if 0 < elapsed < 240:
+            factor = min(240 / elapsed, MAX_VOL_PROJECTION)
+            today_vol = today_vol * factor
+    return today_vol
+
+
 def _compute_volume_metrics(kline: list[dict], today_str: str,
                             now=None) -> tuple[float, float]:
     """统一计算 vol_ratio 与 avg_volume（各 analyze_* 共用，分析/验证端口径一致）。
@@ -108,13 +126,7 @@ def _compute_volume_metrics(kline: list[dict], today_str: str,
     volumes = [k["volume"] for k in kline]
     vol_window = volumes[-11:-1] if len(volumes) >= 11 else volumes[:-1]
     avg_vol = sum(vol_window) / max(len(vol_window), 1)
-    today_vol = volumes[-1] if volumes else 0
-
-    if kline and kline[-1]["date"] == today_str and avg_vol > 0:
-        elapsed = trading_minutes_elapsed(now)
-        if 0 < elapsed < 240:
-            factor = min(240 / elapsed, MAX_VOL_PROJECTION)
-            today_vol = today_vol * factor
+    today_vol = _project_today_vol(kline, today_str, now)
 
     vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
     return round(vol_ratio, 2), round(avg_vol, 2)
@@ -172,10 +184,18 @@ def _vol_rank_combo_score(vol_ratio: float, rank_change: int) -> int:
     return 0
 
 
-def _vol_peak_ratio(volumes: list[float], lookback: int = VOL_PEAK_LOOKBACK) -> float:
+def _vol_peak_ratio(volumes: list[float], lookback: int = VOL_PEAK_LOOKBACK,
+                    today_vol: float | None = None) -> float:
+    """末根量能 / 近 N 根量能峰值。
+
+    today_vol 传入时优先用投影后的今日全天量能（_project_today_vol），
+    消除早盘部分量能导致 vol_peak 天然偏低、恒吃 -5/-8 惩罚的偏置。
+    缺省（回测/无今日 bar 场景）回退 volumes[-1]，行为不变。
+    """
     window = volumes[-lookback:] if len(volumes) >= lookback else volumes
     peak = max(window)
-    return volumes[-1] / peak if peak > 0 else 1.0
+    last = today_vol if today_vol is not None else (volumes[-1] if volumes else 0.0)
+    return last / peak if peak > 0 else 1.0
 
 
 def _band_score(value: float, bands: list[tuple[float, str]], W: dict,
@@ -452,7 +472,7 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
         score += W["v_shape"]
         dims["new_face_v_shape"] = W["v_shape"]
 
-    vol_peak = _vol_peak_ratio(volumes)
+    vol_peak = _vol_peak_ratio(volumes, today_vol=_project_today_vol(kline, today_str))
     if vol_peak < VOL_PEAK_NEW_FACE_MIN:
         score += VOL_PEAK_NEW_FACE_PENALTY
         dims["new_face_vol_peak"] = round(vol_peak, 2)
@@ -622,7 +642,7 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
         score += W["vol_surge"]
         dims["momentum_volume"] = W["vol_surge"]
 
-    vol_peak = _vol_peak_ratio(volumes)
+    vol_peak = _vol_peak_ratio(volumes, today_vol=_project_today_vol(kline, today_str))
     if vol_peak < VOL_PEAK_MOMENTUM_WARN:
         score += VOL_PEAK_MOMENTUM_PENALTY
         dims["momentum_vol_peak"] = round(vol_peak, 2)
@@ -955,7 +975,7 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
     score += vol_score
     dims.update(vol_dims)
 
-    vol_peak = _vol_peak_ratio(volumes)
+    vol_peak = _vol_peak_ratio(volumes, today_vol=_project_today_vol(kline, today_str))
     if vol_peak < VOL_PEAK_PULLBACK_CONFIRM:
         score += VOL_PEAK_PULLBACK_BONUS
         dims["pullback_vol_peak"] = round(vol_peak, 2)

@@ -191,6 +191,7 @@ def _collect_fund_flow(box: dict, deadline: float) -> dict:
     53 页，串行太慢，故按 6 线程并行拉页。每页 timeout=10，页间检查 deadline：
     超时取消未开始任务并返回已收集部分。网络/解析异常该页返回空继续。
     返回 {6位代码: {main_net, main_pct, super_net}}。
+    完成全部页数时置 box["done"]=True，供外层区分"完整快照 vs 超时部分"。
     """
     result: dict[str, dict] = {}
     if time.time() > deadline:
@@ -236,18 +237,23 @@ def _collect_fund_flow(box: dict, deadline: float) -> dict:
     total = total or len(first)
     total_pages = max(1, -(-total // _FUND_FLOW_PAGE_SIZE))
     if total_pages <= 1:
+        box["done"] = True
         return result
     remaining = list(range(2, total_pages + 1))
+    completed_all = True
     with ThreadPoolExecutor(max_workers=6) as pool:
         futs = {pool.submit(_page, pn): pn for pn in remaining}
         for fut in as_completed(futs):
             if time.time() > deadline:
                 for f in futs:
                     f.cancel()
+                completed_all = False
                 break
             diff, _ = fut.result()
             _absorb(diff or [])
             box["value"] = dict(result)
+    if completed_all:
+        box["done"] = True
     return result
 
 
@@ -255,6 +261,8 @@ def _fetch_fund_flow_bounded(timeout: float) -> tuple[dict, bool]:
     """daemon 线程内执行并行拉取，join(timeout) 到点即返回 (已收集部分, 是否超时)。
 
     不抛错：网络异常在 _page 内被吞掉 → 空/部分结果；超时由调用方按部分结果处理。
+    判定"部分"的依据不只是线程是否仍在运行（线程可能在 join 超时前恰好跑完
+    内部 deadline），还须看 _collect_fund_flow 是否显式标记完成（box["done"]）。
     """
     box: dict = {"value": {}}
 
@@ -269,7 +277,8 @@ def _fetch_fund_flow_bounded(timeout: float) -> tuple[dict, bool]:
     t.join(timeout=timeout)
     if "error" in box:
         raise box["error"]
-    return box.get("value", {}), t.is_alive()
+    timed_out = t.is_alive() or not box.get("done")
+    return box.get("value", {}), timed_out
 
 
 def fetch_fund_flow_rank() -> dict[str, dict]:

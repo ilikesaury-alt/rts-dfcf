@@ -65,6 +65,16 @@ def memory_db():
             accumulated_pct REAL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS watch_pool (
+            symbol TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            added_date TEXT NOT NULL,
+            last_list_date TEXT NOT NULL,
+            last_eval_date TEXT,
+            over_limit INTEGER DEFAULT 0
+        )
+    """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_date ON appearances(date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_date ON recommendations(date)")
     conn.commit()
@@ -206,3 +216,109 @@ class TestSaveRecommendations:
         ).fetchone()
         assert row is not None
         assert row[0] == "华为概念"
+
+
+class TestWatchPoolEviction:
+    """WATCH_POOL_MAX 容量上限：超限时淘汰 last_list_date 最旧条目。"""
+
+    def _seed(self, memory_db, symbols_dates):
+        # symbols_dates: [(symbol, last_list_date), ...]
+        today = now_beijing().date().isoformat()
+        for sym, lst in symbols_dates:
+            memory_db.execute(
+                "INSERT INTO watch_pool (symbol, name, added_date, last_list_date, over_limit) "
+                "VALUES (?, ?, ?, ?, 0)",
+                (sym, "T", today, lst),
+            )
+        memory_db.commit()
+
+    def test_evicts_oldest_beyond_max(self, memory_db, monkeypatch):
+        from scanner.database import upsert_watch_symbols
+        monkeypatch.setattr("scanner.database.WATCH_POOL_MAX", 3)
+        today = now_beijing().date().isoformat()
+        self._seed(memory_db, [
+            ("300001", "2026-01-01"),  # 最旧
+            ("300002", "2026-01-02"),
+            ("300003", "2026-01-03"),
+        ])
+        # 加入第 4 条 → 池超 3 条 → 淘汰最旧的 300001
+        upsert_watch_symbols(memory_db, [{"symbol": "300004", "name": "T",
+                                          "last_list_date": today}])
+        remaining = {r[0] for r in memory_db.execute(
+            "SELECT symbol FROM watch_pool").fetchall()}
+        assert "300001" not in remaining, "超限应淘汰 last_list_date 最旧"
+        assert remaining == {"300002", "300003", "300004"}
+
+    def test_eviction_keeps_newest_when_upserting(self, memory_db, monkeypatch):
+        from scanner.database import upsert_watch_symbols
+        monkeypatch.setattr("scanner.database.WATCH_POOL_MAX", 2)
+        today = now_beijing().date().isoformat()
+        self._seed(memory_db, [
+            ("300001", "2026-01-01"),
+            ("300002", "2026-01-02"),
+        ])
+        upsert_watch_symbols(memory_db, [{"symbol": "300003", "name": "T",
+                                          "last_list_date": today}])
+        remaining = {r[0] for r in memory_db.execute(
+            "SELECT symbol FROM watch_pool").fetchall()}
+        assert remaining == {"300002", "300003"}
+
+    def test_no_eviction_within_limit(self, memory_db, monkeypatch):
+        from scanner.database import upsert_watch_symbols
+        monkeypatch.setattr("scanner.database.WATCH_POOL_MAX", 10)
+        self._seed(memory_db, [
+            ("300001", "2026-01-01"),
+            ("300002", "2026-01-02"),
+        ])
+        upsert_watch_symbols(memory_db, [{"symbol": "300003", "name": "T"}])
+        remaining = {r[0] for r in memory_db.execute(
+            "SELECT symbol FROM watch_pool").fetchall()}
+        assert remaining == {"300001", "300002", "300003"}
+
+
+class TestProminenceWindow:
+    """回归：辨识度排名窗口与计数窗口必须一致（原先差 1 天）。"""
+
+    def _seed_appearances(self, memory_db, symbol, days_rank):
+        # days_rank: [(date_str, rank), ...]
+        for d, r in days_rank:
+            memory_db.execute(
+                "INSERT INTO appearances (symbol, name, date, rank, percent, value) "
+                "VALUES (?, 'T', ?, ?, 0, 0)",
+                (symbol, d, r),
+            )
+        memory_db.commit()
+
+    def test_prominence_rank_window_matches_count_window(self, memory_db):
+        from scanner.config import PROMINENCE_LOOKBACK_DAYS, PROMINENCE_REPEAT_THRESHOLD
+        from scanner.database import get_prominence_map
+        # 构造：计数窗口内恰好重复阈值天，排名窗口若多算一天（旧 bug）会把一天
+        # 极差排名的历史日拉低平均，导致误判。这里验证两个窗口取同一 lookback。
+        today = now_beijing().date()
+        # 计算 lookback 日期（与实现同口径）
+        lookback = _n_trading_days_ago(PROMINENCE_LOOKBACK_DAYS - 1)
+        # 在 [lookback, today] 内放 PROMINENCE_REPEAT_THRESHOLD 天的记录，
+        # 全部 rank=50（优良），且其中有一天恰好是 lookback 前一天（应被排除在外）
+        # 用较差排名 999 验证"排名窗口不比计数窗口多一天"。
+        import datetime
+        one_before = (datetime.date.fromisoformat(lookback)
+                      - timedelta(days=1)).isoformat()
+        memory_db.execute(
+            "INSERT INTO appearances (symbol, name, date, rank, percent, value) "
+            "VALUES ('300111', 'T', ?, 999, 0, 0)", (one_before,))
+        # 窗口内一天：凑满重复阈值（其余用 today 同日期覆盖会去重，改为多天）
+        day_dates = []
+        cursor = datetime.date.fromisoformat(lookback)
+        while len(day_dates) < PROMINENCE_REPEAT_THRESHOLD:
+            if is_trading_day(cursor):
+                day_dates.append(cursor.isoformat())
+            cursor += timedelta(days=1)
+        for d in day_dates[:PROMINENCE_REPEAT_THRESHOLD]:
+            memory_db.execute(
+                "INSERT INTO appearances (symbol, name, date, rank, percent, value) "
+                "VALUES ('300111', 'T', ?, 50, 0, 0)", (d,))
+        memory_db.commit()
+        result = get_prominence_map(memory_db, ["300111"])
+        # 若排名窗口错误多算 one_before（rank=999），平均会被拉低；正确实现则忽略它。
+        assert result.get("300111") is True, (
+            f"窗口外 bad-rank 日期不得计入排名平均，got {result}")

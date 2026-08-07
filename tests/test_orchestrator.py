@@ -423,6 +423,75 @@ class TestFetchAllKlinesTodayBarWarning:
         assert "今日K线缺失" not in captured
 
 
+class TestFetchAllKlinesSharedDeadline:
+    """回归：榜上票 + 回马枪两批 K 线补拉必须共用同一 deadline。
+
+    修复前两批各建新 45s deadline → 串行最坏 ~90s，超 60s 扫描间隔；
+    修复后传入同一个 deadline，第二批在首批耗尽时间后立即停止，不再重新计时。
+    """
+
+    def _stock(self, symbol: str = "300999") -> StockInfo:
+        return StockInfo(symbol=symbol, name="测试", code=symbol,
+                         percent=5.0, current=10.0, value=10000,
+                         rank_change=1000, rank=1)
+
+    def _kline_fresh(self, n: int) -> list[dict]:
+        base = date.fromisoformat("2026-07-31")
+        return [
+            {"date": (base - timedelta(days=(n - 1) - i)).isoformat(),
+             "open": 10.0, "close": 10.0, "high": 10.2, "low": 9.8,
+             "volume": 1000, "percent": 0.0}
+            for i in range(n)
+        ]
+
+    def test_shared_deadline_caps_total_fetch_time(self, monkeypatch):
+        import time as _t
+        import scanner.orchestrator as o
+
+        monkeypatch.setattr(o, "is_trading_time", lambda *a, **k: True)
+        monkeypatch.setattr(o, "get_cached_kline", lambda conn, sym: None)
+        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
+
+        fetch_calls = {"n": 0}
+
+        class _SlowAdapter:
+            def fetch_kline(self, symbol, days=15):
+                fetch_calls["n"] += 1
+                _t.sleep(0.02)  # 每只 20ms，deadline 内可拉 ~7 只
+                return TestFetchAllKlinesSharedDeadline()._kline_fresh(40)
+
+        # 构造共享 deadline：真实时钟 + 极短窗口（仅剩 ~30ms）。
+        # 注意不能 mock now_beijing 为固定值——deadline 检查依赖它随时间推进。
+        deadline = o.now_beijing().timestamp() + 0.03
+        stocks = [self._stock(f"30000{i}") for i in range(1, 6)]
+        # 第一批：短暂 deadline 内只能拉少量几只（首只检查后再拉，能拉 1~2 只）
+        r1 = o._fetch_all_klines(None, _SlowAdapter(), stocks, deadline=deadline)
+        n_after_first = fetch_calls["n"]
+        assert 1 <= n_after_first < 5, f"首批只应拉 1~2 只（30ms 窗口），got {n_after_first}"
+        # 第二批：同一（已过期）deadline → 一只都不拉
+        r2 = o._fetch_all_klines(None, _SlowAdapter(), stocks[:1], deadline=deadline)
+        n_after_second = fetch_calls["n"]
+        assert n_after_second == n_after_first, (
+            f"共享 deadline 下第二批不得重新计时补拉，{n_after_first}→{n_after_second}")
+
+    def test_default_deadline_still_works(self, monkeypatch):
+        # 未传 deadline 时沿用默认 KLINE_FETCH_DEADLINE 行为（向后兼容）
+        import scanner.orchestrator as o
+        monkeypatch.setattr(o, "is_trading_time", lambda *a, **k: True)
+        monkeypatch.setattr(o, "now_beijing",
+                            lambda: datetime(2026, 7, 31, 10, 0))
+        monkeypatch.setattr(o, "get_cached_kline", lambda conn, sym: None)
+        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
+        fresh = self._kline_fresh(40)
+
+        class _FakeAdapter:
+            def fetch_kline(self, symbol, days=15):
+                return fresh
+
+        res = o._fetch_all_klines(None, _FakeAdapter(), [self._stock("300999")])
+        assert res["300999"] is not None
+
+
 class TestComputeRps:
     """RPS 相对强弱加分：baseline 口径 + 无 baseline 回退 + rebound 豁免。
 

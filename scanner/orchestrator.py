@@ -88,7 +88,8 @@ KLINE_REFRESH_TTL = 120
 _last_kline_fetch: dict[str, float] = {}
 
 
-def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo]) -> dict[str, list[dict] | None]:
+def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo],
+                      deadline: float | None = None) -> dict[str, list[dict] | None]:
     result: dict[str, list[dict] | None] = {}
     needs_fetch: list[str] = []
     stale_cache: dict[str, list[dict]] = {}
@@ -128,7 +129,7 @@ def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo]
     # 雪球模式性能影响可接受——K 线有 KLINE_REFRESH_TTL=120s 缓存，多数周期命中缓存跳过拉取。
     # P-robust: KLINE_FETCH_DEADLINE 限时——API 故障时单只 15s×3 重试会让串行拉取假死数十分钟，
     # 超时后停止补拉，剩余票回退旧缓存（下方 stale_cache 兜底），保证单轮扫描有界。
-    deadline = now_beijing().timestamp() + KLINE_FETCH_DEADLINE
+    deadline = deadline if deadline is not None else now_beijing().timestamp() + KLINE_FETCH_DEADLINE
     fetched: dict[str, list[dict] | None] = {}
     deadline_skipped = 0
     for i, sym in enumerate(needs_fetch):
@@ -492,7 +493,10 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     except Exception as e:
         print(f"  [!] 掉榜跟踪池维护失败: {e}")
 
-    klines = _fetch_all_klines(conn, adapter, gem_stocks_filtered)
+    # 双批 K 线拉取共用同一个 deadline：榜上票 45s + 回马枪幸存者再 45s 会串行 ~90s，
+    # 超 60s 扫描间隔。共用一个 deadline 保证两批总耗时仍被 KLINE_FETCH_DEADLINE 兜底。
+    kline_deadline = now_beijing().timestamp() + KLINE_FETCH_DEADLINE
+    klines = _fetch_all_klines(conn, adapter, gem_stocks_filtered, deadline=kline_deadline)
 
     clusters = get_sector_clusters(gem_stocks_filtered)
 
@@ -524,7 +528,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         on_list_symbols = {s.symbol for s in gem_stocks_filtered}
         comeback_rebound, comeback_reentry, cb_quotes = evaluate_comeback(
             conn, adapter,
-            lambda stocks: _fetch_all_klines(conn, adapter, stocks),
+            lambda stocks: _fetch_all_klines(conn, adapter, stocks, deadline=kline_deadline),
             today, on_list_symbols, clusters)
         market_caps.update(cb_quotes)  # 并入市值/行情，供后续市值富集与实时行情
     except Exception as e:

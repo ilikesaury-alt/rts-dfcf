@@ -226,22 +226,26 @@ def validate_nf(stock, kline_summary, closes: list[float],
 
     total = conv_bonus + hl_bonus + sec_bonus + vol_bonus
 
-    pos_dims = sum(1 for b in (conv_bonus, hl_bonus, sec_bonus) if b > 0)
+    pos_dims = sum(1 for b in (conv_bonus, hl_bonus, sec_bonus, vol_bonus) if b > 0)
     # 硬前提：必须至少 1 项超卖共振（convergence 命中 或 MACD 底背离），
     # 否则仅凭 higher_low + 板块无法证明是"超卖反转"，杜绝上升中继股冒充新面孔。
     oversold_signal = conv_hits >= 1 or conv_detail == "macd_bull_divergence"
     passed = oversold_signal and pos_dims >= 2
 
     details["_pos_dims"] = pos_dims
-    details["_max_dims"] = 3
+    details["_max_dims"] = 4
     return passed, total, details
 
 
 def _mo_ma_alignment(closes: list[float], feats: dict | None = None) -> tuple[int, str]:
     # 与 analysis._ma_bull_score 统一使用 EMA 约定，消除「分析加分 / 验证剔除」脱节。
+    # 数据不足（data_short）返回 0 而非 V_MO_MA_NONE：
+    #   - 避免对无 20 日历史的新股误判「趋势破位」硬过滤（enhancer._detect_trend_breakage）
+    #   - 避免无谓 -5 惩罚（无足够样本时无法判定空头，应中性处理而非当作空头证据）
+    # 真正的空头排列是数据充足时 ma5<=ma10 的 "ma_none"，两者必须区分。
     if feats is None:
         if len(closes) < 10:
-            return V_MO_MA_NONE, "data_short"
+            return 0, "data_short"
         ma5 = compute_ma(closes, 5, ema=True)
         ma10 = compute_ma(closes, 10, ema=True)
         ma20 = compute_ma(closes, 20, ema=True) if len(closes) >= 20 else None
@@ -250,7 +254,7 @@ def _mo_ma_alignment(closes: list[float], feats: dict | None = None) -> tuple[in
         ma10 = feats.get("ma10_ema")
         ma20 = feats.get("ma20_ema")
     if ma5 is None or ma10 is None:
-        return V_MO_MA_NONE, "data_short"
+        return 0, "data_short"
 
     if ma20 is not None and ma5 > ma10 > ma20:
         return V_MO_MA_FULL, "ma_full_5gt10gt20"

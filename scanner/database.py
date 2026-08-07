@@ -7,6 +7,7 @@ from scanner.config import (
     PROMINENCE_LOOKBACK_DAYS,
     PROMINENCE_MAX_AVG_RANK,
     PROMINENCE_REPEAT_THRESHOLD,
+    WATCH_POOL_MAX,
     now_beijing,
 )
 from scanner.trading_session import is_trading_day
@@ -299,7 +300,7 @@ def get_prominence_map(conn: sqlite3.Connection, symbols: list[str]) -> dict[str
     """
     if not symbols:
         return {}
-    lookback_rank = _n_trading_days_ago(PROMINENCE_LOOKBACK_DAYS)
+    lookback_rank = _n_trading_days_ago(PROMINENCE_LOOKBACK_DAYS - 1)
     lookback_count = _n_trading_days_ago(PROMINENCE_LOOKBACK_DAYS - 1)
     today = now_beijing().date().isoformat()
     placeholders = ",".join("?" * len(symbols))
@@ -489,6 +490,12 @@ def upsert_watch_symbols(conn: sqlite3.Connection,
                  over_limit = MAX(watch_pool.over_limit, excluded.over_limit)""",
             [(sym, name, today, lst, ov) for sym, name, lst, ov in rows],
         )
+        # WATCH_POOL_MAX 容量上限：超限时淘汰 last_list_date 最旧的条目（含 over_limit 票，
+        # 老旧的超限启动票不再盯防，防止池无限膨胀）。与 prune_watch_pool 的交易日剪枝互补。
+        conn.execute(
+            "DELETE FROM watch_pool WHERE symbol NOT IN ("
+            "  SELECT symbol FROM watch_pool ORDER BY last_list_date DESC LIMIT ?"
+            ")", (WATCH_POOL_MAX,))
         conn.commit()
     except Exception as e:
         print(f"  [!] 批量写入watch_pool失败: {e}")
