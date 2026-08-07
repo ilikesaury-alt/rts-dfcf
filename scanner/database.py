@@ -559,7 +559,8 @@ def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
 
     返回列表未排序，每项包含：
       symbol, name, category, score, trend, first_time,
-      live_percent (from appearances), live_rank (from appearances)
+      live_percent (from appearances), live_rank (from appearances),
+      rank_score（类内百分位，综合排序跨类别可比用）
     """
     today = now_beijing().date().isoformat()
     try:
@@ -581,6 +582,7 @@ def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
                 "name": r[1],
                 "category": r[2],
                 "score": r[3],
+                "date": today,
                 "trend": r[4],
                 "time": r[5],
                 "percent": r[6] or 0.0,
@@ -614,7 +616,29 @@ def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
         entry["live_percent"] = a.get("percent", 0.0)
         entry["live_rank"] = a.get("rank")
 
-    return list(seen.values())
+    result = list(seen.values())
+    _assign_rank_scores(result)
+    return result
+
+
+def _assign_rank_scores(records: list[dict]) -> None:
+    """为 records 计算 within-(date,category) 百分位 rank_score（0-100），就地修改。
+
+    用于综合排序跨类别可比：同类别同日的票按 score 分位排序，消除各类别自身标尺差异
+    （new_face 均值~45 与 comeback~122 不可直接比）。records 需含 'date'/'category'/'score'，
+    缺 'date' 时退化为仅按 category 分组（get_today_recommendations 全为当日，等价）。
+    """
+    groups: dict[tuple, list[dict]] = {}
+    for r in records:
+        key = (r.get("date"), r.get("category"))
+        groups.setdefault(key, []).append(r)
+    for recs in groups.values():
+        n = len(recs)
+        if n == 0:
+            continue
+        ordered = sorted(recs, key=lambda r: r.get("score", 0.0))
+        for pos, r in enumerate(ordered):
+            r["rank_score"] = 100.0 if n == 1 else round(pos / (n - 1) * 100, 2)
 
 
 def get_concepts_cache(conn: sqlite3.Connection, symbols: list[str], ttl_days: int = 7) -> dict[str, list[str]]:

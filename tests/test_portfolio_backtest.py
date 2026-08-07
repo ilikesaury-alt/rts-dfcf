@@ -28,7 +28,8 @@ def _make_rising_db(path: str, prefix_days: int = 0) -> sqlite3.Connection:
     conn.execute(
         "CREATE TABLE recommendations "
         "(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, time TEXT, symbol TEXT, "
-        "name TEXT, category TEXT, score INTEGER, percent REAL, trend TEXT)"
+        "name TEXT, category TEXT, score INTEGER, percent REAL, trend TEXT, "
+        "score_breakdown TEXT, source TEXT)"
     )
     from scanner.trading_session import is_trading_day
     base = date(2026, 6, 1)
@@ -148,3 +149,174 @@ def test_no_same_day_round_trip():
             assert t.sell_date > t.buy_date, "T+1：卖出日必须晚于买入日"
     finally:
         os.remove(path)
+
+
+def test_accumulate_final_score_excludes_heat_bonuses():
+    """排序键必须剔除热度放大器（RPS/榜单动量/板块集群/实时量比/时间/市场情绪）。
+
+    这些项只应作展示徽章（已写入 dimensions），不能进入 c.score 排序键，
+    否则综合排序沦为「买最热的票」的追涨陷阱（回测实证综合 -28% 劣于无筛选基准）。
+    """
+    from scanner.enhancer import accumulate_final_score, HEAT_AMPLIFIER_BONUS_ATTRS
+    from scanner.models import Candidate, StockInfo, KlineSummary
+
+    # 全部热度 bonus 拉满，质量类 bonus 归零
+    c = Candidate(
+        stock=StockInfo(symbol="300001", name="测试", code="300001", percent=1.0,
+                        current=10.0, value=1e8, rank_change=0, rank=1, source_tag="both"),
+        category="new_face", score=0, reason="",
+        kline=KlineSummary(trend="up", accumulated_pct=0.0, volume_ratio=1.0,
+                           bottom_confirmed=False, score=0, dimensions={}),
+    )
+    for attr in HEAT_AMPLIFIER_BONUS_ATTRS:
+        setattr(c, attr, 50)  # 热度项全置 50
+    c.time_bonus = 50
+    c.market_sentiment_bonus = 50
+
+    total = accumulate_final_score(c, opening_scores={})
+    # 排序键应完全忽略上述热度项：结果为 0（质量类 bonus 全为默认 0）
+    assert total == 0, f"排序键不应包含热度 bonus，期望 0，实得 {total}"
+
+    # 反向：质量类 bonus 应被计入
+    c.first_today_bonus = 3
+    c.gap_up_bonus = 2
+    c.fund_flow_bonus = 4
+    assert accumulate_final_score(c, opening_scores={}) == 9, \
+        "质量类 bonus 应计入排序键"
+
+
+def test_assign_rank_scores_signal_percentile():
+    """within-(date,category) 百分位：同类内 score 越高 percentile 越高；跨类各自归一。"""
+    from scanner.portfolio_backtest import Signal, _assign_rank_scores
+
+    # 类别 A：低分标尺（新面孔风格，score 17~45）
+    # 类别 B：高分标尺（comeback 风格，score 114~129）
+    sigs = [
+        Signal(rec_date="2026-07-01", symbol="A1", name="a", category="new_face", score=17),
+        Signal(rec_date="2026-07-01", symbol="A2", name="a", category="new_face", score=45),
+        Signal(rec_date="2026-07-01", symbol="A3", name="a", category="new_face", score=30),
+        Signal(rec_date="2026-07-01", symbol="B1", name="b", category="comeback", score=114),
+        Signal(rec_date="2026-07-01", symbol="B2", name="b", category="comeback", score=129),
+    ]
+    _assign_rank_scores(sigs)
+    by = {s.symbol: s for s in sigs}
+    # 类别 A：3 只，分位 0/50/100
+    assert by["A1"].rank_score == 0.0
+    assert by["A3"].rank_score == 50.0
+    assert by["A2"].rank_score == 100.0
+    # 类别 B：2 只，分位 0/100
+    assert by["B1"].rank_score == 0.0
+    assert by["B2"].rank_score == 100.0
+    # 跨类可比：A2（分位100）应优于 B1（分位0），即便 B1 的 raw score(114) >> A2(45)
+    assert by["A2"].rank_score > by["B1"].rank_score
+
+
+def test_assign_rank_scores_dict_percentile():
+    """database._assign_rank_scores 对 dict 记录的百分位归一化（综合排序展示用）。"""
+    from scanner.database import _assign_rank_scores
+
+    recs = [
+        {"date": "2026-07-01", "category": "new_face", "score": 20},
+        {"date": "2026-07-01", "category": "new_face", "score": 45},
+        {"date": "2026-07-01", "category": "comeback", "score": 122},
+    ]
+    _assign_rank_scores(recs)
+    by = {r["category"]: r for r in recs}
+    assert by["new_face"]["rank_score"] == 100.0   # 同类内最高
+    assert by["comeback"]["rank_score"] == 100.0    # 同类内唯一 -> 100
+    # 两者类内均居首，故综合排序并列优先，不再被 comeback 的标尺(122)压过 new_face(45)
+    assert by["new_face"]["rank_score"] == by["comeback"]["rank_score"]
+
+
+def test_deheat_score_unit():
+    """_deheat_score 从含热度 final_score 重建去热度分（验证 Step 1 可历史回测）。"""
+    import json
+    from scanner.config import CROSS_SOURCE_BONUS
+    from scanner.portfolio_backtest import _deheat_score
+
+    dims = {
+        "sector_bonus": 2, "live_vol_bonus": 3, "rps_bonus": 5,
+        "list_momentum_bonus": 4, "time_bonus": 1,
+        "market_sentiment_bonus": 2, "market_env_bonus": 3,
+    }  # 热度合计 = 20
+    # 含热度 raw=200，减掉 20 -> 180
+    assert _deheat_score(200, json.dumps(dims), "xueqiu") == 180
+    # source=='both' 额外减 CROSS_SOURCE_BONUS
+    assert _deheat_score(200, json.dumps(dims), "both") == 180 - CROSS_SOURCE_BONUS
+    # 无 breakdown -> 回退原始分（不报错）
+    assert _deheat_score(200, None, "xueqiu") == 200
+    # breakdown 仅含部分热度键 -> 只减存在的
+    assert _deheat_score(200, json.dumps({"sector_bonus": 2}), "xueqiu") == 198
+    # 非法 JSON -> 回退原始分
+    assert _deheat_score(200, "not-json", "xueqiu") == 200
+
+
+def test_load_signals_deheat_toggles_score():
+    """_load_signals 的 deheat 开关应改变 Signal.score（去热度 vs 原始）。"""
+    import tempfile, os, json
+    from scanner.config import CROSS_SOURCE_BONUS
+    from scanner.portfolio_backtest import (
+        PBConfig, _build_calendar, _load_signals,
+    )
+    from scanner.trading_session import is_trading_day
+
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE daily_kline "
+                     "(symbol TEXT, timestamp INTEGER, date TEXT, open REAL, close REAL, "
+                     "high REAL, low REAL, volume REAL, percent REAL, PRIMARY KEY(symbol, date))")
+        conn.execute("CREATE TABLE recommendations "
+                     "(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, time TEXT, symbol TEXT, "
+                     "name TEXT, category TEXT, score INTEGER, percent REAL, trend TEXT, "
+                     "score_breakdown TEXT, source TEXT)")
+        base = date(2026, 6, 1)
+        dates = []
+        d = base
+        while len(dates) < 8:
+            if is_trading_day(d):
+                dates.append(d.isoformat())
+            d += timedelta(days=1)
+        for sym in ("300001", "300002"):
+            prev = 100.0
+            for i, dt in enumerate(dates):
+                o = prev
+                c = 100.0 if i == 0 else round(prev * 1.005, 3)
+                prev = c
+                conn.execute("INSERT INTO daily_kline VALUES (?,?,?,?,?,?,?,?,?)",
+                             (sym, i, dt, o, c, c, o, 1e6, 0.5))
+        heat = {"sector_bonus": 10, "live_vol_bonus": 5, "rps_bonus": 8,
+                "list_momentum_bonus": 7, "time_bonus": 2,
+                "market_sentiment_bonus": 5, "market_env_bonus": 3}  # 合计 40
+        conn.execute(
+            "INSERT INTO recommendations (date,time,symbol,name,category,score,percent,trend,score_breakdown,source) "
+            "VALUES (?, '09:30:00','300001','A','new_face',100,0.5,'up',?, 'xueqiu')",
+            (dates[0], json.dumps(heat)))
+        conn.execute(
+            "INSERT INTO recommendations (date,time,symbol,name,category,score,percent,trend,score_breakdown,source) "
+            "VALUES (?, '09:30:00','300002','B','new_face',100,0.5,'up',?, 'both')",
+            (dates[0], json.dumps(heat)))
+        conn.commit()
+
+        calendar = _build_calendar(conn, dates[0], dates[-1])
+        cal_index = {d: i for i, d in enumerate(calendar)}
+        cal_end = calendar[-1]
+
+        sig_raw = _load_signals(conn, PBConfig(category="new_face", deheat=False),
+                                calendar, cal_index, cal_end)
+        sig_de = _load_signals(conn, PBConfig(category="new_face", deheat=True),
+                               calendar, cal_index, cal_end)
+        conn.close()
+
+        assert len(sig_raw) == 2 and len(sig_de) == 2
+        # deheat=False: 原始分
+        assert all(s.score == 100 for s in sig_raw)
+        # deheat=True: 100 - 40 = 60（xueqiu）；both 再减 CROSS_SOURCE_BONUS
+        by_de = {s.symbol: s for s in sig_de}
+        assert by_de["300001"].score == 60
+        assert by_de["300002"].score == 60 - CROSS_SOURCE_BONUS
+    finally:
+        os.remove(path)
+
+

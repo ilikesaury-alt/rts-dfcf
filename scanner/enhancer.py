@@ -2,7 +2,6 @@ from datetime import datetime
 
 from scanner.config import (
     now_beijing,
-    CROSS_SOURCE_BONUS,
     DISTRIBUTION_ACCUM_HIGH,
     DISTRIBUTION_ACCUM_MID,
     DISTRIBUTION_ACCUM_PULLBACK,
@@ -506,15 +505,36 @@ def compute_market_env_bonus(market_idx_pct: float | None) -> int:
     return 0
 
 
-def accumulate_final_score(c: Candidate, market_env_bonus: int, opening_scores: dict[str, float | None]) -> int:
+# 热度放大器 bonus：仅作「展示徽章」，不再进入排序键。
+# 理由（2026-08-07 code review）：RPS/板块集群/榜单动量(top40+轨迹)/实时量比/双榜/市场情绪/
+#       时间/市场环境 均与「已经涨起来的热票」高度相关，叠加后综合排序≈系统性追涨，
+#       回测显示综合(评分筛选) -28.5% 反而劣于无筛选基准 -14.3%。
+#       这些项仍通过 _record_dimensions 写入 c.kline.dimensions（即 recommendations.score_breakdown JSON），
+#       展示层继续可见，只是不再参与 c.score 排序键。
+HEAT_AMPLIFIER_BONUS_ATTRS = (
+    "sector_bonus",        # 板块集群
+    "live_vol_bonus",      # 实时量比
+    "rps_bonus",           # RPS（近期涨幅百分位）
+    "list_momentum_bonus", # 榜单动量（连板+轨迹+top40）
+    "time_bonus",          # 盘中时段
+    "market_sentiment_bonus",  # 市场情绪（全市场，非个股）
+    # cross_source / market_env_bonus 在下方累加时显式排除（非 c 属性）
+)
+
+
+def accumulate_final_score(c: Candidate, opening_scores: dict[str, float | None]) -> int:
+    """返回**排序键**应累加的 bonus 之和。
+
+    排序键只保留「个股质量 / 策略信号」类 bonus，确保：
+      1. 类内排序由策略信号驱动，而非「谁更热」；
+      2. 跨类别综合排序时，各类别标尺差异不会由热度放大器进一步放大。
+    热度放大器（见 HEAT_AMPLIFIER_BONUS_ATTRS）已写入 dimensions 供展示，不在此累加。
+    market_env_bonus（市场环境，全市场非个股）属热度放大器，仅作展示维度，不入排序键。
+    """
     opening = opening_scores.get(c.stock.symbol)
     opening_bonus = int(round(opening)) if opening is not None else 0
-    cross_source = CROSS_SOURCE_BONUS if c.stock.source_tag == "both" else 0
-    total = (c.sector_bonus + c.live_vol_bonus
-             + c.first_today_bonus + c.first_breakout_bonus
-             + market_env_bonus + c.turnover_bonus + c.time_bonus
-             + c.market_sentiment_bonus + c.rps_bonus + c.market_cap_bonus
-             + c.list_momentum_bonus + opening_bonus
-             + cross_source + c.gap_up_bonus
-             + c.fund_flow_bonus + c.zt_lianban_bonus)
+    total = (c.first_today_bonus + c.first_breakout_bonus
+             + c.turnover_bonus + c.market_cap_bonus
+             + c.gap_up_bonus + c.fund_flow_bonus
+             + c.zt_lianban_bonus + opening_bonus)
     return total

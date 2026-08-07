@@ -62,7 +62,6 @@ from scanner.database import (
 from scanner.enhancer import (
     accumulate_final_score,
     apply_all_bonuses,
-    compute_market_env_bonus,
     compute_time_bonus,
 )
 from scanner.models import Candidate, KlineSummary, StockInfo
@@ -590,7 +589,6 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
                             intraday_scores, opening_scores, live_volumes)
 
     market_idx_pct = adapter.fetch_market_index()
-    market_env_bonus = compute_market_env_bonus(market_idx_pct)
     time_bonus = compute_time_bonus()
 
     apply_all_bonuses(all_candidates, gem_stocks_filtered, intraday_scores,
@@ -617,7 +615,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     # 依据 c.category 选 key，_apply_list_momentum_bonus 依据 c.category 判 is_reversal）。
     # 若复用同一 extra，short_term 桶会拿到 new_face 桶的 bonus，排名错位。
     for i, c in enumerate(all_candidates):
-        extra = accumulate_final_score(c, market_env_bonus, opening_scores)
+        extra = accumulate_final_score(c, opening_scores)
         all_candidates[i] = dataclass_replace(c, score=c.score + extra)
 
     update_rank_history({s.symbol: s.rank for s in gem_stocks_filtered})

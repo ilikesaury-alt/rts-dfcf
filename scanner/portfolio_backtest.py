@@ -37,7 +37,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 
-from scanner.config import DB_PATH
+from scanner.config import CROSS_SOURCE_BONUS, DB_PATH
 from scanner.trading_session import is_trading_day
 
 
@@ -50,6 +50,21 @@ PORTFOLIO_CATEGORIES: set[str] = {
     "short_term",
     "comeback",
 }
+
+# 热度放大器组件键（与 enhancer.HEAT_AMPLIFIER_BONUS_ATTRS 对应）：在 score_breakdown(JSON)
+# 中记录，用于从历史 recommendations.score（旧 orchestrator 含热度写出的）重建「去热度分」，
+# 从而回测真正验证 Step 1 的「热度移出排序键」效果，而非只对旧热度分做百分位归一。
+# cross_source 不入 breakdown，由 source=='both' 推导（CROSS_SOURCE_BONUS）。
+HEAT_BONUS_KEYS = (
+    "sector_bonus",         # 板块集群
+    "live_vol_bonus",       # 实时量比
+    "rps_bonus",            # RPS（近期涨幅百分位）
+    "list_momentum_bonus",  # 榜单动量（连板+轨迹+top40）
+    "time_bonus",           # 盘中时段
+    "market_sentiment_bonus",  # 市场情绪（全市场，非个股）
+    "market_env_bonus",     # 市场环境（全市场，非个股）
+)
+
 
 # A 股成本默认参数
 DEFAULT_COMMISSION = 0.00025      # 万 2.5
@@ -74,6 +89,9 @@ class PBConfig:
     slippage: float = DEFAULT_SLIPPAGE
     category: str | None = None        # 仅跑该类别；None=综合(全部现役类别)
     no_skill: bool = False              # True=基准模式：不按 score 筛选，买入全部当日信号
+    deheat: bool = True                 # True=从 score_breakdown 重建「去热度分」再排序（验证 Step 1）；
+                                        # False=直接用 DB 原始 score（含热度）排序
+
 
 
 @dataclass
@@ -83,6 +101,7 @@ class Signal:
     name: str
     category: str
     score: int
+    rank_score: float = 0.0            # 类内百分位（within-date+category），综合排序跨类别可比
     buy_date: str | None = None        # 实际买入日（交易日历内）；None=无法执行
     buy_index: int = -1                 # 买入日在日历中的下标
     exit_index: int = -1                # 卖出日在日历中的下标
@@ -182,11 +201,44 @@ def _nth_trading_day_after(d: date, n: int) -> date | None:
 
 # ── 信号加载 ────────────────────────────────────────────────────────────────
 
+def _deheat_score(raw_score: int, breakdown_json: str | None, source: str | None) -> int:
+    """从 DB 中存储的含热度 final_score 重建「去热度分」。
+
+    raw_score 是旧 orchestrator 写出时含所有 bonus（含热度放大器）的 score；
+    score_breakdown(JSON) 记录了各热度组件的取值，减去它们即得与 enhancer 新排序键一致的分。
+    cross_source（双榜）不入 breakdown，由 source=='both' 推导。
+    无法解析 breakdown 时回退原始分（不抛异常）。
+    """
+    if not breakdown_json:
+        return raw_score
+    try:
+        dims = json.loads(breakdown_json)
+    except (json.JSONDecodeError, TypeError):
+        return raw_score
+    if not isinstance(dims, dict):
+        return raw_score
+    total = raw_score
+    for key in HEAT_BONUS_KEYS:
+        v = dims.get(key)
+        if isinstance(v, (int, float)):
+            total -= int(v)
+    if source == "both":
+        total -= CROSS_SOURCE_BONUS
+    return total
+
+
 def _load_signals(conn: sqlite3.Connection, cfg: PBConfig, calendar: list[str],
                   cal_index: dict[str, int], cal_end: str) -> list[Signal]:
-    """从 recommendations 加载信号，并计算买入日 / 卖出日在日历中的下标。"""
+    """从 recommendations 加载信号，并计算买入日 / 卖出日在日历中的下标。
+
+    若 cfg.deheat=True（默认），从 score_breakdown(JSON) + source 列重建「去热度分」：
+        deheated = raw_score - Σ(热度组件) - (CROSS_SOURCE_BONUS if source=='both')
+    使得综合排序真正反映 Step 1「热度移出排序键」后的排序，而非仅对旧热度分做百分位归一。
+    无 breakdown 的早期行（旧 schema）无法重建，回退为原始 score（不报错）。
+    """
     rows = conn.execute(
-        "SELECT date, symbol, name, category, score FROM recommendations"
+        "SELECT date, symbol, name, category, score, score_breakdown, source "
+        "FROM recommendations"
     ).fetchall()
 
     # 推荐日范围（用于 --days / 默认窗口）
@@ -200,7 +252,7 @@ def _load_signals(conn: sqlite3.Connection, cfg: PBConfig, calendar: list[str],
         start_date = cfg.start or min_rec
 
     signals: list[Signal] = []
-    for rec_date, sym, name, cat, score in rows:
+    for rec_date, sym, name, cat, score, breakdown_json, src in rows:
         # 类别过滤
         if cfg.category and cat != cfg.category:
             continue
@@ -209,7 +261,11 @@ def _load_signals(conn: sqlite3.Connection, cfg: PBConfig, calendar: list[str],
         # 日期窗口过滤（推荐日口径）
         if not (start_date <= rec_date <= end_date):
             continue
-        sig = Signal(rec_date=rec_date, symbol=sym, name=name, category=cat, score=score)
+        # 去热度分重建：从 score_breakdown 减掉热度放大器组件（验证 Step 1 效果）
+        eff_score = score
+        if cfg.deheat:
+            eff_score = _deheat_score(score, breakdown_json, src)
+        sig = Signal(rec_date=rec_date, symbol=sym, name=name, category=cat, score=eff_score)
         # 计算买入日
         buy_d = _nth_trading_day_after(date.fromisoformat(rec_date), cfg.buy_delay)
         if buy_d is None or buy_d.isoformat() > cal_end:
@@ -224,7 +280,26 @@ def _load_signals(conn: sqlite3.Connection, cfg: PBConfig, calendar: list[str],
             exit_idx = len(calendar) - 1
         sig.exit_index = exit_idx
         signals.append(sig)
+
+    # 综合排序跨类别可比：在 (推荐日, 类别) 组内对 score 做百分位归一化。
+    # 单类别时组内排序与 raw score 一致；综合(all) 时消除各类别自身标尺差异
+    # （new_face 均值~45 与 comeback~122 不可直接比），避免综合排序沦为「按标尺大小而非好坏」排。
+    _assign_rank_scores(signals)
     return signals
+
+
+def _assign_rank_scores(signals: list[Signal]) -> None:
+    """对 signals 计算 within-(rec_date, category) 百分位 rank_score（0-100），就地修改。"""
+    groups: dict[tuple, list[Signal]] = {}
+    for s in signals:
+        groups.setdefault((s.rec_date, s.category), []).append(s)
+    for recs in groups.values():
+        n = len(recs)
+        if n == 0:
+            continue
+        ordered = sorted(recs, key=lambda s: s.score)
+        for pos, s in enumerate(ordered):
+            s.rank_score = 100.0 if n == 1 else pos / (n - 1) * 100.0
 
 
 # ── 核心模拟 ────────────────────────────────────────────────────────────────
@@ -244,7 +319,12 @@ def _sell_proceeds(notional: float, cfg: PBConfig) -> float:
 
 def run_backtest(conn: sqlite3.Connection, cfg: PBConfig) -> BacktestResult:
     """执行组合回测，返回含 NAV 序列、逐笔交易与指标的结果。"""
-    label = cfg.category or ("基准(无筛选)" if cfg.no_skill else "综合(all)")
+    if cfg.category:
+        label = cfg.category
+    elif cfg.no_skill:
+        label = "基准(无筛选)"
+    else:
+        label = "综合(去热度)" if cfg.deheat else "综合(含热度)"
     result = BacktestResult(label=label, config=cfg)
 
     # 1) 构建交易日历（覆盖全部 kline 日期范围，确保买入/卖出日有行情可查）
@@ -284,7 +364,7 @@ def run_backtest(conn: sqlite3.Connection, cfg: PBConfig) -> BacktestResult:
         day_signals = by_buy.get(i, [])
         if day_signals:
             if not cfg.no_skill:
-                day_signals = sorted(day_signals, key=lambda s: -s.score)
+                day_signals = sorted(day_signals, key=lambda s: -s.rank_score)
             for sig in day_signals:
                 if len(positions) >= cfg.max_positions:
                     break
@@ -555,9 +635,12 @@ def main() -> None:
         # 基准（无筛选）
         bench = _run_one(conn, replace(base_cfg, no_skill=True, category=None))
         results.append(bench)
-        # 综合
-        combined = _run_one(conn, replace(base_cfg, category=None))
+        # 综合（去热度分，默认=Step 1 生效后的排序）
+        combined = _run_one(conn, replace(base_cfg, category=None, deheat=True))
         results.append(combined)
+        # 综合（含热度，对照：仅对旧 score 做百分位归一，未去热度）
+        combined_heat = _run_one(conn, replace(base_cfg, category=None, deheat=False))
+        results.append(combined_heat)
         # 各现役类别
         for cat in sorted(PORTFOLIO_CATEGORIES):
             r = _run_one(conn, replace(base_cfg, category=cat))

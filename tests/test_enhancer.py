@@ -73,17 +73,22 @@ class TestAccumulateFinalScore:
         stock = StockInfo(symbol="300999", name="测试", code="300999",
                           percent=0.0, current=10.0, value=1000, rank_change=0, rank=50)
         c = Candidate(stock=stock, category="new_face", score=10, reason="test", kline=None)
-        assert accumulate_final_score(c, 0, {}) == 0
+        assert accumulate_final_score(c, {}) == 0
 
     def test_basic_sum(self):
         stock = StockInfo(symbol="300999", name="测试", code="300999",
                           percent=5.0, current=15.0, value=5000, rank_change=100, rank=30)
         c = Candidate(stock=stock, category="new_face", score=10, reason="test", kline=None)
+        # 热度放大器（板块集群/实时量比/时间）必须被排除出排序键
         c.sector_bonus = 3
         c.live_vol_bonus = 2
         c.time_bonus = 3
-        result = accumulate_final_score(c, 0, {})
-        assert result == 8
+        assert accumulate_final_score(c, {}) == 0
+        # 质量/策略类 bonus 仍计入排序键
+        c.first_today_bonus = 3
+        c.gap_up_bonus = 2
+        c.fund_flow_bonus = 3
+        assert accumulate_final_score(c, {}) == 8
 
 
 # ============================================================
@@ -659,11 +664,13 @@ class TestMarketExtraRiskFlags:
 
 
 class TestAccumulateWithMarketExtra:
-    def test_total_includes_bonuses(self):
+    def test_rank_key_excludes_heat_bonuses(self):
         c = _make_candidate()
+        # sector_bonus 属热度放大器(板块集群)，不计入排序键；
+        # fund_flow / zt_lianban 属质量/策略类，计入。
         c.sector_bonus = 2
         c.fund_flow_bonus = 5
         c.zt_lianban_bonus = 8
-        result = accumulate_final_score(c, 0, {})
-        assert result == 15
+        result = accumulate_final_score(c, {})
+        assert result == 13
 

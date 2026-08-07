@@ -489,12 +489,14 @@ def _print_priority_row(entry: dict, i: int, flow_pct_map: dict) -> None:
 
 def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
                      rank_map: dict[str, int] | None = None):
-    """从本地数据库读取今日所有进入过推荐的票，按档位(辨识度/资金流)+展示优先级(CAT_DISPLAY_PRIORITY)+评分降序展示。
+    """从本地数据库读取今日所有进入过推荐的票，按档位(辨识度/资金流)+展示优先级(CAT_DISPLAY_PRIORITY)+rank_score降序展示。
 
     live_quotes: {symbol: {percent, current}} 实时行情覆盖，优先于候选池和数据库数据。
     rank_map: {symbol: 飙升榜排名} 当前扫描的榜单排名，为掉榜/重启行补实时排名。
-    排序键 = (档位, CAT_DISPLAY_PRIORITY, -score)：档0置前(辨识度或净流入≥5%) < 档1普通 <
-    档2劣后(净流出≤-5%，覆盖辨识度)。档位只影响排序，不改评分列/不落库。
+    排序键 = (档位, CAT_DISPLAY_PRIORITY, -rank_score)：档0置前(辨识度或净流入≥5%) < 档1普通 <
+    档2劣后(净流出≤-5%，覆盖辨识度)。rank_score 为类内百分位（见 get_today_recommendations），
+    使跨类别综合排序可比（new_face 均值~45 与 comeback~122 不再直接比标尺）。
+    档位只影响排序，不改评分列/不落库。
     """
     if conn is None:
         return
@@ -570,9 +572,9 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     main_recs = [e for e in today_recs if e["category"] != "comeback"]
     scored = sorted(main_recs, key=lambda x: (_sort_tier(x),
                                                CAT_DISPLAY_PRIORITY.get(x["category"], 99),
-                                               -x["score"]))
+                                               -x.get("rank_score", x["score"])))
 
-    print(f"\n{ANSI['BOLD']}◆ 综合排序 — 今日上榜推荐 按档位(辨识度/资金流)+类别优先级+评分降序（回马枪见下方独立区）{ANSI['RESET']}")
+    print(f"\n{ANSI['BOLD']}◆ 综合排序 — 今日上榜推荐 按档位(辨识度/资金流)+类别优先级+类内百分位(评分)降序（回马枪见下方独立区）{ANSI['RESET']}")
     hdr = (f"  {_pad('#',3,'r')} {_pad('代码',12)} {_pad('名称',10)} "
            f"{_pad('板块',14)} {_pad('策略',5)} {_pad('评分',4,'r')} {_pad('涨幅',8,'r')} "
            f"{_pad('5日累计',8,'r')} {_pad('现价',7,'r')} {_pad('排名',4,'r')} {_pad('时间',6)} {_pad('建议',6)}")
@@ -600,7 +602,7 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     # 回马枪独立成区（方案A）：主表仅排榜上五类，comeback 抽到此处独立成区，
     # 仍按档位(tier)+评分排序，复用档位横幅与统一行渲染。comeback 为空则跳过（与旧行为一致）。
     if comeback_recs:
-        cb_scored = sorted(comeback_recs, key=lambda x: (_sort_tier(x), -x["score"]))
+        cb_scored = sorted(comeback_recs, key=lambda x: (_sort_tier(x), -x.get("rank_score", x["score"])))
         print(f"\n{ANSI['CYAN']}◆ 回马枪 — 掉榜跟踪/回调买点（综合排序独立区）{ANSI['RESET']}")
         print(hdr)
         cb_prev_tier = None
