@@ -40,6 +40,31 @@ def test_tracked_watch_shown_when_watch_max_positive(monkeypatch, capsys):
     assert "观察股" in out
 
 
+def test_tracked_fund_flow_icon_from_db(capsys):
+    """历史推荐跟踪行展示资金流图标（market_extra_cache 当日数据，无数据不显示）。"""
+    conn = _rec_db()
+    today = now_beijing().date().isoformat()
+    conn.executemany(
+        "INSERT INTO market_extra_cache (symbol, date, data_type, payload_json, updated) "
+        "VALUES (?, ?, ?, ?, ?)",
+        [("300001", today, "fund_flow", '{"main_pct": 6.0, "main_net": 1e7}', now_beijing().isoformat()),
+         ("300002", today, "fund_flow", '{"main_pct": -7.0, "main_net": -1e7}', now_beijing().isoformat())],
+    )
+    conn.commit()
+    disp_mod.display([], [], 0, 60,
+                     tracked_recs=[_tracked("到买点", "流入股", "300001"),
+                                   _tracked("到买点", "流出台", "300002"),
+                                   _tracked("到买点", "无数据", "300003")],
+                     conn=conn)
+    out = capsys.readouterr().out
+    line_in = next(l for l in out.splitlines() if "流入股" in l)
+    line_out = next(l for l in out.splitlines() if "流出台" in l)
+    line_none = next(l for l in out.splitlines() if "无数据" in l)
+    assert "▲" in line_in
+    assert "▼" in line_out
+    assert "▲" not in line_none and "▼" not in line_none
+
+
 # ── 资金流强弱档位（5 档图标规则，2026-08-06）──
 def _candidate(pct):
     k = KlineSummary(trend="", accumulated_pct=0.0, volume_ratio=1.0,

@@ -383,6 +383,17 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
         buy = [t for t in tracked_recs if t.status == "到买点"]
         watch = [t for t in tracked_recs if t.status == "观察中"]
 
+        # 资金流图标：从 market_extra_cache 读当日资金流（与综合排序同源口径），
+        # 展示型标识，不影响排序/状态分类。conn=None（测试/独立场景）时跳过查库。
+        flow_pct_map: dict[str, float] = {}
+        if conn is not None:
+            try:
+                ff_db = get_market_extra_cache(conn, [t.symbol for t in tracked_recs], "fund_flow")
+                flow_pct_map = {sym: (payload.get("main_pct") if payload else None)
+                                for sym, payload in ff_db.items()}
+            except Exception:
+                flow_pct_map = {}
+
         def _tracked_row(t):
             today_str = pct_colored(t.today_pct)
             cum_str = f"{t.cum_return:+.1f}%"
@@ -403,8 +414,11 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             if t.prominence_labels:
                 tags = " ".join(t.prominence_labels)
                 prom_str = f" {ANSI['CYAN']}│{tags}│{ANSI['RESET']}"
+            # 资金流图标（无数据不显示）
+            ff_icon = _fund_flow_icon_str(flow_pct_map.get(t.symbol))
+            ff_str = f" {ff_icon}" if ff_icon else ""
             print(f"  {t.rec_date} {_pad(t.name,10)} {t.symbol:<12} {_pad(t.rec_category,14)} "
-                  f"{status_display} {t.buy_signals:>4} {today_str} {cum_display} {signals_str}{prom_str}")
+                  f"{status_display} {t.buy_signals:>4} {today_str} {cum_display} {signals_str}{prom_str}{ff_str}")
 
         print(f"\n{ANSI['CYAN']}◆ 历史推荐跟踪 — 近{TRACK_RECOMMENDATION_DAYS}日推荐回调到买点{ANSI['RESET']}")
         print(f"  {'—'*108}")
@@ -421,6 +435,7 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
                 _tracked_row(t)
         elif TRACK_DISPLAY_WATCH_MAX > 0 and watch:
             print(f"  {ANSI['YELLOW']}  · 另有 {len(watch)} 只观察中（已省略，回调结构不充分）{ANSI['RESET']}")
+        print(f"  {ANSI['CYAN']}▲▲/▲ 净流入  {ANSI['RESET']}{ANSI['RED']}▼/▼▼ 净流出{ANSI['RESET']}  (无图标 = 中性/无数据)")
 
 
 def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
