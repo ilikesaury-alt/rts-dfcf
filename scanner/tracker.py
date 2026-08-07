@@ -16,6 +16,7 @@ from scanner.config import (
     TRACK_FILTER_CUM_LOW,
     TRACK_FILTER_TODAY_HIGH,
     TRACK_FILTER_TODAY_LOW,
+    TRACK_FUND_FLOW_FILTER_LOW,
     TRACK_KLINE_REFRESH_LOOPS,
     TRACK_MA20_SLOPE_MIN,
     TRACK_MA20_SUPPORT_PCT,
@@ -27,8 +28,9 @@ from scanner.config import (
     TRACK_VOL_SHRINK_RATIO,
     now_beijing,
 )
-from scanner.database import (get_cached_kline, get_recent_recommendations,
-                               is_prominent, save_kline_to_db)
+from scanner.database import (get_cached_kline, get_fund_flow_pct_map,
+                               get_recent_recommendations, is_prominent,
+                               save_kline_to_db)
 from scanner.indicators import compute_bollinger_bands, compute_macd, compute_ma, compute_rsi
 
 
@@ -75,6 +77,9 @@ def track_recent_recommendations(conn, adapter, lookback_days: int = TRACK_RECOM
     symbols = [r["symbol"] for r in recs]
     quotes = adapter.fetch_market_caps_batch(symbols)
 
+    # 资金流映射：批量读当日主力净占比（与综合排序/图标同源口径），用于硬过滤
+    flow_pct_map = get_fund_flow_pct_map(conn, symbols)
+
     # 每 N 轮给跟踪票拉一次 K 线并写入 DB（节流，避免每轮都拉）
     refresh_kline = (_loop_count % TRACK_KLINE_REFRESH_LOOPS == 1)
 
@@ -107,6 +112,8 @@ def track_recent_recommendations(conn, adapter, lookback_days: int = TRACK_RECOM
             continue
         if cum_return <= TRACK_FILTER_CUM_LOW:
             continue
+        if not _passes_fund_flow_filter(flow_pct_map, sym):
+            continue  # 主力净流出（≤-5%），回调可能是出货
 
         # 节流刷新 K 线（用于指标计算的最新数据）
         if refresh_kline:
@@ -137,6 +144,19 @@ def track_recent_recommendations(conn, adapter, lookback_days: int = TRACK_RECOM
     # 排序：辨识度优先 → 买点信号数降序 → 累计收益升序（回调深的优先）
     result.sort(key=lambda x: (not bool(x.prominence_labels), -x.buy_signals, x.cum_return))
     return result
+
+
+def _passes_fund_flow_filter(flow_pct_map: dict[str, float],
+                             symbol: str,
+                             low: float = TRACK_FUND_FLOW_FILTER_LOW) -> bool:
+    """资金流硬过滤：主力净占比 ≤ 阈值 → 剔除（回调可能是出货）；无当日数据 → 保留（视同中性）。
+
+    flow_pct_map: {symbol: main_pct}，无该 symbol 或值为 None 表示无当日资金流数据。
+    """
+    ff_pct = flow_pct_map.get(symbol)
+    if ff_pct is None:
+        return True
+    return ff_pct > low
 
 
 def _evaluate_buy_signals(kline: list[dict] | None) -> tuple[str, int, list[str]]:

@@ -17,7 +17,7 @@ from scanner.config import (
     YI,
     now_beijing,
 )
-from scanner.database import get_market_extra_cache, get_prominence_map, get_today_recommendations
+from scanner.database import get_fund_flow_pct_map, get_prominence_map, get_today_recommendations
 from scanner.models import Candidate
 from scanner.orchestrator import _session_state
 from scanner.sector import classify_sector
@@ -387,12 +387,7 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
         # 展示型标识，不影响排序/状态分类。conn=None（测试/独立场景）时跳过查库。
         flow_pct_map: dict[str, float] = {}
         if conn is not None:
-            try:
-                ff_db = get_market_extra_cache(conn, [t.symbol for t in tracked_recs], "fund_flow")
-                flow_pct_map = {sym: (payload.get("main_pct") if payload else None)
-                                for sym, payload in ff_db.items()}
-            except Exception:
-                flow_pct_map = {}
+            flow_pct_map = get_fund_flow_pct_map(conn, [t.symbol for t in tracked_recs])
 
         def _tracked_row(t):
             today_str = pct_colored(t.today_pct)
@@ -502,13 +497,7 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     # 资金流图标：从 market_extra_cache 直接读当日资金流，不依赖当前进程 today_pool。
     # 候选存在时优先用其扫描时的最新维度，否则（重启/掉榜/扫描时拉取失败）回退到 DB
     # 保存的全市场快照——避免综合排序大量行因进程重启丢失资金流图标。
-    flow_pct_map: dict[str, float] = {}
-    try:
-        ff_db = get_market_extra_cache(conn, list({e["symbol"] for e in today_recs}), "fund_flow")
-        flow_pct_map = {sym: (payload.get("main_pct") if payload else None)
-                        for sym, payload in ff_db.items()}
-    except Exception:
-        flow_pct_map = {}
+    flow_pct_map = get_fund_flow_pct_map(conn, [e["symbol"] for e in today_recs])
 
     # 档位置顶（2026-08-06）：排序键 (档位, 类别优先级, -score)，跨类别全局生效。
     # 档0置前 = 辨识度(↻) 或 主力净流入 ≥ FUND_FLOW_MAIN_PCT_STRONG；档2劣后 = 净流出

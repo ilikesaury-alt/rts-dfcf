@@ -1,7 +1,7 @@
 """tracker 模块买点信号识别单元测试。"""
 from datetime import datetime, timedelta
 
-from scanner.tracker import _evaluate_buy_signals
+from scanner.tracker import _evaluate_buy_signals, _passes_fund_flow_filter
 
 
 def _make_kline(n: int = 30, end_date: datetime = None, prices: list[float] = None,
@@ -208,3 +208,27 @@ def test_status_classification_thresholds():
         assert status == "观察中"
     else:
         assert status == ""
+
+
+# ── 资金流硬过滤（2026-08-07）：主力净占比≤-5% 剔除；无数据保留 ──
+def test_fund_flow_filter_outflow_excluded():
+    """主力净占比 ≤ -5% → 剔除（含边界值）。"""
+    flow = {"SZ300001": -6.0, "SZ300002": -5.0, "SZ300003": -8.0}
+    assert not _passes_fund_flow_filter(flow, "SZ300001")
+    assert not _passes_fund_flow_filter(flow, "SZ300002")
+    assert not _passes_fund_flow_filter(flow, "SZ300003")
+
+
+def test_fund_flow_filter_kept():
+    """主力净占比 > -5%（含流入/中性/微流出）→ 保留。"""
+    flow = {"SZ300001": -4.9, "SZ300002": 0.0, "SZ300003": 6.0}
+    assert _passes_fund_flow_filter(flow, "SZ300001")
+    assert _passes_fund_flow_filter(flow, "SZ300002")
+    assert _passes_fund_flow_filter(flow, "SZ300003")
+
+
+def test_fund_flow_filter_missing_data_kept():
+    """无当日资金流数据（缺 symbol / 值为 None / 空映射）→ 保留。"""
+    assert _passes_fund_flow_filter({"SZ300001": 6.0}, "SZ300002")
+    assert _passes_fund_flow_filter({"SZ300001": None}, "SZ300001")
+    assert _passes_fund_flow_filter({}, "SZ300001")

@@ -587,6 +587,23 @@ def get_market_extra_cache(conn: sqlite3.Connection, symbols: list[str],
     return result
 
 
+def get_fund_flow_pct_map(conn: sqlite3.Connection, symbols: list[str]) -> dict[str, float]:
+    """批量读取当日主力净占比，返回 {symbol: main_pct}。
+
+    与资金流图标/综合排序档位同源口径（get_market_extra_cache data_type=fund_flow，
+    仅当日数据）。无当日数据或查询失败时该 symbol 不包含在结果中（缺失=中性，
+    由调用方 fail-open 处理，如 tracker 资金流硬过滤、display 图标回退）。
+    """
+    if not symbols:
+        return {}
+    try:
+        ff_db = get_market_extra_cache(conn, list(dict.fromkeys(symbols)), "fund_flow")
+    except Exception:
+        return {}
+    return {sym: (payload.get("main_pct") if payload else None)
+            for sym, payload in ff_db.items()}
+
+
 def save_market_extra_cache(conn: sqlite3.Connection, data_map: dict[str, dict],
                             data_type: str):
     """批量写入 market_extra_cache（INSERT OR REPLACE，按 symbol+data_type 覆盖）。"""

@@ -515,6 +515,8 @@ TRACK_FILTER_TODAY_HIGH = 5.0    # 今日涨幅≥此值 → 过滤（不追高�
 TRACK_FILTER_TODAY_LOW = -5.0    # 今日跌幅≥此值 → 过滤（可能破位）
 TRACK_FILTER_CUM_HIGH = 10.0     # 累计收益≥此值 → 过滤（已错过）
 TRACK_FILTER_CUM_LOW = -10.0     # 累计收益≤此值 → 过滤（信号失效）
+# 资金流硬过滤：主力净占比 ≤ -5% → 剔除（回调可能是出货，不追）；无当日数据 → 保留（视同中性）
+TRACK_FUND_FLOW_FILTER_LOW = FUND_FLOW_MAIN_PCT_WEAK  # 与评分扣分档同源，避免阈值漂移
 # 买点信号阈值（满足条件计 1 分，信号数决定状态分类）
 TRACK_MA20_SUPPORT_PCT = 3.0     # |close-MA20|/MA20 < 此值 且 MA20 上行 → MA20 支撑
 TRACK_VOL_SHRINK_RATIO = 0.8     # vol_ratio < 此值 → 缩量回调
