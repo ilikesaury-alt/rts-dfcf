@@ -373,3 +373,26 @@ def test_display_priority_tier_db_source_for_dropped(monkeypatch, capsys):
     lines = [l for l in out.splitlines() if "SZ30000" in l]
     assert "SZ300001" in lines[0], f"掉榜置前票(60,档0)应排在普通票(90,档1)之前: {lines}"
     assert "SZ300002" in lines[1]
+
+
+def test_display_priority_tier_banner_separates_groups(monkeypatch, capsys):
+    """档位分隔横幅：跨三档时输出含 置顶档/普通档/劣后档 分组标题，且辨识度+流出票落在劣后档。"""
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "置顶", "rebound", 50)
+    _insert_rec_cat(conn, "SZ300002", "普通", "momentum", 70)
+    _insert_rec_cat(conn, "SZ300003", "劣后", "rebound", 90)
+    pool = {
+        "SZ300001": _cand_tier("SZ300001", 50, "rebound", prominent=True),
+        "SZ300002": _cand_tier("SZ300002", 70, "momentum"),
+        "SZ300003": _cand_tier("SZ300003", 90, "rebound", fund_flow=-6.0, prominent=True),
+    }
+    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
+    disp_mod.display_priority(conn)
+    out = capsys.readouterr().out
+    assert "▶ 置顶档" in out
+    assert "▶ 普通档" in out
+    assert "▶ 劣后档" in out
+    # 劣后档横幅后出现的首个数据行应是 SZ300003（流出覆盖辨识度，沉到档2）
+    after_last = out.split("▶ 劣后档", 1)[1]
+    assert "SZ300003" in after_last
+    assert "SZ300001" not in after_last

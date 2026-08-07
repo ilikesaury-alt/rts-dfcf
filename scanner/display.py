@@ -484,8 +484,24 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
            f"{_pad('板块',14)} {_pad('策略',5)} {_pad('评分',4,'r')} {_pad('涨幅',8,'r')} "
            f"{_pad('5日累计',8,'r')} {_pad('现价',7,'r')} {_pad('排名',4,'r')} {_pad('时间',6)} {_pad('建议',6)}")
     print(hdr)
-    print(f"  {'-'*100}")
+    # 档位分隔横幅：综合排序把 置顶(0)/普通(1)/劣后(2) 三档混在同一张表，
+    # 必须显式分组标题，否则扫一眼分不清哪些被置顶、哪些被沉底。
+    TIER_BANNER = {
+        0: ("置顶档", "GREEN", "▲▲/▲ 或 ↻ · 辨识度高 / 主力净流入≥5%"),
+        1: ("普通档", "",      "其余（无强信号）"),
+        2: ("劣后档", "RED",   "▼▼/▼ · 主力净流出≤-5% · 出货嫌疑"),
+    }
+    prev_tier = None
     for i, entry in enumerate(scored, 1):
+        tier = _sort_tier(entry)
+        if tier != prev_tier:
+            name, col, detail = TIER_BANNER[tier]
+            tc = ANSI.get(col, "")
+            if prev_tier is not None:
+                print()
+            print(f"  {tc}{ANSI['BOLD']}▶ {name}{ANSI['RESET']}  {tc}{detail}{ANSI['RESET']}")
+            print(f"  {tc}{'-'*100}{ANSI['RESET']}")
+            prev_tier = tier
         c = entry["_candidate"]
         sector = classify_sector(entry["name"])
         # 标签/优先级/建议列统一用 entry["category"]（与排序口径一致），
