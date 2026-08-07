@@ -1,4 +1,4 @@
-"""历史推荐跟踪显示：默认只显示"到买点"，"观察中"隐藏（TRACK_DISPLAY_WATCH_MAX=0）。"""
+"""综合排序显示与资金流图标测试。"""
 import sqlite3
 from datetime import timedelta
 from types import SimpleNamespace
@@ -6,63 +6,6 @@ from types import SimpleNamespace
 import scanner.display as disp_mod
 from scanner.config import now_beijing
 from scanner.models import Candidate, KlineSummary, StockInfo
-
-
-def _tracked(status: str, name: str, symbol: str) -> SimpleNamespace:
-    return SimpleNamespace(
-        rec_date="07-28", name=name, symbol=symbol, rec_category="new_face",
-        status=status, buy_signals=4, today_pct=1.2, cum_return=-2.0,
-        signals=["未破位", "BOLL中轨", "缩量"],
-        prominence_labels=[],
-    )
-
-
-def test_tracked_only_buy_point_when_watch_max_zero(monkeypatch, capsys):
-    """watch_max=0：仅"到买点"出现，"观察中"整段（含提示）不渲染。"""
-    monkeypatch.setattr(disp_mod, "TRACK_DISPLAY_WATCH_MAX", 0)
-    disp_mod.display([], [], 0, 60,
-                     tracked_recs=[_tracked("到买点", "买点股", "300001"),
-                                   _tracked("观察中", "观察股", "300002")])
-    out = capsys.readouterr().out
-    assert "买点股" in out
-    assert "观察股" not in out
-    assert "观察中" not in out
-
-
-def test_tracked_watch_shown_when_watch_max_positive(monkeypatch, capsys):
-    """watch_max>0：到买点不足时"观察中"作为补充尾部出现。"""
-    monkeypatch.setattr(disp_mod, "TRACK_DISPLAY_WATCH_MAX", 5)
-    disp_mod.display([], [], 0, 60,
-                     tracked_recs=[_tracked("到买点", "买点股", "300001"),
-                                   _tracked("观察中", "观察股", "300002")])
-    out = capsys.readouterr().out
-    assert "买点股" in out
-    assert "观察股" in out
-
-
-def test_tracked_fund_flow_icon_from_db(capsys):
-    """历史推荐跟踪行展示资金流图标（market_extra_cache 当日数据，无数据不显示）。"""
-    conn = _rec_db()
-    today = now_beijing().date().isoformat()
-    conn.executemany(
-        "INSERT INTO market_extra_cache (symbol, date, data_type, payload_json, updated) "
-        "VALUES (?, ?, ?, ?, ?)",
-        [("300001", today, "fund_flow", '{"main_pct": 6.0, "main_net": 1e7}', now_beijing().isoformat()),
-         ("300002", today, "fund_flow", '{"main_pct": -7.0, "main_net": -1e7}', now_beijing().isoformat())],
-    )
-    conn.commit()
-    disp_mod.display([], [], 0, 60,
-                     tracked_recs=[_tracked("到买点", "流入股", "300001"),
-                                   _tracked("到买点", "流出台", "300002"),
-                                   _tracked("到买点", "无数据", "300003")],
-                     conn=conn)
-    out = capsys.readouterr().out
-    line_in = next(l for l in out.splitlines() if "流入股" in l)
-    line_out = next(l for l in out.splitlines() if "流出台" in l)
-    line_none = next(l for l in out.splitlines() if "无数据" in l)
-    assert "▲" in line_in
-    assert "▼" in line_out
-    assert "▲" not in line_none and "▼" not in line_none
 
 
 # ── 资金流强弱档位（5 档图标规则，2026-08-06）──
@@ -155,6 +98,50 @@ def test_display_priority_fund_flow_icon_from_db(capsys):
     line2 = next(l for l in out.splitlines() if "SZ300002" in l)
     assert "▲" in line1
     assert "▲" not in line2
+
+
+# ── 回马枪显示（2026-08-07）──
+def _comeback_candidate(name: str, symbol: str, variant: str, score: int = 70) -> Candidate:
+    k = KlineSummary(trend=f"{variant}·超跌企稳", accumulated_pct=-12.0,
+                     volume_ratio=1.5, bottom_confirmed=False, score=score,
+                     dimensions={"comeback_variant": variant})
+    return Candidate(
+        stock=StockInfo(symbol=symbol, name=name, code=symbol[-6:], percent=3.0,
+                        current=12.0, value=1e8, rank_change=0, rank=0),
+        category="comeback", score=score, reason=k.trend, kline=k,
+        off_list=True, comeback_variant=variant)
+
+
+def test_display_comeback_section(capsys):
+    """回马枪分区渲染：含「反转」「回踩」两变体行（trend 列带变体前缀）。"""
+    disp_mod.display([], [], 0, 60,
+                     comeback_list=[_comeback_candidate("志特新材", "SZ300986", "反转"),
+                                    _comeback_candidate("某股", "SZ300111", "回踩")])
+    out = capsys.readouterr().out
+    assert "◆ 回马枪" in out
+    line_rt = next(l for l in out.splitlines() if "SZ300986" in l)
+    line_re = next(l for l in out.splitlines() if "SZ300111" in l)
+    assert "反转·超跌企稳" in line_rt
+    assert "回踩·超跌企稳" in line_re
+
+
+def test_display_priority_comeback_label_and_rank(monkeypatch, capsys):
+    """综合排序：comeback 显示 CB 标签 + 建议「回马」，且优先级插在 rebound 与 short_term 之间。"""
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "反弹", "rebound", 50)
+    _insert_rec_cat(conn, "SZ300002", "回马", "comeback", 90)
+    _insert_rec_cat(conn, "SZ300003", "超短", "short_term", 80)
+    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
+    disp_mod.display_priority(conn)
+    out = capsys.readouterr().out
+    lines = [l for l in out.splitlines() if "SZ30000" in l]
+    assert len(lines) == 3
+    assert "SZ300001" in lines[0]   # rebound 优先级 0
+    assert "SZ300002" in lines[1]   # comeback 优先级 1
+    assert "SZ300003" in lines[2]   # short_term 优先级 2
+    line_cb = lines[1]
+    assert "CB" in line_cb
+    assert "回马" in line_cb        # SUGGEST_BY_CAT['comeback']
 
 
 # ── 综合排序实时行情覆盖：live_quotes 对所有行优先（候选/非候选一致）──

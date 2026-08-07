@@ -87,6 +87,20 @@ def init_db() -> sqlite3.Connection:
             PRIMARY KEY(symbol, data_type)
         )
     """)
+    # 回马枪掉榜跟踪池：凡上过榜的 GEM 股入池，掉榜后保留若干交易日供 off-list 评估。
+    # over_limit=1 表示"超限启动"入池（当日涨幅超过 short_term 上限，强得没法买），
+    # 需在后续交易日持续评估（次日即使不上榜也被盯住）。
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS watch_pool (
+            symbol TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            added_date TEXT NOT NULL,
+            last_list_date TEXT NOT NULL,
+            last_eval_date TEXT,
+            over_limit INTEGER DEFAULT 0
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_watch_list ON watch_pool(last_list_date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_date ON appearances(date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_sym ON appearances(symbol)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_date ON recommendations(date)")
@@ -327,8 +341,8 @@ def get_prominence_map(conn: sqlite3.Connection, symbols: list[str]) -> dict[str
 def is_prominent(conn: sqlite3.Connection, symbol: str) -> bool:
     """单只股票是否满足辨识度条件（↻）。
 
-    复用 get_prominence_map 批量实现（避免 enhancer/tracker 各自维护逐股 N+1 拷贝
-    导致的口径漂移），供 enhancer._compute_prominence_labels 与 tracker 调用。
+    复用 get_prominence_map 批量实现（避免 enhancer/回马枪各自维护逐股 N+1 拷贝
+    导致的口径漂移），供 enhancer._compute_prominence_labels 与回马枪回踩变体调用。
     """
     return get_prominence_map(conn, [symbol]).get(symbol, False)
 
@@ -401,7 +415,7 @@ def get_recent_recommendations(conn: sqlite3.Connection,
     """查询近 N 个交易日的推荐记录（去重：同股取最新推荐日的最高分）。
 
     返回每只票在最近推荐日的记录（同日内取最高分，跨日取最新日）。
-    用于 tracker 模块持续跟踪历史推荐的后续表现。
+    用于回马枪回踩变体（回调到买点二次上车）的候选域。
     """
     today = now_beijing().date().isoformat()
     lookback = _n_trading_days_ago(lookback_days)
@@ -433,6 +447,104 @@ def get_recent_recommendations(conn: sqlite3.Connection,
             "score": r[3], "percent": r[4] or 0.0, "date": r[5],
         })
     return result
+
+
+def upsert_watch_symbol(conn: sqlite3.Connection, symbol: str, name: str,
+                        last_list_date: str | None = None,
+                        over_limit: bool = False) -> None:
+    """写入/刷新掉榜跟踪池（单条，委托批量实现）。
+
+    - 在榜票每次扫描刷新 last_list_date（保活）；
+    - 超限启动票（当日涨幅超过 short_term 上限）置 over_limit=1，持续盯防；
+    - added_date 保持首次入池日期不变。
+    """
+    upsert_watch_symbols(conn, [
+        {"symbol": symbol, "name": name,
+         "last_list_date": last_list_date, "over_limit": over_limit},
+    ])
+
+
+def upsert_watch_symbols(conn: sqlite3.Connection,
+                         entries: list[dict]) -> None:
+    """批量写入/刷新掉榜跟踪池（单次事务，避免逐条 commit 拖慢扫描循环）。
+
+    entries: [{symbol, name, last_list_date?, over_limit?}]
+    """
+    if not entries:
+        return
+    today = now_beijing().date().isoformat()
+    rows = [
+        (e.get("symbol", ""), e.get("name", ""),
+         e.get("last_list_date") or today, 1 if e.get("over_limit") else 0)
+        for e in entries
+        if e.get("symbol")
+    ]
+    try:
+        conn.executemany(
+            """INSERT INTO watch_pool (symbol, name, added_date, last_list_date, last_eval_date, over_limit)
+               VALUES (?, ?, ?, ?, NULL, ?)
+               ON CONFLICT(symbol) DO UPDATE SET
+                 name = excluded.name,
+                 last_list_date = MAX(watch_pool.last_list_date, excluded.last_list_date),
+                 over_limit = MAX(watch_pool.over_limit, excluded.over_limit)""",
+            [(sym, name, today, lst, ov) for sym, name, lst, ov in rows],
+        )
+        conn.commit()
+    except Exception as e:
+        print(f"  [!] 批量写入watch_pool失败: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
+def get_watch_symbols(conn: sqlite3.Connection) -> list[dict]:
+    """返回掉榜跟踪池全部条目。"""
+    try:
+        rows = conn.execute(
+            "SELECT symbol, name, last_list_date, over_limit, last_eval_date "
+            "FROM watch_pool"
+        ).fetchall()
+    except Exception as e:
+        logger.warning(f"get_watch_symbols failed: {e}")
+        return []
+    return [
+        {"symbol": r[0], "name": r[1], "last_list_date": r[2],
+         "over_limit": r[3], "last_eval_date": r[4]}
+        for r in rows
+    ]
+
+
+def mark_watch_evaluated(conn: sqlite3.Connection, symbols: list[str]) -> None:
+    """标记掉榜票今日已评估（避免同一交易日重复评估/重复补拉）。"""
+    if not symbols:
+        return
+    today = now_beijing().date().isoformat()
+    for sym in symbols:
+        try:
+            conn.execute(
+                "UPDATE watch_pool SET last_eval_date = ? WHERE symbol = ?", (today, sym))
+        except Exception:
+            pass
+    conn.commit()
+
+
+def prune_watch_pool(conn: sqlite3.Connection,
+                     keep_trading_days: int = 15) -> int:
+    """删除掉榜超过 keep_trading_days 个交易日的条目（last_list_date 过旧）。
+
+    over_limit 票的 last_list_date 在其超限上榜日写入，同样按此剪枝，
+    不额外豁免——避免超限队列无限期驻留。
+    """
+    cutoff = _n_trading_days_ago(keep_trading_days)
+    try:
+        cur = conn.execute(
+            "DELETE FROM watch_pool WHERE last_list_date < ?", (cutoff,))
+        conn.commit()
+        return cur.rowcount
+    except Exception as e:
+        logger.warning(f"prune_watch_pool failed: {e}")
+        return 0
 
 
 def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
@@ -592,7 +704,7 @@ def get_fund_flow_pct_map(conn: sqlite3.Connection, symbols: list[str]) -> dict[
 
     与资金流图标/综合排序档位同源口径（get_market_extra_cache data_type=fund_flow，
     仅当日数据）。无当日数据或查询失败时该 symbol 不包含在结果中（缺失=中性，
-    由调用方 fail-open 处理，如 tracker 资金流硬过滤、display 图标回退）。
+    由调用方 fail-open 处理，如回马枪回踩资金流硬过滤、display 图标回退）。
     """
     if not symbols:
         return {}

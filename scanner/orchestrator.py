@@ -46,13 +46,18 @@ from scanner.config import (
     RPS_PCTILE_LOW,
     RPS_PCTILE_MEDIUM,
     RISK_FLAGS_HARD_FILTER,
+    SHORT_TERM_MAX_TODAY_PCT,
+    WATCH_OFFLIST_KEEP_DAYS,
 )
+from scanner.comeback import evaluate_comeback
 from scanner.database import (
     get_cached_kline,
     get_loss_rates_batch,
     get_symbol_appearances,
+    prune_watch_pool,
     record_appearances,
     save_kline_to_db,
+    upsert_watch_symbols,
 )
 from scanner.enhancer import (
     accumulate_final_score,
@@ -414,8 +419,8 @@ def _compute_rps(candidates: list[Candidate],
         for rank, i in enumerate(order):
             pctiles[i] = (rank + 1) * 100 // total
     for c, pctile in zip(candidates, pctiles):
-        # 超跌反弹 accumulated 为负必落底部分位，RPS_LOW 惩罚违背策略初衷，豁免
-        if c.category == "rebound":
+        # 超跌反弹/回马枪 accumulated 为负必落底部分位，RPS_LOW 惩罚违背策略初衷，豁免
+        if c.category in ("rebound", "comeback"):
             scores[c.stock.symbol] = 0
             continue
         if pctile >= RPS_PCTILE_HIGH:
@@ -433,7 +438,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
                   adapter) -> tuple[
                       list[Candidate], list[Candidate], list[Candidate],
                       list[Candidate], list[Candidate], list[Candidate],
-                      list[StockInfo], int, dict]:
+                      list[Candidate], list[StockInfo], int, dict]:
     global _session_state
     session_state = _session_state
     today = now_beijing().date().isoformat()
@@ -471,6 +476,22 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
             continue
         gem_stocks_filtered.append(s)
 
+    # 回马枪掉榜跟踪池维护（2026-08-07）：
+    # 1) 在榜 GEM 票保活（刷新 last_list_date，掉榜后保留 WATCH_OFFLIST_KEEP_DAYS 个交易日）
+    # 2) 超限启动票（今日涨幅 > short_term 上限，强得没法买）置 over_limit=1 持续盯防
+    # 3) 剪枝过旧条目
+    try:
+        upsert_watch_symbols(conn, [
+            {"symbol": s.symbol, "name": s.name, "last_list_date": today}
+            for s in gem_stocks_filtered
+        ] + [
+            {"symbol": s.symbol, "name": s.name, "last_list_date": today, "over_limit": True}
+            for s in gem_stocks_filtered if s.percent > SHORT_TERM_MAX_TODAY_PCT
+        ])
+        prune_watch_pool(conn, WATCH_OFFLIST_KEEP_DAYS)
+    except Exception as e:
+        print(f"  [!] 掉榜跟踪池维护失败: {e}")
+
     klines = _fetch_all_klines(conn, adapter, gem_stocks_filtered)
 
     clusters = get_sector_clusters(gem_stocks_filtered)
@@ -494,7 +515,23 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         if st:
             short_term_list.append(st)
 
-    all_candidates = new_faces + momentum + pullback_list + rebound_list + short_term_list
+    # 回马枪：评估掉榜跟踪池 + 近 N 日推荐（两变体均 category="comeback"）。
+    # 在榜票走正常策略，此处只处理掉榜票（on_list_symbols 排除）。K 线补拉
+    # 已过 5 日跌幅预过滤 + KLINE_FETCH_DEADLINE 限时，成本有界。
+    comeback_rebound: list[Candidate] = []
+    comeback_reentry: list[Candidate] = []
+    try:
+        on_list_symbols = {s.symbol for s in gem_stocks_filtered}
+        comeback_rebound, comeback_reentry, cb_quotes = evaluate_comeback(
+            conn, adapter,
+            lambda stocks: _fetch_all_klines(conn, adapter, stocks),
+            today, on_list_symbols, clusters)
+        market_caps.update(cb_quotes)  # 并入市值/行情，供后续市值富集与实时行情
+    except Exception as e:
+        print(f"  [!] 回马枪评估失败: {type(e).__name__}: {e}")
+
+    all_candidates = (new_faces + momentum + pullback_list + rebound_list
+                      + short_term_list + comeback_rebound + comeback_reentry)
     for c in all_candidates:
         cap_data = market_caps.get(c.stock.symbol, {})
         c.market_cap = cap_data.get("market_cap", 0)
@@ -603,11 +640,13 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     pullback_list = [c for c in all_candidates if c.category == "pullback"]
     rebound_list = [c for c in all_candidates if c.category == "rebound"]
     short_term_list = [c for c in all_candidates if c.category == "short_term"]
+    comeback_list = [c for c in all_candidates if c.category == "comeback"]
     new_faces.sort(key=lambda c: -c.score)
     momentum.sort(key=lambda c: -c.score)
     pullback_list.sort(key=lambda c: -c.score)
     rebound_list.sort(key=lambda c: -c.score)
     short_term_list.sort(key=lambda c: -c.score)
+    comeback_list.sort(key=lambda c: -c.score)
 
     # 同板块上限：板块普涨日防止单板块淹没超短列表。
     # 必须在 apply_all_bonuses + accumulate_final_score 之后执行：
@@ -634,7 +673,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     }
 
     return (new_faces, momentum, pullback_list, rebound_list, short_term_list,
-            stale_candidates, gem_stocks_filtered, filtered_large_cap,
+            comeback_list, stale_candidates, gem_stocks_filtered, filtered_large_cap,
             current_quotes)
 
 

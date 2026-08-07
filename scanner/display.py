@@ -11,9 +11,6 @@ from scanner.config import (
     MAX_STOCK_PRICE,
     RISK_FLAGS_DISPLAY_HARD,
     SUGGEST_BY_CAT,
-    TRACK_DISPLAY_BUY_MAX,
-    TRACK_DISPLAY_WATCH_MAX,
-    TRACK_RECOMMENDATION_DAYS,
     YI,
     now_beijing,
 )
@@ -227,7 +224,7 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             pullback_list: list[Candidate] | None = None,
             short_term_list: list[Candidate] | None = None,
             rebound_list: list[Candidate] | None = None,
-            tracked_recs: list = None,
+            comeback_list: list[Candidate] | None = None,
             conn=None, live_quotes: dict[str, dict] | None = None,
             rank_map: dict[str, int] | None = None):
     if last_ranks is None:
@@ -240,11 +237,13 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
         short_term_list = []
     if rebound_list is None:
         rebound_list = []
+    if comeback_list is None:
+        comeback_list = []
 
     print(f"{'='*96}")
     print(f"  创业板飙升榜监控  ({now})")
 
-    all_c = new_faces + pure_momentum + pullback_list + rebound_list + short_term_list
+    all_c = new_faces + pure_momentum + pullback_list + rebound_list + comeback_list + short_term_list
     # 双挂去重：同一 symbol 在多个桶出现时，仅在先展示的桶显示一次
     displayed_syms: set[str] = set()
     sec_counts: dict[str, int] = {}
@@ -257,6 +256,7 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
     cap_count = sum(1 for c in all_c if c.market_cap > 0)
     cap_status = f"市值数据{cap_count}/{len(all_c)}" if all_c else "暂无候选"
     pb_red = f"{ANSI['RED']}回{len(pullback_list)}{ANSI['RESET']}" if pullback_list else f"回{len(pullback_list)}"
+    cb_tag = f"{ANSI['CYAN']}马{len(comeback_list)}{ANSI['RESET']}" if comeback_list else f"马{len(comeback_list)}"
     # 大盘环境标签：从首个 candidate 的 dimensions 读取 market_env_bonus
     env_bonus = 0
     if all_c and all_c[0].kline:
@@ -267,7 +267,7 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
         env_tag = f" | {ANSI['RED']}[大盘弱势·谨慎]{ANSI['RESET']}"
     else:
         env_tag = " | [大盘中性]"
-    print(f"  创业板共 {gem_total} 只 | 新{len(new_faces)}动{len(pure_momentum)}{pb_red}反{len(rebound_list)}超{len(short_term_list)}{filter_info} | {sec_line} | {cap_status} | 每{interval}s刷新{env_tag}")
+    print(f"  创业板共 {gem_total} 只 | 新{len(new_faces)}动{len(pure_momentum)}{pb_red}反{len(rebound_list)}{cb_tag}超{len(short_term_list)}{filter_info} | {sec_line} | {cap_status} | 每{interval}s刷新{env_tag}")
     print(f"  小而美: 市值≤{int(MAX_MARKET_CAP/YI)}亿 股价≤{MAX_STOCK_PRICE}元")
     print(f"{'='*96}")
 
@@ -355,6 +355,16 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             displayed_syms.add(c.stock.symbol)
             _print_row(c, icon="↗")
 
+    if comeback_list:
+        print(f"\n{ANSI['CYAN']}◆ 回马枪 — 掉榜跟踪/回调买点{ANSI['RESET']}  (找: 掉榜超跌企稳首阳 / 近5日推荐回调到买点)")
+        print(hdr)
+        print(f"  {'-'*112}")
+        for c in comeback_list:
+            if c.stock.symbol in displayed_syms:
+                continue
+            displayed_syms.add(c.stock.symbol)
+            _print_row(c, icon="↩")
+
     if short_term_list:
         print(f"\n{ANSI['RED']}◆ 超短次日 — 今日涨明日卖{ANSI['RESET']}  (找: 涨2-8%+放量+板块活跃)")
         print(hdr)
@@ -377,61 +387,6 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
 
     display_priority(conn, live_quotes=live_quotes, rank_map=rank_map)
 
-    if tracked_recs:
-        # 只显示高确信"到买点"；"观察中"默认隐藏（TRACK_DISPLAY_WATCH_MAX=0），
-        # 需要时把该常量改回 >0 可恢复补充尾部。
-        buy = [t for t in tracked_recs if t.status == "到买点"]
-        watch = [t for t in tracked_recs if t.status == "观察中"]
-
-        # 资金流图标：从 market_extra_cache 读当日资金流（与综合排序同源口径），
-        # 展示型标识，不影响排序/状态分类。conn=None（测试/独立场景）时跳过查库。
-        flow_pct_map: dict[str, float] = {}
-        if conn is not None:
-            flow_pct_map = get_fund_flow_pct_map(conn, [t.symbol for t in tracked_recs])
-
-        def _tracked_row(t):
-            today_str = pct_colored(t.today_pct)
-            cum_str = f"{t.cum_return:+.1f}%"
-            if t.cum_return >= 5:
-                cum_color = ANSI["GREEN"]
-            elif t.cum_return <= -5:
-                cum_color = ANSI["RED"]
-            else:
-                cum_color = ""
-            cum_display = f"{cum_color}{cum_str:>10}{ANSI['RESET']}" if cum_color else f"{cum_str:>10}"
-            # 状态着色：到买点绿色，观察中黄色
-            if t.status == "到买点":
-                status_display = f"{ANSI['GREEN']}{_pad(t.status,8)}{ANSI['RESET']}"
-            else:
-                status_display = f"{ANSI['YELLOW']}{_pad(t.status,8)}{ANSI['RESET']}"
-            signals_str = "/".join(t.signals) if t.signals else ""
-            prom_str = ""
-            if t.prominence_labels:
-                tags = " ".join(t.prominence_labels)
-                prom_str = f" {ANSI['CYAN']}│{tags}│{ANSI['RESET']}"
-            # 资金流图标（无数据不显示）
-            ff_icon = _fund_flow_icon_str(flow_pct_map.get(t.symbol))
-            ff_str = f" {ff_icon}" if ff_icon else ""
-            print(f"  {t.rec_date} {_pad(t.name,10)} {t.symbol:<12} {_pad(t.rec_category,14)} "
-                  f"{status_display} {t.buy_signals:>4} {today_str} {cum_display} {signals_str}{prom_str}{ff_str}")
-
-        print(f"\n{ANSI['CYAN']}◆ 历史推荐跟踪 — 近{TRACK_RECOMMENDATION_DAYS}日推荐回调到买点{ANSI['RESET']}")
-        print(f"  {'—'*108}")
-        print(f"  {_pad('推荐日',10)} {_pad('名称',10)} {_pad('代码',12)} {_pad('策略',14)} "
-              f"{_pad('状态',8)} {_pad('信号',4,'r')} {_pad('今日涨幅',10,'r')} "
-              f"{_pad('累计收益',10,'r')} {_pad('买点信号',30)}")
-        print(f"  {'-'*108}")
-        # 仅展示高确信"到买点"
-        for t in buy[:TRACK_DISPLAY_BUY_MAX]:
-            _tracked_row(t)
-        # 仅当配置允许（TRACK_DISPLAY_WATCH_MAX > 0）且到买点不足时，才补充"观察中"尾部
-        if TRACK_DISPLAY_WATCH_MAX > 0 and len(buy) < TRACK_DISPLAY_BUY_MAX:
-            for t in watch[:TRACK_DISPLAY_WATCH_MAX]:
-                _tracked_row(t)
-        elif TRACK_DISPLAY_WATCH_MAX > 0 and watch:
-            print(f"  {ANSI['YELLOW']}  · 另有 {len(watch)} 只观察中（已省略，回调结构不充分）{ANSI['RESET']}")
-        print(f"  {ANSI['CYAN']}▲▲/▲ 净流入  {ANSI['RESET']}{ANSI['RED']}▼/▼▼ 净流出{ANSI['RESET']}  (无图标 = 中性/无数据)")
-
 
 def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
                      rank_map: dict[str, int] | None = None):
@@ -452,10 +407,12 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     CAT_LABEL = {
         "known_new_face": "kNF", "rebound": "RBD", "new_face": "NEW",
         "momentum": "MOM", "short_term": "ST", "pullback": "PB",
+        "comeback": "CB",
     }
     CAT_COLOR = {
         "known_new_face": ANSI["GREEN"], "rebound": ANSI["CYAN"], "new_face": ANSI["GREEN"],
         "momentum": ANSI["YELLOW"], "short_term": ANSI["RED"], "pullback": ANSI["RED"],
+        "comeback": ANSI["CYAN"],
     }
 
     for entry in today_recs:
@@ -618,6 +575,7 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
           f"  |  {SUGGEST_BY_CAT['new_face']} → NEW(新面孔)"
           f"  |  {SUGGEST_BY_CAT['momentum']} → {ANSI['YELLOW']}MOM(动量){ANSI['RESET']}"
           f"  |  {SUGGEST_BY_CAT['short_term']} → ST(超短次日卖)"
-          f"  |  {SUGGEST_BY_CAT['pullback']} → PB(回调,负期望)")
+          f"  |  {SUGGEST_BY_CAT['pullback']} → PB(回调,负期望)"
+          f"  |  {SUGGEST_BY_CAT['comeback']} → CB(回马枪)")
     print(f"  {ANSI['CYAN']}↻{ANSI['RESET']} 辨识度高(近5日上榜≥3次均排名≤70)  {ANSI['YELLOW']}⚠{ANSI['RESET']} 带有风险标签")
     print(f"  排序档位: ▲▲/▲(净流入≥5%) 或 ↻ → 置前  |  ▼/▼▼(净流出≤-5%) → 劣后  |  其余 → 普通")

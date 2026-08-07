@@ -505,37 +505,44 @@ RISK_FLAGS_HARD_FILTER: set[str] = {
 }
 
 # Time-based bonus thresholds (minutes since midnight)
-STALE_TIMEOUT_MINUTES = 30  # 掉榜后保留时长
-TRACK_RECOMMENDATION_DAYS = 5  # 历史推荐跟踪窗口（交易日）
+STALE_TIMEOUT_MINUTES = 30  # 掉榜后保留时长（进程内 today_pool 掉榜保留，与 watch_pool 无关）
 
-# ── 历史推荐跟踪 — 买点信号识别阈值 ──
-# 跟踪场景核心：找"推荐后回调到买点"的票，不是简单展示全部历史推荐
-# 硬过滤：排除不能买的（大涨追高/已错过/暴跌失效）
-TRACK_FILTER_TODAY_HIGH = 5.0    # 今日涨幅≥此值 → 过滤（不追高）
-TRACK_FILTER_TODAY_LOW = -5.0    # 今日跌幅≥此值 → 过滤（可能破位）
-TRACK_FILTER_CUM_HIGH = 10.0     # 累计收益≥此值 → 过滤（已错过）
-TRACK_FILTER_CUM_LOW = -10.0     # 累计收益≤此值 → 过滤（信号失效）
-# 资金流硬过滤：主力净占比 ≤ -5% → 剔除（回调可能是出货，不追）；无当日数据 → 保留（视同中性）
-TRACK_FUND_FLOW_FILTER_LOW = FUND_FLOW_MAIN_PCT_WEAK  # 与评分扣分档同源，避免阈值漂移
+# ── 回马枪（掉榜跟踪）— 独立策略桶（2026-08-07 新增）──
+# 背景：候选池由"当次热榜"驱动，掉榜超跌股（如志特新材 07-09→07-31 三周掉榜）完全不可见，
+# 反弹企稳日（07-14~07-30）无法被 rebound 评估。回马枪补上这块盲区。
+# 评估域 = watch_pool（上过榜的 GEM 股）∪ 近 N 日推荐，减去今日在榜票；
+# 每票每日最多评估一次（last_eval_date 落库，重启不丢）。
+WATCH_POOL_MAX = 600                 # 掉榜跟踪池上限（超限时淘汰 last_list_date 最旧）
+WATCH_OFFLIST_KEEP_DAYS = 15         # 掉榜后保留交易日数（覆盖三周级掉榜，见志特新材案例）
+COMEBACK_MIN_SCORE = 18              # 回马枪最低分（反转变体复用 rebound 阈值）
+# 反转变体：超跌企稳（复用 analyze_rebound 语义，off_list 收紧）
+COMEBACK_MIN_TODAY_PCT = 2.0         # off_list 今日涨幅下限（比 rebound 0.5 更严，反转确认）
+COMEBACK_MAX_TODAY_PCT = 12.0        # 与 short_term 上限同源：覆盖 8-12% 续涨（掉榜日无热榜背书）
+COMEBACK_PREFILTER_5D_DROP = -8.0    # 5日累计跌幅≤此值才补拉当日 bar（成本预过滤，从~600降到数十/日）
+COMEBACK_POS_DIMS = 3                # off_list 交叉验证维度下限（榜上为2，掉榜无热榜背书更严）
+# 回踩变体（吸收原历史推荐跟踪 tracker）：近 N 日推荐回调到买点 → 二次上车
+COMEBACK_REENTRY_DAYS = 5            # 回踩跟踪窗口（交易日）
+COMEBACK_REENTRY_BASE_SCORE = 40     # 回踩基础分（每命中一个买点信号 +15）
+COMEBACK_REENTRY_SIGNAL_SCORE = 15
+COMEBACK_REENTRY_FILTER_TODAY_HIGH = 5.0    # 今日涨幅≥此值 → 过滤（不追高）
+COMEBACK_REENTRY_FILTER_TODAY_LOW = -5.0    # 今日跌幅≤此值 → 过滤（可能破位）
+COMEBACK_REENTRY_FILTER_CUM_HIGH = 10.0     # 累计收益≥此值 → 过滤（已错过）
+COMEBACK_REENTRY_FILTER_CUM_LOW = -10.0     # 累计收益≤此值 → 过滤（信号失效）
+# 资金流硬过滤：主力净占比 ≤ -5% → 剔除（回调可能是出货）；无当日数据 → 保留（视同中性）
+COMEBACK_REENTRY_FUND_FLOW_LOW = FUND_FLOW_MAIN_PCT_WEAK  # 与评分扣分档同源，避免阈值漂移
 # 买点信号阈值（满足条件计 1 分，信号数决定状态分类）
-TRACK_MA20_SUPPORT_PCT = 3.0     # |close-MA20|/MA20 < 此值 且 MA20 上行 → MA20 支撑
-TRACK_VOL_SHRINK_RATIO = 0.8     # vol_ratio < 此值 → 缩量回调
-TRACK_RSI_LOW = 30               # RSI 合理区下限
-TRACK_RSI_HIGH = 50              # RSI 合理区上限（回落但不超卖）
-TRACK_BOLL_MID_PCT = 3.0         # 距 BOLL 中轨±此值内 → 位置合理
-TRACK_MA20_SLOPE_MIN = 0.5       # MA20 日涨幅>此值 → 上行（百分比）
-# 状态分类阈值
-TRACK_STATUS_BUY = 4             # 信号数≥此值 → "到买点"
+COMEBACK_REENTRY_MA20_SUPPORT_PCT = 3.0     # |close-MA20|/MA20 < 此值 且 MA20 上行 → MA20 支撑
+COMEBACK_REENTRY_VOL_SHRINK_RATIO = 0.8     # vol_ratio < 此值 → 缩量回调
+COMEBACK_REENTRY_RSI_LOW = 30               # RSI 合理区下限
+COMEBACK_REENTRY_RSI_HIGH = 50              # RSI 合理区上限（回落但不超卖）
+COMEBACK_REENTRY_BOLL_MID_PCT = 3.0         # 距 BOLL 中轨±此值内 → 位置合理
+COMEBACK_REENTRY_MA20_SLOPE_MIN = 0.5       # MA20 日涨幅>此值 → 上行（百分比）
+COMEBACK_REENTRY_STATUS_BUY = 4             # 信号数≥此值 → "到买点"
 # 观察中门槛由 2 提到 3：原 2 个信号极易由同源指标（MA20支撑/未破位/BOLL中轨
 # 三者本质都是"价格在均线附近"）一次凑齐，导致大量横盘票涌入观察列表、噪声过大。
-# 提到 3 后"观察中"需更实质的回调结构才出现。
-TRACK_STATUS_WATCH = 3           # 信号数≥此值 → "观察中"，否则 "未到买点"（过滤）
-TRACK_KLINE_REFRESH_LOOPS = 5    # 每 N 轮给跟踪票拉一次 K 线（节流）
-# 历史推荐跟踪显示上限（避免列表过长）：只显示高确信"到买点"，
-# "观察中"默认不显示（TRACK_DISPLAY_WATCH_MAX=0）。若想恢复观察中补充尾部，
-# 把该值改回 >0（如 5）即可，display 会自动追加并封顶。
-TRACK_DISPLAY_BUY_MAX = 10       # "到买点"最多显示条数
-TRACK_DISPLAY_WATCH_MAX = 0      # "观察中"补充最多显示条数（0 = 不显示，只看到买点）
+COMEBACK_REENTRY_STATUS_WATCH = 3           # 信号数≥此值 → "观察中"，否则 "未到买点"（过滤）
+COMEBACK_REENTRY_DISPLAY_BUY_MAX = 10       # "到买点"最多显示条数
+COMEBACK_REENTRY_DISPLAY_WATCH_MAX = 0      # "观察中"补充最多显示条数（0 = 不显示，只看到买点）
 
 # 辨识度标签 — 反复上榜
 PROMINENCE_LOOKBACK_DAYS = 5     # 回溯 N 个交易日
@@ -671,8 +678,9 @@ PULLBACK_20D_EXTREME_PENALTY = -15
 # 且 score IC 反指（-0.134/-0.179 双口径），类别内分数不可靠，不置顶。
 # 用 `python -m scanner.backtest --ranking` 校准此顺序，人工复核后更新。
 CAT_DISPLAY_PRIORITY = {
-    "known_new_face": 3, "rebound": 0, "new_face": 4,
-    "momentum": 2, "short_term": 1, "pullback": 5,
+    "known_new_face": 4, "rebound": 0, "new_face": 5,
+    "momentum": 3, "short_term": 2, "pullback": 6,
+    "comeback": 1,
 }
 
 # SUGGEST_BY_CAT：操作建议按类别独立映射（与优先级解耦，语义不变）。
@@ -684,4 +692,5 @@ SUGGEST_BY_CAT = {
     "momentum": "参考",
     "short_term": "\033[91m超短\033[0m",
     "pullback": "\033[91m回避\033[0m",
+    "comeback": "\033[96m回马\033[0m",
 }

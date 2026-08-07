@@ -1,4 +1,5 @@
 from scanner.config import (
+    COMEBACK_POS_DIMS,
     PULLBACK_20D_GAIN_EXTREME,
     PULLBACK_VOL_HEALTHY,
     PULLBACK_VOL_HIGH,
@@ -747,6 +748,7 @@ _mo_is_overbought = _is_overbought
 def validate(cat: str, stock, kline_summary, closes: list[float],
              historical_kline: list[dict], clusters: dict[str, list[str]] | None = None,
              feats: dict | None = None,
+             off_list: bool = False,
              ) -> tuple[bool, int, dict]:
     if cat in ("new_face", "known_new_face"):
         return validate_nf(stock, kline_summary, closes, historical_kline, clusters, feats)
@@ -755,7 +757,11 @@ def validate(cat: str, stock, kline_summary, closes: list[float],
     if cat == "pullback":
         return validate_pullback(stock, kline_summary, closes, historical_kline, clusters, feats)
     if cat == "rebound":
-        return validate_rebound(stock, kline_summary, closes, historical_kline, clusters, feats)
+        passed, bonus, details = validate_rebound(stock, kline_summary, closes, historical_kline, clusters, feats)
+        if off_list and details.get("_pos_dims", 0) < COMEBACK_POS_DIMS:
+            # 回马枪·反转：掉榜票无热榜背书，交叉验证维度比榜上更严
+            return False, 0, details
+        return passed, bonus, details
     if cat == "short_term":
         return validate_short_term(stock, kline_summary, closes, historical_kline, clusters, feats)
     return False, 0, {}

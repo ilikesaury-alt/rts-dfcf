@@ -38,7 +38,6 @@ from scanner.display import display
 from scanner.feishu import push_feishu
 from scanner.log_utils import log_results
 from scanner.orchestrator import scan_with_raw
-from scanner.tracker import track_recent_recommendations
 from scanner.trading_session import is_trading_time, next_session_label, seconds_until_next_session
 
 if sys.platform == "win32":
@@ -142,7 +141,7 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 both_count = sum(1 for i in xq_raw if i.get("source_tag") == "both")
                 print(f"\r  📡 飙升榜{len(xq_raw)}只 (双榜{both_count}只)", end="", flush=True)
 
-                new_faces, momentum, pullback_list, rebound_list, short_term_list, stale_candidates, all_gem, filtered_large_cap, current_quotes = (
+                new_faces, momentum, pullback_list, rebound_list, short_term_list, comeback_list, stale_candidates, all_gem, filtered_large_cap, current_quotes = (
                     scan_with_raw(xq_raw, conn, adapter))
 
                 new_faces.sort(key=lambda x: -x.score)
@@ -150,6 +149,7 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 pullback_list.sort(key=lambda x: -x.score)
                 rebound_list.sort(key=lambda x: -x.score)
                 short_term_list.sort(key=lambda x: -x.score)
+                comeback_list.sort(key=lambda x: -x.score)
 
                 current_rank_map = {s.symbol: s.rank for s in all_gem}
 
@@ -167,27 +167,24 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 except Exception as e:
                     print(f"  [!] 补拉推荐票行情失败: {e}")
 
-                # 历史推荐跟踪：查近5天推荐的实时表现
-                try:
-                    tracked = track_recent_recommendations(conn, adapter)
-                except Exception as e:
-                    tracked = []
-                    print(f"  [!] 历史推荐跟踪失败: {e}")
+                # 历史推荐跟踪已并入回马枪（2026-08-07）：tracker 模块删除，不再单独查询
                 display(new_faces, momentum, len(all_gem), interval,
                         filtered_large_cap=filtered_large_cap, last_ranks=last_ranks,
                         pullback_list=pullback_list,
                         short_term_list=short_term_list,
-                        rebound_list=rebound_list, tracked_recs=tracked,
+                        rebound_list=rebound_list,
+                        comeback_list=comeback_list,
                         conn=conn, live_quotes=live_quotes,
                         rank_map=current_rank_map)
-                log_results(new_faces, momentum + pullback_list + rebound_list + short_term_list)
+                log_results(new_faces, momentum + pullback_list + rebound_list + short_term_list + comeback_list)
                 if not no_feishu:
                     pushed = push_feishu(new_faces, momentum, pullback_list, stale_candidates,
                                         len(all_gem), filtered_large_cap=filtered_large_cap,
                                         current_rank_map=current_rank_map,
                                         short_term_list=short_term_list,
-                                        rebound_list=rebound_list)
-                    if not pushed and (new_faces or momentum or pullback_list or rebound_list or short_term_list):
+                                        rebound_list=rebound_list,
+                                        comeback_list=comeback_list)
+                    if not pushed and (new_faces or momentum or pullback_list or rebound_list or short_term_list or comeback_list):
                         print(f"\r  📤 飞书推送跳过（冷却中/无变化）", end="", flush=True)
 
                 last_ranks.clear()
@@ -209,6 +206,11 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     src = _SOURCE_LABELS.get(top_r.stock.source_tag, top_r.stock.source_tag)
                     print(f"  ▶ 超跌反弹首选: {top_r.stock.name}({top_r.stock.symbol}) [{src}] "
                           f"{top_r.stock.percent:+.2f}% | {top_r.kline.trend if top_r.kline else ''}")
+                if comeback_list:
+                    top_c = comeback_list[0]
+                    print(f"  ▶ 回马枪首选: {top_c.stock.name}({top_c.stock.symbol}) "
+                          f"[{top_c.comeback_variant}] {top_c.stock.percent:+.2f}% "
+                          f"| {top_c.kline.trend if top_c.kline else ''}")
                 if short_term_list:
                     top_s = short_term_list[0]
                     src = _SOURCE_LABELS.get(top_s.stock.source_tag, top_s.stock.source_tag)
@@ -216,7 +218,7 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                           f"{top_s.stock.percent:+.2f}% | RPS:{top_s.rps_bonus}")
 
                 save_recommendations(conn, new_faces,
-                                     momentum + pullback_list + rebound_list + short_term_list)
+                                     momentum + pullback_list + rebound_list + short_term_list + comeback_list)
                 try:
                     n = backfill_outcomes(conn)
                     if n:

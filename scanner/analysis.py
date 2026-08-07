@@ -41,6 +41,8 @@ from scanner.config import (
     REBOUND_MIN_TODAY_PCT,
     REBOUND_NEAR_LOW_PCT,
     REBOUND_WEIGHTS,
+    COMEBACK_MAX_TODAY_PCT,
+    COMEBACK_MIN_TODAY_PCT,
     RECENT_2_RETURN_THRESHOLD,
     RECENT_2D_BONUS,
     SHORT_TERM_MAX_TODAY_PCT,
@@ -1160,13 +1162,18 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
 
 def analyze_rebound(stock: StockInfo, kline: list[dict] | None,
                     today_str: str | None = None,
-                    features: dict | None = None) -> KlineSummary | None:
+                    features: dict | None = None,
+                    off_list: bool = False) -> KlineSummary | None:
     """超跌反弹策略：识别暴跌后的企稳首阳。
 
     与 new_face 的区别：new_face 要求 accumulated >= -10%（前期无大跌），
     rebound 专门捕获 5日累计跌幅 ≤ -10% 的超跌后企稳阳线。
     典型场景：连跌4-5日（含暴跌日）后出现温和放量阳线；
     或阴跌企稳（无单日暴跌但累计跌 10-15%，P0-1 放宽）。
+
+    off_list=True（回马枪·反转）：掉榜票无热榜背书，收紧今日涨幅下限
+    （COMEBACK_MIN_TODAY_PCT=2.0，反转确认而非抄底猜单），上限放宽到 12%
+    （覆盖 8-12% 续涨，掉榜日无短线上限约束）。
     """
     if not kline or len(kline) < 6:  # 至少6根：5日历史+今日
         return None
@@ -1174,8 +1181,10 @@ def analyze_rebound(stock: StockInfo, kline: list[dict] | None,
     W = REBOUND_WEIGHTS
     today_pct = stock.percent
 
-    # 入池硬筛：今日企稳阳线（温和涨幅）
-    if today_pct < REBOUND_MIN_TODAY_PCT or today_pct > REBOUND_MAX_TODAY_PCT:
+    # 入池硬筛：今日企稳阳线（温和涨幅）；off_list 用回马枪档位
+    min_today = COMEBACK_MIN_TODAY_PCT if off_list else REBOUND_MIN_TODAY_PCT
+    max_today = COMEBACK_MAX_TODAY_PCT if off_list else REBOUND_MAX_TODAY_PCT
+    if today_pct < min_today or today_pct > max_today:
         return None
 
     today_str = today_str or now_beijing().date().isoformat()

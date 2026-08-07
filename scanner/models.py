@@ -59,3 +59,5 @@ class Candidate:
     prominence_labels: list[str] = field(default_factory=list)  # 辨识度标签（反复上榜等）
     hist_loss_rate: float | None = None  # 历史大跌率（近90天推荐中次日<=-5%占比），None=样本不足
     driving_concept: str = ""  # 当前推动概念（仅展示，不参与打分）
+    off_list: bool = False    # 掉榜跟踪候选（回马枪）：不在当次热榜上，无热榜背书
+    comeback_variant: str = ""  # 回马枪变体："反转" / "回踩"（展示与持久化区分）
