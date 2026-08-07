@@ -6,6 +6,7 @@
 - **Crash-proof run**: `python unified_scanner.py --supervise` (父进程拉起子进程，崩溃后指数退避自动重启；重启事件写入 `logs/supervisor.log`)
 - **Run tests**: `python -m pytest tests/ -v`
 - **Single test**: `python -m pytest tests/test_analysis.py::TestAnalysis::test_new_face_bollinger_oversold -v`
+- **组合级回测**: `python -m scanner.portfolio_backtest --compare`（多策略对比：各现役类别+综合+基准）/ `--days 60`（窗口）/ `--category new_face`（单策略）/ `--export nav.csv`（导出净值序列）
 
 ## Long-Run Robustness (P-robust)
 
