@@ -286,7 +286,7 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
     hdr = (f"  {_pad('排名',4,'r')} {_pad('变化',6,'r')} {_pad('源',4)} {_pad('名称',10)} "
            f"{_pad('代码',12)} {_pad('现价',7,'r')} {_pad('涨幅',8,'r')} "
            f"{_pad('趋势',14)} {_pad('5日累计',8,'r')} {_pad('量比',6,'r')} "
-           f"{_pad('评分',4,'r')} {_pad('增强',16)} {_pad('市值',8,'r')}")
+           f"{_pad('评分',4,'r')} {_pad('市值',8,'r')}")
 
     def _print_row(c: Candidate, icon: str = "", show_val: bool = False):
         s = c.stock
@@ -302,7 +302,6 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
         delta_display = (f"{delta_color}{_pad(delta_text,6,'r')}{ANSI['RESET']}"
                          if delta_color else _pad(delta_text,6,'r'))
         src_tag = _source_tag(c)
-        bonus_str = _bonus_tag(c)
         cap_str = _fmt_market_cap(c.market_cap)
         val_str = f"{s.value:.0f}" if s.value else "N/A"
         # 风险标签分级显示：硬信号（超买/主力出货/趋势破位）展开文字，
@@ -327,16 +326,16 @@ def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
             print(f"  {s.rank:>4} {delta_display} {_pad(src_tag,4)} {_pad(display_name,10)} "
                   f"{s.symbol:<12} {cur:>7} {pct_colored(s.percent)} "
                   f"{_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} "
-                  f"{_pad(bonus_str,16)} {cap_str:>8} {val_str:>6} {full_risk}{extra_suffix}")
+                  f"{cap_str:>8} {val_str:>6} {full_risk}{extra_suffix}")
         else:
             print(f"  {s.rank:>4} {delta_display} {_pad(src_tag,4)} {_pad(display_name,10)} "
                   f"{s.symbol:<12} {cur:>7} {pct_colored(s.percent)} "
                   f"{_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} "
-                  f"{_pad(bonus_str,16)} {cap_str:>8} {full_risk}{extra_suffix}")
+                  f"{cap_str:>8} {full_risk}{extra_suffix}")
 
     print(f"\n{ANSI['GREEN']}◆ 新面孔 — 底部异动 / 刚启动{ANSI['RESET']}  (找: 今日小涨+日线底部放量)")
     print(hdr)
-    print(f"  {'-'*112}")
+    print(f"  {'-' * max(2, wcwidth.wcswidth(hdr) - 2)}")
     if new_faces:
         for c in new_faces:
             if c.stock.symbol in displayed_syms:
