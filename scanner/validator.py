@@ -17,9 +17,6 @@ from scanner.config import (
     V_NF_CONVERGE_PARTIAL,
     V_NF_CONVERGE_STRONG,
     V_NF_DIVERGENCE_BULL,
-    V_NF_HL_CLEAR,
-    V_NF_HL_FAIL,
-    V_NF_HL_STABLE,
     V_NF_SECTOR_MOD,
     V_NF_SECTOR_STRONG,
     V_NF_SECTOR_WEAK,
@@ -163,8 +160,13 @@ def _has_macd_bull_divergence(closes: list[float], macd: dict | None) -> bool:
 
 
 def _nf_higher_low(closes: list[float]) -> tuple[int, str]:
+    # Step 2 (2026-08-07): IC 归因显示「更高低结构」对 cum_3d 的 IC 为负
+    # （触发组均值 -2.26% vs 未触发 -1.01%，胜率 30% vs 39%），即更高低反而是
+    # 动量延续而非超卖反转，会误导 new_face 选股。故将其从「正维度」改为中性：
+    # 不再加分（V_NF_HL_CLEAR 失效），也不再作为 pos_dims 的通过依据。
+    # 超卖反转的真正信号由 convergence（RSI<30/MACD金叉/KDJ）承担。
     if len(closes) < 10:
-        return 0, "data_short"
+        return 0, "hl_neutral_data_short"
 
     recent_zone = min(closes[-5:])
     prev_zone = min(closes[-10:-5])
@@ -172,10 +174,10 @@ def _nf_higher_low(closes: list[float]) -> tuple[int, str]:
     prev_zone = max(prev_zone, 0.001)
 
     if recent_zone > prev_zone * 1.01:
-        return V_NF_HL_CLEAR, f"hl_clear_{recent_zone/prev_zone:.3f}"
+        return 0, f"hl_neutral_clear_{recent_zone/prev_zone:.3f}"
     if recent_zone > prev_zone * 0.98:
-        return V_NF_HL_STABLE, f"hl_stable_{recent_zone/prev_zone:.3f}"
-    return V_NF_HL_FAIL, f"hl_fail_{recent_zone/prev_zone:.3f}"
+        return 0, f"hl_neutral_stable_{recent_zone/prev_zone:.3f}"
+    return 0, f"hl_neutral_fail_{recent_zone/prev_zone:.3f}"
 
 
 def _nf_sector(name: str, clusters: dict[str, list[str]] | None) -> tuple[int, int]:

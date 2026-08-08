@@ -29,8 +29,9 @@ class TestAnalyzeNewFace:
         kline = _kline([2, 1, -1, 2, 4], volumes=[0.8, 0.9, 0.7, 1.5, 2.0])
         result = analyze_new_face(_stock(percent=4.5, rank_change=2500, value=12000), kline)
         assert result is not None
-        assert result.score >= 20
-        assert result.dimensions["new_face_today_pct"] == 20
+        assert result.score >= 15
+        # Step 2 (2026-08-07): today_pct_2_6 由 20 下调至 8（IC 归因：今日大涨对 cum_3d 为负）
+        assert result.dimensions["new_face_today_pct"] == 8
         assert "new_face_vol_rank" in result.dimensions
 
     def test_zero_or_negative_pct_returns_none(self):
@@ -91,12 +92,13 @@ class TestAnalyzeNewFace:
         assert result is not None
         assert result.dimensions["new_face_today_pct"] == -15
 
-    def test_today_pct_lt_0_5_scores_five(self):
-        # STRATEGY.md: 新面孔 <1% → +5（含 <0.5%）
+    def test_today_pct_lt_0_5_scores_three(self):
+        # Step 2 (2026-08-07): today_pct_lt_0_5 由 5 下调至 3（IC 归因：弱今日涨幅无预测力）
+        # 注意 _score_today_pct 用 value<upper 阶梯：percent=0.3 < 0.5 → 命中 lt_0_5 档
         kline = _kline([1, 2, 1, 2, 3])
-        result = analyze_new_face(_stock(percent=0.5, rank_change=2000, value=12000), kline)
+        result = analyze_new_face(_stock(percent=0.3, rank_change=2000, value=12000), kline)
         assert result is not None
-        assert result.dimensions["new_face_today_pct"] == 5
+        assert result.dimensions["new_face_today_pct"] == 3
 
 
 class TestAnalyzeMomentum:

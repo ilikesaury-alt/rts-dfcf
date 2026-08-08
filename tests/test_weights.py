@@ -69,9 +69,12 @@ def test_first_today_downweighted():
     assert FIRST_TODAY_BONUS == 3
 
 
-def test_new_face_kdj_downweighted():
-    # 小样本(n=30)只降权不消除
-    assert NEW_FACE_WEIGHTS["kdj_bonus"] == 1
+def test_new_face_kdj_upweighted():
+    # Step 2 (2026-08-07) IC 归因（cum_3d，n=136）：KDJ(K<20金叉/J<0) 是 new_face 中
+    # 预测力最强的维度（触发组胜率 51.5% vs 33.6%，均值 -0.15% vs -1.66%，二元 IC +0.40），
+    # 故从原 1 强提到 6。先前按 next_day 小样本(n=30)降权，但 3 日持有口径(cum_3d)大样本
+    # 证据反转——KDJ 金叉/超卖才是真正的超卖反转触发信号。
+    assert NEW_FACE_WEIGHTS["kdj_bonus"] == 6
 
 
 def test_sector_bonus_unchanged_deferred():
@@ -88,9 +91,13 @@ def test_gap_up_helper_still_computes():
     assert isinstance(pts, int)
 
 
-def test_volume_surge_raised():
-    # new_face_volume 是 next_day 最强正 IC 维度(+0.244)，从 8 上调到 10
-    assert NEW_FACE_WEIGHTS["volume_surge"] == 10
+def test_volume_surge_zeroed_for_hold_metric():
+    # Step 2 (2026-08-07) IC 归因（cum_3d）：放量(volume_surge) 对 3 日持有收益 IC 为负
+    # （触发组均值 -3.11% vs 未触发 -0.53%，胜率 29% vs 40%），故归零。
+    # 注：此前按 next_day 口径 IC=+0.244 上调到 10，但「当日冲高、3 日回落」形态说明
+    # 放量对新面孔是动量确认而非反转信号；本策略持有 2-3 天（cum_3d 为决策口径），
+    # 故不再奖励。若改做「次日了结」变种，应再按 next_day 口径复原。
+    assert NEW_FACE_WEIGHTS["volume_surge"] == 0
 
 
 def test_momentum_value_raised():

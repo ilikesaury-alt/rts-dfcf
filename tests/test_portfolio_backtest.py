@@ -151,6 +151,33 @@ def test_no_same_day_round_trip():
         os.remove(path)
 
 
+def test_buy_at_close_uses_close_price():
+    """--buy-at close 应在买入日收盘买入（更贵），总收益低于 --buy-at open。
+
+    合成上涨库：每日 +1%，买入日 open=前收、close=open*1.01，故同笔交易
+    收盘买比开盘买多付 ~1%，总收益应更低；且 Trade.buy_price 应等于当日收盘（> 开盘）。
+    """
+    import tempfile, os
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        conn = _make_rising_db(path, prefix_days=2)
+        res_open = run_backtest(conn, PBConfig(days=0, hold_days=3, buy_delay=1,
+                                               max_positions=10, buy_at="open"))
+        res_close = run_backtest(conn, PBConfig(days=0, hold_days=3, buy_delay=1,
+                                                max_positions=10, buy_at="close"))
+        conn.close()
+        assert res_open.metrics["n_trades"] == 1
+        assert res_close.metrics["n_trades"] == 1
+        # 收盘买更贵 → 总收益更低
+        assert res_close.metrics["total_return"] < res_open.metrics["total_return"], \
+            "买入日收盘买应比开盘买总收益更低"
+        # Trade.buy_price 应等于买入日收盘价（> 开盘价）
+        assert res_close.trades[0].buy_price > res_open.trades[0].buy_price
+    finally:
+        os.remove(path)
+
+
 def test_accumulate_final_score_excludes_heat_bonuses():
     """排序键必须剔除热度放大器（RPS/榜单动量/板块集群/实时量比/时间/市场情绪）。
 

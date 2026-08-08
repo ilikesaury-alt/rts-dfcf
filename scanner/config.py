@@ -224,29 +224,34 @@ AFTERNOON_START = dtime(13, 0)
 AFTERNOON_END = dtime(15, 0)
 
 # Scoring weights — used by analysis.py
+# Step 2 (2026-08-07) IC 归因重平衡：new_face 是「超卖反转」策略，原权重过度奖励
+# 动量确认信号（今日大涨 +20 / 放量 +10 / 累计涨幅 +10），而这三者在 cum_3d 上 IC 均为负；
+# 真正有预测力的反转触发信号（KDJ K<20金叉/J<0、RSI<30、MACD金叉）权重过小。
+# 重平衡后 reconstruct_score 的 rank-IC（Spearman vs cum_3d）：
+#   new_face  +0.045 → +0.109；Combined +0.041 → +0.099（scanner/ic_attribution.py 实测）。
 NEW_FACE_WEIGHTS: dict[str, int] = {
-    "today_pct_2_6": 20,
-    "today_pct_1_2": 10,
-    "today_pct_0_5_1": 5,
-    "today_pct_lt_0_5": 5,
+    "today_pct_2_6": 8,
+    "today_pct_1_2": 6,
+    "today_pct_0_5_1": 4,
+    "today_pct_lt_0_5": 3,
     "today_pct_6_8": 5,
     "today_pct_gt_8": -15,
-    "accum_neg5_10": 10,
+    "accum_neg5_10": 6,
     "accum_lt_neg5": 0,
-    "accum_10_15": 5,
+    "accum_10_15": 3,
     "accum_15_20": -5,
     "bottom_confirmed": 0,
-    "v_shape": 10,
-    "volume_surge": 10,
+    "v_shape": 8,
+    "volume_surge": 0,
     "value_gte_10000": 2,
     "value_gte_5000": 1,
-    "rsi_bonus": 3,
-    "macd_bonus": 3,
-    "rsi14_oversold_bonus": 3,
-    "bollinger_oversold": 4,
-    "kdj_bonus": 1,
+    "rsi_bonus": 5,
+    "macd_bonus": 6,
+    "rsi14_oversold_bonus": 4,
+    "bollinger_oversold": 5,
+    "kdj_bonus": 6,
     "atr_contraction": 2,
-    "obv_not_negative": 2,
+    "obv_not_negative": 3,
 }
 
 # ── momentum "首次启动" 子模式 ──

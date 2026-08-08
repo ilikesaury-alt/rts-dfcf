@@ -5,8 +5,14 @@
 
 模拟口径（均已在注释中标明，便于审计与后续调参）：
 - 信号来源：recommendations 表（按 category 过滤，排除已废弃类别）。
-- 买入：信号日(rec_date) + buy_delay 个交易日的**开盘价**（默认 1，避开前视、
-        且天然满足 A 股 T+1 不能当日卖的约束）。
+- 买入价锚定（--buy-at，默认 open）：
+    * open ：信号日(rec_date) + buy_delay 个交易日的**开盘价**（默认；避开前视、
+             且天然满足 A 股 T+1 不能当日卖的约束，适合「次日买」节奏）。
+    * close：买入日的**收盘价**。配合 buy_delay=0 即「当日收盘买入」，与
+             recommendations.cum_3d = (close[T+3]-close[T])/close[T] 的持有周期与
+             锚点完全对齐（T 日收盘买、T+hold_days 日收盘卖），用于还原用户「当日
+             推荐当日买入、次日或 3 日内卖出」的真实节奏。注意：buy_delay=0 时买入日
+             = 信号日，买入价用当日收盘价，属「收盘买入」标准建模口径。
 - 持有：hold_days 个交易日（默认 3，匹配用户「持有 2-3 天卖出」的真实操作），
         在到期日**收盘**卖出。
 - 成本（A 股真实费率）：
@@ -81,6 +87,7 @@ class PBConfig:
     days: int = 0                       # 仅用最近 N 天推荐（相对最晚推荐日）；0=全部
     hold_days: int = 3                  # 持有交易日数
     buy_delay: int = 1                  # 信号日到买入日的交易日的偏移（默认 1）
+    buy_at: str = "open"                # 买入价锚定："open"=买入日开盘，"close"=买入日收盘
     max_positions: int = 10            # 最大同时持仓数（= 等权槽位数）
     initial_capital: float = 1_000_000.0
     commission: float = DEFAULT_COMMISSION
@@ -91,6 +98,9 @@ class PBConfig:
     no_skill: bool = False              # True=基准模式：不按 score 筛选，买入全部当日信号
     deheat: bool = True                 # True=从 score_breakdown 重建「去热度分」再排序（验证 Step 1）；
                                         # False=直接用 DB 原始 score（含热度）排序
+    rescore: bool = False               # True=对 new_face/known_new_face 用当前 config 权重历史重扫
+                                        # （验证 Step 2：recommendations 存的是旧权重冻结分，改 config
+                                        # 不 retrospective 生效，必须用 appearances+daily_kline 重跑引擎）
 
 
 
@@ -323,6 +333,8 @@ def run_backtest(conn: sqlite3.Connection, cfg: PBConfig) -> BacktestResult:
         label = cfg.category
     elif cfg.no_skill:
         label = "基准(无筛选)"
+    elif cfg.rescore:
+        label = "综合(重扫new_face)"
     else:
         label = "综合(去热度)" if cfg.deheat else "综合(含热度)"
     result = BacktestResult(label=label, config=cfg)
@@ -338,7 +350,24 @@ def run_backtest(conn: sqlite3.Connection, cfg: PBConfig) -> BacktestResult:
     cal_end = calendar[-1]
 
     # 2) 加载信号并按买入日分组
-    signals = _load_signals(conn, cfg, calendar, cal_index, cal_end)
+    if cfg.rescore and cfg.category in (None, "new_face", "known_new_face"):
+        # Step 2 验证：用当前 config 权重重扫 new_face/known_new_face 引擎，
+        # 替代 recommendations 里的旧权重冻结分。
+        from scanner.historical_rescan import rescan_new_face_signals
+        rescanned = rescan_new_face_signals(conn, cfg, calendar, cal_index, cal_end)
+        if cfg.category in ("new_face", "known_new_face"):
+            signals = [s for s in rescanned if s.category == cfg.category]
+        else:
+            # 综合模式：重扫的 new_face 替换冻结的 new_face/known_new_face，
+            # 其余类别沿用冻结分（Step 2 未改动它们）。
+            frozen = _load_signals(conn, replace(cfg, rescore=False), calendar, cal_index, cal_end)
+            frozen_others = [s for s in frozen
+                             if s.category not in ("new_face", "known_new_face")]
+            signals = rescanned + frozen_others
+            # 注意：不重跑 _assign_rank_scores —— 两类信号各自的 rank_score 已是
+            # within-(date,category) 百分位，跨类别可比，合并后保持各自分组不变。
+    else:
+        signals = _load_signals(conn, cfg, calendar, cal_index, cal_end)
     result.n_signals = len(signals)
     by_buy: dict[int, list[Signal]] = defaultdict(list)
     for s in signals:
@@ -373,27 +402,29 @@ def run_backtest(conn: sqlite3.Connection, cfg: PBConfig) -> BacktestResult:
                     result.skipped_no_open += 1
                     continue
                 open_p, close_p = pd[today]
-                if open_p <= 0:
+                # 买入价锚定：close=买入日收盘（对齐 cum_3d），open=买入日开盘
+                buy_p = close_p if cfg.buy_at == "close" else open_p
+                if buy_p <= 0:
                     result.skipped_no_open += 1
                     continue
                 invest = min(per_slot, cash)
                 if invest <= 0:
                     break
                 buy_notional = invest / (1 + cfg.slippage)   # 含滑点的名义成交额
-                shares = buy_notional / open_p
+                shares = buy_notional / buy_p
                 cost = _buy_cost(buy_notional, cfg)
                 if cost > cash:
                     # 现金不足以覆盖含佣成本，按可用现金微调
                     affordable = (cash - cfg.min_commission) / (1 + cfg.slippage)
                     if affordable <= 0:
                         break
-                    shares = affordable / open_p
+                    shares = affordable / buy_p
                     cost = _buy_cost(affordable, cfg)
                 cash -= cost
                 positions.append(Position(
                     symbol=sig.symbol, name=sig.name, category=sig.category,
                     score=sig.score, entry_index=i, entry_date=today,
-                    entry_open=open_p, shares=shares, entry_cost=cost,
+                    entry_open=buy_p, shares=shares, entry_cost=cost,
                     exit_index=sig.exit_index,
                 ))
                 last_close[sig.symbol] = close_p
@@ -535,6 +566,7 @@ def print_report(result: BacktestResult) -> None:
     print(f"回测窗口(推荐日): start={cfg.start or '全期'}  end={cfg.end or '全期'}  "
           f"days={cfg.days or '全期'}")
     print(f"参数: hold_days={cfg.hold_days}  buy_delay={cfg.buy_delay}  "
+          f"buy_at={cfg.buy_at}  "
           f"max_positions={cfg.max_positions}  initial={cfg.initial_capital:,.0f}")
     print(f"成本: 佣金={cfg.commission*10000:.2f}‱(最低{cfg.min_commission:.0f}元)  "
           f"印花税={cfg.stamp_duty*100:.3f}%  滑点={cfg.slippage*100:.2f}%(双边)")
@@ -610,6 +642,9 @@ def main() -> None:
                         help="仅跑该策略类别；省略=综合(all)")
     parser.add_argument("--hold-days", type=int, default=3, help="持有交易日数（默认3）")
     parser.add_argument("--buy-delay", type=int, default=1, help="信号日到买入日偏移（默认1）")
+    parser.add_argument("--buy-at", dest="buy_at", choices=["open", "close"],
+                        default="open",
+                        help="买入价锚定：open=买入日开盘(默认)，close=买入日收盘(对齐cum_3d，配合buy_delay=0)")
     parser.add_argument("--max-positions", type=int, default=10, help="最大持仓数/等权槽位")
     parser.add_argument("--initial", type=float, default=1_000_000.0, help="初始资金(元)")
     parser.add_argument("--commission", type=float, default=DEFAULT_COMMISSION)
@@ -617,6 +652,10 @@ def main() -> None:
     parser.add_argument("--slippage", type=float, default=DEFAULT_SLIPPAGE)
     parser.add_argument("--compare", action="store_true",
                         help="多策略对比：各现役类别 + 综合 + 基准")
+    parser.add_argument("--rescore", action="store_true",
+                        help="对 new_face/known_new_face 用当前 config 权重历史重扫"
+                             "（验证 Step 2：recommendations 存旧权重冻结分，改 config 不"
+                             "retrospective 生效；须用 appearances+daily_kline 重跑引擎）")
     parser.add_argument("--export", default=None, help="导出 NAV 序列 CSV 路径")
     args = parser.parse_args()
 
@@ -625,9 +664,11 @@ def main() -> None:
     base_cfg = PBConfig(
         days=args.days, start=args.start, end=args.end,
         hold_days=args.hold_days, buy_delay=args.buy_delay,
+        buy_at=args.buy_at,
         max_positions=args.max_positions, initial_capital=args.initial,
         commission=args.commission, stamp_duty=args.stamp_duty,
         slippage=args.slippage,
+        rescore=args.rescore,
     )
 
     if args.compare:
@@ -636,11 +677,15 @@ def main() -> None:
         bench = _run_one(conn, replace(base_cfg, no_skill=True, category=None))
         results.append(bench)
         # 综合（去热度分，默认=Step 1 生效后的排序）
-        combined = _run_one(conn, replace(base_cfg, category=None, deheat=True))
+        combined = _run_one(conn, replace(base_cfg, category=None, deheat=True, rescore=False))
         results.append(combined)
         # 综合（含热度，对照：仅对旧 score 做百分位归一，未去热度）
-        combined_heat = _run_one(conn, replace(base_cfg, category=None, deheat=False))
+        combined_heat = _run_one(conn, replace(base_cfg, category=None, deheat=False, rescore=False))
         results.append(combined_heat)
+        # 综合（重扫 new_face）：Step 2 验证列（仅 --rescore 时显示）
+        if args.rescore:
+            combined_rescored = _run_one(conn, replace(base_cfg, category=None, rescore=True))
+            results.append(combined_rescored)
         # 各现役类别
         for cat in sorted(PORTFOLIO_CATEGORIES):
             r = _run_one(conn, replace(base_cfg, category=cat))
