@@ -355,7 +355,6 @@ def run_backtest(conn: sqlite3.Connection, cfg: PBConfig) -> BacktestResult:
         # P0 验证：用当前 config 权重重扫所有可重建类别引擎（new_face/known_new_face/
         # momentum/short_term/rebound），替代 recommendations 里的旧权重冻结分。
         rescanned = rescan_all_signals(conn, cfg, calendar, cal_index, cal_end)
-        rescanned = rescan_all_signals(conn, cfg, calendar, cal_index, cal_end)
         if cfg.category in RESCANABLE_CATEGORIES:
             signals = [s for s in rescanned if s.category == cfg.category]
         else:
