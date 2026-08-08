@@ -360,7 +360,8 @@ def _compute_momentum_indicators(closes: list[float], historical_kline: list[dic
 
 def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
                      today_str: str | None = None,
-                     features: dict | None = None) -> KlineSummary | None:
+                     features: dict | None = None,
+                     now=None) -> KlineSummary | None:
     if not kline or len(kline) < 5:
         return None
 
@@ -405,7 +406,7 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
         [k["volume"] for k in historical_kline],
     )
 
-    vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str)
+    vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str, now)
     volumes = [k["volume"] for k in kline]
     recent_3_pcts = pcts[-3:] if len(pcts) >= 3 else pcts
     no_heavy_loss = all(p > BOTTOM_MAX_LOSS for p in recent_3_pcts)
@@ -472,7 +473,7 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
         score += W["v_shape"]
         dims["new_face_v_shape"] = W["v_shape"]
 
-    vol_peak = _vol_peak_ratio(volumes, today_vol=_project_today_vol(kline, today_str))
+    vol_peak = _vol_peak_ratio(volumes, today_vol=_project_today_vol(kline, today_str, now))
     if vol_peak < VOL_PEAK_NEW_FACE_MIN:
         score += VOL_PEAK_NEW_FACE_PENALTY
         dims["new_face_vol_peak"] = round(vol_peak, 2)
@@ -511,7 +512,8 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
 
 def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
                      today_str: str | None = None,
-                     features: dict | None = None) -> KlineSummary | None:
+                     features: dict | None = None,
+                     now=None) -> KlineSummary | None:
     if not kline or len(kline) < 5:
         return None
 
@@ -537,7 +539,7 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
         [k["volume"] for k in historical_kline],
     )
 
-    vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str)
+    vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str, now)
     volumes = [k["volume"] for k in kline]
 
     # ── "首次启动" 子模式 ──
@@ -642,7 +644,7 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
         score += W["vol_surge"]
         dims["momentum_volume"] = W["vol_surge"]
 
-    vol_peak = _vol_peak_ratio(volumes, today_vol=_project_today_vol(kline, today_str))
+    vol_peak = _vol_peak_ratio(volumes, today_vol=_project_today_vol(kline, today_str, now))
     if vol_peak < VOL_PEAK_MOMENTUM_WARN:
         score += VOL_PEAK_MOMENTUM_PENALTY
         dims["momentum_vol_peak"] = round(vol_peak, 2)
@@ -698,7 +700,7 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
                         score=score, dimensions=dims, avg_volume=round(avg_vol, 2))
 
 
-def _calc_pullback_base_metrics(kline: list[dict], today_str: str) -> tuple[list, list, float, float, float, list, list]:
+def _calc_pullback_base_metrics(kline: list[dict], today_str: str, now=None) -> tuple[list, list, float, float, float, list, list]:
     """Calculate base metrics for pullback analysis.
 
     Returns:
@@ -713,7 +715,7 @@ def _calc_pullback_base_metrics(kline: list[dict], today_str: str) -> tuple[list
     else:
         accumulated = sum(pcts[-5:])
 
-    vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str)
+    vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str, now)
     volumes = [k["volume"] for k in kline]
 
     return pcts, closes, accumulated, vol_ratio, avg_vol, historical_kline, volumes
@@ -937,7 +939,8 @@ def _classify_pullback_trend(ma_support: bool, ma_broken: bool, today_pct: float
 
 def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
                      today_str: str | None = None,
-                     features: dict | None = None) -> KlineSummary | None:
+                     features: dict | None = None,
+                     now=None) -> KlineSummary | None:
     if not kline or len(kline) < 5:
         return None
 
@@ -947,7 +950,7 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
     if today_pct <= -8 or today_pct > PULLBACK_MAX_TODAY_PCT:
         return None
 
-    pcts, closes, accumulated, vol_ratio, avg_vol, historical_kline, volumes = _calc_pullback_base_metrics(kline, today_str)
+    pcts, closes, accumulated, vol_ratio, avg_vol, historical_kline, volumes = _calc_pullback_base_metrics(kline, today_str, now)
 
     if accumulated < 5:
         return None
@@ -975,7 +978,7 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
     score += vol_score
     dims.update(vol_dims)
 
-    vol_peak = _vol_peak_ratio(volumes, today_vol=_project_today_vol(kline, today_str))
+    vol_peak = _vol_peak_ratio(volumes, today_vol=_project_today_vol(kline, today_str, now))
     if vol_peak < VOL_PEAK_PULLBACK_CONFIRM:
         score += VOL_PEAK_PULLBACK_BONUS
         dims["pullback_vol_peak"] = round(vol_peak, 2)
@@ -1019,7 +1022,8 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
 
 def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
                        today_str: str | None = None,
-                       features: dict | None = None) -> KlineSummary | None:
+                       features: dict | None = None,
+                       now=None) -> KlineSummary | None:
     if not kline or len(kline) < 5:
         return None
 
@@ -1048,7 +1052,7 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
     else:
         accumulated = sum(pcts[-5:]) + today_pct
 
-    vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str)
+    vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str, now)
 
     score = 0
     dims: dict[str, int | float] = {}
@@ -1183,7 +1187,8 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
 def analyze_rebound(stock: StockInfo, kline: list[dict] | None,
                     today_str: str | None = None,
                     features: dict | None = None,
-                    off_list: bool = False) -> KlineSummary | None:
+                    off_list: bool = False,
+                    now=None) -> KlineSummary | None:
     """超跌反弹策略：识别暴跌后的企稳首阳。
 
     与 new_face 的区别：new_face 要求 accumulated >= -10%（前期无大跌），
@@ -1231,7 +1236,7 @@ def analyze_rebound(stock: StockInfo, kline: list[dict] | None,
         accumulated = sum(pcts[-5:])
 
     # 量比
-    vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str)
+    vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str, now)
 
     # 距20日低点比例（确认仍在低位区）
     near_20d_low = False

@@ -1,88 +1,75 @@
-"""历史重扫（gold standard 验证 Step 2 / P0）。
+"""历史重扫：用**当前 config 权重**复现历史上每个交易日的推荐榜。
 
 为什么需要它
 ------------
-`recommendations` 表里存的是「写库当时用旧权重算出的冻结分」，
-改 config 不会 retrospective 生效。所以 `portfolio_backtest` replay 的永远是旧权重分，
-无法验证「改权重到底有没有改善 P&L」。
+`recommendations` 表里存的是「写库当时用旧权重算出的冻结分」，改 config 不会
+retrospective 生效。所以 `portfolio_backtest` replay 的永远是旧权重分，
+无法回答「改权重到底有没有改善 P&L」。
 
-本模块用**当前（新）config 权重**，从最原始的历史输入重跑各策略引擎：
-- 信号来源：`appearances` 表（每个交易日真实的雪球热榜快照：symbol/name/rank/percent/value）
-- 行情来源：`daily_kline`（截至信号日的完整日线，已是收盘量能，无需盘中投影）
-- 引擎：`analysis.analyze_*` + `validator.validate_*`（与实时 orchestrator 同口径）
-- 板块簇：用 `sector.classify_sector(name)` 对当日热榜名重建（与实时一致）
+保真度原则（2026-08-08 重写）
+-----------------------------
+本模块**不再手写**一套 analyzer→validator→分类逻辑。早期版本那么做过，结果与线上
+`orchestrator` 漂移得非常厉害（is_new 用「有史以来首次」而非「近 3 日无上榜」、
+漏掉 MIN_SCORE 门槛、丢掉 validation_bonus、分类漏了 st_weak_to_strong 条件、
+没有创业板过滤），导致重扫宇宙的类别构成与线上完全对不上（new_face 1019 → 28），
+基于它得出的 P&L 结论全部作废。
 
-输出与 `portfolio_backtest._load_signals` 同构的 `Signal` 列表，使 `run_backtest`
-可以直接 replay「新权重生成的信号宇宙」，与「冻结旧分」做苹果对苹果对比。
+现在的做法：**直接复用 orchestrator 的真实流水线**
+    _filter_gem_stocks → _score_stock（内含 5 路 analyze_* + HIGH_RISK_TRENDS
+    + MIN_SCORE + validate/validation_bonus + _classify_category）
+    → _cap_short_term_by_sector
+只把数据来源从「实时 API」换成「历史表」。逻辑只有一份，不会再漂移。
 
-可忠实重建的类别（仅依赖 appearances + daily_kline）：
-    new_face / known_new_face / momentum / short_term / rebound
-    —— 这些类别的引擎输入（percent/value/rank/rank_change/kline）都能从历史表重建。
+数据来源
+--------
+- 信号池：`appearances`（每个交易日真实的雪球热榜快照：symbol/name/rank/percent/value）
+- 行情：`daily_kline`（截至信号日的完整日线，一次性预载进内存后按日期切片）
+- is_new / first_date：`get_symbol_appearances(..., as_of=信号日)`，与线上同一函数同一口径
 
-不可忠实重建、保持冻结分的类别：
-    comeback（回马枪）：掉榜 off-list 变体，需实时 adapter / watch_pool / 资金流，
-    无法仅从 appearances + daily_kline 重建，故重扫宇宙不含它（沿用 recommendations 冻结分）。
+已知保真缺口（无法从历史表重建，均已在代码中标注）
+--------------------------------------------------
+1. `rank_change`：雪球 API 自带的全市场热度排名变动（阈值 500/1000/2000），
+   `appearances` 只存 1~100 的榜内名次，无法反推 → 恒为 0。
+   影响：`_vol_rank_combo_score` 与 `first_breakout_bonus` 在重扫中不触发。
+   （旧版本用「当日 rank − 上次 rank」伪造，量级只有 ±100 且符号相反，比置 0 更糟。）
+2. `market_cap`：无历史市值表 → 恒为 0。影响 short_term 的 value_small_cap /
+   value_mid_cap 维度不触发，以及 MAX_MARKET_CAP 大市值过滤缺失。
+   （MAX_STOCK_PRICE 价格过滤可用当日收盘价重建，已实现。）
+3. 实时增强项：资金流、涨停池、盘中/开盘分、RPS、板块情绪、time_bonus、
+   list_streak 等 `apply_all_bonuses` / `accumulate_final_score` 的加分，
+   以及依赖风险标签的 `_candidate_excluded_by_risk` 硬过滤 —— 均需实时 API，
+   重扫不复现。这些是**跨候选普遍加分**，对同日排序的扰动小于上面两项。
+4. `comeback`（回马枪）：掉榜 off-list 变体，需实时 watch_pool / adapter，
+   不在重扫宇宙内（由调用方合并 `recommendations` 的冻结分补上）。
+
+输出与 `portfolio_backtest._load_signals` 同构的 `Signal` 列表。
 """
 
 from __future__ import annotations
 
 import sqlite3
+from bisect import bisect_right
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Iterable
 
-from scanner.analysis import (
-    analyze_momentum,
-    analyze_new_face,
-    analyze_rebound,
-    analyze_short_term,
+from scanner.candidate_pool import ScanSession
+from scanner.config import MAX_STOCK_PRICE
+from scanner.models import Candidate
+from scanner.orchestrator import (
+    _cap_short_term_by_sector,
+    _filter_gem_stocks,
+    _score_stock,
 )
-from scanner.models import KlineSummary, StockInfo
-from scanner.portfolio_backtest import Signal, _assign_rank_scores
-from scanner.sector import classify_sector
+from scanner.portfolio_backtest import Signal, _assign_rank_scores, _dedup_signals
+from scanner.sector import get_sector_clusters
 from scanner.trading_session import is_trading_day
-from scanner.validator import (
-    validate_momentum,
-    validate_nf,
-    validate_rebound,
-    validate_short_term,
-)
 
 # 可忠实重扫的类别（comeback 为 off-list 变体，无法从 appearances 重建，保持冻结分）
 RESCANABLE_CATEGORIES = ("new_face", "known_new_face", "momentum", "short_term", "rebound")
 
-_ANALYZER_REGISTRY = {
-    "new_face": analyze_new_face,
-    "momentum": analyze_momentum,
-    "short_term": analyze_short_term,
-    "rebound": analyze_rebound,
-}
-_VALIDATOR_REGISTRY = {
-    "new_face": validate_nf,
-    "momentum": validate_momentum,
-    "short_term": validate_short_term,
-    "rebound": validate_rebound,
-}
-
-
-def _classify_rescanned(passing: dict[str, KlineSummary],
-                        first_seen: bool) -> tuple[str, KlineSummary] | None:
-    """从「通过的引擎集合」挑一个类别标签，与 orchestrator._classify_category 同优先级。
-
-    - 新票(first_seen)：new_face > rebound > short_term > momentum
-    - 老票(非 first_seen)：rebound > short_term > momentum > known_new_face
-      （new_face 引擎通过但属老票时，标签落 known_new_face）
-    """
-    if first_seen:
-        order = [("new_face", "new_face"), ("rebound", "rebound"),
-                 ("short_term", "short_term"), ("momentum", "momentum")]
-    else:
-        order = [("rebound", "rebound"), ("short_term", "short_term"),
-                 ("momentum", "momentum"), ("new_face", "known_new_face")]
-    for key, label in order:
-        if key in passing:
-            return label, passing[key]
-    return None
+# K 线最少根数：低于此值所有 analyze_* 直接返回 None，提前跳过省掉切片开销
+_MIN_KLINE_BARS = 5
 
 
 def _nth_trading_day_after(d: date, n: int) -> date | None:
@@ -99,103 +86,150 @@ def _nth_trading_day_after(d: date, n: int) -> date | None:
     return cursor
 
 
-def _get_kline_upto(conn: sqlite3.Connection, symbol: str, d: str) -> list[dict]:
-    """返回 symbol 截至日期 d（含）的完整日线。"""
+def _post_close(d: str) -> datetime:
+    """信号日收盘后的时刻（15:30）。
+
+    传给 `_score_stock` → `analyze_*` → `_project_today_vol`，使盘中量能投影关闭
+    （elapsed=240，倍数恒为 1）。不传的话会用「跑回测那一刻」的真实时间算 elapsed，
+    早盘跑回测会把历史上已收盘的完整量能再放大 ~10 倍，结果随运行时刻漂移。
+    """
+    y, m, dd = (int(x) for x in d.split("-"))
+    return datetime(y, m, dd, 15, 30)
+
+
+def _load_all_klines(conn: sqlite3.Connection) -> dict[str, tuple[list[str], list[dict]]]:
+    """一次性预载全部日线，返回 {symbol: (已排序日期列表, bar 列表)}。
+
+    早期版本对每个 (date, symbol) 发一次 SQL 且每次都取全量历史，
+    4700+ 次查询是重扫耗时的主因。改为单次全表扫描 + 内存 bisect 切片。
+    """
     rows = conn.execute(
-        "SELECT date, open, close, high, low, volume, percent FROM daily_kline "
-        "WHERE symbol=? AND date <= ? ORDER BY date",
-        (symbol, d),
+        "SELECT symbol, date, open, close, high, low, volume, percent "
+        "FROM daily_kline ORDER BY symbol, date"
     ).fetchall()
-    return [
-        {"date": r[0], "open": r[1], "close": r[2], "high": r[3],
-         "low": r[4], "volume": r[5], "percent": r[6]}
-        for r in rows
-    ]
+    out: dict[str, tuple[list[str], list[dict]]] = {}
+    cur_sym: str | None = None
+    dates: list[str] = []
+    bars: list[dict] = []
+    for sym, d, o, c, h, low, vol, pct in rows:
+        if sym != cur_sym:
+            if cur_sym is not None:
+                out[cur_sym] = (dates, bars)
+            cur_sym, dates, bars = sym, [], []
+        dates.append(d)
+        bars.append({"date": d, "open": o, "close": c, "high": h,
+                     "low": low, "volume": vol, "percent": pct})
+    if cur_sym is not None:
+        out[cur_sym] = (dates, bars)
+    return out
+
+
+def _primary_candidate(nf: Candidate | None, mo: Candidate | None,
+                       rb: Candidate | None, st: Candidate | None,
+                       st_kept: bool) -> Candidate | None:
+    """从 `_score_stock` 的返回桶中还原 `_classify_category` 选中的那一个标签。
+
+    `_score_stock` 对「首板票同时满足超短」会双挂（同时返回 nf 与 st），线上两个桶
+    都会落库；但组合回测里同一票同一天只能建一个仓位，所以取分类主标签。
+    桶的互斥性保证了这个优先级能唯一还原分类结果。
+    """
+    if nf is not None:
+        return nf
+    if mo is not None:
+        return mo
+    if rb is not None:
+        return rb
+    if st is not None and st_kept:
+        return st
+    return None
 
 
 def rescan_all_signals(conn: sqlite3.Connection, cfg, calendar: list[str],
                        cal_index: dict[str, int], cal_end: str,
                        categories: Iterable[str] | None = None) -> list[Signal]:
-    """用当前 config 权重重扫所有可重建类别，返回与 _load_signals 同构的 Signal 列表。
+    """用当前 config 权重重扫历史，返回与 `_load_signals` 同构的 Signal 列表。
 
     cfg 提供：buy_delay / hold_days（执行锚定）、start / end / days（信号日窗口）。
-    categories：限定重扫类别（默认 RESCANABLE_CATEGORIES）。comeback 等非重建类别须排除。
+    categories：限定保留的类别标签（默认 RESCANABLE_CATEGORIES）。
     """
     if categories is None:
         categories = RESCANABLE_CATEGORIES
     categories = set(categories)
 
-    rows = conn.execute(
-        "SELECT date, symbol, name, rank, percent, value FROM appearances ORDER BY date"
+    app_rows = conn.execute(
+        "SELECT date, symbol, name, rank, percent, value FROM appearances ORDER BY date, rank"
     ).fetchall()
+    by_date: dict[str, list[tuple]] = defaultdict(list)
+    seen_on_date: dict[str, set[str]] = defaultdict(set)
+    for d, sym, name, rank, pct, val in app_rows:
+        # 同一天同一票可能有多条快照（盘中每轮扫描各记一次），只保留首条
+        if sym in seen_on_date[d]:
+            continue
+        seen_on_date[d].add(sym)
+        by_date[d].append((sym, name, rank, pct, val))
 
-    by_date: dict[str, list[dict]] = defaultdict(list)
-    for d, sym, name, rank, pct, val in rows:
-        by_date[d].append({"symbol": sym, "name": name, "rank": rank,
-                           "percent": pct, "value": val})
-
-    # rank_change = 当日 rank − 上一次上榜 rank；first_seen：该票此日期是否首次上榜
-    prev_rank: dict[str, int] = {}
-    rc_map: dict[tuple[str, str], int] = {}
-    first_seen: dict[tuple[str, str], bool] = {}
-    for d in sorted(by_date):
-        for a in by_date[d]:
-            sym = a["symbol"]
-            first_seen[(d, sym)] = sym not in prev_rank
-            rc_map[(d, sym)] = a["rank"] - prev_rank[sym] if sym in prev_rank else 0
-            prev_rank[sym] = a["rank"]
-
-    # 当日板块簇：按热榜名分类聚合（与实时 orchestrator.get_sector_clusters 同口径）
-    clusters_by_date: dict[str, dict[str, list[str]]] = {}
-    for d, apps in by_date.items():
-        cl: dict[str, list[str]] = defaultdict(list)
-        for a in apps:
-            cl[classify_sector(a["name"])].append(a["symbol"])
-        clusters_by_date[d] = dict(cl)
+    kline_store = _load_all_klines(conn)
 
     signals: list[Signal] = []
     for d in sorted(by_date):
-        apps = by_date[d]
-        clusters = clusters_by_date.get(d)
-        for a in apps:
-            kline = _get_kline_upto(conn, a["symbol"], d)
-            if not kline or len(kline) < 5:
-                continue
-            stock = StockInfo(
-                symbol=a["symbol"], name=a["name"], code=a["symbol"],
-                percent=float(a["percent"]),
-                current=kline[-1]["close"],
-                value=float(a["value"]),
-                rank_change=rc_map.get((d, a["symbol"]), 0),
-                rank=a["rank"],
-                # 注：short_term 用 market_cap 选小/中盘，appearances 无此字段，
-                # 重建为 0 会使 value_small_cap/value_mid_cap 维度不触发（已知保真缺口）。
-                market_cap=0.0,
-            )
-            historical_kline = [k for k in kline if k["date"] != d]
-            closes = [k["close"] for k in historical_kline]
+        now_ref = _post_close(d)
 
-            # 并行跑各引擎，收集通过的类别（与 orchestrator 同口径：每票每引擎独立评分）
-            passing: dict[str, KlineSummary] = {}
-            for cat in ("new_face", "momentum", "short_term", "rebound"):
-                if cat not in categories:
-                    continue
-                summary = _ANALYZER_REGISTRY[cat](stock, kline, today_str=d)
-                if summary is None:
-                    continue
-                validator = _VALIDATOR_REGISTRY[cat]
-                passed, _total, _dims = validator(stock, summary, closes, historical_kline, clusters)
-                if passed:
-                    passing[cat] = summary
+        # 1) 复用线上的创业板/港股/ST 过滤与去重
+        raw = [
+            {"symbol": sym, "code": sym, "name": name,
+             "percent": pct or 0.0, "value": val or 0.0,
+             # rank_change 无法从 appearances 重建，见模块 docstring 缺口 1
+             "rank_change": 0, "rank": rank}
+            for sym, name, rank, pct, val in by_date[d]
+        ]
+        stocks = _filter_gem_stocks(raw)
 
-            if not passing:
+        # 2) 按信号日切片 K 线；顺带用当日收盘价补 current 并复现价格上限过滤
+        klines: dict[str, list[dict] | None] = {}
+        usable = []
+        for s in stocks:
+            entry = kline_store.get(s.symbol)
+            if entry is None:
                 continue
-            chosen = _classify_rescanned(passing, first_seen.get((d, a["symbol"]), True))
-            if chosen is None:
+            dates, bars = entry
+            cut = bisect_right(dates, d)
+            if cut < _MIN_KLINE_BARS:
                 continue
-            cat, summary = chosen
-            sig = Signal(rec_date=d, symbol=a["symbol"], name=a["name"],
-                         category=cat, score=summary.score)
+            sliced = bars[:cut]
+            if sliced[-1]["date"] != d:
+                continue  # 信号日无行情（停牌等），线上也拿不到今日 bar
+            s.current = sliced[-1]["close"]
+            if s.current > 0 and s.current > MAX_STOCK_PRICE:
+                continue  # 与 scan_with_raw 的 MAX_STOCK_PRICE 过滤一致
+            klines[s.symbol] = sliced
+            usable.append(s)
+        if not usable:
+            continue
+
+        clusters = get_sector_clusters(usable)
+        session = ScanSession()
+        session.reset_if_new_day(d)
+
+        scored: list[tuple] = []
+        short_term_bucket: list[Candidate] = []
+        for s in usable:
+            nf, mo, _pb, rb, st, _ = _score_stock(
+                s, conn, klines, d, session, clusters, now=now_ref)
+            if nf is None and mo is None and rb is None and st is None:
+                continue
+            if st is not None:
+                short_term_bucket.append(st)
+            scored.append((nf, mo, rb, st))
+
+        # 3) 同板块上限（线上在 bonus 之后执行；重扫无 bonus，此处即最终分）
+        kept_st = {id(c) for c in _cap_short_term_by_sector(short_term_bucket)}
+
+        for nf, mo, rb, st in scored:
+            cand = _primary_candidate(nf, mo, rb, st, st is not None and id(st) in kept_st)
+            if cand is None or cand.category not in categories:
+                continue
+            sig = Signal(rec_date=d, symbol=cand.stock.symbol, name=cand.stock.name,
+                         category=cand.category, score=cand.score)
             buy_d = _nth_trading_day_after(date.fromisoformat(d), cfg.buy_delay)
             if buy_d is None or buy_d.isoformat() > cal_end:
                 continue
@@ -210,7 +244,7 @@ def rescan_all_signals(conn: sqlite3.Connection, cfg, calendar: list[str],
             sig.exit_index = exit_idx
             signals.append(sig)
 
-    # 信号日窗口过滤（与 _load_signals 同口径）
+    # 4) 信号日窗口过滤（与 _load_signals 同口径）
     if signals:
         rec_dates = [s.rec_date for s in signals]
         max_rec = max(rec_dates)
@@ -222,12 +256,13 @@ def rescan_all_signals(conn: sqlite3.Connection, cfg, calendar: list[str],
             start_date = cfg.start or min_rec
         signals = [s for s in signals if start_date <= s.rec_date <= end_date]
 
+    signals = _dedup_signals(signals)
     _assign_rank_scores(signals)
     return signals
 
 
 def rescan_new_face_signals(conn: sqlite3.Connection, cfg, calendar: list[str],
-                             cal_index: dict[str, int], cal_end: str) -> list[Signal]:
-    """兼容旧接口：仅重扫 new_face / known_new_face（Step 2 验证用）。"""
+                            cal_index: dict[str, int], cal_end: str) -> list[Signal]:
+    """兼容旧接口：仅保留 new_face / known_new_face 标签（Step 2 验证用）。"""
     return rescan_all_signals(conn, cfg, calendar, cal_index, cal_end,
                               categories=("new_face", "known_new_face"))

@@ -98,9 +98,10 @@ class PBConfig:
     no_skill: bool = False              # True=基准模式：不按 score 筛选，买入全部当日信号
     deheat: bool = True                 # True=从 score_breakdown 重建「去热度分」再排序（验证 Step 1）；
                                         # False=直接用 DB 原始 score（含热度）排序
-    rescore: bool = False               # True=对 new_face/known_new_face 用当前 config 权重历史重扫
-                                        # （验证 Step 2：recommendations 存的是旧权重冻结分，改 config
-                                        # 不 retrospective 生效，必须用 appearances+daily_kline 重跑引擎）
+    rescore: bool = False               # True=对全部可重建类别（new_face/known_new_face/momentum/
+                                        # short_term/rebound）用当前 config 权重历史重扫
+                                        # （recommendations 存的是旧权重冻结分，改 config 不 retrospective
+                                        # 生效，必须用 appearances+daily_kline 重跑引擎；comeback 除外）
 
 
 
@@ -211,6 +212,28 @@ def _nth_trading_day_after(d: date, n: int) -> date | None:
 
 # ── 信号加载 ────────────────────────────────────────────────────────────────
 
+def _dedup_signals(signals: list[Signal]) -> list[Signal]:
+    """同一交易日的同一只票只保留一条信号。
+
+    为什么必须去重：`recommendations` 是**盘中每轮扫描各写一行**的流水，同一
+    (date, symbol, category) 最多出现过 21 行。不去重的话组合模拟会把同一只票
+    连开 21 个仓位，直接吃满 max_positions，等于「押注扫描频率」而不是「押注选股」；
+    而 `historical_rescan` 每票每天只产出 1 条，两边根本不可比。
+
+    保留顺序靠调用方保证：`_load_signals` 按 (date, time) 升序取，即保留当天
+    **最早**出现的那一条 —— 对应用户「盘中进入推荐榜的那一刻就买」的真实节奏。
+    """
+    seen: set[tuple[str, str]] = set()
+    out: list[Signal] = []
+    for s in signals:
+        key = (s.rec_date, s.symbol)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+    return out
+
+
 def _deheat_score(raw_score: int, breakdown_json: str | None, source: str | None) -> int:
     """从 DB 中存储的含热度 final_score 重建「去热度分」。
 
@@ -246,9 +269,11 @@ def _load_signals(conn: sqlite3.Connection, cfg: PBConfig, calendar: list[str],
     使得综合排序真正反映 Step 1「热度移出排序键」后的排序，而非仅对旧热度分做百分位归一。
     无 breakdown 的早期行（旧 schema）无法重建，回退为原始 score（不报错）。
     """
+    # 按 (date, time) 升序：_dedup_signals 保留每天每票最早的那一条，
+    # 对应「盘中进入推荐榜的那一刻就买」。
     rows = conn.execute(
         "SELECT date, symbol, name, category, score, score_breakdown, source "
-        "FROM recommendations"
+        "FROM recommendations ORDER BY date, time"
     ).fetchall()
 
     # 推荐日范围（用于 --days / 默认窗口）
@@ -290,6 +315,9 @@ def _load_signals(conn: sqlite3.Connection, cfg: PBConfig, calendar: list[str],
             exit_idx = len(calendar) - 1
         sig.exit_index = exit_idx
         signals.append(sig)
+
+    # 盘中重复快照去重：每天每票只留最早一条（详见 _dedup_signals）
+    signals = _dedup_signals(signals)
 
     # 综合排序跨类别可比：在 (推荐日, 类别) 组内对 score 做百分位归一化。
     # 单类别时组内排序与 raw score 一致；综合(all) 时消除各类别自身标尺差异
@@ -362,7 +390,9 @@ def run_backtest(conn: sqlite3.Connection, cfg: PBConfig) -> BacktestResult:
             frozen = _load_signals(conn, replace(cfg, rescore=False), calendar, cal_index, cal_end)
             frozen_others = [s for s in frozen
                              if s.category not in RESCANABLE_CATEGORIES]
-            signals = rescanned + frozen_others
+            # 重扫结果优先：同一 (日期, 标的) 若在冻结的 comeback 里也出现，
+            # 以重扫标签为准（rescanned 在前，_dedup_signals 保留先出现的）。
+            signals = _dedup_signals(rescanned + frozen_others)
             # 注意：不重跑 _assign_rank_scores —— 各信号各自的 rank_score 已是
             # within-(date,category) 百分位，跨类别可比，合并后保持各自分组不变。
     else:
@@ -682,7 +712,7 @@ def main() -> None:
         # 综合（含热度，对照：仅对旧 score 做百分位归一，未去热度）
         combined_heat = _run_one(conn, replace(base_cfg, category=None, deheat=False, rescore=False))
         results.append(combined_heat)
-        # 综合（重扫 new_face）：Step 2 验证列（仅 --rescore 时显示）
+        # 综合（重扫全类别）：权重改动的 P&L 验证列（仅 --rescore 时显示）
         if args.rescore:
             combined_rescored = _run_one(conn, replace(base_cfg, category=None, rescore=True))
             results.append(combined_rescored)

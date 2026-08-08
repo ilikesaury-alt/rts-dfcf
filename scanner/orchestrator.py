@@ -323,11 +323,20 @@ def _filter_gem_stocks(raw: list[dict]) -> list[StockInfo]:
 
 def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, list[dict] | None],
                  today: str, session_state: ScanSession,
-                 clusters: dict[str, list[str]] | None = None
+                 clusters: dict[str, list[str]] | None = None,
+                 now=None
                  ) -> tuple[Candidate | None, Candidate | None, Candidate | None,
                             Candidate | None, Candidate | None, Candidate | None]:
+    """对单只票跑完 5 路引擎 + 交叉验证 + 分类，返回各桶候选。
+
+    `today` 是本次扫描锚定的交易日；实时扫描传真实今日，历史回放
+    （historical_rescan）传信号日。所有依赖「今天」的下游都由它驱动：
+    appearances 回溯窗口（is_new）、analyze_* 的今日 bar 切分。
+    `now` 仅用于盘中量能投影；回放时传当日收盘后时刻即可关闭投影，
+    使结果不随「跑回测的时刻」漂移。
+    """
     is_first_today = session_state.mark_seen(stock.symbol)
-    app_history = get_symbol_appearances(conn, stock.symbol, NEW_FACE_LOOKBACK_DAYS)
+    app_history = get_symbol_appearances(conn, stock.symbol, NEW_FACE_LOOKBACK_DAYS, as_of=today)
     previous_dates = [a["date"] for a in app_history]
     is_new = len(previous_dates) == 0
     first_date = previous_dates[0] if previous_dates else today
@@ -343,11 +352,11 @@ def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, l
         volumes = [k["volume"] for k in historical]
         feats = build_features(closes, highs, lows, volumes)
 
-    nk = analyze_new_face(stock, kline, features=feats)
-    mk = analyze_momentum(stock, kline, features=feats)
-    rk = analyze_rebound(stock, kline, features=feats)
-    sk = analyze_short_term(stock, kline, features=feats)
-    pk = analyze_pullback(stock, kline, features=feats)
+    nk = analyze_new_face(stock, kline, today_str=today, features=feats, now=now)
+    mk = analyze_momentum(stock, kline, today_str=today, features=feats, now=now)
+    rk = analyze_rebound(stock, kline, today_str=today, features=feats, now=now)
+    sk = analyze_short_term(stock, kline, today_str=today, features=feats, now=now)
+    pk = analyze_pullback(stock, kline, today_str=today, features=feats, now=now)
 
     # 五策略独立打分 + 各自交叉验证，再按价格结构选最贴合的标签
     c_nf = _try_candidate(stock, nk, "new_face" if is_new else "known_new_face",
