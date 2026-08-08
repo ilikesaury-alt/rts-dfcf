@@ -77,3 +77,17 @@ def test_rescore_combined_matches_rescanned_benchmark_h3():
         assert rescan_gap > -0.10, f"重扫综合应≈基准，gap={rescan_gap:.2%} 过大"
     finally:
         conn.close()
+
+
+def test_rescore_per_category_momentum_short_term_rebound():
+    """P0 扩展：--rescore 对 momentum / short_term / rebound 也应重扫产出信号。
+
+    复用了 ic_attribution 同口径的历史重扫，验证重扫已从 new_face 扩到全部可重建类别。
+    """
+    conn = init_db()
+    try:
+        for cat in ("momentum", "short_term", "rebound"):
+            res = run_backtest(conn, _cfg(category=cat, rescore=True))
+            assert res.n_signals > 0, f"重扫应产出 {cat} 信号（P0 扩展未生效？）"
+    finally:
+        conn.close()

@@ -266,27 +266,32 @@ MOMENTUM_LAUNCH_VOL = 1.5       # 放量启动门槛（压掉缩量假阳）
 MOMENTUM_LAUNCH_WORD = "启动首日"
 
 MOMENTUM_WEIGHTS: dict[str, int] = {
+    # 当日涨幅档（momentum_today_pct IC +0.05 偏正，保留核心）
     "today_pct_2_6": 20,
     "today_pct_1_2": 10,
     "today_pct_0_5_1": 5,
     "today_pct_lt_0_5": 5,
     "today_pct_6_8": 5,
     "today_pct_8_10": 3,   # P1-2: 新增 8-10% 档（加速赶顶风险，进一步降权）
-    "accum_10_15": 15,
-    "accum_15_20": 10,
-    "accum_20_30": 5,
+    # 累计涨幅档（momentum_accumulated IC -0.08 反指：已涨多的票 3 日内均值回归，P0 降权）
+    "accum_10_15": 8,
+    "accum_15_20": 5,
+    "accum_20_30": 3,
     "accum_gte_30": -15,
-    "vol_healthy": 2,
+    # 量能（momentum_volume IC -0.32 强反指，P0 清零健康量能）
+    "vol_healthy": 0,
     "vol_surge": 0,
     "vol_low": -3,
-    "value_gte_10000": 3,
-    "value_gte_5000": 1,
-    "rsi_bonus": 3,
-    "kdj_bonus": 3,
-    "macd_bonus": 3,
-    "adx_bonus": 5,
+    # 市值（momentum_value IC +0.22 正指，P0 提权）
+    "value_gte_10000": 5,
+    "value_gte_5000": 2,
+    # 技术面：rsi/macd/atr IC 均为负→清零；kdj 中性偏正→略提；adx 强正→提权
+    "rsi_bonus": 0,
+    "kdj_bonus": 4,
+    "macd_bonus": 0,
+    "adx_bonus": 7,
     "adx_weak": -3,
-    "atr_healthy": 3,
+    "atr_healthy": 0,
     "atr_overheated": -3,
     "obv_uptrend": 3,
 }
@@ -314,27 +319,32 @@ PULLBACK_WEIGHTS: dict[str, int] = {
 }
 
 SHORT_TERM_WEIGHTS: dict[str, int] = {
-    "today_pct_2_4": 15,
-    "today_pct_4_6": 20,
-    "today_pct_6_8": 12,
-    "today_pct_8_12": 8,   # P1-1: 新增 8-12% 档（涨幅偏大降权，但仍可入选）
-    "accum_5_10": 10,
-    "accum_10_15": 15,
-    "accum_15_20": 8,
+    # 当日涨幅档（st_today_pct IC -0.18 反指，P0 适度降权避免追高）
+    "today_pct_2_4": 12,
+    "today_pct_4_6": 15,
+    "today_pct_6_8": 10,
+    "today_pct_8_12": 5,   # P1-1: 新增 8-12% 档（涨幅偏大降权，但仍可入选）
+    # 累计涨幅档（st_accumulated IC≈0 中性，略降高位档）
+    "accum_5_10": 8,
+    "accum_10_15": 10,
+    "accum_15_20": 5,
     "accum_gte_20": -5,
     "accum_lt_0": -5,
-    "vol_healthy": 8,
-    "vol_surge": 12,
+    # 量能（st_volume IC +0.07 偏正；但 v_st_overbought IC -0.30 强反指，vol_surge 易触发超买→P0 降）
+    "vol_healthy": 10,
+    "vol_surge": 8,
     "vol_low": -5,
     "value_small_cap": 6,
     "value_mid_cap": 2,
     "st_weak_to_strong": 8,
+    # 技术面：st_kdj IC -0.16 / st_macd IC -0.10 反指→清零；rsi 留小正
     "rsi_bonus": 3,
-    "kdj_bonus": 3,
-    "macd_bonus": 3,
-    "rank_top10": 8,
-    "rank_top20": 5,
-    "rank_top30": 3,
+    "kdj_bonus": 0,
+    "macd_bonus": 0,
+    # 排名（st_rank IC -0.14 反指，P0 降权）
+    "rank_top10": 5,
+    "rank_top20": 3,
+    "rank_top30": 2,
 }
 
 REBOUND_WEIGHTS: dict[str, int] = {

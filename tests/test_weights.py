@@ -52,7 +52,9 @@ def test_new_face_gap_up_no_longer_scored():
 
 
 def test_momentum_volume_downweighted():
-    assert MOMENTUM_WEIGHTS["vol_healthy"] == 2
+    # P0 IC 重平衡（cum_3d，n=423）：momentum_volume IC=-0.317 强反指，
+    # vol_healthy 从 2 清零（vol_surge 早已为 0）。
+    assert MOMENTUM_WEIGHTS["vol_healthy"] == 0
     assert MOMENTUM_WEIGHTS["vol_low"] == -3
 
 
@@ -101,5 +103,6 @@ def test_volume_surge_zeroed_for_hold_metric():
 
 
 def test_momentum_value_raised():
-    # momentum_value 次强正 IC 维度(+0.215)，从 2 上调到 3
-    assert MOMENTUM_WEIGHTS["value_gte_10000"] == 3
+    # P0 IC 重平衡（cum_3d，n=423）：momentum_value IC=+0.219 正指，
+    # value_gte_10000 从 3 上调到 5（提权小/大市值质量因子）。
+    assert MOMENTUM_WEIGHTS["value_gte_10000"] == 5

@@ -14,3 +14,6 @@
 /opencode-quota/
 
 /.reasonix
+
+# 回测产物（组合级对比报告，临时，不入库）
+pb_*.txt

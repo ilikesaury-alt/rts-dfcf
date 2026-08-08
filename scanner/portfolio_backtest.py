@@ -334,7 +334,7 @@ def run_backtest(conn: sqlite3.Connection, cfg: PBConfig) -> BacktestResult:
     elif cfg.no_skill:
         label = "基准(无筛选)"
     elif cfg.rescore:
-        label = "综合(重扫new_face)"
+        label = "综合(重扫全类别)"
     else:
         label = "综合(去热度)" if cfg.deheat else "综合(含热度)"
     result = BacktestResult(label=label, config=cfg)
@@ -350,21 +350,21 @@ def run_backtest(conn: sqlite3.Connection, cfg: PBConfig) -> BacktestResult:
     cal_end = calendar[-1]
 
     # 2) 加载信号并按买入日分组
-    if cfg.rescore and cfg.category in (None, "new_face", "known_new_face"):
-        # Step 2 验证：用当前 config 权重重扫 new_face/known_new_face 引擎，
-        # 替代 recommendations 里的旧权重冻结分。
-        from scanner.historical_rescan import rescan_new_face_signals
-        rescanned = rescan_new_face_signals(conn, cfg, calendar, cal_index, cal_end)
-        if cfg.category in ("new_face", "known_new_face"):
+    from scanner.historical_rescan import rescan_all_signals, RESCANABLE_CATEGORIES
+    if cfg.rescore and (cfg.category is None or cfg.category in RESCANABLE_CATEGORIES):
+        # P0 验证：用当前 config 权重重扫所有可重建类别引擎（new_face/known_new_face/
+        # momentum/short_term/rebound），替代 recommendations 里的旧权重冻结分。
+        rescanned = rescan_all_signals(conn, cfg, calendar, cal_index, cal_end)
+        rescanned = rescan_all_signals(conn, cfg, calendar, cal_index, cal_end)
+        if cfg.category in RESCANABLE_CATEGORIES:
             signals = [s for s in rescanned if s.category == cfg.category]
         else:
-            # 综合模式：重扫的 new_face 替换冻结的 new_face/known_new_face，
-            # 其余类别沿用冻结分（Step 2 未改动它们）。
+            # 综合模式：重扫类别替换冻结分，comeback 等不可重建类别沿用冻结分。
             frozen = _load_signals(conn, replace(cfg, rescore=False), calendar, cal_index, cal_end)
             frozen_others = [s for s in frozen
-                             if s.category not in ("new_face", "known_new_face")]
+                             if s.category not in RESCANABLE_CATEGORIES]
             signals = rescanned + frozen_others
-            # 注意：不重跑 _assign_rank_scores —— 两类信号各自的 rank_score 已是
+            # 注意：不重跑 _assign_rank_scores —— 各信号各自的 rank_score 已是
             # within-(date,category) 百分位，跨类别可比，合并后保持各自分组不变。
     else:
         signals = _load_signals(conn, cfg, calendar, cal_index, cal_end)
@@ -653,9 +653,10 @@ def main() -> None:
     parser.add_argument("--compare", action="store_true",
                         help="多策略对比：各现役类别 + 综合 + 基准")
     parser.add_argument("--rescore", action="store_true",
-                        help="对 new_face/known_new_face 用当前 config 权重历史重扫"
-                             "（验证 Step 2：recommendations 存旧权重冻结分，改 config 不"
-                             "retrospective 生效；须用 appearances+daily_kline 重跑引擎）")
+                        help="对全部可重建类别(new_face/known_new_face/momentum/"
+                             "short_term/rebound)用当前 config 权重历史重扫"
+                             "（recommendations 存旧权重冻结分，改 config 不 retrospective 生效；"
+                             "须用 appearances+daily_kline 重跑引擎；comeback 为 off-list 变体保持冻结分）")
     parser.add_argument("--export", default=None, help="导出 NAV 序列 CSV 路径")
     args = parser.parse_args()
 

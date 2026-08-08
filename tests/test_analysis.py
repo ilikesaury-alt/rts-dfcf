@@ -174,11 +174,12 @@ class TestAnalyzeMomentum:
         assert result.dimensions["momentum_today_pct"] == 5
 
     def test_accumulated_10_15_scores_fifteen(self):
-        # STRATEGY.md: 动量 5日累计 10%~15% → +15
+        # P0 IC 重平衡（cum_3d，n=423）：momentum_accumulated IC=-0.083 反指
+        # （已涨多的票 3 日内均值回归），accum_10_15 从 15 降到 8。
         kline = _kline([2, 2, 2, 2, 2])
         result = analyze_momentum(_stock(percent=4, rank_change=2000, value=12000), kline)
         assert result is not None
-        assert result.dimensions["momentum_accumulated"] == 15
+        assert result.dimensions["momentum_accumulated"] == 8
 
     def _overbought_kline(self, tail_pcts, ramp=2.4):
         # 构造末周期超买序列（鱼尾段）：长横盘 + 末段仅最后几根急拉冲刺，
@@ -469,11 +470,12 @@ class TestAnalyzeShortTerm:
         assert analyze_short_term(_stock(percent=13.0), kline) is None
 
     def test_pct_8_12_accepted(self):
-        # P1-1: 8~12% 档位验证
+        # P1-1: 8~12% 档位验证（P0 重平衡：st_today_pct IC=-0.183 反指，
+        # today_pct_8_12 从 8 降到 5，避免追高）
         kline = _kline([5, 3, 6, 2, 4])
         result = analyze_short_term(_stock(percent=9.0, rank_change=2000, value=12000), kline)
         assert result is not None
-        assert result.dimensions["st_today_pct"] == 8
+        assert result.dimensions["st_today_pct"] == 5
 
     def test_short_kline_returns_none(self):
         kline = _kline([5, 3, 6])
@@ -487,7 +489,7 @@ class TestAnalyzeShortTerm:
         result = analyze_short_term(_stock(percent=5.0, rank=5), kline)
         assert result is not None
         assert "st_volume" in result.dimensions
-        assert result.dimensions["st_volume"] == 12  # vol_surge
+        assert result.dimensions["st_volume"] == 8  # vol_surge（P0: 12→8，避免触发超买）
 
     def test_high_rank_penalty(self):
         kline = _kline([5, 3, 6, 2, 4], volumes=[1.0, 1.2, 1.5, 1.8, 2.0])
@@ -559,7 +561,7 @@ class TestAnalyzeShortTerm:
         kline = _kline(pcts)
         result = analyze_short_term(_stock(percent=3.0, rank=5), kline)
         assert result is not None
-        assert result.dimensions["st_accumulated"] == 10  # accum_5_10
+        assert result.dimensions["st_accumulated"] == 8  # accum_5_10（P0: 10→8）
 
     def test_rsi_uses_period6_and_5070_window(self):
         from unittest.mock import patch
