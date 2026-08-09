@@ -175,6 +175,37 @@ class TestCapShortTermBySector:
         out = _cap_short_term_by_sector(group, max_per_sector=2)
         assert len(out) == 3
 
+    def test_uncategorized_not_capped_as_one_sector(self):
+        """回归：'其他'（未分类）股票互不相关，不受同板块上限约束——
+        此前 5 只不同未分类股票被误当同一板块截断到 2 只，丢失真候选。"""
+        from scanner.orchestrator import _cap_short_term_by_sector
+        from scanner.sector import classify_sector
+        group = [
+            self._st("300100", "天鹅股份", 60),
+            self._st("300101", "凯发电器", 70),
+            self._st("300102", "恒锋工具", 80),
+            self._st("300103", "中欣氟材", 55),
+            self._st("300104", "光莆股份", 90),
+        ]
+        assert all(classify_sector(c.stock.name) == "其他" for c in group)
+        out = _cap_short_term_by_sector(group, max_per_sector=2)
+        assert len(out) == 5  # 未分类票不截断
+
+    def test_uncategorized_plus_real_sector_still_caps_sector(self):
+        """同板块上限仍对真实板块生效：医药 4 只截断到 2，'其他'票不参与截断。"""
+        from scanner.orchestrator import _cap_short_term_by_sector
+        group = [
+            self._st("300100", "天鹅股份", 60),   # 其他
+            self._st("300101", "医药A", 60),
+            self._st("300102", "医药B", 90),
+            self._st("300103", "医药C", 40),
+            self._st("300104", "医药D", 70),
+        ]
+        out = _cap_short_term_by_sector(group, max_per_sector=2)
+        syms = {c.stock.symbol for c in out}
+        assert "300100" in syms                    # 其他票保留
+        assert syms & {"300101", "300102", "300103", "300104"} == {"300102", "300104"}  # 医药只留高分 2 只
+
 
 class TestScoreStockKnownNewFace:
     """端到端锁定 P0：老股仅命中 new_face 时不应被丢弃。"""
@@ -576,5 +607,160 @@ class TestComputeRps:
         ]
         scores = _compute_rps(cands, baseline=[])
         assert set(scores) == {"300001", "300002"}
+
+
+class TestParallelFetchDeadline:
+    """回归：分时数据拉取各相带 deadline（MINUTE_FETCH_PHASE_DEADLINE），
+    超时的票降级为 None，不再 as_completed 无限等待（minute API 挂死时
+    最坏可卡 ~5 分钟）。"""
+
+    def test_phase_deadline_bounds_and_degrades(self, monkeypatch):
+        import time
+
+        import scanner.orchestrator as o
+        from concurrent.futures import ThreadPoolExecutor
+        from unittest.mock import MagicMock
+
+        def _slow(session, sym):
+            time.sleep(5.0)
+            return 1.0
+
+        monkeypatch.setattr(o, "_get_session", lambda: MagicMock())
+        monkeypatch.setattr(o, "analyze_intraday", _slow)
+        monkeypatch.setattr(o, "analyze_opening_strength", lambda s, x: 2.5)
+        monkeypatch.setattr(o, "estimate_live_volume", lambda s, x: 123.0)
+
+        cands = [_make_candidate("300001")]
+        intra, opening, live = {}, {}, {}
+        pool = ThreadPoolExecutor(max_workers=6)
+        try:
+            start = time.time()
+            o._parallel_fetch(pool, cands, intra, opening, live, phase_deadline=0.4)
+            elapsed = time.time() - start
+        finally:
+            pool.shutdown(wait=False)  # 与扫描主路径一致：不阻塞等后台任务
+
+        # 三相各 ≤0.4s deadline：总耗时受约束（而非等 5s 慢任务）
+        assert elapsed < 1.6, f"应受三相 deadline 约束, elapsed={elapsed:.2f}s"
+        assert intra["300001"] is None   # intraday 相超时 → 降级 None
+        assert opening["300001"] == 2.5  # opening 相即时完成
+        assert live["300001"] == 123.0   # live_vol 相即时完成
+
+
+class TestFilterGemStocks:
+    """回归：原始行情字段必须强转数值，脏数据整票跳过（防 TypeError 拖垮整轮扫描）。"""
+
+    def test_coerces_string_numbers(self):
+        from scanner.orchestrator import _filter_gem_stocks
+        raw = [
+            {"symbol": "SZ300001", "code": "300001", "name": "测试A",
+             "percent": "5.23", "current": "12.5", "value": "10000",
+             "rank_change": "1200", "rank": "3"},
+        ]
+        stocks = _filter_gem_stocks(raw)
+        assert len(stocks) == 1
+        s = stocks[0]
+        assert isinstance(s.percent, float) and s.percent == 5.23
+        assert isinstance(s.current, float) and s.current == 12.5
+        assert isinstance(s.value, float) and s.value == 10000.0
+        assert isinstance(s.rank_change, int) and s.rank_change == 1200
+        assert s.rank == 3
+
+    def test_skips_garbage_numeric_row(self):
+        # rank_change="-" 无法解析 → 该票跳过，其余票正常进入（不再抛 TypeError）
+        from scanner.orchestrator import _filter_gem_stocks
+        raw = [
+            {"symbol": "SZ300001", "code": "300001", "name": "测试A",
+             "percent": "5.23", "current": "12.5", "value": "10000",
+             "rank_change": "-", "rank": 1},
+            {"symbol": "SZ300002", "code": "300002", "name": "测试B",
+             "percent": 3.1, "current": 10.0, "value": 8000,
+             "rank_change": 1200, "rank": 2},
+        ]
+        stocks = _filter_gem_stocks(raw)
+        assert [s.symbol for s in stocks] == ["SZ300002"]
+        # 下游比较不再崩溃
+        assert (stocks[0].current > 200.0) is (stocks[0].current > 200.0)
+
+
+class TestFetchAllKlinesShortCacheTtl:
+    """回归：短缓存（len<KLINE_MIN_LENGTH）同样受 KLINE_REFRESH_TTL 节流，
+    不再每扫描周期强制重拉（此前耗尽 KLINE_FETCH_DEADLINE 拖累全列表）。"""
+
+    def _cached(self, today):
+        return [{"date": "2026-06-17", "close": 10.0}] + \
+               [{"date": today, "close": 10.5}] * 25   # 26 根 < KLINE_MIN_LENGTH=32
+
+    def test_short_cache_with_today_bar_within_ttl_not_refetched(self, monkeypatch):
+        import scanner.orchestrator as o
+        from scanner.models import StockInfo
+        from datetime import date
+
+        today = date.today().isoformat()
+        cached = self._cached(today)
+        monkeypatch.setattr(o, "get_cached_kline", lambda conn, sym: cached)
+        monkeypatch.setattr(o, "is_trading_time", lambda: True)
+        o._last_kline_fetch["300123"] = o.now_beijing().timestamp() - 10
+        fetched = {}
+
+        class _FakeAdapter:
+            def fetch_kline(self, symbol, days=15):
+                fetched["called"] = True
+                return cached
+
+        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
+        res = o._fetch_all_klines(None, _FakeAdapter(), [StockInfo(
+            symbol="300123", name="T", code="300123", percent=3.0,
+            current=10.0, value=10000, rank_change=1000, rank=1)])
+        assert "called" not in fetched  # TTL 内短缓存复用
+        assert res["300123"] is cached
+
+    def test_short_cache_past_ttl_refetches(self, monkeypatch):
+        import scanner.orchestrator as o
+        from scanner.models import StockInfo
+        from datetime import date
+
+        today = date.today().isoformat()
+        cached = self._cached(today)
+        monkeypatch.setattr(o, "get_cached_kline", lambda conn, sym: cached)
+        monkeypatch.setattr(o, "is_trading_time", lambda: True)
+        o._last_kline_fetch["300124"] = o.now_beijing().timestamp() - 600
+        fetched = {}
+        fresh = [{"date": today, "close": 11.0}] * 45
+
+        class _FakeAdapter:
+            def fetch_kline(self, symbol, days=15):
+                fetched["called"] = True
+                return fresh
+
+        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
+        res = o._fetch_all_klines(None, _FakeAdapter(), [StockInfo(
+            symbol="300124", name="T", code="300124", percent=3.0,
+            current=10.0, value=10000, rank_change=1000, rank=1)])
+        assert "called" in fetched  # 超 TTL 后仍补拉（跨日增长 K 线根数）
+        assert res["300124"] is not None
+
+    def test_short_cache_reused_outside_trading_time(self, monkeypatch):
+        import scanner.orchestrator as o
+        from scanner.models import StockInfo
+        from datetime import date
+
+        today = date.today().isoformat()
+        cached = self._cached(today)
+        monkeypatch.setattr(o, "get_cached_kline", lambda conn, sym: cached)
+        monkeypatch.setattr(o, "is_trading_time", lambda: False)
+        fetched = {}
+
+        class _FakeAdapter:
+            def fetch_kline(self, symbol, days=15):
+                fetched["called"] = True
+                return cached
+
+        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
+        res = o._fetch_all_klines(None, _FakeAdapter(), [StockInfo(
+            symbol="300125", name="T", code="300125", percent=3.0,
+            current=10.0, value=10000, rank_change=1000, rank=1)])
+        assert "called" not in fetched  # 非交易时段一律复用缓存
+        assert res["300125"] is cached
 
 

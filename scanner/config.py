@@ -23,6 +23,12 @@ NEW_FACE_LOOKBACK_DAYS = 3
 # 防止 API 故障时串行重试让单轮扫描假死数十分钟。
 KLINE_FETCH_DEADLINE = 45
 
+# 分时数据（分时强度/开盘强度/实时量比）单相拉取 deadline（秒）。
+# minute API 挂死时单只请求最坏 ~48s（15s×3 重试），40 只候选 6 线程并发
+# 会让 as_completed 无限等待最长 ~5 分钟；加 deadline 后超时部分降级为
+# 无分时信号（None），与 K 线 KLINE_FETCH_DEADLINE 的限时语义对齐。
+MINUTE_FETCH_PHASE_DEADLINE = 30
+
 # Normal mode thresholds
 NEW_FACE_MIN_SCORE = 18
 MOMENTUM_MIN_SCORE = 16

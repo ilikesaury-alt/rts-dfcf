@@ -426,7 +426,9 @@ def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None
 
     traj_bonus = traj
     top40_bonus = 0
-    if rank <= TOP40_THRESHOLD:
+    # rank>0 前提：回马枪掉榜票（comeback）rank=0，无榜单排名，不能把它当作"榜上第 1 名"
+    # 计 TOP40/top20 加分（此前掉榜票拿的榜单动能加分反而超过真正的榜上前 40，分失真）。
+    if 0 < rank <= TOP40_THRESHOLD:
         top40_bonus = TOP40_BONUS
         advance = (TOP40_THRESHOLD - rank) // 10
         top40_bonus += advance * TOP40_ADVANCE_PER_10

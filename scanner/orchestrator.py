@@ -1,6 +1,6 @@
 import sqlite3
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, Future, wait
 from dataclasses import replace as dataclass_replace
 from datetime import date
 
@@ -29,9 +29,9 @@ from scanner.config import (
     HIGH_RISK_TRENDS,
     KLINE_FETCH_DAYS,
     KLINE_FETCH_DEADLINE,
-    KLINE_MIN_LENGTH,
     MAX_MARKET_CAP,
     MAX_STOCK_PRICE,
+    MINUTE_FETCH_PHASE_DEADLINE,
     MOMENTUM_MIN_SCORE,
     NEW_FACE_LOOKBACK_DAYS,
     PULLBACK_MIN_SCORE,
@@ -98,14 +98,12 @@ def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo]
     for s in stocks:
         cached = get_cached_kline(conn, s.symbol)
         if cached:
-            if len(cached) < KLINE_MIN_LENGTH:
-                stale_cache[s.symbol] = cached
-                needs_fetch.append(s.symbol)
-                continue
             max_date_str = max(k["date"] for k in cached)
             max_date = date.fromisoformat(max_date_str)
+            last_fetch = _last_kline_fetch.get(s.symbol, 0.0)
+            within_ttl = (now_beijing().timestamp() - last_fetch) < KLINE_REFRESH_TTL
             if not is_trading_time():
-                # 非交易时段：直接复用缓存，不补拉
+                # 非交易时段：直接复用缓存，不补拉（含短缓存，避免收盘后反复重拉同一段历史）
                 result[s.symbol] = cached
                 continue
             # 交易时段
@@ -114,9 +112,11 @@ def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo]
                 stale_cache[s.symbol] = cached
                 needs_fetch.append(s.symbol)
                 continue
-            # 已含今日 Bar：仅当超过刷新 TTL 才补拉，否则复用缓存
-            last_fetch = _last_kline_fetch.get(s.symbol, 0.0)
-            if (now_beijing().timestamp() - last_fetch) < KLINE_REFRESH_TTL:
+            # 已含今日 Bar：仅当超过刷新 TTL 才补拉，否则复用缓存。
+            # 短缓存（len<KLINE_MIN_LENGTH）同样受 TTL 节流：同一交易日内反复重拉
+            # 不会增长 K 线根数，只会耗尽 KLINE_FETCH_DEADLINE 拖累全列表，故不再
+            # 每轮强制补拉（此前 <32 根的票每扫描周期都重拉一次）。
+            if within_ttl:
                 result[s.symbol] = cached
                 continue
             stale_cache[s.symbol] = cached
@@ -240,6 +240,8 @@ def _cap_short_term_by_sector(short_term_list: list[Candidate],
 
     按 score 降序每组保留前 max_per_sector 只；其余从超短列表移除
     （仍可能经其它策略桶保留在 all_candidates）。
+    "其他"（未分类）股票互不相关，不受同板块上限约束——否则一批名称不含行业
+    关键词的股票会被误当同一板块截断到 2 只，丢真正互不相关的候选。
     """
     if not max_per_sector or len(short_term_list) <= max_per_sector:
         return short_term_list
@@ -248,7 +250,10 @@ def _cap_short_term_by_sector(short_term_list: list[Candidate],
         sec = classify_sector(c.stock.name)
         by_sector.setdefault(sec, []).append(c)
     capped: list[Candidate] = []
-    for group in by_sector.values():
+    for sec, group in by_sector.items():
+        if sec == "其他":
+            capped.extend(group)
+            continue
         group.sort(key=lambda c: -c.score)
         capped.extend(group[:max_per_sector])
     return capped
@@ -310,13 +315,21 @@ def _filter_gem_stocks(raw: list[dict]) -> list[StockInfo]:
         if symbol in seen_symbols:
             continue
         seen_symbols.add(symbol)
+        # 数值强转：API 偶发返回字符串（如 rank_change="-"）时，保持字符串会让下游
+        # 的 str vs float/int 比较抛 TypeError（s.current > MAX_STOCK_PRICE、
+        # _vol_rank_combo_score 等），整轮扫描异常丢失。脏数据直接跳过该票。
+        try:
+            percent = float(item.get("percent") or 0.0)
+            current = float(item.get("current") or 0.0)
+            value = float(item.get("value") or 0.0)
+            rank_change = int(float(item.get("rank_change") or 0))
+            rank = int(item.get("rank") or i)
+        except (TypeError, ValueError):
+            continue
         gem_stocks.append(StockInfo(
             symbol=symbol, name=name, code=code,
-            percent=item.get("percent") or 0.0,
-            current=item.get("current") or 0.0,
-            value=item.get("value") or 0.0,
-            rank_change=item.get("rank_change") or 0,
-            rank=item.get("rank", i),
+            percent=percent, current=current, value=value,
+            rank_change=rank_change, rank=rank,
             source_tag=item.get("source_tag", "xueqiu"),
         ))
     return gem_stocks
@@ -585,9 +598,15 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     live_volumes: dict[str, float | None] = {}
 
     if all_candidates:
-        with ThreadPoolExecutor(max_workers=6) as pool:
+        # wait=False 关闭：_parallel_fetch 各相已有 phase_deadline 限时，超时被
+        # cancel 的任务仍在后台跑（受请求自身超时约束，最坏 ~48s 后自然结束），
+        # 不能让 with-exit 的 shutdown(wait=True) 阻塞主扫描循环等待它们。
+        pool = ThreadPoolExecutor(max_workers=6)
+        try:
             _parallel_fetch(pool, all_candidates,
                             intraday_scores, opening_scores, live_volumes)
+        finally:
+            pool.shutdown(wait=False)
 
     market_idx_pct = adapter.fetch_market_index()
     market_env_bonus = compute_market_env_bonus(market_idx_pct)
@@ -697,56 +716,49 @@ def _parallel_fetch(pool: ThreadPoolExecutor,
                     candidates: list[Candidate],
                     intraday_scores: dict[str, float | None],
                     opening_scores: dict[str, float | None],
-                    live_volumes: dict[str, float | None]):
-    seen: set[str] = set()
-    intra_futs = {}
-    for c in candidates:
-        sym = c.stock.symbol
-        if sym in seen:
-            continue
-        seen.add(sym)
-        def _do(sym=sym, fn=analyze_intraday):
-            return fn(_get_session(), sym)
-        intra_futs[pool.submit(_do)] = sym
-    for fut in as_completed(intra_futs):
-        sym = intra_futs[fut]
-        try:
-            intraday_scores[sym] = fut.result()
-        except Exception as e:
-            print(f"  [!] 分时强度失败 {sym}: {e}")
-            intraday_scores[sym] = None
+                    live_volumes: dict[str, float | None],
+                    phase_deadline: float = MINUTE_FETCH_PHASE_DEADLINE):
+    """并行拉取分时强度/开盘强度/实时量比（三相串行，每相内部并行）。
 
-    seen = set()
-    open_futs = {}
-    for c_ in candidates:
-        sym = c_.stock.symbol
-        if sym in seen:
-            continue
-        seen.add(sym)
-        def _open(sym=sym):
-            return analyze_opening_strength(_get_session(), sym)
-        open_futs[pool.submit(_open)] = sym
-    for fut in as_completed(open_futs):
-        sym = open_futs[fut]
-        try:
-            opening_scores[sym] = fut.result()
-        except Exception:
-            opening_scores[sym] = None
+    P-robust：每相用 futures.wait(timeout=phase_deadline) 限时——minute API
+    挂死时单只请求最坏 ~48s（15s×3 重试），若用 as_completed 无限等待，
+    40 只候选 6 线程并发可卡死扫描循环最长 ~5 分钟。超时的票降级为 None
+    （无分时信号，与 `_apply_intraday_bonus` 的 None 降级语义一致）。
+    """
+    def _run_phase(make_fut, store):
+        seen: set[str] = set()
+        futs: dict[Future, str] = {}
+        for c_ in candidates:
+            sym = c_.stock.symbol
+            if sym in seen:
+                continue
+            seen.add(sym)
+            futs[pool.submit(make_fut(sym))] = sym
+        if not futs:
+            return
+        done, pending = wait(futs, timeout=phase_deadline)
+        if pending:
+            print(f"  [!] 分时数据拉取超时（>{phase_deadline:.0f}s），"
+                  f"{len(pending)} 只降级为无分时信号")
+            for fut in pending:
+                fut.cancel()
+                store[futs[fut]] = None
+        for fut in done:
+            sym = futs[fut]
+            try:
+                store[sym] = fut.result()
+            except Exception as e:
+                store[sym] = None
 
-    seen = set()
-    vol_futs = {}
-    for c_ in candidates:
-        sym = c_.stock.symbol
-        if sym in seen:
-            continue
-        seen.add(sym)
-        def _vol(sym=sym):
-            return estimate_live_volume(_get_session(), sym)
-        vol_futs[pool.submit(_vol)] = sym
-    for fut in as_completed(vol_futs):
-        sym = vol_futs[fut]
-        try:
-            live_volumes[sym] = fut.result()
-        except Exception as e:
-            print(f"  [!] 实时量比失败 {sym}: {e}")
-            live_volumes[sym] = None
+    def _intraday(sym):
+        return lambda: analyze_intraday(_get_session(), sym)
+
+    def _opening(sym):
+        return lambda: analyze_opening_strength(_get_session(), sym)
+
+    def _live_vol(sym):
+        return lambda: estimate_live_volume(_get_session(), sym)
+
+    _run_phase(_intraday, intraday_scores)
+    _run_phase(_opening, opening_scores)
+    _run_phase(_live_vol, live_volumes)

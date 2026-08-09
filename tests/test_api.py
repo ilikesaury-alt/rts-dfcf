@@ -50,6 +50,21 @@ class TestComputeSurgeSentiment:
         assert r["phase"] == "cool"
         assert r["bonus"] == -2
 
+    def test_string_percent_and_rank_change_coerced(self):
+        """回归：原始行情 percent/rank_change 为字符串时不抛 TypeError
+        （此前 sum(str + float) 崩溃，拖垮整个扫描周期）。"""
+        items = [
+            {"percent": "8.5", "rank_change": "500"},
+            {"percent": 7.0, "rank_change": 200},
+            {"percent": "6.2", "rank_change": None},
+            {"percent": None, "rank_change": "-"},
+        ]
+        r = compute_surge_sentiment(items)
+        assert r["phase"] == "boiling"
+        assert r["avg_top10_pct"] == pytest.approx(5.42)  # (8.5+7.0+6.2+0.0)/4
+        assert r["pct_gt_5_ratio"] == pytest.approx(0.75)
+        assert r["avg_rank_churn"] == pytest.approx(175.0)  # (500 + 200 + 0 + 0) / 4
+
 
 class TestBiaoshengCircuitBreaker:
 
@@ -232,6 +247,60 @@ class TestFetchMinuteDataRawArray:
         assert isinstance(score, float)
         opening = analyze_opening_strength(MagicMock(), "300001")
         assert opening is not None
+
+
+class TestFetchMarketCapsCoercion:
+    """回归：batch quote 各字段强转 float，字符串/缺失不抛 TypeError（拖垮扫描）。"""
+
+    def _fake_resp(self, payload):
+        r = MagicMock()
+        r.json.return_value = payload
+        return r
+
+    def test_market_caps_values_coerced(self):
+        from scanner.api import fetch_market_caps_batch
+        payload = {
+            "data": {
+                "SZ300001": {"quote": {
+                    "symbol": "SZ300001",
+                    "market_capital": "5000000000",
+                    "float_market_capital": "3000000000",
+                    "turnover_rate": "5.5",
+                    "current": "12.5",
+                    "percent": "3.2",
+                }},
+                "SZ300002": {"quote": {"symbol": "SZ300002"}},  # 缺数值字段 → 0.0
+            }
+        }
+        with patch("scanner.api._request_with_retry", return_value=self._fake_resp(payload)):
+            result = fetch_market_caps_batch(MagicMock(), ["SZ300001", "SZ300002"])
+        q1 = result["SZ300001"]
+        assert q1["market_cap"] == 5000000000.0 and isinstance(q1["market_cap"], float)
+        assert q1["circ_market_cap"] == 3000000000.0
+        assert q1["turnover_rate"] == 5.5
+        assert q1["current"] == 12.5 and q1["percent"] == 3.2
+        q2 = result["SZ300002"]
+        assert q2["market_cap"] == 0.0 and q2["percent"] == 0.0
+
+    def test_items_array_form_coerced(self):
+        from scanner.api import fetch_market_caps_batch
+        payload = {
+            "data": {
+                "items": [{"quote": {
+                    "symbol": "SZ300003",
+                    "market_capital": "1000000000",
+                    "float_market_capital": "800000000",
+                    "turnover_rate": 2.0,
+                    "current": 20.0,
+                    "percent": "1.5",
+                }}]
+            }
+        }
+        with patch("scanner.api._request_with_retry", return_value=self._fake_resp(payload)):
+            result = fetch_market_caps_batch(MagicMock(), ["SZ300003"])
+        assert result["SZ300003"]["current"] == 20.0
+        assert result["SZ300003"]["percent"] == 1.5
+        assert isinstance(result["SZ300003"]["percent"], float)
 
 
 class TestFetchListSoftErrorCircuitBreaker:

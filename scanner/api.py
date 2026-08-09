@@ -136,18 +136,27 @@ def fetch_market_index(session: requests.Session) -> float | None:
     return None
 
 
+def _num(v, default: float = 0.0) -> float:
+    """安全转 float：API 偶发返回字符串/None/NaN 时按 0 处理，避免下游 str/float 比较崩溃。"""
+    try:
+        f = float(v)
+        return default if f != f else f  # NaN → default
+    except (TypeError, ValueError):
+        return default
+
+
 def compute_surge_sentiment(raw_items: list[dict]) -> dict:
     top10 = raw_items[:10]
 
-    top10_pcts = [item.get("percent") or 0 for item in top10]
+    top10_pcts = [_num(item.get("percent")) for item in top10]
     avg_top10 = sum(top10_pcts) / len(top10_pcts) if top10_pcts else 0
 
-    all_pcts = [item.get("percent") or 0 for item in raw_items]
+    all_pcts = [_num(item.get("percent")) for item in raw_items]
     pct_gt_5 = sum(1 for p in all_pcts if p > 5)
     pct_lt_0 = sum(1 for p in all_pcts if p < 0)
     total = len(all_pcts) or 1
 
-    rank_changes = [abs(item.get("rank_change") or 0) for item in raw_items]
+    rank_changes = [abs(_num(item.get("rank_change"))) for item in raw_items]
     avg_rank_churn = sum(rank_changes) / len(rank_changes) if rank_changes else 0
 
     pct_gt_5_ratio = pct_gt_5 / total
@@ -402,13 +411,11 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
                         q = entry if isinstance(entry, dict) else {}
                     qsym = q.get("symbol", sym)
                     if qsym:
-                        mc = q.get("market_capital") or 0
-                        cmc = q.get("float_market_capital") or 0
-                        turnover = q.get("turnover_rate") or 0
-                        result[qsym] = {"market_cap": mc, "circ_market_cap": cmc,
-                                        "turnover_rate": turnover,
-                                        "current": q.get("current", 0),
-                                        "percent": q.get("percent", 0)}
+                        result[qsym] = {"market_cap": _num(q.get("market_capital")),
+                                        "circ_market_cap": _num(q.get("float_market_capital")),
+                                        "turnover_rate": _num(q.get("turnover_rate")),
+                                        "current": _num(q.get("current")),
+                                        "percent": _num(q.get("percent"))}
             else:
                 items = data.get("items", []) if isinstance(data, dict) else []
                 for item in items:
@@ -417,13 +424,11 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
                         q = item if isinstance(item, dict) else {}
                     sym = q.get("symbol", "")
                     if sym:
-                        mc = q.get("market_capital") or 0
-                        cmc = q.get("float_market_capital") or 0
-                        turnover = q.get("turnover_rate") or 0
-                        result[sym] = {"market_cap": mc, "circ_market_cap": cmc,
-                                       "turnover_rate": turnover,
-                                       "current": q.get("current", 0),
-                                       "percent": q.get("percent", 0)}
+                        result[sym] = {"market_cap": _num(q.get("market_capital")),
+                                       "circ_market_cap": _num(q.get("float_market_capital")),
+                                       "turnover_rate": _num(q.get("turnover_rate")),
+                                       "current": _num(q.get("current")),
+                                       "percent": _num(q.get("percent"))}
         except Exception as e:
             print(f"  [!] 市值批量查询失败(批次{i // 50 + 1}): {e}")
             continue

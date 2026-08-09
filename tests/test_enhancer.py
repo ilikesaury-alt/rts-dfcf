@@ -425,6 +425,19 @@ class TestApplyListMomentumBonus:
         assert c.list_momentum_bonus == 0
 
     @patch("scanner.enhancer.rank_trajectory_score", return_value=0)
+    def test_comeback_rank0_no_top40_bonus(self, mock_traj):
+        """回归：回马枪掉榜票 rank=0（无榜单排名）不得被当作"榜上第 1 名"计
+        TOP40/top20 加分——此前 off-list 候选 list_momentum_bonus 虚高 +13，
+        超过真实榜上前 40 名的加分，违背"掉榜无热榜背书、比榜上更严"的设计。"""
+        c = _make_candidate(rank=0, category="comeback")
+        c.off_list = True
+        c.comeback_variant = "反转"
+        _apply_list_momentum_bonus(c, list_streaks={})
+        assert c.list_momentum_bonus == 0, (
+            f"off-list rank=0 不应有榜单动能加分, got {c.list_momentum_bonus}")
+        assert c.kline.dimensions.get("list_top40_bonus") == 0
+
+    @patch("scanner.enhancer.rank_trajectory_score", return_value=0)
     def test_no_kline(self, mock_traj):
         c = _make_candidate()
         c.kline = None
