@@ -132,6 +132,30 @@ def _compute_volume_metrics(kline: list[dict], today_str: str,
     return round(vol_ratio, 2), round(avg_vol, 2)
 
 
+def _split_today(kline: list[dict], today_str: str) -> tuple[list[dict], list[float], list[float]]:
+    """剔除今日 bar，返回 (historical_kline, pcts, closes)。
+
+    各 analyze_* 共用：今日 bar 切分逻辑完全一致，抽成单点避免 5 处样板重复。
+    """
+    historical_kline = [k for k in kline if k["date"] != today_str]
+    pcts = [k["percent"] for k in historical_kline]
+    closes = [k["close"] for k in historical_kline]
+    return historical_kline, pcts, closes
+
+
+def _get_features(closes: list[float], historical_kline: list[dict],
+                  features: dict | None = None) -> dict:
+    """构建特征（调用方已预计算则复用，否则从 historical_kline 抽取 high/low/volume 现算）。"""
+    if features is not None:
+        return features
+    return build_features(
+        closes,
+        [k["high"] for k in historical_kline],
+        [k["low"] for k in historical_kline],
+        [k["volume"] for k in historical_kline],
+    )
+
+
 def _ma_bull_score(closes: list[float], feats: dict | None = None) -> int:
     # 使用 EMA（从最近 N 根收盘价播种），创业板高波动下比 SMA 噪声更小。
     # 注意：与 compute_macd 内部 EMA（从 closes[0] 播种）并非同一序列，
@@ -172,6 +196,27 @@ def _detect_gap_up(today_current: float, kline: list[dict], today_str: str | Non
     if gap_pct > GAP_UP_WEAK:
         return round(gap_pct, 2), GAP_UP_WEAK_PTS
     return round(gap_pct, 2), 0
+
+
+def _crash_safety_block(pcts: list[float], prefix: str) -> tuple[bool, int, dict]:
+    """无暴跌日安全分 + 近2日不差附加分（momentum/short_term 共用样板）。
+
+    分析入口均要求 len(kline)>=5（历史必>=4 根），len(pcts)<2 分支在实际中不可达，
+    保留纯防御。dims key 用 prefix 区分策略（momentum_* / st_*）。
+    返回 (has_crash_day, score_delta, dims)。
+    """
+    has_crash_day = any(p <= CRASH_THRESHOLD for p in pcts[-5:])
+    score = 0
+    dims: dict[str, int | float] = {}
+    if not has_crash_day:
+        score += NO_CRASH_SAFE_BONUS
+        dims[f"{prefix}_no_crash_safe"] = NO_CRASH_SAFE_BONUS
+        if len(pcts) >= 2:
+            recent_2_return = pcts[-2] + pcts[-1]
+            if recent_2_return > RECENT_2_RETURN_THRESHOLD:
+                score += RECENT_2D_BONUS
+                dims[f"{prefix}_recent_2d"] = RECENT_2D_BONUS
+    return has_crash_day, score, dims
 
 
 def _vol_rank_combo_score(vol_ratio: float, rank_change: int) -> int:
@@ -226,11 +271,7 @@ def _score_today_pct(today_pct: float, W: dict, prefix: str) -> tuple[int, str, 
 def _compute_new_face_indicators(closes: list[float], historical_kline: list[dict],
                                  W: dict, feats: dict | None = None) -> tuple[int, dict]:
     """New face specific indicator scoring (oversold reversal signals)."""
-    if feats is None:
-        highs = [k["high"] for k in historical_kline]
-        lows = [k["low"] for k in historical_kline]
-        volumes = [k["volume"] for k in historical_kline]
-        feats = build_features(closes, highs, lows, volumes)
+    feats = _get_features(closes, historical_kline, feats)
     rsi_val = feats["rsi6"]
     rsi14_val = feats["rsi14"]
     kdj_val = feats.get("kdj")
@@ -294,11 +335,7 @@ def _compute_new_face_indicators(closes: list[float], historical_kline: list[dic
 def _compute_momentum_indicators(closes: list[float], historical_kline: list[dict],
                                  W: dict, feats: dict | None = None) -> tuple[int, dict]:
     """Momentum specific indicator scoring (trend confirmation signals)."""
-    if feats is None:
-        highs = [k["high"] for k in historical_kline]
-        lows = [k["low"] for k in historical_kline]
-        volumes = [k["volume"] for k in historical_kline]
-        feats = build_features(closes, highs, lows, volumes)
+    feats = _get_features(closes, historical_kline, feats)
     rsi_val = feats["rsi6"]
     kdj_val = feats.get("kdj")
     macd_val = feats["macd"]
@@ -376,9 +413,7 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
         return None
 
     today_str = today_str or now_beijing().date().isoformat()
-    historical_kline = [k for k in kline if k["date"] != today_str]
-    pcts = [k["percent"] for k in historical_kline]
-    closes = [k["close"] for k in historical_kline]
+    historical_kline, pcts, closes = _split_today(kline, today_str)
 
     recent_5_pcts = pcts[-5:]
     down_days = sum(1 for p in recent_5_pcts if p < 0)
@@ -399,12 +434,7 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
     if accumulated > 20:
         return None
 
-    feats = features if features is not None else build_features(
-        closes,
-        [k["high"] for k in historical_kline],
-        [k["low"] for k in historical_kline],
-        [k["volume"] for k in historical_kline],
-    )
+    feats = _get_features(closes, historical_kline, features)
 
     vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str, now)
     volumes = [k["volume"] for k in kline]
@@ -524,20 +554,13 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
         return None
 
     today_str = today_str or now_beijing().date().isoformat()
-    historical_kline = [k for k in kline if k["date"] != today_str]
-    pcts = [k["percent"] for k in historical_kline]
-    closes = [k["close"] for k in historical_kline]
+    historical_kline, pcts, closes = _split_today(kline, today_str)
     if len(closes) >= 6:
         accumulated = (closes[-1] - closes[-6]) / closes[-6] * 100
     else:
         accumulated = sum(pcts[-5:])
 
-    feats = features if features is not None else build_features(
-        closes,
-        [k["high"] for k in historical_kline],
-        [k["low"] for k in historical_kline],
-        [k["volume"] for k in historical_kline],
-    )
+    feats = _get_features(closes, historical_kline, features)
 
     vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str, now)
     volumes = [k["volume"] for k in kline]
@@ -650,18 +673,9 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
         dims["momentum_vol_peak"] = round(vol_peak, 2)
 
     # Crash check — split: base safety + recent 2d bonus
-    if len(pcts) >= 2:
-        has_crash_day = any(p <= CRASH_THRESHOLD for p in pcts[-5:])
-        recent_2_return = pcts[-2] + pcts[-1]
-    else:
-        has_crash_day = False
-        recent_2_return = 0.0
-    if not has_crash_day:
-        score += NO_CRASH_SAFE_BONUS
-        dims["momentum_no_crash_safe"] = NO_CRASH_SAFE_BONUS
-        if recent_2_return > RECENT_2_RETURN_THRESHOLD:
-            score += RECENT_2D_BONUS
-            dims["momentum_recent_2d"] = RECENT_2D_BONUS
+    has_crash_day, crash_score, crash_dims = _crash_safety_block(pcts, "momentum")
+    score += crash_score
+    dims.update(crash_dims)
 
     vol_rank = _vol_rank_combo_score(vol_ratio, stock.rank_change)
     score += vol_rank
@@ -707,9 +721,7 @@ def _calc_pullback_base_metrics(kline: list[dict], today_str: str, now=None) -> 
         (pcts, closes, accumulated, vol_ratio, avg_vol, historical_kline, volumes) tuple
     """
     today_str = today_str or now_beijing().date().isoformat()
-    historical_kline = [k for k in kline if k["date"] != today_str]
-    pcts = [k["percent"] for k in historical_kline]
-    closes = [k["close"] for k in historical_kline]
+    historical_kline, pcts, closes = _split_today(kline, today_str)
     if len(closes) >= 6:
         accumulated = (closes[-1] - closes[-6]) / closes[-6] * 100
     else:
@@ -786,25 +798,8 @@ def _score_pullback_volume(vol_ratio: float, W: dict) -> tuple[int, dict]:
 
 
 def _check_crash_day(pcts: list) -> tuple[bool, int, dict]:
-    """Check crash day + recent 2d return for pullback.
-
-    Returns:
-        (has_crash_day, score, dimensions)
-    """
-    has_crash_day = any(p <= CRASH_THRESHOLD for p in pcts[-5:])
-    score = 0
-    dims: dict[str, int | float] = {}
-
-    if not has_crash_day:
-        score += NO_CRASH_SAFE_BONUS
-        dims["pullback_no_crash_safe"] = NO_CRASH_SAFE_BONUS
-        if len(pcts) >= 2:
-            recent_2_return = pcts[-2] + pcts[-1]
-            if recent_2_return > RECENT_2_RETURN_THRESHOLD:
-                score += RECENT_2D_BONUS
-                dims["pullback_recent_2d"] = RECENT_2D_BONUS
-
-    return has_crash_day, score, dims
+    """Check crash day + recent 2d return for pullback（复用 _crash_safety_block）。"""
+    return _crash_safety_block(pcts, "pullback")
 
 
 def _analyze_pullback_ma(closes: list, W: dict) -> dict:
@@ -866,11 +861,7 @@ def _score_pullback_indicators(closes: list, historical_kline: list[dict],
     Returns:
         (score, dimensions) tuple
     """
-    if feats is None:
-        highs = [k["high"] for k in historical_kline]
-        lows = [k["low"] for k in historical_kline]
-        volumes = [k["volume"] for k in historical_kline]
-        feats = build_features(closes, highs, lows, volumes)
+    feats = _get_features(closes, historical_kline, feats)
     rsi_val = feats["rsi6"]
     macd_val = feats["macd"]
     kdj_val = feats.get("kdj")
@@ -955,12 +946,7 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
     if accumulated < 5:
         return None
 
-    feats = features if features is not None else build_features(
-        closes,
-        [k["high"] for k in historical_kline],
-        [k["low"] for k in historical_kline],
-        [k["volume"] for k in historical_kline],
-    )
+    feats = _get_features(closes, historical_kline, features)
 
     score = 0
     dims: dict[str, int | float] = {}
@@ -1034,16 +1020,9 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
         return None
 
     today_str = today_str or now_beijing().date().isoformat()
-    historical_kline = [k for k in kline if k["date"] != today_str]
-    pcts = [k["percent"] for k in historical_kline]
-    closes = [k["close"] for k in historical_kline]
+    historical_kline, pcts, closes = _split_today(kline, today_str)
 
-    feats = features if features is not None else build_features(
-        closes,
-        [k["high"] for k in historical_kline],
-        [k["low"] for k in historical_kline],
-        [k["volume"] for k in historical_kline],
-    )
+    feats = _get_features(closes, historical_kline, features)
 
     # short_term 的 accumulated 包含今日 bar（与策略语义"今日异动"一致）
     all_closes = [k["close"] for k in kline]
@@ -1096,15 +1075,9 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
         score += W["vol_low"]
         dims["st_volume"] = W["vol_low"]
 
-    has_crash = any(p <= CRASH_THRESHOLD for p in pcts[-5:])
-    if not has_crash:
-        score += NO_CRASH_SAFE_BONUS
-        dims["st_no_crash_safe"] = NO_CRASH_SAFE_BONUS
-        if len(pcts) >= 2:
-            recent_2_return = pcts[-2] + pcts[-1]
-            if recent_2_return > RECENT_2_RETURN_THRESHOLD:
-                score += RECENT_2D_BONUS
-                dims["st_recent_2d"] = RECENT_2D_BONUS
+    _, crash_score, crash_dims = _crash_safety_block(pcts, "st")
+    score += crash_score
+    dims.update(crash_dims)
 
     # 超短偏好小市值：流通盘轻、拉升阻力小（market_cap 单位：亿元，流通市值优先）
     if stock.market_cap > 0:
@@ -1213,9 +1186,7 @@ def analyze_rebound(stock: StockInfo, kline: list[dict] | None,
         return None
 
     today_str = today_str or now_beijing().date().isoformat()
-    historical_kline = [k for k in kline if k["date"] != today_str]
-    pcts = [k["percent"] for k in historical_kline]
-    closes = [k["close"] for k in historical_kline]
+    historical_kline, pcts, closes = _split_today(kline, today_str)
 
     if len(pcts) < 5:
         return None
@@ -1289,12 +1260,7 @@ def analyze_rebound(stock: StockInfo, kline: list[dict] | None,
         dims["rebound_volume"] = W["vol_low"]
 
     # 技术面确认：RSI 超卖
-    feats = features if features is not None else build_features(
-        closes,
-        [k["high"] for k in historical_kline],
-        [k["low"] for k in historical_kline],
-        [k["volume"] for k in historical_kline],
-    )
+    feats = _get_features(closes, historical_kline, features)
     rsi_val = feats["rsi6"]
     if rsi_val is not None:
         if rsi_val < 30:

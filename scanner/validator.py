@@ -63,15 +63,26 @@ from scanner.indicators import (
 from scanner.sector import classify_sector
 
 
+def _get_features(closes: list[float], historical_kline: list[dict],
+                  feats: dict | None = None) -> dict:
+    """构建特征（调用方已预计算则复用，否则从 historical_kline 抽取 high/low 现算）。
+
+    与 analysis._get_features 的唯一差异：validator 各维度不需要 volumes/OBV
+    （momentum 的 OBV 背离由 _mo_divergence 独立计算），故不传 volumes。
+    """
+    if feats is not None:
+        return feats
+    highs = [k["high"] for k in historical_kline]
+    lows = [k["low"] for k in historical_kline]
+    return build_features(closes, highs, lows)
+
+
 def _nf_convergence(closes: list[float], historical_kline: list[dict],
                     feats: dict | None = None) -> tuple[int, str, int]:
     if len(closes) < 10:
         return 0, "data_short", 0
 
-    if feats is None:
-        highs = [k["high"] for k in historical_kline]
-        lows = [k["low"] for k in historical_kline]
-        feats = build_features(closes, highs, lows)
+    feats = _get_features(closes, historical_kline, feats)
     rsi = feats["rsi6"]
     macd = feats["macd"]
     kdj = feats.get("kdj")
@@ -205,10 +216,7 @@ def validate_nf(stock, kline_summary, closes: list[float],
                 historical_kline: list[dict], clusters: dict[str, list[str]] | None,
                 feats: dict | None = None
                 ) -> tuple[bool, int, dict]:
-    if feats is None:
-        highs = [k["high"] for k in historical_kline]
-        lows = [k["low"] for k in historical_kline]
-        feats = build_features(closes, highs, lows)
+    feats = _get_features(closes, historical_kline, feats)
     conv_bonus, conv_detail, conv_hits = _nf_convergence(closes, historical_kline, feats)
     hl_bonus, hl_detail = _nf_higher_low(closes)
     sec_bonus, sec_count = _nf_sector(stock.name, clusters)
@@ -382,10 +390,7 @@ def validate_momentum(stock, kline_summary, closes: list[float],
                       historical_kline: list[dict], clusters: dict[str, list[str]] | None,
                       feats: dict | None = None
                       ) -> tuple[bool, int, dict]:
-    if feats is None:
-        highs = [k["high"] for k in historical_kline]
-        lows = [k["low"] for k in historical_kline]
-        feats = build_features(closes, highs, lows)
+    feats = _get_features(closes, historical_kline, feats)
     ma_bonus, ma_detail = _mo_ma_alignment(closes, feats)
     div_bonus, div_detail = _mo_divergence(closes, historical_kline, feats)
     vol_bonus, vol_detail = _mo_volume_uniformity(historical_kline)
@@ -515,10 +520,7 @@ def _rb_oversold(closes: list[float], historical_kline: list[dict],
     """超卖确认：RSI<30 或 KDJ J<0 或 MACD 柱翻红。"""
     if len(closes) < 10:
         return 0, "data_short"
-    if feats is None:
-        highs = [k["high"] for k in historical_kline]
-        lows = [k["low"] for k in historical_kline]
-        feats = build_features(closes, highs, lows)
+    feats = _get_features(closes, historical_kline, feats)
     rsi = feats["rsi6"]
     kdj = feats.get("kdj")
     macd = feats["macd"]
@@ -584,10 +586,7 @@ def validate_rebound(stock, kline_summary, closes: list[float],
     维度：超卖确认 / 量能确认 / 板块共振 / 形态确认。
     不设超买否决（rebound 场景本身在低位，超买概率低）。
     """
-    if feats is None:
-        highs = [k["high"] for k in historical_kline]
-        lows = [k["low"] for k in historical_kline]
-        feats = build_features(closes, highs, lows)
+    feats = _get_features(closes, historical_kline, feats)
     os_bonus, os_detail = _rb_oversold(closes, historical_kline, feats)
     vol_bonus, vol_detail = _rb_volume(kline_summary)
     sec_bonus, sec_count = _rb_sector(stock.name, clusters)

@@ -210,8 +210,7 @@ def _try_rebound_candidate(stock: StockInfo, kline: list[dict], today: str,
     new_dims["comeback_variant"] = "反转"
     new_dims["comeback_off_list"] = 1
     # 2026-08-10: validation_bonus 只做门禁不加分（全期 IC -0.139 反指），与 orchestrator 同步。
-    ks = dataclass_replace(ks, score=ks.score,
-                           dimensions=new_dims, trend=f"反转·{ks.trend}")
+    ks = dataclass_replace(ks, dimensions=new_dims, trend=f"反转·{ks.trend}")
     return Candidate(
         stock=stock, category="comeback", score=ks.score, reason=ks.trend,
         kline=ks, first_seen=now_beijing().strftime("%H:%M"),
