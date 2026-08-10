@@ -682,6 +682,29 @@ class TestFilterGemStocks:
         # 下游比较不再崩溃
         assert (stocks[0].current > 200.0) is (stocks[0].current > 200.0)
 
+    def test_none_symbol_code_name_skipped_not_crash(self):
+        # symbol/code/name 为 None（键存在但值为 null）时，is_hk_stock/is_gem/is_st
+        # 不能抛 AttributeError/TypeError 拖垮整轮扫描；脏值按空串处理，被过滤掉。
+        from scanner.orchestrator import _filter_gem_stocks
+        raw = [
+            {"symbol": None, "code": None, "name": None,
+             "percent": 5.0, "current": 10.0, "value": 8000,
+             "rank_change": 100, "rank": 1},
+            {"symbol": "SZ300002", "code": "300002", "name": "测试B",
+             "percent": 3.1, "current": 10.0, "value": 8000,
+             "rank_change": 1200, "rank": 2},
+        ]
+        stocks = _filter_gem_stocks(raw)
+        assert [s.symbol for s in stocks] == ["SZ300002"]
+
+    def test_missing_symbol_code_name_ok(self):
+        # 键完全缺失时默认空串，同样不崩溃且被过滤
+        from scanner.orchestrator import _filter_gem_stocks
+        raw = [{"percent": 5.0, "current": 10.0, "value": 8000,
+                "rank_change": 100, "rank": 1}]
+        stocks = _filter_gem_stocks(raw)
+        assert stocks == []
+
 
 class TestFetchAllKlinesShortCacheTtl:
     """回归：短缓存（len<KLINE_MIN_LENGTH）同样受 KLINE_REFRESH_TTL 节流，
@@ -762,5 +785,31 @@ class TestFetchAllKlinesShortCacheTtl:
             current=10.0, value=10000, rank_change=1000, rank=1)])
         assert "called" not in fetched  # 非交易时段一律复用缓存
         assert res["300125"] is cached
+
+    def test_bad_date_format_in_cache_not_crash(self, monkeypatch):
+        """回归：DB 缓存含非 ISO 日期（历史脏数据 '2026-6-7'）时，
+        date.fromisoformat 不能抛 ValueError 拖垮整轮扫描——走补拉路径。"""
+        import scanner.orchestrator as o
+        from scanner.models import StockInfo
+
+        bad_cached = [{"date": "2026-6-7", "close": 10.0},
+                      {"date": "2026-06-08", "close": 10.5}]
+        monkeypatch.setattr(o, "get_cached_kline", lambda conn, sym: bad_cached)
+        monkeypatch.setattr(o, "is_trading_time", lambda: True)
+        o._last_kline_fetch.pop("300126", None)
+        fetched = {}
+        fresh = [{"date": "2026-06-08", "close": 10.5}] * 45
+
+        class _FakeAdapter:
+            def fetch_kline(self, symbol, days=15):
+                fetched["called"] = True
+                return fresh
+
+        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
+        res = o._fetch_all_klines(None, _FakeAdapter(), [StockInfo(
+            symbol="300126", name="T", code="300126", percent=3.0,
+            current=10.0, value=10000, rank_change=1000, rank=1)])
+        assert "called" in fetched  # 脏日期按"需补拉"处理
+        assert res["300126"] is not None
 
 

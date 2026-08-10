@@ -227,17 +227,26 @@ def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[
         return None
     result = []
     for item in raw_items:
+        # 短数组防护：API 偶发返回缺列 item 时跳过该根（与 _normalize_minute_item 同族），
+        # 避免 IndexError 整批丢失。正常 kline 列序:
+        # [timestamp, volume, open, high, low, close, chg, percent, turnoverrate, ...]
+        if not isinstance(item, (list, tuple)) or len(item) < 8:
+            continue
         ts = item[0]
+        # OHLCV/percent 全部 _num 强转：雪球 API 偶发返回字符串/None/NaN 时，
+        # 直接赋值会让下游 closes 算术（-、/）抛 TypeError 或把脏值落库，
+        # 拖垮整轮评分（analyze_* 直接对 close 做减法）。脏值按 0 处理，由
+        # 各 analyze_* 的 close 非正过滤兜底。
         result.append({
             "timestamp": ts,
             # 雪球时间戳按北京时间生成，必须用北京时区解析，否则非 UTC+8 部署日期错位
             "date": datetime.fromtimestamp(ts / 1000, tz=BEIJING_TZ).strftime("%Y-%m-%d"),
-            "open": item[2],
-            "high": item[3],
-            "low": item[4],
-            "close": item[5],
-            "volume": item[1],
-            "percent": item[7],
+            "open": _num(item[2]),
+            "high": _num(item[3]),
+            "low": _num(item[4]),
+            "close": _num(item[5]),
+            "volume": _num(item[1]),
+            "percent": _num(item[7]),
         })
     if _kline_cache_ttl > 0:
         with _kline_cache_lock:

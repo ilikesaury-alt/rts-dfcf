@@ -99,7 +99,14 @@ def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo]
         cached = get_cached_kline(conn, s.symbol)
         if cached:
             max_date_str = max(k["date"] for k in cached)
-            max_date = date.fromisoformat(max_date_str)
+            try:
+                max_date = date.fromisoformat(max_date_str)
+            except (ValueError, TypeError):
+                # 脏日期（非 ISO 格式的历史数据）视为无今日 bar，走补拉路径，
+                # 避免 date.fromisoformat 抛 ValueError 拖垮整轮扫描。
+                stale_cache[s.symbol] = cached
+                needs_fetch.append(s.symbol)
+                continue
             last_fetch = _last_kline_fetch.get(s.symbol, 0.0)
             within_ttl = (now_beijing().timestamp() - last_fetch) < KLINE_REFRESH_TTL
             if not is_trading_time():
@@ -319,9 +326,12 @@ def _filter_gem_stocks(raw: list[dict]) -> list[StockInfo]:
     gem_stocks: list[StockInfo] = []
     seen_symbols: set[str] = set()
     for i, item in enumerate(raw, 1):
-        symbol = item.get("symbol", "")
-        code = item.get("code", "")
-        name = item.get("name", "")
+        # symbol/code/name 强转 str：API 偶发返回 None（键存在但值为 null）时，
+        # is_hk_stock(None).isdigit() / is_gem(None).startswith() / is_st(None) 抛
+        # AttributeError/TypeError，整轮扫描异常丢失。脏值按空串处理（下游过滤掉）。
+        symbol = item.get("symbol") or ""
+        code = item.get("code") or ""
+        name = item.get("name") or ""
         if is_hk_stock(symbol) or not is_gem(code) or is_st(name):
             continue
         # 去重：API 异常返回重复 symbol 时只保留首条，避免下游重复打分/显示

@@ -347,3 +347,36 @@ def test_load_signals_deheat_toggles_score():
         os.remove(path)
 
 
+def test_load_signals_empty_recommendations_returns_empty():
+    """回归：recommendations 无记录时 _load_signals 应返回空列表，
+    不得因 max([]) 抛 ValueError（此前在空库回测时崩溃）。"""
+    import tempfile, os
+    from scanner.portfolio_backtest import (
+        PBConfig, _build_calendar, _load_signals,
+    )
+
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE daily_kline "
+                     "(symbol TEXT, timestamp INTEGER, date TEXT, open REAL, close REAL, "
+                     "high REAL, low REAL, volume REAL, percent REAL, PRIMARY KEY(symbol, date))")
+        conn.execute("CREATE TABLE recommendations "
+                     "(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, time TEXT, symbol TEXT, "
+                     "name TEXT, category TEXT, score INTEGER, percent REAL, trend TEXT, "
+                     "score_breakdown TEXT, source TEXT)")
+        conn.execute("INSERT INTO daily_kline VALUES ('300001',0,'2026-06-02',100,100.5,100.5,99.5,1e6,0.5)")
+        conn.commit()
+
+        calendar = _build_calendar(conn, "2026-06-01", "2026-06-30")
+        cal_index = {d: i for i, d in enumerate(calendar)}
+        cal_end = calendar[-1]
+
+        signals = _load_signals(conn, PBConfig(), calendar, cal_index, cal_end)
+        conn.close()
+        assert signals == []
+    finally:
+        os.remove(path)
+
+

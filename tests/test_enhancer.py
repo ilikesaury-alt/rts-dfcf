@@ -624,6 +624,15 @@ class TestApplyFundFlowBonus:
         _apply_fund_flow_bonus(c, None)
         assert c.fund_flow_bonus == 0
 
+    def test_garbage_flow_values_no_crash(self):
+        """回归：market_extra 中 main_pct 为不可解析字符串/NaN/None 时
+        float() 不能抛 ValueError 拖垮整轮扫描（数据入口防御）。"""
+        c = _make_candidate()
+        _apply_fund_flow_bonus(c, {c.stock.symbol: {"fund_flow": {
+            "main_pct": "abc", "main_net": "NaN", "super_net": None}}})
+        assert c.fund_flow_bonus == 0
+        assert c.kline.dimensions.get("fund_flow_main_pct") == 0.0
+
 
 class TestApplyZtBonus:
     @staticmethod
@@ -651,6 +660,16 @@ class TestApplyZtBonus:
         c = _make_candidate(category="new_face")
         _apply_zt_bonus(c, self._zt(c, 3, 0))
         assert c.zt_lianban_bonus == 0
+
+    def test_garbage_zt_values_no_crash(self):
+        """回归：zt lianban/zhaban 为不可解析字符串/None 时 int() 不能抛
+        ValueError 拖垮整轮扫描（数据入口防御）。"""
+        c = _make_candidate(category="momentum")
+        _apply_zt_bonus(c, {c.stock.symbol: {"zt": {
+            "lianban": "abc", "zhaban": "x", "industry": None}}})
+        assert c.zt_lianban_bonus == 0
+        assert c.kline.dimensions.get("zt_lianban") == 0
+        assert c.kline.dimensions.get("zt_zhaban") == 0
 
 
 class TestMarketExtraRiskFlags:

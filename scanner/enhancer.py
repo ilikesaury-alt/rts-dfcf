@@ -317,6 +317,28 @@ def _apply_gap_up_bonus(c: Candidate):
         c.gap_up_bonus = c.kline.dimensions.get(gap_key, 0)
 
 
+def _safe_float(v, default: float = 0.0) -> float:
+    """安全转 float：None/NaN/不可解析字符串 → default（数据入口防御，防整轮扫描异常丢失）。"""
+    try:
+        f = float(v)
+        return default if f != f else f  # NaN → default
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(v, default: int = 0) -> int:
+    """安全转 int：None/不可解析字符串/浮点 → 就近取整（数据入口防御）。"""
+    try:
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return default
+            return int(float(v))
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
 def _apply_fund_flow_bonus(c: Candidate, market_extra: dict):
     """主力资金流评分：主力净流入占比 ≥阈值加分，净流出明显扣分。
 
@@ -326,10 +348,10 @@ def _apply_fund_flow_bonus(c: Candidate, market_extra: dict):
     entry = ((market_extra or {}).get(c.stock.symbol, {}) or {}).get("fund_flow")
     if not entry or not c.kline:
         return
-    main_pct = float(entry.get("main_pct") or 0.0)
+    main_pct = _safe_float(entry.get("main_pct"))
     c.kline.dimensions["fund_flow_main_pct"] = round(main_pct, 2)
-    c.kline.dimensions["fund_flow_main_net"] = float(entry.get("main_net") or 0.0)
-    c.kline.dimensions["fund_flow_super_net"] = float(entry.get("super_net") or 0.0)
+    c.kline.dimensions["fund_flow_main_net"] = _safe_float(entry.get("main_net"))
+    c.kline.dimensions["fund_flow_super_net"] = _safe_float(entry.get("super_net"))
     if main_pct >= FUND_FLOW_MAIN_PCT_STRONG:
         c.fund_flow_bonus = FUND_FLOW_BONUS_STRONG
     elif main_pct <= FUND_FLOW_MAIN_PCT_WEAK:
@@ -344,9 +366,9 @@ def _apply_zt_bonus(c: Candidate, market_extra: dict):
     entry = ((market_extra or {}).get(c.stock.symbol, {}) or {}).get("zt")
     if not entry or not c.kline:
         return
-    lianban = int(entry.get("lianban") or 0)
+    lianban = _safe_int(entry.get("lianban"))
     c.kline.dimensions["zt_lianban"] = lianban
-    c.kline.dimensions["zt_zhaban"] = int(entry.get("zhaban") or 0)
+    c.kline.dimensions["zt_zhaban"] = _safe_int(entry.get("zhaban"))
     c.kline.dimensions["zt_industry"] = str(entry.get("industry") or "")
     if c.category in ("momentum", "short_term"):
         if lianban >= 4:

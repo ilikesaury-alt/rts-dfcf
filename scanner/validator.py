@@ -729,14 +729,17 @@ def _is_overbought(closes: list[float], historical_kline: list[dict],
     # KDJ 只算历史 bar：原逻辑把 today_close 同时塞进 high/low，产生 (high==low)
     # 的人造 bar，污染 J 值（今日急拉时易误判超买）。改用纯历史序列，
     # 长度天然与 closes / historical_kline 对齐。
-    # 注意：调用方必须保证 closes 与 historical_kline 同长（不含今日），
-    # 否则 compute_kdj 内 max() 可能取到空切片。
+    # 防御：highs/lows 与 closes 长度不一致（异常数据/历史重放时）先截断对齐，
+    # 避免 compute_kdj 内 max() 取到空切片抛 ValueError（数据入口边界）。
     if len(closes) >= 9:
-        kdj = compute_kdj(
-            [k["high"] for k in historical_kline],
-            [k["low"] for k in historical_kline],
-            closes,
-        )
+        n = len(closes)
+        highs = [k["high"] for k in historical_kline][:n]
+        lows = [k["low"] for k in historical_kline][:n]
+        # 不足 n 根的补齐（只读 KDJ 不产生交易语义），防止 max() 空切片
+        if len(highs) < n:
+            highs = highs + [closes[-1]] * (n - len(highs))
+            lows = lows + [closes[-1]] * (n - len(lows))
+        kdj = compute_kdj(highs, lows, closes)
         if kdj is not None and kdj["J"] > ST_OVERBOUGHT_KDJ:
             return True
     # 20日涨幅口径与分析端一致：用历史 closes（不含今日）的 [-1] 与 [-21]

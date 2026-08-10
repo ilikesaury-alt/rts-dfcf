@@ -29,6 +29,12 @@ def test_noise_board_filter():
     assert not _is_noise_board("文化传媒")
 
 
+def test_noise_board_none_and_empty_safe():
+    # None/空串输入不崩溃（API 脏字段防御）
+    assert _is_noise_board(None) is False
+    assert _is_noise_board("") is False
+
+
 def test_fetch_stock_boards_parses_and_filters():
     fake = {"ssbk": [
         {"BOARD_NAME": "AIGC概念", "BOARD_RANK": 1},

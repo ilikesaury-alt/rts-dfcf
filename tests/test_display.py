@@ -209,6 +209,27 @@ def test_display_priority_candidate_fallback_when_no_live(monkeypatch, capsys):
     assert "N/A" not in line  # 候选有 rank，应显示 5 而非 N/A
 
 
+def test_display_priority_dropped_live_percent_zero_not_fallback(monkeypatch, capsys):
+    """回归：掉榜行（无候选、无 live_quotes）live_percent=0.0（合法 0.00% 涨幅）
+    必须按 0.00% 显示，不能因 `or` 回退到推荐时落库的 percent（此前显示 +2.00%）。"""
+    conn = _rec_db()
+    _insert_rec(conn, "SZ300002", "掉榜票", 2.0)
+    # 写入今日 appearances，percent=0.0（真实 0.00% 涨幅）
+    today = now_beijing().date().isoformat()
+    conn.execute(
+        "INSERT INTO appearances (symbol, name, date, rank, percent, value) "
+        "VALUES ('SZ300002', '掉榜票', ?, 5, 0.0, 100)",
+        (today,),
+    )
+    conn.commit()
+    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
+    disp_mod.display_priority(conn)
+    out = capsys.readouterr().out
+    line = next(l for l in out.splitlines() if "SZ300002" in l)
+    assert "+0.00%" in line
+    assert "+2.00%" not in line
+
+
 def test_display_priority_rank_map_for_dropped(monkeypatch, capsys):
     """掉榜/重启行（无候选）的排名由当前飙升榜 rank_map 补上（此前恒为 —）。"""
     conn = _rec_db()

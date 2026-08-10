@@ -238,9 +238,11 @@ def _try_reentry_candidate(stock: StockInfo, kline: list[dict], today: str,
     cum_return = (stock.current - rec_close) / rec_close * 100
 
     # 硬过滤：排除不能买的（今日大涨追高/暴跌破位/累计已错过/信号失效/资金流出）
-    if stock.percent >= COMEBACK_REENTRY_FILTER_TODAY_HIGH:
+    # stock.percent 防御强转：None/NaN → 0.0，避免比较抛 TypeError（入口防御）
+    today_pct = float(stock.percent or 0.0)
+    if today_pct >= COMEBACK_REENTRY_FILTER_TODAY_HIGH:
         return None
-    if stock.percent <= COMEBACK_REENTRY_FILTER_TODAY_LOW:
+    if today_pct <= COMEBACK_REENTRY_FILTER_TODAY_LOW:
         return None
     if cum_return >= COMEBACK_REENTRY_FILTER_CUM_HIGH:
         return None

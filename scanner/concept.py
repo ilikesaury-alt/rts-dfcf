@@ -57,10 +57,12 @@ def _cache_put(cache: dict, key, value):
 
 def _is_noise_board(name: str) -> bool:
     """判断是否为噪音板块（地域/风格/指数成分/涨停梯队等，不反映推动逻辑）。"""
+    if not name:
+        return False
     if name in CONCEPT_NOISE_BOARDS:
         return True
     # 指数成分/风格类板块常以数字结尾（深成500/中证800/央视50），真实概念板块不会
-    if name and name[-1].isdigit():
+    if name[-1].isdigit():
         return True
     for suffix in CONCEPT_NOISE_BOARD_SUFFIXES:
         if name.endswith(suffix):

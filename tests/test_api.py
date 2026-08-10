@@ -354,3 +354,54 @@ class TestFetchListSoftErrorCircuitBreaker:
             r = fetch_xueqiu_hot_list(MagicMock(), 100)
         assert r == [{"symbol": "SZ300002"}]
         assert _xueqiu_hot_cb["failures"] == 0, "正常数据重置失败计数"
+
+
+class TestFetchKlineCoercion:
+    """回归：K 线 OHLCV/percent 必须强转数值，字符串/None/NaN 不再漏进下游
+    closes 算术（此前 close=None 落库后 analyze_short_term 减法抛 TypeError）。"""
+
+    def _fake_resp(self, payload):
+        r = MagicMock()
+        r.json.return_value = payload
+        return r
+
+    def test_ohlcv_values_coerced(self):
+        from scanner.api import fetch_kline
+        # 列序: [ts, volume, open, high, low, close, chg, percent, ...]
+        payload = {"data": {"item": [
+            [1609459200000, "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
+        ]}}
+        with patch("scanner.api._request_with_retry", return_value=self._fake_resp(payload)):
+            kline = fetch_kline(MagicMock(), "SZ300001", days=15)
+        assert kline is not None and len(kline) == 1
+        bar = kline[0]
+        assert isinstance(bar["open"], float) and bar["open"] == 10.5
+        assert isinstance(bar["close"], float) and bar["close"] == 10.8
+        assert isinstance(bar["volume"], float) and bar["volume"] == 500.0
+        assert isinstance(bar["percent"], float) and bar["percent"] == 2.3
+
+    def test_none_and_nan_ohlcv_do_not_crash(self):
+        from scanner.api import fetch_kline
+        payload = {"data": {"item": [
+            [1609459200000, None, None, None, None, None, None, None],
+            [1609459200000, float("nan"), "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
+        ]}}
+        with patch("scanner.api._request_with_retry", return_value=self._fake_resp(payload)):
+            kline = fetch_kline(MagicMock(), "SZ300001", days=15)
+        assert kline is not None
+        # None bar → _num 归 0（不崩溃）；NaN bar → 0 亦不崩溃
+        assert len(kline) == 2
+        assert kline[0]["close"] == 0.0 and kline[0]["percent"] == 0.0
+        assert kline[1]["open"] == 10.5 and kline[1]["close"] == 10.8
+
+    def test_short_item_skipped(self):
+        from scanner.api import fetch_kline
+        # 缺列 item（长度 <8）应跳过该根，不抛 IndexError
+        payload = {"data": {"item": [
+            [1609459200000, "500"],
+            [1609459200000, "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
+        ]}}
+        with patch("scanner.api._request_with_retry", return_value=self._fake_resp(payload)):
+            kline = fetch_kline(MagicMock(), "SZ300001", days=15)
+        assert kline is not None and len(kline) == 1
+        assert kline[0]["close"] == 10.8

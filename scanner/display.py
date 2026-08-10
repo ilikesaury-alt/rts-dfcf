@@ -433,7 +433,10 @@ def _print_priority_row(entry: dict, i: int, flow_pct_map: dict) -> None:
         live_cur = c.stock.current
         live_rank = c.stock.rank
     else:
-        pct = entry.get("live_percent") or entry.get("percent", 0.0)
+        # live_percent 可能为 0.0（合法 0.00% 涨幅），不能用 `or` 回退——
+        # 否则 0.00% 的票会错误显示成推荐时落库的 percent（如 5.0%）。
+        _lp = entry.get("live_percent")
+        pct = _lp if _lp is not None else entry.get("percent", 0.0)
         live_cur = 0.0
         live_rank = entry.get("live_rank")
     # 实时行情不含 rank/current（batch/quote 无 rank 字段）时，回退候选快照。

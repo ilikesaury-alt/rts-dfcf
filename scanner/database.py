@@ -257,10 +257,26 @@ def get_cached_kline(conn: sqlite3.Connection, symbol: str) -> list[dict] | None
     )
     rows = cur.fetchall()
     if rows:
-        return [
-            {"date": r[0], "open": r[1], "close": r[2], "high": r[3], "low": r[4], "volume": r[5], "percent": r[6]}
-            for r in rows
-        ]
+        result = []
+        for r in rows:
+            # 防御过滤：历史脏数据（close 为 None/0/NaN）会让下游 closes 算术崩溃
+            # （analyze_* 对 close 做减法/除法）。fetch_kline 已 _num 强转新数据，
+            # 此处兜底旧库残留的 NULL/0 行。close 非正（含停牌/脏值）直接剔除该 bar。
+            close = r[2]
+            if close is None:
+                continue
+            try:
+                close = float(close)
+            except (TypeError, ValueError):
+                continue
+            if close <= 0:
+                continue
+            result.append({
+                "date": r[0], "open": r[1], "close": close,
+                "high": r[3], "low": r[4], "volume": r[5], "percent": r[6],
+            })
+        if result:
+            return result
     return None
 
 

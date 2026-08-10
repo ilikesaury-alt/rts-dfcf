@@ -278,6 +278,9 @@ def _load_signals(conn: sqlite3.Connection, cfg: PBConfig, calendar: list[str],
 
     # 推荐日范围（用于 --days / 默认窗口）
     rec_dates = [r[0] for r in rows]
+    if not rec_dates:
+        # 无任何推荐记录：无信号可回测，直接返回空（不抛 max() empty）
+        return []
     max_rec = max(rec_dates)
     min_rec = min(rec_dates)
     end_date = cfg.end or max_rec

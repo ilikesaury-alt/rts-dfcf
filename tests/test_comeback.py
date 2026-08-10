@@ -207,6 +207,16 @@ class TestReentryCandidate:
         stock = _stock(percent=6.0, current=13.5)
         assert cb._try_reentry_candidate(stock, hist, "2026-08-07", self._rec(), {}) is None
 
+    def test_percent_none_no_crash(self, monkeypatch):
+        """回归：stock.percent=None（行情脏字段）时硬过滤比较不能抛 TypeError，
+        按 0.0% 处理（不触发追高/破位过滤，进入信号判定）。"""
+        hist = self._hist()
+        monkeypatch.setattr(cb, "_evaluate_buy_signals",
+                            lambda h: ("到买点", 5, []))
+        stock = _stock(percent=None, current=13.5)
+        c = cb._try_reentry_candidate(stock, hist, "2026-08-07", self._rec(), {})
+        assert c is not None
+
     def test_cum_gain_too_high_filtered(self, monkeypatch):
         hist = self._hist()
         monkeypatch.setattr(cb, "_evaluate_buy_signals",
