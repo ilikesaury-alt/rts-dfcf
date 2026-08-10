@@ -113,17 +113,25 @@ def _comeback_candidate(name: str, symbol: str, variant: str, score: int = 70) -
         off_list=True, comeback_variant=variant)
 
 
-def test_display_comeback_section(capsys):
-    """回马枪分区渲染：含「反转」「回踩」两变体行（trend 列带变体前缀）。"""
-    disp_mod.display([], [], 0, 60,
-                     comeback_list=[_comeback_candidate("志特新材", "SZ300986", "反转"),
-                                    _comeback_candidate("某股", "SZ300111", "回踩")])
+def test_display_comeback_section(monkeypatch, capsys):
+    """策略桶下线（2026-08-10）后回马枪改走综合排序独立区，变体（反转/回踩）随标签展示。"""
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "反弹", "rebound", 50)
+    _insert_rec_cat(conn, "SZ300986", "志特新材", "comeback", 70)
+    _insert_rec_cat(conn, "SZ300111", "回踩股", "comeback", 55)
+    # 变体来源：候选 kline.dimensions（DB-only 行走 trend 前缀）
+    pool = {
+        "SZ300986": _comeback_candidate("志特新材", "SZ300986", "反转", 70),
+        "SZ300111": _comeback_candidate("回踩股", "SZ300111", "回踩", 55),
+    }
+    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
+    disp_mod.display_priority(conn)
     out = capsys.readouterr().out
     assert "◆ 回马枪" in out
     line_rt = next(l for l in out.splitlines() if "SZ300986" in l)
     line_re = next(l for l in out.splitlines() if "SZ300111" in l)
-    assert "反转·超跌企稳" in line_rt
-    assert "回踩·超跌企稳" in line_re
+    assert "反转" in line_rt
+    assert "回踩" in line_re
 
 
 def test_display_priority_comeback_label_and_rank(monkeypatch, capsys):
@@ -424,7 +432,7 @@ def test_display_priority_tier_db_source_for_dropped(monkeypatch, capsys):
 
 
 def test_display_priority_tier_banner_separates_groups(monkeypatch, capsys):
-    """档位分隔横幅：跨档时输出含 置顶档/普通档 分组标题；劣后档票被过滤不打印。"""
+    """档位分隔横幅下线（2026-08-10 精简装饰）后，置顶档仍排前、劣后档票仍被过滤。"""
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300001", "置顶", "rebound", 50)
     _insert_rec_cat(conn, "SZ300002", "普通", "momentum", 70)
@@ -437,11 +445,11 @@ def test_display_priority_tier_banner_separates_groups(monkeypatch, capsys):
     monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
     disp_mod.display_priority(conn)
     out = capsys.readouterr().out
-    assert "▶ 置顶档" in out
-    assert "▶ 普通档" in out
-    assert "▶ 劣后档" not in out
+    assert "▶ 置顶档" not in out
+    assert "▶ 普通档" not in out
     assert "SZ300003" not in out, "劣后档票(SZ300003)不应出现在输出中"
     assert "SZ300001" in out
+    assert "SZ300002" in out
 
 
 def test_display_priority_comeback_separate_region(monkeypatch, capsys):

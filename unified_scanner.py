@@ -127,8 +127,6 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
     print(f"  新面孔: 过去{NEW_FACE_LOOKBACK_DAYS}天未出现 = 新  |  交易时段: 09:30-11:30 / 13:00-15:00")
     print(f"  {'='*60}")
 
-    last_ranks: dict[str, int] = {}
-
     try:
         while True:
             try:
@@ -195,12 +193,8 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     print(f"  [!] 补拉推荐票行情失败: {e}")
 
                 # 历史推荐跟踪已并入回马枪（2026-08-07）：tracker 模块删除，不再单独查询
-                display(new_faces, momentum, len(all_gem), interval,
-                        filtered_large_cap=filtered_large_cap, last_ranks=last_ranks,
-                        pullback_list=pullback_list,
-                        short_term_list=short_term_list,
-                        rebound_list=rebound_list,
-                        comeback_list=comeback_list,
+                display(len(all_gem), interval,
+                        filtered_large_cap=filtered_large_cap,
                         conn=conn, live_quotes=live_quotes,
                         rank_map=current_rank_map)
                 log_results(new_faces, momentum + pullback_list + rebound_list + short_term_list + comeback_list)
@@ -213,10 +207,6 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                                         comeback_list=comeback_list)
                     if not pushed and (new_faces or momentum or pullback_list or rebound_list or short_term_list or comeback_list):
                         print(f"\r  📤 飞书推送跳过（冷却中/无变化）", end="", flush=True)
-
-                last_ranks.clear()
-                for s in all_gem:
-                    last_ranks[s.symbol] = s.rank
 
                 if new_faces:
                     top = new_faces[0]

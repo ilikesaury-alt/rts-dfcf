@@ -7,8 +7,6 @@ from scanner.config import (
     FUND_FLOW_MAIN_PCT_EXTREME,
     FUND_FLOW_MAIN_PCT_STRONG,
     FUND_FLOW_MAIN_PCT_WEAK,
-    MAX_MARKET_CAP,
-    MAX_STOCK_PRICE,
     NEXTDAY_CAT_PRIORITY,
     NEXTDAY_SPIKE_MID_MAX,
     NEXTDAY_SPIKE_MID_MIN,
@@ -16,7 +14,6 @@ from scanner.config import (
     NEXTDAY_SPIKE_SWEET_MIN,
     RISK_FLAGS_DISPLAY_HARD,
     SUGGEST_BY_CAT,
-    YI,
     now_beijing,
 )
 from scanner.database import get_fund_flow_pct_map, get_prominence_map, get_today_recommendations
@@ -57,18 +54,6 @@ CAT_COLOR = {
 }
 
 
-def _rank_delta_str(symbol: str, current_rank: int, last_ranks: dict[str, int]) -> tuple[str, str]:
-    prev = last_ranks.get(symbol)
-    if prev is None:
-        return "  —", ""
-    diff = prev - current_rank
-    if diff > 0:
-        return f"↑{diff}", ANSI["RED"] if diff >= 5 else ""
-    if diff < 0:
-        return f"↓{-diff}", ANSI["GREEN"] if -diff >= 5 else ""
-    return "  —", ""
-
-
 def _vis_len(s: str) -> int:
     # wcwidth.wcwidth 对 ANSI 转义字符（如 \x1b）返回 -1（控制字符），
     # `-1 or 1` 在 Python 中返回 -1（truthy），导致宽度计算错误、列对齐错位。
@@ -100,10 +85,6 @@ def clear_screen():
         print("\033[2J\033[H", end="")
 
 
-def fmt_time():
-    return now_beijing().strftime("%H:%M:%S")
-
-
 def pct_colored(pct: float | None, width: int = 8) -> str:
     if pct is None:
         pct = 0.0
@@ -117,39 +98,6 @@ def pct_colored(pct: float | None, width: int = 8) -> str:
     else:
         c = ""
     return f"{c}{s:>{width}}{ANSI['RESET']}" if c else f"{s:>{width}}"
-
-
-def _source_tag(c: Candidate) -> str:
-    tag = getattr(c.stock, "source_tag", "xueqiu")
-    if tag == "both":
-        return f"{ANSI['GREEN']}双{ANSI['RESET']}"
-    return ""
-
-
-def _bonus_tag(c: Candidate) -> str:
-    parts = []
-    if c.sector_bonus:
-        parts.append(f"S{c.sector_bonus:+d}")
-    if c.first_breakout_bonus:
-        parts.append(f"B{c.first_breakout_bonus:+d}")
-    if c.gap_up_bonus:
-        parts.append(f"G{c.gap_up_bonus:+d}")
-    if c.intraday_score is not None and c.intraday_score != 0.0:
-        d_tag = f"D{int(c.intraday_score):+d}"
-        if c.intraday_score < -2:
-            d_tag = f"{ANSI['RED']}{d_tag}{ANSI['RESET']}"
-        elif c.intraday_score > 2:
-            d_tag = f"{ANSI['GREEN']}{d_tag}{ANSI['RESET']}"
-        parts.append(d_tag)
-    if c.turnover_bonus:
-        parts.append(f"H{c.turnover_bonus:+d}")
-    if c.list_momentum_bonus:
-        parts.append(f"L{c.list_momentum_bonus:+d}")
-    if c.fund_flow_bonus:
-        parts.append(f"F{c.fund_flow_bonus:+d}")
-    if c.zt_lianban_bonus:
-        parts.append(f"Z{c.zt_lianban_bonus:+d}")
-    return " ".join(parts) if parts else ""
 
 
 def fund_flow_signal(main_pct: float | None) -> str:
@@ -239,181 +187,35 @@ def _market_extra_str(c: Candidate) -> str:
     return " ".join(parts) if parts else ""
 
 
-def _fmt_market_cap(cap: float) -> str:
-    if cap <= 0:
-        return ""
-    cap_yi = cap / YI
-    if cap_yi < 10:
-        return f"{cap_yi:.1f}亿"
-    return f"{cap_yi:.0f}亿"
+def _market_env_tag() -> str:
+    """大盘环境标签（中性/强势/弱势·谨慎），从候选池 dims 读 market_env_bonus。"""
+    env_bonus = 0
+    for c in _session_state.today_pool.values():
+        if c.kline and c.kline.dimensions:
+            env_bonus = c.kline.dimensions.get("market_env_bonus", 0) or 0
+            break
+    if env_bonus > 0:
+        return f"{ANSI['GREEN']}[大盘强势]{ANSI['RESET']}"
+    if env_bonus < 0:
+        return f"{ANSI['RED']}[大盘弱势·谨慎]{ANSI['RESET']}"
+    return "[大盘中性]"
 
 
-def display(new_faces: list[Candidate], pure_momentum: list[Candidate],
-            gem_total: int, interval: int, filtered_large_cap: int = 0,
-            last_ranks: dict[str, int] | None = None,
-            pullback_list: list[Candidate] | None = None,
-            short_term_list: list[Candidate] | None = None,
-            rebound_list: list[Candidate] | None = None,
-            comeback_list: list[Candidate] | None = None,
+def display(gem_total: int, interval: int, filtered_large_cap: int = 0,
             conn=None, live_quotes: dict[str, dict] | None = None,
             rank_map: dict[str, int] | None = None):
-    if last_ranks is None:
-        last_ranks = {}
+    """扫描主屏：头部摘要 + 综合排序总表（含回马枪/次日大涨/选股建议子区）。
+
+    策略桶（新面孔/动量/反弹/回马枪/超短）2026-08-10 下线：与综合排序重复列同一批票、
+    每桶重复列头；综合排序表已带类别标签，桶区信息不再单列。
+    """
     clear_screen()
     now = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
-    if pullback_list is None:
-        pullback_list = []
-    if short_term_list is None:
-        short_term_list = []
-    if rebound_list is None:
-        rebound_list = []
-    if comeback_list is None:
-        comeback_list = []
-
     print(f"{'='*96}")
     print(f"  创业板飙升榜监控  ({now})")
-
-    all_c = new_faces + pure_momentum + pullback_list + rebound_list + comeback_list + short_term_list
-    # 双挂去重：同一 symbol 在多个桶出现时，仅在先展示的桶显示一次
-    displayed_syms: set[str] = set()
-    sec_counts: dict[str, int] = {}
-    for c_ in all_c:
-        if c_.sector:
-            sec_counts[c_.sector] = sec_counts.get(c_.sector, 0) + 1
-    hot_secs = [f"{s}{c}" for s, c in sorted(sec_counts.items(), key=lambda x: -x[1])[:3]]
-    sec_line = f"  {' '.join(hot_secs)}" if hot_secs else ""
     filter_info = f" | 过滤{filtered_large_cap}只" if filtered_large_cap else ""
-    cap_count = sum(1 for c in all_c if c.market_cap > 0)
-    cap_status = f"市值数据{cap_count}/{len(all_c)}" if all_c else "暂无候选"
-    pb_red = f"{ANSI['RED']}回{len(pullback_list)}{ANSI['RESET']}" if pullback_list else f"回{len(pullback_list)}"
-    cb_tag = f"{ANSI['CYAN']}马{len(comeback_list)}{ANSI['RESET']}" if comeback_list else f"马{len(comeback_list)}"
-    # 大盘环境标签：从首个 candidate 的 dimensions 读取 market_env_bonus
-    env_bonus = 0
-    if all_c and all_c[0].kline:
-        env_bonus = all_c[0].kline.dimensions.get("market_env_bonus", 0) or 0
-    if env_bonus > 0:
-        env_tag = f" | {ANSI['GREEN']}[大盘强势]{ANSI['RESET']}"
-    elif env_bonus < 0:
-        env_tag = f" | {ANSI['RED']}[大盘弱势·谨慎]{ANSI['RESET']}"
-    else:
-        env_tag = " | [大盘中性]"
-    print(f"  创业板共 {gem_total} 只 | 新{len(new_faces)}动{len(pure_momentum)}{pb_red}反{len(rebound_list)}{cb_tag}超{len(short_term_list)}{filter_info} | {sec_line} | {cap_status} | 每{interval}s刷新{env_tag}")
-    print(f"  小而美: 市值≤{int(MAX_MARKET_CAP/YI)}亿 股价≤{MAX_STOCK_PRICE}元")
+    print(f"  创业板共 {gem_total} 只{filter_info} | 每{interval}s刷新 | {_market_env_tag()}")
     print(f"{'='*96}")
-
-    hdr = (f"  {_pad('排名',4,'r')} {_pad('变化',6,'r')} {_pad('源',4)} {_pad('名称',10)} "
-           f"{_pad('代码',12)} {_pad('现价',7,'r')} {_pad('涨幅',8,'r')} "
-           f"{_pad('趋势',14)} {_pad('5日累计',8,'r')} {_pad('量比',6,'r')} "
-           f"{_pad('评分',4,'r')} {_pad('市值',8,'r')}")
-
-    def _print_row(c: Candidate, icon: str = "", show_val: bool = False):
-        s = c.stock
-        k = c.kline
-        display_name = f"{icon} {s.name}" if icon else s.name
-        cur = f"{s.current:.2f}" if s.current else "N/A"
-        acc = f"{k.accumulated_pct:+.2f}%" if k else "N/A"
-        vr = f"{k.volume_ratio:.1f}x" if k else "N/A"
-        score_visible = str(c.score)
-        score_tag = f"{ANSI['BOLD']}{_pad(score_visible,4,'r')}{ANSI['RESET']}" if c.score >= 15 else _pad(score_visible,4,'r')
-        trend_tag = k.trend if k else "N/A"
-        delta_text, delta_color = _rank_delta_str(s.symbol, s.rank, last_ranks)
-        delta_display = (f"{delta_color}{_pad(delta_text,6,'r')}{ANSI['RESET']}"
-                         if delta_color else _pad(delta_text,6,'r'))
-        src_tag = _source_tag(c)
-        cap_str = _fmt_market_cap(c.market_cap)
-        val_str = f"{s.value:.0f}" if s.value else "N/A"
-        # 风险标签分级显示：硬信号（超买/主力出货/趋势破位）展开文字，
-        # 软信号（疲劳/弱市/涨幅过大/量价背离）折叠成 +N 角标，避免长串红字扰乱注意力。
-        hard, soft_count = split_risk_flags(c.risk_flags)
-        risk_parts = []
-        if hard:
-            risk_parts.append(f"{ANSI['RED']}⚠{'/'.join(hard)}{ANSI['RESET']}")
-            if soft_count:
-                # 硬信号已展开时，软信号折叠成 +N
-                risk_parts[0] += f"{ANSI['YELLOW']}+{soft_count}{ANSI['RESET']}"
-        elif soft_count:
-            # 无硬信号但有软信号：提示有软风险但不阻断
-            risk_parts.append(f"{ANSI['YELLOW']}⚠+{soft_count}{ANSI['RESET']}")
-        risk_str = " ".join(risk_parts)
-        # 辨识度标签
-        prom_str = _render_prominence(c.prominence_labels)
-        full_risk = f"{prom_str} {risk_str}" if prom_str else risk_str
-        extra_str = _market_extra_str(c)
-        extra_suffix = f" {extra_str}" if extra_str else ""
-        if show_val:
-            print(f"  {s.rank:>4} {delta_display} {_pad(src_tag,4)} {_pad(display_name,10)} "
-                  f"{s.symbol:<12} {cur:>7} {pct_colored(s.percent)} "
-                  f"{_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} "
-                  f"{cap_str:>8} {val_str:>6} {full_risk}{extra_suffix}")
-        else:
-            print(f"  {s.rank:>4} {delta_display} {_pad(src_tag,4)} {_pad(display_name,10)} "
-                  f"{s.symbol:<12} {cur:>7} {pct_colored(s.percent)} "
-                  f"{_pad(trend_tag,14)} {acc:>8} {vr:>6} {score_tag} "
-                  f"{cap_str:>8} {full_risk}{extra_suffix}")
-
-    print(f"\n{ANSI['GREEN']}◆ 新面孔 — 底部异动 / 刚启动{ANSI['RESET']}  (找: 今日小涨+日线底部放量)")
-    print(hdr)
-    print(f"  {'-' * max(2, wcwidth.wcswidth(hdr) - 2)}")
-    if new_faces:
-        for c in new_faces:
-            if c.stock.symbol in displayed_syms:
-                continue
-            displayed_syms.add(c.stock.symbol)
-            icon = "★" if c.first_breakout_bonus else ("△" if c.category == "known_new_face" else "")
-            _print_row(c, icon=icon)
-    else:
-        print(f"  {ANSI['YELLOW']}暂无新面孔{ANSI['RESET']}")
-
-    if pure_momentum:
-        print(f"\n{ANSI['YELLOW']}◆ 动量延续 — 已启动 / 温和上攻{ANSI['RESET']}  (找: 累计涨幅已起+今日温和放量)")
-        print(hdr)
-        print(f"  {'-'*112}")
-        for c in pure_momentum:
-            if c.stock.symbol in displayed_syms:
-                continue
-            displayed_syms.add(c.stock.symbol)
-            _print_row(c)
-
-    if rebound_list:
-        print(f"\n{ANSI['CYAN']}◆ 超跌反弹 — 暴跌后企稳/反转{ANSI['RESET']}  (找: 5日跌超15%+放量阳线+板块共振)")
-        print(hdr)
-        print(f"  {'-'*112}")
-        for c in rebound_list:
-            if c.stock.symbol in displayed_syms:
-                continue
-            displayed_syms.add(c.stock.symbol)
-            _print_row(c, icon="↗")
-
-    if comeback_list:
-        print(f"\n{ANSI['CYAN']}◆ 回马枪 — 掉榜跟踪/回调买点{ANSI['RESET']}  (找: 掉榜超跌企稳首阳 / 近5日推荐回调到买点)")
-        print(hdr)
-        print(f"  {'-'*112}")
-        for c in comeback_list:
-            if c.stock.symbol in displayed_syms:
-                continue
-            displayed_syms.add(c.stock.symbol)
-            _print_row(c, icon="↩")
-
-    if short_term_list:
-        print(f"\n{ANSI['RED']}◆ 超短次日 — 今日涨明日卖{ANSI['RESET']}  (找: 涨2-8%+放量+板块活跃)")
-        print(hdr)
-        print(f"  {'-'*112}")
-        for c in short_term_list:
-            if c.stock.symbol in displayed_syms:
-                continue
-            displayed_syms.add(c.stock.symbol)
-            _print_row(c, icon="▸")
-
-    if pullback_list:
-        print(f"\n{ANSI['RED']}⚠️ 高风险监控 — 回调介入（历史大跌率35%，谨慎参考）{ANSI['RESET']}")
-        print(hdr)
-        print(f"  {'-'*112}")
-        for c in pullback_list:
-            if c.stock.symbol in displayed_syms:
-                continue
-            displayed_syms.add(c.stock.symbol)
-            _print_row(c, icon="⚠")
-
     display_priority(conn, live_quotes=live_quotes, rank_map=rank_map)
 
 
@@ -465,6 +267,17 @@ def _print_priority_row(entry: dict, i: int, flow_pct_map: dict) -> None:
     price_str = f"{live_cur:.2f}" if live_cur else "—"
     rank_str = f"{live_rank}" if live_rank else "—"
     label_display = f"{CAT_COLOR.get(cat, '')}{CAT_LABEL.get(cat, cat)}{ANSI['RESET']}"
+    # 回马枪变体（反转/回踩）：策略桶下线后由此处单行保留，避免掉榜区丢失语义。
+    if cat == "comeback":
+        variant = ""
+        if c:
+            variant = getattr(c, "comeback_variant", "") or (
+                c.kline.dimensions.get("comeback_variant", "") if c.kline else "")
+        if not variant:
+            trend = (entry.get("trend") or "")
+            variant = trend.split("·")[0] if "·" in trend else ""
+        if variant:
+            label_display += f"{ANSI['CYAN']}·{variant}{ANSI['RESET']}"
     prom_labels = c.prominence_labels if c else (["↻"] if entry.get("_prominent") else [])
     prom_raw = _render_prominence(prom_labels)
     prom_str = f" {prom_raw}" if prom_raw else ""
@@ -657,49 +470,22 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
                                                CAT_DISPLAY_PRIORITY.get(x["category"], 99),
                                                _score_sort_key(x)))
 
-    print(f"\n{ANSI['BOLD']}◆ 综合排序 — 今日上榜推荐 按档位(辨识度/资金流)+类别优先级+评分降序（kNF升序，回马枪见下方独立区）{ANSI['RESET']}")
+    print(f"\n{ANSI['BOLD']}◆ 综合排序 — 今日上榜推荐{ANSI['RESET']}")
     hdr = (f"  {_pad('#',3,'r')} {_pad('代码',12)} {_pad('名称',10)} "
            f"{_pad('板块',14)} {_pad('策略',5)} {_pad('评分',4,'r')} {_pad('涨幅',8,'r')} "
            f"{_pad('5日累计',8,'r')} {_pad('现价',7,'r')} {_pad('排名',4,'r')} {_pad('时间',6)} {_pad('建议',6)}")
     print(hdr)
-    # 档位分隔横幅：综合排序把 置顶(0)/普通(1)/劣后(2) 三档混在同一张表，
-    # 必须显式分组标题，否则扫一眼分不清哪些被置顶、哪些被沉底。
-    TIER_BANNER = {
-        0: ("置顶档", "GREEN", "▲▲/▲ 或 ↻ · 辨识度高 / 主力净流入≥5%"),
-        1: ("普通档", "",      "其余（无强信号）"),
-        2: ("劣后档", "RED",   "▼▼/▼ · 主力净流出≤-5% · 出货嫌疑"),
-    }
-    prev_tier = None
     for i, entry in enumerate(scored, 1):
-        tier = _sort_tier(entry)
-        if tier != prev_tier:
-            name, col, detail = TIER_BANNER[tier]
-            tc = ANSI.get(col, "")
-            if prev_tier is not None:
-                print()
-            print(f"  {tc}{ANSI['BOLD']}▶ {name}{ANSI['RESET']}  {tc}{detail}{ANSI['RESET']}")
-            print(f"  {tc}{'-'*100}{ANSI['RESET']}")
-            prev_tier = tier
         _print_priority_row(entry, i, flow_pct_map)
     print(f"  {'-'*92}")
     # 回马枪独立成区（方案A）：主表仅排榜上五类，comeback 抽到此处独立成区，
-    # 仍按档位(tier)+评分排序，复用档位横幅与统一行渲染。comeback 为空则跳过（与旧行为一致）。
+    # 仍按档位(tier)+评分排序，复用统一行渲染。comeback 为空则跳过（与旧行为一致）。
     if comeback_recs:
         cb_scored = [e for e in comeback_recs if _sort_tier(e) != 2]
         cb_scored = sorted(cb_scored, key=lambda x: (_sort_tier(x), -x["score"]))
-        print(f"\n{ANSI['CYAN']}◆ 回马枪 — 掉榜跟踪/回调买点（综合排序独立区）{ANSI['RESET']}")
+        print(f"\n{ANSI['CYAN']}◆ 回马枪 — 掉榜跟踪/回调买点{ANSI['RESET']}")
         print(hdr)
-        cb_prev_tier = None
         for ci, entry in enumerate(cb_scored, 1):
-            tier = _sort_tier(entry)
-            if tier != cb_prev_tier:
-                name, col, detail = TIER_BANNER[tier]
-                tc = ANSI.get(col, "")
-                if cb_prev_tier is not None:
-                    print()
-                print(f"  {tc}{ANSI['BOLD']}▶ {name}{ANSI['RESET']}  {tc}{detail}{ANSI['RESET']}")
-                print(f"  {tc}{'-'*100}{ANSI['RESET']}")
-                cb_prev_tier = tier
             _print_priority_row(entry, ci, flow_pct_map)
         print(f"  {'-'*92}")
     # 次日大涨候选独立区（2026-08-10）：display-only 观察窗口。
@@ -714,15 +500,6 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
         for ni, entry in enumerate(nextday_cands, 1):
             _print_priority_row(entry, ni, flow_pct_map)
         print(f"  {'-'*92}")
-    print(f"  {SUGGEST_BY_CAT['known_new_face']} → {ANSI['GREEN']}kNF(已知新面孔){ANSI['RESET']}"
-          f"  |  {SUGGEST_BY_CAT['rebound']} → {ANSI['CYAN']}RBD(超跌反弹){ANSI['RESET']}"
-          f"  |  {SUGGEST_BY_CAT['new_face']} → NEW(新面孔)"
-          f"  |  {SUGGEST_BY_CAT['momentum']} → {ANSI['YELLOW']}MOM(动量){ANSI['RESET']}"
-          f"  |  {SUGGEST_BY_CAT['short_term']} → ST(超短次日卖)"
-          f"  |  {SUGGEST_BY_CAT['pullback']} → PB(回调,负期望)"
-          f"  |  {SUGGEST_BY_CAT['comeback']} → CB(回马枪)")
-    print(f"  {ANSI['CYAN']}↻{ANSI['RESET']} 辨识度高(近5日上榜≥3次均排名≤70)  {ANSI['YELLOW']}⚠{ANSI['RESET']} 带有风险标签")
-    print(f"  排序档位: ▲▲/▲(净流入≥5%) 或 ↻ → 置前  |  ▼/▼▼(净流出≤-5%) → 劣后  |  其余 → 普通")
 
     # 今日选股建议（2026-08-10）：跨类别 score 排序是反指（历史取前2 cum_3d -3.1%），
     # 选股按「类别+市场环境」而非分数（类别优先级 rebound>short_term>momentum，
