@@ -37,10 +37,11 @@ def test_new_face_min_score_lowered_with_bottom_clear():
 
 
 def test_new_face_first_min_score_split():
-    # 2026-08-10: 首日 new_face 全档负收益（1018 条 cum_3d -1.58）提门槛砍量；
-    # known_new_face 分数反指（低分档最优）保持低门槛，二者必须拆开，不得同步抬高。
-    assert NEW_FACE_FIRST_MIN_SCORE > NEW_FACE_MIN_SCORE
-    assert NEW_FACE_FIRST_MIN_SCORE >= 50
+    # 2026-08-10: FIRST 曾=50（旧权重高分体系下砍首日 new_face 量）；恢复 9826399 权重重平衡后
+    # 分数整体下移，50 在新权重下饿死列表（历史重扫 0 信号），回测验证 18 → 29 信号 +12.79%，
+    # 故 FIRST 回到 18（9826399 配套）。二者保持同值但不允许任一跌破 18（与旧权重时代 22→18 保护一致）。
+    assert NEW_FACE_FIRST_MIN_SCORE == NEW_FACE_MIN_SCORE
+    assert NEW_FACE_FIRST_MIN_SCORE >= 18
 
 
 def test_momentum_min_score_raised():

@@ -30,7 +30,8 @@ class TestAnalyzeNewFace:
         result = analyze_new_face(_stock(percent=4.5, rank_change=2500, value=12000), kline)
         assert result is not None
         assert result.score >= 20
-        assert result.dimensions["new_face_today_pct"] == 20
+        # Step 2 重平衡：today_pct_2_6 20→8（今日大涨对超卖反转是动量确认而非反转信号）
+        assert result.dimensions["new_face_today_pct"] == 8
         assert "new_face_vol_rank" in result.dimensions
 
     def test_zero_or_negative_pct_returns_none(self):
@@ -91,12 +92,13 @@ class TestAnalyzeNewFace:
         assert result is not None
         assert result.dimensions["new_face_today_pct"] == -15
 
-    def test_today_pct_lt_0_5_scores_five(self):
-        # STRATEGY.md: 新面孔 <1% → +5（含 <0.5%）
+    def test_today_pct_lt_0_5_scores_three(self):
+        # Step 2 重平衡：today_pct_lt_0_5 5→3（超卖反转弱化今日涨幅奖励）。
+        # _band_score 用严格 < 比较：percent=0.3 < 0.5 落 lt_0_5 档；percent=0.5 落 0_5_1 档。
         kline = _kline([1, 2, 1, 2, 3])
-        result = analyze_new_face(_stock(percent=0.5, rank_change=2000, value=12000), kline)
+        result = analyze_new_face(_stock(percent=0.3, rank_change=2000, value=12000), kline)
         assert result is not None
-        assert result.dimensions["new_face_today_pct"] == 5
+        assert result.dimensions["new_face_today_pct"] == 3
 
 
 class TestAnalyzeMomentum:
@@ -171,12 +173,12 @@ class TestAnalyzeMomentum:
         assert result is not None
         assert result.dimensions["momentum_today_pct"] == 5
 
-    def test_accumulated_10_15_scores_fifteen(self):
-        # STRATEGY.md: 动量 5日累计 10%~15% → +15
+    def test_accumulated_10_15_scores_eight(self):
+        # P0 IC 重平衡：accum_10_15 15→8（momentum_accumulated IC -0.08 反指，已涨多的票 3 日内均值回归）
         kline = _kline([2, 2, 2, 2, 2])
         result = analyze_momentum(_stock(percent=4, rank_change=2000, value=12000), kline)
         assert result is not None
-        assert result.dimensions["momentum_accumulated"] == 15
+        assert result.dimensions["momentum_accumulated"] == 8
 
     def _overbought_kline(self, tail_pcts, ramp=2.4):
         # 构造末周期超买序列（鱼尾段）：长横盘 + 末段仅最后几根急拉冲刺，

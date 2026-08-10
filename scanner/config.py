@@ -33,10 +33,13 @@ MINUTE_FETCH_PHASE_DEADLINE = 30
 # 首日新面孔（首次上榜）与二次上榜（known_new_face）分开设门槛（2026-08-10）：
 # - known_new_face 分数反指（低分档[18,37) cum_3d +5.58/64% 胜率 vs 高分档[77,98) -3.76），
 #   故 NEW_FACE_MIN_SCORE 保持低门槛，不砍"低调二次上榜"的低分档。
-# - 首日 new_face 全 score 档均负收益（1018 条 cum_3d -1.58，含 [17,46) 档 560 条 -1.27），
-#   无阈值能救，先提 NEW_FACE_FIRST_MIN_SCORE 砍掉最低 ~55% 量减噪，后续再评估策略本身。
+# - 首日 new_face 全 score 档均负收益（旧权重下 1018 条 cum_3d -1.58）曾设
+#   NEW_FACE_FIRST_MIN_SCORE=50 砍量；但 2026-08-10 恢复 9826399 权重重平衡后
+#   （today_pct 20→8 等，分数体系整体下移），50 在新权重下饿死列表（历史重扫 0 信号）。
+#   回测（rescore）验证新权重下 18 → 29 信号 +12.79%、12 → 55 信号 +18.40%，
+#   故 FIRST 阈值回到 18（与 9826399 配套；新权重下"反转信号主导"本身已砍掉大量动量票）。
 NEW_FACE_MIN_SCORE = 18
-NEW_FACE_FIRST_MIN_SCORE = 50
+NEW_FACE_FIRST_MIN_SCORE = 18
 # 2026-08-10: 16→50——回测分桶 momentum 低分档[16,49) 55 条 cum_3d -0.95%，>=50 档 379 条
 # +2.82%；「首次启动」子模式分数实测全 >=64 不受影响。切掉最差 ~12% 量。
 MOMENTUM_MIN_SCORE = 50
@@ -242,29 +245,36 @@ AFTERNOON_START = dtime(13, 0)
 AFTERNOON_END = dtime(15, 0)
 
 # Scoring weights — used by analysis.py
+# Step 2 (2026-08-07, 9826399, merge 24443ff 中丢失后于 2026-08-10 恢复):
+# IC 归因重平衡——new_face 是「超卖反转」策略，原权重过度奖励动量确认信号
+# （今日大涨 / 放量 / 累计涨幅，cum_3d IC 均为负），真正有预测力的反转触发信号
+# （KDJ K<20金叉/J<0、RSI<30、MACD金叉）权重过小。重平衡后 reconstruct_score
+# rank-IC：new_face +0.045→+0.109、Combined +0.041→+0.099（ic_attribution.py）。
+# 2026-08-10 独立复核：KDJ超卖金叉触发组 cum_3d +0.54 vs 未触发 -0.52（IC +0.42）、
+# 放量 >1.3 触发组 -2.83 vs 未触发 -0.51（IC ≈0），方向一致。
 NEW_FACE_WEIGHTS: dict[str, int] = {
-    "today_pct_2_6": 20,
-    "today_pct_1_2": 10,
-    "today_pct_0_5_1": 5,
-    "today_pct_lt_0_5": 5,
+    "today_pct_2_6": 8,
+    "today_pct_1_2": 6,
+    "today_pct_0_5_1": 4,
+    "today_pct_lt_0_5": 3,
     "today_pct_6_8": 5,
     "today_pct_gt_8": -15,
-    "accum_neg5_10": 10,
+    "accum_neg5_10": 6,
     "accum_lt_neg5": 0,
-    "accum_10_15": 5,
+    "accum_10_15": 3,
     "accum_15_20": -5,
     "bottom_confirmed": 0,
-    "v_shape": 10,
-    "volume_surge": 10,
+    "v_shape": 8,
+    "volume_surge": 0,
     "value_gte_10000": 2,
     "value_gte_5000": 1,
-    "rsi_bonus": 3,
-    "macd_bonus": 3,
-    "rsi14_oversold_bonus": 3,
-    "bollinger_oversold": 4,
-    "kdj_bonus": 1,
+    "rsi_bonus": 5,
+    "macd_bonus": 6,
+    "rsi14_oversold_bonus": 4,
+    "bollinger_oversold": 5,
+    "kdj_bonus": 6,
     "atr_contraction": 2,
-    "obv_not_negative": 2,
+    "obv_not_negative": 3,
 }
 
 # ── momentum "首次启动" 子模式 ──
@@ -278,6 +288,11 @@ MOMENTUM_LAUNCH_TODAY_MAX = 8.0
 MOMENTUM_LAUNCH_VOL = 1.5       # 放量启动门槛（压掉缩量假阳）
 MOMENTUM_LAUNCH_WORD = "启动首日"
 
+# P0 IC 重平衡 (2026-08-08, e3ee10e4, merge 24443ff 中丢失后于 2026-08-10 恢复)。
+# 依据 cum_3d 口径 dimension_ic（当前库复核一致）：
+#   momentum_volume -0.32 强反指 → 健康量能清零；momentum_value +0.22 正指 → 提权；
+#   momentum_macd -0.21 / momentum_rsi -0.06 / momentum_accumulated -0.09 反指 → 清零/降权；
+#   momentum_adx +0.22 强正指 → 提权；momentum_kdj ≈0 → 中性略提。
 MOMENTUM_WEIGHTS: dict[str, int] = {
     "today_pct_2_6": 20,
     "today_pct_1_2": 10,
@@ -285,21 +300,21 @@ MOMENTUM_WEIGHTS: dict[str, int] = {
     "today_pct_lt_0_5": 5,
     "today_pct_6_8": 5,
     "today_pct_8_10": 3,   # P1-2: 新增 8-10% 档（加速赶顶风险，进一步降权）
-    "accum_10_15": 15,
-    "accum_15_20": 10,
-    "accum_20_30": 5,
+    "accum_10_15": 8,
+    "accum_15_20": 5,
+    "accum_20_30": 3,
     "accum_gte_30": -15,
-    "vol_healthy": 2,
+    "vol_healthy": 0,
     "vol_surge": 0,
     "vol_low": -3,
-    "value_gte_10000": 3,
-    "value_gte_5000": 1,
-    "rsi_bonus": 3,
-    "kdj_bonus": 3,
-    "macd_bonus": 3,
-    "adx_bonus": 5,
+    "value_gte_10000": 5,
+    "value_gte_5000": 2,
+    "rsi_bonus": 0,
+    "kdj_bonus": 4,
+    "macd_bonus": 0,
+    "adx_bonus": 7,
     "adx_weak": -3,
-    "atr_healthy": 3,
+    "atr_healthy": 0,
     "atr_overheated": -3,
     "obv_uptrend": 3,
 }
