@@ -347,12 +347,25 @@ def _in_nextday_sweet_band(percent: float) -> bool:
             or NEXTDAY_SPIKE_MID_MIN <= percent < NEXTDAY_SPIKE_MID_MAX)
 
 
+def _entry_prominent(entry: dict) -> bool:
+    """辨识度（↻）：候选行用扫描时标签，掉榜/重启行用 DB appearances 计算的 _prominent。
+
+    与 _print_priority_row 的 prom_labels 同口径，供次日大涨候选区排序复用。
+    """
+    c = entry.get("_candidate")
+    if c:
+        return bool(c.prominence_labels)
+    return bool(entry.get("_prominent"))
+
+
 def _nextday_spike_candidates(main_recs: list[dict]) -> list[dict]:
     """从综合排序主表中筛出「次日大涨画像」候选（display-only）。
 
     过滤条件（均来自 nextday_attribution 数据）：
       1. 推荐时刻涨幅在甜蜜带（低吸潜伏 <2% 或 中段启动 4~8%）；
       2. 排除 short_term 超买（死亡信号：hit 5% vs 非超买 10.5%）。
+    排序：辨识度(↻)优先（2026-08-10：辨识度 hit 16~24% vs 非辨识度 6~10%，
+    是当前最强单因子，复用已有 ↻ 标记）→ 类别优先级 → 评分降序。
     不改 score / 排序键 / 不落库——独立区纯展示观察窗口。
     """
     out = []
@@ -369,7 +382,8 @@ def _nextday_spike_candidates(main_recs: list[dict]) -> list[dict]:
                     or c.kline.dimensions.get("v_mo_overbought")):
                 continue  # 超买 = 次日大涨死亡信号
         out.append(e)
-    out.sort(key=lambda x: (NEXTDAY_CAT_PRIORITY.get(x["category"], 99), -x["score"]))
+    out.sort(key=lambda x: (0 if _entry_prominent(x) else 1,
+                            NEXTDAY_CAT_PRIORITY.get(x["category"], 99), -x["score"]))
     return out
 
 

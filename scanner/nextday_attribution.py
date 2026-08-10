@@ -33,6 +33,7 @@ from datetime import timedelta
 
 from scanner.backtest import ACTIVE_CATEGORIES, _ic
 from scanner.config import DB_PATH, now_beijing
+from scanner.database import get_prominence_map
 
 DEFAULT_THRESHOLD = 7.0   # 次日大涨阈值（%）
 DEFAULT_RECENT_DAYS = 0   # 0=全部历史；>0=最近 N 天
@@ -40,6 +41,21 @@ DEFAULT_RECENT_DAYS = 0   # 0=全部历史；>0=最近 N 天
 # 维度归因只关心「正值与否」即可区分，避免数值口径差异
 _BIN_DIMS = ("v_st_overbought", "v_st_weak", "v_mo_divergence", "v_nf_volume",
              "v_st_ma", "rank_trend_bonus", "validation_bonus")
+
+# 二元因子条件 hit 率表（2026-08-10 新增辨识度）：
+#   辨识度 = 近 5 交易日上榜 ≥3 天 + 历史日平均排名 ≤ 70（复用 database.get_prominence_map，
+#   与 enhancer/display 同一实现，防口径漂移）。数据：辨识度 hit 16~24% vs 非辨识度 6~10%，
+#   当前最强单因子；「前N日曾推」与其 67% 重合、独立增量≈0，故用辨识度而非推荐历史。
+FACTOR_CONDITIONS: list[tuple[str, object]] = [
+    ("辨识度(↻反复上榜)", lambda r: r.get("_prominent") is True),
+    ("非辨识度", lambda r: r.get("_prominent") is False),
+    ("short_term 超买", lambda r: bool(_parse(r).get("v_st_overbought"))),
+    ("short_term 非超买", lambda r: not _parse(r).get("v_st_overbought")),
+    ("short_term 弱转强", lambda r: _parse(r).get("st_weak_to_strong", 0) > 0),
+    ("momentum MA3头", lambda r: _parse(r).get("v_mo_ma", 0) == 6),
+    ("momentum 超买", lambda r: bool(_parse(r).get("v_mo_overbought"))),
+    ("new_face 收敛≥2", lambda r: (_parse(r).get("v_nf_convergence_hits", 0) or 0) >= 2),
+]
 
 
 def _load_dedup(conn: sqlite3.Connection, days: int = 0) -> list[dict]:
@@ -76,6 +92,30 @@ def _parse(d: dict) -> dict:
         return bd if isinstance(bd, dict) else {}
     except (json.JSONDecodeError, TypeError):
         return {}
+
+
+def _attach_prominence(conn: sqlite3.Connection, recs: list[dict]) -> list[dict]:
+    """按推荐日视角给每条记录附加辨识度（↻）标记 r["_prominent"]。
+
+    复用 database.get_prominence_map（与 enhancer/display 同一实现，防口径漂移），
+    按 as_of_date 回放：判定「推荐当天」的辨识度窗口，而非真实今日。
+    无 appearances 表（如单测库）时置 None = 未知，避免把「不可算」误标为「非辨识度」。
+    """
+    try:
+        conn.execute("SELECT 1 FROM appearances LIMIT 1").fetchone()
+    except Exception:
+        for r in recs:
+            r["_prominent"] = None
+        return recs
+    by_date: dict[str, list[dict]] = defaultdict(list)
+    for r in recs:
+        by_date[r["date"]].append(r)
+    for d, group in by_date.items():
+        syms = [r["symbol"] for r in group]
+        pmap = get_prominence_map(conn, syms, as_of_date=d)
+        for r in group:
+            r["_prominent"] = pmap.get(r["symbol"], False)
+    return recs
 
 
 def _hit_stats(recs: list[dict], threshold: float) -> tuple[int, float, float]:
@@ -182,6 +222,19 @@ def dim_compare(recs: list[dict], threshold: float) -> list[dict]:
     return out
 
 
+def conditional_hit_table(recs: list[dict], threshold: float) -> list[dict]:
+    """二元因子条件 hit 率（样本/hit/hit率/平均次日），供 [5] 节与单测复用。"""
+    out = []
+    for label, fn in FACTOR_CONDITIONS:
+        g = [r for r in recs if fn(r)]
+        if not g:
+            continue
+        hits, hr, avg = _hit_stats(g, threshold)
+        out.append({"factor": label, "n": len(g), "hits": hits,
+                    "hit_rate": hr, "avg_next": avg})
+    return out
+
+
 def _print_table(header: list[str], rows: list[list], widths: list[int] | None = None) -> None:
     if widths is None:
         widths = [max(len(str(h)), *(len(str(r[i])) for r in rows)) if rows else len(str(h))
@@ -230,21 +283,10 @@ def print_report(recs: list[dict], threshold: float) -> None:
     _print_table(["维度", "hit组正值", "非hit组", "Δ"], rows)
 
     print("\n[5] 二元因子条件 hit 率")
-    conds = {
-        "short_term 超买": lambda r: bool(_parse(r).get("v_st_overbought")),
-        "short_term 非超买": lambda r: not _parse(r).get("v_st_overbought"),
-        "short_term 弱转强": lambda r: _parse(r).get("st_weak_to_strong", 0) > 0,
-        "momentum MA3头": lambda r: _parse(r).get("v_mo_ma", 0) == 6,
-        "momentum 超买": lambda r: bool(_parse(r).get("v_mo_overbought")),
-        "new_face 收敛≥2": lambda r: (_parse(r).get("v_nf_convergence_hits", 0) or 0) >= 2,
-    }
     rows = []
-    for label, fn in conds.items():
-        g = [r for r in recs if fn(r)]
-        if not g:
-            continue
-        ch, chr_, cavg = _hit_stats(g, threshold)
-        rows.append([label, str(len(g)), str(ch), f"{chr_*100:.1f}%", f"{cavg:+.2f}%"])
+    for f in conditional_hit_table(recs, threshold):
+        rows.append([f["factor"], str(f["n"]), str(f["hits"]),
+                     f"{f['hit_rate']*100:.1f}%", f"{f['avg_next']:+.2f}%"])
     _print_table(["因子", "样本", "hit", "hit率", "平均次日"], rows)
 
     print("\n  注: next_day 为单日口径，次日大涨票多为高开冲高；结论只用于「次日大涨」")
@@ -265,6 +307,7 @@ def main() -> None:
     args = build_parser().parse_args()
     conn = sqlite3.connect(DB_PATH)
     recs = _load_dedup(conn, days=args.days)
+    _attach_prominence(conn, recs)
     conn.close()
     print_report(recs, args.threshold)
     if args.csv:

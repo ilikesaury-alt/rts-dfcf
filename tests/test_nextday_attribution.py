@@ -16,6 +16,8 @@ import os
 from scanner.nextday_attribution import (
     _load_dedup,
     _hit_stats,
+    _attach_prominence,
+    conditional_hit_table,
     gain_band_matrix,
     score_bucket_table,
     dim_compare,
@@ -129,15 +131,66 @@ def test_strategy_table_sorts_by_hit_rate():
     assert stats[0]["hit_rate"] == 1.0
 
 
+def test_attach_prominence_historical():
+    """辨识度按推荐日视角回放：窗口内≥3天+好排名 → True；上榜不足 → False。"""
+    conn = sqlite3.connect(":memory:")
+    conn.execute("""CREATE TABLE appearances (
+        symbol TEXT NOT NULL, name TEXT NOT NULL, date TEXT NOT NULL,
+        rank INTEGER, percent REAL, value REAL, UNIQUE(symbol, date))""")
+    for d in ("2026-07-01", "2026-07-02", "2026-07-03"):
+        conn.execute(
+            "INSERT INTO appearances VALUES (?, 'T', ?, 50, 0, 0)",
+            ("SZ300001", d))
+    conn.commit()
+    recs = [
+        {"date": "2026-07-03", "symbol": "SZ300001", "next_day": 8.0},
+        {"date": "2026-07-03", "symbol": "SZ300002", "next_day": 1.0},
+    ]
+    _attach_prominence(conn, recs)
+    conn.close()
+    assert recs[0]["_prominent"] is True, "窗口内 3 天上榜 + 平均排名 50 应判辨识度"
+    assert recs[1]["_prominent"] is False, "无上榜记录应为非辨识度"
+
+
+def test_attach_prominence_no_table_sets_none():
+    """无 appearances 表（单测/空库）时置 None，不得误标为非辨识度。"""
+    conn = sqlite3.connect(":memory:")
+    recs = [{"date": "2026-07-01", "symbol": "SZ300001", "next_day": 5.0}]
+    _attach_prominence(conn, recs)
+    conn.close()
+    assert recs[0]["_prominent"] is None, "无法计算辨识度时应为 None（未知）"
+
+
+def test_conditional_hit_table_prominence():
+    """辨识度/非辨识度因子行 hit 率计算正确。"""
+    recs = [
+        dict(_mk_rec(next_day=8.0), _prominent=True),
+        dict(_mk_rec(next_day=8.0), _prominent=True),
+        dict(_mk_rec(next_day=2.0), _prominent=False),
+    ]
+    rows = conditional_hit_table(recs, threshold=7.0)
+    by = {r["factor"]: r for r in rows}
+    assert "辨识度(↻反复上榜)" in by, f"缺少辨识度因子行: {list(by)}"
+    assert by["辨识度(↻反复上榜)"]["n"] == 2
+    assert by["辨识度(↻反复上榜)"]["hit_rate"] == 1.0
+    assert "非辨识度" in by
+    assert by["非辨识度"]["n"] == 1
+    assert by["非辨识度"]["hit_rate"] == 0.0
+
+
 def test_real_db_smoke():
     from scanner.config import DB_PATH
     if not os.path.exists(DB_PATH):
         return  # 无库时跳过（CI/开发环境）
     conn = sqlite3.connect(DB_PATH)
     recs = _load_dedup(conn, days=30)
+    _attach_prominence(conn, recs)
     conn.close()
     assert len(recs) > 0, "真实库应有样本"
     assert strategy_table(recs, 7.0)
     assert gain_band_matrix(recs, 7.0)
     assert score_bucket_table(recs, 7.0)
     assert dim_compare(recs, 7.0)
+    assert conditional_hit_table(recs, 7.0), "辨识度因子应可计算"
+    assert any(r.get("_prominent") is not None for r in recs), "真实库应能计算辨识度"
+    assert any(r.get("_prominent") is True for r in recs), "真实库应存在辨识度票"

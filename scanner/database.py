@@ -323,19 +323,23 @@ def count_recent_appearances(conn: sqlite3.Connection, symbol: str, lookback_day
     return cur.fetchone()[0]
 
 
-def get_prominence_map(conn: sqlite3.Connection, symbols: list[str]) -> dict[str, bool]:
+def get_prominence_map(conn: sqlite3.Connection, symbols: list[str],
+                       as_of_date: str | None = None) -> dict[str, bool]:
     """批量查询哪些 symbol 满足辨识度条件（↻）。
 
     逻辑与 enhancer._compute_prominence_labels 完全一致：
       近 PROMINENCE_LOOKBACK_DAYS 个交易日内出现 ≥ PROMINENCE_REPEAT_THRESHOLD 天，
       且历史日（不含今日）平均排名 ≤ PROMINENCE_MAX_AVG_RANK。
     单次 SQL 批查，避免 N+1。
+
+    as_of_date: 历史回放视角——把「今天」锚定到该日，判定与那一天实时扫描完全一致
+    （nextday_attribution 归因按推荐日视角评估，默认 None = 真实今日）。
     """
     if not symbols:
         return {}
-    lookback_rank = _n_trading_days_ago(PROMINENCE_LOOKBACK_DAYS - 1)
-    lookback_count = _n_trading_days_ago(PROMINENCE_LOOKBACK_DAYS - 1)
-    today = now_beijing().date().isoformat()
+    lookback_rank = _n_trading_days_ago(PROMINENCE_LOOKBACK_DAYS - 1, as_of=as_of_date)
+    lookback_count = _n_trading_days_ago(PROMINENCE_LOOKBACK_DAYS - 1, as_of=as_of_date)
+    today = as_of_date or now_beijing().date().isoformat()
     placeholders = ",".join("?" * len(symbols))
     try:
         rows = conn.execute(

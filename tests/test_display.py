@@ -534,3 +534,22 @@ def test_nextday_spike_section_no_hits_omitted(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "◆ 次日大涨候选" not in out, "无甜蜜带票时不应输出空独立区"
     assert "SZ300001" in out  # 主表仍正常显示
+
+
+def test_nextday_zone_prominence_prioritized(monkeypatch, capsys):
+    """次日大涨候选区复用辨识度（2026-08-10）：↻ 票排非辨识度票前（即使分数更低）。"""
+    conn = _rec_db()
+    _insert_rec_pct(conn, "SZ300001", "辨识票", "rebound", 50, 1.0)   # <2% 甜蜜带
+    _insert_rec_pct(conn, "SZ300002", "普通票", "rebound", 80, 1.0)
+    pool = {
+        "SZ300001": _cand_tier("SZ300001", 50, "rebound", prominent=True),
+        "SZ300002": _cand_tier("SZ300002", 80, "rebound"),
+    }
+    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
+    disp_mod.display_priority(conn)
+    out = capsys.readouterr().out
+    nextday_part = out.split("◆ 次日大涨候选", 1)[1]
+    lines = [l for l in nextday_part.splitlines() if "SZ30000" in l]
+    assert len(lines) == 2
+    assert "SZ300001" in lines[0], f"辨识度票(score50)应排在普通票(score80)前: {lines}"
+    assert "SZ300002" in lines[1]
