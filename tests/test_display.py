@@ -335,8 +335,8 @@ def test_display_priority_tier_strong_inflow_front(monkeypatch, capsys):
     assert "SZ300002" in lines[1]
 
 
-def test_display_priority_tier_outflow_last_overrides_prominence(monkeypatch, capsys):
-    """净流出强制劣后：高分辨识度+流出票(档2)排到普通票(档1)之后。"""
+def test_display_priority_tier_outflow_not_printed(monkeypatch, capsys):
+    """劣后档不打印：主力净流出≤-5% 的票（含高分辨识度）直接不输出，普通票正常展示。"""
     conn = _rec_db()
     _insert_rec(conn, "SZ300001", "流出置前", 1.0)  # momentum score 60
     _insert_rec_cat(conn, "SZ300002", "普通票", "momentum", 50)
@@ -346,8 +346,10 @@ def test_display_priority_tier_outflow_last_overrides_prominence(monkeypatch, ca
     disp_mod.display_priority(conn)
     out = capsys.readouterr().out
     lines = [l for l in out.splitlines() if "SZ30000" in l]
-    assert "SZ300002" in lines[0], f"普通票(50)应排在辨识度+流出票(100)之前: {lines}"
-    assert "SZ300001" in lines[1]
+    assert len(lines) == 1, f"劣后档票不应打印，仅剩普通票: {lines}"
+    assert "SZ300002" in lines[0]
+    assert "SZ300001" not in out, f"流出劣后票(SZ300001)不应出现在输出中"
+    assert "▶ 劣后档" not in out, "劣后档横幅不应打印"
 
 
 def test_display_priority_tier_db_source_for_dropped(monkeypatch, capsys):
@@ -378,7 +380,7 @@ def test_display_priority_tier_db_source_for_dropped(monkeypatch, capsys):
 
 
 def test_display_priority_tier_banner_separates_groups(monkeypatch, capsys):
-    """档位分隔横幅：跨三档时输出含 置顶档/普通档/劣后档 分组标题，且辨识度+流出票落在劣后档。"""
+    """档位分隔横幅：跨档时输出含 置顶档/普通档 分组标题；劣后档票被过滤不打印。"""
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300001", "置顶", "rebound", 50)
     _insert_rec_cat(conn, "SZ300002", "普通", "momentum", 70)
@@ -393,15 +395,13 @@ def test_display_priority_tier_banner_separates_groups(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "▶ 置顶档" in out
     assert "▶ 普通档" in out
-    assert "▶ 劣后档" in out
-    # 劣后档横幅后出现的首个数据行应是 SZ300003（流出覆盖辨识度，沉到档2）
-    after_last = out.split("▶ 劣后档", 1)[1]
-    assert "SZ300003" in after_last
-    assert "SZ300001" not in after_last
+    assert "▶ 劣后档" not in out
+    assert "SZ300003" not in out, "劣后档票(SZ300003)不应出现在输出中"
+    assert "SZ300001" in out
 
 
 def test_display_priority_comeback_separate_region(monkeypatch, capsys):
-    """方案A：回马枪从主排序表抽出，置于末尾独立区块；主表不含 CB 行，独立区按档位(置顶>劣后)排序。"""
+    """方案A：回马枪从主排序表抽出，置于末尾独立区块；主表不含 CB 行，独立区劣后档票被过滤。"""
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300001", "反弹", "rebound", 50)
     _insert_rec_cat(conn, "SZ300002", "超短", "short_term", 60)
@@ -421,6 +421,6 @@ def test_display_priority_comeback_separate_region(monkeypatch, capsys):
     # 主表（回马枪之前）不含任何 comeback 数据行
     assert "SZ300101" not in main_part
     assert "SZ300102" not in main_part
-    # 独立区内两只回马枪按档位：置顶(马置顶) 在 劣后(马劣后) 之前
-    assert "SZ300101" in cb_part and "SZ300102" in cb_part
-    assert cb_part.index("SZ300101") < cb_part.index("SZ300102")
+    # 独立区内劣后档回马枪被过滤，仅剩置顶票
+    assert "SZ300101" in cb_part
+    assert "SZ300102" not in out, "劣后档回马枪(SZ300102)不应出现在输出中"

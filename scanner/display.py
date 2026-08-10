@@ -495,6 +495,7 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     rank_map: {symbol: 飙升榜排名} 当前扫描的榜单排名，为掉榜/重启行补实时排名。
     排序键 = (档位, CAT_DISPLAY_PRIORITY, -score)：档0置前(辨识度或净流入≥5%) < 档1普通 <
     档2劣后(净流出≤-5%，覆盖辨识度)。档位只影响排序，不改评分列/不落库。
+    劣后档（主力净流出 ≤ FUND_FLOW_MAIN_PCT_WEAK）直接不打印，被过滤出综合排序与回马枪区。
     """
     if conn is None:
         return
@@ -568,6 +569,8 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     # momentum/short_term，不含 comeback/pullback）。
     comeback_recs = [e for e in today_recs if e["category"] == "comeback"]
     main_recs = [e for e in today_recs if e["category"] != "comeback"]
+    # 劣后档（主力净流出 ≤ FUND_FLOW_MAIN_PCT_WEAK）直接不打印，不进入排序与展示。
+    main_recs = [e for e in main_recs if _sort_tier(e) != 2]
     scored = sorted(main_recs, key=lambda x: (_sort_tier(x),
                                                CAT_DISPLAY_PRIORITY.get(x["category"], 99),
                                                -x["score"]))
@@ -600,7 +603,8 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     # 回马枪独立成区（方案A）：主表仅排榜上五类，comeback 抽到此处独立成区，
     # 仍按档位(tier)+评分排序，复用档位横幅与统一行渲染。comeback 为空则跳过（与旧行为一致）。
     if comeback_recs:
-        cb_scored = sorted(comeback_recs, key=lambda x: (_sort_tier(x), -x["score"]))
+        cb_scored = [e for e in comeback_recs if _sort_tier(e) != 2]
+        cb_scored = sorted(cb_scored, key=lambda x: (_sort_tier(x), -x["score"]))
         print(f"\n{ANSI['CYAN']}◆ 回马枪 — 掉榜跟踪/回调买点（综合排序独立区）{ANSI['RESET']}")
         print(hdr)
         cb_prev_tier = None
