@@ -7,6 +7,7 @@ from scanner.database import (
     _n_trading_days_ago,
     get_cached_kline,
     get_symbol_appearances,
+    get_today_recommendations,
     record_appearances,
     save_kline_to_db,
     save_recommendations,
@@ -62,7 +63,8 @@ def memory_db():
             score_breakdown TEXT,
             source TEXT DEFAULT 'xueqiu',
             concept TEXT,
-            accumulated_pct REAL
+            accumulated_pct REAL,
+            excluded INTEGER DEFAULT 0
         )
     """)
     conn.execute("""
@@ -216,6 +218,27 @@ class TestSaveRecommendations:
         ).fetchone()
         assert row is not None
         assert row[0] == "华为概念"
+
+
+class TestTodayRecommendationsExcluded:
+    """P1-7 (2026-08-10): 当日被硬过滤（excluded=1）的推荐不再出现在综合排序。"""
+
+    def test_excluded_flag_filtered_out(self, memory_db):
+        today = now_beijing().date().isoformat()
+        rows = [
+            (today, "300001", "通过", "momentum", 60, 0),
+            (today, "300002", "被过滤", "momentum", 80, 1),
+        ]
+        memory_db.executemany(
+            "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, excluded) "
+            "VALUES (?, '13:00', ?, ?, ?, ?, 2.0, ?)",
+            rows,
+        )
+        memory_db.commit()
+        recs = get_today_recommendations(memory_db)
+        syms = {r["symbol"] for r in recs}
+        assert "300001" in syms
+        assert "300002" not in syms, "excluded=1 的硬过滤票不应出现在综合排序"
 
 
 class TestWatchPoolEviction:

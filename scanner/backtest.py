@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import sqlite3
 from collections import defaultdict
@@ -462,20 +463,37 @@ def print_ranking_report(conn: sqlite3.Connection, metric: str = "cum_3d", recen
     print("确认后人工更新 config.CAT_DISPLAY_PRIORITY")
 
 
-def print_report(conn: sqlite3.Connection, metric: str = "next_day_pct", days: int = 0) -> None:
+def print_report(conn: sqlite3.Connection, metric: str = "cum_3d", days: int = 0) -> None:
     print("=" * 70)
     days_label = f", 最近{days}天" if days > 0 else ", 全部历史"
     print(f"回测归因报告 (metric={metric}{days_label})")
     print("=" * 70)
+    # P1-6 (2026-08-10): 高估方向标注。cum_2d/cum_3d 以推荐日收盘价(T+0 close)为起点，
+    # 但推荐发生在盘中——推荐后到收盘的涨幅已计入策略收益，早盘推荐高估最明显。
+    # 全库无推荐时刻买入价（无分钟快照），暂无法精确还原，先标注方向供解读。
+    if metric in ("cum_2d", "cum_3d"):
+        print("  注: cum_*d 用推荐日收盘价为起点，盘中推荐的票把\"推荐后到收盘涨幅\"计入了收益，")
+        print("      结果系统性高估（早盘推荐尤甚）。解读时需保留这一余量。")
+    print()
 
     print("\n[1] 分策略表现")
     print(f"{'类别':<16}{'样本':>6}{'胜率':>8}{'均收益':>9}{'盈亏比':>8}{'IC':>8}{'均分':>8}")
-    for s in strategy_performance(conn, metric, days=days):
+    stats = strategy_performance(conn, metric, days=days)
+    for s in stats:
         print(
             f"{s.category:<16}{s.count:>6}{s.win_rate*100:>7.1f}%"
             f"{s.avg_return:>9.2f}{s.profit_loss_ratio:>8.2f}"
             f"{s.ic_score:>8.3f}{s.avg_score:>8.1f}"
         )
+    # P1-5 (2026-08-10): 全推荐汇总作为"不挑选买入全部推荐"的无选择基准行，
+    # 便于判断各策略是否跑赢"全量摊大饼"。指数历史（创业板指）库内无数据，
+    # 暂用此候选池基准代替。
+    tot_n = sum(s.count for s in stats)
+    if tot_n:
+        tot_ret = sum(s.avg_return * s.count for s in stats) / tot_n
+        tot_win = sum(s.win_rate * s.count for s in stats) / tot_n
+        print(f"{'ALL(全推荐基准)':<16}{tot_n:>6}{tot_win*100:>7.1f}%"
+              f"{tot_ret:>9.2f}")
 
     print("\n[2] 分维度 IC（降序，正=加分越多收益越好）")
     print(f"{'维度':<28}{'样本':>6}{'IC':>8}{'加正分均收益':>14}{'零分均收益':>12}")
@@ -486,18 +504,20 @@ def print_report(conn: sqlite3.Connection, metric: str = "next_day_pct", days: i
         print(f"{d.dimension:<28}{d.hits:>6}{d.ic:>8.3f}{ap:>14}{az:>12}{tag}")
 
 
-def main() -> None:
-    import argparse
-
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="创业板扫描策略回测归因")
     parser.add_argument("--days", type=int, default=0, help="仅分析最近 N 天的推荐（0=全部）")
-    parser.add_argument("--metric", default="next_day_pct",
+    parser.add_argument("--metric", default="cum_3d",
                         choices=["next_day_pct", "fwd_3d", "fwd_5d", "cum_2d", "cum_3d"])
     parser.add_argument("--ranking", action="store_true",
                         help="综合排序类别优先级校准报告（默认 cum_3d，近期30天窗口）")
     parser.add_argument("--backfill", action="store_true", help="回填 N 日收益字段")
     parser.add_argument("--dry-run", action="store_true", help="回填预览不写库")
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
 
     conn = sqlite3.connect(DB_PATH)
     if args.backfill:

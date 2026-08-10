@@ -69,7 +69,8 @@ def _rec_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, time TEXT NOT NULL,
         symbol TEXT NOT NULL, name TEXT NOT NULL, category TEXT NOT NULL, score INTEGER NOT NULL,
         percent REAL, trend TEXT, next_day_pct REAL, fwd_3d REAL, fwd_5d REAL,
-        score_breakdown TEXT, source TEXT DEFAULT 'xueqiu', concept TEXT, accumulated_pct REAL)""")
+        score_breakdown TEXT, source TEXT DEFAULT 'xueqiu', concept TEXT, accumulated_pct REAL,
+        excluded INTEGER DEFAULT 0)""")
     conn.execute("""CREATE TABLE market_extra_cache (
         symbol TEXT NOT NULL, date TEXT NOT NULL, data_type TEXT NOT NULL,
         payload_json TEXT NOT NULL, updated TEXT NOT NULL, PRIMARY KEY(symbol, data_type))""")

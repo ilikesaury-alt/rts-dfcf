@@ -37,7 +37,9 @@ MINUTE_FETCH_PHASE_DEADLINE = 30
 #   无阈值能救，先提 NEW_FACE_FIRST_MIN_SCORE 砍掉最低 ~55% 量减噪，后续再评估策略本身。
 NEW_FACE_MIN_SCORE = 18
 NEW_FACE_FIRST_MIN_SCORE = 50
-MOMENTUM_MIN_SCORE = 16
+# 2026-08-10: 16→50——回测分桶 momentum 低分档[16,49) 55 条 cum_3d -0.95%，>=50 档 379 条
+# +2.82%；「首次启动」子模式分数实测全 >=64 不受影响。切掉最差 ~12% 量。
+MOMENTUM_MIN_SCORE = 50
 PULLBACK_MIN_SCORE = 18  # 保留常量供 analyze_pullback 测试使用，orchestrator 已下线 pullback
 SHORT_TERM_MIN_SCORE = 15
 REBOUND_MIN_SCORE = 18
@@ -326,9 +328,12 @@ PULLBACK_WEIGHTS: dict[str, int] = {
 
 SHORT_TERM_WEIGHTS: dict[str, int] = {
     "today_pct_2_4": 15,
-    "today_pct_4_6": 20,
+    # 2026-08-10: 4-6% 20→8（分桶最差档：41 条 cum_3d -1.41%，权重却是最高）、
+    # 8-12% 8→15（分桶最好档：21 条 +3.84%，接近涨停梯队次日惯性）——按数据反向修正，
+    # 替换原"涨幅偏大降权"的拍脑袋设定。2-4% / 6-8% 保持（+0.43% / +0.45% 中性）。
+    "today_pct_4_6": 8,
     "today_pct_6_8": 12,
-    "today_pct_8_12": 8,   # P1-1: 新增 8-12% 档（涨幅偏大降权，但仍可入选）
+    "today_pct_8_12": 15,   # P1-1: 8-12% 档（2026-08-10 由 8 上调，数据支持）
     "accum_5_10": 10,
     "accum_10_15": 15,
     "accum_15_20": 8,

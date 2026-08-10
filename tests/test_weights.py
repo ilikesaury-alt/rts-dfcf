@@ -11,6 +11,8 @@
 from scanner.config import (
     NEW_FACE_MIN_SCORE,
     NEW_FACE_FIRST_MIN_SCORE,
+    MOMENTUM_MIN_SCORE,
+    SHORT_TERM_WEIGHTS,
     NEW_FACE_WEIGHTS,
     MOMENTUM_WEIGHTS,
     MARKET_ENV_STRONG,
@@ -39,6 +41,19 @@ def test_new_face_first_min_score_split():
     # known_new_face 分数反指（低分档最优）保持低门槛，二者必须拆开，不得同步抬高。
     assert NEW_FACE_FIRST_MIN_SCORE > NEW_FACE_MIN_SCORE
     assert NEW_FACE_FIRST_MIN_SCORE >= 50
+
+
+def test_momentum_min_score_raised():
+    # P1-8 (2026-08-10): 16→50——回测分桶 <50 档 55 条 cum_3d -0.95%，>=50 档 379 条 +2.82%，
+    # 「首次启动」子模式分数实测全 >=64 不受影响。
+    assert MOMENTUM_MIN_SCORE == 50
+
+
+def test_short_term_today_pct_weight_rebalanced():
+    # P1-8 (2026-08-10): 分桶数据 4-6% 档最差(-1.41%, n=41) 但原权重最高(20)、
+    # 8-12% 档最好(+3.84%, n=21) 但原权重最低(8)——按数据反向修正，消除"涨幅越大越降权"的拍脑袋设定。
+    assert SHORT_TERM_WEIGHTS["today_pct_4_6"] < SHORT_TERM_WEIGHTS["today_pct_2_4"]
+    assert SHORT_TERM_WEIGHTS["today_pct_8_12"] > SHORT_TERM_WEIGHTS["today_pct_6_8"]
 
 
 def test_new_face_gap_up_no_longer_scored():

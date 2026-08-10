@@ -467,11 +467,11 @@ class TestAnalyzeShortTerm:
         assert analyze_short_term(_stock(percent=13.0), kline) is None
 
     def test_pct_8_12_accepted(self):
-        # P1-1: 8~12% 档位验证
+        # P1-1: 8~12% 档位验证（P1-8 权重 8→15，数据支持：8-12% 档分桶 cum_3d +3.84% 最好）
         kline = _kline([5, 3, 6, 2, 4])
         result = analyze_short_term(_stock(percent=9.0, rank_change=2000, value=12000), kline)
         assert result is not None
-        assert result.dimensions["st_today_pct"] == 8
+        assert result.dimensions["st_today_pct"] == 15
 
     def test_short_kline_returns_none(self):
         kline = _kline([5, 3, 6])

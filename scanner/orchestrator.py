@@ -669,6 +669,22 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         print(f"  [风险过滤] {len(excluded_by_risk)} 只命中硬排除标签，已移出推荐：{_names}{_more}")
     all_candidates = [c for c in all_candidates if not _candidate_excluded_by_risk(c)]
 
+    # P1-7 (2026-08-10): 硬过滤落标——被过滤的今日推荐标记 excluded=1（综合排序不再展示），
+    # 通过硬过滤的候选置 0（同日风险标签可能随时间变化，以最新轮次为准）。
+    try:
+        if excluded_by_risk:
+            conn.executemany(
+                "UPDATE recommendations SET excluded=1 WHERE date=? AND symbol=?",
+                [(today, c.stock.symbol) for c in excluded_by_risk])
+        passed_syms = [(today, c.stock.symbol) for c in all_candidates]
+        if passed_syms:
+            conn.executemany(
+                "UPDATE recommendations SET excluded=0 WHERE date=? AND symbol=?",
+                passed_syms)
+        conn.commit()
+    except Exception as e:
+        print(f"  [!] 风险过滤落标失败: {e}")
+
     # 分类列表必须从 all_candidates 重建，而非沿用旧对象引用——
     # dataclass_replace 已创建新对象（含最终 score），
     # 旧列表持有的仍是未累加 extra 的过期对象。

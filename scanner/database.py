@@ -123,6 +123,12 @@ def init_db() -> sqlite3.Connection:
     # 避免掉榜/重启后因 today_pool 缺失无法显示
     if "accumulated_pct" not in cols:
         conn.execute("ALTER TABLE recommendations ADD COLUMN accumulated_pct REAL")
+    # 硬过滤落标：当日曾命中 RISK_FLAGS_HARD_FILTER（主力出货/趋势破位）的票置 1，
+    # 综合排序读取时排除——防止"早先轮次落库、后续轮次被过滤"的票仍展示。
+    # orchestrator 每轮扫描按最新轮次状态更新（过滤→1，通过→0），
+    # 一旦当日被硬过滤即当日不再展示（止损级信号，保守语义）。
+    if "excluded" not in cols:
+        conn.execute("ALTER TABLE recommendations ADD COLUMN excluded INTEGER DEFAULT 0")
     try:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_source ON recommendations(source)")
     except Exception:
@@ -565,7 +571,7 @@ def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
     try:
         rows = conn.execute(
             "SELECT symbol, name, category, score, trend, time, percent, concept, accumulated_pct "
-            "FROM recommendations WHERE date = ? ORDER BY score DESC",
+            "FROM recommendations WHERE date = ? AND COALESCE(excluded, 0) = 0 ORDER BY score DESC",
             (today,),
         ).fetchall()
     except Exception as e:
