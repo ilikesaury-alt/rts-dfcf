@@ -95,6 +95,53 @@ tests/                    # pytest test suite
 
 Tests use pytest with helper factories `_stock()` and `_kline()` in `tests/helpers.py` and `tests/test_analysis.py` for creating mock data. No external services required.
 
+## Bug 检查规则（用户要求"检查 bug / 审查 / 排查问题"时必读）
+
+用户每次让我检查 bug，都必须**完整执行以下流程**，不许只挑能看懂的部分，不许一轮只查上次改过的文件。
+
+### 0. 触发词
+「检查bug」「审查」「排查问题」「看看有没有问题」「第三/四/五轮检查」等，一律按本规则执行。
+
+### 1. 基线必须先绿
+1. `python -m compileall -q scanner unified_scanner.py stock_report.py backfill_kline.py query_summary.py query_today.py xueqiu_hot.py`
+2. `python -m pytest tests/ -q`
+3. 有失败的先修到全绿再开始查；全绿才代表"结论不是被坏代码掩盖"。
+4. 若仓库出现 `ruff`/`mypy`/`pyright`/`pytest-cov` 配置则必须运行；**当前没有**，要在报告末尾注明"本轮纯人工审查，未用静态分析/覆盖率工具，可能仍不穷尽"。
+
+### 2. 系统化逐模块过（按以下 7 个风险区，每轮都全过一遍）
+- **数据入口/输入强制转换**：所有从 API/DB/外部取数的函数，搜 `or 0` / `or 0.0` / `get(...) or` / `or i` 模式，检查字符串/None/NaN 会不会漏进下游的数值比较与算术。参考已修复类：`_filter_gem_stocks`、`compute_surge_sentiment`、`fetch_market_caps_batch`（同一缺陷在 3 处各爆一次）。
+- **K线/缓存/新鲜度**：`_fetch_all_klines`（TTL、今日bar缺失、KLINE_FETCH_DEADLINE）、`get_cached_kline`、`save_kline_to_db`、`_last_kline_fetch`。
+- **并发/健壮性**：每个 `ThreadPoolExecutor`/`threading` 是否带 deadline（kline 有 `KLINE_FETCH_DEADLINE`、分时有 `MINUTE_FETCH_PHASE_DEADLINE`，**涨停池/概念/资金流是否也有**）、缓存是否带上限淘汰、共享全局（`_session_state`、`_last_kline_fetch`、api 各缓存）线程安全。
+- **评分/验证**：`analysis.py` / `validator.py` / `enhancer.py` — None 处理、除零、窗口越界（`[-21]`、`[-5:]`、`closes[-6]` 等）、维度键是否存在、默认参数是否绑定模块常量导致 patch 失效。
+- **掉榜/回马枪**：`comeback.py` + `watch_pool` — `rank=0` 被当榜上排名加分、`last_eval_date` 幂等、预筛 vs 策略门口径、off_list 加分豁免、`over_limit` 粘性。
+- **展示/推送**：`display.py` / `feishu.py` — live_quotes 回退链、tier 排序、双挂去重、掉榜行 `_candidate` 为 None 的分支。
+- **数值边界**：NaN/字符串/None/0 除/负值/空列表/单元素列表，用最小复现脚本或 fuzz 验证（参考 `_score_stock` 各 K 线长度随机输入）。
+
+### 3. 找到 bug 后必须做「同族扩散检查」
+同一根因在其它调用点是否有同构副本。方法：定位 bug 的函数 → grep 所有调用它 / 消费同一数据源 / 复制同一写法的函数 → 逐个验证。
+
+### 4. 修复必须带可复现验证
+顺序：先写最小脚本**复现**（确认真实存在）→ 修复 → 复现脚本通过 → **补 pytest 回归测试**到 `tests/` 对应文件 → 重跑全量。
+
+### 5. 修完 re-read 被改函数的上游/下游调用者
+防修复引入新破坏（如改 `_fetch_all_klines` 必须复查调用它的 `scan_with_raw` 与回马枪 lambda；改 executor 必须复查 `shutdown` 生命周期）。
+
+### 6. 每轮必须输出统一报告表
+```
+| # | Bug | 位置 file:line | 严重度(严重/中/低) | 根因 | 同族扩散点 | 回归测试 | 状态 |
+```
+- 严重 = 崩溃/数据失真/漏推荐；中 = 性能/误截断；低 = 死代码/未用参数。
+- 复核过但确认"非 bug / 设计如此"的项也要列出（注明依据），不许隐藏。
+- 已知低危/死代码统一列出（如 pullback 下线后仍被调用、`_merge_from_db` 未用 cache 参数）。
+
+### 7. 已知重点项（历次已发现，每轮必须 re-check 是否复发）
+- comeback/off_list 候选 `rank=0` 被当榜上第 1 名计 TOP40 加分（`enhancer._apply_list_momentum_bonus`）
+- 短 K 线 <32 根每轮重拉绕过 TTL（`orchestrator._fetch_all_klines`，2026-08-09 已修）
+- API 字符串/None 未强转（`_filter_gem_stocks` / `compute_surge_sentiment` / `fetch_market_caps_batch`，已修）
+- 同板块上限误把「其他」未分类股票当一组截断（`_cap_short_term_by_sector`，已修）
+- 分时/开盘/量比拉取无 deadline（`_parallel_fetch`，已修；留意同批新引入的 `shutdown(wait=False)` 线程生命周期）
+- `scan_with_raw` 里模块级全局（`_session_state`/`_last_kline_fetch`）跨扫描一致性
+
 ## Stock Report Tool
 
 个股深度分析报告工具（Skill + Python脚本混合方案）。
