@@ -324,6 +324,10 @@ def _load_signals(conn: sqlite3.Connection, cfg: PBConfig, calendar: list[str],
         exit_idx = sig.buy_index + cfg.hold_days
         if exit_idx >= len(calendar):
             exit_idx = len(calendar) - 1
+        if exit_idx <= sig.buy_index:
+            # T+1 约束：买入日已是日历末尾时，clamp 会让 exit_index == buy_index，
+            # 造成「当日买入当日卖出」的 T+0 假交易。无法持有 ≥1 交易日则跳过该信号。
+            continue
         sig.exit_index = exit_idx
         signals.append(sig)
 

@@ -151,6 +151,58 @@ def test_no_same_day_round_trip():
         os.remove(path)
 
 
+def test_last_calendar_day_buy_is_skipped():
+    """回归：买入日落在日历末尾时不得产生 T+0 假交易。
+
+    此前 clamp 逻辑 `exit_idx >= len(calendar) -> len-1` 会让「买入日=最后一个交易日」
+    的信号 exit_index == buy_index，产生当日买入当日卖出（hold_days=0）的 T+0 交易，
+    违反 A 股 T+1 约束。修复后该信号应被跳过（无信号/无交易）。
+    """
+    import tempfile, os
+    from scanner.portfolio_backtest import PBConfig, _build_calendar, _load_signals, run_backtest
+    from scanner.trading_session import is_trading_day
+
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE daily_kline "
+                     "(symbol TEXT, timestamp INTEGER, date TEXT, open REAL, close REAL, "
+                     "high REAL, low REAL, volume REAL, percent REAL, PRIMARY KEY(symbol, date))")
+        conn.execute("CREATE TABLE recommendations "
+                     "(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, time TEXT, symbol TEXT, "
+                     "name TEXT, category TEXT, score INTEGER, percent REAL, trend TEXT, "
+                     "score_breakdown TEXT, source TEXT)")
+        base = date(2026, 6, 1)
+        dates = []
+        d = base
+        while len(dates) < 12:
+            if is_trading_day(d):
+                dates.append(d.isoformat())
+            d += timedelta(days=1)
+        for i, dt in enumerate(dates):
+            conn.execute("INSERT INTO daily_kline VALUES (?,?,?,?,?,?,?,?,?)",
+                         ("300001", i, dt, 10.0 + i, 10.0 + i, 10.0 + i, 10.0 + i, 1e6, 1.0))
+        # 推荐日=倒数第2个交易日，buy_delay=1 → 买入日=最后一个交易日
+        conn.execute(
+            "INSERT INTO recommendations (date,time,symbol,name,category,score,percent,trend) "
+            "VALUES (?, '09:30:00', '300001', 'T', 'new_face', 50, 1.0, 'up')",
+            (dates[-2],),
+        )
+        conn.commit()
+
+        calendar = _build_calendar(conn, dates[0], dates[-1])
+        cal_index = {d: i for i, d in enumerate(calendar)}
+        cfg = PBConfig(category="new_face", buy_delay=1, hold_days=3, max_positions=10)
+        sigs = _load_signals(conn, cfg, calendar, cal_index, calendar[-1])
+        assert sigs == [], "买入日=最后交易日，无法持有≥1日，信号应被跳过"
+        res = run_backtest(conn, cfg)
+        conn.close()
+        assert res.metrics["n_trades"] == 0, "不得产生 T+0 假交易"
+    finally:
+        os.remove(path)
+
+
 def test_buy_at_close_uses_close_price():
     """--buy-at close 应在买入日收盘买入（更贵），总收益低于 --buy-at open。
 

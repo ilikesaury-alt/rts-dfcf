@@ -241,6 +241,10 @@ def rescan_all_signals(conn: sqlite3.Connection, cfg, calendar: list[str],
             exit_idx = sig.buy_index + cfg.hold_days
             if exit_idx >= len(calendar):
                 exit_idx = len(calendar) - 1
+            if exit_idx <= sig.buy_index:
+                # 与 _load_signals 同族：买入日已是日历末尾时 clamp 产生
+                # 当日买入当日卖出的 T+0 假交易，无法持有 ≥1 交易日则跳过。
+                continue
             sig.exit_index = exit_idx
             signals.append(sig)
 
