@@ -198,6 +198,19 @@ def _fund_flow_icon_str(ff_pct) -> str:
     return _FUND_FLOW_ICON.get(fund_flow_signal(float(ff_pct)), "")
 
 
+def _entry_sector_display(entry: dict, c) -> str:
+    """选股建议行的板块显示：候选推动概念 > 分类板块 > DB concept > 名称关键词。"""
+    if c is not None:
+        if getattr(c, "driving_concept", ""):
+            return c.driving_concept
+        if getattr(c, "sector", ""):
+            return c.sector
+    db_concept = (entry.get("concept") or "").strip()
+    if db_concept:
+        return db_concept
+    return classify_sector(entry.get("name", ""))
+
+
 def _market_extra_str(c: Candidate) -> str:
     """行情增强标记：主力资金流强弱图标 + 连板/炸板（无数据返回空串）。
 
@@ -641,3 +654,37 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
           f"  |  {SUGGEST_BY_CAT['comeback']} → CB(回马枪)")
     print(f"  {ANSI['CYAN']}↻{ANSI['RESET']} 辨识度高(近5日上榜≥3次均排名≤70)  {ANSI['YELLOW']}⚠{ANSI['RESET']} 带有风险标签")
     print(f"  排序档位: ▲▲/▲(净流入≥5%) 或 ↻ → 置前  |  ▼/▼▼(净流出≤-5%) → 劣后  |  其余 → 普通")
+
+    # 今日选股建议（2026-08-10）：跨类别 score 排序是反指（历史取前2 cum_3d -3.1%），
+    # 选股按「类别+市场环境」而非分数（类别优先级 rebound>short_term>momentum，
+    # 弱市回避动量，板块去重，排除负期望类别与硬风险/净流出）。置于末尾结论区。
+    # 仅在进程内有真实候选关联时展示（today_pool 非空），避免在无候选上下文中
+    # 输出干扰主表的额外行（display 测试契约：主表行数 = 推荐行数）。
+    if _session_state.today_pool:
+        from scanner.pick import build_pick_suggestion
+        suggestion = build_pick_suggestion(today_recs)
+        if suggestion["picks"]:
+            print(f"\n{ANSI['BOLD']}{ANSI['CYAN']}◆ 今日选股建议（2只 · 类别>分数 · 弱市回避动量 · 板块去重）{ANSI['RESET']}")
+            hdr_pick = (f"  {_pad('名称',10)} {_pad('板块',14)} "
+                        f"{_pad('策略',5)} {_pad('评分',4,'r')} {_pad('涨幅',8,'r')}")
+            print(hdr_pick)
+            print(f"  {'-' * max(2, wcwidth.wcswidth(hdr_pick) - 2)}")
+            for e in suggestion["picks"]:
+                c = e.get("_candidate")
+                cat = e.get("category", "")
+                label = f"{CAT_COLOR.get(cat, '')}{CAT_LABEL.get(cat, cat)}{ANSI['RESET']}"
+                pct = e.get("live_percent")
+                if pct is None and c:
+                    pct = c.stock.percent
+                if pct is None:
+                    pct = e.get("percent", 0.0)
+                score = e.get("score", 0)
+                sec = _entry_sector_display(e, c)
+                print(f"  {_pad(e['name'],10)} {_pad(_trunc(sec,14),14)} "
+                      f"{_pad(label,5,'r')} {score:4d} {pct_colored(pct)}")
+            for r in suggestion["reasons"]:
+                print(f"    {ANSI['YELLOW']}·{ANSI['RESET']} {r}")
+        elif suggestion["reasons"]:
+            print(f"\n{ANSI['YELLOW']}◆ 今日选股建议：无可选候选{ANSI['RESET']}")
+            for r in suggestion["reasons"]:
+                print(f"    · {r}")
