@@ -179,8 +179,13 @@ def record_appearances(conn: sqlite3.Connection, symbols: list[dict]):
         conn.commit()
 
 
-def _n_trading_days_ago(n: int) -> str:
-    cursor = now_beijing().date()
+def _n_trading_days_ago(n: int, as_of: str | None = None) -> str:
+    """as_of（含）之前第 n 个交易日；as_of 为 None 时锚定真实今日。
+
+    as_of 用于历史回放（historical_rescan）：把「今天」挪到某个过去的交易日，
+    使 is_new / 回溯窗口的判定与那一天的实时扫描完全一致。
+    """
+    cursor = date.fromisoformat(as_of) if as_of else now_beijing().date()
     trading_days = 0
     # 上限保护：避免节假日数据缺失/损坏时 is_trading_day 永远为 False 导致死循环
     max_iter = n * 3 + 30
@@ -198,9 +203,15 @@ def _n_trading_days_ago(n: int) -> str:
     return cursor.isoformat()
 
 
-def get_symbol_appearances(conn: sqlite3.Connection, symbol: str, days: int) -> list[dict]:
-    today = now_beijing().date().isoformat()
-    lookback = _n_trading_days_ago(days)
+def get_symbol_appearances(conn: sqlite3.Connection, symbol: str, days: int,
+                           as_of: str | None = None) -> list[dict]:
+    """symbol 在 as_of 之前 days 个交易日内的上榜记录（不含 as_of 当天）。
+
+    as_of 默认真实今日（实时扫描口径）。历史回放传入信号日，即可复现那一天
+    orchestrator 看到的 is_new / first_date，避免用「有史以来首次」之类的近似口径。
+    """
+    today = as_of or now_beijing().date().isoformat()
+    lookback = _n_trading_days_ago(days, as_of=as_of)
     cur = conn.execute(
         "SELECT date, rank, percent, value FROM appearances WHERE symbol = ? AND date >= ? AND date < ? ORDER BY date",
         (symbol, lookback, today),
@@ -565,7 +576,8 @@ def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
 
     返回列表未排序，每项包含：
       symbol, name, category, score, trend, first_time,
-      live_percent (from appearances), live_rank (from appearances)
+      live_percent (from appearances), live_rank (from appearances),
+      rank_score（类内百分位，综合排序跨类别可比用）
     """
     today = now_beijing().date().isoformat()
     try:
@@ -587,6 +599,7 @@ def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
                 "name": r[1],
                 "category": r[2],
                 "score": r[3],
+                "date": today,
                 "trend": r[4],
                 "time": r[5],
                 "percent": r[6] or 0.0,
@@ -620,7 +633,29 @@ def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
         entry["live_percent"] = a.get("percent", 0.0)
         entry["live_rank"] = a.get("rank")
 
-    return list(seen.values())
+    result = list(seen.values())
+    _assign_rank_scores(result)
+    return result
+
+
+def _assign_rank_scores(records: list[dict]) -> None:
+    """为 records 计算 within-(date,category) 百分位 rank_score（0-100），就地修改。
+
+    用于综合排序跨类别可比：同类别同日的票按 score 分位排序，消除各类别自身标尺差异
+    （new_face 均值~45 与 comeback~122 不可直接比）。records 需含 'date'/'category'/'score'，
+    缺 'date' 时退化为仅按 category 分组（get_today_recommendations 全为当日，等价）。
+    """
+    groups: dict[tuple, list[dict]] = {}
+    for r in records:
+        key = (r.get("date"), r.get("category"))
+        groups.setdefault(key, []).append(r)
+    for recs in groups.values():
+        n = len(recs)
+        if n == 0:
+            continue
+        ordered = sorted(recs, key=lambda r: r.get("score", 0.0))
+        for pos, r in enumerate(ordered):
+            r["rank_score"] = 100.0 if n == 1 else round(pos / (n - 1) * 100, 2)
 
 
 def get_concepts_cache(conn: sqlite3.Connection, symbols: list[str], ttl_days: int = 7) -> dict[str, list[str]]:

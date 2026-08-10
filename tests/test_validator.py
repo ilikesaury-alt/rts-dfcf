@@ -1,8 +1,6 @@
 from scanner.config import (
     V_MO_MA_FULL,
     V_MO_MA_NONE,
-    V_NF_HL_CLEAR,
-    V_NF_HL_FAIL,
     V_NF_SECTOR_STRONG,
     V_PB_SHRINK_NO,
     V_PB_SHRINK_YES,
@@ -57,19 +55,21 @@ class TestValidateNewFaceHelpers:
         assert isinstance(bonus, int) and isinstance(detail, str)
         assert "data_short" not in detail
 
-    def test_higher_low_detects_improvement(self):
+    def test_higher_low_is_neutral(self):
+        # Step 2 (2026-08-07): IC 归因证明「更高低结构」cum_3d 上 IC 为负，
+        # 引擎不再将其作为正维度，改为中性（恒返回 0，不再给 V_NF_HL_CLEAR）。
         pcts = [-2]*8 + [0.5]*7  # recent zone higher than prev zone
         k = _kline(pcts, volumes=[1.0]*15)
         closes = [c["close"] for c in k[:-1]]
         bonus, detail = _nf_higher_low(closes)
-        assert bonus == V_NF_HL_CLEAR, f"expected clear HL, got {bonus} ({detail})"
+        assert bonus == 0, f"higher_low 应中性(0)，got {bonus} ({detail})"
+        assert "hl_neutral" in detail
 
-    def test_higher_low_continued_decline(self):
-        pcts = [-0.5]*10 + [-2]*5  # recent zone lower than prev zone
-        k = _kline(pcts, volumes=[1.0]*15)
-        closes = [c["close"] for c in k[:-1]]
-        bonus, detail = _nf_higher_low(closes)
-        assert bonus == V_NF_HL_FAIL, f"expected HL fail, got {bonus} ({detail})"
+        pcts2 = [-0.5]*10 + [-2]*5  # recent zone lower than prev zone
+        k2 = _kline(pcts2, volumes=[1.0]*15)
+        closes2 = [c["close"] for c in k2[:-1]]
+        bonus2, detail2 = _nf_higher_low(closes2)
+        assert bonus2 == 0, f"higher_low 应中性(0)，got {bonus2} ({detail2})"
 
     def test_sector_strong(self):
         bonus, count = _nf_sector("半导体测试", SEMICONDUCTOR_CLUSTER)
@@ -88,22 +88,25 @@ class TestValidateNewFaceHelpers:
 class TestValidateNewFace:
 
     def test_all_three_pass(self):
-        # 构造先跌到低点A(70)→温和反弹到84→回调到74(高于A*1.01)的序列：
-        # - 最后6根持续下跌使 RSI<30 → 超卖信号命中
-        #   （反弹幅度需克制：原 70→90 反弹使 RSI 升至 ~33 不触超卖；
-        #    改为 70→84 温和反弹，最后6根全跌 → RSI≈17 触发超卖）
-        # - recent_zone min(74) > prev_zone min(70)*1.01 → higher_low_clear
-        # - 板块共振 → pos_dims >= 2 → 通过
+        # 超卖反转场景：RSI<30 触发超卖信号（oversold_signal），
+        # 板块共振(≥3) + 放量确认(量比>1.3) 提供 2 个正维度 → pos_dims>=2 → 通过。
+        # 注：更高低维度(Step 2)已中性化，不再作为通过依据；
+        # 故本场景需显式提供量能确认维度（kline_summary.volume_ratio>1.3）。
         closes = [100 - i for i in range(24)] + [70, 75, 80, 82, 84, 82, 80, 78, 76, 74]
         k = [{"date": f"2026-01-{i+1:02d}", "open": c, "close": c,
               "high": c * 1.02, "low": c * 0.98, "volume": 1.0, "percent": 0}
              for i, c in enumerate(closes)]
+        ksum = KlineSummary(
+            trend="unknown", accumulated_pct=-10.0,
+            volume_ratio=1.5, bottom_confirmed=True, score=0,
+        )
         passed, total, dims = validate_nf(
-            _stock(name="半导体测试"), None, closes, k,
+            _stock(name="半导体测试"), ksum, closes, k,
             SEMICONDUCTOR_CLUSTER
         )
         assert passed, f"should pass, total={total}, dims={dims}"
         assert dims["v_nf_sector"] == V_NF_SECTOR_STRONG
+        assert dims["v_nf_volume"] > 0
 
     def test_short_kline(self):
         k = _kline([1, 2, 3], volumes=[1.0]*3)
