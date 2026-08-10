@@ -571,11 +571,20 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     main_recs = [e for e in today_recs if e["category"] != "comeback"]
     # 劣后档（主力净流出 ≤ FUND_FLOW_MAIN_PCT_WEAK）直接不打印，不进入排序与展示。
     main_recs = [e for e in main_recs if _sort_tier(e) != 2]
+
+    # 2026-08-10: known_new_face 分数反指（回测分桶：低分档[18,37) cum_3d +5.58/64%胜率，
+    # 高分档[77,98) -3.76/33%）——分区内 score 升序，把"低调二次上榜"的低分票排前，
+    # 避免把最差的追高票顶在最前。其余类别仍降序。
+    def _score_sort_key(entry):
+        if entry["category"] == "known_new_face":
+            return entry["score"]
+        return -entry["score"]
+
     scored = sorted(main_recs, key=lambda x: (_sort_tier(x),
                                                CAT_DISPLAY_PRIORITY.get(x["category"], 99),
-                                               -x["score"]))
+                                               _score_sort_key(x)))
 
-    print(f"\n{ANSI['BOLD']}◆ 综合排序 — 今日上榜推荐 按档位(辨识度/资金流)+类别优先级+评分降序（回马枪见下方独立区）{ANSI['RESET']}")
+    print(f"\n{ANSI['BOLD']}◆ 综合排序 — 今日上榜推荐 按档位(辨识度/资金流)+类别优先级+评分降序（kNF升序，回马枪见下方独立区）{ANSI['RESET']}")
     hdr = (f"  {_pad('#',3,'r')} {_pad('代码',12)} {_pad('名称',10)} "
            f"{_pad('板块',14)} {_pad('策略',5)} {_pad('评分',4,'r')} {_pad('涨幅',8,'r')} "
            f"{_pad('5日累计',8,'r')} {_pad('现价',7,'r')} {_pad('排名',4,'r')} {_pad('时间',6)} {_pad('建议',6)}")

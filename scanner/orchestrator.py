@@ -36,6 +36,7 @@ from scanner.config import (
     NEW_FACE_LOOKBACK_DAYS,
     PULLBACK_MIN_SCORE,
     NEW_FACE_MIN_SCORE,
+    NEW_FACE_FIRST_MIN_SCORE,
     REBOUND_MIN_SCORE,
     SHORT_TERM_MIN_SCORE,
     SHORT_TERM_MAX_PER_SECTOR,
@@ -215,7 +216,8 @@ def _try_candidate(stock: StockInfo, kline_summary: KlineSummary | None, categor
     if kline_summary.trend in HIGH_RISK_TRENDS:
         return None
     min_score = {
-        "new_face": NEW_FACE_MIN_SCORE,
+        # 首日 new_face 全档负收益提门槛砍量；known_new_face 分数反指（低分档最优）保持低门槛
+        "new_face": NEW_FACE_FIRST_MIN_SCORE,
         "known_new_face": NEW_FACE_MIN_SCORE,
         "momentum": MOMENTUM_MIN_SCORE,
         "pullback": PULLBACK_MIN_SCORE,
@@ -230,7 +232,9 @@ def _try_candidate(stock: StockInfo, kline_summary: KlineSummary | None, categor
     new_dims = dict(kline_summary.dimensions)
     new_dims["validation_bonus"] = bonus
     new_dims.update(dims)
-    kline_summary = dataclass_replace(kline_summary, score=kline_summary.score + bonus, dimensions=new_dims)
+    # 2026-08-10: validation_bonus 全期 cum_3d IC -0.139（反指）——交叉验证只做通过门禁，
+    # 加分不再进 score。bonus 仍写入 dims 供展示与 backtest dimension_ic 归因。
+    kline_summary = dataclass_replace(kline_summary, score=kline_summary.score, dimensions=new_dims)
     return _build_candidate(stock, kline_summary, category, is_first_today, first_date, kline)
 
 
@@ -300,6 +304,16 @@ def _classify_category(stock: StockInfo, is_new: bool,
         return "known_new_face"
     # pullback 已下线（P0-3）：强势回踩票不再有分类候选
     return None
+
+
+def _new_face_sort_key(c: Candidate) -> float:
+    """new_face 桶排序键：known_new_face 分数反指（低分档收益更好）→ 升序；new_face → 降序。
+
+    与 display._score_sort_key 同口径，保证终端/飞书的新面孔列表与综合排序一致。
+    """
+    if c.category == "known_new_face":
+        return c.score
+    return -c.score
 
 
 def _filter_gem_stocks(raw: list[dict]) -> list[StockInfo]:
@@ -664,7 +678,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     rebound_list = [c for c in all_candidates if c.category == "rebound"]
     short_term_list = [c for c in all_candidates if c.category == "short_term"]
     comeback_list = [c for c in all_candidates if c.category == "comeback"]
-    new_faces.sort(key=lambda c: -c.score)
+    new_faces.sort(key=lambda c: _new_face_sort_key(c))
     momentum.sort(key=lambda c: -c.score)
     pullback_list.sort(key=lambda c: -c.score)
     rebound_list.sort(key=lambda c: -c.score)

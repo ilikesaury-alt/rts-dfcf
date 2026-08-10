@@ -39,7 +39,7 @@ from scanner.database import get_today_recommendations, init_db, save_recommenda
 from scanner.display import display
 from scanner.feishu import push_feishu
 from scanner.log_utils import log_results
-from scanner.orchestrator import scan_with_raw
+from scanner.orchestrator import _new_face_sort_key, scan_with_raw
 from scanner.trading_session import is_trading_time, next_session_label, seconds_until_next_session
 
 if sys.platform == "win32":
@@ -171,7 +171,7 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 new_faces, momentum, pullback_list, rebound_list, short_term_list, comeback_list, stale_candidates, all_gem, filtered_large_cap, current_quotes = (
                     scan_with_raw(xq_raw, conn, adapter))
 
-                new_faces.sort(key=lambda x: -x.score)
+                new_faces.sort(key=_new_face_sort_key)
                 momentum.sort(key=lambda x: -x.score)
                 pullback_list.sort(key=lambda x: -x.score)
                 rebound_list.sort(key=lambda x: -x.score)

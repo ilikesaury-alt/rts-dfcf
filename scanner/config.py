@@ -30,7 +30,13 @@ KLINE_FETCH_DEADLINE = 45
 MINUTE_FETCH_PHASE_DEADLINE = 30
 
 # Normal mode thresholds
+# 首日新面孔（首次上榜）与二次上榜（known_new_face）分开设门槛（2026-08-10）：
+# - known_new_face 分数反指（低分档[18,37) cum_3d +5.58/64% 胜率 vs 高分档[77,98) -3.76），
+#   故 NEW_FACE_MIN_SCORE 保持低门槛，不砍"低调二次上榜"的低分档。
+# - 首日 new_face 全 score 档均负收益（1018 条 cum_3d -1.58，含 [17,46) 档 560 条 -1.27），
+#   无阈值能救，先提 NEW_FACE_FIRST_MIN_SCORE 砍掉最低 ~55% 量减噪，后续再评估策略本身。
 NEW_FACE_MIN_SCORE = 18
+NEW_FACE_FIRST_MIN_SCORE = 50
 MOMENTUM_MIN_SCORE = 16
 PULLBACK_MIN_SCORE = 18  # 保留常量供 analyze_pullback 测试使用，orchestrator 已下线 pullback
 SHORT_TERM_MIN_SCORE = 15
@@ -181,7 +187,11 @@ FUND_FLOW_FETCH_TIMEOUT = 30      # 资金流全市场分页拉取上限（秒�
 FUND_FLOW_MAIN_PCT_STRONG = 5.0   # 主力净占比 ≥5% → 加分
 FUND_FLOW_MAIN_PCT_WEAK = -5.0    # 主力净占比 ≤-5% → 扣分
 # FUND_FLOW_MAIN_PCT_EXTREME 定义见下方「风险标签阈值」——与 FUND_OUTFLOW_NET_PCT 同源，避免档位漂移
-FUND_FLOW_BONUS_STRONG = 5
+# 2026-08-10: FUND_FLOW_BONUS_STRONG 归零——回测分组显示强流入(≥5%)组 next_day 均 -1.13%
+# （n=22）差于无数据基线 -0.85%，momentum/short_term 内同为负：今日主力净流入与当日涨幅
+# 正相关，是追涨资金次日兑现，加分方向反指。仅保留 FUND_FLOW_BONUS_WEAK=-3 流出扣分、
+# 「资金流出」标签、劣后档过滤（规避语义，与预测语义无关）。字段仍写入 dims 供展示/归因。
+FUND_FLOW_BONUS_STRONG = 0
 FUND_FLOW_BONUS_WEAK = -3
 # 综合排序「档位置顶」（2026-08-06，display.py:_sort_tier）：
 # 排序键 (档位, CAT_DISPLAY_PRIORITY, -score)。档位阈值与上方资金流评分常量同源——
@@ -696,8 +706,10 @@ CAT_DISPLAY_PRIORITY = {
 
 # SUGGEST_BY_CAT：操作建议按类别独立映射（与优先级解耦，语义不变）。
 # 值含 ANSI 颜色码，由 display 端渲染；排序位置变化不影响建议。
+# 2026-08-10: known_new_face 由「推荐」改「超短」——next_day +0.91 但 cum_3d -0.44
+# （3 日高开低走回吐），且分数反指，正确操作是次日卖而非持有 3 日。
 SUGGEST_BY_CAT = {
-    "known_new_face": "\033[92m推荐\033[0m",
+    "known_new_face": "\033[91m超短\033[0m",
     "rebound": "\033[96m推荐\033[0m",
     "new_face": "参考",
     "momentum": "参考",

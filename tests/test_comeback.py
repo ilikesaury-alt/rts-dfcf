@@ -147,7 +147,7 @@ class TestReboundCandidate:
         assert c.off_list is True
         assert c.comeback_variant == "反转"
         assert c.kline.trend.startswith("反转·")
-        assert c.kline.score == 35  # 30 + validation bonus 5
+        assert c.kline.score == 30  # 2026-08-10: validation_bonus 只做门禁不进 score
 
     def test_off_list_flag_passed_to_analysis(self, monkeypatch):
         seen = {}

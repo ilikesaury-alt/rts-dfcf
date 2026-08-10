@@ -599,7 +599,8 @@ class TestApplyFundFlowBonus:
     def test_strong_inflow(self):
         c = _make_candidate()
         _apply_fund_flow_bonus(c, self._flow(c, 8.5, 123456789.0, 6e7))
-        assert c.fund_flow_bonus == 5
+        # 2026-08-10: 强流入加分归零（回测强流入组 next_day -1.13% 反指），字段仍写入 dims
+        assert c.fund_flow_bonus == 0
         assert c.kline.dimensions.get("fund_flow_main_pct") == 8.5
         assert c.kline.dimensions.get("fund_flow_main_net") == 123456789.0
 

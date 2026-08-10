@@ -248,8 +248,26 @@ def test_display_priority_new_group_order(monkeypatch, capsys):
         assert sym in lines[i], f"{sym} 应在第 {i} 行，实际顺序: {lines}"
 
 
+def test_display_priority_knf_score_ascending(monkeypatch, capsys):
+    """kNF 分数反指（低分档收益更好）：分区内按 score 升序，低分票排前；不跨类别影响降序。"""
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "已知新低分", "known_new_face", 20)
+    _insert_rec_cat(conn, "SZ300002", "已知新高分", "known_new_face", 90)
+    _insert_rec_cat(conn, "SZ300003", "动量高分", "momentum", 90)
+    _insert_rec_cat(conn, "SZ300004", "动量低分", "momentum", 30)
+    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
+    disp_mod.display_priority(conn)
+    out = capsys.readouterr().out
+    lines = [l for l in out.splitlines() if "SZ30000" in l]
+    # 类别组内：kNF 低分(20) 在 高分(90) 前；momentum 高分(90) 在 低分(30) 前（仍降序）
+    assert lines.index(next(l for l in lines if "SZ300001" in l)) < \
+        lines.index(next(l for l in lines if "SZ300002" in l)), "kNF 应升序（低分在前）"
+    assert lines.index(next(l for l in lines if "SZ300003" in l)) < \
+        lines.index(next(l for l in lines if "SZ300004" in l)), "momentum 应降序（高分在前）"
+
+
 def test_display_priority_suggestion_decoupled(monkeypatch, capsys):
-    """建议列与优先级解耦：new_face 位次垫底仍显示「参考」，kNF/rebound 显示「推荐」，short_term 显示「超短」。"""
+    """建议列与优先级解耦：new_face 位次垫底仍显示「参考」，kNF/short_term 显示「超短」，rebound 显示「推荐」。"""
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300001", "新面孔", "new_face", 80)
     _insert_rec_cat(conn, "SZ300002", "已知新", "known_new_face", 90)
@@ -260,7 +278,7 @@ def test_display_priority_suggestion_decoupled(monkeypatch, capsys):
     out = capsys.readouterr().out
     lines = {sym: next(l for l in out.splitlines() if sym in l)
              for sym in ["SZ300001", "SZ300002", "SZ300003", "SZ300004"]}
-    assert "推荐" in lines["SZ300002"]  # known_new_face
+    assert "超短" in lines["SZ300002"]  # known_new_face 次日卖
     assert "推荐" in lines["SZ300003"]  # rebound
     assert "参考" in lines["SZ300001"]  # new_face 位次虽低仍参考，非回避
     assert "超短" in lines["SZ300004"]  # short_term

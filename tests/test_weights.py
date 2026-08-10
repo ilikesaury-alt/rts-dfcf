@@ -10,6 +10,7 @@
 """
 from scanner.config import (
     NEW_FACE_MIN_SCORE,
+    NEW_FACE_FIRST_MIN_SCORE,
     NEW_FACE_WEIGHTS,
     MOMENTUM_WEIGHTS,
     MARKET_ENV_STRONG,
@@ -31,6 +32,13 @@ def test_new_face_min_score_lowered_with_bottom_clear():
     # 否则 new_face 列表会因最高减 10 分而饥饿。
     assert NEW_FACE_MIN_SCORE == 18
     assert NEW_FACE_MIN_SCORE < 22
+
+
+def test_new_face_first_min_score_split():
+    # 2026-08-10: 首日 new_face 全档负收益（1018 条 cum_3d -1.58）提门槛砍量；
+    # known_new_face 分数反指（低分档最优）保持低门槛，二者必须拆开，不得同步抬高。
+    assert NEW_FACE_FIRST_MIN_SCORE > NEW_FACE_MIN_SCORE
+    assert NEW_FACE_FIRST_MIN_SCORE >= 50
 
 
 def test_new_face_gap_up_no_longer_scored():
