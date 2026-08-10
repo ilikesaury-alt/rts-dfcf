@@ -9,6 +9,11 @@ from scanner.config import (
     FUND_FLOW_MAIN_PCT_WEAK,
     MAX_MARKET_CAP,
     MAX_STOCK_PRICE,
+    NEXTDAY_CAT_PRIORITY,
+    NEXTDAY_SPIKE_MID_MAX,
+    NEXTDAY_SPIKE_MID_MIN,
+    NEXTDAY_SPIKE_SWEET_LOW,
+    NEXTDAY_SPIKE_SWEET_MIN,
     RISK_FLAGS_DISPLAY_HARD,
     SUGGEST_BY_CAT,
     YI,
@@ -503,6 +508,58 @@ def _print_priority_row(entry: dict, i: int, flow_pct_map: dict) -> None:
           f"{accum_str:>8} {price_str:>7} {rank_str:>4} {_pad(first_time,6)} {_pad(suggest_str,6)}{prom_str}{risk_str}{extra_suffix}")
 
 
+def _nextday_entry_percent(entry: dict) -> float:
+    """推荐时刻盘中涨幅（用于次日大涨候选区筛形）。
+
+    回退链：候选池当前扫描快照（最新）→ live_quotes（有实时覆盖）→ DB 落库 percent。
+    次日大涨画像依据的是「推荐时刻涨幅带」，故优先用扫描快照的 percent
+    （与 nextday_attribution 落库 percent 同源）；实时 live_percent 可能已随盘中
+    涨跌漂移，仅在无候选/无落库时兜底。
+    """
+    c = entry.get("_candidate")
+    if c and c.stock:
+        return float(c.stock.percent)
+    if entry.get("live_quote_available") and entry.get("live_percent") is not None:
+        return float(entry["live_percent"])
+    return float(entry.get("percent", 0.0))
+
+
+def _in_nextday_sweet_band(percent: float) -> bool:
+    """推荐时刻涨幅是否落在次日大涨甜蜜带（<2% 或 4~8%）。
+
+    数据（scanner.nextday_attribution，next_day≥7%）：<1% hit 11.7%、1-2% hit 13.2%、
+    4-6% hit 11.8%、6-8% hit 11.8%；2-4% 死区（6.2%）、8-10% 陷阱（7.5%，平均 -1.42%）。
+    """
+    return (NEXTDAY_SPIKE_SWEET_MIN <= percent < NEXTDAY_SPIKE_SWEET_LOW
+            or NEXTDAY_SPIKE_MID_MIN <= percent < NEXTDAY_SPIKE_MID_MAX)
+
+
+def _nextday_spike_candidates(main_recs: list[dict]) -> list[dict]:
+    """从综合排序主表中筛出「次日大涨画像」候选（display-only）。
+
+    过滤条件（均来自 nextday_attribution 数据）：
+      1. 推荐时刻涨幅在甜蜜带（低吸潜伏 <2% 或 中段启动 4~8%）；
+      2. 排除 short_term 超买（死亡信号：hit 5% vs 非超买 10.5%）。
+    不改 score / 排序键 / 不落库——独立区纯展示观察窗口。
+    """
+    out = []
+    for e in main_recs:
+        if e["category"] not in NEXTDAY_CAT_PRIORITY:
+            continue
+        if not _in_nextday_sweet_band(_nextday_entry_percent(e)):
+            continue
+        c = e.get("_candidate")
+        if c and c.kline and c.kline.dimensions:
+            if (c.kline.dimensions.get("st_overbought_flag")
+                    or c.kline.dimensions.get("mo_overbought_flag")
+                    or c.kline.dimensions.get("v_st_overbought")
+                    or c.kline.dimensions.get("v_mo_overbought")):
+                continue  # 超买 = 次日大涨死亡信号
+        out.append(e)
+    out.sort(key=lambda x: (NEXTDAY_CAT_PRIORITY.get(x["category"], 99), -x["score"]))
+    return out
+
+
 def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
                      rank_map: dict[str, int] | None = None):
     """从本地数据库读取今日所有进入过推荐的票，按档位(辨识度/资金流)+展示优先级(CAT_DISPLAY_PRIORITY)+评分降序展示。
@@ -644,6 +701,18 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
                 print(f"  {tc}{'-'*100}{ANSI['RESET']}")
                 cb_prev_tier = tier
             _print_priority_row(entry, ci, flow_pct_map)
+        print(f"  {'-'*92}")
+    # 次日大涨候选独立区（2026-08-10）：display-only 观察窗口。
+    # 依据 scanner.nextday_attribution：推荐时刻涨幅甜蜜带（<2% 低吸潜伏 / 4-8% 中段启动）
+    # + 排除 short_term 超买死亡信号。只筛形展示，不改 score / 排序键 / 不落库。
+    # 样本积累足够（nextday_attribution 归因稳定）后再考虑是否并入评分。
+    nextday_cands = _nextday_spike_candidates(main_recs)
+    if nextday_cands:
+        print(f"\n{ANSI['GREEN']}◆ 次日大涨候选 — 低吸潜伏/中段启动（display-only 观察窗口，不改分）{ANSI['RESET']}")
+        print(hdr)
+        print(f"  {'-'*112}")
+        for ni, entry in enumerate(nextday_cands, 1):
+            _print_priority_row(entry, ni, flow_pct_map)
         print(f"  {'-'*92}")
     print(f"  {SUGGEST_BY_CAT['known_new_face']} → {ANSI['GREEN']}kNF(已知新面孔){ANSI['RESET']}"
           f"  |  {SUGGEST_BY_CAT['rebound']} → {ANSI['CYAN']}RBD(超跌反弹){ANSI['RESET']}"

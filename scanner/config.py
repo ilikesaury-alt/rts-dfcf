@@ -737,3 +737,21 @@ SUGGEST_BY_CAT = {
     "pullback": "\033[91m回避\033[0m",
     "comeback": "\033[96m回马\033[0m",
 }
+
+# ── 次日大涨候选独立区（display-only，2026-08-10）──
+# 依据 scanner.nextday_attribution（去重 1006 条，next_day≥7% hit 10.2%）：
+#   - 涨幅带甜蜜区：推荐时刻盘中涨幅 <2%（低吸潜伏 hit 11.7%/13.2%）与 4~8%
+#     （中段启动 hit 11.8%）；2~4% 是死区（6.2%）、8~10% 是陷阱（7.5%，平均 -1.42%）。
+#   - score 低分反指（<30 桶 hit 16.7% vs 70-90 桶 7.4%）。
+#   - short_term 超买是死亡信号（hit 5% vs 非超买 10.5%）。
+# 本区只筛出"形态符合次日大涨画像"的票独立展示，不改 score / 排序键 / 不落库。
+NEXTDAY_SPIKE_SWEET_MIN = 0.0     # 低吸潜伏带下限（推荐时刻盘中涨幅）
+NEXTDAY_SPIKE_SWEET_LOW = 2.0     # 低吸潜伏带上限（<2%）
+NEXTDAY_SPIKE_MID_MIN = 4.0       # 中段启动带下限
+NEXTDAY_SPIKE_MID_MAX = 8.0       # 中段启动带上限（<8%，排除 8-10% 陷阱）
+# 分类别展示优先：rebound（hit 32%）> short_term（弱转强 11.8%）> momentum（MA3头 11.8%）
+# > known_new_face > new_face。comeback 无 hit 不入区。
+NEXTDAY_CAT_PRIORITY = {
+    "rebound": 0, "short_term": 1, "momentum": 2,
+    "known_new_face": 3, "new_face": 4,
+}

@@ -263,7 +263,9 @@ def test_display_priority_new_group_order(monkeypatch, capsys):
     monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
     disp_mod.display_priority(conn)
     out = capsys.readouterr().out
-    lines = [l for l in out.splitlines() if "SZ30000" in l]
+    # 主表区域 = 次日大涨候选独立区之前（该区为 display-only 观察窗，会重复列出甜蜜带票）
+    main_out = out.split("◆ 次日大涨候选", 1)[0]
+    lines = [l for l in main_out.splitlines() if "SZ30000" in l]
     assert len(lines) == 5
     order = ["SZ300003", "SZ300005", "SZ300004", "SZ300002", "SZ300001"]
     for i, sym in enumerate(order):
@@ -337,7 +339,8 @@ def test_display_priority_tier_front_cross_category(monkeypatch, capsys):
     monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
     disp_mod.display_priority(conn)
     out = capsys.readouterr().out
-    lines = [l for l in out.splitlines() if "SZ30000" in l]
+    main_out = out.split("◆ 次日大涨候选", 1)[0]
+    lines = [l for l in main_out.splitlines() if "SZ30000" in l]
     assert len(lines) == 3
     # 档0 内按 CAT_DISPLAY_PRIORITY：short_term(1) < momentum(2)，超短置前在前
     order = ["SZ300003", "SZ300002", "SZ300004"]
@@ -385,7 +388,8 @@ def test_display_priority_tier_outflow_not_printed(monkeypatch, capsys):
     monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
     disp_mod.display_priority(conn)
     out = capsys.readouterr().out
-    lines = [l for l in out.splitlines() if "SZ30000" in l]
+    main_out = out.split("◆ 次日大涨候选", 1)[0]
+    lines = [l for l in main_out.splitlines() if "SZ30000" in l]
     assert len(lines) == 1, f"劣后档票不应打印，仅剩普通票: {lines}"
     assert "SZ300002" in lines[0]
     assert "SZ300001" not in out, f"流出劣后票(SZ300001)不应出现在输出中"
@@ -464,3 +468,61 @@ def test_display_priority_comeback_separate_region(monkeypatch, capsys):
     # 独立区内劣后档回马枪被过滤，仅剩置顶票
     assert "SZ300101" in cb_part
     assert "SZ300102" not in out, "劣后档回马枪(SZ300102)不应出现在输出中"
+
+
+# ── 次日大涨候选独立区（2026-08-10）：display-only 观察窗口 ──
+def _insert_rec_pct(conn, symbol: str, name: str, category: str, score: int, percent: float):
+    today = now_beijing().date().isoformat()
+    conn.execute(
+        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (today, "13:00", symbol, name, category, score, percent),
+    )
+    conn.commit()
+
+
+def test_nextday_spike_section_sweet_band(monkeypatch, capsys):
+    """次日大涨候选区：甜蜜带票（<2% 低吸潜伏 / 4-8% 中段启动）进入独立区；陷阱带(8-10%)排除。"""
+    conn = _rec_db()
+    _insert_rec_pct(conn, "SZ300001", "低吸", "rebound", 50, 1.0)      # <2% 甜蜜带
+    _insert_rec_pct(conn, "SZ300002", "中段", "short_term", 60, 5.0)   # 4-8% 甜蜜带
+    _insert_rec_pct(conn, "SZ300003", "陷阱", "momentum", 70, 9.0)     # 8-10% 陷阱带
+    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
+    disp_mod.display_priority(conn)
+    out = capsys.readouterr().out
+    assert "◆ 次日大涨候选" in out
+    nextday_part = out.split("◆ 次日大涨候选", 1)[1]
+    assert "SZ300001" in nextday_part
+    assert "SZ300002" in nextday_part
+    assert "SZ300003" not in nextday_part, "8-10% 陷阱带票不应进次日大涨候选区"
+
+
+def test_nextday_spike_section_excludes_overbought(monkeypatch, capsys):
+    """次日大涨候选区：short_term 超买（死亡信号 hit 5%）被排除。"""
+    conn = _rec_db()
+    _insert_rec_pct(conn, "SZ300001", "超买超短", "short_term", 60, 1.0)
+    _insert_rec_pct(conn, "SZ300002", "正常超短", "short_term", 55, 1.0)
+    dims_over = {"st_overbought_flag": True}
+    pool = {
+        "SZ300001": _cand_tier("SZ300001", 60, "short_term"),
+        "SZ300002": _cand_tier("SZ300002", 55, "short_term"),
+    }
+    pool["SZ300001"].kline.dimensions.update(dims_over)
+    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
+    disp_mod.display_priority(conn)
+    out = capsys.readouterr().out
+    assert "◆ 次日大涨候选" in out
+    nextday_part = out.split("◆ 次日大涨候选", 1)[1]
+    assert "SZ300002" in nextday_part
+    assert "SZ300001" not in nextday_part, "超买票不应进次日大涨候选区"
+
+
+def test_nextday_spike_section_no_hits_omitted(monkeypatch, capsys):
+    """次日大涨候选区：无甜蜜带票时不输出该区（避免空区块）。"""
+    conn = _rec_db()
+    _insert_rec_pct(conn, "SZ300001", "陷阱票", "momentum", 70, 9.0)   # 8-10% 陷阱带
+    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
+    disp_mod.display_priority(conn)
+    out = capsys.readouterr().out
+    assert "◆ 次日大涨候选" not in out, "无甜蜜带票时不应输出空独立区"
+    assert "SZ300001" in out  # 主表仍正常显示
