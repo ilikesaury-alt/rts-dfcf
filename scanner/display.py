@@ -151,19 +151,6 @@ def _fund_flow_icon_str(ff_pct) -> str:
     return _FUND_FLOW_ICON.get(fund_flow_signal(float(ff_pct)), "")
 
 
-def _entry_sector_display(entry: dict, c) -> str:
-    """选股建议行的板块显示：候选推动概念 > 分类板块 > DB concept > 名称关键词。"""
-    if c is not None:
-        if getattr(c, "driving_concept", ""):
-            return c.driving_concept
-        if getattr(c, "sector", ""):
-            return c.sector
-    db_concept = (entry.get("concept") or "").strip()
-    if db_concept:
-        return db_concept
-    return classify_sector(entry.get("name", ""))
-
-
 def _market_extra_str(c: Candidate) -> str:
     """行情增强标记：主力资金流强弱图标 + 连板/炸板（无数据返回空串）。
 
@@ -204,7 +191,7 @@ def _market_env_tag() -> str:
 def display(gem_total: int, interval: int, filtered_large_cap: int = 0,
             conn=None, live_quotes: dict[str, dict] | None = None,
             rank_map: dict[str, int] | None = None):
-    """扫描主屏：头部摘要 + 综合排序总表（含回马枪/次日大涨/选股建议子区）。
+    """扫描主屏：头部摘要 + 综合排序总表（含回马枪/次日大涨子区）。
 
     策略桶（新面孔/动量/反弹/回马枪/超短）2026-08-10 下线：与综合排序重复列同一批票、
     每桶重复列头；综合排序表已带类别标签，桶区信息不再单列。
@@ -317,8 +304,9 @@ def _print_priority_row(entry: dict, i: int, flow_pct_map: dict) -> None:
             extra_str = f"{extra_str} {icon}".strip() if extra_str else icon
     extra_suffix = f" {extra_str}" if extra_str else ""
     print(f"  {i:3d}  {entry['symbol']:<12} {_pad(entry['name'],10)} "
-          f"{_pad(_trunc(sector,14),14)} {_pad(label_display,5,'r')} {entry['score']:4d} {pct_colored(pct)} "
-          f"{accum_str:>8} {price_str:>7} {rank_str:>4} {_pad(first_time,6)} {_pad(suggest_str,6)}{prom_str}{risk_str}{extra_suffix}")
+          f"{pct_colored(pct)} {accum_str:>8} {price_str:>7} {rank_str:>4} "
+          f"{_pad(_trunc(sector,14),14)} {_pad(label_display,5,'r')} {entry['score']:4d} "
+          f"{_pad(first_time,6)} {_pad(suggest_str,6)}{prom_str}{risk_str}{extra_suffix}")
 
 
 def _nextday_entry_percent(entry: dict) -> float:
@@ -473,21 +461,12 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
 
     print(f"\n{ANSI['BOLD']}◆ 综合排序 — 今日上榜推荐{ANSI['RESET']}")
     hdr = (f"  {_pad('#',3,'r')} {_pad('代码',12)} {_pad('名称',10)} "
-           f"{_pad('板块',14)} {_pad('策略',5)} {_pad('评分',4,'r')} {_pad('涨幅',8,'r')} "
-           f"{_pad('5日累计',8,'r')} {_pad('现价',7,'r')} {_pad('排名',4,'r')} {_pad('时间',6)} {_pad('建议',6)}")
+           f"{_pad('涨幅',8,'r')} {_pad('5日累计',8,'r')} {_pad('现价',7,'r')} {_pad('排名',4,'r')} "
+           f"{_pad('板块',14)} {_pad('策略',5)} {_pad('评分',4,'r')} {_pad('时间',6)} {_pad('建议',6)}")
     print(hdr)
     for i, entry in enumerate(scored, 1):
         _print_priority_row(entry, i, flow_pct_map)
     print(f"  {'-'*92}")
-    # 回马枪独立成区（方案A）：主表仅排榜上五类，comeback 抽到此处独立成区，
-    # 仍按档位(tier)+评分排序，复用统一行渲染。comeback 为空则跳过（与旧行为一致）。
-    if comeback_recs:
-        cb_scored = sorted(comeback_recs, key=lambda x: (_sort_tier(x), -x["score"]))
-        print(f"\n{ANSI['CYAN']}◆ 回马枪 — 掉榜跟踪/回调买点{ANSI['RESET']}")
-        print(hdr)
-        for ci, entry in enumerate(cb_scored, 1):
-            _print_priority_row(entry, ci, flow_pct_map)
-        print(f"  {'-'*92}")
     # 次日大涨候选独立区（2026-08-10）：display-only 观察窗口。
     # 依据 scanner.nextday_attribution：推荐时刻涨幅甜蜜带（<2% 低吸潜伏 / 4-8% 中段启动）
     # + 排除 short_term 超买死亡信号。只筛形展示，不改 score / 排序键 / 不落库。
@@ -501,36 +480,12 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
             _print_priority_row(entry, ni, flow_pct_map)
         print(f"  {'-'*92}")
 
-    # 今日选股建议（2026-08-10）：跨类别 score 排序是反指（历史取前2 cum_3d -3.1%），
-    # 选股按「类别+市场环境」而非分数（类别优先级 rebound>short_term>momentum，
-    # 弱市回避动量，板块去重，排除负期望类别与硬风险/净流出）。置于末尾结论区。
-    # 仅在进程内有真实候选关联时展示（today_pool 非空），避免在无候选上下文中
-    # 输出干扰主表的额外行（display 测试契约：主表行数 = 推荐行数）。
-    if _session_state.today_pool:
-        from scanner.pick import build_pick_suggestion
-        suggestion = build_pick_suggestion(today_recs)
-        if suggestion["picks"]:
-            print(f"\n{ANSI['BOLD']}{ANSI['CYAN']}◆ 今日选股建议（2只 · 类别>分数 · 弱市回避动量 · 板块去重）{ANSI['RESET']}")
-            hdr_pick = (f"  {_pad('名称',10)} {_pad('板块',14)} "
-                        f"{_pad('策略',5)} {_pad('评分',4,'r')} {_pad('涨幅',8,'r')}")
-            print(hdr_pick)
-            print(f"  {'-' * max(2, wcwidth.wcswidth(hdr_pick) - 2)}")
-            for e in suggestion["picks"]:
-                c = e.get("_candidate")
-                cat = e.get("category", "")
-                label = f"{CAT_COLOR.get(cat, '')}{CAT_LABEL.get(cat, cat)}{ANSI['RESET']}"
-                pct = e.get("live_percent")
-                if pct is None and c:
-                    pct = c.stock.percent
-                if pct is None:
-                    pct = e.get("percent", 0.0)
-                score = e.get("score", 0)
-                sec = _entry_sector_display(e, c)
-                print(f"  {_pad(e['name'],10)} {_pad(_trunc(sec,14),14)} "
-                      f"{_pad(label,5,'r')} {score:4d} {pct_colored(pct)}")
-            for r in suggestion["reasons"]:
-                print(f"    {ANSI['YELLOW']}·{ANSI['RESET']} {r}")
-        elif suggestion["reasons"]:
-            print(f"\n{ANSI['YELLOW']}◆ 今日选股建议：无可选候选{ANSI['RESET']}")
-            for r in suggestion["reasons"]:
-                print(f"    · {r}")
+    # 回马枪独立成区（2026-08-11 移到最末尾）：主表仅排榜上五类，comeback 抽到此处独立成区，
+    # 仍按档位(tier)+评分排序，复用统一行渲染。comeback 为空则跳过。
+    if comeback_recs:
+        cb_scored = sorted(comeback_recs, key=lambda x: (_sort_tier(x), -x["score"]))
+        print(f"\n{ANSI['CYAN']}◆ 回马枪 — 掉榜跟踪/回调买点{ANSI['RESET']}")
+        print(hdr)
+        for ci, entry in enumerate(cb_scored, 1):
+            _print_priority_row(entry, ci, flow_pct_map)
+        print(f"  {'-'*92}")
