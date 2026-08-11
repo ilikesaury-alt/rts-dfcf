@@ -117,5 +117,3 @@ class Candidate:
     driving_concept: str = ""  # 当前推动概念（仅展示，不参与打分）
     off_list: bool = False    # 掉榜跟踪候选（回马枪）：不在当次热榜上，无热榜背书
     comeback_variant: str = ""  # 回马枪变体："反转" / "回踩"（展示与持久化区分）
-    sector_capped: bool = False  # 同板块上限（2026-08-12）：该 short_term 候选本轮被板块限流。
-    # 仍照常落库（保留回测全样本），但综合排序/飞书等对外展示隐藏；双挂票（如新面孔+超短）豁免。

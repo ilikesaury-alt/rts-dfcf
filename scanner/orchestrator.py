@@ -39,7 +39,6 @@ from scanner.config import (
     NEW_FACE_FIRST_MIN_SCORE,
     REBOUND_MIN_SCORE,
     SHORT_TERM_MIN_SCORE,
-    SHORT_TERM_MAX_PER_SECTOR,
     RPS_BONUS_HIGH,
     RPS_BONUS_LOW,
     RPS_BONUS_MEDIUM,
@@ -241,39 +240,6 @@ def _try_candidate(stock: StockInfo, kline_summary: KlineSummary | None, categor
     # 加分不再进 score。bonus 仍写入 dims 供展示与 backtest dimension_ic 归因。
     kline_summary = dataclass_replace(kline_summary, dimensions=new_dims)
     return _build_candidate(stock, kline_summary, category, is_first_today, first_date, kline)
-
-
-def _cap_short_term_by_sector(group: list[Candidate],
-                             max_per_sector: int = SHORT_TERM_MAX_PER_SECTOR,
-                             skip_symbols: set[str] | None = None) -> list[Candidate]:
-    """同板块数量上限（2026-08-12 改为「标记不裁剪」）：板块普涨日防止单板块淹没超短列表。
-
-    行为变更：不再从列表移除超限候选，而是把超出上限的候选标记 `sector_capped=True`
-    （全量返回）。数据层照常落库保留回测全样本，综合排序/飞书等展示层隐藏被标记的票。
-    skip_symbols：双挂票（如新面孔+超短首板）的 symbol 集合——这些票在其它策略桶有
-    独立存在，不能被板块上限隐藏，跳过标记。
-    "其他"（未分类）股票互不相关，不受同板块上限约束——否则一批名称不含行业
-    关键词的股票会被误当同一板块截断，丢真正互不相关的候选。
-    """
-    skip_symbols = skip_symbols or set()
-    if not max_per_sector or len(group) <= max_per_sector:
-        return group
-    by_sector: dict[str, list[Candidate]] = {}
-    for c in group:
-        sec = classify_sector(c.stock.name)
-        by_sector.setdefault(sec, []).append(c)
-    result: list[Candidate] = []
-    for sec, sec_group in by_sector.items():
-        if sec == "其他":
-            result.extend(sec_group)
-            continue
-        # 评分已含全部 bonus（调用点在 apply_all_bonuses + accumulate_final_score 之后）
-        sec_group.sort(key=lambda c: -c.score)
-        for i, c in enumerate(sec_group):
-            if i >= max_per_sector and c.stock.symbol not in skip_symbols:
-                c.sector_capped = True
-            result.append(c)
-    return result
 
 
 def _classify_category(stock: StockInfo, is_new: bool,
@@ -731,15 +697,6 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     rebound_list.sort(key=lambda c: -c.score)
     short_term_list.sort(key=lambda c: -c.score)
     comeback_list.sort(key=lambda c: -c.score)
-
-    # 同板块上限（2026-08-12 起「标记不裁剪」）：板块普涨日防止单板块淹没超短列表。
-    # 必须在 apply_all_bonuses + accumulate_final_score 之后执行：
-    # list_momentum_bonus(±15) 等大额 bonus 会反转同板块内排名，
-    # 若在 bonus 之前裁剪会保留错误的候选（bug 修复）。
-    # 超限候选打 sector_capped=True（不再移出列表，落库保留回测全样本）；
-    # 双挂票（新面孔+超短首板，在其它桶另有记录）豁免，避免被板块上限整体隐藏。
-    _skip_cap = {c.stock.symbol for c in (new_faces + momentum + rebound_list + pullback_list + comeback_list)}
-    short_term_list = _cap_short_term_by_sector(short_term_list, skip_symbols=_skip_cap)
 
     # 综合排序「板块」列：计算当前推动概念（东财 F10 概念归属 + 今日飙升池聚合）。
     # 仅影响展示，不参与任何打分。首次拉取缺失缓存，之后 DB/进程缓存零网络开销。

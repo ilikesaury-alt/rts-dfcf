@@ -130,11 +130,6 @@ def init_db() -> sqlite3.Connection:
     # 一旦当日被硬过滤即当日不再展示（止损级信号，保守语义）。
     if "excluded" not in cols:
         conn.execute("ALTER TABLE recommendations ADD COLUMN excluded INTEGER DEFAULT 0")
-    # 同板块上限落标（2026-08-12）：short_term 本轮被板块限流（同板块>2只）的票置 1。
-    # 数据层照常落库（回测全样本保留），综合排序/飞书等展示层隐藏，回测默认排除（--include-capped 恢复）。
-    # orchestrator 每轮扫描按最新轮次状态更新（同 excluded 的每轮刷新语义）。
-    if "sector_capped" not in cols:
-        conn.execute("ALTER TABLE recommendations ADD COLUMN sector_capped INTEGER DEFAULT 0")
     try:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_source ON recommendations(source)")
     except Exception:
@@ -407,29 +402,21 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: li
             rec_source = source or getattr(c.stock, "source_tag", "unified")
             concept = getattr(c, "driving_concept", "") or ""
             accumulated = c.kline.accumulated_pct if c.kline else None
-            # 同板块上限落标：即使本轮分数未刷新（score 不更高），sector_capped 仍按最新轮次
-            # 决策更新——多轮扫描中同板块容量变化时，限流状态必须跟随最新轮次（防陈旧限流/陈旧放行）。
-            capped_flag = 1 if getattr(c, "sector_capped", False) else 0
             if existing:
                 # 同日同股同策略已存在：仅当新分更高时更新（保留当日最高分用于回测归因）
                 if c.score > existing[1]:
                     conn.execute(
-                        "UPDATE recommendations SET time = ?, score = ?, percent = ?, trend = ?, score_breakdown = ?, source = ?, concept = ?, accumulated_pct = ?, sector_capped = ? "
+                        "UPDATE recommendations SET time = ?, score = ?, percent = ?, trend = ?, score_breakdown = ?, source = ?, concept = ?, accumulated_pct = ? "
                         "WHERE id = ?",
                         (now, c.score, c.stock.percent, c.kline.trend if c.kline else None,
-                         breakdown, rec_source, concept, accumulated, capped_flag, existing[0]),
-                    )
-                else:
-                    conn.execute(
-                        "UPDATE recommendations SET sector_capped = ? WHERE id = ?",
-                        (capped_flag, existing[0]),
+                         breakdown, rec_source, concept, accumulated, existing[0]),
                     )
                 continue
             conn.execute(
-                "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, trend, score_breakdown, source, concept, accumulated_pct, sector_capped) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, trend, score_breakdown, source, concept, accumulated_pct) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (today, now, c.stock.symbol, c.stock.name, c.category,
-                 c.score, c.stock.percent, c.kline.trend if c.kline else None, breakdown, rec_source, concept, accumulated, capped_flag),
+                 c.score, c.stock.percent, c.kline.trend if c.kline else None, breakdown, rec_source, concept, accumulated),
             )
         except Exception as e:
             print(f"  [!] 保存推荐记录失败 {c.stock.symbol}: {e}")
@@ -617,13 +604,9 @@ def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
     """
     today = now_beijing().date().isoformat()
     try:
-        # sector_capped 列可能存在旧库缺失（未跑 init_db 迁移）；缺列时退化为不过滤，
-        # 保持与旧 schema 兼容（display 单测等最小 schema 亦依赖此回退）。
-        has_sc = "sector_capped" in {r[1] for r in conn.execute("PRAGMA table_info(recommendations)")}
-        sc_filter = "AND COALESCE(sector_capped, 0) = 0 " if has_sc else ""
         rows = conn.execute(
-            f"SELECT symbol, name, category, score, trend, time, percent, concept, accumulated_pct "
-            f"FROM recommendations WHERE date = ? AND COALESCE(excluded, 0) = 0 {sc_filter}ORDER BY score DESC",
+            "SELECT symbol, name, category, score, trend, time, percent, concept, accumulated_pct "
+            "FROM recommendations WHERE date = ? AND COALESCE(excluded, 0) = 0 ORDER BY score DESC",
             (today,),
         ).fetchall()
     except Exception as e:

@@ -32,12 +32,17 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from scanner.config import DB_PATH, now_beijing
 from scanner.trading_session import is_trading_day
+
+# Windows GBK 控制台无法编码 ‱ 等字符，统一走 UTF-8（项目其它入口同款处理）
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
 
 
 # 当前有效策略类别（过滤已废弃的 old_face / early_momentum）
@@ -222,23 +227,8 @@ class StrategyStat:
     avg_score: float = 0.0
 
 
-def _sector_capped_filter(conn: sqlite3.Connection, include_capped: bool = False) -> str:
-    """生成 sector_capped 的 SQL 过滤片段。
-
-    include_capped=True 时不过滤（恢复被板块上限隐藏的票到全样本）；
-    列缺失（旧库 / 最小测试 schema）时返回空串，保持兼容。
-    """
-    if include_capped:
-        return ""
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(recommendations)")}
-    if "sector_capped" not in cols:
-        return ""
-    return "AND COALESCE(sector_capped, 0) = 0 "
-
-
 def strategy_performance(
     conn: sqlite3.Connection, metric: str = "next_day_pct", days: int = 0,
-    include_capped: bool = False,
 ) -> list[StrategyStat]:
     """按策略类别聚合表现。metric ∈ {next_day_pct, fwd_3d, fwd_5d, cum_2d, cum_3d}。
 
@@ -246,7 +236,6 @@ def strategy_performance(
     - cum_2d / cum_3d：累计收益口径（新，匹配用户「持有 2-3 天卖出」操作）
 
     days > 0 时仅分析最近 N 天的推荐（基于 date 列过滤）。
-    include_capped=True 时纳入被板块上限（sector_capped=1）隐藏的票（全样本）。
     """
     # 用 Beijing UTC+8 计算截止日，避免服务器本地时区导致日期偏移
     # （'localtime' 修饰符依赖服务器时区，违反项目硬约束）
@@ -260,7 +249,7 @@ def strategy_performance(
     rows = conn.execute(
         f"SELECT category, score, {metric} FROM recommendations "
         f"WHERE category IN ({','.join('?' * len(ACTIVE_CATEGORIES))}) "
-        f"AND {metric} IS NOT NULL {date_filter}{_sector_capped_filter(conn, include_capped)}",
+        f"AND {metric} IS NOT NULL {date_filter}",
         tuple(params),
     ).fetchall()
 
@@ -303,15 +292,14 @@ class DimensionIC:
     avg_return_when_zero: float
 
 
-def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct", days: int = 0,
-                 include_capped: bool = False) -> list[DimensionIC]:
+def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct", days: int = 0) -> list[DimensionIC]:
     """解析 score_breakdown，逐维度计算 IC。
 
     对每一条推荐记录，将每个维度视为「该维度是否加正分」，与收益做分组比较：
     - 维度值 > 0 组的均收益 vs 维度值 == 0 组，计算 rank IC。
     这能揭示哪些维度是「正 IC（加分越多收益越好）」还是「反指」。
 
-    days > 0 时仅分析最近 N 天的推荐。include_capped=True 时纳入板块上限隐藏的票。
+    days > 0 时仅分析最近 N 天的推荐。
     """
     # 已删除功能残留于历史 score_breakdown JSON，无对应评分代码，仅干扰阅读。
     dead_dim_keys = {
@@ -328,8 +316,7 @@ def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct", days: i
     rows = conn.execute(
         f"SELECT score_breakdown, {metric} FROM recommendations "
         f"WHERE category IN ({','.join('?' * len(ACTIVE_CATEGORIES))}) "
-        f"AND {metric} IS NOT NULL AND score_breakdown IS NOT NULL {date_filter}"
-        f"{_sector_capped_filter(conn, include_capped)}",
+        f"AND {metric} IS NOT NULL AND score_breakdown IS NOT NULL {date_filter}",
         tuple(params),
     ).fetchall()
 
@@ -386,13 +373,11 @@ class RankCategoryStat:
 RANK_MIN_SAMPLE = 20
 
 
-def rank_category_stats(conn: sqlite3.Connection, metric: str = "cum_3d", days: int = 0,
-                        include_capped: bool = False) -> list[RankCategoryStat]:
+def rank_category_stats(conn: sqlite3.Connection, metric: str = "cum_3d", days: int = 0) -> list[RankCategoryStat]:
     """各现役类别在给定口径下的表现（按均收益降序）。
 
     metric ∈ {cum_2d, cum_3d, next_day_pct, ...}。days > 0 时仅用最近 N 天推荐。
     类别内 IC 为 IC(score → return)，用于识别「分数反指」的类别（IC 为负）。
-    include_capped=True 时纳入板块上限隐藏的票（全样本）。
     """
     params = list(ACTIVE_CATEGORIES)
     if days > 0:
@@ -404,7 +389,7 @@ def rank_category_stats(conn: sqlite3.Connection, metric: str = "cum_3d", days: 
     rows = conn.execute(
         f"SELECT category, score, {metric} FROM recommendations "
         f"WHERE category IN ({','.join('?' * len(ACTIVE_CATEGORIES))}) "
-        f"AND {metric} IS NOT NULL {date_filter}{_sector_capped_filter(conn, include_capped)}",
+        f"AND {metric} IS NOT NULL {date_filter}",
         tuple(params),
     ).fetchall()
 
@@ -435,8 +420,7 @@ def suggest_priority(stats: list[RankCategoryStat]) -> list[str]:
     return [s.category for s in sorted(stats, key=lambda s: -s.avg_return)]
 
 
-def print_ranking_report(conn: sqlite3.Connection, metric: str = "cum_3d", recent_days: int = 30,
-                         include_capped: bool = False) -> None:
+def print_ranking_report(conn: sqlite3.Connection, metric: str = "cum_3d", recent_days: int = 30) -> None:
     """综合排序类别优先级校准报告。
 
     同时展示全期与近期两个窗口：全期样本大但混入历史配置，近期反映当前市场环境但样本小。
@@ -444,8 +428,8 @@ def print_ranking_report(conn: sqlite3.Connection, metric: str = "cum_3d", recen
     """
     from scanner.config import CAT_DISPLAY_PRIORITY
 
-    full = rank_category_stats(conn, metric, days=0, include_capped=include_capped)
-    recent = rank_category_stats(conn, metric, days=recent_days, include_capped=include_capped)
+    full = rank_category_stats(conn, metric, days=0)
+    recent = rank_category_stats(conn, metric, days=recent_days)
     full_map = {s.category: s for s in full}
     recent_map = {s.category: s for s in recent}
 
@@ -491,12 +475,10 @@ def print_ranking_report(conn: sqlite3.Connection, metric: str = "cum_3d", recen
     print("确认后人工更新 config.CAT_DISPLAY_PRIORITY")
 
 
-def print_report(conn: sqlite3.Connection, metric: str = "cum_3d", days: int = 0,
-                 include_capped: bool = False) -> None:
+def print_report(conn: sqlite3.Connection, metric: str = "cum_3d", days: int = 0) -> None:
     print("=" * 70)
     days_label = f", 最近{days}天" if days > 0 else ", 全部历史"
-    sc_label = "（含板块上限票）" if include_capped else ""
-    print(f"回测归因报告 (metric={metric}{days_label}{sc_label})")
+    print(f"回测归因报告 (metric={metric}{days_label})")
     print("=" * 70)
     # P1-6 (2026-08-10): 高估方向标注。cum_2d/cum_3d 以推荐日收盘价(T+0 close)为起点，
     # 但推荐发生在盘中——推荐后到收盘的涨幅已计入策略收益，早盘推荐高估最明显。
@@ -508,7 +490,7 @@ def print_report(conn: sqlite3.Connection, metric: str = "cum_3d", days: int = 0
 
     print("\n[1] 分策略表现")
     print(f"{'类别':<16}{'样本':>6}{'胜率':>8}{'均收益':>9}{'盈亏比':>8}{'IC':>8}{'均分':>8}")
-    stats = strategy_performance(conn, metric, days=days, include_capped=include_capped)
+    stats = strategy_performance(conn, metric, days=days)
     for s in stats:
         print(
             f"{s.category:<16}{s.count:>6}{s.win_rate*100:>7.1f}%"
@@ -527,7 +509,7 @@ def print_report(conn: sqlite3.Connection, metric: str = "cum_3d", days: int = 0
 
     print("\n[2] 分维度 IC（降序，正=加分越多收益越好）")
     print(f"{'维度':<28}{'样本':>6}{'IC':>8}{'加正分均收益':>14}{'零分均收益':>12}")
-    for d in dimension_ic(conn, metric, days=days, include_capped=include_capped):
+    for d in dimension_ic(conn, metric, days=days):
         ap = f"{d.avg_return_when_positive:.2f}" if d.avg_return_when_positive == d.avg_return_when_positive else "n/a"
         az = f"{d.avg_return_when_zero:.2f}" if d.avg_return_when_zero == d.avg_return_when_zero else "n/a"
         tag = "  <== 反指" if d.ic < -0.02 else ("  <== 强信号" if d.ic > 0.02 else "")
@@ -541,8 +523,6 @@ def build_parser() -> argparse.ArgumentParser:
                         choices=["next_day_pct", "fwd_3d", "fwd_5d", "cum_2d", "cum_3d"])
     parser.add_argument("--ranking", action="store_true",
                         help="综合排序类别优先级校准报告（默认 cum_3d，近期30天窗口）")
-    parser.add_argument("--include-capped", action="store_true",
-                        help="纳入被板块上限（sector_capped=1）隐藏的票（全样本，默认排除）")
     parser.add_argument("--backfill", action="store_true", help="回填 N 日收益字段")
     parser.add_argument("--dry-run", action="store_true", help="回填预览不写库")
     return parser
@@ -556,10 +536,9 @@ def main() -> None:
         n = backfill_outcomes(conn, dry_run=args.dry_run)
         print(f"回填更新行数: {n}" + (" (dry-run)" if args.dry_run else ""))
     if args.ranking:
-        print_ranking_report(conn, metric=args.metric, recent_days=args.days or 30,
-                             include_capped=args.include_capped)
+        print_ranking_report(conn, metric=args.metric, recent_days=args.days or 30)
     else:
-        print_report(conn, metric=args.metric, days=args.days, include_capped=args.include_capped)
+        print_report(conn, metric=args.metric, days=args.days)
     conn.close()
 
 

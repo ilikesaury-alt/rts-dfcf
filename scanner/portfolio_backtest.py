@@ -47,12 +47,17 @@ import argparse
 import csv
 import json
 import sqlite3
+import sys
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 
 from scanner.config import CROSS_SOURCE_BONUS, DB_PATH
 from scanner.trading_session import is_trading_day
+
+# Windows GBK 控制台无法编码 ‱/🎯 等字符，统一走 UTF-8（项目其它入口同款处理）
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
 
 
 # ── 组合回测使用的现役策略类别（排除已废弃的 old_face / early_momentum / pullback 离线）──
@@ -110,8 +115,6 @@ class PBConfig:
                                         # short_term/rebound）用当前 config 权重历史重扫
                                         # （recommendations 存的是旧权重冻结分，改 config 不 retrospective
                                         # 生效，必须用 appearances+daily_kline 重跑引擎；comeback 除外）
-    include_capped: bool = False        # True=纳入被板块上限（sector_capped=1）隐藏的票（全样本）。
-                                        # 默认排除——组合回测校准的是「用户实际看到」的展示集合
 
 
 
@@ -281,15 +284,8 @@ def _load_signals(conn: sqlite3.Connection, cfg: PBConfig, calendar: list[str],
     """
     # 按 (date, time) 升序：_dedup_signals 保留每天每票最早的那一条，
     # 对应「盘中进入推荐榜的那一刻就买」。
-    # sector_capped 列可能存在旧库缺失（未跑 init_db 迁移）：缺列时按 0（不排除）处理。
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(recommendations)")}
-    has_sc = "sector_capped" in cols
-    if has_sc:
-        sc_select = ", sector_capped"
-    else:
-        sc_select = ", 0 AS sector_capped"
     rows = conn.execute(
-        f"SELECT date, symbol, name, category, score, score_breakdown, source{sc_select} "
+        "SELECT date, symbol, name, category, score, score_breakdown, source "
         "FROM recommendations ORDER BY date, time"
     ).fetchall()
 
@@ -307,14 +303,11 @@ def _load_signals(conn: sqlite3.Connection, cfg: PBConfig, calendar: list[str],
         start_date = cfg.start or min_rec
 
     signals: list[Signal] = []
-    for rec_date, sym, name, cat, score, breakdown_json, src, sc_flag in rows:
+    for rec_date, sym, name, cat, score, breakdown_json, src in rows:
         # 类别过滤
         if cfg.category and cat != cfg.category:
             continue
         if (not cfg.category) and cat not in PORTFOLIO_CATEGORIES:
-            continue
-        # 板块上限票：默认排除（校准"用户实际看到"的集合），--include-capped 恢复全样本
-        if not cfg.include_capped and sc_flag:
             continue
         # 日期窗口过滤（推荐日口径）
         if not (start_date <= rec_date <= end_date):
@@ -713,8 +706,6 @@ def main() -> None:
                              "short_term/rebound)用当前 config 权重历史重扫"
                              "（recommendations 存旧权重冻结分，改 config 不 retrospective 生效；"
                              "须用 appearances+daily_kline 重跑引擎；comeback 为 off-list 变体保持冻结分）")
-    parser.add_argument("--include-capped", action="store_true",
-                        help="纳入被板块上限（sector_capped=1）隐藏的票（全样本，默认排除）")
     parser.add_argument("--export", default=None, help="导出 NAV 序列 CSV 路径")
     args = parser.parse_args()
 
@@ -728,7 +719,6 @@ def main() -> None:
         commission=args.commission, stamp_duty=args.stamp_duty,
         slippage=args.slippage,
         rescore=args.rescore,
-        include_capped=args.include_capped,
     )
 
     if args.compare:

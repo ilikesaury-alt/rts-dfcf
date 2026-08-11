@@ -176,11 +176,6 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 short_term_list.sort(key=lambda x: -x.score)
                 comeback_list.sort(key=lambda x: -x.score)
 
-                # 同板块上限票（sector_capped=True，2026-08-12）只落库供回测全样本，
-                # 不参与对外输出（log/飞书/首选打印）；综合排序经 get_today_recommendations
-                # 过滤同列。save_recommendations 仍用完整 short_term_list（保留回测样本）。
-                st_visible = [c for c in short_term_list if not c.sector_capped]
-
                 current_rank_map = {s.symbol: s.rank for s in all_gem}
 
                 # 为综合推荐补拉今日曾推荐但不在 current_quotes 中的票的实时行情
@@ -202,15 +197,15 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                         filtered_large_cap=filtered_large_cap,
                         conn=conn, live_quotes=live_quotes,
                         rank_map=current_rank_map)
-                log_results(new_faces, momentum + pullback_list + rebound_list + st_visible + comeback_list)
+                log_results(new_faces, momentum + pullback_list + rebound_list + short_term_list + comeback_list)
                 if not no_feishu:
                     pushed = push_feishu(new_faces, momentum, pullback_list, stale_candidates,
                                         len(all_gem), filtered_large_cap=filtered_large_cap,
                                         current_rank_map=current_rank_map,
-                                        short_term_list=st_visible,
+                                        short_term_list=short_term_list,
                                         rebound_list=rebound_list,
                                         comeback_list=comeback_list)
-                    if not pushed and (new_faces or momentum or pullback_list or rebound_list or st_visible or comeback_list):
+                    if not pushed and (new_faces or momentum or pullback_list or rebound_list or short_term_list or comeback_list):
                         print(f"\r  📤 飞书推送跳过（冷却中/无变化）", end="", flush=True)
 
                 if new_faces:
@@ -233,8 +228,8 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     print(f"  ▶ 回马枪首选: {top_c.stock.name}({top_c.stock.symbol}) "
                           f"[{top_c.comeback_variant}] {top_c.stock.percent:+.2f}% "
                           f"| {top_c.kline.trend if top_c.kline else ''}")
-                if st_visible:
-                    top_s = st_visible[0]
+                if short_term_list:
+                    top_s = short_term_list[0]
                     src = _SOURCE_LABELS.get(top_s.stock.source_tag, top_s.stock.source_tag)
                     print(f"  ▶ 超短次日首选: {top_s.stock.name}({top_s.stock.symbol}) [{src}] "
                           f"{top_s.stock.percent:+.2f}% | RPS:{top_s.rps_bonus}")

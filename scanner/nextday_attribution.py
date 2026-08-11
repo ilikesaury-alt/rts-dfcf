@@ -59,11 +59,7 @@ FACTOR_CONDITIONS: list[tuple[str, object]] = [
 
 
 def _load_dedup(conn: sqlite3.Connection, days: int = 0) -> list[dict]:
-    """加载现役类别推荐，同 (date, symbol) 去重保留最高分（综合排序展示口径）。
-
-    排除被板块上限（sector_capped=1）隐藏的票，与综合排序展示口径一致；
-    列缺失（旧库）时不过滤，保持兼容。
-    """
+    """加载现役类别推荐，同 (date, symbol) 去重保留最高分（综合排序展示口径）。"""
     params = list(ACTIVE_CATEGORIES)
     if days > 0:
         cutoff = (now_beijing() - timedelta(days=days)).date().isoformat()
@@ -71,17 +67,11 @@ def _load_dedup(conn: sqlite3.Connection, days: int = 0) -> list[dict]:
         params.append(cutoff)
     else:
         date_filter = ""
-    sc_filter = ""
-    try:
-        if "sector_capped" in {r[1] for r in conn.execute("PRAGMA table_info(recommendations)")}:
-            sc_filter = "AND COALESCE(sector_capped, 0) = 0 "
-    except Exception:
-        pass
     rows = conn.execute(
         f"SELECT date, symbol, name, category, score, percent, next_day_pct, score_breakdown "
         f"FROM recommendations "
         f"WHERE category IN ({','.join('?' * len(ACTIVE_CATEGORIES))}) "
-        f"AND next_day_pct IS NOT NULL {date_filter}{sc_filter}",
+        f"AND next_day_pct IS NOT NULL {date_filter}",
         tuple(params),
     ).fetchall()
     best: dict[tuple[str, str], dict] = {}

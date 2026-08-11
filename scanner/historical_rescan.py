@@ -17,8 +17,8 @@ retrospective 生效。所以 `portfolio_backtest` replay 的永远是旧权重�
 现在的做法：**直接复用 orchestrator 的真实流水线**
     _filter_gem_stocks → _score_stock（内含 5 路 analyze_* + HIGH_RISK_TRENDS
     + MIN_SCORE + validate/validation_bonus + _classify_category）
-    → _cap_short_term_by_sector
-只把数据来源从「实时 API」换成「历史表」。逻辑只有一份，不会再漂移。
+    只把数据来源从「实时 API」换成「历史表」。逻辑只有一份，不会再漂移。
+    （同板块上限 2026-08-12 已整体移除，此处无需复现。）
 
 数据来源
 --------
@@ -57,7 +57,6 @@ from scanner.candidate_pool import ScanSession
 from scanner.config import MAX_STOCK_PRICE
 from scanner.models import Candidate, KlineBar, make_kline_bar
 from scanner.orchestrator import (
-    _cap_short_term_by_sector,
     _filter_gem_stocks,
     _score_stock,
 )
@@ -130,13 +129,13 @@ def _load_all_klines(conn: sqlite3.Connection) -> dict[str, tuple[list[str], lis
 
 
 def _primary_candidate(nf: Candidate | None, mo: Candidate | None,
-                       rb: Candidate | None, st: Candidate | None,
-                       st_kept: bool) -> Candidate | None:
+                       rb: Candidate | None, st: Candidate | None) -> Candidate | None:
     """从 `_score_stock` 的返回桶中还原 `_classify_category` 选中的那一个标签。
 
     `_score_stock` 对「首板票同时满足超短」会双挂（同时返回 nf 与 st），线上两个桶
     都会落库；但组合回测里同一票同一天只能建一个仓位，所以取分类主标签。
     桶的互斥性保证了这个优先级能唯一还原分类结果。
+    （同板块上限已移除，st 不再有保留/丢弃分支。）
     """
     if nf is not None:
         return nf
@@ -144,7 +143,7 @@ def _primary_candidate(nf: Candidate | None, mo: Candidate | None,
         return mo
     if rb is not None:
         return rb
-    if st is not None and st_kept:
+    if st is not None:
         return st
     return None
 
@@ -216,21 +215,15 @@ def rescan_all_signals(conn: sqlite3.Connection, cfg, calendar: list[str],
         session.reset_if_new_day(d)
 
         scored: list[tuple] = []
-        short_term_bucket: list[Candidate] = []
         for s in usable:
             nf, mo, _pb, rb, st, _ = _score_stock(
                 s, conn, klines, d, session, clusters, now=now_ref)
             if nf is None and mo is None and rb is None and st is None:
                 continue
-            if st is not None:
-                short_term_bucket.append(st)
             scored.append((nf, mo, rb, st))
 
-        # 3) 同板块上限（线上在 bonus 之后执行；重扫无 bonus，此处即最终分）
-        kept_st = {id(c) for c in _cap_short_term_by_sector(short_term_bucket)}
-
         for nf, mo, rb, st in scored:
-            cand = _primary_candidate(nf, mo, rb, st, st is not None and id(st) in kept_st)
+            cand = _primary_candidate(nf, mo, rb, st)
             if cand is None or cand.category not in categories:
                 continue
             sig = Signal(rec_date=d, symbol=cand.stock.symbol, name=cand.stock.name,
