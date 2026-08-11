@@ -633,6 +633,19 @@ class TestApplyFundFlowBonus:
         assert c.fund_flow_bonus == 0
         assert c.kline.dimensions.get("fund_flow_main_pct") == 0.0
 
+    def test_inf_flow_coerced(self):
+        """回归：main_pct=±inf（Python json 字面量）→ 0，不触发档位判断
+        （inf >= 5 恒真，此前会把 inf 当作强流入展示）。"""
+        import math
+        c = _make_candidate()
+        _apply_fund_flow_bonus(c, {c.stock.symbol: {"fund_flow": {
+            "main_pct": float("inf"), "main_net": float("-inf"), "super_net": float("nan")}}})
+        assert c.fund_flow_bonus == 0
+        v = c.kline.dimensions.get("fund_flow_main_pct")
+        assert v == 0.0 and math.isfinite(v)
+        assert c.kline.dimensions.get("fund_flow_main_net") == 0.0
+        assert c.kline.dimensions.get("fund_flow_super_net") == 0.0
+
 
 class TestApplyZtBonus:
     @staticmethod

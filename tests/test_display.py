@@ -253,7 +253,7 @@ def _insert_rec_cat(conn, symbol: str, name: str, category: str, score: int):
     conn.execute(
         "INSERT INTO recommendations (date, time, symbol, name, category, score, percent) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (today, "13:00", symbol, name, category, score, 1.0),
+        (today, "13:00", symbol, name, category, score, 3.0),  # 3.0=死区，避免掉榜行被 🎯 置顶
     )
     conn.commit()
 
@@ -319,14 +319,17 @@ def test_display_priority_suggestion_decoupled(monkeypatch, capsys):
 # 档0置前 = 辨识度(↻)；档1 = 其余。2026-08-11 起资金流不再参与档位排序/劣后过滤
 # （图标与「资金流出」标签仍保留展示）。_cand_tier 的 fund_flow 参数供图标相关测试使用。
 def _cand_tier(symbol: str, score: int, category: str = "momentum",
-               fund_flow: float | None = None, prominent: bool = False) -> Candidate:
+               fund_flow: float | None = None, prominent: bool = False,
+               percent: float = 3.0) -> Candidate:
+    # percent 默认 3.0（2~4% 死区，不在次日大涨甜蜜带）：避免候选行被 🎯 误置顶，
+    # 使档位测试只由 prominent 决定；需要 🎯 的测试显式传甜蜜带（<2% / 4~8%）。
     dims = {}
     if fund_flow is not None:
         dims["fund_flow_main_pct"] = fund_flow
     k = KlineSummary(trend="", accumulated_pct=0.0, volume_ratio=1.0,
                      bottom_confirmed=False, score=score, dimensions=dims)
     c = Candidate(
-        stock=StockInfo(symbol=symbol, name="测试", code=symbol[-6:], percent=1.0,
+        stock=StockInfo(symbol=symbol, name="测试", code=symbol[-6:], percent=percent,
                         current=10.0, value=1e8, rank_change=0, rank=1),
         category=category, score=score, reason="", kline=k)
     if prominent:
@@ -335,13 +338,13 @@ def _cand_tier(symbol: str, score: int, category: str = "momentum",
 
 
 def test_display_priority_tier_front_cross_category(monkeypatch, capsys):
-    """跨类别置顶：ST 置前票(档0)排在 MOM 普通高分票(档1)之前；档0 内仍按类别优先级+评分。"""
+    """跨类别置顶：🎯 置前票(档0)排在 MOM 普通高分票(档1)之前；档0 内仍按类别优先级+评分。"""
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300002", "动量置前", "momentum", 80)
     _insert_rec_cat(conn, "SZ300003", "超短置前", "short_term", 90)
     _insert_rec_cat(conn, "SZ300004", "普通动量", "momentum", 125)
-    pool = {"SZ300002": _cand_tier("SZ300002", 80, prominent=True),
-            "SZ300003": _cand_tier("SZ300003", 90, category="short_term", prominent=True),
+    pool = {"SZ300002": _cand_tier("SZ300002", 80, percent=1.0),
+            "SZ300003": _cand_tier("SZ300003", 90, category="short_term", percent=1.0),
             "SZ300004": _cand_tier("SZ300004", 125)}
     monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
     disp_mod.display_priority(conn)
@@ -356,9 +359,24 @@ def test_display_priority_tier_front_cross_category(monkeypatch, capsys):
 
 
 def test_display_priority_tier_front_within_category(monkeypatch, capsys):
-    """同类别内：低分辨识度票(档0)排在普通高分票(档1)之前，不靠分数翻盘。"""
+    """同类别内：低分甜蜜带票(档0)排在普通高分票(档1)之前，不靠分数翻盘。"""
     conn = _rec_db()
     _insert_rec(conn, "SZ300001", "置前票", 1.0)   # momentum score 60
+    _insert_rec_cat(conn, "SZ300002", "高分普通票", "momentum", 150)
+    pool = {"SZ300001": _cand_tier("SZ300001", 60, percent=1.0),
+            "SZ300002": _cand_tier("SZ300002", 150)}
+    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
+    disp_mod.display_priority(conn)
+    out = capsys.readouterr().out
+    lines = [l for l in out.splitlines() if "SZ30000" in l]
+    assert "SZ300001" in lines[0], f"甜蜜带票(60)应排在普通高分票(150)之前: {lines}"
+    assert "SZ300002" in lines[1]
+
+
+def test_prominence_no_longer_sorts(monkeypatch, capsys):
+    """2026-08-12: 辨识度不再参与排序——只有辨识度(↻)、无甜蜜带的票按正常分数排序（不置顶）。"""
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "辨识票", "momentum", 60)
     _insert_rec_cat(conn, "SZ300002", "高分普通票", "momentum", 150)
     pool = {"SZ300001": _cand_tier("SZ300001", 60, prominent=True),
             "SZ300002": _cand_tier("SZ300002", 150)}
@@ -366,8 +384,9 @@ def test_display_priority_tier_front_within_category(monkeypatch, capsys):
     disp_mod.display_priority(conn)
     out = capsys.readouterr().out
     lines = [l for l in out.splitlines() if "SZ30000" in l]
-    assert "SZ300001" in lines[0], f"辨识度票(60)应排在普通高分票(150)之前: {lines}"
-    assert "SZ300002" in lines[1]
+    assert "SZ300002" in lines[0], f"辨识度票(60)不再置顶，高分票(150)应在前: {lines}"
+    assert "SZ300001" in lines[1]
+    assert "↻" in lines[1], "辨识度标记应保留行内展示"
 
 
 def test_display_priority_fund_flow_no_longer_sorts(monkeypatch, capsys):
@@ -388,11 +407,11 @@ def test_display_priority_fund_flow_no_longer_sorts(monkeypatch, capsys):
 
 def test_display_priority_fund_flow_outflow_not_hidden(monkeypatch, capsys):
     """资金流不再劣后（2026-08-11）：主力净流出≤-5% 的票不再被过滤出综合排序，
-    正常展示；辨识度仍置前。"""
+    正常展示；🎯 置前票仍置前。"""
     conn = _rec_db()
     _insert_rec(conn, "SZ300001", "流出票", 1.0)  # momentum score 60
     _insert_rec_cat(conn, "SZ300002", "普通票", "momentum", 50)
-    pool = {"SZ300001": _cand_tier("SZ300001", 100, fund_flow=-6.0, prominent=True),
+    pool = {"SZ300001": _cand_tier("SZ300001", 100, fund_flow=-6.0, percent=1.0),
             "SZ300002": _cand_tier("SZ300002", 50)}
     monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
     disp_mod.display_priority(conn)
@@ -400,12 +419,13 @@ def test_display_priority_fund_flow_outflow_not_hidden(monkeypatch, capsys):
     main_out = out
     lines = [l for l in main_out.splitlines() if "SZ30000" in l]
     assert len(lines) == 2, f"净流出票不应被过滤，两条都展示: {lines}"
-    assert "SZ300001" in lines[0], f"辨识度票应置前: {lines}"
+    assert "SZ300001" in lines[0], f"🎯 置前票应置前: {lines}"
     assert "SZ300002" in lines[1]
 
 
 def test_display_priority_tier_db_source_for_dropped(monkeypatch, capsys):
-    """掉榜行（无候选）统一分档：辨识度从 appearances 现算；资金流仅用于图标不参与排序。"""
+    """掉榜行（无候选）统一分档：次日大涨画像从 DB 落库 percent 现算；
+    辨识度不再参与排序（仅保留 ↻ 行内展示）。"""
     conn = _rec_db()
     today = now_beijing().date()
     for i in range(5):
@@ -414,7 +434,7 @@ def test_display_priority_tier_db_source_for_dropped(monkeypatch, capsys):
             "INSERT INTO appearances (symbol, name, date, rank) VALUES (?, ?, ?, ?)",
             ("SZ300001", "辨识票", d, 40 + i),
         )
-    _insert_rec(conn, "SZ300001", "辨识票", 1.0)  # momentum score 60
+    _insert_rec(conn, "SZ300001", "辨识票", 1.0)  # momentum score 60（甜蜜带 → 🎯 档0）
     _insert_rec_cat(conn, "SZ300002", "普通票", "momentum", 90)
     conn.execute(
         "INSERT INTO market_extra_cache (symbol, date, data_type, payload_json, updated) "
@@ -427,7 +447,7 @@ def test_display_priority_tier_db_source_for_dropped(monkeypatch, capsys):
     disp_mod.display_priority(conn)
     out = capsys.readouterr().out
     lines = [l for l in out.splitlines() if "SZ30000" in l]
-    assert "SZ300001" in lines[0], f"掉榜置前票(60,档0)应排在普通票(90,档1)之前: {lines}"
+    assert "SZ300001" in lines[0], f"掉榜甜蜜带票(60,档0)应排在普通票(90,档1)之前: {lines}"
     assert "SZ300002" in lines[1]
 
 
@@ -438,9 +458,9 @@ def test_display_priority_tier_banner_separates_groups(monkeypatch, capsys):
     _insert_rec_cat(conn, "SZ300002", "普通", "momentum", 70)
     _insert_rec_cat(conn, "SZ300003", "流出", "rebound", 90)
     pool = {
-        "SZ300001": _cand_tier("SZ300001", 50, "rebound", prominent=True),
+        "SZ300001": _cand_tier("SZ300001", 50, "rebound", percent=1.0),
         "SZ300002": _cand_tier("SZ300002", 70, "momentum"),
-        "SZ300003": _cand_tier("SZ300003", 90, "rebound", fund_flow=-6.0, prominent=True),
+        "SZ300003": _cand_tier("SZ300003", 90, "rebound", fund_flow=-6.0, percent=1.0),
     }
     monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
     disp_mod.display_priority(conn)
@@ -450,17 +470,18 @@ def test_display_priority_tier_banner_separates_groups(monkeypatch, capsys):
     main_out = out
     lines = [l for l in main_out.splitlines() if "SZ30000" in l]
     assert len(lines) == 3, f"净流出票(SZ300003)应正常展示，不再被劣后过滤: {lines}"
-    # 档0（辨识度）内按类别优先级+分数降序：SZ300003(rebound,90) 与 SZ300001(rebound,50) 同档，高分在前
-    assert "SZ300003" in lines[0], f"辨识度档高分票应在前: {lines}"
+    # 档0（🎯）内按类别优先级+分数降序：SZ300003(rebound,90) 与 SZ300001(rebound,50) 同档，高分在前
+    assert "SZ300003" in lines[0], f"🎯 档高分票应在前: {lines}"
     assert "SZ300001" in lines[1]
     assert "SZ300002" in lines[2]
 
 
 def test_display_priority_comeback_separate_region(monkeypatch, capsys):
-    """方案A：回马枪独立成区（主区无推荐时兜底），按辨识度档位置前；独立区净流出票正常展示。"""
+    """方案A：回马枪独立成区（主区无推荐时兜底），按分数降序；独立区净流出票正常展示。
+    2026-08-12：辨识度不再参与排序（comeback 不在次日大涨画像范围，恒档1）。"""
     conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300101", "马置顶", "comeback", 55)
-    _insert_rec_cat(conn, "SZ300102", "马劣后", "comeback", 120)
+    _insert_rec_cat(conn, "SZ300101", "马低分", "comeback", 55)
+    _insert_rec_cat(conn, "SZ300102", "马高分", "comeback", 120)
     pool = {
         "SZ300101": _cand_tier("SZ300101", 55, "comeback", prominent=True),
         "SZ300102": _cand_tier("SZ300102", 120, "comeback", fund_flow=-6.0),
@@ -470,10 +491,10 @@ def test_display_priority_comeback_separate_region(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "◆ 回马枪" in out
     cb_part = out.split("◆ 回马枪", 1)[1]
-    # 独立区：辨识度(档0)置前，净流出票不再劣后过滤（2026-08-11）
+    # 独立区：按分数降序（辨识度不再置顶），净流出票不再劣后过滤（2026-08-11）
     cb_lines = [l for l in cb_part.splitlines() if "SZ300101" in l or "SZ300102" in l]
-    assert "SZ300101" in cb_lines[0]
-    assert "SZ300102" in cb_lines[1]
+    assert "SZ300102" in cb_lines[0], f"独立区按分数降序，高分(120)应在前: {cb_lines}"
+    assert "SZ300101" in cb_lines[1]
 
 
 def test_display_priority_comeback_capped(monkeypatch, capsys):
@@ -490,10 +511,12 @@ def test_display_priority_comeback_capped(monkeypatch, capsys):
     assert len(cb_lines) == disp_mod.COMEBACK_DISPLAY_MAX
 
 
-# ── 次日大涨画像标记（2026-08-11 起并入主表行尾 🎯，替代原独立区）──
+# ── 次日大涨画像标记（2026-08-11 起并入主表行尾 🎯；2026-08-12 起成为排序档0唯一因子）──
 # 原独立区（2026-08-10）与主表重合度 65%（主表 17 只中 11 只甜蜜带、两表排序几乎一致、
 # 辨识度因子空转），重复输出；改为主表行尾标记。筛形条件不变（nextday_attribution 口径）：
 # 推荐时刻涨幅甜蜜带（<2% 低吸潜伏 / 4~8% 中段启动）且非超买死亡信号。
+# 2026-08-12：🎯 从纯视觉标记升级为排序档0唯一因子——辨识度退出排序（次日大涨本身即
+# 辨识度属性），↻ 仅保留行内展示。
 def _insert_rec_pct(conn, symbol: str, name: str, category: str, score: int, percent: float):
     today = now_beijing().date().isoformat()
     conn.execute(
@@ -527,8 +550,8 @@ def test_nextday_mark_excludes_overbought(monkeypatch, capsys):
     _insert_rec_pct(conn, "SZ300001", "超买超短", "short_term", 60, 1.0)
     _insert_rec_pct(conn, "SZ300002", "正常超短", "short_term", 55, 1.0)
     pool = {
-        "SZ300001": _cand_tier("SZ300001", 60, "short_term"),
-        "SZ300002": _cand_tier("SZ300002", 55, "short_term"),
+        "SZ300001": _cand_tier("SZ300001", 60, "short_term", percent=1.0),
+        "SZ300002": _cand_tier("SZ300002", 55, "short_term", percent=1.0),
     }
     pool["SZ300001"].kline.dimensions.update({"st_overbought_flag": True})
     monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
@@ -551,20 +574,26 @@ def test_nextday_mark_no_hits_omitted(monkeypatch, capsys):
     assert "SZ300001" in out  # 主表仍正常显示
 
 
-def test_nextday_mark_not_affect_sort(monkeypatch, capsys):
-    """🎯 只加视觉标记不改排序：主表仍按档位(辨识度置前)→类别优先级→分数排序。"""
+def test_nextday_mark_lifts_tier(monkeypatch, capsys):
+    """2026-08-12: 🎯 是排序档0唯一因子——甜蜜带+非超买票(档0)排在无标记高分票(档1)前，
+    无视分数；档0 内仍按类别优先级+分数排序（辨识度不再参与排序）。"""
     conn = _rec_db()
-    _insert_rec_pct(conn, "SZ300001", "辨识票", "rebound", 50, 1.0)   # <2% 甜蜜带
-    _insert_rec_pct(conn, "SZ300002", "普通票", "rebound", 80, 1.0)
+    _insert_rec_pct(conn, "SZ300001", "辨识票", "rebound", 50, 1.0)   # 辨识度+甜蜜带
+    _insert_rec_pct(conn, "SZ300002", "甜蜜票", "rebound", 80, 1.0)   # 仅甜蜜带
+    _insert_rec_pct(conn, "SZ300003", "普通票", "rebound", 120, 3.0)  # 死区带，无标记
     pool = {
-        "SZ300001": _cand_tier("SZ300001", 50, "rebound", prominent=True),
-        "SZ300002": _cand_tier("SZ300002", 80, "rebound"),
+        "SZ300001": _cand_tier("SZ300001", 50, "rebound", prominent=True, percent=1.0),
+        "SZ300002": _cand_tier("SZ300002", 80, "rebound", percent=1.0),
+        "SZ300003": _cand_tier("SZ300003", 120, "rebound"),
     }
     monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
     disp_mod.display_priority(conn)
     out = capsys.readouterr().out
     lines = [l for l in out.splitlines() if "SZ30000" in l]
-    assert len(lines) == 2
-    assert "SZ300001" in lines[0], f"辨识度票(score50,档0)应排在普通票(score80,档1)前: {lines}"
-    assert "SZ300002" in lines[1]
-    assert "🎯" in lines[0] and "🎯" in lines[1], "两票都在甜蜜带，均应带 🎯 标记"
+    assert len(lines) == 3
+    # 档0（辨识度+🎯）内同类别按分数降序：甜蜜票(80) > 辨识票(50)；无标记高分票(120)落档1
+    assert "SZ300002" in lines[0], f"🎯 甜蜜带票(80,档0)应排在辨识度票(50,档0)前: {lines}"
+    assert "SZ300001" in lines[1]
+    assert "SZ300003" in lines[2], f"无标记高分票(120,档1)应排在档0之后: {lines}"
+    assert "🎯" in lines[0] and "🎯" in lines[1]
+    assert "🎯" not in lines[2], f"死区带票不应有 🎯 标记: {lines}"

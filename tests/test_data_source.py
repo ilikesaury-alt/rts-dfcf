@@ -128,16 +128,53 @@ class TestAkshareAdapter:
         assert isinstance(k["timestamp"], int)
 
     def test_fetch_kline_empty(self):
+        """东财空 → 降级新浪；新浪也空 → None。"""
         adapter = AkshareAdapter()
         mock_ak = MagicMock()
         mock_ak.stock_zh_a_hist.return_value = pd.DataFrame()
+        mock_ak.stock_zh_a_daily.return_value = pd.DataFrame()
         adapter._ak = mock_ak
         assert adapter.fetch_kline("SZ300001") is None
+        mock_ak.stock_zh_a_daily.assert_called_once()
 
-    def test_fetch_kline_exception(self):
+    def test_fetch_kline_em_fails_falls_back_to_sina(self):
+        """东财异常 → 降级新浪成功返回（percent 由收盘价推算）。"""
         adapter = AkshareAdapter()
         mock_ak = MagicMock()
         mock_ak.stock_zh_a_hist.side_effect = Exception("network error")
+        mock_ak.stock_zh_a_daily.return_value = pd.DataFrame({
+            "date": ["2026-07-30", "2026-07-31"],
+            "open": [10.0, 11.0],
+            "high": [10.8, 11.8],
+            "low": [9.8, 10.8],
+            "close": [10.5, 11.5],
+            "volume": [100000, 120000],
+            "amount": [1050000.0, 1380000.0],
+            "outstanding_share": [1e9, 1e9],
+            "turnover": [0.01, 0.01],
+        })
+        adapter._ak = mock_ak
+
+        result = adapter.fetch_kline("SZ300001", 15)
+
+        assert result is not None
+        assert len(result) == 2
+        k = result[0]
+        assert set(k.keys()) == {"timestamp", "date", "open", "high", "low",
+                                 "close", "volume", "percent"}
+        assert k["date"] == "2026-07-30"
+        assert k["close"] == 10.5
+        # percent 为推算值：首根无前收盘 → 0；次根 (11.5/10.5-1)*100
+        assert k["percent"] == 0.0
+        assert result[1]["percent"] == pytest.approx(9.5238, abs=0.01)
+        assert isinstance(k["timestamp"], int)
+
+    def test_fetch_kline_exception(self):
+        """东财 + 新浪都失败 → None（不抛错）。"""
+        adapter = AkshareAdapter()
+        mock_ak = MagicMock()
+        mock_ak.stock_zh_a_hist.side_effect = Exception("network error")
+        mock_ak.stock_zh_a_daily.side_effect = Exception("sina network error")
         adapter._ak = mock_ak
         assert adapter.fetch_kline("SZ300001") is None
 
@@ -165,6 +202,43 @@ class TestAkshareAdapter:
         assert result["SZ300001"]["turnover_rate"] == 1.5
         assert result["SZ300001"]["current"] == 10.5
         assert result["SZ300001"]["percent"] == 5.0
+
+    def test_fetch_market_caps_batch_nan_inf_coerced(self):
+        """回归：停牌/异常行为 NaN/inf（DataFrame 常态脏值）→ 0，
+        不产出 NaN 市值/现价（此前 float(NaN or 0)=NaN 漏进下游比较）。"""
+        import math
+        adapter = AkshareAdapter()
+        mock_df = pd.DataFrame({
+            "代码": ["300001"],
+            "名称": ["股票A"],
+            "最新价": [float("nan")],
+            "涨跌幅": [float("inf")],
+            "总市值": [float("nan")],
+            "流通市值": [float("-inf")],
+            "换手率": [None],
+        })
+        mock_ak = MagicMock()
+        mock_ak.stock_zh_a_spot_em.return_value = mock_df
+        adapter._ak = mock_ak
+
+        result = adapter.fetch_market_caps_batch(["SZ300001"])
+        e = result["SZ300001"]
+        assert e["current"] == 0.0 and e["percent"] == 0.0
+        assert e["market_cap"] == 0.0 and e["circ_market_cap"] == 0.0
+        assert e["turnover_rate"] == 0.0
+        for v in e.values():
+            assert math.isfinite(v)
+
+    def test_fetch_market_index_nan_coerced(self):
+        adapter = AkshareAdapter()
+        mock_df = pd.DataFrame({
+            "代码": ["399006"],
+            "涨跌幅": [float("nan")],
+        })
+        mock_ak = MagicMock()
+        mock_ak.stock_zh_index_spot_em.return_value = mock_df
+        adapter._ak = mock_ak
+        assert adapter.fetch_market_index() == 0.0  # NaN → 0（中性）
 
     def test_fetch_market_caps_batch_empty_request(self):
         adapter = AkshareAdapter()

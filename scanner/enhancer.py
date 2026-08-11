@@ -1,5 +1,7 @@
 from datetime import datetime
 
+import math
+
 from scanner.config import (
     now_beijing,
     DISTRIBUTION_ACCUM_HIGH,
@@ -318,10 +320,14 @@ def _apply_gap_up_bonus(c: Candidate):
 
 
 def _safe_float(v, default: float = 0.0) -> float:
-    """安全转 float：None/NaN/不可解析字符串 → default（数据入口防御，防整轮扫描异常丢失）。"""
+    """安全转 float：None/NaN/±inf/不可解析字符串 → default（数据入口防御，防整轮扫描异常丢失）。
+
+    与 api._num / market_extra._num 同族：Python json/DataFrame 可出现 ±inf，
+    inf 与数值比较恒为真/假会绕过阈值判断（fund_flow 档位），故统一 math.isfinite。
+    """
     try:
         f = float(v)
-        return default if f != f else f  # NaN → default
+        return default if not math.isfinite(f) else f  # NaN/±inf → default
     except (TypeError, ValueError):
         return default
 

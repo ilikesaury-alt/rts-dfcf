@@ -213,7 +213,7 @@ def _print_priority_row(entry: dict, i: int, flow_pct_map: dict,
 
     flow_pct_map: {symbol: 主力净占比} DB 快照回退（候选缺失/扫描失败时仍显示资金流图标）。
     nextday_mark: 次日大涨画像（🎯）——推荐时刻涨幅甜蜜带 + 非超买（见 _is_nextday_marked）。
-    只加视觉标记，不改分数/排序/不落库。
+    视觉标记 + 参与综合排序档位置顶（display_priority._sort_tier 档0），不改 score / 不落库。
     """
     c = entry["_candidate"]
     sector = classify_sector(entry["name"])
@@ -348,7 +348,7 @@ def _is_nextday_marked(entry: dict) -> bool:
     标记，消除重复输出。筛形条件与独立区完全一致（nextday_attribution 口径）：
       1. 推荐时刻涨幅在甜蜜带（<2% 低吸潜伏 或 4~8% 中段启动）；
       2. 排除超买（short_term/动量死亡信号：hit 5% vs 非超买 10.5%）。
-    只加视觉标记，不改 score / 排序键 / 不落库。
+    视觉标记 + 参与综合排序档位（_sort_tier 档0置顶），不改 score / 不落库。
     """
     if entry["category"] not in NEXTDAY_CAT_PRIORITY:
         return False
@@ -370,9 +370,10 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
 
     live_quotes: {symbol: {percent, current}} 实时行情覆盖，优先于候选池和数据库数据。
     rank_map: {symbol: 飙升榜排名} 当前扫描的榜单排名，为掉榜/重启行补实时排名。
-    排序键 = (档位, CAT_DISPLAY_PRIORITY, 分数键)：档0置前(辨识度↻) < 档1普通。
+    排序键 = (档位, CAT_DISPLAY_PRIORITY, 分数键)：档0置前(次日大涨🎯) < 档1普通。
     2026-08-11 起资金流不再参与档位排序/劣后过滤（净流出票正常展示，仅保留图标与「资金流出」标签）。
-    档位只影响排序，不改评分列/不落库。
+    2026-08-12 次日大涨画像(🎯)置顶；辨识度(↻)不再参与排序（次日大涨本身即辨识度属性），
+    仅保留行内 ↻ 展示。档位只影响排序，不改评分列/不落库。
     """
     if conn is None:
         return
@@ -422,13 +423,13 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     # 保存的全市场快照——避免综合排序大量行因进程重启丢失资金流图标。
     flow_pct_map = get_fund_flow_pct_map(conn, [e["symbol"] for e in today_recs])
 
-    # 档位置顶（2026-08-06 引入；2026-08-11 去掉资金流因子）：排序键 (档位, 类别优先级, 分数键)，
-    # 跨类别全局生效。档0置前 = 辨识度(↻)；档1 = 其余。资金流不再参与排序/劣后过滤
-    # （净流出票回到正常排序展示，仅保留「资金流出」标签与图标提醒），展示数据源不变。
+    # 档位置顶（2026-08-06 引入；2026-08-11 去掉资金流因子；2026-08-12 档0=辨识度∪次日大涨；
+    # 2026-08-12 去掉辨识度排序）：排序键 (档位, 类别优先级, 分数键)，跨类别全局生效。
+    # 档0置前 = 次日大涨画像(🎯)（推荐时刻涨幅甜蜜带 + 非超买）；档1 = 其余。辨识度(↻)
+    # 不再参与排序——次日大涨画像本身即辨识度属性（用户决策），↻ 仅保留行内展示。
+    # 资金流不参与排序/劣后过滤（净流出票正常展示，仅保留「资金流出」标签与图标提醒）。
     def _sort_tier(entry):
-        c = entry["_candidate"]
-        prominent = bool(c.prominence_labels) if c else prom_map.get(entry["symbol"], False)
-        return 0 if prominent else 1
+        return 0 if _is_nextday_marked(entry) else 1
 
     # 回马枪独立成区（2026-08-07 方案A）：comeback 是 off_list 掉榜跟踪票，语义与榜上票不同，
     # 从主排序表抽出放到末尾独立区块；主表只排榜上五类（rebound/known_new_face/new_face/
@@ -463,7 +464,9 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     # 次日大涨画像标记（🎯）图例：2026-08-11 独立区并入主表行尾标记——原独立区与主表
     # 重合度 65%（主表 17 只中 11 只甜蜜带、排序几乎一致、辨识度因子空转），重复输出。
     # 标记条件 = 推荐时刻涨幅甜蜜带（<2% 低吸潜伏 / 4~8% 中段启动）+ 非超买死亡信号
-    # （nextday_attribution 口径），只加视觉标记，不改 score / 排序键 / 不落库。
+    # （nextday_attribution 口径）。2026-08-12 起 🎯 为排序档0唯一因子（辨识度退出排序，
+    # 次日大涨本身即辨识度属性），↻ 仅保留行内展示。
+    # 只加视觉标记，不改 score / 不落库。
     if marked:
         print(f"  {ANSI['GREEN']}🎯 次日大涨画像：推荐时刻涨幅<2%（低吸潜伏）或 4~8%（中段启动）且非超买{ANSI['RESET']}")
 

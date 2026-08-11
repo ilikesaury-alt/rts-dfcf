@@ -15,6 +15,7 @@
 - 符号格式转换复用 data_source 的 _ak_to_xq（300001 → SZ300001）
 """
 import logging
+import math
 import os
 import threading
 import time
@@ -312,7 +313,7 @@ def fetch_fund_flow_rank() -> dict[str, dict]:
 
 
 def _num(row, key) -> float:
-    """单元格安全取值：None/NaN/空字符串 → 0.0。"""
+    """单元格安全取值：None/NaN/±inf/不可解析字符串 → 0.0。"""
     try:
         v = row.get(key)
     except (AttributeError, TypeError):
@@ -320,12 +321,8 @@ def _num(row, key) -> float:
     if v is None:
         return 0.0
     try:
-        if v != v:  # NaN
-            return 0.0
-    except Exception:
-        pass
-    try:
-        return float(v)
+        f = float(v)
+        return f if math.isfinite(f) else 0.0
     except (TypeError, ValueError):
         return 0.0
 

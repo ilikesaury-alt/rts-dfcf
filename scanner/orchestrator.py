@@ -1,3 +1,4 @@
+import math
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor, Future, wait
@@ -338,12 +339,25 @@ def _filter_gem_stocks(raw: list[dict]) -> list[StockInfo]:
             percent = float(item.get("percent") or 0.0)
             current = float(item.get("current") or 0.0)
             value = float(item.get("value") or 0.0)
-            rank_change = int(float(item.get("rank_change") or 0))
+            rc_val = float(item.get("rank_change") or 0)
             # rank 与 rank_change 同口径 float 中转：API 偶发返回 "5.0" 这类数值字符串时，
             # 直接 int("5.0") 抛 ValueError 会让整只票被跳过（漏推荐），float 中转则正常解析。
-            rank = int(float(item.get("rank") or i))
+            rank_val = float(item.get("rank") or i)
         except (TypeError, ValueError):
             continue
+        # NaN/inf 防御（Python json 默认解析 JSON 字面量 NaN/Infinity，与字符串脏值同族）：
+        # NaN 与任何数值比较均为 False，会绕过 s.current > MAX_STOCK_PRICE / 涨幅档位判断，
+        # 产出 NaN 评分并写库为 NULL（sqlite 把 NaN 存为 NULL）；inf 同理。统一按 0 处理
+        # （与 api._num 口径一致）。rank/rank_change 为 NaN 时 int(nan) 抛 ValueError
+        # 会让整只票被跳过（漏推荐），改回退默认值（0 / 列表下标）。
+        if not math.isfinite(percent):
+            percent = 0.0
+        if not math.isfinite(current):
+            current = 0.0
+        if not math.isfinite(value):
+            value = 0.0
+        rank_change = int(rc_val) if math.isfinite(rc_val) else 0
+        rank = int(rank_val) if math.isfinite(rank_val) else i
         gem_stocks.append(StockInfo(
             symbol=symbol, name=name, code=code,
             percent=percent, current=current, value=value,

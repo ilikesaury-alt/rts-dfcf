@@ -436,3 +436,64 @@ class TestFetchKlineCoercion:
             kline = fetch_kline(MagicMock(), "SZ300001", days=15)
         assert kline is not None and len(kline) == 1
         assert kline[0]["close"] == 10.8
+
+
+class TestNumInf:
+    """回归：_num 对 ±inf 必须按 0 处理（此前仅判 `f != f`，inf 会漏进下游）。
+
+    Python json 默认可解析 JSON 字面量 NaN/Infinity，inf 与数值比较恒为真/假，
+    会绕过 s.current > MAX_STOCK_PRICE 等越界判断，与 NaN 同族。
+    """
+
+    def test_inf_coerced_to_default(self):
+        from scanner.api import _num
+        assert _num(float("inf")) == 0.0
+        assert _num(float("-inf")) == 0.0
+
+    def test_inf_string_coerced(self):
+        from scanner.api import _num
+        assert _num("Infinity") == 0.0
+        assert _num("-Infinity") == 0.0
+
+    def test_finite_unchanged(self):
+        from scanner.api import _num
+        assert _num("5.23") == 5.23
+        assert _num(None) == 0.0
+        assert _num(float("nan")) == 0.0
+
+
+class TestFetchMarketIndexCoercion:
+    """回归：大盘指数涨幅列偶发字符串/NaN 时强转，否则 enhancer 比较抛 TypeError
+    拖垮整轮扫描（enhancer._record_dimensions: market_idx_pct > MARKET_STRONG_THRESHOLD）。"""
+
+    def _fake_resp(self, item):
+        r = MagicMock()
+        r.json.return_value = {"data": {"item": [item]}}
+        return r
+
+    def test_string_pct_coerced(self):
+        import scanner.api as api
+        # 列序: [ts, volume, open, high, low, close, chg, percent, ...]
+        with patch("scanner.api._request_with_retry",
+                   return_value=self._fake_resp([1700000000000, 1, 10, 11, 9, 10, 0.1, "-0.12", 1.2])):
+            api._market_index_cache = (None, 0)  # 清缓存防跨测试污染
+            pct = api.fetch_market_index(MagicMock())
+        assert isinstance(pct, float) and pct == pytest.approx(-0.12)
+        # 下游比较不再崩溃
+        assert (pct > 0.5) is False
+
+    def test_nan_pct_coerced(self):
+        import scanner.api as api
+        with patch("scanner.api._request_with_retry",
+                   return_value=self._fake_resp([1700000000000, 1, 10, 11, 9, 10, 0.1, float("nan"), 1.2])):
+            api._market_index_cache = (None, 0)
+            pct = api.fetch_market_index(MagicMock())
+        assert pct == 0.0  # NaN → 0（中性，不触发大盘强弱标签）
+
+    def test_none_pct_returns_none(self):
+        import scanner.api as api
+        with patch("scanner.api._request_with_retry",
+                   return_value=self._fake_resp([1700000000000, 1, 10, 11, 9, 10, 0.1, None, 1.2])):
+            api._market_index_cache = (None, 0)
+            pct = api.fetch_market_index(MagicMock())
+        assert pct is None

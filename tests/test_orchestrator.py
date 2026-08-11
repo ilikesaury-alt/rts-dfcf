@@ -718,6 +718,27 @@ class TestFilterGemStocks:
         stocks = _filter_gem_stocks(raw)
         assert stocks == []
 
+    def test_nan_inf_coerced_to_zero(self):
+        """回归：percent/current/value 为 NaN/inf（Python json 可解析 JSON 字面量）
+        必须强转 0，否则 NaN 绕过 `s.current > MAX_STOCK_PRICE` 等数值过滤、
+        产出 NaN 评分写库为 NULL；inf 同理。rank/rank_change 为 NaN 时不得整票跳过。"""
+        from scanner.orchestrator import _filter_gem_stocks
+        raw = [
+            {"symbol": "SZ300001", "code": "300001", "name": "测试A",
+             "percent": float("nan"), "current": float("nan"), "value": 8000,
+             "rank_change": 100, "rank": 1},
+            {"symbol": "SZ300002", "code": "300002", "name": "测试B",
+             "percent": float("inf"), "current": float("-inf"), "value": 8000,
+             "rank_change": float("nan"), "rank": float("nan")},
+        ]
+        stocks = _filter_gem_stocks(raw)
+        assert len(stocks) == 2
+        s1, s2 = stocks
+        assert s1.percent == 0.0 and s1.current == 0.0
+        assert s2.percent == 0.0 and s2.current == 0.0
+        assert s2.rank_change == 0
+        assert s2.rank == 2  # rank=NaN → 回退列表下标
+
 
 class TestFetchAllKlinesShortCacheTtl:
     """回归：短缓存（len<KLINE_MIN_LENGTH）同样受 KLINE_REFRESH_TTL 节流，

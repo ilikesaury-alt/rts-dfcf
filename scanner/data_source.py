@@ -10,6 +10,7 @@
 - 符号格式由 adapter 内部转换（雪球 SZ300001 ↔ AKShare 300001）
 """
 import logging
+import math
 from datetime import datetime, timedelta
 from typing import Protocol, runtime_checkable
 
@@ -74,6 +75,19 @@ class XueqiuAdapter:
         return api.fetch_market_index(self._get_session())
 
 
+def _as_float(v) -> float | None:
+    """安全取 float：None/NaN/±inf/非法 → None（调用方按脏值处理）。
+
+    Python json/DataFrame 均可能出现 NaN/inf（如东财涨停池/资金流停牌行），
+    inf 与数值比较恒为真/假会绕过越界判断，与 NaN 同族，统一剔除。
+    """
+    try:
+        f = float(v)
+        return None if not math.isfinite(f) else f
+    except (TypeError, ValueError):
+        return None
+
+
 def _xq_to_ak(symbol: str) -> str:
     """雪球符号 → AKShare 符号（去市场前缀）。SZ300001 → 300001"""
     return symbol[2:] if symbol[:2] in ("SZ", "SH", "BJ") else symbol
@@ -123,41 +137,87 @@ class AkshareAdapter:
             return False
 
     def fetch_kline(self, symbol: str, days: int = 15) -> list[KlineBar] | None:
+        """东财 stock_zh_a_hist 失败/空时降级到新浪 stock_zh_a_daily。
+
+        东财 push2his 在本机间歇性不可达（连接被重置，2026-08-11 实测），
+        单靠东财兜底等于没有兜底；新浪接口稳定（3/3），且返回完整 OHLCV。
+        两份输出都统一走 make_kline_bar 契约，下游无感知。
+        """
+        ak = self._get_ak()
+        code = _xq_to_ak(symbol)
         try:
-            ak = self._get_ak()
-            code = _xq_to_ak(symbol)
-            end = datetime.now(BEIJING_TZ)
-            # 多拉一倍天数确保足够交易日（剔除周末/节假日）
-            start = end - timedelta(days=days * 2)
-            df = ak.stock_zh_a_hist(
-                symbol=code, period="daily", adjust="qfq",
-                start_date=start.strftime("%Y%m%d"),
-                end_date=end.strftime("%Y%m%d"),
-            )
-            if df is None or df.empty:
-                return None
-            result = []
-            for _, row in df.iterrows():
-                date_str = str(row["日期"])[:10]
-                dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=BEIJING_TZ)
-                # 统一走 make_kline_bar 契约（数值强转 + close<=0/date 非法剔除），
-                # 与雪球 fetch_kline 输出 1:1 对齐，下游无感知。
-                bar = make_kline_bar({
-                    "date": date_str,
-                    "open": row["开盘"],
-                    "high": row["最高"],
-                    "low": row["最低"],
-                    "close": row["收盘"],
-                    "volume": row["成交量"],
-                    "percent": row["涨跌幅"],
-                })
-                if bar is not None:
-                    bar["timestamp"] = int(dt.timestamp() * 1000)
-                    result.append(bar)
-            return result if result else None
+            result = self._fetch_kline_em(ak, code, days)
+            if result:
+                return result
         except Exception as e:
-            logger.warning("AKShare K线获取失败 %s: %s", symbol, e)
+            logger.warning("AKShare 东财K线获取失败 %s: %s，降级到新浪", symbol, e)
+        try:
+            return self._fetch_kline_sina(ak, code, days)
+        except Exception as e:
+            logger.warning("AKShare 新浪K线获取失败 %s: %s", symbol, e)
             return None
+
+    def _fetch_kline_em(self, ak, code: str, days: int) -> list[KlineBar] | None:
+        end = datetime.now(BEIJING_TZ)
+        # 多拉一倍天数确保足够交易日（剔除周末/节假日）
+        start = end - timedelta(days=days * 2)
+        df = ak.stock_zh_a_hist(
+            symbol=code, period="daily", adjust="qfq",
+            start_date=start.strftime("%Y%m%d"),
+            end_date=end.strftime("%Y%m%d"),
+        )
+        if df is None or df.empty:
+            return None
+        result = []
+        for _, row in df.iterrows():
+            date_str = str(row["日期"])[:10]
+            dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=BEIJING_TZ)
+            # 统一走 make_kline_bar 契约（数值强转 + close<=0/date 非法剔除），
+            # 与雪球 fetch_kline 输出 1:1 对齐，下游无感知。
+            bar = make_kline_bar({
+                "date": date_str,
+                "open": row["开盘"],
+                "high": row["最高"],
+                "low": row["最低"],
+                "close": row["收盘"],
+                "volume": row["成交量"],
+                "percent": row["涨跌幅"],
+            })
+            if bar is not None:
+                bar["timestamp"] = int(dt.timestamp() * 1000)
+                result.append(bar)
+        return result if result else None
+
+    def _fetch_kline_sina(self, ak, code: str, days: int) -> list[KlineBar] | None:
+        """新浪日线兜底：stock_zh_a_daily 返回全量 qfq，无涨跌幅列 → 由收盘价推算。"""
+        market = "sh" if code.startswith("6") else ("bj" if code.startswith(("8", "4")) else "sz")
+        df = ak.stock_zh_a_daily(symbol=f"{market}{code}", adjust="qfq")
+        if df is None or df.empty:
+            return None
+        df = df.tail(days * 2)  # 多拉一倍，后续补拉/合并时窗口够用
+        result = []
+        prev_close: float | None = None
+        for _, row in df.iterrows():
+            date_str = str(row["date"])[:10]
+            dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=BEIJING_TZ)
+            close = _as_float(row["close"])
+            percent = 0.0
+            if close is not None and prev_close:
+                percent = (close / prev_close - 1.0) * 100.0
+            bar = make_kline_bar({
+                "date": date_str,
+                "open": row["open"],
+                "high": row["high"],
+                "low": row["low"],
+                "close": close if close is not None else row["close"],
+                "volume": row["volume"],
+                "percent": percent,
+            })
+            if bar is not None:
+                bar["timestamp"] = int(dt.timestamp() * 1000)
+                result.append(bar)
+                prev_close = close if close is not None else bar["close"]
+        return result if result else None
 
     def fetch_biaosheng(self, size: int = 100) -> list[dict]:
         logger.warning("AKShare 无飙升榜对应接口，返回空列表（依赖雪球熔断缓存兜底）")
@@ -182,11 +242,11 @@ class AkshareAdapter:
                 if code not in wanted:
                     continue
                 result[_ak_to_xq(code)] = {
-                    "market_cap": float(row.get("总市值") or 0),
-                    "circ_market_cap": float(row.get("流通市值") or 0),
-                    "turnover_rate": float(row.get("换手率") or 0),
-                    "current": float(row.get("最新价") or 0),
-                    "percent": float(row.get("涨跌幅") or 0),
+                    "market_cap": _as_float(row.get("总市值")) or 0,
+                    "circ_market_cap": _as_float(row.get("流通市值")) or 0,
+                    "turnover_rate": _as_float(row.get("换手率")) or 0,
+                    "current": _as_float(row.get("最新价")) or 0,
+                    "percent": _as_float(row.get("涨跌幅")) or 0,
                 }
             return result
         except Exception as e:
@@ -203,7 +263,7 @@ class AkshareAdapter:
             row = df[df["代码"] == "399006"]
             if row.empty:
                 return None
-            return float(row.iloc[0].get("涨跌幅") or 0)
+            return _as_float(row.iloc[0].get("涨跌幅")) or 0
         except Exception as e:
             logger.warning("AKShare 大盘指数获取失败: %s", e)
             return None

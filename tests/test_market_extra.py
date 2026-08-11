@@ -324,6 +324,21 @@ class TestCacheDateKey:
         assert Bad.calls == 1, "失败缓存空结果：TTL 内第二次调用不再打网络"
 
 
+class TestNumCell:
+    """回归：_num 对 NaN/±inf/字符串脏值 → 0（此前仅判 `v != v`，inf 与 "NaN" 字符串漏网）。"""
+
+    def test_inf_and_nan_coerced(self):
+        import math
+        for bad in (float("nan"), float("inf"), float("-inf"), "NaN", "Infinity", "abc", "", None):
+            row = {"f62": bad}
+            v = me._num(row, "f62")
+            assert math.isfinite(v) and v == 0.0, f"f62={bad!r} → {v}"
+
+    def test_finite_kept(self):
+        assert me._num({"f62": 123.5}, "f62") == 123.5
+        assert me._num({"f62": "8.25"}, "f62") == 8.25
+
+
 @pytest.fixture
 def memory_db():
     import sqlite3

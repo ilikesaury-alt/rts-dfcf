@@ -1,4 +1,5 @@
 import logging
+import math
 import threading
 import time
 from datetime import datetime
@@ -128,20 +129,30 @@ def fetch_market_index(session: requests.Session) -> float | None:
         resp = _request_with_retry(session, url)
         items = resp.json().get("data", {}).get("item", [])
         if items and len(items[-1]) > 7:
-            pct = items[-1][7]
-            with _index_cache_lock:
-                _market_index_cache = (pct, now)
-            return pct
+            pct_raw = items[-1][7]
+            if pct_raw is not None:
+                # 类型防御（与 _num 同族）：大盘涨幅列偶发为字符串/NaN/inf 时统一强转，
+                # 否则下游 enhancer._record_dimensions 的 `market_idx_pct > MARKET_STRONG_THRESHOLD`
+                # 对字符串抛 TypeError，整轮扫描异常丢失。强转后 0.0 语义=中性，无加分。
+                pct = _num(pct_raw)
+                with _index_cache_lock:
+                    _market_index_cache = (pct, now)
+                return pct
     except Exception as e:
         print(f"  [!] 获取大盘指数失败: {e}")
     return None
 
 
 def _num(v, default: float = 0.0) -> float:
-    """安全转 float：API 偶发返回字符串/None/NaN 时按 0 处理，避免下游 str/float 比较崩溃。"""
+    """安全转 float：API 偶发返回字符串/None/NaN/±inf 时按 0 处理，避免下游 str/float 比较崩溃。
+
+    Python json 默认允许解析 JSON 字面量 NaN/Infinity（非标准但可被 parse），
+    仅判 `f != f`（NaN）会放行 inf——inf 与任何数值比较恒为真/假，会绕过节流
+    与越界判断（如 s.current > MAX_STOCK_PRICE），故统一用 math.isfinite。
+    """
     try:
         f = float(v)
-        return default if f != f else f  # NaN → default
+        return default if not math.isfinite(f) else f  # NaN/±inf → default
     except (TypeError, ValueError):
         return default
 
