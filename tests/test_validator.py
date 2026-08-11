@@ -2,8 +2,6 @@ from scanner.config import (
     V_MO_MA_FULL,
     V_MO_MA_NONE,
     V_NF_SECTOR_STRONG,
-    V_PB_SHRINK_NO,
-    V_PB_SHRINK_YES,
     V_ST_MA_SUPPORT,
     V_ST_RANK_TOP10,
     V_ST_SECTOR_HOT,
@@ -20,9 +18,6 @@ from scanner.validator import (
     _nf_convergence,
     _nf_higher_low,
     _nf_sector,
-    _pb_ma_trend,
-    _pb_sector,
-    _pb_shrinkage,
     _st_is_overbought,
     validate,
     validate_momentum,
@@ -339,84 +334,12 @@ class TestValidateMomentum:
             V._mo_ma_alignment, V._mo_volume_uniformity = orig_ma, orig_vol
 
 
-class TestValidatePullbackHelpers:
-
-    def test_ma_trend_up(self):
-        pcts = [1.0]*26
-        k = _kline(pcts, volumes=[1.0]*26)
-        closes = [c["close"] for c in k[:-1]]
-        bonus, detail = _pb_ma_trend(closes)
-        assert bonus > 0, f"expected ma up, got {bonus} ({detail})"
-
-    def test_ma_trend_down(self):
-        pcts = [-1.0]*26
-        k = _kline(pcts, volumes=[1.0]*26)
-        closes = [c["close"] for c in k[:-1]]
-        bonus, detail = _pb_ma_trend(closes)
-        assert bonus < 0, f"expected ma down, got {bonus} ({detail})"
-
-    def test_shrinkage_yes(self):
-        ks = KlineSummary(
-            trend="缩量回调", accumulated_pct=15.0, volume_ratio=0.3,
-            bottom_confirmed=True, score=20, avg_volume=1.0,
-        )
-        bonus, vr = _pb_shrinkage(ks)
-        assert bonus == V_PB_SHRINK_YES, f"expected shrink yes, got {bonus}"
-
-    def test_shrinkage_neutral_at_high_boundary(self):
-        # vol_ratio == PULLBACK_VOL_HIGH(1.3) 视为中性，与分析端口径一致
-        ks = KlineSummary(
-            trend="回踩整理", accumulated_pct=18.0, volume_ratio=1.3,
-            bottom_confirmed=True, score=16, avg_volume=1.0,
-        )
-        bonus, vr = _pb_shrinkage(ks)
-        assert bonus == 0, f"1.3 应为中性, got {bonus}"
-
-    def test_shrinkage_no(self):
-        # vol_ratio > PULLBACK_VOL_HIGH(1.3) 才惩罚
-        ks = KlineSummary(
-            trend="放量回落", accumulated_pct=18.0, volume_ratio=1.5,
-            bottom_confirmed=True, score=16, avg_volume=1.0,
-        )
-        bonus, vr = _pb_shrinkage(ks)
-        assert bonus == V_PB_SHRINK_NO, f"expected shrink no, got {bonus}"
-
-    def test_volume_band_consistency_analysis_vs_validator(self):
-        # B3 回归：分析端与验证端对回踩量能的"正/中性/惩罚"判定必须一致，
-        # 避免 vol_ratio∈(1.0,1.3] 时分析端中性、验证端却扣分导致误判 pos_dims。
-        from scanner.analysis import _score_pullback_volume
-        from scanner.config import PULLBACK_WEIGHTS
-
-        bands = [0.3, 0.5, 0.9, 1.1, 1.3, 1.5, 2.0]
-        for vr in bands:
-            ks = KlineSummary(
-                trend="t", accumulated_pct=15.0, volume_ratio=vr,
-                bottom_confirmed=True, score=20, avg_volume=1.0,
-            )
-            vbonus, _ = _pb_shrinkage(ks)
-            validator_negative = vbonus < 0
-            a_score, _ = _score_pullback_volume(vr, PULLBACK_WEIGHTS)
-            analysis_negative = a_score < 0
-            assert validator_negative == analysis_negative, (
-                f"vol_ratio={vr}: 验证端负={validator_negative} 分析端负={analysis_negative} 不一致"
-            )
-
-    def test_sector_hot(self):
-        bonus, count = _pb_sector("半导体测试", SEMICONDUCTOR_CLUSTER)
-        assert bonus > 0
-        assert count == 3
-
-    def test_sector_dead(self):
-        bonus, count = _pb_sector("测试", None)
-        assert count == 0
-
-    def test_sector_cold(self):
-        bonus, count = _pb_sector("半导体测试", {"医疗": ["300001"]})
-        assert count == 0
-        assert bonus == 0
-
-
 class TestValidatePullback:
+    """pullback 策略已下线（2026-07-30），仅保留端到端冒烟用例。
+
+    2026-08-12 精简：原 TestValidatePullbackHelpers（9 个维度级辅助函数用例）为死路径
+    维护成本，删除。保留 validate_pullback 端到端冒烟，未来恢复策略时再重写详细用例。
+    """
 
     def test_healthy_pullback_passes(self):
         pcts = [1.0]*20 + [-1, -1.5, -2, -0.5, 0.0]

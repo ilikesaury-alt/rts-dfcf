@@ -131,6 +131,8 @@ class TestDetectMomentumPatterns:
 
 
 class TestDetectPullbackPatterns:
+    """pullback 已下线（2026-07-30），detect_pullback_patterns 仅被离线 analyze_pullback 调用。
+    2026-08-12 精简：保留入口契约冒烟（engulfing 检出 + 空 K 线鲁棒），删除维度级用例。"""
 
     def test_engulfing(self):
         k = [
@@ -139,28 +141,6 @@ class TestDetectPullbackPatterns:
         ]
         score, dims = detect_pullback_patterns(k, vol_ratio=1.0)
         assert dims["pb_pattern_engulfing"] == 5
-
-    def test_doji(self):
-        k = [
-            {"open": 51, "close": 49, "high": 52, "low": 48},
-            {"open": 50, "close": 50.05, "high": 50.5, "low": 49.5},
-        ]
-        score, dims = detect_pullback_patterns(k, vol_ratio=0.5)
-        assert dims["pb_pattern_doji"] == 4
-
-    def test_doji_vol_too_high(self):
-        k = [
-            {"open": 51, "close": 49, "high": 52, "low": 48},
-            {"open": 50, "close": 50.05, "high": 50.5, "low": 49.5},
-        ]
-        score, dims = detect_pullback_patterns(k, vol_ratio=0.9)
-        assert score == 0, "vol_ratio must < 0.8"
-        assert dims == {}
-
-    def test_too_short_kline(self):
-        k = [{"open": 50, "close": 51, "high": 52, "low": 49}]
-        score, dims = detect_pullback_patterns(k, vol_ratio=1.0)
-        assert score == 0
 
     def test_empty_kline(self):
         score, dims = detect_pullback_patterns([], vol_ratio=1.0)

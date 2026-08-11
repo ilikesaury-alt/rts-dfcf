@@ -9,6 +9,8 @@ import math
 import sqlite3
 from datetime import date, timedelta
 
+import pytest
+
 from scanner.config import DB_PATH
 from scanner.portfolio_backtest import PBConfig, run_backtest
 
@@ -91,6 +93,7 @@ def test_synthetic_costs_reduce_return():
         os.remove(path)
 
 
+@pytest.mark.smoke
 def test_real_db_smoke():
     conn = sqlite3.connect(DB_PATH)
     cfg = PBConfig(days=20, hold_days=3, buy_delay=1, max_positions=10)
@@ -125,6 +128,7 @@ def test_metrics_use_active_window():
         os.remove(path)
 
 
+@pytest.mark.smoke
 def test_benchmark_no_skill_runs():
     """基准(无筛选)模式应在真实库上正常产出指标。"""
     conn = sqlite3.connect(DB_PATH)

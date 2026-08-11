@@ -4,7 +4,7 @@
 
 - **Run scanner**: `python unified_scanner.py` (default 60s interval) or `python unified_scanner.py 120` (custom seconds)
 - **Crash-proof run**: `python unified_scanner.py --supervise` (父进程拉起子进程，崩溃后指数退避自动重启；重启事件写入 `logs/supervisor.log`)
-- **Run tests**: `python -m pytest tests/ -v`
+- **Run tests**: `python -m pytest tests/ -v`（默认跳过真实库/外网集成测试，~5s 快跑；加 `--run-smoke` 跑全部含集成，~27s）
 - **Single test**: `python -m pytest tests/test_analysis.py::TestAnalysis::test_new_face_bollinger_oversold -v`
 - **组合级回测**: `python -m scanner.portfolio_backtest --compare`（多策略对比：各现役类别+综合+基准）/ `--days 60`（窗口）/ `--category new_face`（单策略）/ `--export nav.csv`（导出净值序列）
 - **归因回测**: `python -m scanner.backtest`（权重校准仪表盘，默认 cum_3d 口径）
@@ -63,7 +63,7 @@ tests/                    # pytest test suite
 ## Architecture Notes
 
 - Scanner filters: GEM stocks only (300xxx), excludes ST/*ST, HK stocks, market cap >500亿, price >200元
-- Five strategies: new_face (bottom breakout), momentum (trend continuation), pullback (**offline as of 2026-07-30** — cum_2d 均亏 -8.33%, 胜率 15.8%; `analyze_pullback` 本体保留供未来恢复，但 orchestrator 调用链已完全切断——`_score_stock` 不再调用 `analyze_pullback`/`validate_pullback`，不再进入分类候选), rebound (oversold reversal), short_term (next-day sell)
+- Five strategies: new_face (bottom breakout), momentum (trend continuation), pullback (**offline as of 2026-07-30** — cum_2d 均亏 -8.33%, 胜率 15.8%; `analyze_pullback` 本体保留供未来恢复，但 orchestrator 调用链已完全切断——`_score_stock` 不再调用 `analyze_pullback`/`validate_pullback`，不再进入分类候选。**2026-08-12 测试精简**：`TestAnalyzePullback`(19→4)、`TestValidatePullbackHelpers`(9→删)、`TestDetectPullbackPatterns`(5→2) 全部收敛为入口契约冒烟用例，维度级死路径测试移除，未来恢复时按当时数据重写), rebound (oversold reversal), short_term (next-day sell)
 - Cross-validation (`validator.py`): each candidate must pass ≥2 of its independent dimensions (pos_dims ≥ 2). short_term adds a "non-sector" constraint and 弱转强 override.
   - **new_face**: requires ≥1 oversold signal (indicator convergence hit OR MACD bull divergence) AND pos_dims ≥ 2. Dimensions: convergence (RSI<30 + MACD golden cross + KDJ K<20 & K>D), higher-low structure, sector resonance, volume surge.
   - **momentum**: MA5>10>20 alignment (EMA, penalty -5 if broken), no RSI divergence, volume uniformity (5-day window). pos_dims ≥ 2 required.
@@ -108,7 +108,7 @@ tests/                    # pytest test suite
 
 ## Testing
 
-Tests use pytest with helper factories `_stock()` and `_kline()` in `tests/helpers.py` and `tests/test_analysis.py` for creating mock data. No external services required.
+Tests use pytest with helper factories `_stock()` and `_kline()` in `tests/helpers.py` and `tests/test_analysis.py` for creating mock data. No external services required. 真实 `scanner.db` / 外网的集成测试（共 11 个：`test_historical_rescan` 全部、`test_backtest` 3 个真实库用例、`test_nextday_attribution.test_real_db_smoke`、`test_portfolio_backtest` 2 个真实库用例）标 `@pytest.mark.smoke`，默认跳过（`tests/conftest.py` 未传 `--run-smoke` 时自动 skip），显式 `--run-smoke` 才跑——保持默认套件 ~5s 快速、密封、可在无库环境稳定通过。
 
 ## Bug 检查规则（用户要求"检查 bug / 审查 / 排查问题"时必读）
 

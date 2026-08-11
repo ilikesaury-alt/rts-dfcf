@@ -128,7 +128,10 @@ class TestSuperviseLoop:
              patch("unified_scanner._heartbeat_age", return_value=999), \
              patch("unified_scanner.time.sleep") as mock_sleep, \
              patch("unified_scanner._supervise_log"):
-            code = _wait_or_kill(proc)
+            # grace=0：跳过启动宽限期（默认 SUPERVISE_CHILD_GRACE=60 会让本测试
+            # 真实等待 60s 才进心跳判定，纯测试成本）。SUPERVISE_CHILD_TIMEOUT 是
+            # 函数内读模块属性、patch 生效；grace 是默认参数、定义时已绑定，须显式传。
+            code = _wait_or_kill(proc, grace=0)
         assert code == -9
         mock_kill.assert_called_once()
 

@@ -1,6 +1,8 @@
 import sqlite3
 from datetime import date
 
+import pytest
+
 from scanner.backtest import (
     _ic,
     _nth_trading_day_after,
@@ -70,8 +72,9 @@ def test_compute_outcome_missing_returns_none():
     assert occ.fwd_3d is None
 
 
+@pytest.mark.smoke
 def test_strategy_performance_runs():
-    # 用真实库（若存在），否则跳过——不强制依赖外部数据
+    # 真实库集成测试：依赖 scanner.db（默认跳过，--run-smoke 运行）
     import os
     from scanner.config import DB_PATH
 
@@ -85,6 +88,7 @@ def test_strategy_performance_runs():
     conn.close()
 
 
+@pytest.mark.smoke
 def test_dimension_ic_runs():
     import os
     from scanner.config import DB_PATH
@@ -97,6 +101,7 @@ def test_dimension_ic_runs():
     conn.close()
 
 
+@pytest.mark.smoke
 def test_dimension_ic_keeps_live_momentum_kdj():
     import os
     from scanner.config import DB_PATH

@@ -8,8 +8,9 @@
 运行时间略长，但能锁定 Step 2 的 P&L 改善不回归。
 """
 
-import sqlite3
 from collections import defaultdict
+
+import pytest
 
 from scanner.database import init_db
 from scanner.historical_rescan import RESCANABLE_CATEGORIES, rescan_all_signals
@@ -18,6 +19,9 @@ from scanner.portfolio_backtest import (
     _build_calendar,
     run_backtest,
 )
+
+# 全部为真实 scanner.db 集成测试（重扫 + 组合回测），默认跳过，--run-smoke 运行
+pytestmark = pytest.mark.smoke
 
 
 def _cfg(**kw):

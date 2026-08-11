@@ -13,6 +13,8 @@ import sqlite3
 import tempfile
 import os
 
+import pytest
+
 from scanner.nextday_attribution import (
     _load_dedup,
     _hit_stats,
@@ -178,6 +180,7 @@ def test_conditional_hit_table_prominence():
     assert by["非辨识度"]["hit_rate"] == 0.0
 
 
+@pytest.mark.smoke
 def test_real_db_smoke():
     from scanner.config import DB_PATH
     if not os.path.exists(DB_PATH):

@@ -19,3 +19,8 @@ strict = false
 warn_unused_ignores = true
 warn_return_any = false
 disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+markers = [
+    "smoke: 真实 scanner.db / 外网依赖的集成测试（默认跳过，--run-smoke 运行）",
+]
