@@ -195,13 +195,14 @@ FUND_FLOW_MAIN_PCT_WEAK = -5.0    # 主力净占比 ≤-5% → 扣分
 # 2026-08-10: FUND_FLOW_BONUS_STRONG 归零——回测分组显示强流入(≥5%)组 next_day 均 -1.13%
 # （n=22）差于无数据基线 -0.85%，momentum/short_term 内同为负：今日主力净流入与当日涨幅
 # 正相关，是追涨资金次日兑现，加分方向反指。仅保留 FUND_FLOW_BONUS_WEAK=-3 流出扣分、
-# 「资金流出」标签、劣后档过滤（规避语义，与预测语义无关）。字段仍写入 dims 供展示/归因。
+# 「资金流出」标签（规避语义，与预测语义无关）。字段仍写入 dims 供展示/归因。
 FUND_FLOW_BONUS_STRONG = 0
 FUND_FLOW_BONUS_WEAK = -3
-# 综合排序「档位置顶」（2026-08-06，display.py:_sort_tier）：
-# 排序键 (档位, CAT_DISPLAY_PRIORITY, -score)。档位阈值与上方资金流评分常量同源——
-# 强流入 ≥ FUND_FLOW_MAIN_PCT_STRONG 置前、强流出 ≤ FUND_FLOW_MAIN_PCT_WEAK 劣后（覆盖辨识度）。
-# 仅综合排序展示层，不改最终评分/不落库/不影响策略桶与回测。
+# 综合排序「档位置顶」历史说明（2026-08-06 引入，2026-08-11 起仅保留辨识度分档）：
+# 排序键 (档位, CAT_DISPLAY_PRIORITY, 分数键)。档位原含资金流——强流入 ≥ FUND_FLOW_MAIN_PCT_STRONG
+# 置前、强流出 ≤ FUND_FLOW_MAIN_PCT_WEAK 劣后（覆盖辨识度）。2026-08-11 去掉资金流排序：
+# 档0 = 辨识度(↻)、档1 = 其余，资金流不再置前/劣后（净流出票正常展示，仅保留图标与
+# 「资金流出」标签）。展示层不改最终评分/不落库/不影响策略桶与回测。
 # 连板评分：连板数（今日涨停池涨停统计口径）加分/追高降权
 ZT_LIANBAN_BONUS_2 = 5
 ZT_LIANBAN_BONUS_3 = 8

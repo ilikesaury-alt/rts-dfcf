@@ -317,8 +317,9 @@ def test_display_priority_suggestion_decoupled(monkeypatch, capsys):
     assert "回避" not in lines["SZ300001"]
 
 
-# ── 综合排序档位置顶（2026-08-06）：排序键 (档位, 类别优先级, -score) ──
-# 档0置前 = 辨识度(↻) 或 主力净流入≥5%；档2劣后 = 净流出≤-5%（覆盖辨识度）；其余档1普通。
+# ── 综合排序档位置顶（2026-08-06 引入）：排序键 (档位, 类别优先级, 分数键) ──
+# 档0置前 = 辨识度(↻)；档1 = 其余。2026-08-11 起资金流不再参与档位排序/劣后过滤
+# （图标与「资金流出」标签仍保留展示）。_cand_tier 的 fund_flow 参数供图标相关测试使用。
 def _cand_tier(symbol: str, score: int, category: str = "momentum",
                fund_flow: float | None = None, prominent: bool = False) -> Candidate:
     dims = {}
@@ -371,25 +372,27 @@ def test_display_priority_tier_front_within_category(monkeypatch, capsys):
     assert "SZ300002" in lines[1]
 
 
-def test_display_priority_tier_strong_inflow_front(monkeypatch, capsys):
-    """强资金流置前：净流入≥5% 的低分票(档0)排在普通高分票(档1)之前。"""
+def test_display_priority_fund_flow_no_longer_sorts(monkeypatch, capsys):
+    """资金流不再参与排序（2026-08-11）：净流入≥5% 的低分票不再因资金流置前，
+    按正常档位（无辨识度=档1）+类别+分数排序。"""
     conn = _rec_db()
     _insert_rec(conn, "SZ300001", "流入票", 1.0)
-    _insert_rec_cat(conn, "SZ300002", "普通票", "momentum", 65)
+    _insert_rec_cat(conn, "SZ300002", "高分普通票", "momentum", 65)
     pool = {"SZ300001": _cand_tier("SZ300001", 55, fund_flow=6.0),
             "SZ300002": _cand_tier("SZ300002", 65)}
     monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
     disp_mod.display_priority(conn)
     out = capsys.readouterr().out
     lines = [l for l in out.splitlines() if "SZ30000" in l]
-    assert "SZ300001" in lines[0], f"强流入票(55)应排在普通票(65)之前: {lines}"
-    assert "SZ300002" in lines[1]
+    assert "SZ300002" in lines[0], f"高分普通票(65)应排在强流入票(55)之前(资金流不再置前): {lines}"
+    assert "SZ300001" in lines[1]
 
 
-def test_display_priority_tier_outflow_not_printed(monkeypatch, capsys):
-    """劣后档不打印：主力净流出≤-5% 的票（含高分辨识度）直接不输出，普通票正常展示。"""
+def test_display_priority_fund_flow_outflow_not_hidden(monkeypatch, capsys):
+    """资金流不再劣后（2026-08-11）：主力净流出≤-5% 的票不再被过滤出综合排序，
+    正常展示；辨识度仍置前。"""
     conn = _rec_db()
-    _insert_rec(conn, "SZ300001", "流出置前", 1.0)  # momentum score 60
+    _insert_rec(conn, "SZ300001", "流出票", 1.0)  # momentum score 60
     _insert_rec_cat(conn, "SZ300002", "普通票", "momentum", 50)
     pool = {"SZ300001": _cand_tier("SZ300001", 100, fund_flow=-6.0, prominent=True),
             "SZ300002": _cand_tier("SZ300002", 50)}
@@ -398,14 +401,13 @@ def test_display_priority_tier_outflow_not_printed(monkeypatch, capsys):
     out = capsys.readouterr().out
     main_out = out.split("◆ 次日大涨候选", 1)[0]
     lines = [l for l in main_out.splitlines() if "SZ30000" in l]
-    assert len(lines) == 1, f"劣后档票不应打印，仅剩普通票: {lines}"
-    assert "SZ300002" in lines[0]
-    assert "SZ300001" not in out, f"流出劣后票(SZ300001)不应出现在输出中"
-    assert "▶ 劣后档" not in out, "劣后档横幅不应打印"
+    assert len(lines) == 2, f"净流出票不应被过滤，两条都展示: {lines}"
+    assert "SZ300001" in lines[0], f"辨识度票应置前: {lines}"
+    assert "SZ300002" in lines[1]
 
 
 def test_display_priority_tier_db_source_for_dropped(monkeypatch, capsys):
-    """掉榜行（无候选）统一分档：资金流从 market_extra_cache、辨识度从 appearances。"""
+    """掉榜行（无候选）统一分档：辨识度从 appearances 现算；资金流仅用于图标不参与排序。"""
     conn = _rec_db()
     today = now_beijing().date()
     for i in range(5):
@@ -432,11 +434,11 @@ def test_display_priority_tier_db_source_for_dropped(monkeypatch, capsys):
 
 
 def test_display_priority_tier_banner_separates_groups(monkeypatch, capsys):
-    """档位分隔横幅下线（2026-08-10 精简装饰）后，置顶档仍排前、劣后档票仍被过滤。"""
+    """档位分隔横幅下线后，辨识度档仍排前；净流出票不再劣后过滤（2026-08-11）。"""
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300001", "置顶", "rebound", 50)
     _insert_rec_cat(conn, "SZ300002", "普通", "momentum", 70)
-    _insert_rec_cat(conn, "SZ300003", "劣后", "rebound", 90)
+    _insert_rec_cat(conn, "SZ300003", "流出", "rebound", 90)
     pool = {
         "SZ300001": _cand_tier("SZ300001", 50, "rebound", prominent=True),
         "SZ300002": _cand_tier("SZ300002", 70, "momentum"),
@@ -447,13 +449,17 @@ def test_display_priority_tier_banner_separates_groups(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "▶ 置顶档" not in out
     assert "▶ 普通档" not in out
-    assert "SZ300003" not in out, "劣后档票(SZ300003)不应出现在输出中"
-    assert "SZ300001" in out
-    assert "SZ300002" in out
+    main_out = out.split("◆ 次日大涨候选", 1)[0]
+    lines = [l for l in main_out.splitlines() if "SZ30000" in l]
+    assert len(lines) == 3, f"净流出票(SZ300003)应正常展示，不再被劣后过滤: {lines}"
+    # 档0（辨识度）内按类别优先级+分数降序：SZ300003(rebound,90) 与 SZ300001(rebound,50) 同档，高分在前
+    assert "SZ300003" in lines[0], f"辨识度档高分票应在前: {lines}"
+    assert "SZ300001" in lines[1]
+    assert "SZ300002" in lines[2]
 
 
 def test_display_priority_comeback_separate_region(monkeypatch, capsys):
-    """方案A：回马枪从主排序表抽出，置于末尾独立区块；主表不含 CB 行，独立区劣后档票被过滤。"""
+    """方案A：回马枪从主排序表抽出，置于末尾独立区块；主表不含 CB 行，独立区净流出票正常展示。"""
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300001", "反弹", "rebound", 50)
     _insert_rec_cat(conn, "SZ300002", "超短", "short_term", 60)
@@ -473,9 +479,9 @@ def test_display_priority_comeback_separate_region(monkeypatch, capsys):
     # 主表（回马枪之前）不含任何 comeback 数据行
     assert "SZ300101" not in main_part
     assert "SZ300102" not in main_part
-    # 独立区内劣后档回马枪被过滤，仅剩置顶票
+    # 独立区：辨识度置前，净流出票不再劣后过滤（2026-08-11）
     assert "SZ300101" in cb_part
-    assert "SZ300102" not in out, "劣后档回马枪(SZ300102)不应出现在输出中"
+    assert "SZ300102" in cb_part
 
 
 # ── 次日大涨候选独立区（2026-08-10）：display-only 观察窗口 ──

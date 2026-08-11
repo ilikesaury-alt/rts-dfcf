@@ -389,13 +389,13 @@ def _nextday_spike_candidates(main_recs: list[dict]) -> list[dict]:
 
 def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
                      rank_map: dict[str, int] | None = None):
-    """从本地数据库读取今日所有进入过推荐的票，按档位(辨识度/资金流)+展示优先级(CAT_DISPLAY_PRIORITY)+评分降序展示。
+    """从本地数据库读取今日所有进入过推荐的票，按档位(辨识度)+展示优先级(CAT_DISPLAY_PRIORITY)+评分键展示。
 
     live_quotes: {symbol: {percent, current}} 实时行情覆盖，优先于候选池和数据库数据。
     rank_map: {symbol: 飙升榜排名} 当前扫描的榜单排名，为掉榜/重启行补实时排名。
-    排序键 = (档位, CAT_DISPLAY_PRIORITY, -score)：档0置前(辨识度或净流入≥5%) < 档1普通 <
-    档2劣后(净流出≤-5%，覆盖辨识度)。档位只影响排序，不改评分列/不落库。
-    劣后档（主力净流出 ≤ FUND_FLOW_MAIN_PCT_WEAK）直接不打印，被过滤出综合排序与回马枪区。
+    排序键 = (档位, CAT_DISPLAY_PRIORITY, 分数键)：档0置前(辨识度↻) < 档1普通。
+    2026-08-11 起资金流不再参与档位排序/劣后过滤（净流出票正常展示，仅保留图标与「资金流出」标签）。
+    档位只影响排序，不改评分列/不落库。
     """
     if conn is None:
         return
@@ -445,32 +445,19 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     # 保存的全市场快照——避免综合排序大量行因进程重启丢失资金流图标。
     flow_pct_map = get_fund_flow_pct_map(conn, [e["symbol"] for e in today_recs])
 
-    # 档位置顶（2026-08-06）：排序键 (档位, 类别优先级, -score)，跨类别全局生效。
-    # 档0置前 = 辨识度(↻) 或 主力净流入 ≥ FUND_FLOW_MAIN_PCT_STRONG；档2劣后 = 净流出
-    # ≤ FUND_FLOW_MAIN_PCT_WEAK（覆盖辨识度）；其余档1普通。只改排序，不改评分列/不落库。
-    # 数据源与展示图标一致：资金流候选用扫描维度、否则回退 DB 快照 flow_pct_map；辨识度
-    # 候选用扫描时标签、掉榜行用 prom_map——掉榜行 DB score 不含这些字段，展示层统一分档。
+    # 档位置顶（2026-08-06 引入；2026-08-11 去掉资金流因子）：排序键 (档位, 类别优先级, 分数键)，
+    # 跨类别全局生效。档0置前 = 辨识度(↻)；档1 = 其余。资金流不再参与排序/劣后过滤
+    # （净流出票回到正常排序展示，仅保留「资金流出」标签与图标提醒），展示数据源不变。
     def _sort_tier(entry):
         c = entry["_candidate"]
-        ff = c.kline.dimensions.get("fund_flow_main_pct") if c and c.kline else None
-        if ff is None:
-            ff = flow_pct_map.get(entry["symbol"])
         prominent = bool(c.prominence_labels) if c else prom_map.get(entry["symbol"], False)
-        # 档位阈值复用 fund_flow_signal 5 档映射（与图标/评分同源），避免独立比较漂移
-        sig = fund_flow_signal(ff)
-        if sig in ("out", "strong_out"):
-            return 2
-        if prominent or sig in ("in", "strong_in"):
-            return 0
-        return 1
+        return 0 if prominent else 1
 
     # 回马枪独立成区（2026-08-07 方案A）：comeback 是 off_list 掉榜跟踪票，语义与榜上票不同，
     # 从主排序表抽出放到末尾独立区块；主表只排榜上五类（rebound/known_new_face/new_face/
     # momentum/short_term，不含 comeback/pullback）。
     comeback_recs = [e for e in today_recs if e["category"] == "comeback"]
     main_recs = [e for e in today_recs if e["category"] != "comeback"]
-    # 劣后档（主力净流出 ≤ FUND_FLOW_MAIN_PCT_WEAK）直接不打印，不进入排序与展示。
-    main_recs = [e for e in main_recs if _sort_tier(e) != 2]
 
     # 2026-08-10: known_new_face 分数反指（回测分桶：低分档[18,37) cum_3d +5.58/64%胜率，
     # 高分档[77,98) -3.76/33%）——分区内 score 升序，把"低调二次上榜"的低分票排前，
@@ -495,8 +482,7 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     # 回马枪独立成区（方案A）：主表仅排榜上五类，comeback 抽到此处独立成区，
     # 仍按档位(tier)+评分排序，复用统一行渲染。comeback 为空则跳过（与旧行为一致）。
     if comeback_recs:
-        cb_scored = [e for e in comeback_recs if _sort_tier(e) != 2]
-        cb_scored = sorted(cb_scored, key=lambda x: (_sort_tier(x), -x["score"]))
+        cb_scored = sorted(comeback_recs, key=lambda x: (_sort_tier(x), -x["score"]))
         print(f"\n{ANSI['CYAN']}◆ 回马枪 — 掉榜跟踪/回调买点{ANSI['RESET']}")
         print(hdr)
         for ci, entry in enumerate(cb_scored, 1):
