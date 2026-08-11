@@ -15,6 +15,7 @@ from typing import Protocol, runtime_checkable
 
 from scanner import api
 from scanner.config import BEIJING_TZ, DATA_SOURCE
+from scanner.models import KlineBar, make_kline_bar
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ class DataSourceAdapter(Protocol):
     name: str
 
     def is_available(self) -> bool: ...
-    def fetch_kline(self, symbol: str, days: int = 15) -> list[dict] | None: ...
+    def fetch_kline(self, symbol: str, days: int = 15) -> list[KlineBar] | None: ...
     def fetch_biaosheng(self, size: int = 100) -> list[dict]: ...
     def fetch_hot_list(self, size: int = 100) -> list[dict]: ...
     def fetch_market_caps_batch(self, symbols: list[str]) -> dict[str, dict]: ...
@@ -57,7 +58,7 @@ class XueqiuAdapter:
             logger.warning("雪球 session 不可用: %s", e)
             return False
 
-    def fetch_kline(self, symbol: str, days: int = 15) -> list[dict] | None:
+    def fetch_kline(self, symbol: str, days: int = 15) -> list[KlineBar] | None:
         return api.fetch_kline(self._get_session(), symbol, days)
 
     def fetch_biaosheng(self, size: int = 100) -> list[dict]:
@@ -121,7 +122,7 @@ class AkshareAdapter:
         except Exception:
             return False
 
-    def fetch_kline(self, symbol: str, days: int = 15) -> list[dict] | None:
+    def fetch_kline(self, symbol: str, days: int = 15) -> list[KlineBar] | None:
         try:
             ak = self._get_ak()
             code = _xq_to_ak(symbol)
@@ -139,16 +140,20 @@ class AkshareAdapter:
             for _, row in df.iterrows():
                 date_str = str(row["日期"])[:10]
                 dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=BEIJING_TZ)
-                result.append({
-                    "timestamp": int(dt.timestamp() * 1000),
+                # 统一走 make_kline_bar 契约（数值强转 + close<=0/date 非法剔除），
+                # 与雪球 fetch_kline 输出 1:1 对齐，下游无感知。
+                bar = make_kline_bar({
                     "date": date_str,
-                    "open": float(row["开盘"]),
-                    "high": float(row["最高"]),
-                    "low": float(row["最低"]),
-                    "close": float(row["收盘"]),
-                    "volume": int(row["成交量"]),
-                    "percent": float(row["涨跌幅"]),
+                    "open": row["开盘"],
+                    "high": row["最高"],
+                    "low": row["最低"],
+                    "close": row["收盘"],
+                    "volume": row["成交量"],
+                    "percent": row["涨跌幅"],
                 })
+                if bar is not None:
+                    bar["timestamp"] = int(dt.timestamp() * 1000)
+                    result.append(bar)
             return result if result else None
         except Exception as e:
             logger.warning("AKShare K线获取失败 %s: %s", symbol, e)
@@ -245,7 +250,7 @@ class FallbackAdapter:
             return getattr(self._secondary, method)(*args, **kwargs)
         raise RuntimeError("无可用数据源")
 
-    def fetch_kline(self, symbol: str, days: int = 15) -> list[dict] | None:
+    def fetch_kline(self, symbol: str, days: int = 15) -> list[KlineBar] | None:
         """雪球 K 线失败时降级到 AKShare 补拉。
 
         api.fetch_kline 内部吞异常返回 None（网络失败/无数据），不会抛给

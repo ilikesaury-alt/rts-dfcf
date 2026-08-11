@@ -87,6 +87,7 @@ from scanner.patterns import (
 )
 from scanner.validator import _mo_divergence
 from scanner.trading_session import trading_minutes_elapsed
+from scanner.models import KlineBar
 
 # 盘中把今日部分量能投影为全天量能的最大倍数（9:31 开盘瞬间量能爆表时封顶）。
 # 保持 10：A股量能呈 U 型（开盘聚集），普通票前5分钟约占全天 5%，投影 5%×10=0.5
@@ -95,7 +96,7 @@ from scanner.trading_session import trading_minutes_elapsed
 MAX_VOL_PROJECTION = 10.0
 
 
-def _project_today_vol(kline: list[dict], today_str: str, now=None) -> float:
+def _project_today_vol(kline: list[KlineBar], today_str: str, now=None) -> float:
     """今日盘中部分量能投影为全天量能（与 _compute_volume_metrics 同口径）。
 
     无今日 bar / 已收盘 / 开盘前 → 不投影（返回末根原始量能）。
@@ -113,7 +114,7 @@ def _project_today_vol(kline: list[dict], today_str: str, now=None) -> float:
     return today_vol
 
 
-def _compute_volume_metrics(kline: list[dict], today_str: str,
+def _compute_volume_metrics(kline: list[KlineBar], today_str: str,
                             now=None) -> tuple[float, float]:
     """统一计算 vol_ratio 与 avg_volume（各 analyze_* 共用，分析/验证端口径一致）。
 
@@ -132,7 +133,7 @@ def _compute_volume_metrics(kline: list[dict], today_str: str,
     return round(vol_ratio, 2), round(avg_vol, 2)
 
 
-def _split_today(kline: list[dict], today_str: str) -> tuple[list[dict], list[float], list[float]]:
+def _split_today(kline: list[KlineBar], today_str: str) -> tuple[list[KlineBar], list[float], list[float]]:
     """剔除今日 bar，返回 (historical_kline, pcts, closes)。
 
     各 analyze_* 共用：今日 bar 切分逻辑完全一致，抽成单点避免 5 处样板重复。
@@ -143,7 +144,7 @@ def _split_today(kline: list[dict], today_str: str) -> tuple[list[dict], list[fl
     return historical_kline, pcts, closes
 
 
-def _get_features(closes: list[float], historical_kline: list[dict],
+def _get_features(closes: list[float], historical_kline: list[KlineBar],
                   features: dict | None = None) -> dict:
     """构建特征（调用方已预计算则复用，否则从 historical_kline 抽取 high/low/volume 现算）。"""
     if features is not None:
@@ -179,7 +180,7 @@ def _ma_bull_score(closes: list[float], feats: dict | None = None) -> int:
     return MA_BEAR_SCORE
 
 
-def _detect_gap_up(today_current: float, kline: list[dict], today_str: str | None = None) -> tuple[float, int]:
+def _detect_gap_up(today_current: float, kline: list[KlineBar], today_str: str | None = None) -> tuple[float, int]:
     yesterday_close = None
     today_str = today_str or now_beijing().date().isoformat()
     for k in reversed(kline):
@@ -268,7 +269,7 @@ def _score_today_pct(today_pct: float, W: dict, prefix: str) -> tuple[int, str, 
 
 
 
-def _compute_new_face_indicators(closes: list[float], historical_kline: list[dict],
+def _compute_new_face_indicators(closes: list[float], historical_kline: list[KlineBar],
                                  W: dict, feats: dict | None = None) -> tuple[int, dict]:
     """New face specific indicator scoring (oversold reversal signals)."""
     feats = _get_features(closes, historical_kline, feats)
@@ -332,7 +333,7 @@ def _compute_new_face_indicators(closes: list[float], historical_kline: list[dic
     return bonus, dims
 
 
-def _compute_momentum_indicators(closes: list[float], historical_kline: list[dict],
+def _compute_momentum_indicators(closes: list[float], historical_kline: list[KlineBar],
                                  W: dict, feats: dict | None = None) -> tuple[int, dict]:
     """Momentum specific indicator scoring (trend confirmation signals)."""
     feats = _get_features(closes, historical_kline, feats)
@@ -395,7 +396,7 @@ def _compute_momentum_indicators(closes: list[float], historical_kline: list[dic
     return bonus, dims
 
 
-def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
+def analyze_new_face(stock: StockInfo, kline: list[KlineBar] | None,
                      today_str: str | None = None,
                      features: dict | None = None,
                      now=None) -> KlineSummary | None:
@@ -540,7 +541,7 @@ def analyze_new_face(stock: StockInfo, kline: list[dict] | None,
                         score=score, dimensions=dims, avg_volume=round(avg_vol, 2))
 
 
-def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
+def analyze_momentum(stock: StockInfo, kline: list[KlineBar] | None,
                      today_str: str | None = None,
                      features: dict | None = None,
                      now=None) -> KlineSummary | None:
@@ -714,7 +715,7 @@ def analyze_momentum(stock: StockInfo, kline: list[dict] | None,
                         score=score, dimensions=dims, avg_volume=round(avg_vol, 2))
 
 
-def _calc_pullback_base_metrics(kline: list[dict], today_str: str, now=None) -> tuple[list, list, float, float, float, list, list]:
+def _calc_pullback_base_metrics(kline: list[KlineBar], today_str: str, now=None) -> tuple[list, list, float, float, float, list, list]:
     """Calculate base metrics for pullback analysis.
 
     Returns:
@@ -854,7 +855,7 @@ def _analyze_pullback_ma(closes: list, W: dict) -> dict:
     return result
 
 
-def _score_pullback_indicators(closes: list, historical_kline: list[dict],
+def _score_pullback_indicators(closes: list, historical_kline: list[KlineBar],
                                W: dict, feats: dict | None = None) -> tuple[int, dict]:
     """Score based on technical indicators (RSI, MACD, KDJ, Bollinger).
 
@@ -928,7 +929,7 @@ def _classify_pullback_trend(ma_support: bool, ma_broken: bool, today_pct: float
         return "回踩整理"
 
 
-def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
+def analyze_pullback(stock: StockInfo, kline: list[KlineBar] | None,
                      today_str: str | None = None,
                      features: dict | None = None,
                      now=None) -> KlineSummary | None:
@@ -1006,7 +1007,7 @@ def analyze_pullback(stock: StockInfo, kline: list[dict] | None,
                         score=score, dimensions=dims, avg_volume=round(avg_vol, 2))
 
 
-def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
+def analyze_short_term(stock: StockInfo, kline: list[KlineBar] | None,
                        today_str: str | None = None,
                        features: dict | None = None,
                        now=None) -> KlineSummary | None:
@@ -1157,7 +1158,7 @@ def analyze_short_term(stock: StockInfo, kline: list[dict] | None,
                         score=score, dimensions=dims, avg_volume=round(avg_vol, 2))
 
 
-def analyze_rebound(stock: StockInfo, kline: list[dict] | None,
+def analyze_rebound(stock: StockInfo, kline: list[KlineBar] | None,
                     today_str: str | None = None,
                     features: dict | None = None,
                     off_list: bool = False,

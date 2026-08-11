@@ -52,6 +52,7 @@ tests/                    # pytest test suite
 
 ## Key Facts
 
+- **K 线数据契约（2026-08-11 重构 P0-1，`models.py:KlineBar`）**：kline 从裸 `list[dict]` 统一为 TypedDict `KlineBar`（date/open/high/low/close/volume/percent + 可选 timestamp），**唯一生产入口 `make_kline_bar()`**（`api.fetch_kline` / `database.get_cached_kline` / `historical_rescan._load_all_klines` / `ic_attribution.load_kline_by_symbol` / AKShare adapter 全部接入），内部消费端（analysis/validator/patterns/comeback/orchestrator）全部带类型标注。契约规则：date 必须非空字符串；close 必须能解析为正数（close<=0/None/NaN/`inf`/非法串 → 整 bar 剔除）；其余字段脏值（含 `inf`）→ 0。**行为收紧点**：旧 `fetch_kline` 保留 close=0 脏 bar 靠 analyze_* 兜底，现与 `get_cached_kline` 口径统一为剔除（消除两个生产端不一致）。**AKShare adapter 行为变更**：旧代码 `float(row[...])` 遇 NaN 抛异常 → 整只票返回 None 跳过评分；现走 `make_kline_bar` NaN/`inf`→0 保留 bar → 该票会被评分（volume=0/percent=0 参与 vol_ratio，大概率更优）。TypedDict 保持 dict 行为（`k["date"]` 访问、merge/sort 不变），除上述行为变更外零运行时变化。测试：`tests/test_models.py`（契约用例）。
 - **Database**: SQLite at `scanner.db` (auto-created). Tables: appearances, daily_kline, recommendations, sector_cache, concept_cache, market_extra_cache
 - **Python version**: 3.12+ (uses f-strings, dataclasses, type hints)
 - **Dependencies**: `requests`, `wcwidth` (see `requirements.txt`)

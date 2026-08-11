@@ -38,6 +38,7 @@ from scanner.config import (
     NEW_FACE_WEIGHTS,
 )
 from scanner.features import build_features
+from scanner.models import KlineBar, make_kline_bar
 from scanner.sector import classify_sector
 
 
@@ -79,7 +80,7 @@ def _ma_bull_score(closes: list[float], feats: dict) -> int:
     return MA_BEAR_SCORE
 
 
-def _vol_ratio(kline: list[dict], today_str: str) -> float:
+def _vol_ratio(kline: list[KlineBar], today_str: str) -> float:
     """复刻 analysis._compute_volume_metrics 的 vol_ratio（无今日 bar 投影）。"""
     volumes = [k["volume"] for k in kline]
     vol_window = volumes[-11:-1] if len(volumes) >= 11 else volumes[:-1]
@@ -104,8 +105,8 @@ def load_recommendations(conn: sqlite3.Connection) -> list[dict]:
     return recs
 
 
-def load_kline_by_symbol(conn: sqlite3.Connection, symbols: set[str]) -> dict[str, list[dict]]:
-    out: dict[str, list[dict]] = {}
+def load_kline_by_symbol(conn: sqlite3.Connection, symbols: set[str]) -> dict[str, list[KlineBar]]:
+    out: dict[str, list[KlineBar]] = {}
     for sym in symbols:
         cur = conn.execute(
             "SELECT date, open, close, high, low, volume, percent FROM daily_kline "
@@ -113,8 +114,10 @@ def load_kline_by_symbol(conn: sqlite3.Connection, symbols: set[str]) -> dict[st
         )
         rows = []
         for date, o, c, h, l, v, p in cur.fetchall():
-            rows.append({"date": date, "open": o, "close": c, "high": h,
-                         "low": l, "volume": v, "percent": p})
+            bar = make_kline_bar({"date": date, "open": o, "close": c, "high": h,
+                                  "low": l, "volume": v, "percent": p})
+            if bar is not None:
+                rows.append(bar)
         out[sym] = rows
     return out
 
@@ -128,7 +131,7 @@ def sector_counts_by_date(recs: list[dict]) -> dict[str, Counter]:
     return {d: Counter(secs) for d, secs in by_date.items()}
 
 
-def extract_features(kline: list[dict], rec_date: str, sector_peers: int) -> dict | None:
+def extract_features(kline: list[KlineBar], rec_date: str, sector_peers: int) -> dict | None:
     """在 rec_date 当日重建 new_face 各维度特征；缺数据返回 None。"""
     idx = None
     for i, k in enumerate(kline):

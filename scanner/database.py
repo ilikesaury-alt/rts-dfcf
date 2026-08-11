@@ -10,6 +10,7 @@ from scanner.config import (
     WATCH_POOL_MAX,
     now_beijing,
 )
+from scanner.models import KlineBar, make_kline_bar
 from scanner.trading_session import is_trading_day
 
 logger = logging.getLogger(__name__)
@@ -219,11 +220,11 @@ def get_symbol_appearances(conn: sqlite3.Connection, symbol: str, days: int,
     return [{"date": r[0], "rank": r[1], "percent": r[2], "value": r[3]} for r in cur.fetchall()]
 
 
-def save_kline_to_db(conn: sqlite3.Connection, symbol: str, kline: list[dict]):
+def save_kline_to_db(conn: sqlite3.Connection, symbol: str, kline: list[KlineBar]):
     rows = []
     for k in kline:
         rows.append((
-            symbol, k["timestamp"], k["date"], k["open"], k["close"],
+            symbol, k.get("timestamp"), k["date"], k["open"], k["close"],
             k["high"], k["low"], k["volume"], k["percent"],
         ))
     try:
@@ -249,7 +250,7 @@ def save_kline_to_db(conn: sqlite3.Connection, symbol: str, kline: list[dict]):
         conn.commit()
 
 
-def get_cached_kline(conn: sqlite3.Connection, symbol: str) -> list[dict] | None:
+def get_cached_kline(conn: sqlite3.Connection, symbol: str) -> list[KlineBar] | None:
     lookback = (now_beijing().date() - timedelta(days=60)).isoformat()
     cur = conn.execute(
         "SELECT date, open, close, high, low, volume, percent FROM daily_kline WHERE symbol = ? AND date >= ? ORDER BY date",
@@ -259,22 +260,14 @@ def get_cached_kline(conn: sqlite3.Connection, symbol: str) -> list[dict] | None
     if rows:
         result = []
         for r in rows:
-            # 防御过滤：历史脏数据（close 为 None/0/NaN）会让下游 closes 算术崩溃
-            # （analyze_* 对 close 做减法/除法）。fetch_kline 已 _num 强转新数据，
-            # 此处兜底旧库残留的 NULL/0 行。close 非正（含停牌/脏值）直接剔除该 bar。
-            close = r[2]
-            if close is None:
-                continue
-            try:
-                close = float(close)
-            except (TypeError, ValueError):
-                continue
-            if close <= 0:
-                continue
-            result.append({
-                "date": r[0], "open": r[1], "close": close,
+            # 统一走 make_kline_bar 契约：close 非正（含停牌/脏值）直接剔除，
+            # 数值强转 + date 校验收敛到入口单点（原此处手工防御 + analyze_* 兜底）。
+            bar = make_kline_bar({
+                "date": r[0], "open": r[1], "close": r[2],
                 "high": r[3], "low": r[4], "volume": r[5], "percent": r[6],
             })
+            if bar is not None:
+                result.append(bar)
         if result:
             return result
     return None

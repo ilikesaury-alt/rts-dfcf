@@ -55,7 +55,7 @@ from typing import Iterable
 
 from scanner.candidate_pool import ScanSession
 from scanner.config import MAX_STOCK_PRICE
-from scanner.models import Candidate
+from scanner.models import Candidate, KlineBar, make_kline_bar
 from scanner.orchestrator import (
     _cap_short_term_by_sector,
     _filter_gem_stocks,
@@ -97,28 +97,33 @@ def _post_close(d: str) -> datetime:
     return datetime(y, m, dd, 15, 30)
 
 
-def _load_all_klines(conn: sqlite3.Connection) -> dict[str, tuple[list[str], list[dict]]]:
+def _load_all_klines(conn: sqlite3.Connection) -> dict[str, tuple[list[str], list[KlineBar]]]:
     """一次性预载全部日线，返回 {symbol: (已排序日期列表, bar 列表)}。
 
     早期版本对每个 (date, symbol) 发一次 SQL 且每次都取全量历史，
     4700+ 次查询是重扫耗时的主因。改为单次全表扫描 + 内存 bisect 切片。
+    bar 统一走 make_kline_bar 契约（与实时扫描 fetch_kline/get_cached_kline 同源），
+    保证重扫与实时评分口径一致，不因数据源不同产生漂移。
     """
     rows = conn.execute(
         "SELECT symbol, date, open, close, high, low, volume, percent "
         "FROM daily_kline ORDER BY symbol, date"
     ).fetchall()
-    out: dict[str, tuple[list[str], list[dict]]] = {}
+    out: dict[str, tuple[list[str], list[KlineBar]]] = {}
     cur_sym: str | None = None
     dates: list[str] = []
-    bars: list[dict] = []
+    bars: list[KlineBar] = []
     for sym, d, o, c, h, low, vol, pct in rows:
         if sym != cur_sym:
             if cur_sym is not None:
                 out[cur_sym] = (dates, bars)
             cur_sym, dates, bars = sym, [], []
+        bar = make_kline_bar({"date": d, "open": o, "close": c, "high": h,
+                              "low": low, "volume": vol, "percent": pct})
+        if bar is None:
+            continue  # 脏 bar（close<=0/date 非法）剔除，与实时链路一致
         dates.append(d)
-        bars.append({"date": d, "open": o, "close": c, "high": h,
-                     "low": low, "volume": vol, "percent": pct})
+        bars.append(bar)
     if cur_sym is not None:
         out[cur_sym] = (dates, bars)
     return out
@@ -185,7 +190,7 @@ def rescan_all_signals(conn: sqlite3.Connection, cfg, calendar: list[str],
         stocks = _filter_gem_stocks(raw)
 
         # 2) 按信号日切片 K 线；顺带用当日收盘价补 current 并复现价格上限过滤
-        klines: dict[str, list[dict] | None] = {}
+        klines: dict[str, list[KlineBar]] = {}
         usable = []
         for s in stocks:
             entry = kline_store.get(s.symbol)

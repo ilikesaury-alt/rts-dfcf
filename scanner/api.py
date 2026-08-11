@@ -22,6 +22,7 @@ from scanner.config import (
     SENTIMENT_PCT_GT5_WARM,
     SENTIMENT_WARM,
 )
+from scanner.models import KlineBar, make_kline_bar
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +110,7 @@ _minute_data_cache_lock = threading.Lock()
 
 _market_index_cache: tuple[float | None, float] = (None, 0)
 
-_kline_cache: dict[str, tuple[list[dict] | None, float]] = {}
+_kline_cache: dict[str, tuple[list[KlineBar] | None, float]] = {}
 # TTL=0 禁用 API 层缓存：避免与 orchestrator.KLINE_REFRESH_TTL 双层叠加导致 K 线陈旧。
 # K 线新鲜度统一由 orchestrator 层 TTL 控制，补拉时真正发请求而非命中旧缓存。
 _kline_cache_ttl = 0
@@ -195,7 +196,7 @@ def make_session() -> requests.Session:
     return s
 
 
-def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[dict] | None:
+def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[KlineBar] | None:
     now = time.time()
 
     with _kline_cache_lock:
@@ -233,21 +234,21 @@ def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[
         if not isinstance(item, (list, tuple)) or len(item) < 8:
             continue
         ts = item[0]
-        # OHLCV/percent 全部 _num 强转：雪球 API 偶发返回字符串/None/NaN 时，
-        # 直接赋值会让下游 closes 算术（-、/）抛 TypeError 或把脏值落库，
-        # 拖垮整轮评分（analyze_* 直接对 close 做减法）。脏值按 0 处理，由
-        # 各 analyze_* 的 close 非正过滤兜底。
-        result.append({
-            "timestamp": ts,
+        # 统一走 make_kline_bar 契约：date 从北京时间戳解析、OHLCV/percent 数值强转、
+        # close<=0 剔除。此前脏值按 0 处理由 analyze_* 兜底，现收敛到入口单点。
+        bar = make_kline_bar({
             # 雪球时间戳按北京时间生成，必须用北京时区解析，否则非 UTC+8 部署日期错位
             "date": datetime.fromtimestamp(ts / 1000, tz=BEIJING_TZ).strftime("%Y-%m-%d"),
-            "open": _num(item[2]),
-            "high": _num(item[3]),
-            "low": _num(item[4]),
-            "close": _num(item[5]),
-            "volume": _num(item[1]),
-            "percent": _num(item[7]),
+            "open": item[2],
+            "high": item[3],
+            "low": item[4],
+            "close": item[5],
+            "volume": item[1],
+            "percent": item[7],
         })
+        if bar is not None:
+            bar["timestamp"] = ts
+            result.append(bar)
     if _kline_cache_ttl > 0:
         with _kline_cache_lock:
             _cache_put(_kline_cache, symbol, (result, now))

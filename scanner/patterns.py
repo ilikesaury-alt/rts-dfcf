@@ -8,6 +8,7 @@
 每个 detect_* 仅声明"用哪些原语 + 各自打分/维度键"，消除算法级重复。
 """
 from __future__ import annotations
+from scanner.models import KlineBar
 
 
 def _candle_body_len(o: float, c: float) -> float:
@@ -69,7 +70,7 @@ def _hammer(latest: dict) -> bool:
     return lower > body * 2 and upper < body * 0.5
 
 
-def _three_bullish(bars: list[dict]) -> bool:
+def _three_bullish(bars: list[KlineBar]) -> bool:
     """3连阳：近3日全阳线且收盘递增。"""
     if len(bars) < 3:
         return False
@@ -80,7 +81,7 @@ def _three_bullish(bars: list[dict]) -> bool:
     return c3[0] < c3[1] < c3[2]
 
 
-def _breakout_3d(latest: dict, bars: list[dict]) -> bool:
+def _breakout_3d(latest: dict, bars: list[KlineBar]) -> bool:
     """突破3日高点：今日收盘>近3日最高价（需 bars 长度>=4）。"""
     if len(bars) < 4:
         return False
@@ -93,7 +94,7 @@ def _breakout_3d(latest: dict, bars: list[dict]) -> bool:
 # 各策略组合：仅声明原语 + 打分/维度键
 # ----------------------------------------------------------------------------
 
-def detect_new_face_patterns(historical_kline: list[dict]) -> tuple[int, dict]:
+def detect_new_face_patterns(historical_kline: list[KlineBar]) -> tuple[int, dict]:
     """new_face 适用的底部形态：阳包阴、锤子线、3连阳。"""
     if len(historical_kline) < 2:
         return 0, {}
@@ -115,7 +116,7 @@ def detect_new_face_patterns(historical_kline: list[dict]) -> tuple[int, dict]:
     return score, dims
 
 
-def detect_momentum_patterns(historical_kline: list[dict]) -> tuple[int, dict]:
+def detect_momentum_patterns(historical_kline: list[KlineBar]) -> tuple[int, dict]:
     """momentum 适用的形态：突破3日高点、3连阳。"""
     if len(historical_kline) < 4:
         return 0, {}
@@ -133,7 +134,7 @@ def detect_momentum_patterns(historical_kline: list[dict]) -> tuple[int, dict]:
     return score, dims
 
 
-def detect_pullback_patterns(historical_kline: list[dict], vol_ratio: float) -> tuple[int, dict]:
+def detect_pullback_patterns(historical_kline: list[KlineBar], vol_ratio: float) -> tuple[int, dict]:
     """pullback 适用的形态：阳包阴、缩量十字星。"""
     if len(historical_kline) < 2:
         return 0, {}
@@ -156,7 +157,7 @@ def detect_pullback_patterns(historical_kline: list[dict], vol_ratio: float) -> 
     return score, dims
 
 
-def detect_short_term_patterns(historical_kline: list[dict]) -> tuple[int, dict]:
+def detect_short_term_patterns(historical_kline: list[KlineBar]) -> tuple[int, dict]:
     """short_term 适用的形态：突破3日高点。"""
     if len(historical_kline) < 4:
         return 0, {}
@@ -169,7 +170,7 @@ def detect_short_term_patterns(historical_kline: list[dict]) -> tuple[int, dict]
     return score, dims
 
 
-def detect_rebound_patterns(kline: list[dict]) -> tuple[int, dict]:
+def detect_rebound_patterns(kline: list[KlineBar]) -> tuple[int, dict]:
     """rebound（超跌反弹）适用的形态：底部吞没、锤子线、3连阳企稳。
 
     与 new_face/pullback 形态不同：rebound 形态必须包含今日 bar，

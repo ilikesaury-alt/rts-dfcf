@@ -64,7 +64,7 @@ from scanner.enhancer import (
     apply_all_bonuses,
     compute_time_bonus,
 )
-from scanner.models import Candidate, KlineSummary, StockInfo
+from scanner.models import Candidate, KlineBar, KlineSummary, StockInfo
 from scanner.rank_trend import update_rank_history
 from scanner.sector import get_sector_clusters, classify_sector
 from scanner.trading_session import is_trading_day, is_trading_time
@@ -88,10 +88,10 @@ _last_kline_fetch: dict[str, float] = {}
 
 
 def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo],
-                      deadline: float | None = None) -> dict[str, list[dict] | None]:
-    result: dict[str, list[dict] | None] = {}
+                      deadline: float | None = None) -> dict[str, list[KlineBar] | None]:
+    result: dict[str, list[KlineBar] | None] = {}
     needs_fetch: list[str] = []
-    stale_cache: dict[str, list[dict]] = {}
+    stale_cache: dict[str, list[KlineBar]] = {}
     today = now_beijing().date()
 
     for s in stocks:
@@ -136,7 +136,7 @@ def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo]
     # P-robust: KLINE_FETCH_DEADLINE 限时——API 故障时单只 15s×3 重试会让串行拉取假死数十分钟，
     # 超时后停止补拉，剩余票回退旧缓存（下方 stale_cache 兜底），保证单轮扫描有界。
     deadline = deadline if deadline is not None else now_beijing().timestamp() + KLINE_FETCH_DEADLINE
-    fetched: dict[str, list[dict] | None] = {}
+    fetched: dict[str, list[KlineBar] | None] = {}
     deadline_skipped = 0
     for i, sym in enumerate(needs_fetch):
         if now_beijing().timestamp() >= deadline:
@@ -198,7 +198,7 @@ def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo]
 
 
 def _build_candidate(stock: StockInfo, kline_summary: KlineSummary | None, category: str,
-                     is_first_today: bool, first_date: str, kline: list[dict] | None) -> Candidate:
+                     is_first_today: bool, first_date: str, kline: list[KlineBar] | None) -> Candidate:
     first_breakout = (stock.rank_change >= FIRST_BREAKOUT_RANK_CHANGE
                       and kline_summary.volume_ratio > FIRST_BREAKOUT_VOL_RATIO)
     return Candidate(
@@ -212,8 +212,8 @@ def _build_candidate(stock: StockInfo, kline_summary: KlineSummary | None, categ
 
 
 def _try_candidate(stock: StockInfo, kline_summary: KlineSummary | None, category: str,
-                   is_first_today: bool, first_date: str, kline: list[dict] | None,
-                   closes: list[float], historical: list[dict],
+                   is_first_today: bool, first_date: str, kline: list[KlineBar] | None,
+                   closes: list[float], historical: list[KlineBar],
                    clusters: dict[str, list[str]] | None,
                    feats: dict | None = None) -> Candidate | None:
     if kline_summary is None:
@@ -353,7 +353,7 @@ def _filter_gem_stocks(raw: list[dict]) -> list[StockInfo]:
     return gem_stocks
 
 
-def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, list[dict] | None],
+def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, list[KlineBar] | None],
                  today: str, session_state: ScanSession,
                  clusters: dict[str, list[str]] | None = None,
                  now=None

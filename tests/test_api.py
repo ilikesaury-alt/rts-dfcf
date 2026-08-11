@@ -419,10 +419,11 @@ class TestFetchKlineCoercion:
         with patch("scanner.api._request_with_retry", return_value=self._fake_resp(payload)):
             kline = fetch_kline(MagicMock(), "SZ300001", days=15)
         assert kline is not None
-        # None bar → _num 归 0（不崩溃）；NaN bar → 0 亦不崩溃
-        assert len(kline) == 2
-        assert kline[0]["close"] == 0.0 and kline[0]["percent"] == 0.0
-        assert kline[1]["open"] == 10.5 and kline[1]["close"] == 10.8
+        # 2026-08-11 契约收紧（重构 P0-1）：make_kline_bar 统一剔除 close<=0 脏 bar
+        # （与 get_cached_kline 口径一致，此前 fetch_kline 保留 close=0 靠 analyze_* 兜底，
+        # 两个生产端行为不一致）。None bar 的 close 归 0 → 被剔除；NaN/字符串 bar 正常强转保留。
+        assert len(kline) == 1
+        assert kline[0]["open"] == 10.5 and kline[0]["close"] == 10.8
 
     def test_short_item_skipped(self):
         from scanner.api import fetch_kline

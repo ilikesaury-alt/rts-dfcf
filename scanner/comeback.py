@@ -57,10 +57,10 @@ from scanner.indicators import (
     compute_ma,
     compute_rsi,
 )
-from scanner.models import Candidate, KlineSummary, StockInfo
+from scanner.models import Candidate, KlineBar, KlineSummary, StockInfo
 from scanner.validator import validate
 
-_KlineFetcher = Callable[[list[StockInfo]], dict[str, list[dict] | None]]
+_KlineFetcher = Callable[[list[StockInfo]], dict[str, list[KlineBar] | None]]
 
 
 def collect_comeback_symbols(conn, today: str, on_list_symbols: set[str]) -> list[dict]:
@@ -151,7 +151,7 @@ def evaluate_comeback(conn, adapter, fetch_klines: _KlineFetcher,
 
     # 统一补拉幸存者 K 线（受限时，KLINE_FETCH_DEADLINE 兜底）
     fetch_stocks = list(stocks.values())
-    klines: dict[str, list[dict] | None] = {}
+    klines: dict[str, list[KlineBar] | None] = {}
     if fetch_stocks:
         try:
             klines = fetch_klines(fetch_stocks)
@@ -188,7 +188,7 @@ def evaluate_comeback(conn, adapter, fetch_klines: _KlineFetcher,
     return rebound_candidates, reentry_candidates, quotes
 
 
-def _try_rebound_candidate(stock: StockInfo, kline: list[dict], today: str,
+def _try_rebound_candidate(stock: StockInfo, kline: list[KlineBar], today: str,
                            clusters: dict[str, list[str]] | None) -> Candidate | None:
     """回马枪·反转：off-list 超跌企稳（analyze_rebound 收紧档位 + pos_dims≥3）。"""
     ks = analyze_rebound(stock, kline, today_str=today, off_list=True)
@@ -219,7 +219,7 @@ def _try_rebound_candidate(stock: StockInfo, kline: list[dict], today: str,
     )
 
 
-def _try_reentry_candidate(stock: StockInfo, kline: list[dict], today: str,
+def _try_reentry_candidate(stock: StockInfo, kline: list[KlineBar], today: str,
                            rec: dict, flow_pct_map: dict[str, float]) -> Candidate | None:
     """回马枪·回踩：近 N 日推荐回调到买点（6 维信号 ≥4 到买点）。"""
     if not kline or len(kline) < 20:
@@ -278,7 +278,7 @@ def _try_reentry_candidate(stock: StockInfo, kline: list[dict], today: str,
     )
 
 
-def _passes_drop_prefilter(kline: list[dict] | None, today: str,
+def _passes_drop_prefilter(kline: list[KlineBar] | None, today: str,
                            threshold: float = COMEBACK_PREFILTER_5D_DROP) -> bool:
     """DB 缓存预过滤：历史 5 日累计跌幅 ≤ 阈值才可能过反转变体（零网络成本）。"""
     if not kline or len(kline) < 6:
@@ -300,7 +300,7 @@ def _passes_fund_flow_filter(flow_pct_map: dict[str, float], symbol: str,
     return ff_pct > low
 
 
-def _evaluate_buy_signals(historical: list[dict]) -> tuple[str, int, list[str]]:
+def _evaluate_buy_signals(historical: list[KlineBar]) -> tuple[str, int, list[str]]:
     """6 维买点信号判定（基于历史 K 线，排除今日 bar 防盘中实时价干扰）。
 
     1. MA20 支撑  2. 缩量回调  3. 未破位  4. RSI 合理区
@@ -356,7 +356,7 @@ def _evaluate_buy_signals(historical: list[dict]) -> tuple[str, int, list[str]]:
     return status, count, signals
 
 
-def _get_rec_day_close(kline: list[dict] | None, rec_date: str) -> float:
+def _get_rec_day_close(kline: list[KlineBar] | None, rec_date: str) -> float:
     """从 K 线中取推荐日收盘价；找不到精确匹配时取之前最近的收盘价作为基准。"""
     if not kline:
         return 0.0
