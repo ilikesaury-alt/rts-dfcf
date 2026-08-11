@@ -269,8 +269,8 @@ def test_display_priority_new_group_order(monkeypatch, capsys):
     monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
     disp_mod.display_priority(conn)
     out = capsys.readouterr().out
-    # 主表区域 = 次日大涨候选独立区之前（该区为 display-only 观察窗，会重复列出甜蜜带票）
-    main_out = out.split("◆ 次日大涨候选", 1)[0]
+    # 2026-08-11：次日大涨独立区已并入主表行尾 🎯 标记，无重复区块，直接取全部输出
+    main_out = out
     lines = [l for l in main_out.splitlines() if "SZ30000" in l]
     assert len(lines) == 5
     order = ["SZ300003", "SZ300005", "SZ300004", "SZ300002", "SZ300001"]
@@ -346,7 +346,7 @@ def test_display_priority_tier_front_cross_category(monkeypatch, capsys):
     monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
     disp_mod.display_priority(conn)
     out = capsys.readouterr().out
-    main_out = out.split("◆ 次日大涨候选", 1)[0]
+    main_out = out
     lines = [l for l in main_out.splitlines() if "SZ30000" in l]
     assert len(lines) == 3
     # 档0 内按 CAT_DISPLAY_PRIORITY：short_term(1) < momentum(2)，超短置前在前
@@ -397,7 +397,7 @@ def test_display_priority_fund_flow_outflow_not_hidden(monkeypatch, capsys):
     monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
     disp_mod.display_priority(conn)
     out = capsys.readouterr().out
-    main_out = out.split("◆ 次日大涨候选", 1)[0]
+    main_out = out
     lines = [l for l in main_out.splitlines() if "SZ30000" in l]
     assert len(lines) == 2, f"净流出票不应被过滤，两条都展示: {lines}"
     assert "SZ300001" in lines[0], f"辨识度票应置前: {lines}"
@@ -447,7 +447,7 @@ def test_display_priority_tier_banner_separates_groups(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "▶ 置顶档" not in out
     assert "▶ 普通档" not in out
-    main_out = out.split("◆ 次日大涨候选", 1)[0]
+    main_out = out
     lines = [l for l in main_out.splitlines() if "SZ30000" in l]
     assert len(lines) == 3, f"净流出票(SZ300003)应正常展示，不再被劣后过滤: {lines}"
     # 档0（辨识度）内按类别优先级+分数降序：SZ300003(rebound,90) 与 SZ300001(rebound,50) 同档，高分在前
@@ -490,7 +490,10 @@ def test_display_priority_comeback_capped(monkeypatch, capsys):
     assert len(cb_lines) == disp_mod.COMEBACK_DISPLAY_MAX
 
 
-# ── 次日大涨候选独立区（2026-08-10）：display-only 观察窗口 ──
+# ── 次日大涨画像标记（2026-08-11 起并入主表行尾 🎯，替代原独立区）──
+# 原独立区（2026-08-10）与主表重合度 65%（主表 17 只中 11 只甜蜜带、两表排序几乎一致、
+# 辨识度因子空转），重复输出；改为主表行尾标记。筛形条件不变（nextday_attribution 口径）：
+# 推荐时刻涨幅甜蜜带（<2% 低吸潜伏 / 4~8% 中段启动）且非超买死亡信号。
 def _insert_rec_pct(conn, symbol: str, name: str, category: str, score: int, percent: float):
     today = now_beijing().date().isoformat()
     conn.execute(
@@ -501,8 +504,8 @@ def _insert_rec_pct(conn, symbol: str, name: str, category: str, score: int, per
     conn.commit()
 
 
-def test_nextday_spike_section_sweet_band(monkeypatch, capsys):
-    """次日大涨候选区：甜蜜带票（<2% 低吸潜伏 / 4-8% 中段启动）进入独立区；陷阱带(8-10%)排除。"""
+def test_nextday_mark_sweet_band(monkeypatch, capsys):
+    """🎯 标记：甜蜜带票（<2% 低吸潜伏 / 4-8% 中段启动）行尾打标记；陷阱带(8-10%)不打。"""
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "低吸", "rebound", 50, 1.0)      # <2% 甜蜜带
     _insert_rec_pct(conn, "SZ300002", "中段", "short_term", 60, 5.0)   # 4-8% 甜蜜带
@@ -510,46 +513,46 @@ def test_nextday_spike_section_sweet_band(monkeypatch, capsys):
     monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
     disp_mod.display_priority(conn)
     out = capsys.readouterr().out
-    assert "◆ 次日大涨候选" in out
-    nextday_part = out.split("◆ 次日大涨候选", 1)[1]
-    assert "SZ300001" in nextday_part
-    assert "SZ300002" in nextday_part
-    assert "SZ300003" not in nextday_part, "8-10% 陷阱带票不应进次日大涨候选区"
+    lines = {sym: next(l for l in out.splitlines() if sym in l)
+             for sym in ["SZ300001", "SZ300002", "SZ300003"]}
+    assert "🎯" in lines["SZ300001"], "<2% 甜蜜带票应有 🎯 标记"
+    assert "🎯" in lines["SZ300002"], "4-8% 甜蜜带票应有 🎯 标记"
+    assert "🎯" not in lines["SZ300003"], "8-10% 陷阱带票不应有 🎯 标记"
+    assert "次日大涨画像" in out, "有标记票时应打印图例行"
 
 
-def test_nextday_spike_section_excludes_overbought(monkeypatch, capsys):
-    """次日大涨候选区：short_term 超买（死亡信号 hit 5%）被排除。"""
+def test_nextday_mark_excludes_overbought(monkeypatch, capsys):
+    """🎯 标记：short_term 超买（死亡信号 hit 5%）不打标记。"""
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "超买超短", "short_term", 60, 1.0)
     _insert_rec_pct(conn, "SZ300002", "正常超短", "short_term", 55, 1.0)
-    dims_over = {"st_overbought_flag": True}
     pool = {
         "SZ300001": _cand_tier("SZ300001", 60, "short_term"),
         "SZ300002": _cand_tier("SZ300002", 55, "short_term"),
     }
-    pool["SZ300001"].kline.dimensions.update(dims_over)
+    pool["SZ300001"].kline.dimensions.update({"st_overbought_flag": True})
     monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
     disp_mod.display_priority(conn)
     out = capsys.readouterr().out
-    assert "◆ 次日大涨候选" in out
-    nextday_part = out.split("◆ 次日大涨候选", 1)[1]
-    assert "SZ300002" in nextday_part
-    assert "SZ300001" not in nextday_part, "超买票不应进次日大涨候选区"
+    lines = {sym: next(l for l in out.splitlines() if sym in l)
+             for sym in ["SZ300001", "SZ300002"]}
+    assert "🎯" in lines["SZ300002"], "正常超短应有 🎯 标记"
+    assert "🎯" not in lines["SZ300001"], "超买票不应有 🎯 标记"
 
 
-def test_nextday_spike_section_no_hits_omitted(monkeypatch, capsys):
-    """次日大涨候选区：无甜蜜带票时不输出该区（避免空区块）。"""
+def test_nextday_mark_no_hits_omitted(monkeypatch, capsys):
+    """🎯 标记：无甜蜜带票时不打印图例行（主表正常显示）。"""
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "陷阱票", "momentum", 70, 9.0)   # 8-10% 陷阱带
     monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
     disp_mod.display_priority(conn)
     out = capsys.readouterr().out
-    assert "◆ 次日大涨候选" not in out, "无甜蜜带票时不应输出空独立区"
+    assert "次日大涨画像" not in out, "无甜蜜带票时不应打印 🎯 图例行"
     assert "SZ300001" in out  # 主表仍正常显示
 
 
-def test_nextday_zone_prominence_prioritized(monkeypatch, capsys):
-    """次日大涨候选区复用辨识度（2026-08-10）：↻ 票排非辨识度票前（即使分数更低）。"""
+def test_nextday_mark_not_affect_sort(monkeypatch, capsys):
+    """🎯 只加视觉标记不改排序：主表仍按档位(辨识度置前)→类别优先级→分数排序。"""
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "辨识票", "rebound", 50, 1.0)   # <2% 甜蜜带
     _insert_rec_pct(conn, "SZ300002", "普通票", "rebound", 80, 1.0)
@@ -560,8 +563,8 @@ def test_nextday_zone_prominence_prioritized(monkeypatch, capsys):
     monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
     disp_mod.display_priority(conn)
     out = capsys.readouterr().out
-    nextday_part = out.split("◆ 次日大涨候选", 1)[1]
-    lines = [l for l in nextday_part.splitlines() if "SZ30000" in l]
+    lines = [l for l in out.splitlines() if "SZ30000" in l]
     assert len(lines) == 2
-    assert "SZ300001" in lines[0], f"辨识度票(score50)应排在普通票(score80)前: {lines}"
+    assert "SZ300001" in lines[0], f"辨识度票(score50,档0)应排在普通票(score80,档1)前: {lines}"
     assert "SZ300002" in lines[1]
+    assert "🎯" in lines[0] and "🎯" in lines[1], "两票都在甜蜜带，均应带 🎯 标记"
