@@ -113,7 +113,8 @@ def _ranking_db():
     conn = sqlite3.connect(":memory:")
     conn.execute(
         "CREATE TABLE recommendations "
-        "(date TEXT, category TEXT, score REAL, cum_3d REAL, score_breakdown TEXT)"
+        "(date TEXT, category TEXT, score REAL, cum_3d REAL, score_breakdown TEXT, "
+        "sector_capped INTEGER DEFAULT 0)"
     )
     return conn
 
@@ -185,6 +186,46 @@ def test_rank_category_stats_metric_is_cum_3d():
     stats = rank_category_stats(conn)
     assert len(stats) == 1
     assert abs(stats[0].avg_return - 1.0) < 1e-9
+
+
+def test_rank_category_stats_excludes_sector_capped_by_default():
+    """2026-08-12: 被板块上限（sector_capped=1）的票默认排除（校准用户实际看到的集合），
+    include_capped=True 时恢复全样本。"""
+    conn = _ranking_db()
+    rows = [
+        ("2026-07-01", "momentum", 50, 2.0, None, 0),
+        ("2026-07-01", "momentum", 40, -3.0, None, 1),
+        ("2026-07-01", "momentum", 45, 5.0, None, 0),
+    ]
+    conn.executemany(
+        "INSERT INTO recommendations (date, category, score, cum_3d, score_breakdown, sector_capped) "
+        "VALUES (?,?,?,?,?,?)",
+        rows,
+    )
+    conn.commit()
+    default = rank_category_stats(conn, "cum_3d", days=0)
+    assert default[0].count == 2
+    assert abs(default[0].avg_return - 3.5) < 1e-9  # (2+5)/2
+    full = rank_category_stats(conn, "cum_3d", days=0, include_capped=True)
+    assert full[0].count == 3
+    assert abs(full[0].avg_return - (2.0 - 3.0 + 5.0) / 3) < 1e-9
+
+
+def test_rank_category_stats_missing_sector_capped_column_compatible():
+    """列缺失（旧库/最小 schema）时不过滤，保持兼容。"""
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE recommendations "
+        "(date TEXT, category TEXT, score REAL, cum_3d REAL)"
+    )
+    conn.executemany(
+        "INSERT INTO recommendations (date, category, score, cum_3d) VALUES (?,?,?,?)",
+        [("2026-07-01", "momentum", 50, 2.0), ("2026-07-01", "momentum", 40, -1.0)],
+    )
+    conn.commit()
+    stats = rank_category_stats(conn, "cum_3d", days=0)
+    assert len(stats) == 1
+    assert stats[0].count == 2
 
 
 def test_suggest_priority_sorts_desc_by_avg():

@@ -65,7 +65,8 @@ def memory_db():
             source TEXT DEFAULT 'xueqiu',
             concept TEXT,
             accumulated_pct REAL,
-            excluded INTEGER DEFAULT 0
+            excluded INTEGER DEFAULT 0,
+            sector_capped INTEGER DEFAULT 0
         )
     """)
     conn.execute("""
@@ -270,6 +271,49 @@ class TestSaveRecommendations:
         assert row is not None
         assert row[0] == "华为概念"
 
+    def _cand(self, symbol: str, score: int = 20,
+              capped: bool = False) -> Candidate:
+        stock = StockInfo(symbol=symbol, name="Test", code="300001",
+                          percent=5.0, current=10.0, value=10000,
+                          rank_change=1000, rank=1)
+        kline_summary = KlineSummary(trend="底部启动", accumulated_pct=2.0,
+                                      volume_ratio=1.5, bottom_confirmed=True,
+                                      score=score, dimensions={}, avg_volume=1_000_000)
+        return Candidate(stock=stock, category="short_term", score=score,
+                         reason="test", kline=kline_summary, first_seen="09:30",
+                         sector_capped=capped)
+
+    def test_save_persists_sector_capped(self, memory_db):
+        """2026-08-12：被板块上限标记的 short_term 候选照常落库（保留回测全样本），
+        且 sector_capped=1 正确写入。"""
+        save_recommendations(memory_db, [self._cand("300001", capped=True)], [])
+        row = memory_db.execute(
+            "SELECT sector_capped FROM recommendations WHERE symbol = '300001'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == 1
+
+    def test_save_refreshes_sector_capped_even_when_score_unchanged(self, memory_db):
+        """2026-08-12：同日同股分数未刷新（不更高）时，sector_capped 仍按最新轮次更新——
+        多轮扫描中板块容量变化时，限流状态必须跟随最新轮次，防陈旧放行。"""
+        save_recommendations(memory_db, [self._cand("300001", score=50, capped=False)], [])
+        save_recommendations(memory_db, [self._cand("300001", score=40, capped=True)], [])
+        row = memory_db.execute(
+            "SELECT score, sector_capped FROM recommendations WHERE symbol = '300001'"
+        ).fetchone()
+        # 分数保留最高（50），但 sector_capped 更新为最新轮次（1）
+        assert row[0] == 50
+        assert row[1] == 1
+
+    def test_sector_capped_refresh_back_to_zero(self, memory_db):
+        """2026-08-12：板块容量恢复后，被限流票应可重新放行（sector_capped 回落 0）。"""
+        save_recommendations(memory_db, [self._cand("300001", score=50, capped=True)], [])
+        save_recommendations(memory_db, [self._cand("300001", score=30, capped=False)], [])
+        row = memory_db.execute(
+            "SELECT sector_capped FROM recommendations WHERE symbol = '300001'"
+        ).fetchone()
+        assert row[0] == 0
+
 
 class TestTodayRecommendationsExcluded:
     """P1-7 (2026-08-10): 当日被硬过滤（excluded=1）的推荐不再出现在综合排序。"""
@@ -290,6 +334,33 @@ class TestTodayRecommendationsExcluded:
         syms = {r["symbol"] for r in recs}
         assert "300001" in syms
         assert "300002" not in syms, "excluded=1 的硬过滤票不应出现在综合排序"
+
+
+class TestTodayRecommendationsSectorCapped:
+    """2026-08-12: 被板块上限（sector_capped=1）的票不再出现在综合排序，
+    但仍保留在 recommendations 表（回测全样本）。"""
+
+    def test_sector_capped_filtered_out(self, memory_db):
+        today = now_beijing().date().isoformat()
+        rows = [
+            (today, "300001", "展示", "short_term", 60, 0),
+            (today, "300002", "被限流", "short_term", 80, 1),
+        ]
+        memory_db.executemany(
+            "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, sector_capped) "
+            "VALUES (?, '13:00', ?, ?, ?, ?, 2.0, ?)",
+            rows,
+        )
+        memory_db.commit()
+        recs = get_today_recommendations(memory_db)
+        syms = {r["symbol"] for r in recs}
+        assert "300001" in syms
+        assert "300002" not in syms, "sector_capped=1 的限流票不应出现在综合排序"
+        # 数据层保留：全样本仍在表里，供回测 --include-capped 使用
+        kept = memory_db.execute(
+            "SELECT COUNT(*) FROM recommendations WHERE symbol = '300002'"
+        ).fetchone()[0]
+        assert kept == 1
 
 
 class TestWatchPoolEviction:

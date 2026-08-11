@@ -432,3 +432,65 @@ def test_load_signals_empty_recommendations_returns_empty():
         os.remove(path)
 
 
+def test_load_signals_excludes_sector_capped_by_default():
+    """2026-08-12: 被板块上限（sector_capped=1）的票默认排除（校准用户实际看到的集合），
+    include_capped=True 时恢复全样本。缺列旧库兼容（SELECT 用 0 占位）。"""
+    import tempfile, os
+    from scanner.portfolio_backtest import (
+        PBConfig, _build_calendar, _load_signals,
+    )
+
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        from scanner.trading_session import is_trading_day
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE daily_kline "
+                     "(symbol TEXT, timestamp INTEGER, date TEXT, open REAL, close REAL, "
+                     "high REAL, low REAL, volume REAL, percent REAL, PRIMARY KEY(symbol, date))")
+        conn.execute("CREATE TABLE recommendations "
+                     "(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, time TEXT, symbol TEXT, "
+                     "name TEXT, category TEXT, score INTEGER, percent REAL, trend TEXT, "
+                     "score_breakdown TEXT, source TEXT, sector_capped INTEGER DEFAULT 0)")
+        base = date(2026, 6, 1)
+        dates = []
+        d = base
+        while len(dates) < 8:
+            if is_trading_day(d):
+                dates.append(d.isoformat())
+            d += timedelta(days=1)
+        for i, dt in enumerate(dates):
+            conn.execute("INSERT INTO daily_kline VALUES (?,?,?,?,?,?,?,?,?)",
+                         ("300001", i, dt, 10.0 + i, 10.0 + i, 10.0 + i, 10.0 + i, 1e6, 1.0))
+            conn.execute("INSERT INTO daily_kline VALUES (?,?,?,?,?,?,?,?,?)",
+                         ("300002", i, dt, 10.0 + i, 10.0 + i, 10.0 + i, 10.0 + i, 1e6, 1.0))
+        conn.execute(
+            "INSERT INTO recommendations (date,time,symbol,name,category,score,percent,trend,sector_capped) "
+            "VALUES (?, '09:30:00', '300001', '展示', 'short_term', 50, 1.0, 'up', 0)",
+            (dates[0],),
+        )
+        conn.execute(
+            "INSERT INTO recommendations (date,time,symbol,name,category,score,percent,trend,sector_capped) "
+            "VALUES (?, '09:30:00', '300002', '被限流', 'short_term', 80, 1.0, 'up', 1)",
+            (dates[0],),
+        )
+        conn.commit()
+
+        calendar = _build_calendar(conn, dates[0], dates[-1])
+        cal_index = {d: i for i, d in enumerate(calendar)}
+        cal_end = calendar[-1]
+
+        default = _load_signals(conn, PBConfig(category="short_term"),
+                                calendar, cal_index, cal_end)
+        assert {s.symbol for s in default} == {"300001"}
+        full = _load_signals(conn, PBConfig(category="short_term", include_capped=True),
+                             calendar, cal_index, cal_end)
+        assert {s.symbol for s in full} == {"300001", "300002"}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        os.remove(path)
+
+

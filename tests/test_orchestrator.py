@@ -145,7 +145,8 @@ class TestClassifyCategory:
 
 
 class TestCapShortTermBySector:
-    """P0-69 补充：板块普涨日防止单板块淹没超短列表。"""
+    """P0-69 补充：板块普涨日防止单板块淹没超短列表。
+    2026-08-12 行为变更：标记（sector_capped=True）不裁剪，全量返回。"""
 
     def _st(self, symbol: str, name: str, score: int) -> Candidate:
         return _make_candidate(symbol, score=score, name=name)
@@ -160,10 +161,11 @@ class TestCapShortTermBySector:
             self._st("300104", "医药D", 70),
         ]
         out = _cap_short_term_by_sector(group, max_per_sector=2)
-        assert len(out) == 2
-        # 高分优先：90、70 的保留
-        syms = {c.stock.symbol for c in out}
-        assert syms == {"300102", "300104"}
+        assert len(out) == 4  # 全量返回（不再裁剪）
+        capped = {c.stock.symbol for c in out if c.sector_capped}
+        # 高分优先保留：B(90)、D(70) 不标记；A(60)、C(40) 被限流
+        assert capped == {"300101", "300103"}
+        assert {c.stock.symbol for c in out if not c.sector_capped} == {"300102", "300104"}
 
     def test_different_sectors_not_capped(self):
         from scanner.orchestrator import _cap_short_term_by_sector
@@ -174,6 +176,7 @@ class TestCapShortTermBySector:
         ]
         out = _cap_short_term_by_sector(group, max_per_sector=2)
         assert len(out) == 3
+        assert not any(c.sector_capped for c in out)
 
     def test_uncategorized_not_capped_as_one_sector(self):
         """回归：'其他'（未分类）股票互不相关，不受同板块上限约束——
@@ -190,9 +193,10 @@ class TestCapShortTermBySector:
         assert all(classify_sector(c.stock.name) == "其他" for c in group)
         out = _cap_short_term_by_sector(group, max_per_sector=2)
         assert len(out) == 5  # 未分类票不截断
+        assert not any(c.sector_capped for c in out)
 
     def test_uncategorized_plus_real_sector_still_caps_sector(self):
-        """同板块上限仍对真实板块生效：医药 4 只截断到 2，'其他'票不参与截断。"""
+        """同板块上限仍对真实板块生效：医药 4 只限流到 2，'其他'票不参与限流。"""
         from scanner.orchestrator import _cap_short_term_by_sector
         group = [
             self._st("300100", "天鹅股份", 60),   # 其他
@@ -202,9 +206,26 @@ class TestCapShortTermBySector:
             self._st("300104", "医药D", 70),
         ]
         out = _cap_short_term_by_sector(group, max_per_sector=2)
-        syms = {c.stock.symbol for c in out}
-        assert "300100" in syms                    # 其他票保留
-        assert syms & {"300101", "300102", "300103", "300104"} == {"300102", "300104"}  # 医药只留高分 2 只
+        capped = {c.stock.symbol for c in out if c.sector_capped}
+        assert "300100" not in capped                   # 其他票保留
+        assert capped == {"300101", "300103"}           # 医药只留高分 B(90)、D(70)
+
+    def test_dual_listed_skipped_from_cap(self):
+        """2026-08-12 回归：双挂票（如新面孔+超短首板）在其它桶另有存在，
+        板块上限不得把它整只隐藏——跳过标记，仍落库展示。"""
+        from scanner.orchestrator import _cap_short_term_by_sector
+        group = [
+            self._st("300101", "医药A", 90),
+            self._st("300102", "医药B", 70),
+            self._st("300103", "医药C", 40),
+            self._st("300104", "医药D", 60),
+        ]
+        # 300104 是双挂票（symbol 出现在其它策略桶），虽排在板块第 3 也不被限流
+        out = _cap_short_term_by_sector(group, max_per_sector=2,
+                                        skip_symbols={"300104"})
+        capped = {c.stock.symbol for c in out if c.sector_capped}
+        assert capped == {"300103"}                     # 仅第 4 名 C 被限流
+        assert not any(c.sector_capped for c in out if c.stock.symbol == "300104")
 
 
 class TestScoreStockKnownNewFace:
