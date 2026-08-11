@@ -291,11 +291,21 @@ def get_consecutive_appearance_days(conn: sqlite3.Connection, symbol: str, max_d
         return 0
     dates = sorted(r[0] for r in rows)
     streak = 1
+    try:
+        curr = date.fromisoformat(dates[-1])
+    except (ValueError, TypeError):
+        # 脏日期（非 ISO 的历史数据）：无法判定连续性，返回 1（仅当日）。
+        # 该函数被 enhancer._apply_list_momentum_bonus 对每个候选调用，脏数据若不兜底
+        # 会让整轮扫描抛 ValueError（与 _fetch_all_klines 的脏日期守卫同族）。
+        return streak
     for i in range(len(dates) - 1, 0, -1):
-        d1 = date.fromisoformat(dates[i])
-        d2 = date.fromisoformat(dates[i - 1])
-        if _is_consecutive_trading_days(d2, d1):
+        try:
+            prev = date.fromisoformat(dates[i - 1])
+        except (ValueError, TypeError):
+            break  # 脏日期打断连续上榜计数，不再向后追溯
+        if _is_consecutive_trading_days(prev, curr):
             streak += 1
+            curr = prev
         else:
             break
     return streak

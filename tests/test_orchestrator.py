@@ -666,6 +666,19 @@ class TestFilterGemStocks:
         assert isinstance(s.rank_change, int) and s.rank_change == 1200
         assert s.rank == 3
 
+    def test_rank_numeric_string_with_decimal_kept(self):
+        """回归：rank="3.0" 这类数值字符串此前 int("3.0") 抛 ValueError 导致整票被跳过
+        （漏推荐）；现与 rank_change 同口径 float 中转后正常解析保留。"""
+        from scanner.orchestrator import _filter_gem_stocks
+        raw = [
+            {"symbol": "SZ300001", "code": "300001", "name": "测试A",
+             "percent": 5.0, "current": 10.0, "value": 8000,
+             "rank_change": 100, "rank": "3.0"},
+        ]
+        stocks = _filter_gem_stocks(raw)
+        assert len(stocks) == 1
+        assert stocks[0].rank == 3
+
     def test_skips_garbage_numeric_row(self):
         # rank_change="-" 无法解析 → 该票跳过，其余票正常进入（不再抛 TypeError）
         from scanner.orchestrator import _filter_gem_stocks

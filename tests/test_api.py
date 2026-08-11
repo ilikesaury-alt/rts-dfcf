@@ -225,6 +225,36 @@ class TestNormalizeMinuteItem:
         d = _normalize_minute_item([1])
         assert d["current"] == 0.0
 
+    def test_string_values_coerced(self):
+        """回归：分时接口与 kline 同源，偶发返回字符串/None/NaN 数值字段。
+        保持字符串会让 analyze_opening_strength / estimate_live_volume 抛 TypeError
+        丢分时信号（与 fetch_kline 的 _num 同族修复）。"""
+        raw = [1609459200000, "500", 99.0, 102.0, 98.0, "101.0", 1.0, 1.0, 0.5, "50500.0"]
+        d = _normalize_minute_item(raw)
+        assert isinstance(d["volume"], float) and d["volume"] == 500.0
+        assert isinstance(d["current"], float) and d["current"] == 101.0
+        assert isinstance(d["avg_price"], float) and d["avg_price"] == pytest.approx(101.0)
+
+    def test_dict_string_values_coerced_by_fetch(self):
+        """dict 直通形态的字符串字段由 _fetch_minute_data 统一兜底强转，
+        三个消费者（opening_strength/live_volume/intraday）不抛 TypeError。"""
+        raw_items = [
+            {"timestamp": 1609459200000 + i * 60000, "volume": "100",
+             "avg_price": "10.0", "current": "10.0"}
+            for i in range(20)
+        ]
+        fake_resp = MagicMock()
+        fake_resp.json.return_value = {"data": {"items": raw_items}}
+        with patch("scanner.api._request_with_retry", return_value=fake_resp):
+            items = _fetch_minute_data(MagicMock(), "300555")
+        assert items is not None
+        assert isinstance(items[0]["current"], float)
+        assert isinstance(items[0]["volume"], float)
+        # 消费者不再崩溃
+        assert analyze_opening_strength(MagicMock(), "300555") is not None
+        assert estimate_live_volume(MagicMock(), "300555") is not None
+        assert analyze_intraday(MagicMock(), "300555") is not None
+
 
 class TestFetchMinuteDataRawArray:
 

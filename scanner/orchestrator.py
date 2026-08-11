@@ -339,7 +339,9 @@ def _filter_gem_stocks(raw: list[dict]) -> list[StockInfo]:
             current = float(item.get("current") or 0.0)
             value = float(item.get("value") or 0.0)
             rank_change = int(float(item.get("rank_change") or 0))
-            rank = int(item.get("rank") or i)
+            # rank 与 rank_change 同口径 float 中转：API 偶发返回 "5.0" 这类数值字符串时，
+            # 直接 int("5.0") 抛 ValueError 会让整只票被跳过（漏推荐），float 中转则正常解析。
+            rank = int(float(item.get("rank") or i))
         except (TypeError, ValueError):
             continue
         gem_stocks.append(StockInfo(

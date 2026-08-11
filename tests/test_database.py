@@ -6,6 +6,7 @@ import pytest
 from scanner.database import (
     _n_trading_days_ago,
     get_cached_kline,
+    get_consecutive_appearance_days,
     get_symbol_appearances,
     get_today_recommendations,
     record_appearances,
@@ -114,6 +115,26 @@ class TestRecordAppearances:
         result = _n_trading_days_ago(3)
         result_date = date.fromisoformat(result)
         assert is_trading_day(result_date), f"{result} should be a trading day"
+
+    def test_consecutive_appearance_days_dirty_date_no_crash(self, memory_db):
+        """回归：脏日期（非 ISO）存在时 get_consecutive_appearance_days 不抛 ValueError。
+
+        该函数被 enhancer._apply_list_momentum_bonus 对每个候选调用，脏数据若不兜底
+        会让整轮扫描崩溃（此前 date.fromisoformat("2026-08-01bad") 直接炸）。
+        """
+        memory_db.execute(
+            "INSERT INTO appearances (symbol, name, date, rank, percent, value) VALUES (?,?,?,?,?,?)",
+            ("SZ300001", "Test", "1970-01-01bad", 5, 1.0, 100.0),
+        )
+        memory_db.execute(
+            "INSERT INTO appearances (symbol, name, date, rank, percent, value) VALUES (?,?,?,?,?,?)",
+            ("SZ300001", "Test", "1970-01-02", 5, 1.0, 100.0),
+        )
+        memory_db.commit()
+        # 脏日期应打断连续计数而非崩溃
+        n = get_consecutive_appearance_days(memory_db, "SZ300001")
+        assert isinstance(n, int)
+        assert n >= 1
 
     def test_symbol_appearances_holiday_gap(self, memory_db):
         """Holiday gap should not prevent finding records within N-trading-day lookback."""

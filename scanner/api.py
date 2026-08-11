@@ -473,9 +473,13 @@ def _normalize_minute_item(raw) -> dict:
         return raw
     try:
         ts = raw[0]
-        volume = raw[1]
-        current = raw[5]
-        amount = raw[9] if len(raw) > 9 else None
+        # 数值强转：分时接口与 kline 同源（雪球 chart/minute.json），同样偶发返回
+        # 字符串/None/NaN。保持字符串会让下游 analyze_opening_strength / estimate_live_volume
+        # 的算术（-、/、+）抛 TypeError 丢分时信号（与 fetch_kline 的 _num 同族修复，
+        # 此前仅在调用方 _parallel_fetch 兜底为 None，整相静默降级）。
+        volume = _num(raw[1])
+        current = _num(raw[5])
+        amount = _num(raw[9]) if len(raw) > 9 else 0.0
         avg_price = (amount / volume) if (amount and volume) else current
     except (IndexError, TypeError):
         return {"timestamp": 0, "volume": 0, "avg_price": 0.0, "current": 0.0}
@@ -506,6 +510,14 @@ def _fetch_minute_data(session: requests.Session, symbol: str) -> list[dict] | N
         # opening_strength 仍需 >=6（自身 len() 兜底），约 9:36 起生效。
         if raw_items and len(raw_items) >= 2:
             items = [_normalize_minute_item(it) for it in raw_items]
+            # 兜底强转：dict 直通形态（_normalize_minute_item 对 dict 保持原样，含
+            # 单测恒等契约）的数值字段可能仍是字符串/None/NaN，数组形态已强转。
+            # 统一在此收敛，保证 analyze_opening_strength / estimate_live_volume /
+            # analyze_intraday 三个消费者不再对字符串做算术抛 TypeError。
+            for it in items:
+                for key in ("volume", "current", "avg_price"):
+                    if isinstance(it, dict) and key in it:
+                        it[key] = _num(it[key])
             with _minute_data_cache_lock:
                 _cache_put(_MINUTE_DATA_CACHE, symbol, (items, now))
             return items
