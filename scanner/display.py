@@ -4,6 +4,7 @@ import wcwidth
 
 from scanner.config import (
     CAT_DISPLAY_PRIORITY,
+    COMEBACK_DISPLAY_MAX,
     FUND_FLOW_MAIN_PCT_EXTREME,
     FUND_FLOW_MAIN_PCT_STRONG,
     FUND_FLOW_MAIN_PCT_WEAK,
@@ -480,11 +481,14 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
             _print_priority_row(entry, ni, flow_pct_map)
         print(f"  {'-'*92}")
 
-    # 回马枪独立成区（2026-08-11 移到最末尾）：主表仅排榜上五类，comeback 抽到此处独立成区，
-    # 仍按档位(tier)+评分排序，复用统一行渲染。comeback 为空则跳过。
-    if comeback_recs:
+    # 回马枪独立成区（2026-08-11 移到最末尾）：主表仅排榜上五类，comeback 抽到此处独立成区。
+    # 2026-08-11 用户反馈：回马枪只在无推荐时才会看——主区有票就不显示回马枪区（避免刷屏），
+    # 主区为空时才兜底展示，且仅显示前 COMEBACK_DISPLAY_MAX 条。comeback 为空同样跳过。
+    if not main_recs and comeback_recs:
         cb_scored = sorted(comeback_recs, key=lambda x: (_sort_tier(x), -x["score"]))
-        print(f"\n{ANSI['CYAN']}◆ 回马枪 — 掉榜跟踪/回调买点{ANSI['RESET']}")
+        if len(cb_scored) > COMEBACK_DISPLAY_MAX:
+            cb_scored = cb_scored[:COMEBACK_DISPLAY_MAX]
+        print(f"\n{ANSI['CYAN']}◆ 回马枪 — 掉榜跟踪/回调买点（主区无推荐·兜底参考）{ANSI['RESET']}")
         print(hdr)
         for ci, entry in enumerate(cb_scored, 1):
             _print_priority_row(entry, ci, flow_pct_map)

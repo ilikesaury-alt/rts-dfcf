@@ -114,9 +114,9 @@ def _comeback_candidate(name: str, symbol: str, variant: str, score: int = 70) -
 
 
 def test_display_comeback_section(monkeypatch, capsys):
-    """策略桶下线（2026-08-10）后回马枪改走综合排序独立区，变体（反转/回踩）随标签展示。"""
+    """策略桶下线（2026-08-10）后回马枪改走综合排序独立区，变体（反转/回踩）随标签展示。
+    2026-08-11：主区无推荐时才兜底展示，仅显示前 COMEBACK_DISPLAY_MAX 条。"""
     conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "反弹", "rebound", 50)
     _insert_rec_cat(conn, "SZ300986", "志特新材", "comeback", 70)
     _insert_rec_cat(conn, "SZ300111", "回踩股", "comeback", 55)
     # 变体来源：候选 kline.dimensions（DB-only 行走 trend 前缀）
@@ -128,14 +128,17 @@ def test_display_comeback_section(monkeypatch, capsys):
     disp_mod.display_priority(conn)
     out = capsys.readouterr().out
     assert "◆ 回马枪" in out
+    assert "兜底参考" in out
     line_rt = next(l for l in out.splitlines() if "SZ300986" in l)
     line_re = next(l for l in out.splitlines() if "SZ300111" in l)
+    assert "CB" in line_rt
+    assert "回马" in line_rt        # SUGGEST_BY_CAT['comeback']
     assert "反转" in line_rt
     assert "回踩" in line_re
 
 
-def test_display_priority_comeback_label_and_rank(monkeypatch, capsys):
-    """综合排序（方案A）：comeback 不再穿插主表，而是独立区显示 CB 标签 + 建议「回马」。"""
+def test_display_priority_comeback_hidden_when_main_has_recs(monkeypatch, capsys):
+    """2026-08-11：主区（榜上五类）有推荐时不显示回马枪独立区——回马枪只在无推荐时兜底参考。"""
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300001", "反弹", "rebound", 50)
     _insert_rec_cat(conn, "SZ300002", "回马", "comeback", 90)
@@ -143,16 +146,11 @@ def test_display_priority_comeback_label_and_rank(monkeypatch, capsys):
     monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
     disp_mod.display_priority(conn)
     out = capsys.readouterr().out
-    main_part, cb_part = out.split("◆ 回马枪", 1)
-    # 主表只含 rebound + short_term（comeback 已抽出到独立区）
-    main_lines = [l for l in main_part.splitlines() if "SZ30000" in l]
+    assert "◆ 回马枪" not in out
+    main_lines = [l for l in out.splitlines() if "SZ30000" in l]
     assert "SZ300001" in main_lines[0]   # rebound
     assert "SZ300003" in main_lines[1]   # short_term
-    # 独立区含 comeback，显示 CB 标签 + 回马 建议
-    assert "SZ300002" in cb_part
-    line_cb = next(l for l in cb_part.splitlines() if "SZ300002" in l)
-    assert "CB" in line_cb
-    assert "回马" in line_cb        # SUGGEST_BY_CAT['comeback']
+    assert "SZ300002" not in out         # comeback 行随区块整体隐藏
 
 
 # ── 综合排序实时行情覆盖：live_quotes 对所有行优先（候选/非候选一致）──
@@ -459,15 +457,11 @@ def test_display_priority_tier_banner_separates_groups(monkeypatch, capsys):
 
 
 def test_display_priority_comeback_separate_region(monkeypatch, capsys):
-    """方案A：回马枪从主排序表抽出，置于末尾独立区块；主表不含 CB 行，独立区净流出票正常展示。"""
+    """方案A：回马枪独立成区（主区无推荐时兜底），按辨识度档位置前；独立区净流出票正常展示。"""
     conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "反弹", "rebound", 50)
-    _insert_rec_cat(conn, "SZ300002", "超短", "short_term", 60)
     _insert_rec_cat(conn, "SZ300101", "马置顶", "comeback", 55)
     _insert_rec_cat(conn, "SZ300102", "马劣后", "comeback", 120)
     pool = {
-        "SZ300001": _cand_tier("SZ300001", 50, "rebound", prominent=True),
-        "SZ300002": _cand_tier("SZ300002", 60, "short_term", fund_flow=6.0),
         "SZ300101": _cand_tier("SZ300101", 55, "comeback", prominent=True),
         "SZ300102": _cand_tier("SZ300102", 120, "comeback", fund_flow=-6.0),
     }
@@ -475,13 +469,25 @@ def test_display_priority_comeback_separate_region(monkeypatch, capsys):
     disp_mod.display_priority(conn)
     out = capsys.readouterr().out
     assert "◆ 回马枪" in out
-    main_part, cb_part = out.split("◆ 回马枪", 1)
-    # 主表（回马枪之前）不含任何 comeback 数据行
-    assert "SZ300101" not in main_part
-    assert "SZ300102" not in main_part
-    # 独立区：辨识度置前，净流出票不再劣后过滤（2026-08-11）
-    assert "SZ300101" in cb_part
-    assert "SZ300102" in cb_part
+    cb_part = out.split("◆ 回马枪", 1)[1]
+    # 独立区：辨识度(档0)置前，净流出票不再劣后过滤（2026-08-11）
+    cb_lines = [l for l in cb_part.splitlines() if "SZ300101" in l or "SZ300102" in l]
+    assert "SZ300101" in cb_lines[0]
+    assert "SZ300102" in cb_lines[1]
+
+
+def test_display_priority_comeback_capped(monkeypatch, capsys):
+    """2026-08-11：回马枪区最多显示 COMEBACK_DISPLAY_MAX 条（超量截断，避免刷屏）。"""
+    conn = _rec_db()
+    for i in range(12):
+        _insert_rec_cat(conn, f"SZ3003{i:02d}", f"马{i}", "comeback", 50 + i)
+    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
+    disp_mod.display_priority(conn)
+    out = capsys.readouterr().out
+    assert "◆ 回马枪" in out
+    cb_part = out.split("◆ 回马枪", 1)[1]
+    cb_lines = [l for l in cb_part.splitlines() if "SZ3003" in l]
+    assert len(cb_lines) == disp_mod.COMEBACK_DISPLAY_MAX
 
 
 # ── 次日大涨候选独立区（2026-08-10）：display-only 观察窗口 ──
