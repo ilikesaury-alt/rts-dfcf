@@ -295,12 +295,13 @@ def _filter_gem_stocks(raw: list[dict]) -> list[StockInfo]:
     gem_stocks: list[StockInfo] = []
     seen_symbols: set[str] = set()
     for i, item in enumerate(raw, 1):
-        # symbol/code/name 强转 str：API 偶发返回 None（键存在但值为 null）时，
-        # is_hk_stock(None).isdigit() / is_gem(None).startswith() / is_st(None) 抛
-        # AttributeError/TypeError，整轮扫描异常丢失。脏值按空串处理（下游过滤掉）。
-        symbol = item.get("symbol") or ""
-        code = item.get("code") or ""
-        name = item.get("name") or ""
+        # symbol/code/name 强转 str：API 偶发返回 None（键存在但值为 null）或数值
+        # 类型（int/float）时，is_hk_stock(None).isdigit() / is_gem(300001).startswith()
+        # / is_st(None) 抛 AttributeError/TypeError，整轮扫描异常丢失。脏值统一转
+        # 空串或 str（下游过滤/比对不崩）。
+        symbol = str(item.get("symbol") or "")
+        code = str(item.get("code") or "")
+        name = str(item.get("name") or "")
         if is_hk_stock(symbol) or not is_gem(code) or is_st(name):
             continue
         # 去重：API 异常返回重复 symbol 时只保留首条，避免下游重复打分/显示

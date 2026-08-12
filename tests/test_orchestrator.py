@@ -687,6 +687,23 @@ class TestFilterGemStocks:
         stocks = _filter_gem_stocks(raw)
         assert stocks == []
 
+    def test_int_symbol_code_name_coerced_not_crash(self):
+        """回归：symbol/code/name 为 int（API 偶发数值类型，docstring 声称"强转 str"
+        但此前只处理 None，int 会让 is_hk_stock.isdigit()/is_gem.startswith() 抛
+        AttributeError 拖垮整轮扫描）。现 str() 强转后正常过滤/保留。"""
+        from scanner.orchestrator import _filter_gem_stocks
+        raw = [
+            {"symbol": 300001, "code": "300001", "name": 12345,
+             "percent": 5.0, "current": 10.0, "value": 8000,
+             "rank_change": 100, "rank": 1},
+            {"symbol": "SZ300002", "code": 300002, "name": "测试B",
+             "percent": 3.1, "current": 10.0, "value": 8000,
+             "rank_change": 1200, "rank": 2},
+        ]
+        stocks = _filter_gem_stocks(raw)
+        # int symbol 300001 → str "300001"（GEM 代码保留），int name 12345 → "12345"
+        assert [s.symbol for s in stocks] == ["300001", "SZ300002"]
+
     def test_nan_inf_coerced_to_zero(self):
         """回归：percent/current/value 为 NaN/inf（Python json 可解析 JSON 字面量）
         必须强转 0，否则 NaN 绕过 `s.current > MAX_STOCK_PRICE` 等数值过滤、
