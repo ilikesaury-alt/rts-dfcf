@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install -r requirements-dev.txt
+      - name: Ruff lint (必须全绿)
+        run: |
+          ruff check scanner/ unified_scanner.py stock_report.py \
+            backfill_kline.py query_summary.py query_today.py xueqiu_hot.py
+      - name: Mypy (类型债 backlog，暂不阻断，见 AGENTS.md)
+        run: |
+          mypy scanner/ --ignore-missing-imports || true
+        continue-on-error: true
+      - name: pytest（默认跳过真实库/外网集成测试）
+        run: |
+          python -m pytest tests/ -q

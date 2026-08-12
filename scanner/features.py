@@ -18,8 +18,8 @@ from scanner.indicators import (
     compute_atr,
     compute_bollinger_bands,
     compute_kdj,
-    compute_macd,
     compute_ma,
+    compute_macd,
     compute_obv,
     compute_rsi,
 )
@@ -38,7 +38,7 @@ def build_features(closes: list[float],
         kdj / adx / atr    仅在 highs/lows 提供时计算
         obv                仅在 volumes 提供时计算
         ma5_ema/ma10_ema/ma20_ema   EMA 均线(与分析._ma_bull_score / validator._mo_ma_alignment 同约定)
-        ma20_sma / ma20_sma_prev    简单 MA20 及其 5 日前窗口(与 validator._pb_ma_trend 同口径)
+        ma20_sma / ma20_sma_prev    简单 MA20 及其 5 日前窗口
     """
     feats: dict = {}
     feats["rsi6"] = compute_rsi(closes, 6)

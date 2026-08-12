@@ -113,9 +113,9 @@ def load_kline_by_symbol(conn: sqlite3.Connection, symbols: set[str]) -> dict[st
             "WHERE symbol = ? ORDER BY date", (sym,)
         )
         rows = []
-        for date, o, c, h, l, v, p in cur.fetchall():
+        for date, o, c, h, low, v, p in cur.fetchall():
             bar = make_kline_bar({"date": date, "open": o, "close": c, "high": h,
-                                  "low": l, "volume": v, "percent": p})
+                                  "low": low, "volume": v, "percent": p})
             if bar is not None:
                 rows.append(bar)
         out[sym] = rows
@@ -254,7 +254,6 @@ def _winrate(xs: list[float]) -> float:
 
 def cont_ic_table(rows: list[tuple[float, dict]]) -> list[dict]:
     """rows: (cum_3d, features)"""
-    y = [r[0] for r in rows]
     out = []
     for key, label in CONT_FEATURES:
         xs = [r[1].get(key) for r in rows if r[1].get(key) is not None]

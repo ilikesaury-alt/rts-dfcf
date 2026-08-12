@@ -5,7 +5,6 @@ from scanner.analysis import (
     _score_today_pct,
     analyze_momentum,
     analyze_new_face,
-    analyze_pullback,
     analyze_rebound,
     analyze_short_term,
 )
@@ -257,38 +256,6 @@ class TestAnalyzeMomentum:
         assert result is not None
         assert "mo_overbought_20d" not in result.dimensions, \
             f"分析侧不应标记 20日极值, dims={result.dimensions}"
-
-
-class TestAnalyzePullback:
-    """pullback 策略已下线（2026-07-30，orchestrator 调用链切断，函数保留供未来恢复）。
-
-    2026-08-12 精简：原 19 个维度级测试（volume/ma/rank/rsi/macd/kdj/bollinger/20d_gain 等）
-    均为死路径维护成本，删除。仅保留入口契约冒烟测试——未来恢复该策略时先过这几条，
-    再按当时数据重写详细维度用例。
-    """
-
-    def test_golden_path_returns_scored_candidate(self):
-        kline = _kline([1, 2, 1, 2, 3], volumes=[0.8, 0.9, 0.7, 1.5, 2.0])
-        result = analyze_pullback(_stock(percent=-2, rank_change=2500, value=12000), kline)
-        assert result is not None
-        assert result.score >= 18
-        assert "pullback_today_pct" in result.dimensions
-        assert "pullback_accumulated" in result.dimensions
-
-    def test_positive_pct_rejected(self):
-        # PULLBACK_MAX_TODAY_PCT=0.0：今日上涨不算回调，直接拒绝
-        kline = _kline([1, 1, 1, 2, 3], volumes=[1.0]*5)
-        assert analyze_pullback(_stock(percent=0.5), kline) is None
-        assert analyze_pullback(_stock(percent=1), kline) is None
-        assert analyze_pullback(_stock(percent=2), kline) is None
-        assert analyze_pullback(_stock(percent=2.5), kline) is None
-
-    def test_short_kline_returns_none(self):
-        kline = _kline([1, 2])
-        assert analyze_pullback(_stock(percent=-2), kline) is None
-
-    def test_none_kline_returns_none(self):
-        assert analyze_pullback(_stock(percent=-2), None) is None
 
 
 class TestIndicatorIntegration:

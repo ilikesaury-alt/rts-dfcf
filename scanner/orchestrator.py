@@ -1,15 +1,13 @@
 import math
 import sqlite3
 import threading
-from concurrent.futures import ThreadPoolExecutor, Future, wait
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import replace as dataclass_replace
 from datetime import date
 
 import requests
 
 from scanner.analysis import analyze_momentum, analyze_new_face, analyze_rebound, analyze_short_term
-from scanner.validator import validate
-from scanner.features import build_features
 from scanner.api import (
     analyze_intraday,
     analyze_opening_strength,
@@ -18,10 +16,9 @@ from scanner.api import (
     make_session,
 )
 from scanner.candidate_pool import ScanSession
+from scanner.comeback import evaluate_comeback
 from scanner.concept import compute_driving_concepts
 from scanner.config import (
-    now_beijing,
-    YI,
     CACHE_MAX_ENTRIES,
     FIRST_BREAKOUT_BONUS,
     FIRST_BREAKOUT_RANK_CHANGE,
@@ -34,25 +31,25 @@ from scanner.config import (
     MAX_STOCK_PRICE,
     MINUTE_FETCH_PHASE_DEADLINE,
     MOMENTUM_MIN_SCORE,
+    NEW_FACE_FIRST_MIN_SCORE,
     NEW_FACE_LOOKBACK_DAYS,
     NEW_FACE_MIN_SCORE,
-    NEW_FACE_FIRST_MIN_SCORE,
     REBOUND_MIN_SCORE,
-    SHORT_TERM_MIN_SCORE,
+    RISK_FLAGS_HARD_FILTER,
     RPS_BONUS_HIGH,
     RPS_BONUS_LOW,
     RPS_BONUS_MEDIUM,
     RPS_PCTILE_HIGH,
     RPS_PCTILE_LOW,
     RPS_PCTILE_MEDIUM,
-    RISK_FLAGS_HARD_FILTER,
     SHORT_TERM_MAX_TODAY_PCT,
+    SHORT_TERM_MIN_SCORE,
     WATCH_OFFLIST_KEEP_DAYS,
+    YI,
+    now_beijing,
 )
-from scanner.comeback import evaluate_comeback
 from scanner.database import (
-    get_cached_kline,
-    get_loss_rates_batch,
+    get_cached_klines,
     get_symbol_appearances,
     prune_watch_pool,
     record_appearances,
@@ -64,11 +61,13 @@ from scanner.enhancer import (
     apply_all_bonuses,
     compute_time_bonus,
 )
-from scanner.models import Candidate, KlineBar, KlineSummary, StockInfo
+from scanner.features import build_features
+from scanner.models import Candidate, KlineBar, KlineSummary, ScanResult, StockInfo
 from scanner.rank_trend import update_rank_history
-from scanner.sector import get_sector_clusters, classify_sector
-from scanner.trading_session import is_trading_day, is_trading_time
+from scanner.sector import get_sector_clusters
+from scanner.trading_session import is_trading_time
 from scanner.utils import is_gem, is_hk_stock, is_st
+from scanner.validator import validate
 
 _thread_local = threading.local()
 
@@ -94,8 +93,10 @@ def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo]
     stale_cache: dict[str, list[KlineBar]] = {}
     today = now_beijing().date()
 
+    # 批量读缓存（单次 SQL，避免对每只票各发一条查询）
+    cached_map = get_cached_klines(conn, [s.symbol for s in stocks]) if stocks else {}
     for s in stocks:
-        cached = get_cached_kline(conn, s.symbol)
+        cached = cached_map.get(s.symbol)
         if cached:
             max_date_str = max(k["date"] for k in cached)
             try:
@@ -248,9 +249,8 @@ def _classify_category(stock: StockInfo, is_new: bool,
                        c_rb: Candidate | None = None) -> str | None:
     """按价格结构（而非尝试顺序）选最贴合的策略标签。
 
-    P0-3 (2026-07-30): pullback 下线（回测 cum_2d 均亏 -8.33%，胜率 15.8%，
-    所有维度均亏损，无保留价值）。_classify_category 不再返回 "pullback"，
-    分析侧亦不再调用 analyze_pullback；analyze_pullback 本体保留供未来恢复。
+    pullback 已于 2026-07-30 下线（回测 cum_2d 均亏 -8.33%，胜率 15.8%），
+    _classify_category 不再返回 "pullback"。
     """
     if is_new:
         if c_nf is not None:
@@ -268,7 +268,8 @@ def _classify_category(stock: StockInfo, is_new: bool,
     # 超跌反弹：前期暴跌+今日企稳阳线，优先于动量/超短（场景互斥，避免反弹票被误归动量）
     if c_rb is not None:
         return "rebound"
-    st_is_wts = c_st is not None and c_st.kline.dimensions.get("st_weak_to_strong", 0) > 0
+    st_is_wts = bool(c_st is not None and c_st.kline is not None
+                     and c_st.kline.dimensions.get("st_weak_to_strong"))
     if c_st is not None and st_is_wts:
         return "short_term"
     if c_mo is not None:
@@ -346,8 +347,8 @@ def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, l
                  clusters: dict[str, list[str]] | None = None,
                  now=None
                  ) -> tuple[Candidate | None, Candidate | None, Candidate | None,
-                            Candidate | None, Candidate | None, Candidate | None]:
-    """对单只票跑完 5 路引擎 + 交叉验证 + 分类，返回各桶候选。
+                            Candidate | None]:
+    """对单只票跑完 4 路引擎 + 交叉验证 + 分类，返回各桶候选 (new_face, momentum, rebound, short_term)。
 
     `today` 是本次扫描锚定的交易日；实时扫描传真实今日，历史回放
     （historical_rescan）传信号日。所有依赖「今天」的下游都由它驱动：
@@ -376,8 +377,6 @@ def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, l
     mk = analyze_momentum(stock, kline, today_str=today, features=feats, now=now)
     rk = analyze_rebound(stock, kline, today_str=today, features=feats, now=now)
     sk = analyze_short_term(stock, kline, today_str=today, features=feats, now=now)
-    # pullback 已下线（2026-07-30，回测全维度亏损）：不再调用 analyze_pullback，
-    # 分析引擎本体保留供未来恢复（见 config.PULLBACK_MIN_SCORE 注释）。
 
     # 四策略独立打分 + 各自交叉验证，再按价格结构选最贴合的标签
     c_nf = _try_candidate(stock, nk, "new_face" if is_new else "known_new_face",
@@ -391,17 +390,17 @@ def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, l
 
     category = _classify_category(stock, is_new, c_mo, c_nf, c_st, c_rb)
     if category == "short_term":
-        return None, None, None, None, c_st, None
+        return None, None, None, c_st
     if category in ("new_face", "known_new_face"):
         # 首板票若同时满足超短次日，双挂到超短列表（保留新面孔标签）
         if is_new and c_st is not None:
-            return c_nf, None, None, None, c_st, None
-        return c_nf, None, None, None, None, None
+            return c_nf, None, None, c_st
+        return c_nf, None, None, None
     if category == "momentum":
-        return None, c_mo, None, None, None, None
+        return None, c_mo, None, None
     if category == "rebound":
-        return None, None, None, c_rb, None, None
-    return None, None, None, None, None, None
+        return None, None, c_rb, None
+    return None, None, None, None
 
 
 def _compute_rps(candidates: list[Candidate],
@@ -461,10 +460,7 @@ def _compute_rps(candidates: list[Candidate],
 
 
 def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
-                  adapter) -> tuple[
-                      list[Candidate], list[Candidate], list[Candidate],
-                      list[Candidate], list[Candidate], list[Candidate],
-                      list[Candidate], list[StockInfo], int, dict]:
+                  adapter) -> ScanResult:
     global _session_state
     session_state = _session_state
     today = now_beijing().date().isoformat()
@@ -527,18 +523,15 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
 
     new_faces: list[Candidate] = []
     momentum: list[Candidate] = []
-    pullback_list: list[Candidate] = []
     rebound_list: list[Candidate] = []
     short_term_list: list[Candidate] = []
 
     for stock in gem_stocks_filtered:
-        nf, mo, pb, rb, st, _ = _score_stock(stock, conn, klines, today, session_state, clusters)
+        nf, mo, rb, st = _score_stock(stock, conn, klines, today, session_state, clusters)
         if nf:
             new_faces.append(nf)
         if mo:
             momentum.append(mo)
-        if pb:
-            pullback_list.append(pb)
         if rb:
             rebound_list.append(rb)
         if st:
@@ -559,7 +552,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     except Exception as e:
         print(f"  [!] 回马枪评估失败: {type(e).__name__}: {e}")
 
-    all_candidates = (new_faces + momentum + pullback_list + rebound_list
+    all_candidates = (new_faces + momentum + rebound_list
                       + short_term_list + comeback_rebound + comeback_reentry)
     for c in all_candidates:
         cap_data = market_caps.get(c.stock.symbol, {})
@@ -579,7 +572,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     rps_scores: dict[str, int] = {}
     # RPS 基准：全 GEM 监控集（过滤后、含未入选候选）的 5 日累计涨幅列表，
     # 使 RPS 表达「相对全市场强弱」而非仅在已涨票中比谁涨得多。
-    # 口径统一为"历史5日累计"（排除今日），与 new_face/momentum/pullback/rebound
+    # 口径统一为"历史5日累计"（排除今日），与 new_face/momentum/rebound
     # 的 c.kline.accumulated_pct 一致。short_term 的 accumulated 包含今日
     # （策略语义），需通过 accum_map 覆盖为历史口径，避免百分位偏高。
     rps_baseline: list[float] = []
@@ -616,7 +609,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         pool = ThreadPoolExecutor(max_workers=6)
         try:
             _parallel_fetch(pool, all_candidates,
-                            intraday_scores, opening_scores, live_volumes)
+                            intraday_scores, opening_scores, live_volumes, adapter)
         finally:
             pool.shutdown(wait=False)
 
@@ -630,16 +623,6 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
                       list_streaks=session_state.list_presence,
                       market_extra=market_extra,
                       conn=conn)
-
-    # 历史大跌率标签：批量查询近 90 天推荐中次日<=-5% 占比，供 UI 风控参考
-    # 样本<3 不返回（get_loss_rates_batch 内部过滤），单次 SQL 避免 N 次查询
-    syms_for_loss = list({c.stock.symbol for c in all_candidates})
-    loss_rates = get_loss_rates_batch(conn, syms_for_loss)
-    if loss_rates:
-        for i, c in enumerate(all_candidates):
-            rate = loss_rates.get(c.stock.symbol)
-            if rate is not None:
-                all_candidates[i] = dataclass_replace(c, hist_loss_rate=rate)
 
     # 双挂候选（首板票同时挂 new_face + short_term）需各自独立计算 extra：
     # accumulate_final_score 依赖 c.gap_up_bonus / c.list_momentum_bonus 等，
@@ -687,13 +670,11 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     # 旧列表持有的仍是未累加 extra 的过期对象。
     new_faces = [c for c in all_candidates if c.category in ("new_face", "known_new_face")]
     momentum = [c for c in all_candidates if c.category == "momentum"]
-    pullback_list = [c for c in all_candidates if c.category == "pullback"]
     rebound_list = [c for c in all_candidates if c.category == "rebound"]
     short_term_list = [c for c in all_candidates if c.category == "short_term"]
     comeback_list = [c for c in all_candidates if c.category == "comeback"]
     new_faces.sort(key=lambda c: _new_face_sort_key(c))
     momentum.sort(key=lambda c: -c.score)
-    pullback_list.sort(key=lambda c: -c.score)
     rebound_list.sort(key=lambda c: -c.score)
     short_term_list.sort(key=lambda c: -c.score)
     comeback_list.sort(key=lambda c: -c.score)
@@ -716,9 +697,18 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         for sym, d in market_caps.items()
     }
 
-    return (new_faces, momentum, pullback_list, rebound_list, short_term_list,
-            comeback_list, stale_candidates, gem_stocks_filtered, filtered_large_cap,
-            current_quotes)
+    return ScanResult(
+        new_faces=new_faces,
+        momentum=momentum,
+        rebound=rebound_list,
+        short_term=short_term_list,
+        comeback=comeback_list,
+        stale_candidates=stale_candidates,
+        gem_stocks=gem_stocks_filtered,
+        filtered_large_cap=filtered_large_cap,
+        current_quotes=current_quotes,
+        today_pool=session_state.today_pool,
+    )
 
 
 def _candidate_excluded_by_risk(c: Candidate) -> bool:
@@ -738,48 +728,74 @@ def _parallel_fetch(pool: ThreadPoolExecutor,
                     intraday_scores: dict[str, float | None],
                     opening_scores: dict[str, float | None],
                     live_volumes: dict[str, float | None],
+                    adapter,
                     phase_deadline: float = MINUTE_FETCH_PHASE_DEADLINE):
-    """并行拉取分时强度/开盘强度/实时量比（三相串行，每相内部并行）。
+    """并行拉取分时强度/开盘强度/实时量比。
 
-    P-robust：每相用 futures.wait(timeout=phase_deadline) 限时——minute API
-    挂死时单只请求最坏 ~48s（15s×3 重试），若用 as_completed 无限等待，
-    40 只候选 6 线程并发可卡死扫描循环最长 ~5 分钟。超时的票降级为 None
-    （无分时信号，与 `_apply_intraday_bonus` 的 None 降级语义一致）。
+    分时数据统一经 adapter.fetch_minute 拉取一次（每 symbol 一条），再并行喂给
+    三个评分函数——AKShare 源（fetch_minute 返回 None）时整体降级为无分时信号，
+    不再静默回退雪球（此前 api.analyze_* 直接走雪球分钟接口）。
+    三相 + 拉取相每相都带 phase_deadline 限时——minute API 挂死时单只请求最坏
+    ~48s（15s×3 重试），若用 as_completed 无限等待，40 只候选 6 线程并发可卡死
+    扫描循环最长 ~5 分钟。超时的票降级为 None（无分时信号）。
     """
-    def _run_phase(make_fut, store):
-        seen: set[str] = set()
+    syms: list[str] = []
+    seen: set[str] = set()
+    for c_ in candidates:
+        sym = c_.stock.symbol
+        if sym in seen:
+            continue
+        seen.add(sym)
+        syms.append(sym)
+    if not syms:
+        return
+
+    # 拉取相：经 adapter 取分时数据（每 symbol 一条，供三相共用）
+    items_map: dict[str, list[dict] | None] = {}
+
+    def _fetch_one(s: str, adp) -> list[dict] | None:
+        return adp.fetch_minute(s)
+
+    fetch_futs = {pool.submit(_fetch_one, sym, adapter): sym for sym in syms}
+    done, pending = wait(fetch_futs, timeout=phase_deadline)
+    for fut in pending:
+        fut.cancel()
+        items_map[fetch_futs[fut]] = None
+    for fut in done:
+        sym = fetch_futs[fut]
+        try:
+            items_map[sym] = fut.result()
+        except Exception:
+            items_map[sym] = None
+
+    def _run_phase(fn, store):
         futs: dict[Future, str] = {}
-        for c_ in candidates:
-            sym = c_.stock.symbol
-            if sym in seen:
+
+        def _compute_one(s: str, it: list[dict]):
+            return fn(_get_session(), s, it)
+
+        for sym in syms:
+            items = items_map.get(sym)
+            if items is None:
+                store[sym] = None  # 无分时数据（AKShare 或拉取失败），整体降级
                 continue
-            seen.add(sym)
-            futs[pool.submit(make_fut(sym))] = sym
+            futs[pool.submit(_compute_one, sym, items)] = sym
         if not futs:
             return
-        done, pending = wait(futs, timeout=phase_deadline)
-        if pending:
+        phase_done, phase_pending = wait(futs, timeout=phase_deadline)
+        if phase_pending:
             print(f"  [!] 分时数据拉取超时（>{phase_deadline:.0f}s），"
-                  f"{len(pending)} 只降级为无分时信号")
-            for fut in pending:
+                  f"{len(phase_pending)} 只降级为无分时信号")
+            for fut in phase_pending:
                 fut.cancel()
                 store[futs[fut]] = None
-        for fut in done:
+        for fut in phase_done:
             sym = futs[fut]
             try:
                 store[sym] = fut.result()
-            except Exception as e:
+            except Exception:
                 store[sym] = None
 
-    def _intraday(sym):
-        return lambda: analyze_intraday(_get_session(), sym)
-
-    def _opening(sym):
-        return lambda: analyze_opening_strength(_get_session(), sym)
-
-    def _live_vol(sym):
-        return lambda: estimate_live_volume(_get_session(), sym)
-
-    _run_phase(_intraday, intraday_scores)
-    _run_phase(_opening, opening_scores)
-    _run_phase(_live_vol, live_volumes)
+    _run_phase(analyze_intraday, intraday_scores)
+    _run_phase(analyze_opening_strength, opening_scores)
+    _run_phase(estimate_live_volume, live_volumes)

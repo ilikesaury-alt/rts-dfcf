@@ -4,9 +4,8 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 from unified_scanner import _build_child_cmd, _should_restart
-from scanner.api import _cache_put
-from scanner.concept import _cache_put as _concept_cache_put
 from scanner.models import StockInfo
+from scanner.utils import cache_put as _cache_put
 
 _BASE = datetime(2026, 8, 5, 10, 0, tzinfo=timezone(timedelta(hours=8)))
 
@@ -34,16 +33,11 @@ class TestBoundedCache:
 
     def test_concept_cache_evicts(self):
         import scanner.concept as mod
-        orig = mod.CACHE_MAX_ENTRIES
         mod._concept_ttl_cache.clear()
-        mod.CACHE_MAX_ENTRIES = 3
-        try:
-            for i in range(5):
-                _concept_cache_put(mod._concept_ttl_cache, f"s{i}", ([], 0.0))
-            assert set(mod._concept_ttl_cache.keys()) == {"s2", "s3", "s4"}
-        finally:
-            mod.CACHE_MAX_ENTRIES = orig
-            mod._concept_ttl_cache.clear()
+        for i in range(5):
+            _cache_put(mod._concept_ttl_cache, f"s{i}", ([], 0.0), max_entries=3)
+        assert set(mod._concept_ttl_cache.keys()) == {"s2", "s3", "s4"}
+        mod._concept_ttl_cache.clear()
 
 
 class TestSuperviseDecision:
@@ -160,7 +154,7 @@ class TestKlineFetchDeadline:
 
         with patch.object(orch, "now_beijing", return_value=_BASE), \
              patch.object(orch, "is_trading_time", return_value=True), \
-             patch.object(orch, "get_cached_kline", return_value=stale_kline), \
+             patch.object(orch, "get_cached_klines", return_value={s.symbol: stale_kline for s in stocks}), \
              patch.object(orch, "KLINE_FETCH_DEADLINE", 0):
             result = orch._fetch_all_klines(conn, adapter, stocks)
 
@@ -190,7 +184,7 @@ class TestKlineFetchDeadline:
 
         with patch.object(orch, "now_beijing", return_value=_BASE), \
              patch.object(orch, "is_trading_time", return_value=True), \
-             patch.object(orch, "get_cached_kline", return_value=stale_kline), \
+             patch.object(orch, "get_cached_klines", return_value={s.symbol: stale_kline for s in stocks}), \
              patch.object(orch, "KLINE_FETCH_DEADLINE", 3600):
             result = orch._fetch_all_klines(conn, adapter, stocks)
 

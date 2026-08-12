@@ -11,7 +11,6 @@ _last_push_symbols: set[str] = set()
 def _build_card(
     new_faces: list[Candidate],
     momentum: list[Candidate],
-    pullback_list: list[Candidate],
     stale_candidates: list[Candidate],
     gem_total: int,
     filtered_large_cap: int = 0,
@@ -27,7 +26,7 @@ def _build_card(
         rebound_list = []
     if comeback_list is None:
         comeback_list = []
-    all_c = new_faces + momentum + pullback_list + rebound_list + comeback_list + short_term_list
+    all_c = new_faces + momentum + rebound_list + comeback_list + short_term_list
 
     sec_cnt: dict[str, int] = {}
     for c in all_c:
@@ -47,7 +46,9 @@ def _build_card(
     else:
         env_tag = " | ⚪大盘中性"
 
-    header_text = f"**{now}** | 🟢新{len(new_faces)} 📈动{len(momentum)} 🔄反{len(rebound_list)} 🌀马{len(comeback_list)} 🔴超{len(short_term_list)} ⚠️回{len(pullback_list)}{env_tag}"
+    header_text = (f"**{now}** | 🟢新{len(new_faces)} 📈动{len(momentum)} "
+                   f"🔄反{len(rebound_list)} 🌀马{len(comeback_list)} "
+                   f"🔴超{len(short_term_list)}{env_tag}")
     if stale_candidates:
         header_text += f" ⏳掉{len(stale_candidates)}"
     if sec_line:
@@ -57,15 +58,13 @@ def _build_card(
         {"tag": "div", "text": {"tag": "lark_md", "content": header_text}},
     ]
 
-    # 顺序与 display.py 对齐：新面孔 → 动量 → 超短 → 回调（高风险区置末）
-    # pullback 标题加 ⚠️ 高风险警告（历史大跌率 35%，谨慎参考）
+    # 顺序与 display.py 对齐：新面孔 → 动量 → 超短
     sections = [
         ("🆕 新面孔", new_faces),
         ("📈 动量延续", momentum),
         ("🔄 超跌反弹 — 暴跌后企稳/反转", rebound_list),
         ("🌀 回马枪 — 掉榜超跌/回调买点", comeback_list),
         ("🔴 超短次日", short_term_list),
-        ("⚠️ 高风险监控 — 回调介入（历史大跌率35%，谨慎参考）", pullback_list),
     ]
 
     # 双挂去重：同一 symbol 在多个桶出现时，仅在先展示的桶显示一次
@@ -145,7 +144,9 @@ def _build_card(
     elements.append({
         "tag": "note",
         "elements": [
-            {"tag": "plain_text", "content": f"创业板共{gem_total}只" + (f" | 过滤{filtered_large_cap}只" if filtered_large_cap else "")}
+            {"tag": "plain_text",
+             "content": f"创业板共{gem_total}只"
+                        + (f" | 过滤{filtered_large_cap}只" if filtered_large_cap else "")}
         ],
     })
 
@@ -160,18 +161,17 @@ def _build_card(
 
 
 def _extract_symbols(new_faces: list[Candidate], momentum: list[Candidate],
-                     pullback_list: list[Candidate], short_term_list: list[Candidate],
+                     short_term_list: list[Candidate],
                      rebound_list: list[Candidate] | None = None,
                      comeback_list: list[Candidate] | None = None) -> set[str]:
     rebound_list = rebound_list or []
     comeback_list = comeback_list or []
-    return {c.stock.symbol for c in new_faces + momentum + pullback_list + rebound_list + comeback_list + short_term_list}
+    return {c.stock.symbol for c in new_faces + momentum + rebound_list + comeback_list + short_term_list}
 
 
 def push_feishu(
     new_faces: list[Candidate],
     momentum: list[Candidate],
-    pullback_list: list[Candidate],
     stale_candidates: list[Candidate],
     gem_total: int,
     filtered_large_cap: int = 0,
@@ -194,14 +194,14 @@ def push_feishu(
 
     import time
     now = time.time()
-    current_symbols = _extract_symbols(new_faces, momentum, pullback_list, short_term_list, rebound_list, comeback_list)
+    current_symbols = _extract_symbols(new_faces, momentum, short_term_list, rebound_list, comeback_list)
     has_change = current_symbols != _last_push_symbols
 
     if not has_change and (now - _last_push_time) < FEISHU_MIN_INTERVAL:
         return False
 
     try:
-        card = _build_card(new_faces, momentum, pullback_list, stale_candidates,
+        card = _build_card(new_faces, momentum, stale_candidates,
                            gem_total, filtered_large_cap, current_rank_map,
                            short_term_list, rebound_list, comeback_list)
         resp = requests.post(FEISHU_WEBHOOK,

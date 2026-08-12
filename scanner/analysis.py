@@ -2,6 +2,8 @@ from scanner.config import (
     BOTTOM_MAX_LOSS,
     BOTTOM_NEAR_LOW_PCT,
     BOTTOM_VOL_SURGE,
+    COMEBACK_MAX_TODAY_PCT,
+    COMEBACK_MIN_TODAY_PCT,
     CRASH_THRESHOLD,
     GAP_UP_MEDIUM,
     GAP_UP_MEDIUM_PTS,
@@ -12,37 +14,25 @@ from scanner.config import (
     MA_BEAR_SCORE,
     MA_BULL_2_TIER_SCORE,
     MA_BULL_3_TIER_SCORE,
-    MA_BULL_EXTRA_BONUS,
+    MAX_MOMENTUM_TODAY_PCT,
+    MAX_NEW_FACE_TODAY_PCT,
     MOMENTUM_LAUNCH_ACCUM_MAX,
     MOMENTUM_LAUNCH_ACCUM_MIN,
     MOMENTUM_LAUNCH_TODAY_MAX,
     MOMENTUM_LAUNCH_TODAY_MIN,
     MOMENTUM_LAUNCH_VOL,
     MOMENTUM_LAUNCH_WORD,
-    MAX_MOMENTUM_TODAY_PCT,
-    MAX_NEW_FACE_TODAY_PCT,
     MOMENTUM_VOL_HEALTHY_MAX,
     MOMENTUM_VOL_HEALTHY_MIN,
     MOMENTUM_WEIGHTS,
     NEW_FACE_WEIGHTS,
     NO_CRASH_SAFE_BONUS,
-    PULLBACK_20D_EXTREME_PENALTY,
-    PULLBACK_20D_GAIN_EXTREME,
-    PULLBACK_20D_GAIN_WARN,
-    PULLBACK_20D_WARN_PENALTY,
-    PULLBACK_MAX_TODAY_PCT,
-    PULLBACK_VOL_HEALTHY,
-    PULLBACK_VOL_HIGH,
-    PULLBACK_VOL_LOW,
-    PULLBACK_WEIGHTS,
     REBOUND_5D_DROP_THRESHOLD,
     REBOUND_CRASH_THRESHOLD,
     REBOUND_MAX_TODAY_PCT,
     REBOUND_MIN_TODAY_PCT,
     REBOUND_NEAR_LOW_PCT,
     REBOUND_WEIGHTS,
-    COMEBACK_MAX_TODAY_PCT,
-    COMEBACK_MIN_TODAY_PCT,
     RECENT_2_RETURN_THRESHOLD,
     RECENT_2D_BONUS,
     SHORT_TERM_MAX_TODAY_PCT,
@@ -59,8 +49,6 @@ from scanner.config import (
     VOL_PEAK_MOMENTUM_WARN,
     VOL_PEAK_NEW_FACE_MIN,
     VOL_PEAK_NEW_FACE_PENALTY,
-    VOL_PEAK_PULLBACK_BONUS,
-    VOL_PEAK_PULLBACK_CONFIRM,
     VOL_RANK_MEDIUM_PTS,
     VOL_RANK_MEDIUM_RC,
     VOL_RANK_STRONG_PTS,
@@ -77,17 +65,15 @@ from scanner.config import (
 )
 from scanner.features import build_features
 from scanner.indicators import compute_ma
-from scanner.models import KlineSummary, StockInfo
+from scanner.models import KlineBar, KlineSummary, StockInfo
 from scanner.patterns import (
     detect_momentum_patterns,
     detect_new_face_patterns,
-    detect_pullback_patterns,
     detect_rebound_patterns,
     detect_short_term_patterns,
 )
-from scanner.validator import _mo_divergence
 from scanner.trading_session import trading_minutes_elapsed
-from scanner.models import KlineBar
+from scanner.validator import _mo_divergence
 
 # 盘中把今日部分量能投影为全天量能的最大倍数（9:31 开盘瞬间量能爆表时封顶）。
 # 保持 10：A股量能呈 U 型（开盘聚集），普通票前5分钟约占全天 5%，投影 5%×10=0.5
@@ -442,7 +428,8 @@ def analyze_new_face(stock: StockInfo, kline: list[KlineBar] | None,
     recent_3_pcts = pcts[-3:] if len(pcts) >= 3 else pcts
     no_heavy_loss = all(p > BOTTOM_MAX_LOSS for p in recent_3_pcts)
     volume_surge = vol_ratio > BOTTOM_VOL_SURGE
-    near_20d_low = (closes[-1] - min(closes[-20:])) / max(min(closes[-20:]), 0.01) < BOTTOM_NEAR_LOW_PCT if len(closes) >= 20 else False
+    near_20d_low = ((closes[-1] - min(closes[-20:])) / max(min(closes[-20:]), 0.01)
+                    < BOTTOM_NEAR_LOW_PCT if len(closes) >= 20 else False)
     bottom_confirmed = no_heavy_loss and volume_surge and near_20d_low
 
     v_shape_reversal = (
@@ -715,298 +702,6 @@ def analyze_momentum(stock: StockInfo, kline: list[KlineBar] | None,
                         score=score, dimensions=dims, avg_volume=round(avg_vol, 2))
 
 
-def _calc_pullback_base_metrics(kline: list[KlineBar], today_str: str, now=None) -> tuple[list, list, float, float, float, list, list]:
-    """Calculate base metrics for pullback analysis.
-
-    Returns:
-        (pcts, closes, accumulated, vol_ratio, avg_vol, historical_kline, volumes) tuple
-    """
-    today_str = today_str or now_beijing().date().isoformat()
-    historical_kline, pcts, closes = _split_today(kline, today_str)
-    if len(closes) >= 6:
-        accumulated = (closes[-1] - closes[-6]) / closes[-6] * 100
-    else:
-        accumulated = sum(pcts[-5:])
-
-    vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str, now)
-    volumes = [k["volume"] for k in kline]
-
-    return pcts, closes, accumulated, vol_ratio, avg_vol, historical_kline, volumes
-
-
-def _score_pullback_today_pct(today_pct: float, W: dict) -> tuple[int, dict]:
-    """Score based on today's percentage change.
-
-    入池硬门已保证 today_pct <= 0（PULLBACK_MAX_TODAY_PCT=0.0），
-    故仅处理平盘/下跌档位。
-
-    Returns:
-        (score, dimensions) tuple
-    """
-    score = 0
-    dims: dict[str, int | float] = {}
-
-    if today_pct > -1:
-        score += W["today_neg1_0"]
-        dims["pullback_today_pct"] = W["today_neg1_0"]
-    elif today_pct > -3:
-        score += W["today_neg3_neg1"]
-        dims["pullback_today_pct"] = W["today_neg3_neg1"]
-    else:
-        score += W["today_neg5_neg3"]
-        dims["pullback_today_pct"] = W["today_neg5_neg3"]
-
-    return score, dims
-
-
-def _score_pullback_accumulated(accumulated: float, W: dict) -> tuple[int, dict]:
-    """Score based on accumulated percentage change.
-
-    Returns:
-        (score, dimensions) tuple
-    """
-    score = _band_score(
-        accumulated,
-        [(10, "accum_5_10"), (20, "accum_10_20"), (30, "accum_20_30")],
-        W, default_key="accum_gte_30",
-    )
-    return score, {"pullback_accumulated": score}
-
-
-def _score_pullback_volume(vol_ratio: float, W: dict) -> tuple[int, dict]:
-    """Score based on volume ratio.
-
-    Returns:
-        (score, dimensions) tuple
-    """
-    score = 0
-    dims: dict[str, int | float] = {}
-
-    if vol_ratio < PULLBACK_VOL_LOW:
-        score += W["vol_low"]
-        dims["pullback_volume"] = W["vol_low"]
-    elif vol_ratio <= PULLBACK_VOL_HEALTHY:
-        score += W["vol_healthy"]
-        dims["pullback_volume"] = W["vol_healthy"]
-    elif vol_ratio > PULLBACK_VOL_HIGH:
-        score += W["vol_surge"]
-        dims["pullback_volume"] = W["vol_surge"]
-    else:
-        # PULLBACK_VOL_HEALTHY < vol_ratio <= PULLBACK_VOL_HIGH: 中性量能
-        dims["pullback_volume"] = 0
-
-    return score, dims
-
-
-def _check_crash_day(pcts: list) -> tuple[bool, int, dict]:
-    """Check crash day + recent 2d return for pullback（复用 _crash_safety_block）。"""
-    return _crash_safety_block(pcts, "pullback")
-
-
-def _analyze_pullback_ma(closes: list, W: dict) -> dict:
-    """Analyze moving averages for pullback strategy.
-
-    Returns:
-        Dictionary containing MA analysis results
-    """
-    result = {
-        "ma10": None,
-        "ma_support": False,
-        "ma_broken": False,
-        "ma_bull_extra": 0,
-        "score": 0,
-        "dimensions": {}
-    }
-
-    if len(closes) >= 10:
-        result["ma10"] = sum(closes[-10:]) / 10
-        current_close = closes[-1]
-        pct_from_ma10 = (current_close - result["ma10"]) / max(result["ma10"], 0.01) * 100
-        if abs(pct_from_ma10) <= 2:
-            result["ma_support"] = True
-            result["score"] += W["ma_support"]
-            result["dimensions"]["pullback_ma_support"] = W["ma_support"]
-
-    if len(closes) >= 20:
-        ma20 = sum(closes[-20:]) / 20
-        if closes[-1] < ma20:
-            result["ma_broken"] = True
-            result["score"] += W["ma_broken"]
-            result["dimensions"]["pullback_ma_broken"] = W["ma_broken"]
-        # ma_bull_extra 仅在未破位时计算：close<ma20 与 ma5>ma10>ma20 同时成立是矛盾信号
-        # （破位时 MA 多头排列是 MA 滞后导致的假象，不应给多头加分）
-        if not result["ma_broken"]:
-            ma5 = sum(closes[-5:]) / 5
-            if result["ma10"] is not None and ma5 > result["ma10"] and result["ma10"] > ma20:
-                result["ma_bull_extra"] = MA_BULL_EXTRA_BONUS
-                result["score"] += result["ma_bull_extra"]
-                result["dimensions"]["pullback_ma_bull"] = result["ma_bull_extra"]
-    elif len(closes) >= 10:
-        if result["ma_support"] and result["ma10"] is not None:
-            ma5 = sum(closes[-5:]) / 5
-            if ma5 > result["ma10"]:
-                result["ma_bull_extra"] = MA_BULL_EXTRA_BONUS
-                result["score"] += result["ma_bull_extra"]
-                result["dimensions"]["pullback_ma_bull"] = result["ma_bull_extra"]
-
-    if not result["ma_support"] and not result["ma_broken"] and result["ma_bull_extra"] == 0:
-        result["dimensions"]["pullback_ma_support"] = 0
-
-    return result
-
-
-def _score_pullback_indicators(closes: list, historical_kline: list[KlineBar],
-                               W: dict, feats: dict | None = None) -> tuple[int, dict]:
-    """Score based on technical indicators (RSI, MACD, KDJ, Bollinger).
-
-    Returns:
-        (score, dimensions) tuple
-    """
-    feats = _get_features(closes, historical_kline, feats)
-    rsi_val = feats["rsi6"]
-    macd_val = feats["macd"]
-    kdj_val = feats.get("kdj")
-    boll = feats["boll"]
-
-    score = 0
-    dims: dict[str, int | float] = {}
-
-    if rsi_val is not None:
-        if rsi_val < 30:
-            score += W["rsi_oversold"]
-            dims["pullback_rsi"] = round(rsi_val, 1)
-        elif rsi_val < 45:
-            score += W["rsi_mid"]
-            dims["pullback_rsi"] = round(rsi_val, 1)
-        else:
-            dims["pullback_rsi"] = round(rsi_val, 1)
-
-    if macd_val is not None:
-        if macd_val["macd"] > macd_val["signal"]:
-            score += W["macd_bonus"]
-            dims["pullback_macd"] = round(macd_val["histogram"], 4)
-
-    if kdj_val is not None and kdj_val["J"] < 0:
-        score += W["kdj_bonus"]
-        dims["pullback_kdj"] = round(kdj_val["J"], 1)
-
-    if boll is not None:
-        dist_to_mid = abs(closes[-1] - boll["middle"]) / max(boll["middle"], 0.01) * 100
-        if dist_to_mid < 0.5:
-            score += W["bollinger_mid_support"]
-            dims["pullback_bollinger"] = round(boll["middle"], 2)
-        elif boll["b_pct"] < 0.05:
-            dims["pullback_bollinger"] = round(boll["lower"], 2)
-        else:
-            dims["pullback_bollinger"] = round(boll["b_pct"], 2)
-
-    return score, dims
-
-
-def _pullback_20day_gain_penalty(closes: list) -> tuple[int, str]:
-    """20日累计涨幅过大 → pullback 高风险惩罚（生命周期保护）"""
-    if len(closes) < 21:
-        return 0, "data_short"
-    gain_20d = (closes[-1] - closes[-21]) / closes[-21] * 100
-    if gain_20d > PULLBACK_20D_GAIN_EXTREME:
-        return PULLBACK_20D_EXTREME_PENALTY, f"20d_gain_{gain_20d:.0f}%_extreme"
-    if gain_20d > PULLBACK_20D_GAIN_WARN:
-        return PULLBACK_20D_WARN_PENALTY, f"20d_gain_{gain_20d:.0f}%_warn"
-    return 0, f"20d_gain_{gain_20d:.0f}%_ok"
-
-
-def _classify_pullback_trend(ma_support: bool, ma_broken: bool, today_pct: float) -> str:
-    """Classify the pullback trend based on conditions.
-
-    Returns:
-        Trend classification string
-    """
-    if ma_support and not ma_broken and (-5 < today_pct <= 0):
-        return "缩量回调"
-    elif ma_broken:
-        return "破位回调"
-    else:
-        return "回踩整理"
-
-
-def analyze_pullback(stock: StockInfo, kline: list[KlineBar] | None,
-                     today_str: str | None = None,
-                     features: dict | None = None,
-                     now=None) -> KlineSummary | None:
-    if not kline or len(kline) < 5:
-        return None
-
-    W = PULLBACK_WEIGHTS
-
-    today_pct = stock.percent
-    if today_pct <= -8 or today_pct > PULLBACK_MAX_TODAY_PCT:
-        return None
-
-    pcts, closes, accumulated, vol_ratio, avg_vol, historical_kline, volumes = _calc_pullback_base_metrics(kline, today_str, now)
-
-    if accumulated < 5:
-        return None
-
-    feats = _get_features(closes, historical_kline, features)
-
-    score = 0
-    dims: dict[str, int | float] = {}
-
-    # Score each component
-    today_score, today_dims = _score_pullback_today_pct(today_pct, W)
-    score += today_score
-    dims.update(today_dims)
-
-    accum_score, accum_dims = _score_pullback_accumulated(accumulated, W)
-    score += accum_score
-    dims.update(accum_dims)
-
-    vol_score, vol_dims = _score_pullback_volume(vol_ratio, W)
-    score += vol_score
-    dims.update(vol_dims)
-
-    vol_peak = _vol_peak_ratio(volumes, today_vol=_project_today_vol(kline, today_str, now))
-    if vol_peak < VOL_PEAK_PULLBACK_CONFIRM:
-        score += VOL_PEAK_PULLBACK_BONUS
-        dims["pullback_vol_peak"] = round(vol_peak, 2)
-
-    has_crash_day, crash_score, crash_dims = _check_crash_day(pcts)
-    score += crash_score
-    dims.update(crash_dims)
-
-    ma_result = _analyze_pullback_ma(closes, W)
-    score += ma_result["score"]
-    dims.update(ma_result["dimensions"])
-
-    rank = stock.rank
-    if rank <= 10:
-        score += W["rank_top10"]
-        dims["pullback_rank"] = W["rank_top10"]
-    elif rank <= 30:
-        score += W["rank_top30"]
-        dims["pullback_rank"] = W["rank_top30"]
-
-    indicator_score, indicator_dims = _score_pullback_indicators(closes, historical_kline, W, feats)
-    score += indicator_score
-    dims.update(indicator_dims)
-
-    pattern_score, pattern_dims = detect_pullback_patterns(historical_kline, vol_ratio)
-    score += pattern_score
-    dims.update(pattern_dims)
-
-    gain_penalty, gain_detail = _pullback_20day_gain_penalty(closes)
-    score += gain_penalty
-    if gain_penalty:
-        dims["pullback_20d_gain"] = gain_penalty
-        dims["pullback_20d_gain_detail"] = gain_detail
-
-    trend = _classify_pullback_trend(ma_result["ma_support"], ma_result["ma_broken"], today_pct)
-
-    return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
-                        volume_ratio=round(vol_ratio, 2), bottom_confirmed=not has_crash_day,
-                        score=score, dimensions=dims, avg_volume=round(avg_vol, 2))
-
-
 def analyze_short_term(stock: StockInfo, kline: list[KlineBar] | None,
                        today_str: str | None = None,
                        features: dict | None = None,
@@ -1131,18 +826,19 @@ def analyze_short_term(stock: StockInfo, kline: list[KlineBar] | None,
     dims.update(pattern_dims)
 
     # 昨日大分歧/烂板/炸板 + 今日在 2~8% 内转强（弱转强）
+    # KlineBar 契约保证 open/high/close 均为数值，无需 .get() 防御
     yest_divergence = False
     if len(historical_kline) >= 2:
         yest = historical_kline[-1]
-        yo = yest.get("open", 0)
-        yh = yest.get("high", 0)
-        yc = yest.get("close", 0)
+        yo = yest["open"]
+        yh = yest["high"]
+        yc = yest["close"]
         if yc > 0:
             upper_shadow = (yh - max(yo, yc)) / yc
             close_to_high = yc / yh - 1 if yh > 0 else 0
             yest_divergence = (upper_shadow > ST_DIVERGE_UPPER_SHADOW
                                 and close_to_high < ST_DIVERGE_CLOSE_WEAK)
-            prev_close = historical_kline[-2].get("close", 0)
+            prev_close = historical_kline[-2]["close"]
             if prev_close > 0 and (yh / prev_close - 1) >= ST_BOMB_HIGH and (yc / prev_close - 1) < ST_BOMB_CLOSE:
                 yest_divergence = True  # 曾触板但收盘大回落 = 炸板/烂板
     if yest_divergence:

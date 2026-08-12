@@ -34,7 +34,7 @@ import json
 import sqlite3
 import sys
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, timedelta
 
 from scanner.config import DB_PATH, now_beijing
@@ -453,13 +453,18 @@ def print_ranking_report(conn: sqlite3.Connection, metric: str = "cum_3d", recen
     print("=" * 70)
     print(f"综合排序类别优先级校准 (metric={metric}, 近期窗口={recent_days}天)")
     print("=" * 70)
-    print(f"[当前 config 顺序]  " + " > ".join(current_order))
-    print(f"[建议优先级]       " + " > ".join(suggested))
+    print("[当前 config 顺序]  " + " > ".join(current_order))
+    print("[建议优先级]       " + " > ".join(suggested))
 
-    print(f"\n[各类别表现]（按建议用的口径降序；近期样本不足回退全期）")
+    print("\n[各类别表现]（按建议用的口径降序；近期样本不足回退全期）")
     print(f"{'类别':<16}{'窗口':>6}{'样本':>6}{'均收益':>9}{'胜率':>8}{'IC(score)':>10}  备注")
     for s in sorted(repr_stats, key=lambda x: -x.avg_return):
-        src = "近期" if (s.category in recent_map and recent_map[s.category].count >= RANK_MIN_SAMPLE) else ("全期" if (s.category in full_map and full_map[s.category].count >= RANK_MIN_SAMPLE) else "近期*")
+        if s.category in recent_map and recent_map[s.category].count >= RANK_MIN_SAMPLE:
+            src = "近期"
+        elif s.category in full_map and full_map[s.category].count >= RANK_MIN_SAMPLE:
+            src = "全期"
+        else:
+            src = "近期*"
         note = ""
         if s.ic < -0.05:
             note = "<== 反指(分数越高越差)"
@@ -471,7 +476,11 @@ def print_ranking_report(conn: sqlite3.Connection, metric: str = "cum_3d", recen
               f"{s.ic:>10.3f}  {note}")
 
     diff = [c for c in current_order if c in suggested and current_order.index(c) != suggested.index(c)]
-    print(f"\n[与当前差异] " + ("无，顺序一致" if not diff else " ".join(f"{c}(当前{c}→建议{suggested.index(c)})" for c in diff)))
+    if not diff:
+        diff_str = "无，顺序一致"
+    else:
+        diff_str = " ".join(f"{c}(当前{c}→建议{suggested.index(c)})" for c in diff)
+    print(f"\n[与当前差异] {diff_str}")
     print("确认后人工更新 config.CAT_DISPLAY_PRIORITY")
 
 

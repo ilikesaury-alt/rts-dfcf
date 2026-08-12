@@ -398,7 +398,7 @@ def run_backtest(conn: sqlite3.Connection, cfg: PBConfig) -> BacktestResult:
     cal_end = calendar[-1]
 
     # 2) 加载信号并按买入日分组
-    from scanner.historical_rescan import rescan_all_signals, RESCANABLE_CATEGORIES
+    from scanner.historical_rescan import RESCANABLE_CATEGORIES, rescan_all_signals
     if cfg.rescore and (cfg.category is None or cfg.category in RESCANABLE_CATEGORIES):
         # P0 验证：用当前 config 权重重扫所有可重建类别引擎（new_face/known_new_face/
         # momentum/short_term/rebound），替代 recommendations 里的旧权重冻结分。

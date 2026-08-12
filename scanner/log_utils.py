@@ -17,6 +17,10 @@ def log_results(new_faces: list[Candidate], momentum: list[Candidate]):
             if c.is_stale:
                 continue
             k = c.kline
-            tag = {"new_face": "新", "known_new_face": "新", "momentum": "动量", "pullback": "回", "rebound": "反", "short_term": "超短"}.get(c.category, "?")
+            tag = {"new_face": "新", "known_new_face": "新", "momentum": "动量",
+                   "rebound": "反", "short_term": "超短"}.get(c.category, "?")
             intra = f"{c.intraday_score:+.1f}" if c.intraday_score is not None and c.intraday_score != 0.0 else ""
-            f.write(f"{now},{tag},{c.stock.name},{c.stock.symbol},{c.stock.current:.2f},{c.stock.percent:+.2f}%,{k.trend if k else ''},{k.accumulated_pct if k else ''},{k.volume_ratio if k else ''},{c.score},{intra}\n")
+            f.write(f"{now},{tag},{c.stock.name},{c.stock.symbol},{c.stock.current:.2f},"
+                    f"{c.stock.percent:+.2f}%,{k.trend if k else ''},"
+                    f"{k.accumulated_pct if k else ''},{k.volume_ratio if k else ''},"
+                    f"{c.score},{intra}\n")

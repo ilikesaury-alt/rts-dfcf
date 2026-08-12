@@ -1,9 +1,6 @@
 from scanner.config import (
     COMEBACK_POS_DIMS,
     PULLBACK_20D_GAIN_EXTREME,
-    PULLBACK_VOL_HEALTHY,
-    PULLBACK_VOL_HIGH,
-    PULLBACK_VOL_LOW,
     ST_OVERBOUGHT_BOLL,
     ST_OVERBOUGHT_KDJ,
     V_MO_DIVERGENCE_BEAR,
@@ -21,17 +18,6 @@ from scanner.config import (
     V_NF_SECTOR_STRONG,
     V_NF_SECTOR_WEAK,
     V_NF_VOLUME_CONFIRM,
-    V_PB_BOLLINGER_MID,
-    V_PB_BOLLINGER_TOUCH,
-    V_PB_MA_DOWN,
-    V_PB_MA_FLAT,
-    V_PB_MA_UP,
-    V_PB_SECTOR_DEAD,
-    V_PB_SECTOR_HOT,
-    V_PB_SECTOR_NEUTRAL,
-    V_PB_SHRINK_MOD,
-    V_PB_SHRINK_NO,
-    V_PB_SHRINK_YES,
     V_RB_OVERSOLD_PARTIAL,
     V_RB_OVERSOLD_STRONG,
     V_RB_PATTERN_3BULL,
@@ -60,8 +46,8 @@ from scanner.indicators import (
     compute_kdj,
     compute_ma,
 )
-from scanner.sector import classify_sector
 from scanner.models import KlineBar
+from scanner.sector import classify_sector
 
 
 def _get_features(closes: list[float], historical_kline: list[KlineBar],
@@ -355,7 +341,7 @@ def _mo_divergence(closes: list[float], historical_kline: list[KlineBar],
     # 条件3：OBV 顶背离（价升量减=资金流出）
     # OBV 序列与 closes 对齐，比较两个价格高点处的 OBV 值
     if historical_kline and len(historical_kline) >= len(closes):
-        volumes = [k.get("volume", 0) for k in historical_kline[:len(closes)]]
+        volumes = [k["volume"] for k in historical_kline[:len(closes)]]
         obv_seq = [0]
         for i in range(1, len(closes)):
             if closes[i] > closes[i - 1]:
@@ -420,99 +406,6 @@ def validate_momentum(stock, kline_summary, closes: list[float],
 
     details["_pos_dims"] = pos_dims
     details["_max_dims"] = 3
-    return passed, total, details
-
-
-def _pb_ma_trend(closes: list[float], feats: dict | None = None) -> tuple[int, str]:
-    if len(closes) < 25:
-        return 0, "data_short"
-
-    if feats is not None and feats.get("ma20_sma") is not None and feats.get("ma20_sma_prev") is not None:
-        ma20_now = feats["ma20_sma"]
-        ma20_prev = feats["ma20_sma_prev"]
-    else:
-        ma20_now = sum(closes[-20:]) / 20
-        ma20_prev = sum(closes[-25:-5]) / 20
-    change_pct = (ma20_now - ma20_prev) / max(ma20_prev, 0.01) * 100
-
-    if change_pct > 0.5:
-        return V_PB_MA_UP, f"ma20_up_{change_pct:+.1f}%"
-    if change_pct > -0.5:
-        return V_PB_MA_FLAT, f"ma20_flat_{change_pct:+.1f}%"
-    return V_PB_MA_DOWN, f"ma20_down_{change_pct:+.1f}%"
-
-
-def _pb_shrinkage(kline_summary) -> tuple[int, float]:
-    vr = kline_summary.volume_ratio
-    # 与分析端 _score_pullback_volume 共用同一组阈值，避免口径矛盾：
-    #   < PULLBACK_VOL_LOW      -> 极度缩量（确认 +）
-    #   <= PULLBACK_VOL_HEALTHY -> 健康缩量（+）
-    #   <= PULLBACK_VOL_HIGH    -> 中性（0）
-    #   >  PULLBACK_VOL_HIGH    -> 放量（非缩量，惩罚 -）
-    if vr < PULLBACK_VOL_LOW:
-        return V_PB_SHRINK_YES, vr
-    if vr <= PULLBACK_VOL_HEALTHY:
-        return V_PB_SHRINK_MOD, vr
-    if vr <= PULLBACK_VOL_HIGH:
-        return 0, vr
-    return V_PB_SHRINK_NO, vr
-
-
-def _pb_sector(name: str, clusters: dict[str, list[str]] | None) -> tuple[int, int]:
-    if not clusters:
-        return V_PB_SECTOR_DEAD, 0
-    sec = classify_sector(name)
-    count = len(clusters.get(sec, []))
-    if count >= 3:
-        return V_PB_SECTOR_HOT, count
-    return V_PB_SECTOR_NEUTRAL, count
-
-
-def _pb_bollinger_touch(closes: list[float], feats: dict | None = None) -> tuple[int, str]:
-    if len(closes) < 20:
-        return 0, "data_short"
-    boll = feats["boll"] if (feats is not None and feats.get("boll") is not None) else compute_bollinger_bands(closes)
-    if boll is None:
-        return 0, "bb_na"
-    current = closes[-1]
-    touch_lower = current <= boll["lower"] * 1.02
-    near_mid = abs(current - boll["middle"]) / max(boll["middle"], 0.01) * 100 < 1.0
-    if touch_lower:
-        return V_PB_BOLLINGER_TOUCH, f"bb_lower_touch_b{boll['b_pct']:.2f}"
-    if near_mid:
-        return V_PB_BOLLINGER_MID, f"bb_mid_return_b{boll['b_pct']:.2f}"
-    return 0, f"bb_mid_b{boll['b_pct']:.2f}"
-
-
-def validate_pullback(stock, kline_summary, closes: list[float],
-                      historical_kline: list[KlineBar], clusters: dict[str, list[str]] | None,
-                      feats: dict | None = None
-                      ) -> tuple[bool, int, dict]:
-    if feats is None:
-        feats = build_features(closes)
-    ma_bonus, ma_detail = _pb_ma_trend(closes, feats)
-    shr_bonus, shr_vr = _pb_shrinkage(kline_summary)
-    sec_bonus, sec_count = _pb_sector(stock.name, clusters)
-    boll_bonus, boll_detail = _pb_bollinger_touch(closes, feats)
-
-    details: dict[str, int | float | str] = {
-        "v_pb_ma_trend": ma_bonus,
-        "v_pb_ma_trend_detail": ma_detail,
-        "v_pb_shrinkage": shr_bonus,
-        "v_pb_shrinkage_vr": round(shr_vr, 2),
-        "v_pb_sector": sec_bonus,
-        "v_pb_sector_count": sec_count,
-        "v_pb_bollinger": boll_bonus,
-        "v_pb_bollinger_detail": boll_detail,
-    }
-
-    total = ma_bonus + shr_bonus + sec_bonus + boll_bonus
-
-    pos_dims = sum(1 for b in (ma_bonus, shr_bonus, sec_bonus, boll_bonus) if b > 0)
-    passed = pos_dims >= 2
-
-    details["_pos_dims"] = pos_dims
-    details["_max_dims"] = 4
     return passed, total, details
 
 
@@ -763,8 +656,6 @@ def validate(cat: str, stock, kline_summary, closes: list[float],
         return validate_nf(stock, kline_summary, closes, historical_kline, clusters, feats)
     if cat == "momentum":
         return validate_momentum(stock, kline_summary, closes, historical_kline, clusters, feats)
-    if cat == "pullback":
-        return validate_pullback(stock, kline_summary, closes, historical_kline, clusters, feats)
     if cat == "rebound":
         passed, bonus, details = validate_rebound(stock, kline_summary, closes, historical_kline, clusters, feats)
         if off_list and details.get("_pos_dims", 0) < COMEBACK_POS_DIMS:

@@ -1,7 +1,6 @@
 from scanner.patterns import (
     detect_new_face_patterns,
     detect_momentum_patterns,
-    detect_pullback_patterns,
     detect_short_term_patterns,
 )
 
@@ -126,24 +125,6 @@ class TestDetectMomentumPatterns:
 
     def test_empty_kline(self):
         score, dims = detect_momentum_patterns([])
-        assert score == 0
-        assert dims == {}
-
-
-class TestDetectPullbackPatterns:
-    """pullback 已下线（2026-07-30），detect_pullback_patterns 仅被离线 analyze_pullback 调用。
-    2026-08-12 精简：保留入口契约冒烟（engulfing 检出 + 空 K 线鲁棒），删除维度级用例。"""
-
-    def test_engulfing(self):
-        k = [
-            {"open": 51, "close": 49, "high": 52, "low": 48},
-            {"open": 48, "close": 53, "high": 54, "low": 47.5},
-        ]
-        score, dims = detect_pullback_patterns(k, vol_ratio=1.0)
-        assert dims["pb_pattern_engulfing"] == 5
-
-    def test_empty_kline(self):
-        score, dims = detect_pullback_patterns([], vol_ratio=1.0)
         assert score == 0
         assert dims == {}
 

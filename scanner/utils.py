@@ -1,3 +1,53 @@
+import math
+
+from scanner.config import CACHE_MAX_ENTRIES
+
+
+def to_float(v, default: float | None = 0.0) -> float | None:
+    """安全转 float：None/NaN/±inf/不可解析字符串/空 → default（数据入口统一防御）。
+
+    收敛 api._num / models._bar_float / enhancer._safe_float / market_extra._num /
+    data_source._as_float 五份同族实现。default 传 None 表示「非法值返回 None」，
+    调用方按缺失处理（data_source._as_float 语义）。
+
+    Python json 允许解析非标准字面量 NaN/Infinity，仅判 `f != f`（NaN）会放行 inf，
+    inf 与任何数值比较恒为真/假，会绕过节流与越界/档位判断（如 current > MAX_STOCK_PRICE），
+    故统一用 math.isfinite。
+    """
+    try:
+        f = float(v)
+        return default if not math.isfinite(f) else f  # NaN/±inf → default
+    except (TypeError, ValueError):
+        return default
+
+
+def to_int(v, default: int = 0) -> int:
+    """安全转 int：None/不可解析字符串/浮点 → 就近取整（数据入口防御）。"""
+    try:
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return default
+            return int(float(v))
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def cache_put(cache: dict, key, value, max_entries: int = CACHE_MAX_ENTRIES) -> None:
+    """带上限的进程内缓存写入：超限时淘汰最旧条目，防止长跑内存无限增长。
+
+    收敛 api._cache_put / market_extra._cache_put / concept._cache_put 三份同族实现。
+    dict 保持插入序，`pop(next(iter(cache)))` 淘汰最早插入的 key。
+    调用方需自行持有对应锁。
+    """
+    if key in cache:
+        cache.pop(key)
+    cache[key] = value
+    while len(cache) > max_entries:
+        cache.pop(next(iter(cache)))
+
+
 def is_st(name: str) -> bool:
     return name.startswith("*ST") or name.startswith("ST") or "退市" in name or name.startswith("退")
 

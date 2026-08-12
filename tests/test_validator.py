@@ -22,7 +22,6 @@ from scanner.validator import (
     validate,
     validate_momentum,
     validate_nf,
-    validate_pullback,
     validate_rebound,
     validate_short_term,
 )
@@ -334,39 +333,6 @@ class TestValidateMomentum:
             V._mo_ma_alignment, V._mo_volume_uniformity = orig_ma, orig_vol
 
 
-class TestValidatePullback:
-    """pullback 策略已下线（2026-07-30），仅保留端到端冒烟用例。
-
-    2026-08-12 精简：原 TestValidatePullbackHelpers（9 个维度级辅助函数用例）为死路径
-    维护成本，删除。保留 validate_pullback 端到端冒烟，未来恢复策略时再重写详细用例。
-    """
-
-    def test_healthy_pullback_passes(self):
-        pcts = [1.0]*20 + [-1, -1.5, -2, -0.5, 0.0]
-        vols = [1.0]*20 + [0.4, 0.5, 0.6, 0.7, 0.8]
-        k = _kline(pcts, volumes=vols)
-        closes = [c["close"] for c in k[:-1]]
-        ks = KlineSummary(
-            trend="缩量回调", accumulated_pct=15.0, volume_ratio=0.5,
-            bottom_confirmed=True, score=20, avg_volume=1.0,
-        )
-        passed, total, dims = validate_pullback(
-            _stock(name="半导体测试"), ks, closes, k[:-1],
-            SEMICONDUCTOR_CLUSTER
-        )
-        assert passed, f"should pass, total={total}, dims={dims}"
-
-    def test_short_kline(self):
-        k = _kline([1, 2, 3], volumes=[1.0]*3)
-        closes = [c["close"] for c in k[:-1]]
-        ks = KlineSummary(
-            trend="缩量回调", accumulated_pct=10.0, volume_ratio=0.5,
-            bottom_confirmed=True, score=18, avg_volume=1.0,
-        )
-        passed, total, dims = validate_pullback(_stock(), ks, closes, k[:-1], None)
-        assert not passed
-
-
 class TestValidateDispatch:
 
     def test_dispatch_new_face(self):
@@ -397,22 +363,13 @@ class TestValidateDispatch:
         )
         assert isinstance(passed, bool)
 
-    def test_dispatch_pullback(self):
-        pcts = [1.0]*20 + [-1, -1.5, -2, -0.5, 0.0]
-        vols = [1.0]*20 + [0.4, 0.5, 0.6, 0.7, 0.8]
-        k = _kline(pcts, volumes=vols)
-        closes = [c["close"] for c in k[:-1]]
-        ks = KlineSummary(
-            trend="缩量回调", accumulated_pct=15.0, volume_ratio=0.5,
-            bottom_confirmed=True, score=20, avg_volume=1.0,
-        )
-        passed, total, dims = validate(
-            "pullback", _stock(name="半导体测试"),
-            ks, closes, k[:-1], SEMICONDUCTOR_CLUSTER
-        )
-        assert isinstance(passed, bool)
-
     def test_unknown_category(self):
+        # pullback 已下线（2026-07-30）：不再有 validate_pullback 分支，
+        # "pullback" 与未知类别一样落入默认拒绝分支。
+        passed, total, dims = validate("pullback", _stock(), None, [], [], None)
+        assert not passed
+        assert total == 0
+        assert dims == {}
         passed, total, dims = validate("unknown", _stock(), None, [], [], None)
         assert not passed
         assert total == 0

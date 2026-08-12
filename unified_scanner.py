@@ -19,27 +19,27 @@ import time
 
 import requests
 
-from scanner.data_source import get_adapter
+from scanner.backtest import backfill_outcomes
 from scanner.config import (
     CROSS_SOURCE_BONUS,
     DB_PATH,
     LOG_DIR,
     NEW_FACE_LOOKBACK_DAYS,
     REFRESH_INTERVAL,
-    SUPERVISE_LOG_FILE,
-    SUPERVISE_CHILD_TIMEOUT,
     SUPERVISE_CHILD_GRACE,
+    SUPERVISE_CHILD_TIMEOUT,
+    SUPERVISE_LOG_FILE,
+    SUPERVISE_RESET_AFTER_SECONDS,
     SUPERVISE_RESTART_DELAY,
     SUPERVISE_RESTART_MAX_DELAY,
-    SUPERVISE_RESET_AFTER_SECONDS,
     now_beijing,
 )
-from scanner.backtest import backfill_outcomes
+from scanner.data_source import get_adapter
 from scanner.database import get_today_recommendations, init_db, save_recommendations
 from scanner.display import display
 from scanner.feishu import push_feishu
 from scanner.log_utils import log_results
-from scanner.orchestrator import _new_face_sort_key, scan_with_raw
+from scanner.orchestrator import scan_with_raw
 from scanner.trading_session import is_trading_time, next_session_label, seconds_until_next_session
 
 if sys.platform == "win32":
@@ -152,7 +152,7 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
 
                 xq_raw = adapter.fetch_biaosheng()
                 if not xq_raw:
-                    print(f"\r  [!] 飙升榜数据为空，等待刷新...", end="", flush=True)
+                    print("\r  [!] 飙升榜数据为空，等待刷新...", end="", flush=True)
                     time.sleep(interval)
                     continue
 
@@ -166,15 +166,17 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 both_count = sum(1 for i in xq_raw if i.get("source_tag") == "both")
                 print(f"\r  📡 飙升榜{len(xq_raw)}只 (双榜{both_count}只)", end="", flush=True)
 
-                new_faces, momentum, pullback_list, rebound_list, short_term_list, comeback_list, stale_candidates, all_gem, filtered_large_cap, current_quotes = (
-                    scan_with_raw(xq_raw, conn, adapter))
-
-                new_faces.sort(key=_new_face_sort_key)
-                momentum.sort(key=lambda x: -x.score)
-                pullback_list.sort(key=lambda x: -x.score)
-                rebound_list.sort(key=lambda x: -x.score)
-                short_term_list.sort(key=lambda x: -x.score)
-                comeback_list.sort(key=lambda x: -x.score)
+                res = scan_with_raw(xq_raw, conn, adapter)
+                new_faces = res.new_faces
+                momentum = res.momentum
+                rebound_list = res.rebound
+                short_term_list = res.short_term
+                comeback_list = res.comeback
+                stale_candidates = res.stale_candidates
+                all_gem = res.gem_stocks
+                filtered_large_cap = res.filtered_large_cap
+                current_quotes = res.current_quotes
+                # 各桶已在 scan_with_raw 内排序（new_face 用 _new_face_sort_key，其余按 score 降序）
 
                 current_rank_map = {s.symbol: s.rank for s in all_gem}
 
@@ -196,17 +198,18 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 display(len(all_gem), interval,
                         filtered_large_cap=filtered_large_cap,
                         conn=conn, live_quotes=live_quotes,
-                        rank_map=current_rank_map)
-                log_results(new_faces, momentum + pullback_list + rebound_list + short_term_list + comeback_list)
+                        rank_map=current_rank_map,
+                        today_pool=res.today_pool)
+                log_results(new_faces, momentum + rebound_list + short_term_list + comeback_list)
                 if not no_feishu:
-                    pushed = push_feishu(new_faces, momentum, pullback_list, stale_candidates,
+                    pushed = push_feishu(new_faces, momentum, stale_candidates,
                                         len(all_gem), filtered_large_cap=filtered_large_cap,
                                         current_rank_map=current_rank_map,
                                         short_term_list=short_term_list,
                                         rebound_list=rebound_list,
                                         comeback_list=comeback_list)
-                    if not pushed and (new_faces or momentum or pullback_list or rebound_list or short_term_list or comeback_list):
-                        print(f"\r  📤 飞书推送跳过（冷却中/无变化）", end="", flush=True)
+                    if not pushed and (new_faces or momentum or rebound_list or short_term_list or comeback_list):
+                        print("\r  📤 飞书推送跳过（冷却中/无变化）", end="", flush=True)
 
                 if new_faces:
                     top = new_faces[0]
@@ -235,7 +238,7 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                           f"{top_s.stock.percent:+.2f}% | RPS:{top_s.rps_bonus}")
 
                 save_recommendations(conn, new_faces,
-                                     momentum + pullback_list + rebound_list + short_term_list + comeback_list)
+                                     momentum + rebound_list + short_term_list + comeback_list)
                 try:
                     n = backfill_outcomes(conn)
                     if n:

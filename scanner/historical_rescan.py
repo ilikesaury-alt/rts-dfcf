@@ -189,7 +189,7 @@ def rescan_all_signals(conn: sqlite3.Connection, cfg, calendar: list[str],
         stocks = _filter_gem_stocks(raw)
 
         # 2) 按信号日切片 K 线；顺带用当日收盘价补 current 并复现价格上限过滤
-        klines: dict[str, list[KlineBar]] = {}
+        klines: dict[str, list[KlineBar] | None] = {}
         usable = []
         for s in stocks:
             entry = kline_store.get(s.symbol)
@@ -216,7 +216,7 @@ def rescan_all_signals(conn: sqlite3.Connection, cfg, calendar: list[str],
 
         scored: list[tuple] = []
         for s in usable:
-            nf, mo, _pb, rb, st, _ = _score_stock(
+            nf, mo, rb, st = _score_stock(
                 s, conn, klines, d, session, clusters, now=now_ref)
             if nf is None and mo is None and rb is None and st is None:
                 continue

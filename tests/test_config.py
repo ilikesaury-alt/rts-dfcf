@@ -5,7 +5,6 @@ from scanner.config import (
     REFRESH_INTERVAL,
     NEW_FACE_MIN_SCORE,
     MOMENTUM_MIN_SCORE,
-    PULLBACK_MIN_SCORE,
     MAX_MARKET_CAP,
     MAX_STOCK_PRICE,
     EARLY_BONUS,
@@ -25,8 +24,8 @@ class TestConstants:
         assert isinstance(REFRESH_INTERVAL, int) and REFRESH_INTERVAL > 0
 
     def test_min_scores(self):
-        assert all(isinstance(s, int) for s in [NEW_FACE_MIN_SCORE, MOMENTUM_MIN_SCORE, PULLBACK_MIN_SCORE])
-        assert all(s > 0 for s in [NEW_FACE_MIN_SCORE, MOMENTUM_MIN_SCORE, PULLBACK_MIN_SCORE])
+        assert all(isinstance(s, int) for s in [NEW_FACE_MIN_SCORE, MOMENTUM_MIN_SCORE])
+        assert all(s > 0 for s in [NEW_FACE_MIN_SCORE, MOMENTUM_MIN_SCORE])
 
     def test_market_cap(self):
         assert MAX_MARKET_CAP > 0

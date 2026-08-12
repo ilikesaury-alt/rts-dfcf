@@ -18,14 +18,14 @@ import requests
 from scanner import api
 from scanner.config import (
     CONCEPT_API_TIMEOUT,
-    CONCEPT_MAX_FETCH_THREADS,
-    CONCEPT_NOISE_BOARDS,
-    CONCEPT_NOISE_BOARD_SUFFIXES,
     CONCEPT_CACHE_TTL_DAYS,
-    CACHE_MAX_ENTRIES,
+    CONCEPT_MAX_FETCH_THREADS,
+    CONCEPT_NOISE_BOARD_SUFFIXES,
+    CONCEPT_NOISE_BOARDS,
 )
 from scanner.database import get_concepts_cache, save_concepts_cache
 from scanner.sector import classify_sector
+from scanner.utils import cache_put as _cache_put
 
 logger = logging.getLogger(__name__)
 
@@ -44,15 +44,6 @@ _EM_HEADERS = {
 _concept_ttl_cache: dict[str, tuple[list[str], float]] = {}
 _concept_lock = threading.Lock()
 _CONCEPT_PROCESS_TTL = 300  # 5 分钟
-
-
-def _cache_put(cache: dict, key, value):
-    """带上限写入（调用方持有 _concept_lock）：超限淘汰最旧，防长跑内存膨胀。"""
-    if key in cache:
-        cache.pop(key)
-    cache[key] = value
-    while len(cache) > CACHE_MAX_ENTRIES:
-        cache.pop(next(iter(cache)))
 
 
 def _is_noise_board(name: str) -> bool:

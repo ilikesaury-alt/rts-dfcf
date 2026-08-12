@@ -1,6 +1,7 @@
-import math
 from dataclasses import dataclass, field
 from typing import NotRequired, TypedDict
+
+from scanner.utils import to_float
 
 
 # ── K 线 bar 数据契约（2026-08-11 重构 P0-1）──
@@ -21,12 +22,8 @@ class KlineBar(TypedDict):
 
 
 def _bar_float(v, default: float = 0.0) -> float:
-    """数值强转：None/NaN/inf/不可解析字符串/空 → default（与 api._num / enhancer._safe_float 同族）。"""
-    try:
-        f = float(v)
-        return default if not math.isfinite(f) else f  # NaN/inf → default
-    except (TypeError, ValueError):
-        return default
+    """数值强转：None/NaN/inf/不可解析字符串/空 → default（统一走 utils.to_float）。"""
+    return to_float(v, default)
 
 
 def make_kline_bar(raw: dict) -> KlineBar | None:
@@ -78,7 +75,8 @@ class KlineSummary:
     volume_ratio: float
     bottom_confirmed: bool
     score: int
-    dimensions: dict = field(default_factory=dict)
+    # 维度值混合 int/float/str（validator 的 detail 字符串也写入），用 object 显式表达。
+    dimensions: dict[str, object] = field(default_factory=dict)
     avg_volume: float = 0.0
 
 
@@ -94,7 +92,6 @@ class Candidate:
     live_vol_bonus: int = 0
     intraday_score: float = 0.0
     first_seen: str = ""
-    last_seen: str = ""
     history_pct: list[float] = field(default_factory=list)
     market_cap: float = 0.0
     circ_market_cap: float = 0.0
@@ -113,7 +110,26 @@ class Candidate:
     stale_since: str = ""
     risk_flags: list[str] = field(default_factory=list)  # 复合风险标签（超买/出货/破位等）
     prominence_labels: list[str] = field(default_factory=list)  # 辨识度标签（反复上榜等）
-    hist_loss_rate: float | None = None  # 历史大跌率（近90天推荐中次日<=-5%占比），None=样本不足
     driving_concept: str = ""  # 当前推动概念（仅展示，不参与打分）
     off_list: bool = False    # 掉榜跟踪候选（回马枪）：不在当次热榜上，无热榜背书
     comeback_variant: str = ""  # 回马枪变体："反转" / "回踩"（展示与持久化区分）
+
+
+@dataclass
+class ScanResult:
+    """单轮扫描的输出汇总（替代 scan_with_raw 的 9 元组返回）。
+
+    new_faces 已按 _new_face_sort_key 排序，其余各桶按 score 降序。
+    today_pool 为本轮候选池快照（symbol → Candidate，含掉榜 stale 条目），
+    供展示层读取实时候选数据，避免 display 直接访问 orchestrator 内部全局。
+    """
+    new_faces: list[Candidate] = field(default_factory=list)
+    momentum: list[Candidate] = field(default_factory=list)
+    rebound: list[Candidate] = field(default_factory=list)
+    short_term: list[Candidate] = field(default_factory=list)
+    comeback: list[Candidate] = field(default_factory=list)
+    stale_candidates: list[Candidate] = field(default_factory=list)
+    gem_stocks: list[StockInfo] = field(default_factory=list)
+    filtered_large_cap: int = 0
+    current_quotes: dict[str, dict] = field(default_factory=dict)
+    today_pool: dict[str, Candidate] = field(default_factory=dict)

@@ -15,7 +15,6 @@
 - 符号格式转换复用 data_source 的 _ak_to_xq（300001 → SZ300001）
 """
 import logging
-import math
 import os
 import threading
 import time
@@ -24,7 +23,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests as _requests
 
 from scanner.config import (
-    CACHE_MAX_ENTRIES,
     ENABLE_FUND_FLOW,
     ENABLE_ZT_POOL,
     FUND_FLOW_FETCH_TIMEOUT,
@@ -37,6 +35,8 @@ from scanner.config import (
 )
 from scanner.data_source import _ak_to_xq
 from scanner.database import get_market_extra_cache, save_market_extra_cache
+from scanner.utils import cache_put as _cache_put
+from scanner.utils import to_float
 
 logger = logging.getLogger(__name__)
 
@@ -85,15 +85,6 @@ def _get_ak():
                 logger.warning("AKShare 不可用，涨停池数据禁用: %s", e)
                 _ak = False
     return _ak if _ak is not False else None
-
-
-def _cache_put(cache: dict, key, value):
-    """带上限写入：超限淘汰最旧，防长跑内存膨胀（调用方持有锁）。"""
-    if key in cache:
-        cache.pop(key)
-    cache[key] = value
-    while len(cache) > CACHE_MAX_ENTRIES:
-        cache.pop(next(iter(cache)))
 
 
 _zt_cache: dict[str, tuple[dict, float]] = {}
@@ -313,18 +304,14 @@ def fetch_fund_flow_rank() -> dict[str, dict]:
 
 
 def _num(row, key) -> float:
-    """单元格安全取值：None/NaN/±inf/不可解析字符串 → 0.0。"""
+    """单元格安全取值：None/NaN/±inf/不可解析字符串 → 0.0（统一走 utils.to_float）。"""
     try:
         v = row.get(key)
     except (AttributeError, TypeError):
         return 0.0
     if v is None:
         return 0.0
-    try:
-        f = float(v)
-        return f if math.isfinite(f) else 0.0
-    except (TypeError, ValueError):
-        return 0.0
+    return to_float(v) or 0.0
 
 
 def _merge_from_db(conn, symbols: list[str], data_type: str,

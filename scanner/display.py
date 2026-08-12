@@ -19,7 +19,6 @@ from scanner.config import (
 )
 from scanner.database import get_fund_flow_pct_map, get_prominence_map, get_today_recommendations
 from scanner.models import Candidate
-from scanner.orchestrator import _session_state
 from scanner.sector import classify_sector
 
 if os.name == "nt":
@@ -175,10 +174,10 @@ def _market_extra_str(c: Candidate) -> str:
     return " ".join(parts) if parts else ""
 
 
-def _market_env_tag() -> str:
+def _market_env_tag(today_pool: dict[str, Candidate] | None) -> str:
     """大盘环境标签（中性/强势/弱势·谨慎），从候选池 dims 读 market_env_bonus。"""
     env_bonus = 0
-    for c in _session_state.today_pool.values():
+    for c in (today_pool or {}).values():
         if c.kline and c.kline.dimensions:
             env_bonus = c.kline.dimensions.get("market_env_bonus", 0) or 0
             break
@@ -191,20 +190,24 @@ def _market_env_tag() -> str:
 
 def display(gem_total: int, interval: int, filtered_large_cap: int = 0,
             conn=None, live_quotes: dict[str, dict] | None = None,
-            rank_map: dict[str, int] | None = None):
+            rank_map: dict[str, int] | None = None,
+            today_pool: dict[str, Candidate] | None = None):
     """扫描主屏：头部摘要 + 综合排序总表（含回马枪/次日大涨子区）。
 
     策略桶（新面孔/动量/反弹/回马枪/超短）2026-08-10 下线：与综合排序重复列同一批票、
     每桶重复列头；综合排序表已带类别标签，桶区信息不再单列。
+
+    today_pool：本轮候选池快照（symbol → Candidate），由调用方（scan_with_raw 的
+    ScanResult）传入，display 不直接访问 orchestrator 内部状态。
     """
     clear_screen()
     now = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
     print(f"{'='*96}")
     print(f"  创业板飙升榜监控  ({now})")
     filter_info = f" | 过滤{filtered_large_cap}只" if filtered_large_cap else ""
-    print(f"  创业板共 {gem_total} 只{filter_info} | 每{interval}s刷新 | {_market_env_tag()}")
+    print(f"  创业板共 {gem_total} 只{filter_info} | 每{interval}s刷新 | {_market_env_tag(today_pool)}")
     print(f"{'='*96}")
-    display_priority(conn, live_quotes=live_quotes, rank_map=rank_map)
+    display_priority(conn, live_quotes=live_quotes, rank_map=rank_map, today_pool=today_pool)
 
 
 def _print_priority_row(entry: dict, i: int, flow_pct_map: dict,
@@ -365,11 +368,14 @@ def _is_nextday_marked(entry: dict) -> bool:
 
 
 def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
-                     rank_map: dict[str, int] | None = None):
+                     rank_map: dict[str, int] | None = None,
+                     today_pool: dict[str, Candidate] | None = None):
     """从本地数据库读取今日所有进入过推荐的票，按档位(辨识度)+展示优先级(CAT_DISPLAY_PRIORITY)+评分键展示。
 
     live_quotes: {symbol: {percent, current}} 实时行情覆盖，优先于候选池和数据库数据。
     rank_map: {symbol: 飙升榜排名} 当前扫描的榜单排名，为掉榜/重启行补实时排名。
+    today_pool: {symbol: Candidate} 本轮候选池快照（缺省空），供掉榜/重启行之外的行
+    渲染最新候选数据（实时候选 > DB 快照）。
     排序键 = (档位, CAT_DISPLAY_PRIORITY, 分数键)：档0置前(次日大涨🎯) < 档1普通。
     2026-08-11 起资金流不再参与档位排序/劣后过滤（净流出票正常展示，仅保留图标与「资金流出」标签）。
     2026-08-12 次日大涨画像(🎯)置顶；辨识度(↻)不再参与排序（次日大涨本身即辨识度属性），
@@ -382,8 +388,9 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     if not today_recs:
         return
 
+    today_pool = today_pool or {}
     for entry in today_recs:
-        pool_c = _session_state.today_pool.get(entry["symbol"])
+        pool_c = today_pool.get(entry["symbol"])
         entry["_candidate"] = pool_c
 
     if live_quotes:
@@ -468,7 +475,8 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     # 次日大涨本身即辨识度属性），↻ 仅保留行内展示。
     # 只加视觉标记，不改 score / 不落库。
     if marked:
-        print(f"  {ANSI['GREEN']}🎯 次日大涨画像：推荐时刻涨幅<2%（低吸潜伏）或 4~8%（中段启动）且非超买{ANSI['RESET']}")
+        print(f"  {ANSI['GREEN']}🎯 次日大涨画像：推荐时刻涨幅<2%（低吸潜伏）"
+              f"或 4~8%（中段启动）且非超买{ANSI['RESET']}")
 
     # 回马枪独立成区（2026-08-11 移到最末尾）：主表仅排榜上五类，comeback 抽到此处独立成区。
     # 2026-08-11 用户反馈：回马枪只在无推荐时才会看——主区有票就不显示回马枪区（避免刷屏），

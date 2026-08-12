@@ -1,6 +1,6 @@
 import logging
 import sqlite3
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
 from scanner.config import (
     DB_PATH,
@@ -163,7 +163,8 @@ def record_appearances(conn: sqlite3.Connection, symbols: list[dict]):
     except Exception as e:
         print(f"  [!] 批量写入appearances失败: {e}, 逐行回退写入")
         try:
-            conn.rollback()  # 事务失败后必须回滚，否则后续 execute 会报"cannot start a transaction within a transaction"
+            conn.rollback()  # 事务失败后必须回滚，否则后续 execute 会报
+            # "cannot start a transaction within a transaction"
         except Exception:
             pass
         for row in rows:
@@ -250,46 +251,50 @@ def save_kline_to_db(conn: sqlite3.Connection, symbol: str, kline: list[KlineBar
         conn.commit()
 
 
-def get_cached_kline(conn: sqlite3.Connection, symbol: str) -> list[KlineBar] | None:
+def get_cached_klines(conn: sqlite3.Connection, symbols: list[str]) -> dict[str, list[KlineBar] | None]:
+    """批量读取多只股票的缓存日线（单次 SQL，消灭 _fetch_all_klines 的 N+1）。
+
+    返回 {symbol: list[KlineBar] | None}；无有效 bar 的 symbol 值为 None（与 get_cached_kline 一致）。
+    bar 统一走 make_kline_bar 契约（close<=0/date 非法剔除），与单只读取同源。
+    """
+    if not symbols:
+        return {}
+    uniq = list(dict.fromkeys(symbols))
     lookback = (now_beijing().date() - timedelta(days=60)).isoformat()
-    cur = conn.execute(
-        "SELECT date, open, close, high, low, volume, percent FROM daily_kline WHERE symbol = ? AND date >= ? ORDER BY date",
-        (symbol, lookback),
-    )
-    rows = cur.fetchall()
-    if rows:
-        result = []
-        for r in rows:
-            # 统一走 make_kline_bar 契约：close 非正（含停牌/脏值）直接剔除，
-            # 数值强转 + date 校验收敛到入口单点（原此处手工防御 + analyze_* 兜底）。
-            bar = make_kline_bar({
-                "date": r[0], "open": r[1], "close": r[2],
-                "high": r[3], "low": r[4], "volume": r[5], "percent": r[6],
-            })
+    placeholders = ",".join("?" * len(uniq))
+    by_sym: dict[str, list[KlineBar]] = {}
+    try:
+        cur = conn.execute(
+            f"SELECT symbol, date, open, close, high, low, volume, percent FROM daily_kline "
+            f"WHERE symbol IN ({placeholders}) AND date >= ? ORDER BY symbol, date",
+            (*uniq, lookback),
+        )
+        for sym, d, o, c, h, low, vol, pct in cur.fetchall():
+            bar = make_kline_bar({"date": d, "open": o, "close": c,
+                                  "high": h, "low": low, "volume": vol, "percent": pct})
             if bar is not None:
-                result.append(bar)
-        if result:
-            return result
-    return None
+                by_sym.setdefault(sym, []).append(bar)
+    except Exception as e:
+        logger.warning(f"get_cached_klines failed: {e}")
+        return {}
+    return {sym: by_sym.get(sym) for sym in uniq}
 
 
-def get_consecutive_appearance_days(conn: sqlite3.Connection, symbol: str, max_days: int = 10) -> int:
-    """Count consecutive trading days a symbol appeared up to (not including) today."""
-    today = now_beijing().date().isoformat()
-    rows = conn.execute(
-        "SELECT DISTINCT date FROM appearances WHERE symbol = ? AND date < ? ORDER BY date DESC LIMIT ?",
-        (symbol, today, max_days),
-    ).fetchall()
-    if not rows:
+def get_cached_kline(conn: sqlite3.Connection, symbol: str) -> list[KlineBar] | None:
+    """单只股票缓存日线（委托批量实现，口径一致）。"""
+    return get_cached_klines(conn, [symbol]).get(symbol)
+
+
+def _count_consecutive_days(dates: list[str]) -> int:
+    """dates（升序）中截至最后一天连续出现的交易日数（不连续即断）。"""
+    if not dates:
         return 0
-    dates = sorted(r[0] for r in rows)
+    dates = sorted(set(dates))
     streak = 1
     try:
         curr = date.fromisoformat(dates[-1])
     except (ValueError, TypeError):
         # 脏日期（非 ISO 的历史数据）：无法判定连续性，返回 1（仅当日）。
-        # 该函数被 enhancer._apply_list_momentum_bonus 对每个候选调用，脏数据若不兜底
-        # 会让整轮扫描抛 ValueError（与 _fetch_all_klines 的脏日期守卫同族）。
         return streak
     for i in range(len(dates) - 1, 0, -1):
         try:
@@ -302,6 +307,44 @@ def get_consecutive_appearance_days(conn: sqlite3.Connection, symbol: str, max_d
         else:
             break
     return streak
+
+
+def get_consecutive_appearance_days_batch(conn: sqlite3.Connection,
+                                          symbols: list[str],
+                                          max_days: int = 10) -> dict[str, int]:
+    """批量计算多只股票连续上榜天数（不含今日），单次 SQL 消灭 enhancer 的 N+1。
+
+    与 get_consecutive_appearance_days 同口径（最多 max_days 天）。
+    日历窗口按 max_days×3+30 天放大，保证窗口内覆盖至少 max_days 个交易日，
+    再在 Python 端用 is_trading_day 精确判定连续性。
+    """
+    if not symbols:
+        return {}
+    uniq = list(dict.fromkeys(symbols))
+    today = now_beijing().date().isoformat()
+    cutoff = (now_beijing().date() - timedelta(days=max_days * 3 + 30)).isoformat()
+    placeholders = ",".join("?" * len(uniq))
+    by_sym: dict[str, list[str]] = {}
+    try:
+        rows = conn.execute(
+            f"SELECT symbol, date FROM appearances WHERE symbol IN ({placeholders}) "
+            f"AND date >= ? AND date < ? ORDER BY symbol, date",
+            (*uniq, cutoff, today),
+        ).fetchall()
+    except Exception as e:
+        logger.warning(f"get_consecutive_appearance_days_batch failed: {e}")
+        return {}
+    for sym, d in rows:
+        by_sym.setdefault(sym, []).append(d)
+    return {sym: _count_consecutive_days(by_sym.get(sym) or []) for sym in uniq}
+
+
+def get_consecutive_appearance_days(conn: sqlite3.Connection, symbol: str, max_days: int = 10) -> int:
+    """Count consecutive trading days a symbol appeared up to (not including) today.
+
+    委托批量实现（口径一致，供 stock_report 等单点调用）。
+    """
+    return get_consecutive_appearance_days_batch(conn, [symbol], max_days).get(symbol, 0)
 
 
 def _is_consecutive_trading_days(prev: date, curr: date) -> bool:
@@ -388,11 +431,16 @@ def is_prominent(conn: sqlite3.Connection, symbol: str) -> bool:
     return get_prominence_map(conn, [symbol]).get(symbol, False)
 
 
-def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: list, source: str | None = None):
+def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, source: str | None = None):
+    """保存当日推荐记录：new_faces（新面孔）+ rest（其余所有类别合并列表）。
+
+    rest 在调用方由 momentum/rebound/short_term/comeback 各桶合并传入，
+    与 new_faces 在本函数内同等对待（统一去重 + 取当日最高分）。
+    """
     import json
     today = now_beijing().date().isoformat()
     now = now_beijing().strftime("%H:%M:%S")
-    for c in new_faces + momentum:
+    for c in new_faces + rest:
         try:
             existing = conn.execute(
                 "SELECT id, score FROM recommendations WHERE date = ? AND symbol = ? AND category = ? LIMIT 1",
@@ -406,17 +454,20 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, momentum: li
                 # 同日同股同策略已存在：仅当新分更高时更新（保留当日最高分用于回测归因）
                 if c.score > existing[1]:
                     conn.execute(
-                        "UPDATE recommendations SET time = ?, score = ?, percent = ?, trend = ?, score_breakdown = ?, source = ?, concept = ?, accumulated_pct = ? "
+                        "UPDATE recommendations SET time = ?, score = ?, percent = ?, trend = ?, "
+                        "score_breakdown = ?, source = ?, concept = ?, accumulated_pct = ? "
                         "WHERE id = ?",
                         (now, c.score, c.stock.percent, c.kline.trend if c.kline else None,
                          breakdown, rec_source, concept, accumulated, existing[0]),
                     )
                 continue
             conn.execute(
-                "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, trend, score_breakdown, source, concept, accumulated_pct) "
+                "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, "
+                "trend, score_breakdown, source, concept, accumulated_pct) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (today, now, c.stock.symbol, c.stock.name, c.category,
-                 c.score, c.stock.percent, c.kline.trend if c.kline else None, breakdown, rec_source, concept, accumulated),
+                 c.score, c.stock.percent, c.kline.trend if c.kline else None,
+                 breakdown, rec_source, concept, accumulated),
             )
         except Exception as e:
             print(f"  [!] 保存推荐记录失败 {c.stock.symbol}: {e}")

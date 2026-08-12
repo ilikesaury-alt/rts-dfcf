@@ -4,18 +4,21 @@ import os
 import re
 import sqlite3
 import sys
-from datetime import datetime, timedelta
 
 sys.stdout.reconfigure(encoding="utf-8")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 
-from scanner.config import DB_PATH, now_beijing
-from scanner.database import get_cached_kline, get_consecutive_appearance_days
-from scanner.indicators import compute_rsi, compute_kdj, compute_macd, compute_bollinger_bands, compute_adx
-from scanner.models import StockInfo
-
+from scanner.config import DB_PATH, now_beijing  # noqa: E402  (BASE_DIR 路径注入后导入)
+from scanner.database import get_cached_kline, get_consecutive_appearance_days  # noqa: E402
+from scanner.indicators import (  # noqa: E402
+    compute_adx,
+    compute_bollinger_bands,
+    compute_kdj,
+    compute_macd,
+    compute_rsi,
+)
 
 SEP = "━" * 55
 SUB_SEP = "─" * 55
@@ -179,7 +182,7 @@ def main():
 
         live_data = {}
         if not args.quick and appearances:
-            from scanner.api import make_session, fetch_market_caps_batch
+            from scanner.api import fetch_market_caps_batch, make_session
             session = make_session()
             try:
                 caps = fetch_market_caps_batch(session, [symbol])
@@ -221,7 +224,7 @@ def main():
         print(f"\033[1;36m  {name} ({symbol}) 深度分析报告\033[0m")
         print(f"\033[1;36m  {report_date}\033[0m")
         if args.quick:
-            print(f"\033[1;36m  [快速模式 - 仅本地数据]\033[0m")
+            print("\033[1;36m  [快速模式 - 仅本地数据]\033[0m")
         print(f"\033[1;36m{'=' * 55}\033[0m")
 
         # ── Section 1: 基本信息 ──
@@ -231,7 +234,6 @@ def main():
         mc = live_data.get("market_cap", 0)
         cmc = live_data.get("circ_market_cap", 0)
         tr = live_data.get("turnover_rate")
-        latest_app = appearances[-1] if appearances else None
         first_app = appearances[0] if appearances else None
 
         print(f"  代码: {symbol}")
@@ -265,7 +267,6 @@ def main():
         # ── Section 2: 上榜轨迹 ──
         print_section("2. 上榜轨迹")
         if appearances:
-            dates = [a["date"][5:] for a in appearances]
             ranks = [a["rank"] for a in appearances]
             width = min(30, len(appearances))
             if len(ranks) > 1:
@@ -296,7 +297,7 @@ def main():
         print_section("3. K线与技术面")
         if kline_data and len(closes) >= 5:
             recent_k = kline_data[-20:]
-            print(f"  近20日K线(收盘价):")
+            print("  近20日K线(收盘价):")
             print(f"  {sparkline(closes[-40:], 30)}")
             print(f"  {'日期':<8} {'收盘':>8} {'涨幅':>8} {'量':>12}")
             for k in reversed(recent_k):
@@ -310,8 +311,10 @@ def main():
                 ma10 = sum(closes[-10:]) / 10
                 ma20 = sum(closes[-20:]) / 20
                 last_close = closes[-1]
-                print(f"\n  均线位置:")
-                print(f"  MA5  = {ma5:.2f}  {'(↑ 股价在其' + ('上方' if last_close > ma5 else '下方') + ')' if ma5 and abs(last_close - ma5) / ma5 < 0.05 else ''}")
+                print("\n  均线位置:")
+                ma5_pos = ('(↑ 股价在其' + ('上方' if last_close > ma5 else '下方') + ')'
+                           if ma5 and abs(last_close - ma5) / ma5 < 0.05 else '')
+                print(f"  MA5  = {ma5:.2f}  {ma5_pos}")
                 print(f"  MA10 = {ma10:.2f}")
                 # MA20 趋势需对比"前一日 MA20"，要求至少 21 根 K 线才能取到完整 20 元素窗口
                 ma20_trend = ""
@@ -327,7 +330,7 @@ def main():
             boll_val = compute_bollinger_bands(closes)
             adx_val = compute_adx(highs, lows, closes)
 
-            print(f"\n  技术指标:")
+            print("\n  技术指标:")
             if rsi_val is not None:
                 rsi_str = green(f"RSI(14) = {rsi_val:.1f}") if rsi_val > 50 else red(f"RSI(14) = {rsi_val:.1f}")
                 if rsi_val > 70:
@@ -338,7 +341,8 @@ def main():
 
             if kdj_val:
                 k, d, j = kdj_val["K"], kdj_val["D"], kdj_val["J"]
-                kdj_str = green(f"KDJ K={k:.1f} D={d:.1f} J={j:.1f}") if j > k else red(f"KDJ K={k:.1f} D={d:.1f} J={j:.1f}")
+                kdj_str = (green(f"KDJ K={k:.1f} D={d:.1f} J={j:.1f}") if j > k
+                           else red(f"KDJ K={k:.1f} D={d:.1f} J={j:.1f}"))
                 if j > 100:
                     kdj_str += yellow(" ⚠J值超买")
                 elif j < 0:
@@ -419,8 +423,14 @@ def main():
             for r in recs[:20]:
                 if r["date"] not in seen_in_day:
                     seen_in_day.add(r["date"])
-                pct_display = green(f"+{r['percent']:.2f}%") if r["percent"] and r["percent"] > 0 else red(f"{r['percent']:.2f}%") if r["percent"] else "N/A"
-                print(f"  {r['date'][5:]:<8}  {r['category']:<16}  {r['score']:>3}  {str(pct_display):>10}  {r['trend']:<10}  {r['source']}")
+                if r["percent"] and r["percent"] > 0:
+                    pct_display = green(f"+{r['percent']:.2f}%")
+                elif r["percent"]:
+                    pct_display = red(f"{r['percent']:.2f}%")
+                else:
+                    pct_display = "N/A"
+                print(f"  {r['date'][5:]:<8}  {r['category']:<16}  {r['score']:>3}  "
+                      f"{str(pct_display):>10}  {r['trend']:<10}  {r['source']}")
 
             last_rec = recs[0]
             if last_rec.get("breakdown"):
@@ -446,11 +456,11 @@ def main():
             low_ever = min(closes)
             current = closes[-1]
             pct_from_high = (current - high_ever) / max(high_ever, 0.01) * 100
-            pct_from_low = (current - low_ever) / max(low_ever, 0.01) * 100
             if high_ever > low_ever:
                 print(f"  区间最高: {high_ever:.2f}")
                 print(f"  区间最低: {low_ever:.2f}")
-                retrace_str = green(f"距最高: {pct_from_high:+.2f}%") if pct_from_high > -5 else red(f"距最高: {pct_from_high:+.2f}%")
+                retrace_str = (green(f"距最高: {pct_from_high:+.2f}%") if pct_from_high > -5
+                               else red(f"距最高: {pct_from_high:+.2f}%"))
                 print(f"  当前价:  {current:.2f}  ({retrace_str})")
                 print(f"  区间涨幅: {(high_ever - low_ever) / low_ever * 100:.1f}%")
 
@@ -584,7 +594,7 @@ def main():
                 print(f"  {yellow('信号中性，缺乏明确方向')}")
 
         print(f"\n{'=' * 55}")
-        print(f"  数据来源: 本地扫描器数据库")
+        print("  数据来源: 本地扫描器数据库")
         print(f"{'=' * 55}\n")
     finally:
         conn.close()

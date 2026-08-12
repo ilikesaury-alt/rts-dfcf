@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
 from scanner.config import STALE_TIMEOUT_MINUTES, now_beijing
 from scanner.models import Candidate

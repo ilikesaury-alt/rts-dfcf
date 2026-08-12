@@ -8,6 +8,7 @@
 每个 detect_* 仅声明"用哪些原语 + 各自打分/维度键"，消除算法级重复。
 """
 from __future__ import annotations
+
 from scanner.models import KlineBar
 
 
@@ -19,8 +20,8 @@ def _upper_shadow_len(h: float, o: float, c: float) -> float:
     return h - max(o, c)
 
 
-def _lower_shadow_len(o: float, c: float, l: float) -> float:
-    return min(o, c) - l
+def _lower_shadow_len(o: float, c: float, low: float) -> float:
+    return min(o, c) - low
 
 
 def _is_bullish_candle(o: float, c: float) -> bool:
@@ -134,29 +135,6 @@ def detect_momentum_patterns(historical_kline: list[KlineBar]) -> tuple[int, dic
     return score, dims
 
 
-def detect_pullback_patterns(historical_kline: list[KlineBar], vol_ratio: float) -> tuple[int, dict]:
-    """pullback 适用的形态：阳包阴、缩量十字星。"""
-    if len(historical_kline) < 2:
-        return 0, {}
-    score = 0
-    dims: dict[str, int] = {}
-    latest = historical_kline[-1]
-    prev = historical_kline[-2]
-
-    if _bullish_engulfing(latest, prev):
-        score += 5
-        dims["pb_pattern_engulfing"] = 5
-    else:
-        ho, hc, hh, hl = latest["open"], latest["close"], latest["high"], latest["low"]
-        body = _candle_body_len(ho, hc)
-        total = hh - hl if hh > hl else 1
-        if body / total < 0.1 and vol_ratio < 0.8:
-            score += 4
-            dims["pb_pattern_doji"] = 4
-
-    return score, dims
-
-
 def detect_short_term_patterns(historical_kline: list[KlineBar]) -> tuple[int, dict]:
     """short_term 适用的形态：突破3日高点。"""
     if len(historical_kline) < 4:
@@ -173,7 +151,7 @@ def detect_short_term_patterns(historical_kline: list[KlineBar]) -> tuple[int, d
 def detect_rebound_patterns(kline: list[KlineBar]) -> tuple[int, dict]:
     """rebound（超跌反弹）适用的形态：底部吞没、锤子线、3连阳企稳。
 
-    与 new_face/pullback 形态不同：rebound 形态必须包含今日 bar，
+    与 new_face 形态不同：rebound 形态必须包含今日 bar，
     因为反弹信号是"今日阳线吞没昨日暴跌阴线"。故接收完整 kline（含今日），
     用 kline[-1] 作为今日、kline[-2] 作为昨日。
     """

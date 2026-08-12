@@ -1,9 +1,6 @@
 from datetime import datetime
 
-import math
-
 from scanner.config import (
-    now_beijing,
     DISTRIBUTION_ACCUM_HIGH,
     DISTRIBUTION_ACCUM_MID,
     DISTRIBUTION_ACCUM_PULLBACK,
@@ -13,6 +10,14 @@ from scanner.config import (
     DISTRIBUTION_VOL_RATIO,
     EARLY_BONUS,
     EARLY_TRADE_CUTOFF,
+    FATIGUE_ACCELERATE_BONUS_CAP,
+    FATIGUE_ACCELERATE_BONUS_PER_DAY,
+    FATIGUE_ACCELERATE_PCT,
+    FATIGUE_PENALTY_CAP,
+    FATIGUE_PENALTY_PER_DAY,
+    FATIGUE_PRICE_WARN_ACCUM,
+    FATIGUE_STREAK_MIN,
+    FATIGUE_VOL_WARN_RATIO,
     FUND_FLOW_BONUS_STRONG,
     FUND_FLOW_BONUS_WEAK,
     FUND_FLOW_MAIN_PCT_STRONG,
@@ -20,14 +25,6 @@ from scanner.config import (
     FUND_OUTFLOW_NET_PCT,
     LATE_BONUS,
     LATE_TRADE_START,
-    FATIGUE_ACCELERATE_BONUS_PER_DAY,
-    FATIGUE_ACCELERATE_BONUS_CAP,
-    FATIGUE_ACCELERATE_PCT,
-    FATIGUE_PENALTY_CAP,
-    FATIGUE_PENALTY_PER_DAY,
-    FATIGUE_PRICE_WARN_ACCUM,
-    FATIGUE_STREAK_MIN,
-    FATIGUE_VOL_WARN_RATIO,
     LIST_STREAK_BONUS_2,
     LIST_STREAK_BONUS_3,
     LIST_STREAK_BONUS_5,
@@ -37,10 +34,10 @@ from scanner.config import (
     MARKET_ENV_WEAK,
     MARKET_STRONG_THRESHOLD,
     MARKET_WEAK_THRESHOLD,
-    MCAP_BONUS_SMALL,
     MCAP_BONUS_MID,
-    MCAP_SMALL_THRESHOLD,
+    MCAP_BONUS_SMALL,
     MCAP_MID_THRESHOLD,
+    MCAP_SMALL_THRESHOLD,
     OVERVALUED_ACCUM_THRESHOLD,
     SECTOR_CLUSTER_BONUS_2,
     SECTOR_CLUSTER_BONUS_3,
@@ -50,27 +47,27 @@ from scanner.config import (
     TOP40_ADVANCE_PER_10,
     TOP40_BONUS,
     TOP40_THRESHOLD,
+    TURNOVER_BONUS_HEALTHY,
     TURNOVER_BONUS_MODERATE,
     TURNOVER_BONUS_PENALTY,
-    TURNOVER_BONUS_HEALTHY,
     TURNOVER_HIGH,
     TURNOVER_LOW,
     TURNOVER_MEDIUM,
     V_MO_DIVERGENCE_BEAR,
     V_MO_MA_NONE,
     V_MO_VOL_SPIKE,
-    V_PB_MA_DOWN,
-    V_PB_SHRINK_NO,
     V_ST_MA_BROKEN,
     ZT_LIANBAN_BONUS_2,
     ZT_LIANBAN_BONUS_3,
     ZT_LIANBAN_GT3_PENALTY,
     ZT_ZHA_BAN_MIN,
+    now_beijing,
 )
-from scanner.database import is_prominent
+from scanner.database import get_consecutive_appearance_days_batch, get_prominence_map
 from scanner.models import Candidate
 from scanner.rank_trend import rank_trajectory_score
 from scanner.sector import classify_sector
+from scanner.utils import to_float, to_int
 
 
 def apply_all_bonuses(
@@ -89,6 +86,10 @@ def apply_all_bonuses(
     market_extra: dict = None,
     conn=None,
 ):
+    syms = [c.stock.symbol for c in candidates]
+    # N+1 → 批量：连续上榜天数 / 辨识度各一次 SQL 查询（此前每个候选各发一条）
+    cross_days_map = get_consecutive_appearance_days_batch(conn, syms) if conn else {}
+    prominence_map = get_prominence_map(conn, syms) if conn else {}
     for c in candidates:
         _apply_sector_bonus(c, clusters)
         _apply_intraday_bonus(c, intraday_scores)
@@ -97,22 +98,23 @@ def apply_all_bonuses(
         _apply_sentiment_bonus(c, sentiment_info)
         _apply_rps_bonus(c, rps_scores)
         _apply_market_cap_bonus(c)
-        _apply_list_momentum_bonus(c, list_streaks, conn)
+        _apply_list_momentum_bonus(c, list_streaks,
+                                   cross_days=cross_days_map.get(c.stock.symbol, 0))
         c.time_bonus = time_bonus
         _apply_gap_up_bonus(c)
         _apply_fund_flow_bonus(c, market_extra)
         _apply_zt_bonus(c, market_extra)
         _record_dimensions(c, market_idx_pct, opening_scores)
         _set_risk_flags(c)
-        _compute_prominence_labels(c, conn)
+        _compute_prominence_labels(c, prominence_map)
 
 
-def _compute_prominence_labels(c: Candidate, conn):
-    if not conn:
+def _compute_prominence_labels(c: Candidate, prominence_map: dict):
+    """辨识度标签（↻）：复用 get_prominence_map 批量结果，口径与 display 一致。"""
+    if not prominence_map:
         return
     try:
-        # 统一走 database.is_prominent（复用 get_prominence_map 批量实现，口径一致）
-        if is_prominent(conn, c.stock.symbol):
+        if prominence_map.get(c.stock.symbol):
             c.prominence_labels.append("\u21bb")
     except Exception:
         pass
@@ -199,19 +201,13 @@ def _detect_main_force_distribution(c: Candidate, dims: dict) -> bool:
 def _detect_trend_breakage(dims: dict) -> bool:
     """识别 MA 趋势破位（止损信号）。
 
-    合并四种 MA 破位场景（满足任一即判定）：
+    合并 MA 破位场景（满足任一即判定）：
     - momentum MA 空头排列（v_mo_ma == V_MO_MA_NONE）
-    - pullback MA20 下行（v_pb_ma_trend == V_PB_MA_DOWN）
     - short_term 跌破 MA5（v_st_ma == V_ST_MA_BROKEN）
-    - pullback MA 破位（pullback_ma_broken < 0）
     """
     if dims.get("v_mo_ma") == V_MO_MA_NONE:
         return True
-    if dims.get("v_pb_ma_trend") == V_PB_MA_DOWN:
-        return True
     if dims.get("v_st_ma") == V_ST_MA_BROKEN:
-        return True
-    if (dims.get("pullback_ma_broken") or 0) < 0:
         return True
     return False
 
@@ -221,15 +217,12 @@ def _detect_overvalued(c: Candidate) -> bool:
 
     满足任一即判定：
     - 累计涨幅 >= OVERVALUED_ACCUM_THRESHOLD
-    - pullback 20日涨幅过大惩罚已触发（pullback_20d_gain < 0）
     - momentum 累计>=30% 惩罚已触发（momentum_accumulated <= -15）
     """
     accum = c.kline.accumulated_pct if c.kline else 0.0
     if accum >= OVERVALUED_ACCUM_THRESHOLD:
         return True
     dims = c.kline.dimensions if c.kline else {}
-    if (dims.get("pullback_20d_gain") or 0) < 0:
-        return True
     if (dims.get("momentum_accumulated") or 0) <= -15:
         return True
     return False
@@ -240,12 +233,9 @@ def _detect_volume_price_divergence(c: Candidate, dims: dict) -> bool:
 
     满足任一即判定：
     - 顶背离（v_mo_divergence == V_MO_DIVERGENCE_BEAR）：价格创新高但指标不创新高
-    - pullback 非缩量（v_pb_shrinkage == V_PB_SHRINK_NO）：回踩却不缩量，量价不匹配
     - momentum 缩量（momentum_volume < 0）：动量延续却缩量，上涨动能不足
     """
     if dims.get("v_mo_divergence") == V_MO_DIVERGENCE_BEAR:
-        return True
-    if dims.get("v_pb_shrinkage") == V_PB_SHRINK_NO:
         return True
     if (dims.get("momentum_volume") or 0) < 0:
         return True
@@ -320,29 +310,16 @@ def _apply_gap_up_bonus(c: Candidate):
 
 
 def _safe_float(v, default: float = 0.0) -> float:
-    """安全转 float：None/NaN/±inf/不可解析字符串 → default（数据入口防御，防整轮扫描异常丢失）。
+    """安全转 float：None/NaN/±inf/不可解析字符串 → default（统一走 utils.to_float）。
 
-    与 api._num / market_extra._num 同族：Python json/DataFrame 可出现 ±inf，
-    inf 与数值比较恒为真/假会绕过阈值判断（fund_flow 档位），故统一 math.isfinite。
+    数据入口防御，防整轮扫描异常丢失。
     """
-    try:
-        f = float(v)
-        return default if not math.isfinite(f) else f  # NaN/±inf → default
-    except (TypeError, ValueError):
-        return default
+    return to_float(v, default)
 
 
 def _safe_int(v, default: int = 0) -> int:
-    """安全转 int：None/不可解析字符串/浮点 → 就近取整（数据入口防御）。"""
-    try:
-        if isinstance(v, str):
-            v = v.strip()
-            if not v:
-                return default
-            return int(float(v))
-        return int(v)
-    except (TypeError, ValueError):
-        return default
+    """安全转 int：None/不可解析字符串/浮点 → 就近取整（统一走 utils.to_int）。"""
+    return to_int(v, default)
 
 
 def _apply_fund_flow_bonus(c: Candidate, market_extra: dict):
@@ -385,14 +362,10 @@ def _apply_zt_bonus(c: Candidate, market_extra: dict):
             c.zt_lianban_bonus = ZT_LIANBAN_BONUS_2
 
 
-def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None, conn=None):
+def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None,
+                               cross_days: int = 0):
     intraday_streak = (list_streaks or {}).get(c.stock.symbol, 0)
-    if conn:
-        from scanner.database import get_consecutive_appearance_days
-        cross_days = get_consecutive_appearance_days(conn, c.stock.symbol)
-    else:
-        cross_days = 0
-    # streak 以"交易日"计：cross_days 是历史连续上榜天数（不含今日），
+    # streak 以"交易日"计：cross_days 是历史连续上榜天数（不含今日，由调用方批量查询），
     # intraday_streak 是本次盘中连续扫描次数（60s/次），仅作为"今日上榜"=+1 天。
     # 绝不能把扫描次数当天数：盘中可达 240，max() 取大后疲劳/加速评分恒饱和 ±15。
     streak = cross_days + (1 if intraday_streak >= 1 else 0)

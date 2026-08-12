@@ -10,13 +10,13 @@
 - 符号格式由 adapter 内部转换（雪球 SZ300001 ↔ AKShare 300001）
 """
 import logging
-import math
 from datetime import datetime, timedelta
 from typing import Protocol, runtime_checkable
 
 from scanner import api
 from scanner.config import BEIJING_TZ, DATA_SOURCE
 from scanner.models import KlineBar, make_kline_bar
+from scanner.utils import to_float
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,12 @@ class DataSourceAdapter(Protocol):
     def fetch_hot_list(self, size: int = 100) -> list[dict]: ...
     def fetch_market_caps_batch(self, symbols: list[str]) -> dict[str, dict]: ...
     def fetch_market_index(self) -> float | None: ...
+    def fetch_minute(self, symbol: str) -> list[dict] | None:
+        """当日分时数据（分钟 bar 列表），无数据/不支持的源返回 None（降级为无分时信号）。
+
+        AKShare 暂不提供分时兜底（字段差异大），返回 None 让 intraday/opening/live
+        三个评分维度整体降级——与 api._fetch_minute_data 的 None 语义一致。
+        """
 
 
 class XueqiuAdapter:
@@ -74,18 +80,13 @@ class XueqiuAdapter:
     def fetch_market_index(self) -> float | None:
         return api.fetch_market_index(self._get_session())
 
+    def fetch_minute(self, symbol: str) -> list[dict] | None:
+        return api._fetch_minute_data(self._get_session(), symbol)
+
 
 def _as_float(v) -> float | None:
-    """安全取 float：None/NaN/±inf/非法 → None（调用方按脏值处理）。
-
-    Python json/DataFrame 均可能出现 NaN/inf（如东财涨停池/资金流停牌行），
-    inf 与数值比较恒为真/假会绕过越界判断，与 NaN 同族，统一剔除。
-    """
-    try:
-        f = float(v)
-        return None if not math.isfinite(f) else f
-    except (TypeError, ValueError):
-        return None
+    """安全取 float：None/NaN/±inf/非法 → None（调用方按脏值处理，统一走 utils.to_float）。"""
+    return to_float(v, None)
 
 
 def _xq_to_ak(symbol: str) -> str:
@@ -268,6 +269,10 @@ class AkshareAdapter:
             logger.warning("AKShare 大盘指数获取失败: %s", e)
             return None
 
+    def fetch_minute(self, symbol: str) -> list[dict] | None:
+        logger.warning("AKShare 暂无分时数据兜底（字段差异大），%s 分时信号整体降级", symbol)
+        return None
+
 
 class FallbackAdapter:
     """组合适配器：primary 异常时降级到 secondary。
@@ -348,6 +353,9 @@ class FallbackAdapter:
 
     def fetch_market_index(self) -> float | None:
         return self._call("fetch_market_index")
+
+    def fetch_minute(self, symbol: str) -> list[dict] | None:
+        return self._call("fetch_minute", symbol)
 
 
 _adapter_instance: DataSourceAdapter | None = None

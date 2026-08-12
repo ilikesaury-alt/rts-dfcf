@@ -1,5 +1,16 @@
 import os
-from datetime import datetime, time as dtime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
+from datetime import time as dtime
+
+# 子模块 re-export：权重表（scanner/weights.py）与交易日历（scanner/holidays.py）
+# 拆出后由 config 统一导出，保持既有 `from scanner.config import ...` 导入路径不变。
+from scanner.holidays import HOLIDAYS, HOLIDAYS_FILE  # noqa: F401  (re-export)
+from scanner.weights import (  # noqa: F401  (re-export)
+    MOMENTUM_WEIGHTS,
+    NEW_FACE_WEIGHTS,
+    REBOUND_WEIGHTS,
+    SHORT_TERM_WEIGHTS,
+)
 
 BEIJING_TZ = timezone(timedelta(hours=8), name="CST")
 
@@ -43,7 +54,6 @@ NEW_FACE_FIRST_MIN_SCORE = 18
 # 2026-08-10: 16→50——回测分桶 momentum 低分档[16,49) 55 条 cum_3d -0.95%，>=50 档 379 条
 # +2.82%；「首次启动」子模式分数实测全 >=64 不受影响。切掉最差 ~12% 量。
 MOMENTUM_MIN_SCORE = 50
-PULLBACK_MIN_SCORE = 18  # 保留常量供 analyze_pullback 测试使用，orchestrator 已下线 pullback
 SHORT_TERM_MIN_SCORE = 15
 REBOUND_MIN_SCORE = 18
 
@@ -52,7 +62,6 @@ MAX_MARKET_CAP = 500 * YI
 MAX_STOCK_PRICE = 200.0
 MAX_NEW_FACE_TODAY_PCT = 12
 MAX_MOMENTUM_TODAY_PCT = 10  # P1-2: 8→10，让 9-10% 加速票能进 momentum（主升浪中段）
-PULLBACK_MAX_TODAY_PCT = 0.0      # 仅今日平盘/下跌才算回调，消除 today∈(0,2] 死区
 SHORT_TERM_MIN_TODAY_PCT = 2.0
 SHORT_TERM_MAX_TODAY_PCT = 12.0  # P1-1: 8→12，覆盖 8-12% 强势股（创业板涨停 20% 仍排除）
 # 超跌反弹：今日企稳阳线（温和涨幅），前期暴跌
@@ -84,15 +93,10 @@ VOL_RANK_WEAK_PTS = 8
 VOL_PEAK_LOOKBACK = 20
 VOL_PEAK_MOMENTUM_WARN = 0.5  # volume < 50% of peak → momentum exhaustion
 VOL_PEAK_NEW_FACE_MIN = 0.3   # volume < 30% of peak → insufficient reversal volume
-VOL_PEAK_PULLBACK_CONFIRM = 0.3  # volume < 30% of peak → genuine shrinkage
 
 # Peak volume ratio scoring (analysis.py hardcoded values migrated)
 VOL_PEAK_NEW_FACE_PENALTY = -5   # new_face vol_peak < threshold → penalty
 VOL_PEAK_MOMENTUM_PENALTY = -8   # momentum vol_peak < threshold → penalty
-VOL_PEAK_PULLBACK_BONUS = 5     # pullback vol_peak < threshold → shrinkage bonus
-
-# MA bull extra bonus (pullback)
-MA_BULL_EXTRA_BONUS = 5
 
 # Analysis.py thresholds — previously hardcoded in analysis.py, centralized for tuning
 # Weak-form filter thresholds
@@ -242,39 +246,7 @@ MORNING_END = dtime(11, 30)
 AFTERNOON_START = dtime(13, 0)
 AFTERNOON_END = dtime(15, 0)
 
-# Scoring weights — used by analysis.py
-# Step 2 (2026-08-07, 9826399, merge 24443ff 中丢失后于 2026-08-10 恢复):
-# IC 归因重平衡——new_face 是「超卖反转」策略，原权重过度奖励动量确认信号
-# （今日大涨 / 放量 / 累计涨幅，cum_3d IC 均为负），真正有预测力的反转触发信号
-# （KDJ K<20金叉/J<0、RSI<30、MACD金叉）权重过小。重平衡后 reconstruct_score
-# rank-IC：new_face +0.045→+0.109、Combined +0.041→+0.099（ic_attribution.py）。
-# 2026-08-10 独立复核：KDJ超卖金叉触发组 cum_3d +0.54 vs 未触发 -0.52（IC +0.42）、
-# 放量 >1.3 触发组 -2.83 vs 未触发 -0.51（IC ≈0），方向一致。
-NEW_FACE_WEIGHTS: dict[str, int] = {
-    "today_pct_2_6": 8,
-    "today_pct_1_2": 6,
-    "today_pct_0_5_1": 4,
-    "today_pct_lt_0_5": 3,
-    "today_pct_6_8": 5,
-    "today_pct_gt_8": -15,
-    "accum_neg5_10": 6,
-    "accum_lt_neg5": 0,
-    "accum_10_15": 3,
-    "accum_15_20": -5,
-    "bottom_confirmed": 0,
-    "v_shape": 8,
-    "volume_surge": 0,
-    "value_gte_10000": 2,
-    "value_gte_5000": 1,
-    "rsi_bonus": 5,
-    "macd_bonus": 6,
-    "rsi14_oversold_bonus": 4,
-    "bollinger_oversold": 5,
-    "kdj_bonus": 6,
-    "atr_contraction": 2,
-    "obv_not_negative": 3,
-}
-
+# Scoring weights — 已拆至 scanner/weights.py（顶部 re-export），此处保留 section 注释。
 # ── momentum "首次启动" 子模式 ──
 # 目标：今日 4-6%（下限3.5%）放量启动 + 累计涨幅尚低（0~7%）的票，
 # 提前 1-2 天进 momentum 池，不必等涨到 6-10% 才上榜。
@@ -286,114 +258,8 @@ MOMENTUM_LAUNCH_TODAY_MAX = 8.0
 MOMENTUM_LAUNCH_VOL = 1.5       # 放量启动门槛（压掉缩量假阳）
 MOMENTUM_LAUNCH_WORD = "启动首日"
 
-# P0 IC 重平衡 (2026-08-08, e3ee10e4, merge 24443ff 中丢失后于 2026-08-10 恢复)。
-# 依据 cum_3d 口径 dimension_ic（当前库复核一致）：
-#   momentum_volume -0.32 强反指 → 健康量能清零；momentum_value +0.22 正指 → 提权；
-#   momentum_macd -0.21 / momentum_rsi -0.06 / momentum_accumulated -0.09 反指 → 清零/降权；
-#   momentum_adx +0.22 强正指 → 提权；momentum_kdj ≈0 → 中性略提。
-MOMENTUM_WEIGHTS: dict[str, int] = {
-    "today_pct_2_6": 20,
-    "today_pct_1_2": 10,
-    "today_pct_0_5_1": 5,
-    "today_pct_lt_0_5": 5,
-    "today_pct_6_8": 5,
-    "today_pct_8_10": 3,   # P1-2: 新增 8-10% 档（加速赶顶风险，进一步降权）
-    "accum_10_15": 8,
-    "accum_15_20": 5,
-    "accum_20_30": 3,
-    "accum_gte_30": -15,
-    "vol_healthy": 0,
-    "vol_surge": 0,
-    "vol_low": -3,
-    "value_gte_10000": 5,
-    "value_gte_5000": 2,
-    "rsi_bonus": 0,
-    "kdj_bonus": 4,
-    "macd_bonus": 0,
-    "adx_bonus": 7,
-    "adx_weak": -3,
-    "atr_healthy": 0,
-    "atr_overheated": -3,
-    "obv_uptrend": 3,
-}
-
-PULLBACK_WEIGHTS: dict[str, int] = {
-    "today_neg1_0": 10,
-    "today_neg3_neg1": 15,
-    "today_neg5_neg3": 8,
-    "accum_5_10": 10,
-    "accum_10_20": 18,
-    "accum_20_30": 8,
-    "accum_gte_30": -10,
-    "vol_healthy": 12,
-    "vol_low": 0,
-    "vol_surge": -8,
-    "ma_support": 12,
-    "ma_broken": -10,
-    "rsi_oversold": 5,
-    "rsi_mid": 3,
-    "macd_bonus": 3,
-    "rank_top10": 8,
-    "rank_top30": 5,
-    "kdj_bonus": 3,
-    "bollinger_mid_support": 5,
-}
-
-SHORT_TERM_WEIGHTS: dict[str, int] = {
-    "today_pct_2_4": 15,
-    # 2026-08-10: 4-6% 20→8（分桶最差档：41 条 cum_3d -1.41%，权重却是最高）、
-    # 8-12% 8→15（分桶最好档：21 条 +3.84%，接近涨停梯队次日惯性）——按数据反向修正，
-    # 替换原"涨幅偏大降权"的拍脑袋设定。2-4% / 6-8% 保持（+0.43% / +0.45% 中性）。
-    "today_pct_4_6": 8,
-    "today_pct_6_8": 12,
-    "today_pct_8_12": 15,   # P1-1: 8-12% 档（2026-08-10 由 8 上调，数据支持）
-    "accum_5_10": 10,
-    "accum_10_15": 15,
-    "accum_15_20": 8,
-    "accum_gte_20": -5,
-    "accum_lt_0": -5,
-    "vol_healthy": 8,
-    "vol_surge": 12,
-    "vol_low": -5,
-    "value_small_cap": 6,
-    "value_mid_cap": 2,
-    "st_weak_to_strong": 8,
-    "rsi_bonus": 3,
-    "kdj_bonus": 3,
-    "macd_bonus": 3,
-    "rank_top10": 8,
-    "rank_top20": 5,
-    "rank_top30": 3,
-}
-
-REBOUND_WEIGHTS: dict[str, int] = {
-    # 今日企稳阳线涨幅档（温和涨幅为主，避免追高）
-    "today_pct_0_5_2": 15,      # 0.5~2%：温和企稳
-    "today_pct_2_4": 18,        # 2~4%：明显企稳
-    "today_pct_4_6": 12,        # 4~6%：较强企稳
-    "today_pct_6_8": 5,         # 6~8%：涨幅偏大降权
-    # 超跌深度档（越深反弹空间越大）
-    "drop_15_20": 10,           # 前5日累计跌15~20%
-    "drop_20_30": 15,           # 跌20~30%
-    "drop_gte_30": 20,          # 跌≥30%
-    "crash_day_bonus": 5,       # 前5日有单日暴跌(≤-10%)额外加分
-    # 量能配合
-    "vol_healthy": 8,           # 量比1.0~2.0：正常企稳量能
-    "vol_surge": 12,            # 量比≥2.0：放量企稳（主力介入）
-    "vol_low": -3,              # 量比<0.8：缩量企稳不可信
-    # 技术面确认
-    "rsi_oversold": 8,          # RSI<30：超卖反弹
-    "rsi_mid": 3,               # RSI 30~50：低位企稳
-    "bollinger_lower": 5,       # 触及BOLL下轨
-    "v_shape": 8,               # V型反转特征（缩量低点+放量阳线）
-    # 板块/市值
-    "sector_active": 5,         # 同板块≥3只（板块共振）
-    "value_small_cap": 4,       # 小盘弹性大
-    "value_mid_cap": 2,
-}
-
 # 超短末周期（鱼尾段）超买防护：validator 单点判断阈值。
-# 20日涨幅阈值直接复用 PULLBACK_20D_GAIN_*（避免常量膨胀）。
+# 20日涨幅阈值复用 PULLBACK_20D_GAIN_EXTREME（超买判定常量，与 pullback 策略本身无关）。
 # 惩罚已移除：超买时仅靠 validator passed 门禁否决 + enhancer 标记，不再做 score 压制。
 # 2026-07-28 收紧：原 BOLL=1.0 / KDJ=105 在强势股主升浪中几乎必中（健康强趋势 J 常 90~115，
 # 单日大涨即破上轨），导致"超买"标签沦为废话、短炒票全民告警。改为仅"极端超买"才触发：
@@ -523,10 +389,9 @@ OVERVALUED_ACCUM_THRESHOLD = 25.0
 # Trend-label hard filter: exclude trends with avg next-day return < -2%
 # Based on 2729 historical recommendations analysis
 # Only includes labels actually produced by current analysis.py
+# pullback 已下线（2026-07-30），"回踩整理" 已无任何策略产出，保留为惰性防线。
 HIGH_RISK_TRENDS: set[str] = {
-    # "缩量回调" 已移除：avg -2.09% win 39.2% 在候选池场景可接受，
-    # 保留 MA 支撑 + 小幅回调的合理 pullback 候选。
-    "回踩整理",   # pullback: avg -3.89%, win 21.6%
+    "回踩整理",   # (原 pullback 标签: avg -3.89%, win 21.6%)
 }
 
 # ── 风险标签硬排除集合 ──
@@ -598,42 +463,7 @@ LATE_TRADE_START = 14 * 60           # 14:00
 EARLY_BONUS = -2
 LATE_BONUS = 3
 
-HOLIDAYS_FILE = os.path.join(BASE_DIR, "holidays.json")
-
-_HOLIDAYS_FALLBACK: set[str] = {
-    "2025-01-01",                              # 元旦
-    "2025-01-28", "2025-01-29", "2025-01-30", "2025-01-31",  # 春节
-    "2025-02-01", "2025-02-02", "2025-02-03", "2025-02-04",  # 春节
-    "2025-04-04", "2025-04-05", "2025-04-06",                # 清明
-    "2025-05-01", "2025-05-02", "2025-05-03", "2025-05-04", "2025-05-05",  # 劳动节
-    "2025-05-31", "2025-06-01", "2025-06-02",                # 端午
-    "2025-10-01", "2025-10-02", "2025-10-03",                # 国庆
-    "2025-10-04", "2025-10-05", "2025-10-06", "2025-10-07", "2025-10-08",  # 国庆
-    "2026-01-01",                              # 元旦
-    "2026-02-17", "2026-02-18", "2026-02-19", "2026-02-20",  # 春节
-    "2026-02-21", "2026-02-22", "2026-02-23", "2026-02-24",  # 春节
-    "2026-04-05", "2026-04-06",                               # 清明
-    "2026-05-01", "2026-05-02", "2026-05-03", "2026-05-04", "2026-05-05",  # 劳动节
-    "2026-06-19", "2026-06-20", "2026-06-21",                # 端午
-    "2026-09-30",                          # 国庆前 (调休)
-    "2026-10-01", "2026-10-02", "2026-10-03",                # 国庆
-    "2026-10-04", "2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08",  # 国庆
-}
-
-
-def _load_holidays_from_file(path: str) -> set[str] | None:
-    try:
-        import json
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            return set(data)
-        return None
-    except (FileNotFoundError, json.JSONDecodeError, TypeError):
-        return None
-
-
-HOLIDAYS: set[str] = _load_holidays_from_file(HOLIDAYS_FILE) or _HOLIDAYS_FALLBACK
+# 交易日历 — 已拆至 scanner/holidays.py（顶部 re-export），此处保留位置标记。
 
 # == Cross-validation weights ==
 # New face
@@ -656,33 +486,9 @@ V_MO_VOL_UP = 8
 V_MO_VOL_STABLE = 5
 V_MO_VOL_SPIKE = -5
 
-# Pullback
-V_PB_MA_UP = 10
-V_PB_MA_FLAT = 0
-V_PB_MA_DOWN = -10
-V_PB_SHRINK_YES = 10
-V_PB_SHRINK_MOD = 5
-V_PB_SHRINK_NO = -5
-
-# 回踩量能比阈值（分析端与验证端共用，避免口径矛盾）
-#   vol_ratio < PULLBACK_VOL_LOW        -> 极度缩量（确认）
-#   vol_ratio <= PULLBACK_VOL_HEALTHY   -> 健康缩量
-#   vol_ratio > PULLBACK_VOL_HIGH       -> 放量（非缩量，惩罚）
-# 中间带 (HEALTHY, HIGH] 视为中性，两端一致。
-PULLBACK_VOL_LOW = 0.4
-PULLBACK_VOL_HEALTHY = 0.9
-PULLBACK_VOL_HIGH = 1.3
-V_PB_SECTOR_HOT = 8
-V_PB_SECTOR_DEAD = -5
-V_PB_SECTOR_NEUTRAL = 0
-
 # New face — added in P0
 V_NF_DIVERGENCE_BULL = 8
 V_NF_VOLUME_CONFIRM = 5
-
-# Pullback — added in P0
-V_PB_BOLLINGER_TOUCH = 5
-V_PB_BOLLINGER_MID = 2
 
 # Short term
 V_ST_VOL_HEALTHY = 8
@@ -697,12 +503,8 @@ V_ST_RANK_LOW = -3
 V_ST_MA_SUPPORT = 5
 V_ST_MA_BROKEN = -5
 
-# Pullback 20-day gain penalty (late-stage lifecycle protection)
-# PULLBACK_20D_GAIN_WARN/EXTREME 同时用于 validator 超买判定阈值。
-PULLBACK_20D_GAIN_WARN = 40       # 20-day gain > 40% → warn
-PULLBACK_20D_GAIN_EXTREME = 60    # 20-day gain > 60% → extreme
-PULLBACK_20D_WARN_PENALTY = -10
-PULLBACK_20D_EXTREME_PENALTY = -15
+# 超买判定 20 日涨幅阈值（validator._is_overbought 使用；pullback 下线后仅此一处消费）
+PULLBACK_20D_GAIN_EXTREME = 60    # 20-day gain > 60% → extreme (overbought)
 
 # ── 综合排序展示优先级与操作建议（2026-08-07 复核重排）──
 # CAT_DISPLAY_PRIORITY：仅决定综合排序「类别分组展示顺序」，与操作建议解耦。

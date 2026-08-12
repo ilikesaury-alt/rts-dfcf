@@ -10,12 +10,14 @@ parser = argparse.ArgumentParser(description='查询推荐汇总')
 parser.add_argument('--date', default=None, help='目标日期 (YYYY-MM-DD)，默认为昨日')
 args = parser.parse_args()
 
-from scanner.config import DB_PATH, now_beijing
+from scanner.config import DB_PATH, now_beijing  # noqa: E402  (reconfigure 后导入避免编码异常)
 
 conn = sqlite3.connect(DB_PATH)
 target_date = args.date or (now_beijing().date() - timedelta(days=1)).isoformat()
 
-cur = conn.execute("SELECT DISTINCT r.symbol, r.name FROM recommendations r WHERE r.date = ? ORDER BY r.symbol", (target_date,))
+cur = conn.execute(
+    "SELECT DISTINCT r.symbol, r.name FROM recommendations r WHERE r.date = ? ORDER BY r.symbol",
+    (target_date,))
 stocks = cur.fetchall()
 print(f'{target_date} 上榜个股: {len(stocks)} 只\n')
 
@@ -36,7 +38,9 @@ for r in rows:
 
 print()
 
-cur = conn.execute("SELECT r.category, COUNT(DISTINCT r.symbol) FROM recommendations r WHERE r.date = ? GROUP BY r.category", (target_date,))
+cur = conn.execute(
+    "SELECT r.category, COUNT(DISTINCT r.symbol) FROM recommendations r WHERE r.date = ? GROUP BY r.category",
+    (target_date,))
 cats = cur.fetchall()
 print('=== 策略分布 ===')
 for c in cats:
@@ -64,7 +68,9 @@ for r in cur:
 
 print()
 
-cur = conn.execute("SELECT r.time, COUNT(*) FROM recommendations r WHERE r.date = ? GROUP BY r.time ORDER BY r.time", (target_date,))
+cur = conn.execute(
+    "SELECT r.time, COUNT(*) FROM recommendations r WHERE r.date = ? GROUP BY r.time ORDER BY r.time",
+    (target_date,))
 cycles = cur.fetchall()
 print('=== 扫描轮次 ===')
 for c in cycles:

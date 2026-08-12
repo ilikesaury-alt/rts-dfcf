@@ -10,7 +10,7 @@ parser = argparse.ArgumentParser(description='查询今日推荐')
 parser.add_argument('--date', default=None, help='目标日期 (YYYY-MM-DD)，默认为昨日')
 args = parser.parse_args()
 
-from scanner.config import DB_PATH, now_beijing
+from scanner.config import DB_PATH, now_beijing  # noqa: E402  (reconfigure 后导入避免编码异常)
 
 conn = sqlite3.connect(DB_PATH)
 target_date = args.date or (now_beijing().date() - timedelta(days=1)).isoformat()

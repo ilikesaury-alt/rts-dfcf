@@ -1,7 +1,6 @@
 """综合排序显示与资金流图标测试。"""
 import sqlite3
 from datetime import timedelta
-from types import SimpleNamespace
 
 import scanner.display as disp_mod
 from scanner.config import now_beijing
@@ -124,8 +123,7 @@ def test_display_comeback_section(monkeypatch, capsys):
         "SZ300986": _comeback_candidate("志特新材", "SZ300986", "反转", 70),
         "SZ300111": _comeback_candidate("回踩股", "SZ300111", "回踩", 55),
     }
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
-    disp_mod.display_priority(conn)
+    disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
     assert "◆ 回马枪" in out
     assert "兜底参考" in out
@@ -143,8 +141,7 @@ def test_display_priority_comeback_hidden_when_main_has_recs(monkeypatch, capsys
     _insert_rec_cat(conn, "SZ300001", "反弹", "rebound", 50)
     _insert_rec_cat(conn, "SZ300002", "回马", "comeback", 90)
     _insert_rec_cat(conn, "SZ300003", "超短", "short_term", 80)
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
-    disp_mod.display_priority(conn)
+    disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     assert "◆ 回马枪" not in out
     main_lines = [l for l in out.splitlines() if "SZ30000" in l]
@@ -178,8 +175,7 @@ def test_display_priority_live_quotes_overrides_candidate(monkeypatch, capsys):
     conn = _rec_db()
     _insert_rec(conn, "SZ300001", "候选票", 2.0)
     cand = _cand_in_pool("SZ300001", 1.5, 10.0, 5)
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={"SZ300001": cand}))
-    disp_mod.display_priority(conn, live_quotes={"SZ300001": {"percent": 3.2, "current": 10.5}})
+    disp_mod.display_priority(conn, live_quotes={"SZ300001": {"percent": 3.2, "current": 10.5}}, today_pool={"SZ300001": cand})
     out = capsys.readouterr().out
     line = next(l for l in out.splitlines() if "SZ300001" in l)
     assert "+3.20%" in line
@@ -192,8 +188,7 @@ def test_display_priority_live_quotes_overrides_db_for_dropped(monkeypatch, caps
     """掉榜行（无候选）用 live_quotes 实时行情，优于 DB 落库值。"""
     conn = _rec_db()
     _insert_rec(conn, "SZ300002", "掉榜票", 1.0)
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
-    disp_mod.display_priority(conn, live_quotes={"SZ300002": {"percent": 4.5, "current": 20.0}})
+    disp_mod.display_priority(conn, live_quotes={"SZ300002": {"percent": 4.5, "current": 20.0}}, today_pool={})
     out = capsys.readouterr().out
     line = next(l for l in out.splitlines() if "SZ300002" in l)
     assert "+4.50%" in line
@@ -206,8 +201,7 @@ def test_display_priority_candidate_fallback_when_no_live(monkeypatch, capsys):
     conn = _rec_db()
     _insert_rec(conn, "SZ300001", "候选票", 2.0)
     cand = _cand_in_pool("SZ300001", 1.5, 10.0, 5)
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={"SZ300001": cand}))
-    disp_mod.display_priority(conn)
+    disp_mod.display_priority(conn, today_pool={"SZ300001": cand})
     out = capsys.readouterr().out
     line = next(l for l in out.splitlines() if "SZ300001" in l)
     assert "+1.50%" in line
@@ -228,8 +222,7 @@ def test_display_priority_dropped_live_percent_zero_not_fallback(monkeypatch, ca
         (today,),
     )
     conn.commit()
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
-    disp_mod.display_priority(conn)
+    disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     line = next(l for l in out.splitlines() if "SZ300002" in l)
     assert "+0.00%" in line
@@ -240,8 +233,7 @@ def test_display_priority_rank_map_for_dropped(monkeypatch, capsys):
     """掉榜/重启行（无候选）的排名由当前飙升榜 rank_map 补上（此前恒为 —）。"""
     conn = _rec_db()
     _insert_rec(conn, "SZ300002", "掉榜票", 1.0)
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
-    disp_mod.display_priority(conn, rank_map={"SZ300002": 42})
+    disp_mod.display_priority(conn, rank_map={"SZ300002": 42}, today_pool={})
     out = capsys.readouterr().out
     line = next(l for l in out.splitlines() if "SZ300002" in l)
     assert "42" in line
@@ -266,8 +258,7 @@ def test_display_priority_new_group_order(monkeypatch, capsys):
     _insert_rec_cat(conn, "SZ300003", "反弹", "rebound", 50)
     _insert_rec_cat(conn, "SZ300004", "动量", "momentum", 70)
     _insert_rec_cat(conn, "SZ300005", "超短", "short_term", 60)
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
-    disp_mod.display_priority(conn)
+    disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     # 2026-08-11：次日大涨独立区已并入主表行尾 🎯 标记，无重复区块，直接取全部输出
     main_out = out
@@ -285,8 +276,7 @@ def test_display_priority_knf_score_ascending(monkeypatch, capsys):
     _insert_rec_cat(conn, "SZ300002", "已知新高分", "known_new_face", 90)
     _insert_rec_cat(conn, "SZ300003", "动量高分", "momentum", 90)
     _insert_rec_cat(conn, "SZ300004", "动量低分", "momentum", 30)
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
-    disp_mod.display_priority(conn)
+    disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     lines = [l for l in out.splitlines() if "SZ30000" in l]
     # 类别组内：kNF 低分(20) 在 高分(90) 前；momentum 高分(90) 在 低分(30) 前（仍降序）
@@ -303,8 +293,7 @@ def test_display_priority_suggestion_decoupled(monkeypatch, capsys):
     _insert_rec_cat(conn, "SZ300002", "已知新", "known_new_face", 90)
     _insert_rec_cat(conn, "SZ300003", "反弹", "rebound", 50)
     _insert_rec_cat(conn, "SZ300004", "超短", "short_term", 60)
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
-    disp_mod.display_priority(conn)
+    disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     lines = {sym: next(l for l in out.splitlines() if sym in l)
              for sym in ["SZ300001", "SZ300002", "SZ300003", "SZ300004"]}
@@ -346,8 +335,7 @@ def test_display_priority_tier_front_cross_category(monkeypatch, capsys):
     pool = {"SZ300002": _cand_tier("SZ300002", 80, percent=1.0),
             "SZ300003": _cand_tier("SZ300003", 90, category="short_term", percent=1.0),
             "SZ300004": _cand_tier("SZ300004", 125)}
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
-    disp_mod.display_priority(conn)
+    disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
     main_out = out
     lines = [l for l in main_out.splitlines() if "SZ30000" in l]
@@ -365,8 +353,7 @@ def test_display_priority_tier_front_within_category(monkeypatch, capsys):
     _insert_rec_cat(conn, "SZ300002", "高分普通票", "momentum", 150)
     pool = {"SZ300001": _cand_tier("SZ300001", 60, percent=1.0),
             "SZ300002": _cand_tier("SZ300002", 150)}
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
-    disp_mod.display_priority(conn)
+    disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
     lines = [l for l in out.splitlines() if "SZ30000" in l]
     assert "SZ300001" in lines[0], f"甜蜜带票(60)应排在普通高分票(150)之前: {lines}"
@@ -380,8 +367,7 @@ def test_prominence_no_longer_sorts(monkeypatch, capsys):
     _insert_rec_cat(conn, "SZ300002", "高分普通票", "momentum", 150)
     pool = {"SZ300001": _cand_tier("SZ300001", 60, prominent=True),
             "SZ300002": _cand_tier("SZ300002", 150)}
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
-    disp_mod.display_priority(conn)
+    disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
     lines = [l for l in out.splitlines() if "SZ30000" in l]
     assert "SZ300002" in lines[0], f"辨识度票(60)不再置顶，高分票(150)应在前: {lines}"
@@ -397,8 +383,7 @@ def test_display_priority_fund_flow_no_longer_sorts(monkeypatch, capsys):
     _insert_rec_cat(conn, "SZ300002", "高分普通票", "momentum", 65)
     pool = {"SZ300001": _cand_tier("SZ300001", 55, fund_flow=6.0),
             "SZ300002": _cand_tier("SZ300002", 65)}
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
-    disp_mod.display_priority(conn)
+    disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
     lines = [l for l in out.splitlines() if "SZ30000" in l]
     assert "SZ300002" in lines[0], f"高分普通票(65)应排在强流入票(55)之前(资金流不再置前): {lines}"
@@ -413,8 +398,7 @@ def test_display_priority_fund_flow_outflow_not_hidden(monkeypatch, capsys):
     _insert_rec_cat(conn, "SZ300002", "普通票", "momentum", 50)
     pool = {"SZ300001": _cand_tier("SZ300001", 100, fund_flow=-6.0, percent=1.0),
             "SZ300002": _cand_tier("SZ300002", 50)}
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
-    disp_mod.display_priority(conn)
+    disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
     main_out = out
     lines = [l for l in main_out.splitlines() if "SZ30000" in l]
@@ -443,8 +427,7 @@ def test_display_priority_tier_db_source_for_dropped(monkeypatch, capsys):
          now_beijing().isoformat()),
     )
     conn.commit()
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
-    disp_mod.display_priority(conn)
+    disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     lines = [l for l in out.splitlines() if "SZ30000" in l]
     assert "SZ300001" in lines[0], f"掉榜甜蜜带票(60,档0)应排在普通票(90,档1)之前: {lines}"
@@ -462,8 +445,7 @@ def test_display_priority_tier_banner_separates_groups(monkeypatch, capsys):
         "SZ300002": _cand_tier("SZ300002", 70, "momentum"),
         "SZ300003": _cand_tier("SZ300003", 90, "rebound", fund_flow=-6.0, percent=1.0),
     }
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
-    disp_mod.display_priority(conn)
+    disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
     assert "▶ 置顶档" not in out
     assert "▶ 普通档" not in out
@@ -486,8 +468,7 @@ def test_display_priority_comeback_separate_region(monkeypatch, capsys):
         "SZ300101": _cand_tier("SZ300101", 55, "comeback", prominent=True),
         "SZ300102": _cand_tier("SZ300102", 120, "comeback", fund_flow=-6.0),
     }
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
-    disp_mod.display_priority(conn)
+    disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
     assert "◆ 回马枪" in out
     cb_part = out.split("◆ 回马枪", 1)[1]
@@ -502,8 +483,7 @@ def test_display_priority_comeback_capped(monkeypatch, capsys):
     conn = _rec_db()
     for i in range(12):
         _insert_rec_cat(conn, f"SZ3003{i:02d}", f"马{i}", "comeback", 50 + i)
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
-    disp_mod.display_priority(conn)
+    disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     assert "◆ 回马枪" in out
     cb_part = out.split("◆ 回马枪", 1)[1]
@@ -533,8 +513,7 @@ def test_nextday_mark_sweet_band(monkeypatch, capsys):
     _insert_rec_pct(conn, "SZ300001", "低吸", "rebound", 50, 1.0)      # <2% 甜蜜带
     _insert_rec_pct(conn, "SZ300002", "中段", "short_term", 60, 5.0)   # 4-8% 甜蜜带
     _insert_rec_pct(conn, "SZ300003", "陷阱", "momentum", 70, 9.0)     # 8-10% 陷阱带
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
-    disp_mod.display_priority(conn)
+    disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     lines = {sym: next(l for l in out.splitlines() if sym in l)
              for sym in ["SZ300001", "SZ300002", "SZ300003"]}
@@ -554,8 +533,7 @@ def test_nextday_mark_excludes_overbought(monkeypatch, capsys):
         "SZ300002": _cand_tier("SZ300002", 55, "short_term", percent=1.0),
     }
     pool["SZ300001"].kline.dimensions.update({"st_overbought_flag": True})
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
-    disp_mod.display_priority(conn)
+    disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
     lines = {sym: next(l for l in out.splitlines() if sym in l)
              for sym in ["SZ300001", "SZ300002"]}
@@ -567,8 +545,7 @@ def test_nextday_mark_no_hits_omitted(monkeypatch, capsys):
     """🎯 标记：无甜蜜带票时不打印图例行（主表正常显示）。"""
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "陷阱票", "momentum", 70, 9.0)   # 8-10% 陷阱带
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool={}))
-    disp_mod.display_priority(conn)
+    disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     assert "次日大涨画像" not in out, "无甜蜜带票时不应打印 🎯 图例行"
     assert "SZ300001" in out  # 主表仍正常显示
@@ -586,8 +563,7 @@ def test_nextday_mark_lifts_tier(monkeypatch, capsys):
         "SZ300002": _cand_tier("SZ300002", 80, "rebound", percent=1.0),
         "SZ300003": _cand_tier("SZ300003", 120, "rebound"),
     }
-    monkeypatch.setattr(disp_mod, "_session_state", SimpleNamespace(today_pool=pool))
-    disp_mod.display_priority(conn)
+    disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
     lines = [l for l in out.splitlines() if "SZ30000" in l]
     assert len(lines) == 3

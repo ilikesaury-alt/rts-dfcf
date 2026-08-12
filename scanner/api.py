@@ -1,5 +1,4 @@
 import logging
-import math
 import threading
 import time
 from datetime import datetime
@@ -8,7 +7,6 @@ import requests
 
 from scanner.config import (
     BEIJING_TZ,
-    CACHE_MAX_ENTRIES,
     HEADERS,
     REQUEST_CONNECT_TIMEOUT,
     REQUEST_TIMEOUT,
@@ -24,6 +22,8 @@ from scanner.config import (
     SENTIMENT_WARM,
 )
 from scanner.models import KlineBar, make_kline_bar
+from scanner.utils import cache_put as _cache_put
+from scanner.utils import to_float as _num
 
 logger = logging.getLogger(__name__)
 
@@ -90,19 +90,6 @@ def _throttle(min_interval: float = 0.15):
         time.sleep(wait)
 
 
-def _cache_put(cache: dict, key, value, max_entries: int = CACHE_MAX_ENTRIES):
-    """带上限的进程内缓存写入：超限时淘汰最旧条目，防止长跑内存无限增长。
-
-    dict 保持插入序，`pop(next(iter(cache)))` 淘汰最早插入的 key。
-    调用方需自行持有对应锁。
-    """
-    if key in cache:
-        cache.pop(key)
-    cache[key] = value
-    while len(cache) > max_entries:
-        cache.pop(next(iter(cache)))
-
-
 _cache_lock = threading.Lock()
 _index_cache_lock = threading.Lock()
 _kline_cache_lock = threading.Lock()
@@ -125,7 +112,8 @@ def fetch_market_index(session: requests.Session) -> float | None:
             return _market_index_cache[0]
     try:
         ts_ms = int(time.time() * 1000)
-        url = f"https://stock.xueqiu.com/v5/stock/chart/kline.json?symbol=SZ399006&begin={ts_ms - 86400*1000*3}&period=day&count=2&_={ts_ms}"
+        url = (f"https://stock.xueqiu.com/v5/stock/chart/kline.json"
+               f"?symbol=SZ399006&begin={ts_ms - 86400*1000*3}&period=day&count=2&_={ts_ms}")
         resp = _request_with_retry(session, url)
         items = resp.json().get("data", {}).get("item", [])
         if items and len(items[-1]) > 7:
@@ -141,20 +129,6 @@ def fetch_market_index(session: requests.Session) -> float | None:
     except Exception as e:
         print(f"  [!] 获取大盘指数失败: {e}")
     return None
-
-
-def _num(v, default: float = 0.0) -> float:
-    """安全转 float：API 偶发返回字符串/None/NaN/±inf 时按 0 处理，避免下游 str/float 比较崩溃。
-
-    Python json 默认允许解析 JSON 字面量 NaN/Infinity（非标准但可被 parse），
-    仅判 `f != f`（NaN）会放行 inf——inf 与任何数值比较恒为真/假，会绕过节流
-    与越界判断（如 s.current > MAX_STOCK_PRICE），故统一用 math.isfinite。
-    """
-    try:
-        f = float(v)
-        return default if not math.isfinite(f) else f  # NaN/±inf → default
-    except (TypeError, ValueError):
-        return default
 
 
 def compute_surge_sentiment(raw_items: list[dict]) -> dict:
@@ -543,9 +517,15 @@ def _fetch_minute_data(session: requests.Session, symbol: str) -> list[dict] | N
         return None
 
 
-def analyze_opening_strength(session: requests.Session, symbol: str) -> float | None:
-    """开盘强度因子: 分析前5分钟(9:30-9:35)的量价行为."""
-    items = _fetch_minute_data(session, symbol)
+def analyze_opening_strength(session: requests.Session, symbol: str,
+                             items: list[dict] | None = None) -> float | None:
+    """开盘强度因子: 分析前5分钟(9:30-9:35)的量价行为.
+
+    items 由调用方（adapter.fetch_minute）传入时直接使用，不重复拉取；
+    items=None 走旧路径：内部 _fetch_minute_data 拉取（保留缓存语义）。
+    """
+    if items is None:
+        items = _fetch_minute_data(session, symbol)
     if not items or len(items) < 6:
         return None
 
@@ -582,8 +562,11 @@ def analyze_opening_strength(session: requests.Session, symbol: str) -> float | 
     return max(-5.0, min(5.0, score))
 
 
-def estimate_live_volume(session: requests.Session, symbol: str) -> float | None:
-    items = _fetch_minute_data(session, symbol)
+def estimate_live_volume(session: requests.Session, symbol: str,
+                         items: list[dict] | None = None) -> float | None:
+    """实时量比投影：items 由调用方传入时直接使用，否则内部拉取。"""
+    if items is None:
+        items = _fetch_minute_data(session, symbol)
     if not items:
         return None
     total_vol = sum(item.get("volume", 0) for item in items)
@@ -593,20 +576,30 @@ def estimate_live_volume(session: requests.Session, symbol: str) -> float | None
     return estimated
 
 
-def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
-    now = time.time()
-    with _intraday_cache_lock:
-        if symbol in _INTRADAY_CACHE:
-            val, ts = _INTRADAY_CACHE[symbol]
-            if val is not None and now - ts < _INTRADAY_CACHE_TTL:
-                return val
-            if val is None and now - ts < _INTRADAY_CACHE_FAIL_TTL:
-                return None
+def analyze_intraday(session: requests.Session, symbol: str,
+                     items: list[dict] | None = None) -> float | None:
+    """分时强度评分（三段早/中/晚加权）。
 
-    items = _fetch_minute_data(session, symbol)
-    if not items or len(items) < 2:
+    items 由调用方（adapter.fetch_minute）传入时直接使用且不读写 _INTRADAY_CACHE
+    （分时源数据已由 adapter 层缓存）；items=None 走旧路径：内部拉取 + 评分缓存。
+    """
+    now = time.time()
+    use_cache = items is None
+    if use_cache:
         with _intraday_cache_lock:
-            _cache_put(_INTRADAY_CACHE, symbol, (None, now))
+            if symbol in _INTRADAY_CACHE:
+                val, ts = _INTRADAY_CACHE[symbol]
+                if val is not None and now - ts < _INTRADAY_CACHE_TTL:
+                    return val
+                if val is None and now - ts < _INTRADAY_CACHE_FAIL_TTL:
+                    return None
+
+    if items is None:
+        items = _fetch_minute_data(session, symbol)
+    if not items or len(items) < 2:
+        if use_cache:
+            with _intraday_cache_lock:
+                _cache_put(_INTRADAY_CACHE, symbol, (None, now))
         return None
 
     try:
@@ -644,7 +637,8 @@ def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
                     idx = min(i * seg_sz, n - 1)
                     nxt = min((i + 1) * seg_sz, n - 1)
                     if idx != nxt:
-                        c = (period_items[nxt]["current"] - period_items[idx]["current"]) / period_items[idx]["current"] * 100
+                        c = ((period_items[nxt]["current"] - period_items[idx]["current"])
+                             / period_items[idx]["current"] * 100)
                         seg_chgs.append(c)
                 attacks = sum(1 for c in seg_chgs if c > 0.15)
                 declines = sum(1 for c in seg_chgs if c < -0.15)
@@ -674,11 +668,13 @@ def analyze_intraday(session: requests.Session, symbol: str) -> float | None:
         # 属预期收敛，不伪造数据。如需大单维度应改用 capital_flow 独立接口。
 
         score = max(-10.0, min(10.0, score))
-        with _intraday_cache_lock:
-            _cache_put(_INTRADAY_CACHE, symbol, (score, now))
+        if use_cache:
+            with _intraday_cache_lock:
+                _cache_put(_INTRADAY_CACHE, symbol, (score, now))
         return score
     except Exception as e:
         print(f"  [!] 分析分时强度失败 {symbol}: {e}")
-        with _intraday_cache_lock:
-            _cache_put(_INTRADAY_CACHE, symbol, (None, now))
+        if use_cache:
+            with _intraday_cache_lock:
+                _cache_put(_INTRADAY_CACHE, symbol, (None, now))
         return None

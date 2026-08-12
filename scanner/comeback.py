@@ -14,12 +14,10 @@ category="comeback"（recommendations 表结构不变，用 trend 列存变体�
 限时兜底，掉榜票每交易日每票最多评估一次（last_eval_date 落库，重启不丢）。
 """
 from collections.abc import Callable
-
 from dataclasses import replace as dataclass_replace
 
 from scanner.analysis import analyze_rebound
 from scanner.config import (
-    COMEBACK_MAX_TODAY_PCT,
     COMEBACK_PREFILTER_5D_DROP,
     COMEBACK_REENTRY_BASE_SCORE,
     COMEBACK_REENTRY_BOLL_MID_PCT,
@@ -53,8 +51,8 @@ from scanner.database import (
 )
 from scanner.indicators import (
     compute_bollinger_bands,
-    compute_macd,
     compute_ma,
+    compute_macd,
     compute_rsi,
 )
 from scanner.models import Candidate, KlineBar, KlineSummary, StockInfo
@@ -224,7 +222,7 @@ def _try_reentry_candidate(stock: StockInfo, kline: list[KlineBar], today: str,
     """回马枪·回踩：近 N 日推荐回调到买点（6 维信号 ≥4 到买点）。"""
     if not kline or len(kline) < 20:
         return None
-    historical = [k for k in kline if k.get("close") and k.get("date") != today]
+    historical = [k for k in kline if k["date"] != today]
     if len(historical) < 20:
         return None
     closes = [k["close"] for k in historical]
@@ -362,8 +360,8 @@ def _get_rec_day_close(kline: list[KlineBar] | None, rec_date: str) -> float:
         return 0.0
     for k in kline:
         if k["date"] == rec_date:
-            return k.get("close", 0) or 0
+            return k["close"]
     before = [k for k in kline if k["date"] <= rec_date]
     if before:
-        return before[-1].get("close", 0) or 0
+        return before[-1]["close"]
     return 0.0

@@ -285,31 +285,22 @@ class TestApplyListMomentumBonus:
     """streak 语义（2026-08-07 修复）：以交易日计 = cross_days(历史连续天数) + 今日上榜1天；
     intraday_streak(扫描次数 60s/次) 仅作"今日在榜"=+1，不再 max() 当"日"（防 240 次饱和）。"""
 
-    @staticmethod
-    def _patch_cross(cross_days: int):
-        """patch get_consecutive_appearance_days 并传入 conn，使 cross_days 可控。"""
-        from unittest.mock import patch as _patch
-        return _patch("scanner.database.get_consecutive_appearance_days", return_value=cross_days)
-
     @patch("scanner.enhancer.rank_trajectory_score", return_value=0)
     def test_streak_2(self, mock_traj):
         c = _make_candidate()
-        with self._patch_cross(1):  # 历史1天 + 今日 = 2
-            _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, conn=object())
+        _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, cross_days=1)
         assert c.list_momentum_bonus == 3
 
     @patch("scanner.enhancer.rank_trajectory_score", return_value=0)
     def test_streak_3(self, mock_traj):
         c = _make_candidate()
-        with self._patch_cross(2):
-            _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, conn=object())
+        _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, cross_days=2)
         assert c.list_momentum_bonus == 5
 
     @patch("scanner.enhancer.rank_trajectory_score", return_value=0)
     def test_streak_5(self, mock_traj):
         c = _make_candidate()
-        with self._patch_cross(4):
-            _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, conn=object())
+        _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, cross_days=4)
         assert c.list_momentum_bonus == 6
 
     @patch("scanner.enhancer.rank_trajectory_score", return_value=0)
@@ -323,32 +314,28 @@ class TestApplyListMomentumBonus:
         """扫描次数 240 只计今日 1 天，不触发疲劳饱和。"""
         c = _make_candidate(accumulated_pct=5.0, volume_ratio=0.8)
         c.category = "momentum"
-        with self._patch_cross(2):  # streak=3（2历史+今日）
-            _apply_list_momentum_bonus(c, list_streaks={"300999": 240}, conn=object())
+        _apply_list_momentum_bonus(c, list_streaks={"300999": 240}, cross_days=2)
         assert c.list_momentum_bonus == -9
 
     @patch("scanner.enhancer.rank_trajectory_score", return_value=0)
     def test_fatigue_penalty(self, mock_traj):
         c = _make_candidate(accumulated_pct=5.0, volume_ratio=0.8)
         c.category = "momentum"
-        with self._patch_cross(2):
-            _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, conn=object())
+        _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, cross_days=2)
         assert c.list_momentum_bonus == -9
 
     @patch("scanner.enhancer.rank_trajectory_score", return_value=0)
     def test_fatigue_penalty_cap(self, mock_traj):
         c = _make_candidate(accumulated_pct=5.0, volume_ratio=0.8)
         c.category = "momentum"
-        with self._patch_cross(5):
-            _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, conn=object())
+        _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, cross_days=5)
         assert c.list_momentum_bonus == -15
 
     @patch("scanner.enhancer.rank_trajectory_score", return_value=0)
     def test_fatigue_new_face_skips_price(self, mock_traj):
         c = _make_candidate(accumulated_pct=3.0, volume_ratio=1.5,
                             percent=2.0, category="new_face")
-        with self._patch_cross(2):
-            _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, conn=object())
+        _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, cross_days=2)
         assert c.list_momentum_bonus == 5
 
     @patch("scanner.enhancer.rank_trajectory_score", return_value=0)
@@ -361,8 +348,7 @@ class TestApplyListMomentumBonus:
         c.comeback_variant = "反转"
         # streak=3（cross=2+今日）：量能萎缩 0.8<1.0 → 仅 1 个疲劳信号（价格被豁免）。
         # 若无豁免，价格(-10<8) 会让信号达 2 → 疲劳 -9；豁免后 → 正常连榜 5。
-        with self._patch_cross(2):
-            _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, conn=object())
+        _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, cross_days=2)
         assert c.list_momentum_bonus == 5, (
             f"comeback 不应因负累计吃疲劳罚分, got {c.list_momentum_bonus}")
 
@@ -375,8 +361,7 @@ class TestApplyListMomentumBonus:
         c.comeback_variant = "反转"
         # streak=3：价格被豁免，但量能(0.5<1.0) + traj(-2<0) → 2 信号 → 疲劳 -9，
         # 再加 traj_bonus -2 → 合计 -11
-        with self._patch_cross(2):
-            _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, conn=object())
+        _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, cross_days=2)
         assert c.list_momentum_bonus == -11, (
             f"comeback 豁免只免价格信号，量能萎缩仍应疲劳, got {c.list_momentum_bonus}")
 
@@ -384,22 +369,19 @@ class TestApplyListMomentumBonus:
     def test_accelerating(self, mock_traj):
         c = _make_candidate(percent=5.0, volume_ratio=1.5)
         c.category = "momentum"
-        with self._patch_cross(2):
-            _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, conn=object())
+        _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, cross_days=2)
         assert c.list_momentum_bonus == 6
 
     @patch("scanner.enhancer.rank_trajectory_score", return_value=4)
     def test_trajectory_bonus(self, mock_traj):
         c = _make_candidate()
-        with self._patch_cross(1):
-            _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, conn=object())
+        _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, cross_days=1)
         assert c.list_momentum_bonus == 7
 
     @patch("scanner.enhancer.rank_trajectory_score", return_value=-2)
     def test_trajectory_negative(self, mock_traj):
         c = _make_candidate()
-        with self._patch_cross(1):
-            _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, conn=object())
+        _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, cross_days=1)
         assert c.list_momentum_bonus == 1
 
     @patch("scanner.enhancer.rank_trajectory_score", return_value=0)
@@ -407,8 +389,7 @@ class TestApplyListMomentumBonus:
         """traj=0（每日开盘 tracker 重置后历史不足）不再计入疲劳信号。"""
         c = _make_candidate(accumulated_pct=5.0, volume_ratio=0.8)
         c.category = "momentum"
-        with self._patch_cross(2):  # 仅 2 信号(price+vol)，traj=0 不参与 → 疲劳 -9
-            _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, conn=object())
+        _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, cross_days=2)
         assert c.list_momentum_bonus == -9
 
     @patch("scanner.enhancer.rank_trajectory_score", return_value=0)
@@ -446,8 +427,7 @@ class TestApplyListMomentumBonus:
     def test_no_kline(self, mock_traj):
         c = _make_candidate()
         c.kline = None
-        with self._patch_cross(1):
-            _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, conn=object())
+        _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, cross_days=1)
         assert c.list_momentum_bonus == 3
 
 
