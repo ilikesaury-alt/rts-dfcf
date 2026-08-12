@@ -127,6 +127,9 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
     print(f"  新面孔: 过去{NEW_FACE_LOOKBACK_DAYS}天未出现 = 新  |  交易时段: 09:30-11:30 / 13:00-15:00")
     print(f"  {'='*60}")
 
+    # 上一轮扫描的榜单排名快照：综合排序「排名」列据此显示雪球榜单排名变化（↑N 升 / ↓N 降）。
+    last_ranks: dict[str, int] = {}
+
     try:
         while True:
             try:
@@ -199,7 +202,10 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                         filtered_large_cap=filtered_large_cap,
                         conn=conn, live_quotes=live_quotes,
                         rank_map=current_rank_map,
-                        today_pool=res.today_pool)
+                        today_pool=res.today_pool,
+                        last_ranks=last_ranks)
+                # 快照本轮榜单排名供下一轮展示排名变化（上一轮为 None 时显示纯名次）。
+                last_ranks = dict(current_rank_map)
                 log_results(new_faces, momentum + rebound_list + short_term_list + comeback_list)
                 if not no_feishu:
                     pushed = push_feishu(new_faces, momentum, stale_candidates,

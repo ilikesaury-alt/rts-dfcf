@@ -16,6 +16,7 @@ from scanner.config import (
     NEXTDAY_SPIKE_SWEET_MIN,
     RISK_FLAGS_DISPLAY_HARD,
     SUGGEST_BY_CAT,
+    TOP40_THRESHOLD,
     now_beijing,
 )
 from scanner.database import get_fund_flow_pct_map, get_prominence_map, get_today_recommendations
@@ -53,6 +54,27 @@ CAT_COLOR = {
     "momentum": ANSI["YELLOW"], "short_term": ANSI["RED"], "pullback": ANSI["RED"],
     "comeback": ANSI["CYAN"],
 }
+
+
+def _rank_delta_str(symbol: str, current_rank: int, last_ranks: dict[str, int]) -> str:
+    """雪球榜单排名较上一轮扫描的变化：↑N 上升 / ↓N 下降 / "" 无变化或无上轮。
+
+    diff = prev - current > 0 表示名次上升（数字变小排前面）；升≥5 名红色、
+    降≥5 名绿色（中国行情配色，红色=强/向上），小幅用纯箭头无着色。
+    """
+    prev = last_ranks.get(symbol)
+    if prev is None:
+        return ""
+    diff = prev - current_rank
+    if diff > 0:
+        if diff >= 5:
+            return f"{ANSI['RED']}↑{diff}{ANSI['RESET']}"
+        return f"↑{diff}"
+    if diff < 0:
+        if -diff >= 5:
+            return f"{ANSI['GREEN']}↓{-diff}{ANSI['RESET']}"
+        return f"↓{-diff}"
+    return ""
 
 
 def _vis_len(s: str) -> int:
@@ -192,7 +214,8 @@ def _market_env_tag(today_pool: dict[str, Candidate] | None) -> str:
 def display(gem_total: int, interval: int, filtered_large_cap: int = 0,
             conn=None, live_quotes: dict[str, dict] | None = None,
             rank_map: dict[str, int] | None = None,
-            today_pool: dict[str, Candidate] | None = None):
+            today_pool: dict[str, Candidate] | None = None,
+            last_ranks: dict[str, int] | None = None):
     """扫描主屏：头部摘要 + 综合排序总表（含回马枪/次日大涨子区）。
 
     策略桶（新面孔/动量/反弹/回马枪/超短）2026-08-10 下线：与综合排序重复列同一批票、
@@ -200,6 +223,8 @@ def display(gem_total: int, interval: int, filtered_large_cap: int = 0,
 
     today_pool：本轮候选池快照（symbol → Candidate），由调用方（scan_with_raw 的
     ScanResult）传入，display 不直接访问 orchestrator 内部状态。
+    last_ranks: 上一轮扫描的榜单排名 {symbol: rank}，供综合排序「排名」列显示变化
+    （↑N 升 / ↓N 降），与已下线策略桶同口径。
     """
     clear_screen()
     now = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
@@ -208,16 +233,20 @@ def display(gem_total: int, interval: int, filtered_large_cap: int = 0,
     filter_info = f" | 过滤{filtered_large_cap}只" if filtered_large_cap else ""
     print(f"  创业板共 {gem_total} 只{filter_info} | 每{interval}s刷新 | {_market_env_tag(today_pool)}")
     print(f"{'='*96}")
-    display_priority(conn, live_quotes=live_quotes, rank_map=rank_map, today_pool=today_pool)
+    display_priority(conn, live_quotes=live_quotes, rank_map=rank_map, today_pool=today_pool,
+                     last_ranks=last_ranks)
 
 
 def _print_priority_row(entry: dict, i: int, flow_pct_map: dict,
-                        nextday_mark: bool = False) -> None:
+                        nextday_mark: bool = False,
+                        last_ranks: dict[str, int] | None = None) -> None:
     """综合排序单行的统一渲染（主表与回马枪独立区共用），避免两处复制大段渲染逻辑。
 
     flow_pct_map: {symbol: 主力净占比} DB 快照回退（候选缺失/扫描失败时仍显示资金流图标）。
     nextday_mark: 次日大涨画像（🎯）——推荐时刻涨幅甜蜜带 + 非超买（见 _is_nextday_marked）。
     视觉标记 + 参与综合排序档位置顶（display_priority._sort_tier 档0），不改 score / 不落库。
+    last_ranks: 上一轮扫描的榜单排名 {symbol: rank}，用于「排名」列展示雪球榜单排名变化
+    （↑N 升 / ↓N 降），与已下线策略桶的 _rank_delta_str 同口径；缺省 None 不显示变化。
     """
     c = entry["_candidate"]
     sector = classify_sector(entry["name"])
@@ -260,7 +289,16 @@ def _print_priority_row(entry: dict, i: int, flow_pct_map: dict,
     if not live_rank and c and c.stock.rank:
         live_rank = c.stock.rank
     price_str = f"{live_cur:.2f}" if live_cur else "—"
-    rank_str = f"{live_rank}" if live_rank else "—"
+    # 排名列：当前名次 + 较上一轮扫描的变化（↑N 升 / ↓N 降），无上轮或不变化仅显名次。
+    # 名次在雪球榜单前 TOP40_THRESHOLD 内时高亮（加粗 + 红色），TOP40 视为热度强势信号。
+    if live_rank:
+        delta_str = _rank_delta_str(entry["symbol"], live_rank, last_ranks or {})
+        rank_num = f"{live_rank}"
+        if 0 < live_rank <= TOP40_THRESHOLD:
+            rank_num = f"{ANSI['BOLD']}{ANSI['RED']}{rank_num}{ANSI['RESET']}"
+        rank_str = f"{rank_num}{delta_str}" if delta_str else rank_num
+    else:
+        rank_str = "—"
     label_display = f"{CAT_COLOR.get(cat, '')}{CAT_LABEL.get(cat, cat)}{ANSI['RESET']}"
     # 回马枪变体（反转/回踩）：策略桶下线后由此处单行保留，避免掉榜区丢失语义。
     if cat == "comeback":
@@ -313,7 +351,7 @@ def _print_priority_row(entry: dict, i: int, flow_pct_map: dict,
     extra_suffix = f" {extra_str}" if extra_str else ""
     nd_mark_str = f" {ANSI['GREEN']}🎯{ANSI['RESET']}" if nextday_mark else ""
     print(f"  {i:3d}  {entry['symbol']:<12} {_pad(entry['name'],10)} "
-          f"{pct_colored(pct)} {accum_str:>8} {price_str:>7} {rank_str:>4} "
+          f"{pct_colored(pct)} {accum_str:>8} {price_str:>7} {_pad(rank_str, 8, 'r')} "
           f"{_pad(_trunc(sector,14),14)} {_pad(label_display,5,'r')} {entry['score']:4d} "
           f"{_pad(first_time,6)} {_pad(suggest_str,6)}{prom_str}{risk_str}{extra_suffix}{nd_mark_str}")
 
@@ -370,13 +408,16 @@ def _is_nextday_marked(entry: dict) -> bool:
 
 def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
                      rank_map: dict[str, int] | None = None,
-                     today_pool: dict[str, Candidate] | None = None):
+                     today_pool: dict[str, Candidate] | None = None,
+                     last_ranks: dict[str, int] | None = None):
     """从本地数据库读取今日所有进入过推荐的票，按档位(辨识度)+展示优先级(CAT_DISPLAY_PRIORITY)+评分键展示。
 
     live_quotes: {symbol: {percent, current}} 实时行情覆盖，优先于候选池和数据库数据。
     rank_map: {symbol: 飙升榜排名} 当前扫描的榜单排名，为掉榜/重启行补实时排名。
     today_pool: {symbol: Candidate} 本轮候选池快照（缺省空），供掉榜/重启行之外的行
     渲染最新候选数据（实时候选 > DB 快照）。
+    last_ranks: 上一轮扫描的榜单排名 {symbol: rank}，供「排名」列显示雪球榜单排名变化
+    （↑N 升 / ↓N 降），与已下线策略桶同口径；缺省 None 不显示变化。
     排序键 = (档位, CAT_DISPLAY_PRIORITY, 分数键)：档0置前(次日大涨🎯) < 档1普通。
     2026-08-11 起资金流不再参与档位排序/劣后过滤（净流出票正常展示，仅保留图标与「资金流出」标签）。
     2026-08-12 次日大涨画像(🎯)置顶；辨识度(↻)不再参与排序（次日大涨本身即辨识度属性），
@@ -459,7 +500,7 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
 
     print(f"\n{ANSI['BOLD']}◆ 综合排序 — 今日上榜推荐{ANSI['RESET']}")
     hdr = (f"  {_pad('#',3,'r')} {_pad('代码',12)} {_pad('名称',10)} "
-           f"{_pad('涨幅',8,'r')} {_pad('5日累计',8,'r')} {_pad('现价',7,'r')} {_pad('排名',4,'r')} "
+           f"{_pad('涨幅',8,'r')} {_pad('5日累计',8,'r')} {_pad('现价',7,'r')} {_pad('排名',8,'r')} "
            f"{_pad('板块',14)} {_pad('策略',5)} {_pad('评分',4,'r')} {_pad('时间',6)} {_pad('建议',6)}")
     print(hdr)
     marked = 0
@@ -467,7 +508,7 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
         mark = _is_nextday_marked(entry)
         if mark:
             marked += 1
-        _print_priority_row(entry, i, flow_pct_map, nextday_mark=mark)
+        _print_priority_row(entry, i, flow_pct_map, nextday_mark=mark, last_ranks=last_ranks)
     print(f"  {'-'*92}")
     # 次日大涨画像标记（🎯）图例：2026-08-11 独立区并入主表行尾标记——原独立区与主表
     # 重合度 65%（主表 17 只中 11 只甜蜜带、排序几乎一致、辨识度因子空转），重复输出。
@@ -490,5 +531,5 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
         print(f"\n{ANSI['CYAN']}◆ 回马枪 — 掉榜跟踪/回调买点（主区推荐较少·补充参考）{ANSI['RESET']}")
         print(hdr)
         for ci, entry in enumerate(cb_scored, 1):
-            _print_priority_row(entry, ci, flow_pct_map)
+            _print_priority_row(entry, ci, flow_pct_map, last_ranks=last_ranks)
         print(f"  {'-'*92}")
