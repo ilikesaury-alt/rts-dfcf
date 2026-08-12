@@ -451,7 +451,7 @@ COMEBACK_REENTRY_DISPLAY_WATCH_MAX = 0      # "观察中"补充最多显示条�
 # COMEBACK_DISPLAY_MIN_MAIN 时不展示回马枪（避免刷屏）；主区推荐条数 < 该值（含为空）
 # 时补充展示，最多前 COMEBACK_DISPLAY_MAX 条（回马枪为掉榜无热榜背书票，评分语义弱于榜上推荐）。
 COMEBACK_DISPLAY_MAX = 10                   # 回马枪区最多显示条数
-COMEBACK_DISPLAY_MIN_MAIN = 5               # 主区推荐条数低于此值 → 补充显示回马枪区
+COMEBACK_DISPLAY_MIN_MAIN = 3               # 主区推荐条数低于此值 → 补充显示回马枪区
 
 # 辨识度标签 — 反复上榜
 PROMINENCE_LOOKBACK_DAYS = 5     # 回溯 N 个交易日

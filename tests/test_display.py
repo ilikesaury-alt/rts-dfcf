@@ -140,7 +140,7 @@ def test_display_priority_comeback_hidden_when_main_has_recs(monkeypatch, capsys
     """2026-08-12：主区（榜上五类）推荐条数 ≥ COMEBACK_DISPLAY_MIN_MAIN 时不显示
     回马枪独立区（避免刷屏）；comeback 行随区块整体隐藏。"""
     conn = _rec_db()
-    # 主区 6 条（≥ 阈值 5）→ 隐藏回马枪
+    # 主区 6 条（≥ 阈值 3）→ 隐藏回马枪
     for i in range(1, 7):
         _insert_rec_cat(conn, f"SZ3000{i}", f"反弹{i}", "rebound", 50 + i)
     _insert_rec_cat(conn, "SZ300007", "回马", "comeback", 90)
