@@ -149,12 +149,21 @@ def safe_round(v, digits=2):
     return round(v, digits)
 
 
+def clear_screen():
+    """打印前清空终端，避免与扫描器主屏/历史输出混叠。"""
+    if os.name == "nt":
+        os.system("cls")
+    else:
+        print("\033[2J\033[H", end="", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description="个股深度分析报告")
     parser.add_argument("query", help="股票代码(300319)或名称(麦捷科技)")
     parser.add_argument("--quick", action="store_true", help="快速模式: 仅本地数据,不调API")
     args = parser.parse_args()
 
+    clear_screen()
     conn = sqlite3.connect(DB_PATH)
     try:
         stocks = find_stock(conn, args.query)
