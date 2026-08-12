@@ -447,9 +447,11 @@ COMEBACK_REENTRY_STATUS_BUY = 4             # 信号数≥此值 → "到买点"
 COMEBACK_REENTRY_STATUS_WATCH = 3           # 信号数≥此值 → "观察中"，否则 "未到买点"（过滤）
 COMEBACK_REENTRY_DISPLAY_BUY_MAX = 10       # "到买点"最多显示条数
 COMEBACK_REENTRY_DISPLAY_WATCH_MAX = 0      # "观察中"补充最多显示条数（0 = 不显示，只看到买点）
-# 回马枪独立区仅作"无推荐兜底参考"：主区（榜上五类）有推荐时不展示回马枪，避免刷屏；
-# 且只在主区为空时最多显示前 N 条（回马枪为掉榜无热榜背书票，评分语义弱于榜上推荐）。
+# 回马枪独立区仅作兜底参考（2026-08-12 放宽）：主区（榜上五类）推荐条数 ≥
+# COMEBACK_DISPLAY_MIN_MAIN 时不展示回马枪（避免刷屏）；主区推荐条数 < 该值（含为空）
+# 时补充展示，最多前 COMEBACK_DISPLAY_MAX 条（回马枪为掉榜无热榜背书票，评分语义弱于榜上推荐）。
 COMEBACK_DISPLAY_MAX = 10                   # 回马枪区最多显示条数
+COMEBACK_DISPLAY_MIN_MAIN = 5               # 主区推荐条数低于此值 → 补充显示回马枪区
 
 # 辨识度标签 — 反复上榜
 PROMINENCE_LOOKBACK_DAYS = 5     # 回溯 N 个交易日
