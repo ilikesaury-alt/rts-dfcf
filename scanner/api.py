@@ -28,15 +28,63 @@ from scanner.utils import to_float as _num
 logger = logging.getLogger(__name__)
 
 
+# ── 雪球 cookie 失效自愈（2026-08-12）──
+# 长驻扫描进程的 session 在启动时经 make_session() 建立一次，运行中永不刷新。
+# cookie 失效后所有 API 请求返回 401/403 或被重定向到 passport 登录页，K 线补拉
+# 静默失败（上层拿 None 回退旧缓存），四策略基于数日前旧数据评分 → 列表饿死，
+# 直到手动重启进程才恢复（实测 8-12 榜上 24 只仅 7 只拉到当日 bar，新 session 4.4s 拉全）。
+# 在统一请求层检测失效信号并原地重建 cookie 重试一次，所有调用方
+# （kline/分时/榜单/市值/指数）自动受益，无需各自处理。
+_session_refresh_lock = threading.Lock()
+
+
+def _is_session_expired(resp: requests.Response) -> bool:
+    """session 失效信号：401/403、被重定向到 passport 登录、200 却返回 HTML 登录页。"""
+    if resp.status_code in (401, 403):
+        return True
+    resp_url = getattr(resp, "url", "") or ""
+    if "passport" in resp_url:
+        return True
+    ct = (resp.headers.get("Content-Type") or "") if hasattr(resp, "headers") else ""
+    if resp.status_code == 200 and "text/html" in ct.lower():
+        # 正常雪球 API 返回 JSON；HTML = 被重定向到登录页
+        return True
+    return False
+
+
+def _refresh_session(session: requests.Session) -> None:
+    """原地重建雪球 cookie：清空旧 cookie 后重新 GET /hq 握手。
+
+    调用方持有的 session 引用不变（thread-local / adapter 单例均无感）。
+    并发重建用锁串行，避免 _parallel_fetch 多线程同时清 cookie 竞态。
+    """
+    with _session_refresh_lock:
+        session.cookies.clear()
+        session.get("https://xueqiu.com/hq", timeout=REQUEST_TIMEOUT)
+
+
 def _request_with_retry(session: requests.Session, url: str,
                         max_retries: int = 3, base_delay: float = 1.0,
                         timeout: int | tuple | None = None) -> requests.Response:
     last_exc = None
+    rebuilt = False
     for attempt in range(max_retries):
         try:
             _throttle()
             # (connect, read) 双段超时：connect 短超时避免连不上挂死拖垮整轮扫描
             resp = session.get(url, timeout=timeout or (REQUEST_CONNECT_TIMEOUT, REQUEST_TIMEOUT))
+
+            # session 失效自愈：cookie 失效（401/403/登录页）时重建后重试一次
+            if not rebuilt and _is_session_expired(resp):
+                rebuilt = True
+                logger.warning("  雪球 session 疑似失效(HTTP %s)，重建 cookie 后重试 %s",
+                               resp.status_code, url[:60])
+                try:
+                    _refresh_session(session)
+                except Exception as e:
+                    logger.warning("  雪球 session 重建失败，按原逻辑继续: %s", e)
+                time.sleep(1)
+                continue
 
             if resp.status_code == 429:
                 try:

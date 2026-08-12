@@ -497,3 +497,85 @@ class TestFetchMarketIndexCoercion:
             api._market_index_cache = (None, 0)
             pct = api.fetch_market_index(MagicMock())
         assert pct is None
+
+
+class TestSessionExpirySelfHeal:
+    """回归（2026-08-12）：长驻进程雪球 cookie 失效后，所有 API 请求返回 401/403/
+    登录页 HTML，K 线补拉静默失败导致列表饿死。现于 _request_with_retry 统一自愈：
+    检测失效信号 → 清 cookie 重建 → 重试一次。"""
+
+    class _FakeCookies:
+        def __init__(self):
+            self.cleared = False
+
+        def clear(self):
+            self.cleared = True
+
+    class _FakeResp:
+        def __init__(self, status_code, content_type="application/json",
+                     url="https://stock.xueqiu.com/v5/stock/chart/kline.json"):
+            self.status_code = status_code
+            self.headers = {"Content-Type": content_type}
+            self.url = url
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise Exception(f"HTTP {self.status_code}")
+
+    class _FakeSession:
+        def __init__(self, responses):
+            self.responses = list(responses)
+            self.cookies = TestSessionExpirySelfHeal._FakeCookies()
+            self.calls = []
+
+        def get(self, url, timeout=None):
+            self.calls.append(url)
+            if "xueqiu.com/hq" in url:
+                # 重建握手请求单独返回（不消耗 API 响应队列）
+                return TestSessionExpirySelfHeal._FakeResp(200)
+            return self.responses.pop(0)
+
+    def test_401_triggers_rebuild_and_retries(self):
+        from scanner.api import _request_with_retry
+        sess = self._FakeSession([self._FakeResp(401), self._FakeResp(200)])
+        resp = _request_with_retry(sess, "https://stock.xueqiu.com/v5/x", max_retries=2)
+        assert resp.status_code == 200
+        assert sess.cookies.cleared
+        # 重建握手请求发给 /hq
+        assert any("xueqiu.com/hq" in u for u in sess.calls)
+
+    def test_html_login_page_triggers_rebuild(self):
+        from scanner.api import _request_with_retry
+        sess = self._FakeSession([
+            self._FakeResp(200, content_type="text/html; charset=utf-8",
+                           url="https://passport.xueqiu.com/"),
+            self._FakeResp(200),
+        ])
+        resp = _request_with_retry(sess, "https://stock.xueqiu.com/v5/x", max_retries=2)
+        assert resp.status_code == 200
+        assert sess.cookies.cleared
+
+    def test_normal_json_no_rebuild(self):
+        from scanner.api import _request_with_retry
+        sess = self._FakeSession([self._FakeResp(200)])
+        resp = _request_with_retry(sess, "https://stock.xueqiu.com/v5/x", max_retries=2)
+        assert resp.status_code == 200
+        assert not sess.cookies.cleared
+
+    def test_server_error_does_not_rebuild(self):
+        # 5xx 是服务端问题，非 cookie 失效，走既有重试而非重建 session
+        from scanner.api import _request_with_retry
+        sess = self._FakeSession([self._FakeResp(500), self._FakeResp(200)])
+        resp = _request_with_retry(sess, "https://stock.xueqiu.com/v5/x", max_retries=2)
+        assert resp.status_code == 200
+        assert not sess.cookies.cleared
+
+    def test_rebuild_only_once(self):
+        # 重建后仍 401 → 不再重复重建，按原逻辑抛错（防重建风暴）
+        import pytest
+        from scanner.api import _request_with_retry
+        sess = self._FakeSession([self._FakeResp(401), self._FakeResp(401), self._FakeResp(401)])
+        with pytest.raises(Exception):
+            _request_with_retry(sess, "https://stock.xueqiu.com/v5/x", max_retries=3)
+        # 只重建过一次（重建握手 + 3 次 API 请求 = 4 次 get）
+        assert sess.calls.count("https://xueqiu.com/hq") == 1
