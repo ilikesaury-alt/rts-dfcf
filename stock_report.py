@@ -258,6 +258,17 @@ def main():
             print(f"  换手率: {tr:.2f}%")
         if sector:
             print(f"  所属板块: {sector}")
+        # 基本面风险（财务风险，stock_report 无 --quick 依赖 pywencai 也不强制：
+        # 读 DB 当日缓存，无数据则尝试拉取）。资不抵债=退市风险级，醒目警示。
+        try:
+            from scanner.fundamentals import collect_fund_risk, get_fund_risk_from_db
+            reason = get_fund_risk_from_db(conn, symbol)
+            if reason is None and not args.quick:
+                reason = collect_fund_risk(conn, [symbol]).get(symbol)
+            if reason:
+                print(f"  {red(f'⚠ 财务风险: {reason}（每股净资产<0，退市风险级，扫描器已排除）')}")
+        except Exception:
+            pass
         if first_app:
             print(f"  首次上榜: {first_app['date']} (排名{first_app['rank']}, 涨幅{(first_app['percent'] or 0):.2f}%)")
         print(f"  累计上榜: {len(appearances)}天")

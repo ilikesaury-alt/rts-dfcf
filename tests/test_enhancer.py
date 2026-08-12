@@ -700,3 +700,30 @@ class TestAccumulateWithMarketExtra:
         result = accumulate_final_score(c, {})
         assert result == 13
 
+
+class TestApplyAllBonusesFundRisk:
+    """apply_all_bonuses 全链路：fund_risk 参数 → _set_risk_flags 打财务风险标签。"""
+
+    def _run(self, fund_risk):
+        c = _make_candidate(symbol="SZ300027")
+        from scanner.enhancer import apply_all_bonuses
+        apply_all_bonuses(
+            [c], [], {}, {}, {}, {}, {}, None, 0,
+            sentiment_info=None, rps_scores=None, list_streaks=None,
+            market_extra=None, fund_risk=fund_risk, conn=None,
+        )
+        return c
+
+    def test_hit_appends_fund_risk_tag(self):
+        from scanner.config import FUND_RISK_TAG
+        c = self._run({"SZ300027": "资不抵债"})
+        assert FUND_RISK_TAG in c.risk_flags
+
+    def test_miss_no_tag(self):
+        c = self._run({"SZ300999": "资不抵债"})
+        assert "财务风险" not in c.risk_flags
+
+    def test_none_default_no_tag(self):
+        c = self._run(None)
+        assert "财务风险" not in c.risk_flags
+

@@ -23,6 +23,7 @@ from scanner.config import (
     FUND_FLOW_MAIN_PCT_STRONG,
     FUND_FLOW_MAIN_PCT_WEAK,
     FUND_OUTFLOW_NET_PCT,
+    FUND_RISK_TAG,
     LATE_BONUS,
     LATE_TRADE_START,
     LIST_STREAK_BONUS_2,
@@ -84,6 +85,7 @@ def apply_all_bonuses(
     rps_scores: dict[str, int] = None,
     list_streaks: dict[str, int] = None,
     market_extra: dict = None,
+    fund_risk: dict[str, str] = None,
     conn=None,
 ):
     syms = [c.stock.symbol for c in candidates]
@@ -105,7 +107,7 @@ def apply_all_bonuses(
         _apply_fund_flow_bonus(c, market_extra)
         _apply_zt_bonus(c, market_extra)
         _record_dimensions(c, market_idx_pct, opening_scores)
-        _set_risk_flags(c)
+        _set_risk_flags(c, fund_risk=fund_risk)
         _compute_prominence_labels(c, prominence_map)
 
 
@@ -120,13 +122,19 @@ def _compute_prominence_labels(c: Candidate, prominence_map: dict):
         pass
 
 
-def _set_risk_flags(c: Candidate):
+def _set_risk_flags(c: Candidate, fund_risk: dict[str, str] = None):
     """设置复合风险标签，供 UI 显示⚠️标记。
 
     每个标签对应明确的交易决策含义，基于多字段组合判断。
     不清零加分（基础评分维度清零会破坏策略逻辑），仅加风险标签供人工判断。
     """
     dims = c.kline.dimensions if c.kline else {}
+
+    # 财务风险：资不抵债等基本面硬伤（排除式硬过滤，2026-08-12 新增）。
+    # fund_risk 由 orchestrator 从 pywencai 问财反向查询全市场资不抵债股获得，
+    # 命中即打 FUND_RISK_TAG 标签，RISK_FLAGS_HARD_FILTER 据此移出推荐列表。
+    if fund_risk and c.stock.symbol in fund_risk:
+        c.risk_flags.append(FUND_RISK_TAG)
 
     # 超买：末周期鱼尾段（BOLL %B>1.0 或 KDJ J>105 或 20日涨幅>60%）
     if dims.get("st_overbought_flag") or dims.get("mo_overbought_flag"):

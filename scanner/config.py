@@ -394,11 +394,26 @@ HIGH_RISK_TRENDS: set[str] = {
     "回踩整理",   # (原 pullback 标签: avg -3.89%, win 21.6%)
 }
 
+# ── 基本面风险过滤（pywencai 问财条件查询，2026-08-12 新增）──
+# 定位：排除式过滤器（filter），不做评分加分。本项目历史反复证明加分类因子
+# 最终都反指被归零（资金流加分、validation_bonus、辨识度加分），而排除类
+# （资不抵债/退市风险）是纯规避语义，与现有硬过滤（主力出货/趋势破位）同架构。
+# 数据源：同花顺问财 pywencai（lazy import，未安装/失败自动返回空集，fail-open）。
+# 查询方式：反向条件查询一次返回全市场命中集合（实测"每股净资产小于0"→42只，
+# 其中 GEM 10 只），比逐票拉取稳定（实测批量单票查询丢代码/返回无关数据）。
+ENABLE_FUND_RISK = _env_flag("RTS_ENABLE_FUND_RISK", True)  # 总开关
+FUND_RISK_QUERY = "每股净资产小于0"  # 问财条件查询语句（资不抵债=退市风险级）
+FUND_RISK_FETCH_TIMEOUT = 25         # 单次问财查询限时（秒，pywencai 无内部 timeout）
+FUND_RISK_TTL_SEC = 86400            # 进程/DB 缓存 TTL（基本面日级更新，当日不重复查询）
+FUND_RISK_TAG = "财务风险"           # 命中时打的风险标签（入 RISK_FLAGS_HARD_FILTER）
+FUND_RISK_REASON = "资不抵债"        # 命中原因说明（payload 落库 + stock_report 展示）
+
 # ── 风险标签硬排除集合 ──
 # 命中即直接从所有推荐列表移除（推荐输出只保留可买票）。
 # 仅纳入"卖出/止损"级信号：
 #   - 主力出货：高位派发，明确的卖出信号
 #   - 趋势破位：MA 破位，止损信号
+#   - 财务风险：资不抵债（每股净资产<0），退市风险级，基本面硬伤
 # 其余标签保留为展示型警告（不在此过滤）：
 #   - 超买：上下文语义（仅 short_term 条件性否决，其余策略展示）
 #   - 涨幅过大 / 疲劳 / 弱市：追高/后劲不足/大盘环境提示
@@ -406,6 +421,7 @@ HIGH_RISK_TRENDS: set[str] = {
 RISK_FLAGS_HARD_FILTER: set[str] = {
     "主力出货",
     "趋势破位",
+    FUND_RISK_TAG,
 }
 
 # Time-based bonus thresholds (minutes since midnight)

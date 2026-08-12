@@ -570,6 +570,20 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     except Exception as e:
         print(f"  [!] 行情增强数据收集失败（忽略，不影响扫描）: {e}")
 
+    # 基本面风险（pywencai 问财反向查询资不抵债股）：排除式过滤器，命中候选打
+    # "财务风险"硬过滤标签（RISK_FLAGS_HARD_FILTER 移出推荐列表），不做任何加分。
+    # 全程 fail-open：问财未安装/超时/异常 → 空 dict，不影响扫描。
+    fund_risk: dict[str, str] = {}
+    try:
+        from scanner.fundamentals import collect_fund_risk
+        fund_risk = collect_fund_risk(conn, [c.stock.symbol for c in all_candidates])
+        if fund_risk:
+            names = "、".join(f"{c.stock.name}({c.stock.symbol})"
+                              for c in all_candidates if c.stock.symbol in fund_risk)
+            print(f"  [财务风险] {len(fund_risk)} 只资不抵债（退市风险级），将移出推荐：{names}")
+    except Exception as e:
+        print(f"  [!] 基本面风险收集失败（忽略，不影响扫描）: {e}")
+
     rps_scores: dict[str, int] = {}
     # RPS 基准：全 GEM 监控集（过滤后、含未入选候选）的 5 日累计涨幅列表，
     # 使 RPS 表达「相对全市场强弱」而非仅在已涨票中比谁涨得多。
@@ -623,6 +637,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
                       sentiment_info=sentiment_info, rps_scores=rps_scores,
                       list_streaks=session_state.list_presence,
                       market_extra=market_extra,
+                      fund_risk=fund_risk,
                       conn=conn)
 
     # 双挂候选（首板票同时挂 new_face + short_term）需各自独立计算 extra：
