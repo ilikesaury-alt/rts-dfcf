@@ -4,6 +4,7 @@ from scanner.candidate_pool import ScanSession
 from scanner.models import Candidate, KlineSummary, StockInfo
 from scanner.orchestrator import (
     _candidate_excluded_by_risk,
+    _enrich_candidate_market_cap,
     _fetch_all_klines,
 )
 
@@ -18,6 +19,48 @@ def _make_candidate(symbol: str, score: int = 20, kline_dims: dict | None = None
                             score=score, dimensions=kline_dims or {}, avg_volume=1_000_000)
     return Candidate(stock=stock, category="new_face", score=score,
                      reason="test", kline=kline_s, first_seen="09:30")
+
+
+class TestEnrichCandidateMarketCap:
+    """回归：回马枪 off-list 候选补齐 stock.market_cap（亿元），
+    使 enhancer._apply_market_cap_bonus 的小市值加分不再系统性缺失。"""
+
+    def _cand(self, symbol: str = "SZ300123") -> Candidate:
+        st = StockInfo(symbol=symbol, name="测试", code="300123",
+                       percent=3.0, current=10.0, value=0.0,
+                       rank_change=0, rank=0, source_tag="comeback")
+        ks = KlineSummary(trend="t", accumulated_pct=-10.0, volume_ratio=1.0,
+                          bottom_confirmed=False, score=30)
+        return Candidate(stock=st, category="comeback", score=30,
+                         reason="t", kline=ks)
+
+    def test_sets_stock_market_cap_in_yi(self):
+        from scanner.enhancer import _apply_market_cap_bonus
+        c = self._cand()
+        _enrich_candidate_market_cap(c, {"market_cap": 5_000_000_000, "circ_market_cap": 3_000_000_000})
+        assert c.market_cap == 5_000_000_000
+        assert c.circ_market_cap == 3_000_000_000
+        assert c.stock.market_cap == 30.0  # 30 亿元（流通市值优先）
+        _apply_market_cap_bonus(c)
+        assert c.market_cap_bonus == 3  # 小市值加分不再缺失
+
+    def test_circ_preferred_over_total(self):
+        c = self._cand()
+        _enrich_candidate_market_cap(c, {"market_cap": 2_000_000_000, "circ_market_cap": 200_000_000_000})
+        assert c.stock.market_cap == 2000.0  # 用流通市值
+
+    def test_missing_cap_data_keeps_zero(self):
+        c = self._cand()
+        _enrich_candidate_market_cap(c, {})
+        assert c.market_cap == 0
+        assert c.stock.market_cap == 0.0
+
+    def test_large_cap_no_bonus(self):
+        from scanner.enhancer import _apply_market_cap_bonus
+        c = self._cand()
+        _enrich_candidate_market_cap(c, {"circ_market_cap": 50_000_000_000})
+        _apply_market_cap_bonus(c)
+        assert c.market_cap_bonus == 0  # 500 亿超大市值不加分
 
 
 class TestScanSession:

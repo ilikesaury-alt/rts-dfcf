@@ -154,6 +154,8 @@ Tests use pytest with helper factories `_stock()` and `_kline()` in `tests/helpe
 
 ### 7. 已知重点项（历次已发现，每轮必须 re-check 是否复发）
 - comeback/off_list 候选 `rank=0` 被当榜上第 1 名计 TOP40 加分（`enhancer._apply_list_momentum_bonus`）
+- **comeback/off_list 候选市值富集（2026-08-13 已修 `_enrich_candidate_market_cap`）**：掉榜票的 `stock.market_cap`（亿元，供 `_apply_market_cap_bonus` 阈值比较）恒为 0 → 小市值加分系统性缺失；注意 `c.market_cap`（元原始值，行情/门禁用）与 `c.stock.market_cap`（亿元，加分用）是两个不同单位字段，富集时必须都补
+- **`api.fetch_kline` 时间戳强转（2026-08-13 已修）**：`datetime.fromtimestamp(item[0]/1000)` 对 None/str/0/负值抛 TypeError 会拖垮整只票 K 线解析（其余 bar 全丢 → 该票本轮漏推荐），应逐根跳过而非让整批中止
 - 短 K 线 <32 根每轮重拉绕过 TTL（`orchestrator._fetch_all_klines`，2026-08-09 已修）
 - API 字符串/None 未强转（`_filter_gem_stocks` / `compute_surge_sentiment` / `fetch_market_caps_batch`，已修）
 - 同板块上限（`_cap_short_term_by_sector`）——**2026-08-12 已整体移除**（历史误截断「其他」等修复记录见 STRATEGY.md B2，功能不再存在，无需 re-check）

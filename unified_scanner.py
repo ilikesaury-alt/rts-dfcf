@@ -36,7 +36,7 @@ from scanner.config import (
 )
 from scanner.data_source import get_adapter
 from scanner.database import get_today_recommendations, init_db, save_recommendations
-from scanner.display import display
+from scanner.display import clear_screen, display
 from scanner.feishu import push_feishu
 from scanner.log_utils import log_results
 from scanner.orchestrator import scan_with_raw
@@ -127,12 +127,16 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
     print(f"  新面孔: 过去{NEW_FACE_LOOKBACK_DAYS}天未出现 = 新  |  交易时段: 09:30-11:30 / 13:00-15:00")
     print(f"  {'='*60}")
 
-    # 上一轮扫描的榜单排名快照：综合排序「排名」列据此显示雪球榜单排名变化（↑N 升 / ↓N 降）。
+    # 上一轮扫描的榜单排名快照：综合排序「排名」列据此显示雪球榜单排名变化（+N 升 / -N 降）。
     last_ranks: dict[str, int] = {}
 
     try:
         while True:
             try:
+                # 每轮迭代（含非交易时段）开头清屏，保证每次输出都是干净终端：
+                # 表头/状态行/回马枪等不再与上一轮残留叠加。display() 内部仍会再
+                # 清一次（保持「清屏→渲染」自包含语义），此处覆盖所有输出路径。
+                clear_screen()
                 now = now_beijing()
                 if not is_trading_time(now):
                     wait = seconds_until_next_session(now)

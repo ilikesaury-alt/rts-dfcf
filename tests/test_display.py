@@ -18,6 +18,31 @@ def _candidate(pct):
         category="new_face", score=50, reason="", kline=k)
 
 
+# ── 终端可见宽度（2026-08-13 修复：剥离 ANSI 转义序列再量宽度）──
+def test_vis_len_strips_ansi_sequences():
+    """回归：彩色文本的可见宽度必须按去 ANSI 后的实际内容计，
+    否则 _pad 少补空格 → 固定列错位（此前 \033[91m45\033[0m 被高估为 9 列）。"""
+    assert disp_mod._vis_len("45") == 2
+    assert disp_mod._vis_len("\033[91m45\033[0m") == 2
+    assert disp_mod._vis_len("\033[1m\033[91m45\033[0m") == 2
+    assert disp_mod._vis_len("\033[91m45+3\033[0m") == 4
+    assert disp_mod._vis_len("半导体") == 6  # 中文按 2 列
+    assert disp_mod._vis_len("5日累计") == 7
+
+
+def test_pad_with_ansi_content_right_aligns():
+    """_pad 对含 ANSI 的字符串应仍按可见宽度右对齐到目标列宽。"""
+    s = disp_mod._pad("\033[91m45\033[0m", 8, "r")
+    stripped = s.replace("\033[91m", "").replace("\033[0m", "")
+    assert disp_mod._vis_len(stripped) == 8  # 6 空格 + 45
+    assert stripped == "      45"
+
+
+def test_trunc_handles_ansi_and_wide_chars():
+    t = disp_mod._trunc("半导体半导体半导体", 10)
+    assert disp_mod._vis_len(t) <= 10 and t.endswith("…")
+
+
 def test_fund_flow_signal_boundaries():
     """阈值端点语义：≥8 强流入、[5,8) 流入、(-5,5) 中性、( -8,-5] 流出、≤-8 强流出。"""
     assert disp_mod.fund_flow_signal(None) == ""
@@ -259,20 +284,23 @@ def test_display_priority_rank_map_for_dropped(monkeypatch, capsys):
 
 # ── 排名变化显示（2026-08-12）：综合排序「排名」列附雪球榜单较上一轮的排名变化 ──
 def test_rank_delta_str():
-    """_rank_delta_str：↑N 升 / ↓N 降 / 无变化或无可比上轮返回空串；≥5 名升降着色。"""
-    assert disp_mod._rank_delta_str("S", 5, {"S": 8}) == "↑3"
-    assert disp_mod._rank_delta_str("S", 8, {"S": 5}) == "↓3"
+    """_rank_delta_str：+N 升 / -N 降 / 无变化或无可比上轮返回空串；≥5 名升降着色。
+
+    2026-08-13：↑/↓ 在中文终端渲染为全角导致固定列错乱，改用 ASCII 半角 + / -。
+    """
+    assert disp_mod._rank_delta_str("S", 5, {"S": 8}) == "+3"
+    assert disp_mod._rank_delta_str("S", 8, {"S": 5}) == "-3"
     assert disp_mod._rank_delta_str("S", 5, {"S": 5}) == ""
     assert disp_mod._rank_delta_str("S", 5, {}) == ""
     assert disp_mod._rank_delta_str("S", 5, {"T": 8}) == ""
     up5 = disp_mod._rank_delta_str("S", 5, {"S": 10})
-    assert "↑5" in up5 and disp_mod.ANSI["RED"] in up5
+    assert "+5" in up5 and disp_mod.ANSI["RED"] in up5
     down5 = disp_mod._rank_delta_str("S", 10, {"S": 5})
-    assert "↓5" in down5 and disp_mod.ANSI["GREEN"] in down5
+    assert "-5" in down5 and disp_mod.ANSI["GREEN"] in down5
 
 
 def test_display_priority_rank_delta_from_last_ranks(monkeypatch, capsys):
-    """综合排序「排名」列显示较上一轮扫描的雪球榜单排名变化（↑N 升 / ↓N 降）。"""
+    """综合排序「排名」列显示较上一轮扫描的雪球榜单排名变化（+N 升 / -N 降）。"""
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300001", "升名", "momentum", 60)
     _insert_rec_cat(conn, "SZ300002", "降名", "momentum", 55)
@@ -288,20 +316,20 @@ def test_display_priority_rank_delta_from_last_ranks(monkeypatch, capsys):
     out = capsys.readouterr().out
     lines = {sym: next(row for row in out.splitlines() if sym in row)
              for sym in ["SZ300001", "SZ300002", "SZ300003"]}
-    assert "5↑3" in lines["SZ300001"]
-    assert "8↓3" in lines["SZ300002"]
-    assert "6" in lines["SZ300003"] and "↑" not in lines["SZ300003"] and "↓" not in lines["SZ300003"]
+    assert "5+3" in lines["SZ300001"]
+    assert "8-3" in lines["SZ300002"]
+    assert "6" in lines["SZ300003"] and "6+" not in lines["SZ300003"] and "6-" not in lines["SZ300003"]
 
 
 def test_display_priority_rank_delta_absent_by_default(monkeypatch, capsys):
-    """未传 last_ranks（缺省 None）时排名列仅显示名次，不带 ↑N/↓N（回归旧显示）。"""
+    """未传 last_ranks（缺省 None）时排名列仅显示名次，不带 +N/-N（回归旧显示）。"""
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300001", "仅名次", "momentum", 60)
     pool = {"SZ300001": _cand_in_pool("SZ300001", 2.0, 10.0, 5)}
     disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
     line = next(row for row in out.splitlines() if "SZ300001" in row)
-    assert "5" in line and "↑" not in line and "↓" not in line
+    assert "5" in line and "5+" not in line and "5-" not in line
 
 
 # ── 榜单 TOP40 排名高亮（2026-08-12）：名次 ≤ TOP40_THRESHOLD 加粗+红色提示 ──
@@ -335,7 +363,7 @@ def test_display_priority_rank_top40_highlight(monkeypatch, capsys):
 
 
 def test_display_priority_rank_top40_highlight_with_delta(monkeypatch, capsys):
-    """高亮只作用于名次数字，不吞掉排名变化箭头（↑N/↓N 保持原样跟在后面）。"""
+    """高亮只作用于名次数字，不吞掉排名变化（+N/-N 保持原样跟在后面）。"""
     _force_ansi(monkeypatch)
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300001", "榜内升名", "momentum", 60)
@@ -343,7 +371,7 @@ def test_display_priority_rank_top40_highlight_with_delta(monkeypatch, capsys):
     disp_mod.display_priority(conn, today_pool=pool, last_ranks={"SZ300001": 8})
     out = capsys.readouterr().out
     line = next(row for row in out.splitlines() if "SZ300001" in row)
-    assert disp_mod.ANSI["BOLD"] in line and "↑3" in line
+    assert disp_mod.ANSI["BOLD"] in line and "+3" in line
 
 
 # ── 综合排序分组顺序（2026-08-07 复核：rebound > short_term > momentum > known_new_face > new_face > pullback）──

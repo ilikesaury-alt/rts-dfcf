@@ -34,6 +34,7 @@ from datetime import timedelta
 from scanner.backtest import ACTIVE_CATEGORIES, _ic
 from scanner.config import DB_PATH, now_beijing
 from scanner.database import get_prominence_map
+from scanner.display import clear_screen
 
 DEFAULT_THRESHOLD = 7.0   # 次日大涨阈值（%）
 DEFAULT_RECENT_DAYS = 0   # 0=全部历史；>0=最近 N 天
@@ -305,6 +306,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    clear_screen()
     conn = sqlite3.connect(DB_PATH)
     recs = _load_dedup(conn, days=args.days)
     _attach_prominence(conn, recs)

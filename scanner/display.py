@@ -1,4 +1,5 @@
 import os
+import re
 
 import wcwidth
 
@@ -22,6 +23,11 @@ from scanner.config import (
 from scanner.database import get_fund_flow_pct_map, get_prominence_map, get_today_recommendations
 from scanner.models import Candidate
 from scanner.sector import classify_sector
+
+# ANSI SGR 转义序列（\x1b[...m：颜色/加粗/复位）。_vis_len 必须先剥离它们再量宽度，
+# 否则 `[`、数字、`;`、`m` 等可打印字符各被 wcwidth 计 1 列，彩色文本被高估宽度，
+# _pad 少补空格 → 实际渲染更窄 → 后续固定列整体错位。
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
 if os.name == "nt":
     import ctypes
@@ -57,10 +63,13 @@ CAT_COLOR = {
 
 
 def _rank_delta_str(symbol: str, current_rank: int, last_ranks: dict[str, int]) -> str:
-    """雪球榜单排名较上一轮扫描的变化：↑N 上升 / ↓N 下降 / "" 无变化或无上轮。
+    """雪球榜单排名较上一轮扫描的变化：+N 上升 / -N 下降 / "" 无变化或无上轮。
 
     diff = prev - current > 0 表示名次上升（数字变小排前面）；升≥5 名红色、
-    降≥5 名绿色（中国行情配色，红色=强/向上），小幅用纯箭头无着色。
+    降≥5 名绿色（中国行情配色，红色=强/向上），小幅用纯符号无着色。
+
+    2026-08-13：改用 ASCII 半角 + / -（颜色保留），避免 ↑/↓ 在部分中文终端
+    渲染为全角导致的宽度二义（排名列固定宽度计算见 _vis_len 的 ANSI 说明）。
     """
     prev = last_ranks.get(symbol)
     if prev is None:
@@ -68,20 +77,25 @@ def _rank_delta_str(symbol: str, current_rank: int, last_ranks: dict[str, int]) 
     diff = prev - current_rank
     if diff > 0:
         if diff >= 5:
-            return f"{ANSI['RED']}↑{diff}{ANSI['RESET']}"
-        return f"↑{diff}"
+            return f"{ANSI['RED']}+{diff}{ANSI['RESET']}"
+        return f"+{diff}"
     if diff < 0:
         if -diff >= 5:
-            return f"{ANSI['GREEN']}↓{-diff}{ANSI['RESET']}"
-        return f"↓{-diff}"
+            return f"{ANSI['GREEN']}-{-diff}{ANSI['RESET']}"
+        return f"-{-diff}"
     return ""
 
 
 def _vis_len(s: str) -> int:
-    # wcwidth.wcwidth 对 ANSI 转义字符（如 \x1b）返回 -1（控制字符），
-    # `-1 or 1` 在 Python 中返回 -1（truthy），导致宽度计算错误、列对齐错位。
-    # 用 max(0, ...) 确保控制字符贡献 0 宽度。
-    return sum(max(0, wcwidth.wcwidth(c)) for c in s)
+    """计算字符串的终端可见宽度（中文等宽字符按 2 列计）。
+
+    2026-08-13 修复：先前仅把 \x1b（ESC，wcwidth 返回 -1）归零，但转义序列中
+    后续的可打印字符（[ 9 1 m 等）各按 1 列计算，导致 `\033[91m45\033[0m` 被
+    高估为 9 列（实际 2 列）。_pad 据此少补空格，彩色单元格在终端渲染得更窄，
+    其后所有固定列整体左移错位（排名列 TOP40 高亮 / ≥5 名着色 delta 最易触发）。
+    现统一先剥离 ANSI SGR 序列再量宽度。
+    """
+    return sum(max(0, wcwidth.wcwidth(c)) for c in _ANSI_ESCAPE.sub("", s))
 
 
 def _pad(s: str, width: int, align: str = "l") -> str:
@@ -105,7 +119,7 @@ def clear_screen():
     if os.name == "nt":
         os.system("cls")
     else:
-        print("\033[2J\033[H", end="")
+        print("\033[2J\033[H", end="", flush=True)
 
 
 def pct_colored(pct: float | None, width: int = 8) -> str:
@@ -224,7 +238,7 @@ def display(gem_total: int, interval: int, filtered_large_cap: int = 0,
     today_pool：本轮候选池快照（symbol → Candidate），由调用方（scan_with_raw 的
     ScanResult）传入，display 不直接访问 orchestrator 内部状态。
     last_ranks: 上一轮扫描的榜单排名 {symbol: rank}，供综合排序「排名」列显示变化
-    （↑N 升 / ↓N 降），与已下线策略桶同口径。
+    （+N 升 / -N 降），与已下线策略桶同口径。
     """
     clear_screen()
     now = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
@@ -246,7 +260,7 @@ def _print_priority_row(entry: dict, i: int, flow_pct_map: dict,
     nextday_mark: 次日大涨画像（🎯）——推荐时刻涨幅甜蜜带 + 非超买（见 _is_nextday_marked）。
     视觉标记 + 参与综合排序档位置顶（display_priority._sort_tier 档0），不改 score / 不落库。
     last_ranks: 上一轮扫描的榜单排名 {symbol: rank}，用于「排名」列展示雪球榜单排名变化
-    （↑N 升 / ↓N 降），与已下线策略桶的 _rank_delta_str 同口径；缺省 None 不显示变化。
+    （+N 升 / -N 降），与已下线策略桶的 _rank_delta_str 同口径；缺省 None 不显示变化。
     """
     c = entry["_candidate"]
     sector = classify_sector(entry["name"])
@@ -289,7 +303,7 @@ def _print_priority_row(entry: dict, i: int, flow_pct_map: dict,
     if not live_rank and c and c.stock.rank:
         live_rank = c.stock.rank
     price_str = f"{live_cur:.2f}" if live_cur else "—"
-    # 排名列：当前名次 + 较上一轮扫描的变化（↑N 升 / ↓N 降），无上轮或不变化仅显名次。
+    # 排名列：当前名次 + 较上一轮扫描的变化（+N 升 / -N 降），无上轮或不变化仅显名次。
     # 名次在雪球榜单前 TOP40_THRESHOLD 内时高亮（加粗 + 红色），TOP40 视为热度强势信号。
     if live_rank:
         delta_str = _rank_delta_str(entry["symbol"], live_rank, last_ranks or {})
@@ -417,7 +431,7 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     today_pool: {symbol: Candidate} 本轮候选池快照（缺省空），供掉榜/重启行之外的行
     渲染最新候选数据（实时候选 > DB 快照）。
     last_ranks: 上一轮扫描的榜单排名 {symbol: rank}，供「排名」列显示雪球榜单排名变化
-    （↑N 升 / ↓N 降），与已下线策略桶同口径；缺省 None 不显示变化。
+    （+N 升 / -N 降），与已下线策略桶同口径；缺省 None 不显示变化。
     排序键 = (档位, CAT_DISPLAY_PRIORITY, 分数键)：档0置前(次日大涨🎯) < 档1普通。
     2026-08-11 起资金流不再参与档位排序/劣后过滤（净流出票正常展示，仅保留图标与「资金流出」标签）。
     2026-08-12 次日大涨画像(🎯)置顶；辨识度(↻)不再参与排序（次日大涨本身即辨识度属性），

@@ -267,11 +267,21 @@ def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[
         if not isinstance(item, (list, tuple)) or len(item) < 8:
             continue
         ts = item[0]
+        # 时间戳强转防御（与 _num 同族，数据入口单点）：API 偶发返回 None/字符串/
+        # 非数字时 fromtimestamp(ts/1000) 抛 TypeError 会拖垮整只票的 K 线解析；
+        # ts<=0（epoch 前）无法映射为有效交易日，同样跳过该根，避免产出 1970 脏日期。
+        try:
+            ts_f = float(ts)
+            if ts_f <= 0:
+                continue
+            bar_date = datetime.fromtimestamp(ts_f / 1000, tz=BEIJING_TZ).strftime("%Y-%m-%d")
+        except (TypeError, ValueError, OverflowError, OSError):
+            continue
         # 统一走 make_kline_bar 契约：date 从北京时间戳解析、OHLCV/percent 数值强转、
         # close<=0 剔除。此前脏值按 0 处理由 analyze_* 兜底，现收敛到入口单点。
         bar = make_kline_bar({
             # 雪球时间戳按北京时间生成，必须用北京时区解析，否则非 UTC+8 部署日期错位
-            "date": datetime.fromtimestamp(ts / 1000, tz=BEIJING_TZ).strftime("%Y-%m-%d"),
+            "date": bar_date,
             "open": item[2],
             "high": item[3],
             "low": item[4],
@@ -280,7 +290,7 @@ def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[
             "percent": item[7],
         })
         if bar is not None:
-            bar["timestamp"] = ts
+            bar["timestamp"] = ts_f
             result.append(bar)
     if _kline_cache_ttl > 0:
         with _kline_cache_lock:

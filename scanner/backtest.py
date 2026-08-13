@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from scanner.config import DB_PATH, now_beijing
+from scanner.display import clear_screen
 from scanner.trading_session import is_trading_day
 
 # Windows GBK 控制台无法编码 ‱ 等字符，统一走 UTF-8（项目其它入口同款处理）
@@ -540,6 +541,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
 
+    clear_screen()
     conn = sqlite3.connect(DB_PATH)
     if args.backfill:
         n = backfill_outcomes(conn, dry_run=args.dry_run)

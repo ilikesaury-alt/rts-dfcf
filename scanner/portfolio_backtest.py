@@ -53,6 +53,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 
 from scanner.config import CROSS_SOURCE_BONUS, DB_PATH
+from scanner.display import clear_screen
 from scanner.trading_session import is_trading_day
 
 # Windows GBK 控制台无法编码 ‱/🎯 等字符，统一走 UTF-8（项目其它入口同款处理）
@@ -709,6 +710,7 @@ def main() -> None:
     parser.add_argument("--export", default=None, help="导出 NAV 序列 CSV 路径")
     args = parser.parse_args()
 
+    clear_screen()
     conn = sqlite3.connect(DB_PATH)
 
     base_cfg = PBConfig(

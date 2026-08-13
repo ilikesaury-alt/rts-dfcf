@@ -437,6 +437,37 @@ class TestFetchKlineCoercion:
         assert kline is not None and len(kline) == 1
         assert kline[0]["close"] == 10.8
 
+    def test_malformed_timestamp_bar_skipped_not_abort(self):
+        """回归：时间戳为 None/字符串等脏值时应跳过该根 bar，而不是抛异常
+        拖垮整只票的 K 线解析（datetime.fromtimestamp 对 None/str 抛 TypeError）。"""
+        from scanner.api import fetch_kline
+        good_ts = 1609459200000
+        payload = {"data": {"item": [
+            [None, "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
+            ["not-a-number", "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
+            [good_ts, "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
+        ]}}
+        with patch("scanner.api._request_with_retry", return_value=self._fake_resp(payload)):
+            kline = fetch_kline(MagicMock(), "SZ300001", days=15)
+        assert kline is not None and len(kline) == 1
+        assert kline[0]["close"] == 10.8
+        assert kline[0]["timestamp"] == good_ts
+
+    def test_negative_or_zero_timestamp_bar_skipped(self):
+        """回归：时间戳为 0/负值（无法映射为有效交易日）的 bar 同样跳过，
+        避免产出 1970 年脏日期。"""
+        from scanner.api import fetch_kline
+        good_ts = 1609459200000
+        payload = {"data": {"item": [
+            [0, "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
+            [-1, "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
+            [good_ts, "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
+        ]}}
+        with patch("scanner.api._request_with_retry", return_value=self._fake_resp(payload)):
+            kline = fetch_kline(MagicMock(), "SZ300001", days=15)
+        assert kline is not None and len(kline) == 1
+        assert kline[0]["close"] == 10.8
+
 
 class TestNumInf:
     """回归：_num 对 ±inf 必须按 0 处理（此前仅判 `f != f`，inf 会漏进下游）。

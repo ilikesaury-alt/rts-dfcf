@@ -37,6 +37,7 @@ from scanner.config import (
     MA_BULL_3_TIER_SCORE,
     NEW_FACE_WEIGHTS,
 )
+from scanner.display import clear_screen
 from scanner.features import build_features
 from scanner.models import KlineBar, make_kline_bar
 from scanner.sector import classify_sector
@@ -407,6 +408,7 @@ def main():
     ap.add_argument("--csv", default=None, help="可选：导出 CSV 前缀")
     args = ap.parse_args()
 
+    clear_screen()
     conn = sqlite3.connect("scanner.db")
     recs = load_recommendations(conn)
     syms = {r["symbol"] for r in recs}

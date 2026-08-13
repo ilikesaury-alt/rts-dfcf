@@ -8,6 +8,8 @@ from datetime import datetime
 
 import requests
 
+from scanner.display import clear_screen
+
 
 def fetch_biaosheng(page=1, size=100):
     headers = {
@@ -66,6 +68,7 @@ def display_data(data):
 
 
 def main():
+    clear_screen()
     try:
         data = fetch_biaosheng()
         display_data(data)

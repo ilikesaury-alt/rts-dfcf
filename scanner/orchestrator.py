@@ -460,6 +460,24 @@ def _compute_rps(candidates: list[Candidate],
     return scores
 
 
+def _enrich_candidate_market_cap(c: Candidate, cap_data: dict) -> None:
+    """为候选补齐市值字段（榜上票与回马枪 off-list 票同口径）。
+
+    - c.market_cap / c.circ_market_cap：元原始值（供行情侧/资金流查询门禁）
+    - c.stock.market_cap：亿元（供 enhancer._apply_market_cap_bonus 的阈值比较）
+
+    榜上票的 stock 对象在 _filter_gem 富集时已赋值 stock.market_cap；回马枪
+    off-list 票的 StockInfo 由 evaluate_comeback 新建、market_cap 恒为 0，
+    导致小市值加分系统性缺失（c.market_cap 是元原始值，与亿元阈值不是同一
+    单位，不能替代）。统一在此按同口径补齐。
+    """
+    c.market_cap = cap_data.get("market_cap", 0)
+    c.circ_market_cap = cap_data.get("circ_market_cap", 0)
+    cmc = cap_data.get("circ_market_cap") or cap_data.get("market_cap", 0)
+    if cmc > 0:
+        c.stock.market_cap = cmc / YI
+
+
 def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
                   adapter) -> ScanResult:
     global _session_state
@@ -556,9 +574,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     all_candidates = (new_faces + momentum + rebound_list
                       + short_term_list + comeback_rebound + comeback_reentry)
     for c in all_candidates:
-        cap_data = market_caps.get(c.stock.symbol, {})
-        c.market_cap = cap_data.get("market_cap", 0)
-        c.circ_market_cap = cap_data.get("circ_market_cap", 0)
+        _enrich_candidate_market_cap(c, market_caps.get(c.stock.symbol, {}))
 
     # 行情增强数据（涨停池 + 个股资金流）：全市场各 1 次请求，失败软降级为空。
     # 必须在 apply_all_bonuses 前收集，供资金流/连板加分与风险标签使用。

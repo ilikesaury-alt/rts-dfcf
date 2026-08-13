@@ -12,6 +12,7 @@ sys.path.insert(0, BASE_DIR)
 
 from scanner.config import DB_PATH, now_beijing  # noqa: E402  (BASE_DIR 路径注入后导入)
 from scanner.database import get_cached_kline, get_consecutive_appearance_days  # noqa: E402
+from scanner.display import clear_screen  # noqa: E402
 from scanner.indicators import (  # noqa: E402
     compute_adx,
     compute_bollinger_bands,
@@ -147,14 +148,6 @@ def safe_round(v, digits=2):
     if v is None:
         return "N/A"
     return round(v, digits)
-
-
-def clear_screen():
-    """打印前清空终端，避免与扫描器主屏/历史输出混叠。"""
-    if os.name == "nt":
-        os.system("cls")
-    else:
-        print("\033[2J\033[H", end="", flush=True)
 
 
 def main():

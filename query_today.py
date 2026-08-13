@@ -1,6 +1,5 @@
 import argparse
 import json
-import os
 import sqlite3
 import sys
 from datetime import timedelta
@@ -12,15 +11,7 @@ parser.add_argument('--date', default=None, help='目标日期 (YYYY-MM-DD)，�
 args = parser.parse_args()
 
 from scanner.config import DB_PATH, now_beijing  # noqa: E402  (reconfigure 后导入避免编码异常)
-
-
-def clear_screen():
-    """打印前清空终端，避免与扫描器主屏/历史输出混叠。"""
-    if os.name == "nt":
-        os.system("cls")
-    else:
-        print("\033[2J\033[H", end="", flush=True)
-
+from scanner.display import clear_screen  # noqa: E402
 
 clear_screen()
 conn = sqlite3.connect(DB_PATH)
