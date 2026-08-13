@@ -130,6 +130,35 @@ class TestFetchFundRiskMap:
                             lambda fn, timeout: (_ for _ in ()).throw(TimeoutError("timeout")))
         assert fb.fetch_fund_risk_map() == {}
 
+    def test_failure_cached_short_backoff(self, monkeypatch):
+        # 回归：失败/超时结果短退避缓存（FUND_RISK_FAIL_TTL_SEC），故障期不每轮重复打 25s 限时
+        calls = {"n": 0}
+
+        def _raise(fn, timeout):
+            calls["n"] += 1
+            raise TimeoutError("timeout")
+
+        monkeypatch.setattr(fb, "_bounded_call", _raise)
+        assert fb.fetch_fund_risk_map() == {}
+        assert calls["n"] == 1
+        assert fb.fetch_fund_risk_map() == {}
+        assert calls["n"] == 1, "失败结果应在短退避 TTL 内命中缓存，不重复打问财"
+
+    def test_empty_success_cached_short_backoff(self, monkeypatch):
+        # 回归：成功但空结果（问财列名不匹配/数据缺失）同样短退避，避免每轮重复查询
+        calls = {"n": 0}
+        fake = FakePywencai(pd.DataFrame({"其他列": ["x"]}))
+
+        def _bounded(fn, timeout):
+            calls["n"] += 1
+            return fake.get("")
+
+        monkeypatch.setattr(fb, "_bounded_call", _bounded)
+        assert fb.fetch_fund_risk_map() == {}
+        assert calls["n"] == 1
+        assert fb.fetch_fund_risk_map() == {}
+        assert calls["n"] == 1, "空结果应在短退避 TTL 内命中缓存"
+
 
 class TestCollectFundRisk:
     def test_filters_to_candidates(self, monkeypatch):
@@ -151,6 +180,21 @@ class TestCollectFundRisk:
 
     def test_empty_symbols(self, monkeypatch):
         assert fb.collect_fund_risk(None, []) == {}
+
+    def test_switch_disabled_returns_empty(self, monkeypatch):
+        # 回归：RTS_ENABLE_FUND_RISK=0 总开关必须生效（此前只定义未接线，关闭无效）
+        fake = FakePywencai(_risk_df("300027.SZ"))
+        monkeypatch.setattr("pywencai.get", fake.get, raising=False)
+        monkeypatch.setattr(fb, "ENABLE_FUND_RISK", False)
+        assert fb.collect_fund_risk(None, ["SZ300027"]) == {}
+        assert fake.calls == 0, "开关关闭时不得打问财"
+
+    def test_switch_enabled_queries(self, monkeypatch):
+        fake = FakePywencai(_risk_df("300027.SZ"))
+        monkeypatch.setattr("pywencai.get", fake.get, raising=False)
+        monkeypatch.setattr(fb, "ENABLE_FUND_RISK", True)
+        assert fb.collect_fund_risk(None, ["SZ300027"]) == {"SZ300027": "资不抵债"}
+        assert fake.calls == 1
 
     def test_empty_result_fail_open(self, monkeypatch):
         fake = FakePywencai(error=RuntimeError("down"))

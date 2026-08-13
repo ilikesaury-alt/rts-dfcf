@@ -92,7 +92,7 @@ tests/                    # pytest test suite
 - **次日大涨候选已并入主表标记（2026-08-11，`display.py`）**：原「◆ 次日大涨候选」独立区（2026-08-10 方案 A display-only 观察窗）与综合排序主表**重合度 65%**（实测当日主表 17 只中 11 只甜蜜带、两表排序几乎一致、辨识度因子空转——甜蜜带∩辨识度=0），重复输出；改为**主表行尾 🎯 标记**（`_is_nextday_marked`），有标记时表尾打印一行图例。筛形条件与独立区完全一致：推荐时刻涨幅在甜蜜带（<2% 低吸潜伏 或 4~8% 中段启动，`NEXTDAY_SPIKE_SWEET_LOW/MID_*`）且**非 short_term/动量超买**（死亡信号）；**视觉标记 + 排序档位置顶**：不改 score / 不落库，主表、回马枪均不受影响。筛选用扫描快照 percent（与 nextday_attribution 口径同源），展示用 live_percent（实时）；辨识度复用 `c.prominence_labels` / `entry["_prominent"]`（`_entry_prominent`）。**2026-08-12：🎯 为排序档0唯一因子**——`_sort_tier` 档0 = 次日大涨画像(🎯)（甜蜜带+非超买），**辨识度退出排序**（次日大涨本身即辨识度属性），↻ 仅保留行内展示；档内仍按类别优先级→评分。后续样本足够、归因稳定后再评估是否并入评分（原方案 B）。
 - K线新鲜度 (2026-07-31): 交易时段内扫描时若候选股缺今日 bar，orchestrator 会统计并打印 `今日K线缺失N只` 警告（`_fetch_all_klines`），缺 bar 的股票用旧缓存评分、下次周期（KLINE_REFRESH_TTL=120s）重试补拉；非交易时段不警告。早盘扫描若出现"上榜多、推荐 0"请先查此警告——short_term 量比按投影口径仍需今日 bar。
 - 行情增强数据 (2026-08-06, `market_extra.py`): 涨停池 + 个股资金流（开关 `RTS_ENABLE_ZT_POOL`/`RTS_ENABLE_FUND_FLOW`，默认开）。**数据源**：涨停池走 AKShare `stock_zt_pool_em`（东财 push2ex）；资金流为**自实现直连东财 clist API**（`push2delay.eastmoney.com`，host 可用 `RTS_FUND_FLOW_HOST` 覆盖）——akshare `stock_individual_fund_flow_rank` 硬编码 `push2.eastmoney.com` 在本机直连/代理均实测不可达，push2delay 提供相同 API 且可达（数据可能延迟约 15 分钟）。**盘中新鲜度**：进程缓存 + DB 缓存共用 `ZT_POOL_TTL_SEC`/`FUND_FLOW_TTL_SEC=300s`，DB 条目按 `updated` 距今超过该 TTL 视为过期重拉（`get_market_extra_cache(..., intraday_ttl_sec)`）——避免首次扫描快照全天冻结；`stock_report` 不传 ttl 参数读取当日任意旧数据。**限时**：涨停池走 `_bounded_call`（daemon 线程 + join(timeout)，`ZT_POOL_FETCH_TIMEOUT=20s`）兜住 AKShare 内部无 timeout 的请求；资金流 `_fetch_fund_flow_bounded`（daemon 线程 + join `FUND_FLOW_FETCH_TIMEOUT=30s`，超时不抛错、返回已收集部分），内部 `_collect_fund_flow` 按 6 线程并行分页（服务端 pz 封顶 100，全市场 5292 只 → 53 页，实测并行 ~17s 全量），每页 timeout=10、页间查 deadline，均不会挂死 60s 扫描循环。**超时部分结果**：打警告 + 只缓存 `FUND_FLOW_PARTIAL_TTL_SEC=60s`（一扫描周期），下一轮扫描重试补全缺页——避免部分数据被冻结 5 分钟静默缺评分。**失败短退避**：彻底失败/接口返回空缓存空结果到 TTL，避免每轮扫描重复轰击死 host / 刷屏告警。**评分**：主力净占比 ≥5% → `fund_flow_bonus=+5`（**2026-08-10 归零**：回测分组强流入组 next_day -1.13% 差于无数据基线 -0.85%，momentum/short_term 内同为负——当日主力流入是追涨资金次日兑现，加分反指；仅保留 ≤-5% 的 -3 扣分 + 资金流出标签等规避语义）、≤-5% → -3；连板 2/3 板 → momentum/short_term +5/+8、≥4 板追高 -5（new_face 不参与）。**风险标签**：「资金流出」（净占比 ≤-8%）与「炸板」（炸板次数≥1）为展示型，不入 `RISK_FLAGS_HARD_FILTER`。**资金流展示图标**（2026-08-06）：`_market_extra_str`/feishu 用 `fund_flow_signal`（`display.py`）把主力净占比映射为 5 档图标替代原「资+x.x% ±xxx万」文本——`≥+8%` → `▲▲`/🟢🟢 强流入、`[+5%,+8%)` → `▲`/🟢 流入、`(-5%,+5%)` → `◇`/⚪ 中性、`(-8%,-5%]` → `▼`/🔴 流出、`≤-8%` → `▼▼`/🔴🔴 强流出，无数据不显示。阈值与 `FUND_FLOW_MAIN_PCT_STRONG/WEAK`（±5%，bonus）和 `FUND_OUTFLOW_NET_PCT`（±8%，极端档）同源，图标与加分永不矛盾。**全市场快照落库**（2026-08-06）：资金流完整拉取时把全市场结果全部写入 `market_extra_cache`（超时部分结果仍只存候选，`_last_ff_partial` 标志区分），保证盘中任一 symbol 的资金流数据可读。**综合排序资金流图标**（2026-08-06）：`display_priority` 从 `market_extra_cache` 读取当日资金流渲染图标，候选存在时优先用其扫描时维度、否则回退 DB——重启/掉榜后图标不丢（此前依赖进程内 `today_pool`，扫描器重启即大量缺失）。
-- 基本面风险过滤（2026-08-12，`fundamentals.py`）: **排除式过滤器**（filter），不做任何评分加分——本项目铁律「加分类因子反复被回测证明反指并归零（资金流/validation_bonus/辨识度），排除类纯规避语义」的直接应用。**数据源**：同花顺问财 pywencai（lazy import，未安装/失败自动返回空集 fail-open）。**查询方式**：反向条件查询（`FUND_RISK_QUERY="每股净资产小于0"`）一次返回全市场资不抵债股集合（实测 42 只、GEM 11 只）——比逐票拉取稳定（实测批量单票查询丢代码/返回无关数据）。**接入点**：orchestrator 在 `apply_all_bonuses` 前调 `collect_fund_risk(conn, 候选symbols)` 拿到 `{xq_symbol: reason}`，作为 `fund_risk` 参数传入 `apply_all_bonuses` → `_set_risk_flags(c, fund_risk=...)` 命中即打 `FUND_RISK_TAG="财务风险"` 标签 → 属 `RISK_FLAGS_HARD_FILTER`，扫描末端自动移出所有推荐列表（同主力出货/趋势破位，含 excluded=1 落标）。**缓存**：进程 TTL `FUND_RISK_TTL_SEC=86400`（基本面日级，当日不重复打问财）+ DB 复用 `market_extra_cache`（data_type="fund_risk"），`stock_report` 经 `get_fund_risk_from_db` 读当日缓存展示「⚠ 财务风险: 资不抵债」；`--quick` 模式不强拉。**限时**：`_bounded_call`（daemon 线程 + join `FUND_RISK_FETCH_TIMEOUT=25s`）兜住 pywencai 无 timeout 请求，超时返回空集不阻塞 60s 扫描循环。开关 `RTS_ENABLE_FUND_RISK`（默认开）。测试：`tests/test_fundamentals.py`（30 例）+ `tests/test_enhancer.py::TestApplyAllBonusesFundRisk`。
+- 基本面风险过滤（2026-08-12，`fundamentals.py`）: **排除式过滤器**（filter），不做任何评分加分——本项目铁律「加分类因子反复被回测证明反指并归零（资金流/validation_bonus/辨识度），排除类纯规避语义」的直接应用。**数据源**：同花顺问财 pywencai（lazy import，未安装/失败自动返回空集 fail-open）。**查询方式**：反向条件查询（`FUND_RISK_QUERY="每股净资产小于0"`）一次返回全市场资不抵债股集合（实测 42 只、GEM 11 只）——比逐票拉取稳定（实测批量单票查询丢代码/返回无关数据）。**接入点**：orchestrator 在 `apply_all_bonuses` 前调 `collect_fund_risk(conn, 候选symbols)` 拿到 `{xq_symbol: reason}`，作为 `fund_risk` 参数传入 `apply_all_bonuses` → `_set_risk_flags(c, fund_risk=...)` 命中即打 `FUND_RISK_TAG="财务风险"` 标签 → 属 `RISK_FLAGS_HARD_FILTER`，扫描末端自动移出所有推荐列表（同主力出货/趋势破位，含 excluded=1 落标）。**缓存**：进程 TTL `FUND_RISK_TTL_SEC=86400`（基本面日级，当日不重复打问财）+ DB 复用 `market_extra_cache`（data_type="fund_risk"），`stock_report` 经 `get_fund_risk_from_db` 读当日缓存展示「⚠ 财务风险: 资不抵债」；`--quick` 模式不强拉。**失败短退避**（2026-08-13）：查询异常/超时/成功但空结果 → 缓存空结果 `FUND_RISK_FAIL_TTL_SEC=60`（一扫描周期）后重试，避免 pywencai 故障期每轮扫描白等 25s 限时（此前不缓存失败 → 每 60s 轮重复阻塞）。**限时**：`_bounded_call`（daemon 线程 + join `FUND_RISK_FETCH_TIMEOUT=25s`）兜住 pywencai 无 timeout 请求，超时返回空集不阻塞 60s 扫描循环。开关 `RTS_ENABLE_FUND_RISK`（默认开，**2026-08-13 已接线**——此前 config 只定义未使用，设 0 无效；现 `collect_fund_risk` 入口先查开关，关闭直接返回空不查询）。测试：`tests/test_fundamentals.py`（30 例）+ `tests/test_enhancer.py::TestApplyAllBonusesFundRisk`。
 - Same-sector cap **已移除（2026-08-12）**：曾限制 short_term 同板块 top `SHORT_TERM_MAX_PER_SECTOR=2`（按最终分降序，防板块普涨日淹没列表）。移除依据（忠实数据回放）：① 历史仅在真实板块触发过 3 天（样本不足，无法验证 top2 标准）；② 真实洪峰几乎全是豁免的「其他」板块；③ 在 >2 只的板块日上，"按 score 保留 top2" 是全保留标准里**最差**的（cum_3d -0.72%/胜率44% vs score 升序 +3.18%/62%、非超买优先 +1.37%、全样本基线 +1.02%）——系统性留住洪峰日最差的一批。结论：防洪峰的 UX 护栏反而持续选出最差票，直接移除。数据/展示/回测全部回归全样本，`sector_capped` 列已废弃（真实库残留列无害，代码已全部清除）。历史 B2 修复（cap 须在 `apply_all_bonuses` + `accumulate_final_score` 之后执行）随功能一并移除，不再适用。
 - Trend-label hard filter (`config.py:HIGH_RISK_TRENDS`): currently only "回踩整理" is rejected before scoring (原 pullback 标签 avg next-day -3.89%, win 21.6%；pullback 已删除，该标签无策略产出，保留为惰性防线)。"缩量回调" was removed (avg -2.09%, win 39.2% — acceptable in candidate-pool context with MA support + mild pullback).
 - Composite risk flags (`enhancer.py:_set_risk_flags`): candidates carry **stackable** risk labels (not single-dim reverse indicators). Seven tags with explicit trading-decision implications, centralized thresholds in `config.py:357-400`. **HARD FILTER labels** (`config.py:RISK_FLAGS_HARD_FILTER` = {主力出货, 趋势破位}) hit → removed from ALL recommendation lists at the orchestrator list-assembly stage (display/feishu receive clean lists automatically; only buyable stocks remain). P1-7 (2026-08-10): 硬过滤同时把该 symbol 当日 recommendations 记录标 `excluded=1`（orchestrator 每轮按最新状态更新，通过者置 0），`get_today_recommendations` 排除 excluded=1——防"早先轮次落库、后续轮次被过滤"的票仍在综合排序展示。Remaining tags stay display-only warnings.
@@ -117,52 +117,41 @@ Tests use pytest with helper factories `_stock()` and `_kline()` in `tests/helpe
 
 ## Bug 检查规则（用户要求"检查 bug / 审查 / 排查问题"时必读）
 
-用户每次让我检查 bug，都必须**完整执行以下流程**，不许只挑能看懂的部分，不许一轮只查上次改过的文件。
-
-### 0. 触发词
-「检查bug」「审查」「排查问题」「看看有没有问题」「第三/四/五轮检查」等，一律按本规则执行。
+触发词：「检查bug」「审查」「排查问题」「看看有没有问题」等。必须走完整流程，不许只查改过的文件。
 
 ### 1. 基线必须先绿
 1. `python -m compileall -q scanner unified_scanner.py stock_report.py backfill_kline.py query_summary.py query_today.py xueqiu_hot.py`
 2. `python -m pytest tests/ -q`
-3. 有失败的先修到全绿再开始查；全绿才代表"结论不是被坏代码掩盖"。
-4. 仓库已装 `ruff`（pyproject.toml 配置，**必须运行且全绿**）：`python -m ruff check scanner/ unified_scanner.py stock_report.py backfill_kline.py query_summary.py query_today.py xueqiu_hot.py`。`mypy` 已装但**存在 ~94 条类型债 backlog（非阻断）**，本次重构未清理，报告末尾注明即可，不必修到全绿。
+3. `python -m ruff check scanner/ unified_scanner.py stock_report.py backfill_kline.py query_summary.py query_today.py xueqiu_hot.py`（必须全绿）
+4. 有失败先修到全绿再查；全绿才代表"结论不是被坏代码掩盖"。`mypy` ~94 条类型债 backlog 非阻断，报告末尾注明即可。
 
-### 2. 系统化逐模块过（按以下 7 个风险区，每轮都全过一遍）
-- **数据入口/输入强制转换**：所有从 API/DB/外部取数的函数，搜 `or 0` / `or 0.0` / `get(...) or` / `or i` 模式，检查字符串/None/NaN 会不会漏进下游的数值比较与算术。参考已修复类：`_filter_gem_stocks`、`compute_surge_sentiment`、`fetch_market_caps_batch`（同一缺陷在 3 处各爆一次）。
-- **K线/缓存/新鲜度**：`_fetch_all_klines`（TTL、今日bar缺失、KLINE_FETCH_DEADLINE）、`get_cached_kline`、`save_kline_to_db`、`_last_kline_fetch`。
-- **并发/健壮性**：每个 `ThreadPoolExecutor`/`threading` 是否带 deadline（kline 有 `KLINE_FETCH_DEADLINE`、分时有 `MINUTE_FETCH_PHASE_DEADLINE`，**涨停池/概念/资金流是否也有**）、缓存是否带上限淘汰、共享全局（`_session_state`、`_last_kline_fetch`、api 各缓存）线程安全。
-- **评分/验证**：`analysis.py` / `validator.py` / `enhancer.py` — None 处理、除零、窗口越界（`[-21]`、`[-5:]`、`closes[-6]` 等）、维度键是否存在、默认参数是否绑定模块常量导致 patch 失效。
-- **掉榜/回马枪**：`comeback.py` + `watch_pool` — `rank=0` 被当榜上排名加分、`last_eval_date` 幂等、预筛 vs 策略门口径、off_list 加分豁免、`over_limit` 粘性。
-- **展示/推送**：`display.py` / `feishu.py` — live_quotes 回退链、tier 排序、双挂去重、掉榜行 `_candidate` 为 None 的分支。
-- **数值边界**：NaN/字符串/None/0 除/负值/空列表/单元素列表，用最小复现脚本或 fuzz 验证（参考 `_score_stock` 各 K 线长度随机输入）。
+### 2. 系统性过风险区（每轮全过一遍）
+- **数据入口/强制转换**：搜 `or 0` / `or 0.0` / `get(...) or` / `or i` 模式，字符串/None/NaN 不得漏进数值比较与算术（`_filter_gem_stocks` / `compute_surge_sentiment` / `fetch_market_caps_batch` 曾同缺陷各爆一次）。
+- **K线/缓存/新鲜度**：`_fetch_all_klines`（TTL/今日bar缺失/KLINE_FETCH_DEADLINE）、`get_cached_kline`、`_last_kline_fetch`。
+- **并发/健壮性**：ThreadPoolExecutor 是否带 deadline（kline 有、涨停池/概念/资金流是否也有）、缓存上限淘汰、共享全局线程安全。
+- **评分/验证**：analysis/validator/enhancer — None 处理、除零、窗口越界（`[-21]`、`closes[-6]`）、维度键缺失、默认参数绑定模块常量。
+- **掉榜/回马枪**：comeback + watch_pool — `rank=0` 被当榜上排名加分、`last_eval_date` 幂等、off_list 加分豁免、`over_limit` 粘性。
+- **展示/推送**：display/feishu — live_quotes 回退链、tier 排序、掉榜行 `_candidate` 为 None 的分支。
+- **数值边界**：NaN/None/0 除/空列表，用最小复现脚本或 fuzz 验证。
 
-### 3. 找到 bug 后必须做「同族扩散检查」
-同一根因在其它调用点是否有同构副本。方法：定位 bug 的函数 → grep 所有调用它 / 消费同一数据源 / 复制同一写法的函数 → 逐个验证。
+### 3. 修复流程
+同族扩散检查（grep 同根因其他调用点逐个验证）→ 最小脚本复现 → 修复 → 复现通过 → 补 pytest 回归测试 → 重跑全量 → re-read 被改函数的上游/下游调用者防新破坏（如改 executor 复查 `shutdown` 生命周期）。
 
-### 4. 修复必须带可复现验证
-顺序：先写最小脚本**复现**（确认真实存在）→ 修复 → 复现脚本通过 → **补 pytest 回归测试**到 `tests/` 对应文件 → 重跑全量。
-
-### 5. 修完 re-read 被改函数的上游/下游调用者
-防修复引入新破坏（如改 `_fetch_all_klines` 必须复查调用它的 `scan_with_raw` 与回马枪 lambda；改 executor 必须复查 `shutdown` 生命周期）。
-
-### 6. 每轮必须输出统一报告表
+### 4. 每轮输出统一报告表
 ```
 | # | Bug | 位置 file:line | 严重度(严重/中/低) | 根因 | 同族扩散点 | 回归测试 | 状态 |
 ```
-- 严重 = 崩溃/数据失真/漏推荐；中 = 性能/误截断；低 = 死代码/未用参数。
-- 复核过但确认"非 bug / 设计如此"的项也要列出（注明依据），不许隐藏。
-- 已知低危/死代码统一列出（如 pullback 下线后仍被调用、`_merge_from_db` 未用 cache 参数）。
+严重 = 崩溃/数据失真/漏推荐；中 = 性能/误截断；低 = 死代码/未用参数。复核过但确认"非 bug / 设计如此"的也列出（注明依据），不许隐藏。
 
-### 7. 已知重点项（历次已发现，每轮必须 re-check 是否复发）
+### 5. 已知重点项（历次发现，每轮 re-check 是否复发）
 - comeback/off_list 候选 `rank=0` 被当榜上第 1 名计 TOP40 加分（`enhancer._apply_list_momentum_bonus`）
-- **comeback/off_list 候选市值富集（2026-08-13 已修 `_enrich_candidate_market_cap`）**：掉榜票的 `stock.market_cap`（亿元，供 `_apply_market_cap_bonus` 阈值比较）恒为 0 → 小市值加分系统性缺失；注意 `c.market_cap`（元原始值，行情/门禁用）与 `c.stock.market_cap`（亿元，加分用）是两个不同单位字段，富集时必须都补
-- **`api.fetch_kline` 时间戳强转（2026-08-13 已修）**：`datetime.fromtimestamp(item[0]/1000)` 对 None/str/0/负值抛 TypeError 会拖垮整只票 K 线解析（其余 bar 全丢 → 该票本轮漏推荐），应逐根跳过而非让整批中止
+- **comeback/off_list 候选市值富集（2026-08-13 已修 `_enrich_candidate_market_cap`）**：掉榜票 `stock.market_cap`（亿元，加分用）恒为 0 → 小市值加分缺失；`c.market_cap`（元，行情/门禁用）与 `c.stock.market_cap` 是两套单位字段，富集时都补
+- **`api.fetch_kline` 时间戳强转（2026-08-13 已修）**：`datetime.fromtimestamp(item[0]/1000)` 对 None/str/0/负值抛 TypeError 拖垮整只票 K 线解析（该票漏推荐），应逐根跳过
 - 短 K 线 <32 根每轮重拉绕过 TTL（`orchestrator._fetch_all_klines`，2026-08-09 已修）
 - API 字符串/None 未强转（`_filter_gem_stocks` / `compute_surge_sentiment` / `fetch_market_caps_batch`，已修）
-- 同板块上限（`_cap_short_term_by_sector`）——**2026-08-12 已整体移除**（历史误截断「其他」等修复记录见 STRATEGY.md B2，功能不再存在，无需 re-check）
-- 分时/开盘/量比拉取无 deadline（`_parallel_fetch`，已修；留意同批新引入的 `shutdown(wait=False)` 线程生命周期）
-- `scan_with_raw` 里模块级全局（`_session_state`/`_last_kline_fetch`）跨扫描一致性
+- 同板块上限 `_cap_short_term_by_sector` 已整体移除（2026-08-12，无需 re-check）
+- 分时/开盘/量比拉取无 deadline（`_parallel_fetch`，已修；留意 `shutdown(wait=False)` 线程生命周期）
+- `scan_with_raw` 模块级全局（`_session_state`/`_last_kline_fetch`）跨扫描一致性
 
 ## Stock Report Tool
 

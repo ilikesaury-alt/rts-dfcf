@@ -165,6 +165,22 @@ class TestValidateMomentumHelpers:
         bonus, detail = _mo_volume_uniformity(k[:-1])
         assert bonus > 0, f"expected positive bonus, got {bonus} ({detail})"
 
+    def test_volume_uniformity_zero_volume_not_spike(self):
+        # 回归：停牌/脏数据零量 bar 曾把 ratio 置 99 → 误判 vol_spike(-5) 惩罚整个 momentum 候选。
+        # 剔除零量后 ratio 应按非零量能计算（此处 2.0→2.4 均匀，应为中性/正维度，不是 spike）。
+        vols = [1.0, 1.2, 1.4, 2.0, 2.0, 0.0, 2.2, 2.4]
+        k = _kline([0.5] * 8, volumes=vols)
+        bonus, detail = _mo_volume_uniformity(k[:-1])
+        assert bonus >= 0, f"零量 bar 误判惩罚: {bonus} ({detail})"
+        assert "spike" not in detail
+
+    def test_volume_uniformity_all_zero_neutral(self):
+        # 近5日几乎全零量（连续停牌）→ 无法判定量能均匀性，中性处理不惩罚
+        vols = [0.0] * 8
+        k = _kline([0.5] * 8, volumes=vols)
+        bonus, detail = _mo_volume_uniformity(k[:-1])
+        assert bonus == 0 and "flat" in detail
+
     def test_ma_alignment_uses_ema_consistent_with_analysis(self):
         # P0 回归：validator 的 _mo_ma_alignment 必须与 analysis._ma_bull_score
         # 使用同一 EMA 约定，否则评分加分与验证维度会脱节。

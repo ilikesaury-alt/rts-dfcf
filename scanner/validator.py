@@ -362,8 +362,14 @@ def _mo_volume_uniformity(historical_kline: list[KlineBar]) -> tuple[int, str]:
         return 0, "data_short"
 
     recent_5 = volumes[-5:]
+    # 量能判定须先剔除停牌/脏数据的零量 bar：单根 volume=0（KlineBar 契约允许）
+    # 会让 min()==0 → 原逻辑 ratio 置 99 → 误判 vol_spike(-5) 惩罚整个 momentum 候选。
+    positive = [v for v in recent_5 if v > 0]
+    if len(positive) < 2:
+        # 5 日窗口几乎全停牌/零量，无法判定量能均匀性 → 中性（不惩罚、不计正维度）
+        return 0, "vol_flat"
     inc = all(recent_5[i] <= recent_5[i + 1] for i in range(len(recent_5) - 1))
-    ratio = max(recent_5) / max(min(recent_5), 0.01) if min(recent_5) > 0 else 99
+    ratio = max(positive) / max(min(positive), 0.01)
 
     # 放宽：去掉"严格非递减"硬要求；仅当 5 日内量能爆量（ratio>=3.0）才判异常
     if inc and ratio < 3.0:

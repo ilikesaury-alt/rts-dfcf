@@ -25,6 +25,8 @@ import threading
 import time
 
 from scanner.config import (
+    ENABLE_FUND_RISK,
+    FUND_RISK_FAIL_TTL_SEC,
     FUND_RISK_FETCH_TIMEOUT,
     FUND_RISK_QUERY,
     FUND_RISK_REASON,
@@ -53,16 +55,19 @@ def reset_fund_risk_cache():
         _logged_missing = False
 
 
-def _cache_put(data: dict, now: float | None = None):
+def _cache_put(data: dict, now: float | None = None, ttl: float | None = None):
     with _fund_risk_lock:
-        _fund_risk_cache[_today_key()] = (data, now if now is not None else time.time())
+        _fund_risk_cache[_today_key()] = (data, now if now is not None else time.time(), ttl)
 
 
 def _cache_get() -> dict | None:
     with _fund_risk_lock:
         entry = _fund_risk_cache.get(_today_key())
-        if entry and time.time() - entry[1] < FUND_RISK_TTL_SEC:
-            return entry[0]
+        if entry:
+            # 失败/空结果走短退避 TTL（一扫描周期）；成功结果走日级 TTL
+            eff_ttl = entry[2] if len(entry) > 2 and entry[2] is not None else FUND_RISK_TTL_SEC
+            if time.time() - entry[1] < eff_ttl:
+                return entry[0]
     return None
 
 
@@ -141,7 +146,9 @@ def _code_to_xq(v) -> str | None:
 def fetch_fund_risk_map() -> dict[str, str]:
     """全市场问财查询资不抵债股，返回 {xq_symbol: reason}。失败返回 {}。
 
-    进程缓存优先：FUND_RISK_TTL_SEC（默认一天）内只查一次问财。
+    进程缓存优先：成功结果 FUND_RISK_TTL_SEC（默认一天）内只查一次问财；
+    失败/空结果短退避缓存 FUND_RISK_FAIL_TTL_SEC（一扫描周期）后重试——
+    避免 pywencai 故障期每轮扫描都白等 FUND_RISK_FETCH_TIMEOUT（25s）。
     """
     cached = _cache_get()
     if cached is not None:
@@ -157,10 +164,11 @@ def fetch_fund_risk_map() -> dict[str, str]:
         for sym in _extract_xq_symbols(df):
             result[sym] = FUND_RISK_REASON
     except Exception:
-        # fail-open：查询异常/超时不缓存失败结果，下轮扫描重试
+        # fail-open + 短退避：查询异常/超时缓存空结果 FUND_RISK_FAIL_TTL_SEC，下轮扫描重试
+        _cache_put({}, ttl=FUND_RISK_FAIL_TTL_SEC)
         return {}
-    if result:
-        _cache_put(result)
+    # 成功但空结果（异常，正常应恒有资不抵债股）：同样短退避，避免每轮重复查询
+    _cache_put(result, ttl=FUND_RISK_TTL_SEC if result else FUND_RISK_FAIL_TTL_SEC)
     return result
 
 
@@ -170,7 +178,10 @@ def collect_fund_risk(conn, symbols: list[str]) -> dict[str, str]:
     流程：进程缓存 → DB 缓存（当日 data_type=fund_risk）→ 全市场问财查询一次。
     任一环节缺失即触发下一环；全程 fail-open，返回空 dict 不影响主扫描。
     命中符号将被打"财务风险"硬过滤标签（orchestrator 组装候选时应用）。
+    受 ENABLE_FUND_RISK（RTS_ENABLE_FUND_RISK 环境变量）总开关控制：关闭时直接返回空。
     """
+    if not ENABLE_FUND_RISK:
+        return {}
     if not symbols:
         return {}
     uniq = list(dict.fromkeys(symbols))

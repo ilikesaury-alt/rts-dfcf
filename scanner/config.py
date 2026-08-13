@@ -405,6 +405,8 @@ ENABLE_FUND_RISK = _env_flag("RTS_ENABLE_FUND_RISK", True)  # 总开关
 FUND_RISK_QUERY = "每股净资产小于0"  # 问财条件查询语句（资不抵债=退市风险级）
 FUND_RISK_FETCH_TIMEOUT = 25         # 单次问财查询限时（秒，pywencai 无内部 timeout）
 FUND_RISK_TTL_SEC = 86400            # 进程/DB 缓存 TTL（基本面日级更新，当日不重复查询）
+FUND_RISK_FAIL_TTL_SEC = 60          # 失败/空结果短退避（秒）：pywencai 故障期不每轮重复打 25s 限时，
+                                     # 一扫描周期后重试，避免 60s 轮循环白白等超时
 FUND_RISK_TAG = "财务风险"           # 命中时打的风险标签（入 RISK_FLAGS_HARD_FILTER）
 FUND_RISK_REASON = "资不抵债"        # 命中原因说明（payload 落库 + stock_report 展示）
 
