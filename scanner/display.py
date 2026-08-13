@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 
 import wcwidth
 
@@ -34,11 +35,12 @@ if os.name == "nt":
     _kernel32 = ctypes.windll.kernel32
     _handle = _kernel32.GetStdHandle(-11)
     _mode = ctypes.c_uint32()
-    _supports_ansi = (
-        _kernel32.GetConsoleMode(_handle, ctypes.byref(_mode)) != 0
-        and _kernel32.SetConsoleMode(_handle, _mode.value | 0x0004) != 0
-    )
+    # 是否「真实 Windows conhost」：GetConsoleMode 仅对真实控制台成功；
+    # pty/终端模拟器/重定向管道均失败（返回 0），但它们通常讲 ANSI/VT 协议。
+    _is_console = _kernel32.GetConsoleMode(_handle, ctypes.byref(_mode)) != 0
+    _supports_ansi = _is_console and _kernel32.SetConsoleMode(_handle, _mode.value | 0x0004) != 0
 else:
+    _is_console = False
     _supports_ansi = True
 
 if _supports_ansi:
@@ -116,10 +118,21 @@ def _trunc(s: str, width: int) -> str:
 
 
 def clear_screen():
-    if os.name == "nt":
+    """清空终端屏幕（主扫描器 display() 渲染前调用，避免上一屏内容逐行叠加）。
+
+    清屏策略（2026-08-13 修订，修复 pty/终端模拟器下 os.system("cls") 无效）：
+    - 输出被重定向/管道（isatty=False）→ 跳过，不注入 ANSI 序列污染日志文件。
+    - 仅「真实 Windows conhost 但不支持 VT 的旧版控制台」用 os.system("cls")。
+    - 其余一律 ANSI \\033[2J\\033[H：现代 conhost（导入时已启用 VT）、Windows
+      Terminal、pty 终端模拟器等均讲 ANSI/VT 协议；pty 下 cls 不生效（cmd 不
+      共享 pty 的屏幕缓冲），正是此前「创业板飙升榜监控」表头逐轮叠加的根因。
+    """
+    if not sys.stdout.isatty():
+        return
+    if os.name == "nt" and _is_console and not _supports_ansi:
         os.system("cls")
-    else:
-        print("\033[2J\033[H", end="", flush=True)
+        return
+    print("\033[2J\033[H", end="", flush=True)
 
 
 def pct_colored(pct: float | None, width: int = 8) -> str:
@@ -517,22 +530,10 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
            f"{_pad('涨幅',8,'r')} {_pad('5日累计',8,'r')} {_pad('现价',7,'r')} {_pad('排名',8,'r')} "
            f"{_pad('板块',14)} {_pad('策略',5)} {_pad('评分',4,'r')} {_pad('时间',6)} {_pad('建议',6)}")
     print(hdr)
-    marked = 0
     for i, entry in enumerate(scored, 1):
         mark = _is_nextday_marked(entry)
-        if mark:
-            marked += 1
         _print_priority_row(entry, i, flow_pct_map, nextday_mark=mark, last_ranks=last_ranks)
     print(f"  {'-'*92}")
-    # 次日大涨画像标记（🎯）图例：2026-08-11 独立区并入主表行尾标记——原独立区与主表
-    # 重合度 65%（主表 17 只中 11 只甜蜜带、排序几乎一致、辨识度因子空转），重复输出。
-    # 标记条件 = 推荐时刻涨幅甜蜜带（<2% 低吸潜伏 / 4~8% 中段启动）+ 非超买死亡信号
-    # （nextday_attribution 口径）。2026-08-12 起 🎯 为排序档0唯一因子（辨识度退出排序，
-    # 次日大涨本身即辨识度属性），↻ 仅保留行内展示。
-    # 只加视觉标记，不改 score / 不落库。
-    if marked:
-        print(f"  {ANSI['GREEN']}🎯 次日大涨画像：推荐时刻涨幅<2%（低吸潜伏）"
-              f"或 4~8%（中段启动）且非超买{ANSI['RESET']}")
 
     # 回马枪独立成区（2026-08-11 移到最末尾）：主表仅排榜上五类，comeback 抽到此处独立成区。
     # 2026-08-12 放宽兜底条件：主区推荐条数 < COMEBACK_DISPLAY_MIN_MAIN（含为空）时也显示，

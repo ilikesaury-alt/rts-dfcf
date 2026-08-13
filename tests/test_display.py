@@ -655,7 +655,7 @@ def test_nextday_mark_sweet_band(monkeypatch, capsys):
     assert "🎯" in lines["SZ300001"], "<2% 甜蜜带票应有 🎯 标记"
     assert "🎯" in lines["SZ300002"], "4-8% 甜蜜带票应有 🎯 标记"
     assert "🎯" not in lines["SZ300003"], "8-10% 陷阱带票不应有 🎯 标记"
-    assert "次日大涨画像" in out, "有标记票时应打印图例行"
+    assert "次日大涨画像" not in out, "2026-08-13 起底部图例已隐藏，不再打印"
 
 
 def test_nextday_mark_excludes_overbought(monkeypatch, capsys):

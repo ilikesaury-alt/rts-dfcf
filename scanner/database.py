@@ -7,6 +7,7 @@ from scanner.config import (
     PROMINENCE_LOOKBACK_DAYS,
     PROMINENCE_MAX_AVG_RANK,
     PROMINENCE_REPEAT_THRESHOLD,
+    REVERSAL_DROP_THRESHOLD,
     WATCH_POOL_MAX,
     now_beijing,
 )
@@ -646,7 +647,13 @@ def prune_watch_pool(conn: sqlite3.Connection,
 
 
 def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
-    """查询今日所有进入过推荐列表的票（去重，保留最高分）。
+    """查询今日所有进入过推荐列表的票（按 symbol 去重）。
+
+    去重优先级：榜上类别（非 comeback）优先于 comeback，同优先级内保留最高分——
+    防止同票同时有 comeback（掉榜跟踪）与榜上推荐（如 short_term）时，因 comeback
+    基线分更高（40+15×信号数）而遮蔽榜上记录，导致该票在综合排序主表消失
+    （回马枪区仅在主区条数 < COMEBACK_DISPLAY_MIN_MAIN 时展示，平时整体隐藏）。
+    comeback 仅是"榜上之外单独评估"的补充信号，在榜票应以主表类别展示。
 
     返回列表未排序，每项包含：
       symbol, name, category, score, trend, first_time,
@@ -657,7 +664,8 @@ def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
     try:
         rows = conn.execute(
             "SELECT symbol, name, category, score, trend, time, percent, concept, accumulated_pct "
-            "FROM recommendations WHERE date = ? AND COALESCE(excluded, 0) = 0 ORDER BY score DESC",
+            "FROM recommendations WHERE date = ? AND COALESCE(excluded, 0) = 0 "
+            "ORDER BY CASE WHEN category = 'comeback' THEN 1 ELSE 0 END, score DESC",
             (today,),
         ).fetchall()
     except Exception as e:
@@ -710,6 +718,58 @@ def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
     result = list(seen.values())
     _assign_rank_scores(result)
     return result
+
+
+def mark_reversed_recommendations(conn: sqlite3.Connection,
+                                  today_recs: list[dict],
+                                  active_syms: set[str],
+                                  live_quotes: dict[str, dict],
+                                  drop_threshold: float = REVERSAL_DROP_THRESHOLD) -> list[str]:
+    """推荐后快速反转移出（2026-08-13）：今日已推荐、当前不在候选池、且「实时涨幅已转负」
+    与「较推荐时刻回落 ≥ drop_threshold」同时满足的榜上主类别票，标 excluded=1 移出综合排序
+    展示（保留落库记录），返回本次标记的 symbol 列表。
+
+    两条件缺一不可（2026-08-13 修正，防止「过滤掉一半」）：
+    - 已转负（live_pct < 0）是「推荐失败」的第一信号——仅按回落阈值会把推荐时 +8~12% 强势股
+      正常回吐（+11% → +7%）成批误杀；仅按翻红会把「推荐时已在零轴、微幅翻绿」的噪音算失败；
+    - 回落阈值（默认 1.5 点）滤掉推荐时 +0.5% 现 -0.2% 这类微幅波动。
+    回马枪（category=="comeback"）是掉榜跟踪池，推荐时刻涨幅=企稳点、尾盘转负为常态，不参与
+    自动移出。硬过滤只评估当前轮次候选，够不着掉出候选池的旧推荐；本函数对 active_syms
+    （本轮通过验证的候选）不下手，避免与 orchestrator 的 passed_syms 置 0 打架；重新成为候选
+    的票由 orchestrator 置回 excluded=0。行情缺失（live_quotes 无该 symbol / percent 为 None）
+    时按无法度量处理 fail-open，不误移出。
+    """
+    reversed_syms: list[str] = []
+    for r in today_recs:
+        sym = r["symbol"]
+        if sym in active_syms:
+            continue
+        if r.get("category") == "comeback":
+            continue
+        rec_pct = r.get("percent")
+        if rec_pct is None:
+            continue
+        q = live_quotes.get(sym)
+        if not q:
+            continue
+        live_pct = q.get("percent")
+        if live_pct is None:
+            continue
+        if live_pct < 0 and rec_pct - live_pct >= drop_threshold:
+            reversed_syms.append(sym)
+    if not reversed_syms:
+        return []
+    today = now_beijing().date().isoformat()
+    try:
+        conn.executemany(
+            "UPDATE recommendations SET excluded=1 WHERE date=? AND symbol=?",
+            [(today, sym) for sym in reversed_syms])
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"mark_reversed_recommendations failed: {e}")
+        return []
+    return reversed_syms
+
 
 
 def _assign_rank_scores(records: list[dict]) -> None:

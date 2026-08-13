@@ -3,18 +3,19 @@ from datetime import date, timedelta
 
 import pytest
 
+from scanner.config import now_beijing
 from scanner.database import (
     _n_trading_days_ago,
     get_cached_kline,
     get_consecutive_appearance_days,
     get_symbol_appearances,
     get_today_recommendations,
+    mark_reversed_recommendations,
     record_appearances,
     save_kline_to_db,
     save_recommendations,
 )
 from scanner.models import Candidate, KlineSummary, StockInfo
-from scanner.config import now_beijing
 from scanner.trading_session import is_trading_day
 
 
@@ -295,6 +296,119 @@ class TestTodayRecommendationsExcluded:
         assert "300002" not in syms, "excluded=1 的硬过滤票不应出现在综合排序"
 
 
+class TestTodayRecommendationsComebackShadowing:
+    """同票同日既有榜上类别（如 short_term）又有 comeback（掉榜跟踪）时，
+    去重须保留榜上类别记录——否则 comeback 基线分更高（40+15×信号数）会遮蔽
+    榜上推荐，且回马枪区在主区条数达标时整体隐藏，导致该票完全不可见。"""
+
+    def _insert(self, memory_db, symbol, category, score, percent):
+        today = now_beijing().date().isoformat()
+        memory_db.execute(
+            "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, excluded) "
+            "VALUES (?, '10:00', ?, '测试', ?, ?, ?, 0)",
+            (today, symbol, category, score, percent),
+        )
+        memory_db.commit()
+
+    def test_main_category_preferred_over_higher_score_comeback(self, memory_db):
+        # comeback 104 分 > short_term 86 分：旧逻辑保留 comeback → 票从主表消失
+        self._insert(memory_db, "301188", "comeback", 104, 1.23)
+        self._insert(memory_db, "301188", "short_term", 86, 10.49)
+        recs = get_today_recommendations(memory_db)
+        matches = [r for r in recs if r["symbol"] == "301188"]
+        assert len(matches) == 1, "同票去重后应只有一条"
+        assert matches[0]["category"] == "short_term", "榜上类别应优先于 comeback 去重保留"
+
+    def test_comeback_only_symbol_kept_as_comeback(self, memory_db):
+        # 纯掉榜票（无榜上类别）仍以 comeback 保留，回马枪区逻辑不受影响
+        self._insert(memory_db, "300383", "comeback", 104, 1.0)
+        recs = get_today_recommendations(memory_db)
+        matches = [r for r in recs if r["symbol"] == "300383"]
+        assert len(matches) == 1
+        assert matches[0]["category"] == "comeback"
+
+
+class TestMarkReversedRecommendations:
+    """2026-08-13 反转盲区：今日已推荐（榜上主类别）但当前不在候选池、且「实时涨幅已转负」
+    与「较推荐时刻回落 ≥ REVERSAL_DROP_THRESHOLD」同时满足的票标 excluded=1 移出综合排序
+    （保留落库记录）。两条件缺一不可——强势股正常回吐不误杀，回马枪跟踪池不参与。"""
+
+    def _insert(self, memory_db, symbol, score=80, percent=3.0, category="short_term"):
+        today = now_beijing().date().isoformat()
+        memory_db.execute(
+            "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, excluded) "
+            "VALUES (?, '10:00', ?, '测试', ?, ?, ?, 0)",
+            (today, symbol, category, score, percent),
+        )
+        memory_db.commit()
+
+    def _recs(self, memory_db):
+        return get_today_recommendations(memory_db)
+
+    def test_reversed_non_candidate_excluded(self, memory_db):
+        # 行云科技案例：+3.86% 推荐 → 盘中 -3.12%（转负 + 回落 6.98 ≥ 3.0）
+        self._insert(memory_db, "300209", percent=3.86)
+        marked = mark_reversed_recommendations(
+            memory_db, self._recs(memory_db), active_syms=set(),
+            live_quotes={"300209": {"percent": -3.12}})
+        assert "300209" in marked
+        assert "300209" not in {r["symbol"] for r in self._recs(memory_db)}, \
+            "转负且回落的旧推荐应从综合排序消失"
+
+    def test_still_positive_not_excluded(self, memory_db):
+        # 强势股正常回吐：+11.2% 推荐 → 现 +9.26%（回落 1.94 ≥ 1.5 但未翻红）→ 不误杀
+        self._insert(memory_db, "300149", percent=11.2)
+        marked = mark_reversed_recommendations(
+            memory_db, self._recs(memory_db), active_syms=set(),
+            live_quotes={"300149": {"percent": 9.26}})
+        assert marked == [], "未翻红不应移出（此前的 3 点回落版正是这里成批误杀）"
+        assert "300149" in {r["symbol"] for r in self._recs(memory_db)}
+
+    def test_slight_negative_noise_not_excluded(self, memory_db):
+        # 微幅翻绿（回落不足阈值）：+1% 推荐 → 现 -1%（回落 2 < 3）→ 噪音不移出
+        self._insert(memory_db, "300209", percent=1.0)
+        marked = mark_reversed_recommendations(
+            memory_db, self._recs(memory_db), active_syms=set(),
+            live_quotes={"300209": {"percent": -1.0}})
+        assert marked == [], "回落不足阈值的微幅翻绿不应移出"
+
+    def test_comeback_not_excluded(self, memory_db):
+        # 回马枪跟踪池：推荐时刻=企稳点，转负是常态，不参与自动移出
+        self._insert(memory_db, "300383", percent=2.68, category="comeback")
+        marked = mark_reversed_recommendations(
+            memory_db, self._recs(memory_db), active_syms=set(),
+            live_quotes={"300383": {"percent": -3.0}})
+        assert marked == [], "回马枪跟踪池不自动移出"
+        assert "300383" in {r["symbol"] for r in self._recs(memory_db)}
+
+    def test_custom_threshold(self, memory_db):
+        self._insert(memory_db, "300209", percent=2.0)
+        marked = mark_reversed_recommendations(
+            memory_db, self._recs(memory_db), active_syms=set(),
+            live_quotes={"300209": {"percent": -0.5}}, drop_threshold=2.0)
+        assert "300209" in marked, "自定义阈值 2.0：转负 + 回落 2.5 ≥ 2 应移出"
+
+    def test_current_candidate_not_excluded(self, memory_db):
+        self._insert(memory_db, "300209", percent=3.0)
+        marked = mark_reversed_recommendations(
+            memory_db, self._recs(memory_db), active_syms={"300209"},
+            live_quotes={"300209": {"percent": -2.0}})
+        assert marked == [], "当前候选即使大幅回落也不应被移出（orchestrator 每轮重评）"
+        assert "300209" in {r["symbol"] for r in self._recs(memory_db)}
+
+    def test_missing_quote_not_excluded(self, memory_db):
+        self._insert(memory_db, "300209", percent=3.0)
+        # 行情缺失 / percent 缺失 fail-open：无法度量回落 → 不移出
+        marked = mark_reversed_recommendations(
+            memory_db, self._recs(memory_db), active_syms=set(), live_quotes={})
+        assert marked == []
+        marked = mark_reversed_recommendations(
+            memory_db, self._recs(memory_db), active_syms=set(),
+            live_quotes={"300209": {"current": 10.0}})
+        assert marked == []
+        assert "300209" in {r["symbol"] for r in self._recs(memory_db)}
+
+
 class TestWatchPoolEviction:
     """WATCH_POOL_MAX 容量上限：超限时淘汰 last_list_date 最旧条目。"""
 
@@ -371,7 +485,6 @@ class TestProminenceWindow:
         from scanner.database import get_prominence_map
         # 构造：计数窗口内恰好重复阈值天，排名窗口若多算一天（旧 bug）会把一天
         # 极差排名的历史日拉低平均，导致误判。这里验证两个窗口取同一 lookback。
-        today = now_beijing().date()
         # 计算 lookback 日期（与实现同口径）
         lookback = _n_trading_days_ago(PROMINENCE_LOOKBACK_DAYS - 1)
         # 在 [lookback, today] 内放 PROMINENCE_REPEAT_THRESHOLD 天的记录，

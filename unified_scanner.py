@@ -35,7 +35,12 @@ from scanner.config import (
     now_beijing,
 )
 from scanner.data_source import get_adapter
-from scanner.database import get_today_recommendations, init_db, save_recommendations
+from scanner.database import (
+    get_today_recommendations,
+    init_db,
+    mark_reversed_recommendations,
+    save_recommendations,
+)
 from scanner.display import clear_screen, display
 from scanner.feishu import push_feishu
 from scanner.log_utils import log_results
@@ -190,6 +195,8 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 # 为综合推荐补拉今日曾推荐但不在 current_quotes 中的票的实时行情
                 live_quotes: dict[str, dict] = {}
                 live_quotes.update(current_quotes)
+                today_recs: list[dict] = []
+                today_syms: set[str] = set()
                 try:
                     today_recs = get_today_recommendations(conn)
                     today_syms = {r["symbol"] for r in today_recs}
@@ -200,6 +207,23 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                             live_quotes[sym] = {"percent": d.get("percent", 0.0), "current": d.get("current", 0.0)}
                 except Exception as e:
                     print(f"  [!] 补拉推荐票行情失败: {e}")
+
+                # 2026-08-13 反转盲区修复：今日已推荐（榜上主类别）但当前不在候选池的票，实时
+                # 涨幅已转负 且 较推荐时刻回落 ≥ REVERSAL_DROP_THRESHOLD，才标 excluded=1 移出
+                # 综合排序（保留落库记录）。两条件缺一不可，避免把强势股正常回吐（+11%→+7%）
+                # 或回马枪低企稳点票成批误杀；回马枪跟踪池不参与自动移出。硬过滤只评估当前轮次
+                # 候选，够不着掉出候选池的旧推荐。excluded 按最新轮次刷新：重新成为候选的票由
+                # orchestrator 的 passed_syms 置回 0。
+                try:
+                    active_syms = {c.stock.symbol for c in (
+                        new_faces + momentum + rebound_list + short_term_list + comeback_list)}
+                    reversed_syms = mark_reversed_recommendations(conn, today_recs, active_syms, live_quotes)
+                    if reversed_syms:
+                        _names = "、".join(reversed_syms[:8])
+                        _more = f" 等{len(reversed_syms)}只" if len(reversed_syms) > 8 else ""
+                        print(f"  [反转移出] {len(reversed_syms)} 只推荐后回落过大，移出综合排序：{_names}{_more}")
+                except Exception as e:
+                    print(f"  [!] 推荐后回落移出失败: {e}")
 
                 # 历史推荐跟踪已并入回马枪（2026-08-07）：tracker 模块删除，不再单独查询
                 display(len(all_gem), interval,
