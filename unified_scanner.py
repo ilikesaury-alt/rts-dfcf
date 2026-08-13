@@ -204,16 +204,17 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     if missing:
                         extra = adapter.fetch_market_caps_batch(missing)
                         for sym, d in extra.items():
-                            live_quotes[sym] = {"percent": d.get("percent", 0.0), "current": d.get("current", 0.0)}
+                            live_quotes[sym] = {"percent": d.get("percent", 0.0),
+                                                "current": d.get("current", 0.0),
+                                                "high_pct": d.get("high_pct")}
                 except Exception as e:
                     print(f"  [!] 补拉推荐票行情失败: {e}")
 
-                # 2026-08-13 反转盲区修复：今日已推荐（榜上主类别）但当前不在候选池的票，实时
-                # 涨幅已转负 且 较推荐时刻回落 ≥ REVERSAL_DROP_THRESHOLD，才标 excluded=1 移出
-                # 综合排序（保留落库记录）。两条件缺一不可，避免把强势股正常回吐（+11%→+7%）
-                # 或回马枪低企稳点票成批误杀；回马枪跟踪池不参与自动移出。硬过滤只评估当前轮次
-                # 候选，够不着掉出候选池的旧推荐。excluded 按最新轮次刷新：重新成为候选的票由
-                # orchestrator 的 passed_syms 置回 0。
+                # 2026-08-13 反转盲区修复：今日已推荐（榜上主类别）但当前不在候选池的票，满足
+                # ①已转负且回落≥1.5 或 ②回落≥5（无论红绿）即标 excluded=1 移出综合排序（保留
+                # 落库记录）——大幅回吐即使未转负也"不敢买"（如 +8%→+2%）。回马枪跟踪池不参与。
+                # 硬过滤只评估当前轮次候选，够不着掉出候选池的旧推荐。excluded 按最新轮次刷新：
+                # 重新成为候选的票由 orchestrator 的 passed_syms 置回 0。
                 try:
                     active_syms = {c.stock.symbol for c in (
                         new_faces + momentum + rebound_list + short_term_list + comeback_list)}

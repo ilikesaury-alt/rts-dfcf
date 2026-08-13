@@ -329,9 +329,12 @@ class TestTodayRecommendationsComebackShadowing:
 
 
 class TestMarkReversedRecommendations:
-    """2026-08-13 反转盲区：今日已推荐（榜上主类别）但当前不在候选池、且「实时涨幅已转负」
-    与「较推荐时刻回落 ≥ REVERSAL_DROP_THRESHOLD」同时满足的票标 excluded=1 移出综合排序
-    （保留落库记录）。两条件缺一不可——强势股正常回吐不误杀，回马枪跟踪池不参与。"""
+    """2026-08-13 反转盲区：今日已推荐（榜上主类别）但当前不在候选池的票，回落幅度（优先按
+    「当日最高涨幅 high_pct−现价」，缺失回退推荐时刻）命中任一条件即标 excluded=1 移出综合
+    排序（保留落库记录）：
+      ① 已转负且回落 ≥ REVERSAL_TURNED_RED_DROP（5.0，滤高位小幅回落就微幅翻绿噪音）；
+      ② 回落 ≥ REVERSAL_OVERSHOOT_DROP（10.0），无论红绿——从最高点大回吐未转负也"不敢买"。
+    回马枪跟踪池不参与；当前候选/行情缺失不受影响。"""
 
     def _insert(self, memory_db, symbol, score=80, percent=3.0, category="short_term"):
         today = now_beijing().date().isoformat()
@@ -346,53 +349,76 @@ class TestMarkReversedRecommendations:
         return get_today_recommendations(memory_db)
 
     def test_reversed_non_candidate_excluded(self, memory_db):
-        # 行云科技案例：+3.86% 推荐 → 盘中 -3.12%（转负 + 回落 6.98 ≥ 3.0）
+        # 行云科技：最高 +12.33% → 现 -3.15%，从最高回落 15.48 ≥ 10（路②）
+        self._insert(memory_db, "300209", percent=3.86)
+        marked = mark_reversed_recommendations(
+            memory_db, self._recs(memory_db), active_syms=set(),
+            live_quotes={"300209": {"percent": -3.15, "high_pct": 12.33}})
+        assert "300209" in marked
+        assert "300209" not in {r["symbol"] for r in self._recs(memory_db)}, \
+            "从最高点大幅回落的旧推荐应从综合排序消失"
+
+    def test_turned_red_fallback_to_rec_pct(self, memory_db):
+        # high_pct 缺失时回退推荐时刻涨幅：+3.86% 推荐 → -3.12%（转负 + 回落 6.98 ≥ 5，路①）
         self._insert(memory_db, "300209", percent=3.86)
         marked = mark_reversed_recommendations(
             memory_db, self._recs(memory_db), active_syms=set(),
             live_quotes={"300209": {"percent": -3.12}})
         assert "300209" in marked
-        assert "300209" not in {r["symbol"] for r in self._recs(memory_db)}, \
-            "转负且回落的旧推荐应从综合排序消失"
 
-    def test_still_positive_not_excluded(self, memory_db):
-        # 强势股正常回吐：+11.2% 推荐 → 现 +9.26%（回落 1.94 ≥ 1.5 但未翻红）→ 不误杀
-        self._insert(memory_db, "300149", percent=11.2)
+    def test_big_overshoot_still_positive_excluded(self, memory_db):
+        # 路②：从最高 +12% 回落到 +2%（回落 10 ≥ 10），未转负但动量已破 → 移出
+        self._insert(memory_db, "300149", percent=8.0)
         marked = mark_reversed_recommendations(
             memory_db, self._recs(memory_db), active_syms=set(),
-            live_quotes={"300149": {"percent": 9.26}})
-        assert marked == [], "未翻红不应移出（此前的 3 点回落版正是这里成批误杀）"
-        assert "300149" in {r["symbol"] for r in self._recs(memory_db)}
+            live_quotes={"300149": {"percent": 2.0, "high_pct": 12.0}})
+        assert "300149" in marked, "从最高点大幅回吐即使未转负也应移出"
 
-    def test_slight_negative_noise_not_excluded(self, memory_db):
-        # 微幅翻绿（回落不足阈值）：+1% 推荐 → 现 -1%（回落 2 < 3）→ 噪音不移出
-        self._insert(memory_db, "300209", percent=1.0)
+    def test_normal_settle_not_excluded(self, memory_db):
+        # 正常回吐：最高 +15% 现 +8%（回落 7 < 10，未转负）→ 保留
+        self._insert(memory_db, "300149", percent=8.0)
         marked = mark_reversed_recommendations(
             memory_db, self._recs(memory_db), active_syms=set(),
-            live_quotes={"300209": {"percent": -1.0}})
-        assert marked == [], "回落不足阈值的微幅翻绿不应移出"
+            live_quotes={"300149": {"percent": 8.0, "high_pct": 15.0}})
+        assert marked == [], "正常回吐且未转负不应移出"
+
+    def test_turned_red_small_high_drop_not_excluded(self, memory_db):
+        # 高位仅小幅回落就微幅翻绿：最高 +2% 现 -1%（回落 3 < 5）→ 噪音不移出
+        self._insert(memory_db, "300209", percent=0.5)
+        marked = mark_reversed_recommendations(
+            memory_db, self._recs(memory_db), active_syms=set(),
+            live_quotes={"300209": {"percent": -1.0, "high_pct": 2.0}})
+        assert marked == [], "高位小幅回落的微幅翻绿不应移出"
 
     def test_comeback_not_excluded(self, memory_db):
         # 回马枪跟踪池：推荐时刻=企稳点，转负是常态，不参与自动移出
         self._insert(memory_db, "300383", percent=2.68, category="comeback")
         marked = mark_reversed_recommendations(
             memory_db, self._recs(memory_db), active_syms=set(),
-            live_quotes={"300383": {"percent": -3.0}})
+            live_quotes={"300383": {"percent": -4.0, "high_pct": 12.0}})
         assert marked == [], "回马枪跟踪池不自动移出"
         assert "300383" in {r["symbol"] for r in self._recs(memory_db)}
 
-    def test_custom_threshold(self, memory_db):
+    def test_custom_thresholds(self, memory_db):
+        # 自定义：路①转负+回落≥6 → 最高+8 现-1（回落 9 ≥ 6）应移出
         self._insert(memory_db, "300209", percent=2.0)
         marked = mark_reversed_recommendations(
             memory_db, self._recs(memory_db), active_syms=set(),
-            live_quotes={"300209": {"percent": -0.5}}, drop_threshold=2.0)
-        assert "300209" in marked, "自定义阈值 2.0：转负 + 回落 2.5 ≥ 2 应移出"
+            live_quotes={"300209": {"percent": -1.0, "high_pct": 8.0}}, turned_red_drop=6.0)
+        assert "300209" in marked
+        # 重置后再验 路②：回落≥8 → 最高+8 现+1（回落 7 < 8）不移出
+        memory_db.execute("UPDATE recommendations SET excluded=0 WHERE date=?", (now_beijing().date().isoformat(),))
+        memory_db.commit()
+        marked = mark_reversed_recommendations(
+            memory_db, self._recs(memory_db), active_syms=set(),
+            live_quotes={"300209": {"percent": 1.0, "high_pct": 8.0}}, overshoot_drop=8.0)
+        assert marked == [], "回落不足自定义阈值不应移出"
 
     def test_current_candidate_not_excluded(self, memory_db):
         self._insert(memory_db, "300209", percent=3.0)
         marked = mark_reversed_recommendations(
             memory_db, self._recs(memory_db), active_syms={"300209"},
-            live_quotes={"300209": {"percent": -2.0}})
+            live_quotes={"300209": {"percent": -3.0, "high_pct": 12.0}})
         assert marked == [], "当前候选即使大幅回落也不应被移出（orchestrator 每轮重评）"
         assert "300209" in {r["symbol"] for r in self._recs(memory_db)}
 

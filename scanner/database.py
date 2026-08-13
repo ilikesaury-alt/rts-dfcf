@@ -7,7 +7,8 @@ from scanner.config import (
     PROMINENCE_LOOKBACK_DAYS,
     PROMINENCE_MAX_AVG_RANK,
     PROMINENCE_REPEAT_THRESHOLD,
-    REVERSAL_DROP_THRESHOLD,
+    REVERSAL_OVERSHOOT_DROP,
+    REVERSAL_TURNED_RED_DROP,
     WATCH_POOL_MAX,
     now_beijing,
 )
@@ -724,20 +725,24 @@ def mark_reversed_recommendations(conn: sqlite3.Connection,
                                   today_recs: list[dict],
                                   active_syms: set[str],
                                   live_quotes: dict[str, dict],
-                                  drop_threshold: float = REVERSAL_DROP_THRESHOLD) -> list[str]:
-    """推荐后快速反转移出（2026-08-13）：今日已推荐、当前不在候选池、且「实时涨幅已转负」
-    与「较推荐时刻回落 ≥ drop_threshold」同时满足的榜上主类别票，标 excluded=1 移出综合排序
-    展示（保留落库记录），返回本次标记的 symbol 列表。
+                                  turned_red_drop: float = REVERSAL_TURNED_RED_DROP,
+                                  overshoot_drop: float = REVERSAL_OVERSHOOT_DROP) -> list[str]:
+    """推荐后快速反转移出（2026-08-13）：今日已推荐、当前不在候选池、且回落幅度超标的榜上
+    主类别票，标 excluded=1 移出综合排序展示（保留落库记录），返回本次标记的 symbol 列表。
 
-    两条件缺一不可（2026-08-13 修正，防止「过滤掉一半」）：
-    - 已转负（live_pct < 0）是「推荐失败」的第一信号——仅按回落阈值会把推荐时 +8~12% 强势股
-      正常回吐（+11% → +7%）成批误杀；仅按翻红会把「推荐时已在零轴、微幅翻绿」的噪音算失败；
-    - 回落阈值（默认 1.5 点）滤掉推荐时 +0.5% 现 -0.2% 这类微幅波动。
-    回马枪（category=="comeback"）是掉榜跟踪池，推荐时刻涨幅=企稳点、尾盘转负为常态，不参与
-    自动移出。硬过滤只评估当前轮次候选，够不着掉出候选池的旧推荐；本函数对 active_syms
-    （本轮通过验证的候选）不下手，避免与 orchestrator 的 passed_syms 置 0 打架；重新成为候选
-    的票由 orchestrator 置回 excluded=0。行情缺失（live_quotes 无该 symbol / percent 为 None）
-    时按无法度量处理 fail-open，不误移出。
+    **回落幅度口径（2026-08-13 改为「从当日最高价」计算）**：`drop = ref_pct - live_pct`，
+    其中 ref_pct 优先取 live_quotes[sym]["high_pct"]（当日最高涨幅，由行情 API 的 high/昨收
+    算出），缺失时回退推荐时刻涨幅（today_recs 的 percent）—— 以最高点为锚能更客观反映
+    "动量从峰值衰减"，不受推荐时刻择时影响。
+    命中任一条件即视为推荐失败：
+      ① 已转负（live_pct<0）且 drop ≥ turned_red_drop（滤掉高位仅小幅回落就微幅翻绿的噪音）；
+      ② drop ≥ overshoot_drop，无论红绿——大幅回吐即使未转负也"不敢买"（如从 +12% 高点回落到
+         +2%，动量已破）。
+    阈值按「从最高涨幅→收盘」回落分布校准（p75=4.49/p90=7.92/p95=10.54，见 config 注释），
+    非单票凑参。回马枪（category=="comeback"）是掉榜跟踪池，不参与自动移出。硬过滤只评估当前
+    轮次候选，够不着掉出候选池的旧推荐；本函数对 active_syms（本轮通过验证的候选）不下手，
+    避免与 orchestrator 的 passed_syms 置 0 打架；重新成为候选的票由 orchestrator 置回
+    excluded=0。行情缺失（live_quotes 无该 symbol / percent 为 None）时按无法度量 fail-open。
     """
     reversed_syms: list[str] = []
     for r in today_recs:
@@ -747,15 +752,17 @@ def mark_reversed_recommendations(conn: sqlite3.Connection,
         if r.get("category") == "comeback":
             continue
         rec_pct = r.get("percent")
-        if rec_pct is None:
-            continue
         q = live_quotes.get(sym)
         if not q:
             continue
         live_pct = q.get("percent")
-        if live_pct is None:
+        if rec_pct is None or live_pct is None:
             continue
-        if live_pct < 0 and rec_pct - live_pct >= drop_threshold:
+        ref_pct = q.get("high_pct")
+        if ref_pct is None:
+            ref_pct = rec_pct
+        drop = ref_pct - live_pct
+        if (live_pct < 0 and drop >= turned_red_drop) or drop >= overshoot_drop:
             reversed_syms.append(sym)
     if not reversed_syms:
         return []

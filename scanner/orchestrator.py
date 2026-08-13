@@ -725,7 +725,8 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         print(f"  [!] 驱动概念计算失败: {type(e).__name__}: {e}")
 
     current_quotes = {
-        sym: {"percent": d.get("percent", 0.0), "current": d.get("current", 0.0)}
+        sym: {"percent": d.get("percent", 0.0), "current": d.get("current", 0.0),
+              "high_pct": d.get("high_pct")}
         for sym, d in market_caps.items()
     }
 

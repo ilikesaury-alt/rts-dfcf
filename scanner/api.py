@@ -441,6 +441,19 @@ def fetch_xueqiu_hot_list(session: requests.Session, size: int = 100) -> list[di
         return _xueqiu_hot_circuit_breaker([], success=False)
 
 
+def _quote_high_pct(q: dict) -> float | None:
+    """当日最高涨幅（%）：由 quote 的 high 与昨收(last_close/prev_close)计算。
+
+    供推荐后反转移出（mark_reversed_recommendations）以「从当日最高价回落」衡量动量衰减。
+    high/base 任一缺失或 ≤0 时返回 None（无法度量 → 调用侧 fail-open）。
+    """
+    high = _num(q.get("high"))
+    base = _num(q.get("prev_close")) or _num(q.get("last_close"))
+    if high > 0 and base > 0:
+        return (high / base - 1) * 100
+    return None
+
+
 def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> dict[str, dict]:
     if not symbols:
         return {}
@@ -468,7 +481,8 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
                                         "circ_market_cap": _num(q.get("float_market_capital")),
                                         "turnover_rate": _num(q.get("turnover_rate")),
                                         "current": _num(q.get("current")),
-                                        "percent": _num(q.get("percent"))}
+                                        "percent": _num(q.get("percent")),
+                                        "high_pct": _quote_high_pct(q)}
             else:
                 items = data.get("items", []) if isinstance(data, dict) else []
                 for item in items:
@@ -481,7 +495,8 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
                                        "circ_market_cap": _num(q.get("float_market_capital")),
                                        "turnover_rate": _num(q.get("turnover_rate")),
                                        "current": _num(q.get("current")),
-                                       "percent": _num(q.get("percent"))}
+                                       "percent": _num(q.get("percent")),
+                                       "high_pct": _quote_high_pct(q)}
         except Exception as e:
             print(f"  [!] 市值批量查询失败(批次{i // 50 + 1}): {e}")
             continue
