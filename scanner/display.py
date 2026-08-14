@@ -418,6 +418,12 @@ def _nextday_entry_accum(entry: dict, conn=None) -> float | None:
     （落库缺失时按推荐日往前 5 根 bar 现算，口径同 KlineSummary.accumulated_pct：
     len(closes)>=6 用 (closes[-1]-closes[-6])/closes[-6]，否则前 5 根 percent 求和）。
     累计字段历史上大部分类别未落库（new_face 4/1020、momentum 58/481），必须回放兜底。
+
+    已知口径时差（2026-08-14 自检确认，非 bug）：回放读「收盘后」daily_kline（含推荐日
+    bar），DB 落库值是「扫描时刻」快照——盘中扫描时两者窗口可能差 1 根（落库值基于
+    缓存 kline，回放基于已收盘的 daily_kline），实测最大偏差 ~24pp、阈值判定 ~10% 不一致。
+    仅影响历史回放/掉榜行兜底：实时展示优先候选池 kline（扫描时刻，含今日 bar），
+    回放只是掉榜/重启行的兜底；历史 1253 条推荐日 bar 全齐不会窗口前移。
     """
     c = entry.get("_candidate")
     if c and c.kline and c.kline.accumulated_pct is not None:

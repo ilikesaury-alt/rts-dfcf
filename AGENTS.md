@@ -81,7 +81,7 @@ tests/                    # pytest test suite
 - RPS 口径统一：所有候选用 `accum_map`（历史5日累计涨幅，排除今日）参与 RPS 排名，与 baseline（全 GEM 监控集历史5日累计）口径一致。short_term 的 `c.kline.accumulated_pct` 仍包含今日 bar（策略语义，供评分维度用），但 RPS 排名时被 `accum_map` 覆盖，避免百分位偏高（2026-07-29 修复）。
 - 反指加分清理（2026-08-10，依据 `--metric cum_3d` 分桶/IC 数据）：
   - **validation_bonus 只做门禁不加分**：全期 cum_3d IC -0.139（反指）——`orchestrator._try_candidate` 与 `comeback._try_rebound_candidate` 不再把 validate 的 bonus 加进 score，bonus 仍写 dims 供展示与 dimension_ic 归因；历史 score 不回填，新口径下重新积累。
-  - **new_face MIN_SCORE 拆分**：首日 new_face 全 score 档均负收益（1018 条 cum_3d -1.58）→ 新增 `NEW_FACE_FIRST_MIN_SCORE=50` 砍量减噪；known_new_face 分数反指（低分档最优）→ 保持 `NEW_FACE_MIN_SCORE=18` 不砍低分，二者必须分开设门槛。
+  - **new_face MIN_SCORE 拆分**：首日 new_face 全 score 档均负收益（旧权重下 1018 条 cum_3d -1.58）曾新增 `NEW_FACE_FIRST_MIN_SCORE=50` 砍量减噪；known_new_face 分数反指（低分档最优）→ 保持 `NEW_FACE_MIN_SCORE=18` 不砍低分，二者必须分开设门槛。**2026-08-10 回退：`NEW_FACE_FIRST_MIN_SCORE` 现值 18（与 `NEW_FACE_MIN_SCORE` 同）**——9826399 权重重平衡（today_pct 20→8 等）后分数体系整体下移，50 在新权重下饿死列表（历史重扫 0 信号）；rescore 验证新权重下 18 → 29 信号 +12.79%、12 → 55 信号 +18.40%，故阈值回到 18（config 为权威，见 `config.py:46-53` 完整决策链）。
   - **momentum MIN_SCORE 16→50**：分桶 <50 档 55 条 cum_3d -0.95% vs >=50 档 379 条 +2.82%；「首次启动」子模式分数实测全 >=64 不受影响。
   - **short_term today_pct 权重反向修正**：分桶 4-6% 档最差（-1.41%, n=41，原权重却最高 20）→ 8；8-12% 档最好（+3.84%, n=21，原权重却最低 8）→ 15。替换"涨幅越大越降权"的拍脑袋设定。
 - **回测定位（2026-08-10，必读）**：本项目是**筛选系统，不是交易系统**，回测有且只有两个合法用途：
