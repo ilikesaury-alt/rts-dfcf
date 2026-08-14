@@ -54,6 +54,7 @@ from scanner.database import (
     prune_watch_pool,
     record_appearances,
     save_kline_to_db,
+    save_scan_quality,
     upsert_watch_symbols,
 )
 from scanner.enhancer import (
@@ -171,11 +172,13 @@ def _merge_minute_today_bar(adapter, stock: StockInfo | None, today: date,
 
 
 def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo],
-                      deadline: float | None = None) -> dict[str, list[KlineBar] | None]:
+                      deadline: float | None = None,
+                      stats: dict | None = None) -> dict[str, list[KlineBar] | None]:
     result: dict[str, list[KlineBar] | None] = {}
     needs_fetch: list[str] = []
     stale_cache: dict[str, list[KlineBar]] = {}
     today = now_beijing().date()
+    _stats = stats if stats is not None else {}
 
     # 批量读缓存（单次 SQL，避免对每只票各发一条查询）
     cached_map = get_cached_klines(conn, [s.symbol for s in stocks]) if stocks else {}
@@ -235,9 +238,13 @@ def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo]
             if len(_last_kline_fetch) > CACHE_MAX_ENTRIES:
                 _last_kline_fetch.pop(next(iter(_last_kline_fetch)))
             fetched[sym] = kline
+            if not kline:
+                _stats["fetch_failed"] = _stats.get("fetch_failed", 0) + 1
         except Exception as e:
+            _stats["fetch_failed"] = _stats.get("fetch_failed", 0) + 1
             print(f"  [!] K线获取失败 {sym}: {e}")
     if deadline_skipped:
+        _stats["fetch_failed"] = _stats.get("fetch_failed", 0) + deadline_skipped
         print(f"  [!] K线补拉超时（>{KLINE_FETCH_DEADLINE}s），剩余{deadline_skipped}只回退旧缓存")
 
     # 写入阶段：主线程顺序写 DB，确保 SQLite 线程安全
@@ -259,6 +266,8 @@ def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo]
             # 缺今日 bar 会让量比硬门误杀放量启动票（网宿案例），构造 bar 仅本轮使用。
             _merged = _merge_minute_today_bar(adapter, stock_map.get(sym), today,
                                               stale_cache[sym])
+            if _merged is not None:
+                _stats["minute_fallback"] = _stats.get("minute_fallback", 0) + 1
             result[sym] = _merged if _merged is not None else stale_cache[sym]
 
     for sym in needs_fetch:
@@ -266,6 +275,8 @@ def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo]
             # deadline 超时未轮到拉取：同样尝试分时今日 bar 兜底
             _merged = _merge_minute_today_bar(adapter, stock_map.get(sym), today,
                                               stale_cache[sym])
+            if _merged is not None:
+                _stats["minute_fallback"] = _stats.get("minute_fallback", 0) + 1
             result[sym] = _merged if _merged is not None else stale_cache[sym]
 
     # P1-3: K线数据缺失汇总（首次拉取失败且无 stale_cache 兜底的票）
@@ -283,6 +294,7 @@ def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo]
             if kl and max(k["date"] for k in kl) < today.isoformat()
         ]
         if today_bar_missing:
+            _stats["today_bar_missing"] = _stats.get("today_bar_missing", 0) + len(today_bar_missing)
             preview = ", ".join(today_bar_missing[:5])
             suffix = f" 等{len(today_bar_missing)}只" if len(today_bar_missing) > 5 else ""
             print(f"  [!] 今日K线缺失{len(today_bar_missing)}只: {preview}{suffix}（旧缓存评分，下次刷新重试）")
@@ -643,7 +655,9 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     # 双批 K 线拉取共用同一个 deadline：榜上票 45s + 回马枪幸存者再 45s 会串行 ~90s，
     # 超 60s 扫描间隔。共用一个 deadline 保证两批总耗时仍被 KLINE_FETCH_DEADLINE 兜底。
     kline_deadline = now_beijing().timestamp() + KLINE_FETCH_DEADLINE
-    klines = _fetch_all_klines(conn, adapter, gem_stocks_filtered, deadline=kline_deadline)
+    quality_stats: dict = {}
+    klines = _fetch_all_klines(conn, adapter, gem_stocks_filtered,
+                               deadline=kline_deadline, stats=quality_stats)
 
     clusters = get_sector_clusters(gem_stocks_filtered)
 
@@ -672,7 +686,8 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         on_list_symbols = {s.symbol for s in gem_stocks_filtered}
         comeback_rebound, comeback_reentry, cb_quotes = evaluate_comeback(
             conn, adapter,
-            lambda stocks: _fetch_all_klines(conn, adapter, stocks, deadline=kline_deadline),
+            lambda stocks: _fetch_all_klines(conn, adapter, stocks,
+                                             deadline=kline_deadline, stats=quality_stats),
             today, on_list_symbols, clusters)
         market_caps.update(cb_quotes)  # 并入市值/行情，供后续市值富集与实时行情
     except Exception as e:
@@ -836,6 +851,16 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
               "high_pct": d.get("high_pct")}
         for sym, d in market_caps.items()
     }
+
+    # 数据血缘日志（2026-08-14）：本轮数据质量快照落库——补拉失败/缺今日bar/兜底构造/
+    # stale 推荐数。跨函数静默降级是本项目最难发现的 bug 类别（网宿案例），常态计数器
+    # 让降级规模可查询：某日 fetch_failed/today_bar_missing 异常升高即数据质量下降信号。
+    try:
+        quality_stats["gem_count"] = len(gem_stocks_filtered)
+        quality_stats["stale_recs"] = sum(1 for c in all_candidates if c.stale_kline)
+        save_scan_quality(conn, quality_stats)
+    except Exception as e:
+        print(f"  [!] 数据血缘日志落库失败: {e}")
 
     return ScanResult(
         new_faces=new_faces,

@@ -14,6 +14,7 @@ from scanner.database import (
     record_appearances,
     save_kline_to_db,
     save_recommendations,
+    save_scan_quality,
 )
 from scanner.models import Candidate, KlineSummary, StockInfo
 from scanner.trading_session import is_trading_day
@@ -82,6 +83,18 @@ def memory_db():
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_date ON appearances(date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_date ON recommendations(date)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scan_quality_log (
+            date TEXT PRIMARY KEY,
+            time TEXT,
+            gem_count INTEGER DEFAULT 0,
+            fetch_failed INTEGER DEFAULT 0,
+            today_bar_missing INTEGER DEFAULT 0,
+            minute_fallback INTEGER DEFAULT 0,
+            stale_recs INTEGER DEFAULT 0,
+            updated TEXT DEFAULT ''
+        )
+    """)
     conn.commit()
     return conn
 
@@ -311,6 +324,40 @@ class TestSaveRecommendations:
         assert len(rows) == 1
         assert rows[0][0] == 30
         assert rows[0][1] == 1  # 更新时写入 stale_kline=1
+
+
+class TestSaveScanQuality:
+    """数据血缘日志（2026-08-14）：每轮扫描的数据质量快照落库。
+
+    跨函数静默降级（补拉失败→旧缓存、缺今日bar→昨日量）是本项目最难发现的
+    bug 类别，单函数审查看不出。此日志把降级规模变成可查询的常态计数器：
+    某日 fetch_failed/today_bar_missing 异常升高 + 推荐数骤降 → 关联即定位。
+    """
+
+    def test_save_and_overwrite_same_day(self, memory_db):
+        save_scan_quality(memory_db, {
+            "gem_count": 77, "fetch_failed": 3, "today_bar_missing": 5,
+            "minute_fallback": 2, "stale_recs": 1,
+        })
+        save_scan_quality(memory_db, {
+            "gem_count": 79, "fetch_failed": 1, "today_bar_missing": 2,
+            "minute_fallback": 0, "stale_recs": 0,
+        })
+        rows = memory_db.execute("SELECT * FROM scan_quality_log").fetchall()
+        assert len(rows) == 1  # 同日覆盖，只留最新快照
+        today = now_beijing().date().isoformat()
+        assert rows[0][0] == today
+        assert rows[0][2] == 79   # gem_count
+        assert rows[0][3] == 1    # fetch_failed
+        assert rows[0][4] == 2    # today_bar_missing
+        assert rows[0][5] == 0    # minute_fallback
+
+    def test_missing_keys_default_zero(self, memory_db):
+        save_scan_quality(memory_db, {"gem_count": 10})
+        rows = memory_db.execute("SELECT * FROM scan_quality_log").fetchall()
+        assert len(rows) == 1
+        assert rows[0][3] == 0  # fetch_failed 缺省 → 0
+        assert rows[0][4] == 0  # today_bar_missing 缺省 → 0
 
 
 class TestTodayRecommendationsExcluded:

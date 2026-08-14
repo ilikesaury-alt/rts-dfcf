@@ -108,6 +108,24 @@ def init_db() -> sqlite3.Connection:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_date ON appearances(date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_sym ON appearances(symbol)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_date ON recommendations(date)")
+    # 扫描数据质量血缘日志（2026-08-14）：每轮扫描的数据质量快照。
+    # 跨函数静默降级（K线补拉失败/缺今日bar/兜底构造）是本项目最难发现的 bug 类别——
+    # 单函数审查看不出来（每个函数都"对"），只存在于函数之间的数据流不变量。
+    # 常态计数器让降级规模可查询：某日补拉失败数异常升高 + 推荐数骤降 → 关联即定位
+    # （网宿科技案例：盘中补拉失败静默回退旧缓存，量比按昨日量误杀放量启动票）。
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scan_quality_log (
+            date TEXT PRIMARY KEY,
+            time TEXT,
+            gem_count INTEGER DEFAULT 0,          -- 本轮在榜 GEM 票数（过滤后）
+            fetch_failed INTEGER DEFAULT 0,        -- 日线补拉失败/超时未拉取的票数
+            today_bar_missing INTEGER DEFAULT 0,   -- 盘中缺今日 bar（旧缓存评分）票数
+            minute_fallback INTEGER DEFAULT 0,     -- 分时构造今日 bar 兜底成功数
+            stale_recs INTEGER DEFAULT 0,          -- 落库推荐中 stale_kline=1 条数
+            updated TEXT DEFAULT ''
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sql_date ON scan_quality_log(date)")
     cur = conn.execute("PRAGMA table_info(recommendations)")
     cols = {row[1] for row in cur.fetchall()}
     if "source" not in cols:
@@ -436,6 +454,48 @@ def is_prominent(conn: sqlite3.Connection, symbol: str) -> bool:
     导致的口径漂移），供 enhancer._compute_prominence_labels 与回马枪回踩变体调用。
     """
     return get_prominence_map(conn, [symbol]).get(symbol, False)
+
+
+def save_scan_quality(conn: sqlite3.Connection,
+                      stats: dict) -> None:
+    """落库单轮扫描的数据质量快照（数据血缘日志，2026-08-14）。
+
+    跨函数静默降级是本项目最难发现的 bug 类别：上游函数在故障路径返回"看似正常"
+    的降级数据（补拉失败→旧缓存、缺今日 bar→昨日量），下游无感知消费导致误判
+    （网宿科技案例：量比硬门误杀放量启动票）。单函数审查无法发现，因为每个函数
+    单独都对。此日志把降级规模变成可查询的常态计数器：某日 fetch_failed/
+    today_bar_missing 异常升高 + 推荐数骤降 → 关联即定位。
+
+    stats 字段：gem_count / fetch_failed / today_bar_missing / minute_fallback /
+    stale_recs。同日多轮扫描按最新一轮覆盖（取当日最后快照），查询历史看日级趋势。
+    """
+    today = now_beijing().date().isoformat()
+    now = now_beijing().strftime("%H:%M:%S")
+    try:
+        conn.execute(
+            """INSERT INTO scan_quality_log
+               (date, time, gem_count, fetch_failed, today_bar_missing,
+                minute_fallback, stale_recs, updated)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(date) DO UPDATE SET
+                 time = excluded.time,
+                 gem_count = excluded.gem_count,
+                 fetch_failed = excluded.fetch_failed,
+                 today_bar_missing = excluded.today_bar_missing,
+                 minute_fallback = excluded.minute_fallback,
+                 stale_recs = excluded.stale_recs,
+                 updated = excluded.updated""",
+            (today, now,
+             int(stats.get("gem_count", 0) or 0),
+             int(stats.get("fetch_failed", 0) or 0),
+             int(stats.get("today_bar_missing", 0) or 0),
+             int(stats.get("minute_fallback", 0) or 0),
+             int(stats.get("stale_recs", 0) or 0),
+             now),
+        )
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"save_scan_quality failed: {e}")
 
 
 def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, source: str | None = None):
