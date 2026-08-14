@@ -556,9 +556,18 @@ def validate_short_term(stock, kline_summary, closes: list[float],
     if len(closes) >= 20:
         ma5 = sum(closes[-5:]) / 5
         ma10 = sum(closes[-10:]) / 10
-        if closes[-1] > ma5 > ma10:
+        # 用今日价（stock.current 实时价/信号日收盘价）而非昨日收盘（closes[-1]）判定
+        # MA 支撑/破位：short_term 是"今日放量启动"策略，昨日在 MA5 下方 + 今日放量
+        # 突破正是标准买点（弱转强/放量启动），用昨日收盘会把已站上均线的启动票误判
+        # V_ST_MA_BROKEN → enhancer「趋势破位」硬过滤移出推荐（2026-08-14 行云科技
+        # 案例：昨收 34.67 < MA5 36.33，今日 +6.68% 收 37.33 已站上，却被移出）。
+        # current 缺失/无效时回退昨日收盘（保持旧行为）。
+        today_close = getattr(stock, "current", 0) or 0
+        if today_close <= 0:
+            today_close = closes[-1]
+        if today_close > ma5 > ma10:
             ma_bonus = V_ST_MA_SUPPORT
-        elif closes[-1] < ma5:
+        elif today_close < ma5:
             ma_bonus = V_ST_MA_BROKEN
 
     # 弱转强作为第 4 个软维度：真弱转强即便板块/排名/MA 全不达标也应放行。

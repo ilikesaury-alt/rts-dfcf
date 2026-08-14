@@ -2,6 +2,7 @@ from scanner.config import (
     V_MO_MA_FULL,
     V_MO_MA_NONE,
     V_NF_SECTOR_STRONG,
+    V_ST_MA_BROKEN,
     V_ST_MA_SUPPORT,
     V_ST_RANK_TOP10,
     V_ST_SECTOR_HOT,
@@ -566,9 +567,60 @@ class TestValidateShortTerm:
             trend="上攻", accumulated_pct=5.0, volume_ratio=1.5,
             bottom_confirmed=False, score=18, avg_volume=1.0,
         )
-        passed, total, dims = validate_short_term(_stock(), ks, closes, k[:-1], None)
+        stock = _stock()
+        # 2026-08-14 修复：MA 判定用今日价（stock.current），今日收盘须与 K 线末端一致
+        stock.current = k[-1]["close"]
+        passed, total, dims = validate_short_term(stock, ks, closes, k[:-1], None)
         assert passed
         assert dims["v_st_ma"] == V_ST_MA_SUPPORT
+
+    def test_ma_support_yesterday_below_today_breakout(self):
+        """2026-08-14 修复回归：昨日在 MA5 下方 + 今日放量突破 = 超短标准买点，
+
+        不应被误判 V_ST_MA_BROKEN（否则 enhancer「趋势破位」硬过滤移出推荐，
+        行云科技 +6.68% 案例：昨收 34.67 < MA5 36.33，今日收 37.33 已站上）。
+        """
+        # 前段深跌、近5天回升（ma5>ma10）、昨日回踩跌破 MA5，今日大涨站回
+        pcts = [-1.5] * 12 + [-0.5] * 3 + [0.8] * 4 + [-1.5, 10.0]
+        k = _kline(pcts, volumes=[1.0] * len(pcts))
+        closes = [c["close"] for c in k[:-1]]
+        # 昨日收盘应低于历史 MA5（构造目标场景）
+        ma5 = sum(closes[-5:]) / 5
+        assert closes[-1] < ma5, "前置条件：昨日收盘应在 MA5 下方"
+        today_close = k[-1]["close"]
+        assert today_close > ma5, "前置条件：今日收盘应站上 MA5"
+        ks = KlineSummary(
+            trend="放量启动", accumulated_pct=5.0, volume_ratio=1.5,
+            bottom_confirmed=False, score=18, avg_volume=1.0,
+        )
+        stock = StockInfo(symbol="300999", name="测试", code="300999",
+                          percent=5.0, current=today_close, value=8000,
+                          rank_change=1500, rank=5)
+        passed, total, dims = validate_short_term(
+            stock, ks, closes, k[:-1], SEMICONDUCTOR_CLUSTER)
+        # 修复后：今日已站上 MA5 → 不应判破位（v_st_ma 不得为 V_ST_MA_BROKEN）
+        assert dims["v_st_ma"] != V_ST_MA_BROKEN, (
+            f"今日已站上 MA5 不应判趋势破位, dims={dims}")
+        assert dims["v_st_ma"] == V_ST_MA_SUPPORT
+
+    def test_ma_break_today_below_still_broken(self):
+        # 对照组：今日收盘仍在 MA5 下方 → 仍应判 V_ST_MA_BROKEN（真破位不能放行）
+        pcts = [-1.0] * 25
+        k = _kline(pcts, volumes=[1.0] * len(pcts))
+        closes = [c["close"] for c in k[:-1]]
+        today_close = k[-1]["close"]
+        ma5 = sum(closes[-5:]) / 5
+        assert today_close < ma5, "前置条件：今日收盘应在 MA5 下方"
+        ks = KlineSummary(
+            trend="放量启动", accumulated_pct=5.0, volume_ratio=1.5,
+            bottom_confirmed=False, score=18, avg_volume=1.0,
+        )
+        stock = StockInfo(symbol="300999", name="测试", code="300999",
+                          percent=5.0, current=today_close, value=8000,
+                          rank_change=1500, rank=5)
+        passed, total, dims = validate_short_term(
+            stock, ks, closes, k[:-1], SEMICONDUCTOR_CLUSTER)
+        assert dims["v_st_ma"] == V_ST_MA_BROKEN
 
     def test_single_rank_dimension_now_rejected(self):
         # 收紧后：仅 rank 单一正维度（sector 冷/MA不足/非弱转强）→ pos_dims=1，应淘汰。

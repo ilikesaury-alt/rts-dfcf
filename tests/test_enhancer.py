@@ -30,14 +30,14 @@ from scanner.models import Candidate, KlineSummary, StockInfo
 
 def _make_candidate(symbol="300999", name="测试", category="momentum",
                     rank=50, percent=5.0, accumulated_pct=10.0,
-                    volume_ratio=1.0, avg_volume=1000.0):
+                    volume_ratio=1.0, avg_volume=1000.0, dimensions=None):
     stock = StockInfo(symbol=symbol, name=name, code=symbol,
                       percent=percent, current=15.0, value=5000,
                       rank_change=100, rank=rank)
     kline = KlineSummary(
         trend="test", accumulated_pct=accumulated_pct,
         volume_ratio=volume_ratio, bottom_confirmed=False,
-        score=30, dimensions={}, avg_volume=avg_volume,
+        score=30, dimensions=dict(dimensions or {}), avg_volume=avg_volume,
     )
     return Candidate(stock=stock, category=category, score=30,
                      reason="test", kline=kline)
@@ -548,6 +548,33 @@ class TestRiskFlagTightening:
         _set_risk_flags(c)
         assert "超买" not in c.risk_flags, f"正常强势票不应标超买, flags={c.risk_flags}"
         assert "主力出货" not in c.risk_flags, f"正常强势票不应标主力出货, flags={c.risk_flags}"
+
+    def test_today_breakout_ma_support_no_trend_breakage(self):
+        """2026-08-14 修复回归：今日放量突破站上 MA5 的票（v_st_ma=SUPPORT）
+
+        不应被打「趋势破位」硬过滤标签。此前 validate_short_term 用昨日收盘
+        （closes[-1]）判定 MA，昨日在 MA5 下方 + 今日放量突破的标准买点票被误判
+        V_ST_MA_BROKEN → enhancer 打「趋势破位」→ 硬过滤移出推荐（行云科技
+        2026-08-14 案例：昨收 34.67 < MA5 36.33，今日 +6.68% 站上却被移出）。
+        """
+        from scanner.config import V_ST_MA_BROKEN, V_ST_MA_SUPPORT
+        from scanner.enhancer import _detect_trend_breakage
+
+        # 今日已站上 MA5 → v_st_ma=SUPPORT（修复后 validate 输出）
+        c = _make_candidate(category="short_term", percent=5.0,
+                            accumulated_pct=5.0, volume_ratio=1.5,
+                            dimensions={"v_st_ma": V_ST_MA_SUPPORT})
+        assert not _detect_trend_breakage(c.kline.dimensions), \
+            "今日站上 MA5（SUPPORT）不应判趋势破位"
+        _set_risk_flags(c)
+        assert "趋势破位" not in c.risk_flags, f"不应误打趋势破位, flags={c.risk_flags}"
+
+        # 对照：今日仍在 MA5 下方 → v_st_ma=BROKEN → 仍应判趋势破位（真破位止损）
+        c2 = _make_candidate(category="short_term", percent=5.0,
+                             accumulated_pct=5.0, volume_ratio=1.5,
+                             dimensions={"v_st_ma": V_ST_MA_BROKEN})
+        assert _detect_trend_breakage(c2.kline.dimensions), \
+            "今日仍在 MA5 下方（BROKEN）应判趋势破位（真破位止损信号）"
 
     def test_distribution_rule2_needs_overheated_turnover(self):
         """主力出货 Rule 2：累计≥15% + 超买旗，但换手仅'活跃'(>0 非过热) 不应触发。"""
