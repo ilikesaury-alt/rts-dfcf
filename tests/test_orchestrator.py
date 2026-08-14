@@ -217,6 +217,112 @@ class TestScoreStockKnownNewFace:
         assert mo is None and rb is None
 
 
+class TestScoreStockStaleKlineAudit:
+    """Layer1 审计（2026-08-14）：评分所用 K 线缺今日 bar（补拉失败旧缓存兜底）时，
+    候选打 stale_kline 标记 + 交易时段 fail-loud 告警，不静默吞掉数据质量下降。
+
+    这正是网宿类 bug 的隐蔽点：上游静默降级（回退旧缓存），下游无感知消费，
+    量比按昨日量误判放量票。标记 + 告警使问题在扫描输出与落库两层都可见。
+    """
+
+    def _stock(self, symbol: str = "300001") -> StockInfo:
+        return StockInfo(symbol=symbol, name="测试", code=symbol,
+                         percent=3.0, current=10.0, value=10000,
+                         rank_change=1000, rank=1)
+
+    def _klines(self, with_today: bool, today: str = "2026-06-18") -> dict:
+        kline = [{"date": "2026-06-17", "close": 10.0, "percent": 2.0},
+                 {"date": "2026-06-16", "close": 9.8, "percent": -1.0}]
+        if with_today:
+            kline.append({"date": today, "close": 10.5, "percent": 3.0})
+        return {"300001": kline}
+
+    def test_stale_kline_marked_when_missing_today_bar(self, monkeypatch):
+        import scanner.orchestrator as o
+        from scanner.candidate_pool import ScanSession
+        from scanner.models import KlineSummary
+
+        ks = KlineSummary(trend="t", accumulated_pct=2.0, volume_ratio=0.9,
+                          bottom_confirmed=True, score=30, dimensions={},
+                          avg_volume=1_000_000)
+        monkeypatch.setattr(o, "is_trading_time", lambda: True)
+        monkeypatch.setattr(o, "analyze_new_face", lambda *a, **k: ks)
+        monkeypatch.setattr(o, "analyze_momentum", lambda *a, **k: None)
+        monkeypatch.setattr(o, "validate", lambda *a, **k: (True, 0, {}))
+        monkeypatch.setattr(o, "get_symbol_appearances", lambda *a, **k: [])
+
+        nf, *_ = o._score_stock(
+            self._stock(), conn=None, klines=self._klines(with_today=False),
+            today="2026-06-18", session_state=ScanSession(), clusters=None,
+        )
+        assert nf is not None
+        assert nf.stale_kline is True  # 缺今日 bar → 审计标记
+
+    def test_fresh_kline_not_marked(self, monkeypatch):
+        import scanner.orchestrator as o
+        from scanner.candidate_pool import ScanSession
+        from scanner.models import KlineSummary
+
+        ks = KlineSummary(trend="t", accumulated_pct=2.0, volume_ratio=1.5,
+                          bottom_confirmed=True, score=30, dimensions={},
+                          avg_volume=1_000_000)
+        monkeypatch.setattr(o, "is_trading_time", lambda: True)
+        monkeypatch.setattr(o, "analyze_new_face", lambda *a, **k: ks)
+        monkeypatch.setattr(o, "analyze_momentum", lambda *a, **k: None)
+        monkeypatch.setattr(o, "validate", lambda *a, **k: (True, 0, {}))
+        monkeypatch.setattr(o, "get_symbol_appearances", lambda *a, **k: [])
+
+        nf, *_ = o._score_stock(
+            self._stock(), conn=None, klines=self._klines(with_today=True),
+            today="2026-06-18", session_state=ScanSession(), clusters=None,
+        )
+        assert nf is not None
+        assert nf.stale_kline is False  # 含今日 bar → 正常
+
+    def test_fail_loud_warning_during_trading_hours(self, monkeypatch, capsys):
+        import scanner.orchestrator as o
+        from scanner.candidate_pool import ScanSession
+        from scanner.models import KlineSummary
+
+        ks = KlineSummary(trend="t", accumulated_pct=2.0, volume_ratio=0.9,
+                          bottom_confirmed=True, score=30, dimensions={},
+                          avg_volume=1_000_000)
+        monkeypatch.setattr(o, "is_trading_time", lambda: True)
+        monkeypatch.setattr(o, "analyze_new_face", lambda *a, **k: ks)
+        monkeypatch.setattr(o, "analyze_momentum", lambda *a, **k: None)
+        monkeypatch.setattr(o, "validate", lambda *a, **k: (True, 0, {}))
+        monkeypatch.setattr(o, "get_symbol_appearances", lambda *a, **k: [])
+
+        o._score_stock(
+            self._stock(), conn=None, klines=self._klines(with_today=False),
+            today="2026-06-18", session_state=ScanSession(), clusters=None,
+        )
+        captured = capsys.readouterr().out
+        assert "评分基于缺今日bar旧缓存" in captured  # fail-loud 告警
+        assert "300001" in captured
+
+    def test_no_warning_outside_trading_hours(self, monkeypatch, capsys):
+        import scanner.orchestrator as o
+        from scanner.candidate_pool import ScanSession
+        from scanner.models import KlineSummary
+
+        ks = KlineSummary(trend="t", accumulated_pct=2.0, volume_ratio=0.9,
+                          bottom_confirmed=True, score=30, dimensions={},
+                          avg_volume=1_000_000)
+        monkeypatch.setattr(o, "is_trading_time", lambda: False)
+        monkeypatch.setattr(o, "analyze_new_face", lambda *a, **k: ks)
+        monkeypatch.setattr(o, "analyze_momentum", lambda *a, **k: None)
+        monkeypatch.setattr(o, "validate", lambda *a, **k: (True, 0, {}))
+        monkeypatch.setattr(o, "get_symbol_appearances", lambda *a, **k: [])
+
+        o._score_stock(
+            self._stock(), conn=None, klines=self._klines(with_today=False),
+            today="2026-06-18", session_state=ScanSession(), clusters=None,
+        )
+        captured = capsys.readouterr().out
+        assert "评分基于缺今日bar旧缓存" not in captured  # 非交易时段不告警
+
+
 class TestFetchAllKlinesIntradayRefresh:
 
     def _cached(self, today):
@@ -501,6 +607,101 @@ class TestFetchAllKlinesSharedDeadline:
 
         res = o._fetch_all_klines(None, _FakeAdapter(), [self._stock("300999")])
         assert res["300999"] is not None
+
+
+class TestFetchAllKlinesMinuteTodayBarFallback:
+    """盘中 K 线补拉失败时，用分时数据构造今日 bar 兜底（2026-08-14 网宿案例）。
+
+    背景：网宿科技 10:56~14:14 在榜 3 小时（涨幅 6.5%~11.8% 在 short_term 可推荐
+    区间），但 K 线补拉失败回退旧缓存（无今日 bar）→ 量比硬门误杀放量启动票。
+    本兜底在补拉失败且交易时段时，用分时累计量能构造今日 bar，仅本轮评分使用。
+    """
+
+    def _stock(self, symbol: str = "300999") -> StockInfo:
+        return StockInfo(symbol=symbol, name="测试", code=symbol,
+                         percent=7.0, current=15.5, value=10000,
+                         rank_change=1000, rank=1)
+
+    def _kline_stale(self, n: int = 40, end_date: str = "2026-07-30") -> list[dict]:
+        base = date.fromisoformat(end_date)
+        return [
+            {"date": (base - timedelta(days=(n - 1) - i)).isoformat(),
+             "open": 10.0, "close": 10.0, "high": 10.2, "low": 9.8,
+             "volume": 1000, "percent": 0.0}
+            for i in range(n)
+        ]
+
+    def test_fallback_merges_today_bar_when_fetch_fails(self, monkeypatch, capsys):
+        import scanner.orchestrator as o
+        cached = self._kline_stale()
+        monkeypatch.setattr(o, "is_trading_time", lambda *a, **k: True)
+        monkeypatch.setattr(o, "now_beijing",
+                            lambda: datetime(2026, 7, 31, 10, 0))
+        monkeypatch.setattr(o, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
+        monkeypatch.setattr(o, "TODAY_BAR_MINUTE_TIMEOUT", 3.0)
+
+        class _FakeAdapter:
+            def fetch_kline(self, symbol, days=15):
+                return None  # 日线补拉失败
+
+            def fetch_minute(self, symbol):
+                return [
+                    {"timestamp": 1, "volume": 100.0, "current": 15.0,
+                     "avg_price": 14.9, "high": 15.2, "low": 14.8, "percent": 3.0},
+                    {"timestamp": 2, "volume": 200.0, "current": 15.5,
+                     "avg_price": 15.1, "high": 15.6, "low": 15.0, "percent": 7.0},
+                ]
+
+        res = o._fetch_all_klines(None, _FakeAdapter(), [self._stock()])
+        kl = res["300999"]
+        assert kl is not None
+        # 今日 bar 已 merge 进返回的 kline（供本轮评分）
+        assert kl[-1]["date"] == "2026-07-31"
+        assert kl[-1]["volume"] == 300.0
+        assert kl[-1]["close"] == 15.5
+        assert kl[-1]["percent"] == 7.0
+        # 今日 bar 未写 DB（不污染缓存）
+        capsys.readouterr()
+
+    def test_fallback_skipped_outside_trading_hours(self, monkeypatch):
+        import scanner.orchestrator as o
+        cached = self._kline_stale()
+        monkeypatch.setattr(o, "is_trading_time", lambda *a, **k: False)
+        monkeypatch.setattr(o, "now_beijing",
+                            lambda: datetime(2026, 7, 31, 16, 0))
+        monkeypatch.setattr(o, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+
+        class _FakeAdapter:
+            def fetch_kline(self, symbol, days=15):
+                return None
+
+            def fetch_minute(self, symbol):
+                raise AssertionError("非交易时段不应拉分时兜底")
+
+        res = o._fetch_all_klines(None, _FakeAdapter(), [self._stock()])
+        # 维持旧回退行为：返回 stale 缓存，不 merge 今日 bar
+        assert res["300999"] is cached
+
+    def test_fallback_when_minute_unavailable(self, monkeypatch):
+        import scanner.orchestrator as o
+        cached = self._kline_stale()
+        monkeypatch.setattr(o, "is_trading_time", lambda *a, **k: True)
+        monkeypatch.setattr(o, "now_beijing",
+                            lambda: datetime(2026, 7, 31, 10, 0))
+        monkeypatch.setattr(o, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
+        monkeypatch.setattr(o, "TODAY_BAR_MINUTE_TIMEOUT", 3.0)
+
+        class _FakeAdapter:
+            def fetch_kline(self, symbol, days=15):
+                return None
+
+            def fetch_minute(self, symbol):
+                return None  # 分时也不可用
+
+        res = o._fetch_all_klines(None, _FakeAdapter(), [self._stock()])
+        assert res["300999"] is cached
 
 
 class TestComputeRps:

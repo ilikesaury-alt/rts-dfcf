@@ -62,7 +62,7 @@ from scanner.enhancer import (
     compute_time_bonus,
 )
 from scanner.features import build_features
-from scanner.models import Candidate, KlineBar, KlineSummary, ScanResult, StockInfo
+from scanner.models import Candidate, KlineBar, KlineSummary, ScanResult, StockInfo, make_kline_bar
 from scanner.rank_trend import update_rank_history
 from scanner.sector import get_sector_clusters
 from scanner.trading_session import is_trading_time
@@ -85,6 +85,90 @@ _session_state = ScanSession()
 KLINE_REFRESH_TTL = 120
 _last_kline_fetch: dict[str, float] = {}
 
+# 盘中 K 线补拉失败兜底（2026-08-14）：分时数据构造今日 bar 的限时（秒）。
+# 主链路已由 KLINE_FETCH_DEADLINE 兜底，此兜底只对补拉失败的票追加一次分时拉取，
+# 单独限时避免 60s 扫描循环被拖垮。
+TODAY_BAR_MINUTE_TIMEOUT = 8.0
+
+
+def _build_today_bar_from_minute(adapter, stock: StockInfo, today: date) -> KlineBar | None:
+    """盘中 K 线补拉失败时，用分时数据构造今日 bar（2026-08-14 网宿科技案例）。
+
+    背景：盘中在榜票若 K 线补拉失败（API 超时/异常），回退旧缓存（无今日 bar）。
+    此时 _compute_volume_metrics 把昨日量当今日量，量比恒 <1.0 → short_term
+    量比硬门（validator.v_st_vol_gate）误杀放量启动票（网宿 10:56~14:14 在榜
+    3 小时未被推荐即此根因）。分时接口独立于日线接口，补拉失败时往往仍可用，
+    用当日累计量能构造今日 bar，使量比/涨幅基于真实今日盘面而非昨日。
+
+    注意：构造 bar 只用于本轮评分（merge 进返回的 kline），不写 DB、不影响缓存，
+    下轮 KLINE_REFRESH_TTL 过期后仍会正常补拉日线。失败返回 None（维持旧回退行为）。
+    """
+    try:
+        items = adapter.fetch_minute(stock.symbol)
+    except Exception as e:
+        print(f"  [!] 今日bar分时兜底失败 {stock.symbol}: {e}")
+        return None
+    if not items:
+        return None
+    # 分时 item 结构：{timestamp, volume, current, avg_price, high, low, percent}
+    try:
+        total_vol = sum(float(i.get("volume") or 0) for i in items)
+        if total_vol <= 0:
+            return None
+        current = float(items[-1].get("current") or 0)
+        if current <= 0:
+            current = float(items[-1].get("avg_price") or 0)
+        if current <= 0:
+            return None
+        high = max(float(i.get("high") or 0) for i in items)
+        low = min(float(i.get("low") or 0) for i in items)
+        if high <= 0 or low <= 0:
+            high = max(current, high)
+            low = min(current, low) if low > 0 else current
+        percent = float(items[-1].get("percent") or 0)
+        if percent == 0 and stock.percent:
+            percent = stock.percent
+        return make_kline_bar({
+            "date": today.isoformat(),
+            "open": float(items[0].get("current") or current),
+            "high": high,
+            "low": low,
+            "close": current,
+            "volume": total_vol,
+            "percent": percent,
+        })
+    except (TypeError, ValueError):
+        return None
+
+
+def _merge_minute_today_bar(adapter, stock: StockInfo | None, today: date,
+                            stale: list[KlineBar]) -> list[KlineBar] | None:
+    """把分时构造的今日 bar 合并进旧缓存；失败/非盘中返回 None（维持原回退）。
+
+    限时 TODAY_BAR_MINUTE_TIMEOUT 兜底：分时接口自身无 timeout，超时线程后台自然
+    结束（daemon），主扫描循环不挂死。仅交易时段启用——收盘后缺今日 bar 属正常，
+    不值得为每个回退票再发一次分时请求。
+    """
+    if not is_trading_time() or not stale or stock is None:
+        return None
+    box: dict = {}
+
+    def _run():
+        try:
+            box["bar"] = _build_today_bar_from_minute(adapter, stock, today)
+        except BaseException:  # noqa: BLE001
+            box["bar"] = None
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=TODAY_BAR_MINUTE_TIMEOUT)
+    bar = box.get("bar")
+    if bar is None or t.is_alive():
+        return None
+    merged = {k["date"]: k for k in stale}
+    merged[bar["date"]] = bar
+    return sorted(merged.values(), key=lambda x: x["date"])
+
 
 def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo],
                       deadline: float | None = None) -> dict[str, list[KlineBar] | None]:
@@ -95,6 +179,7 @@ def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo]
 
     # 批量读缓存（单次 SQL，避免对每只票各发一条查询）
     cached_map = get_cached_klines(conn, [s.symbol for s in stocks]) if stocks else {}
+    stock_map = {s.symbol: s for s in stocks}
     for s in stocks:
         cached = cached_map.get(s.symbol)
         if cached:
@@ -170,11 +255,18 @@ def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo]
             except Exception as e:
                 print(f"  [!] K线写入DB失败 {sym}: {e}")
         elif sym in stale_cache:
-            result[sym] = stale_cache[sym]
+            # 补拉失败回退旧缓存。盘中时尝试用分时构造今日 bar 兜底（2026-08-14）：
+            # 缺今日 bar 会让量比硬门误杀放量启动票（网宿案例），构造 bar 仅本轮使用。
+            _merged = _merge_minute_today_bar(adapter, stock_map.get(sym), today,
+                                              stale_cache[sym])
+            result[sym] = _merged if _merged is not None else stale_cache[sym]
 
     for sym in needs_fetch:
         if sym not in result and sym in stale_cache:
-            result[sym] = stale_cache[sym]
+            # deadline 超时未轮到拉取：同样尝试分时今日 bar 兜底
+            _merged = _merge_minute_today_bar(adapter, stock_map.get(sym), today,
+                                              stale_cache[sym])
+            result[sym] = _merged if _merged is not None else stale_cache[sym]
 
     # P1-3: K线数据缺失汇总（首次拉取失败且无 stale_cache 兜底的票）
     missing = [sym for sym in needs_fetch if sym not in result]
@@ -388,6 +480,21 @@ def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, l
                           is_first_today, first_date, kline, closes, historical, clusters, feats)
     c_st = _try_candidate(stock, sk, "short_term",
                           is_first_today, first_date, kline, closes, historical, clusters, feats)
+
+    # 审计标记（2026-08-14）：评分所用 K 线缺今日 bar（补拉失败旧缓存兜底）时打 stale_kline。
+    # 缺今日 bar → 量比基于昨日量（vol_ratio 失真）→ 可能被量比硬门误杀（网宿案例）或
+    # 基于旧数据误推。落库供事后审计"该推荐基于什么数据评分"。兜底已由 _fetch_all_klines
+    # 的分时构造今日 bar 尽量消除，此处标记残留的兜底失败场景。
+    _stale = bool(kline) and max(k["date"] for k in kline) < today
+    for _c in (c_nf, c_mo, c_rb, c_st):
+        if _c is not None:
+            _c.stale_kline = _stale
+    # fail-loud：交易时段仍以缺今日 bar 旧缓存评分（日线补拉 + 分时兜底均失败）→ 逐票告警。
+    # 不静默吞掉数据质量下降——这正是网宿类 bug 的隐蔽点（上游降级无感知，下游静默消费）。
+    # 非交易时段缺今日 bar 属正常（缓存未更新），不告警。
+    if _stale and is_trading_time():
+        print(f"  [!] {stock.name}({stock.symbol}) 评分基于缺今日bar旧缓存（补拉与分时兜底均失败），"
+              f"量比/涨幅按昨日数据，可能误判")
 
     category = _classify_category(stock, is_new, c_mo, c_nf, c_st, c_rb)
     if category == "short_term":

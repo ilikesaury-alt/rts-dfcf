@@ -66,7 +66,8 @@ def memory_db():
             source TEXT DEFAULT 'xueqiu',
             concept TEXT,
             accumulated_pct REAL,
-            excluded INTEGER DEFAULT 0
+            excluded INTEGER DEFAULT 0,
+            stale_kline INTEGER DEFAULT 0
         )
     """)
     conn.execute("""
@@ -273,6 +274,43 @@ class TestSaveRecommendations:
         ).fetchone()
         assert row is not None
         assert row[0] == "华为概念"
+
+    def test_save_persists_stale_kline_flag(self, memory_db):
+        """Layer2 审计（2026-08-14）：缺今日 bar 旧缓存评分的候选落库时打 stale_kline=1，
+        供事后审计"该推荐基于什么数据评分"（网宿类 bug 的隐蔽点：静默降级无感知）。"""
+        stock = StockInfo(symbol="300002", name="Test", code="300002",
+                          percent=5.0, current=10.0, value=10000,
+                          rank_change=1000, rank=1)
+        kline_summary = KlineSummary(trend="底部启动", accumulated_pct=2.0,
+                                      volume_ratio=0.9, bottom_confirmed=True,
+                                      score=20, dimensions={}, avg_volume=1_000_000)
+        fresh = Candidate(stock=stock, category="new_face", score=20,
+                          reason="底部启动", kline=kline_summary,
+                          first_seen="09:30", stale_kline=False)
+        stale = Candidate(stock=stock, category="new_face", score=20,
+                          reason="底部启动", kline=kline_summary,
+                          first_seen="09:30", stale_kline=True)
+
+        save_recommendations(memory_db, [fresh], [])
+        save_recommendations(memory_db, [stale], [])  # 同分不覆盖，但新分更高才更新
+
+        rows = memory_db.execute(
+            "SELECT stale_kline FROM recommendations WHERE symbol = '300002' ORDER BY id"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == 0  # 首条（fresh）保留
+
+        # 用更高分触发覆盖，确认 stale_kline 随更新写入
+        stale_hi = Candidate(stock=stock, category="new_face", score=30,
+                             reason="底部启动", kline=kline_summary,
+                             first_seen="09:30", stale_kline=True)
+        save_recommendations(memory_db, [stale_hi], [])
+        rows = memory_db.execute(
+            "SELECT score, stale_kline FROM recommendations WHERE symbol = '300002'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == 30
+        assert rows[0][1] == 1  # 更新时写入 stale_kline=1
 
 
 class TestTodayRecommendationsExcluded:

@@ -132,6 +132,11 @@ def init_db() -> sqlite3.Connection:
     # 一旦当日被硬过滤即当日不再展示（止损级信号，保守语义）。
     if "excluded" not in cols:
         conn.execute("ALTER TABLE recommendations ADD COLUMN excluded INTEGER DEFAULT 0")
+    # 评分数据审计（2026-08-14）：该条推荐评分所用 K 线是否缺今日 bar（补拉失败旧缓存兜底）。
+    # 1 = 旧缓存评分（量比基于昨日量，可能失真/误杀/误推）；0 = 含今日 bar 正常评分。
+    # 供事后审计"该推荐基于什么数据评分"，识别静默降级导致的历史误判（网宿案例同类）。
+    if "stale_kline" not in cols:
+        conn.execute("ALTER TABLE recommendations ADD COLUMN stale_kline INTEGER DEFAULT 0")
     try:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_source ON recommendations(source)")
     except Exception:
@@ -452,24 +457,26 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, 
             rec_source = source or getattr(c.stock, "source_tag", "unified")
             concept = getattr(c, "driving_concept", "") or ""
             accumulated = c.kline.accumulated_pct if c.kline else None
+            stale_kline = 1 if getattr(c, "stale_kline", False) else 0
             if existing:
                 # 同日同股同策略已存在：仅当新分更高时更新（保留当日最高分用于回测归因）
                 if c.score > existing[1]:
                     conn.execute(
                         "UPDATE recommendations SET time = ?, score = ?, percent = ?, trend = ?, "
-                        "score_breakdown = ?, source = ?, concept = ?, accumulated_pct = ? "
+                        "score_breakdown = ?, source = ?, concept = ?, accumulated_pct = ?, "
+                        "stale_kline = ? "
                         "WHERE id = ?",
                         (now, c.score, c.stock.percent, c.kline.trend if c.kline else None,
-                         breakdown, rec_source, concept, accumulated, existing[0]),
+                         breakdown, rec_source, concept, accumulated, stale_kline, existing[0]),
                     )
                 continue
             conn.execute(
                 "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, "
-                "trend, score_breakdown, source, concept, accumulated_pct) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "trend, score_breakdown, source, concept, accumulated_pct, stale_kline) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (today, now, c.stock.symbol, c.stock.name, c.category,
                  c.score, c.stock.percent, c.kline.trend if c.kline else None,
-                 breakdown, rec_source, concept, accumulated),
+                 breakdown, rec_source, concept, accumulated, stale_kline),
             )
         except Exception as e:
             print(f"  [!] 保存推荐记录失败 {c.stock.symbol}: {e}")

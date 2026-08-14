@@ -113,6 +113,7 @@ class Candidate:
     driving_concept: str = ""  # 当前推动概念（仅展示，不参与打分）
     off_list: bool = False    # 掉榜跟踪候选（回马枪）：不在当次热榜上，无热榜背书
     comeback_variant: str = ""  # 回马枪变体："反转" / "回踩"（展示与持久化区分）
+    stale_kline: bool = False  # 评分所用 K 线缺今日 bar（补拉失败旧缓存兜底）——审计用（2026-08-14）
 
 
 @dataclass
