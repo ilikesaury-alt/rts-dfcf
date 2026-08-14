@@ -394,6 +394,15 @@ def _apply_zt_bonus(c: Candidate, market_extra: dict):
 
 def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None,
                                cross_days: int = 0):
+    if c.off_list:
+        # 掉榜跟踪票（回马枪）整体豁免榜单动能：cross_days/盘中 streak 是掉榜前残留
+        # （跟踪池最长保留 WATCH_OFFLIST_KEEP_DAYS=15 交易日，连榜早已结束）；traj 来自
+        # 掉榜前排名快照；回踩变体的 volume_ratio 还是合成占位值 0.0——三者都不构成
+        # 真实榜单动能。若不豁免：0.0 < FATIGUE_VOL_WARN_RATIO 恒真 + 掉榜票排名走低的
+        # traj<0，两个"疲劳信号"叠加即误触疲劳惩罚与「疲劳」风险标签（2026-08-14 修复，
+        # 与 rank=0 豁免 TOP40 路径同族）。
+        c.list_momentum_bonus = 0
+        return
     intraday_streak = (list_streaks or {}).get(c.stock.symbol, 0)
     # streak 以"交易日"计：cross_days 是历史连续上榜天数（不含今日，由调用方批量查询），
     # intraday_streak 是本次盘中连续扫描次数（60s/次），仅作为"今日上榜"=+1 天。

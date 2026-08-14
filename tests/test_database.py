@@ -519,6 +519,19 @@ class TestMarkReversedRecommendations:
         assert marked == []
         assert "300209" in {r["symbol"] for r in self._recs(memory_db)}
 
+    def test_degraded_quote_current_zero_not_excluded(self, memory_db):
+        """回归（2026-08-14）：行情降级条目（current<=0，percent 被生产端强转 0.0）
+        不得被当"已转负 0.00%"误移出——此前 percent=None 的 fail-open 检查因生产端
+        强转而不可达，停牌/字段缺失票会被误标 excluded=1。"""
+        self._insert(memory_db, "300209", percent=6.0)
+        # 降级行情：current=0、percent=0.0（强转产物）、high_pct 缺失回退 rec_pct=6.0
+        # 若无守卫：live_pct=0<0（转负）+ drop=6.0-0.0=6.0 ≥ 5 → 路①误移出
+        marked = mark_reversed_recommendations(
+            memory_db, self._recs(memory_db), active_syms=set(),
+            live_quotes={"300209": {"current": 0.0, "percent": 0.0, "high_pct": None}})
+        assert marked == [], "降级行情（current<=0）应 fail-open 不移出"
+        assert "300209" in {r["symbol"] for r in self._recs(memory_db)}
+
 
 class TestWatchPoolEviction:
     """WATCH_POOL_MAX 容量上限：超限时淘汰 last_list_date 最旧条目。"""

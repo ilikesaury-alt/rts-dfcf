@@ -72,7 +72,8 @@ def _build_card(
 
     def _fmt_row(c: Candidate, rank_str: str = "") -> str:
         s = c.stock
-        rs = rank_str or f"{s.rank:>3}"
+        # rank=0（回马枪掉榜票）显示 — 与 display.py 口径一致，不显示虚假名次 0
+        rs = rank_str or (f"{s.rank:>3}" if s.rank else "  —")
         pct_str = f"+{s.percent:.1f}%" if s.percent >= 0 else f"{s.percent:.1f}%"
         acc_val = c.kline.accumulated_pct if c.kline else None
         acc_str = f"{acc_val:+.1f}%" if acc_val is not None else "N/A"

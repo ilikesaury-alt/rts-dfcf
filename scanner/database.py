@@ -822,6 +822,13 @@ def mark_reversed_recommendations(conn: sqlite3.Connection,
         q = live_quotes.get(sym)
         if not q:
             continue
+        # fail-open 防线（2026-08-14）：行情生产端（fetch_market_caps_batch 等）对缺失
+        # 字段强转为 0.0，percent=None 检查实际不可达。current 存在且 <=0（无 A 股以
+        # 0 元成交）即行情降级/停牌条目——0.00% 会被误当"已转负"、drop=ref-0 虚高，
+        # 导致误移出，必须按无法度量跳过（与 docstring 的行情缺失 fail-open 语义对齐）。
+        cur = q.get("current")
+        if cur is not None and cur <= 0:
+            continue
         live_pct = q.get("percent")
         if rec_pct is None or live_pct is None:
             continue

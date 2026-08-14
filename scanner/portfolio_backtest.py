@@ -59,6 +59,7 @@ from scanner.trading_session import is_trading_day
 # Windows GBK 控制台无法编码 ‱/🎯 等字符，统一走 UTF-8（项目其它入口同款处理）
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")  # parser.error 走 stderr，防中文提示乱码
 
 
 # ── 组合回测使用的现役策略类别（排除已废弃的 old_face / early_momentum / pullback 离线）──
@@ -392,6 +393,9 @@ def run_backtest(conn: sqlite3.Connection, cfg: PBConfig) -> BacktestResult:
     min_date, max_date = conn.execute(
         "SELECT MIN(date), MAX(date) FROM daily_kline"
     ).fetchone()
+    if not min_date or not max_date:
+        # daily_kline 空表：fromisoformat(None) 会 TypeError，直接返回空结果
+        return result
     calendar = _build_calendar(conn, min_date, max_date)
     if not calendar:
         return result
@@ -709,6 +713,15 @@ def main() -> None:
                              "须用 appearances+daily_kline 重跑引擎；comeback 为 off-list 变体保持冻结分）")
     parser.add_argument("--export", default=None, help="导出 NAV 序列 CSV 路径")
     args = parser.parse_args()
+
+    if args.max_positions <= 0:
+        parser.error("--max-positions 必须为正整数（等权槽位 = initial / max_positions）")
+    if args.buy_delay < 0:
+        parser.error("--buy-delay 不能为负")
+    if args.buy_delay == 0 and args.buy_at == "open":
+        # 信号由收盘数据算出，当日开盘买入是前视偏差（未卜先知）
+        parser.error("--buy-delay 0 + --buy-at open 构成前视偏差：信号收盘后才产生，"
+                     "无法以当日开盘价买入；请用 --buy-at close 对齐 cum 口径")
 
     clear_screen()
     conn = sqlite3.connect(DB_PATH)

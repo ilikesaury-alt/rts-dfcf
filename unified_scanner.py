@@ -204,6 +204,11 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     if missing:
                         extra = adapter.fetch_market_caps_batch(missing)
                         for sym, d in extra.items():
+                            # 行情降级条目（current<=0，如停牌/字段缺失被强转 0）不入
+                            # live_quotes：0.00% 会被 mark_reversed 误当"已转负"、被
+                            # display 误显为真实涨幅（2026-08-14 fail-open 修复）。
+                            if not d.get("current"):
+                                continue
                             live_quotes[sym] = {"percent": d.get("percent", 0.0),
                                                 "current": d.get("current", 0.0),
                                                 "high_pct": d.get("high_pct")}

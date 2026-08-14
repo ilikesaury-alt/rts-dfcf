@@ -265,8 +265,16 @@ def _try_reentry_candidate(stock: StockInfo, kline: list[KlineBar], today: str,
         "comeback_rec_date": rec["date"],
         "comeback_rec_category": rec.get("category", ""),
     }
+    # 真实量比（今日量 vs 近5日均量，含今日 bar）——此前为占位 0.0，占位值会被
+    # 下游（疲劳判定/展示）当真实缩量消费，2026-08-14 改为真实计算
+    vol_ratio = 0.0
+    vols = [k["volume"] for k in kline]
+    if len(vols) >= 6:
+        avg_v = sum(vols[:-1][-5:]) / 5
+        if avg_v > 0:
+            vol_ratio = round(vols[-1] / avg_v, 2)
     ks = KlineSummary(trend=f"回踩·{status}", accumulated_pct=round(accum, 2),
-                      volume_ratio=0.0, bottom_confirmed=False,
+                      volume_ratio=vol_ratio, bottom_confirmed=False,
                       score=score, dimensions=dims)
     return Candidate(
         stock=stock, category="comeback", score=score, reason=ks.trend,

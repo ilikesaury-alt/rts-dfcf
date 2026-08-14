@@ -346,31 +346,30 @@ class TestApplyListMomentumBonus:
         assert c.list_momentum_bonus == 5
 
     @patch("scanner.enhancer.rank_trajectory_score", return_value=0)
-    def test_fatigue_comeback_skips_price(self, mock_traj):
-        """回归：comeback 反转变体掉榜 5 日跌≤-8% 后企稳，负累计是策略前提，
-        不得按价格判疲劳（与 new_face/RPS 豁免同理）。"""
+    def test_fatigue_comeback_off_list_full_exemption(self, mock_traj):
+        """回归（2026-08-14）：off_list（回马枪）整体豁免榜单动能——cross_days 是
+        掉榜前残留（跟踪池最长保留 15 交易日），traj 来自掉榜前排名快照，均不构成
+        真实榜单动能。负累计 + 残留 streak 不得触发疲劳罚分。"""
         c = _make_candidate(accumulated_pct=-10.0, volume_ratio=0.8,
                             percent=2.0, category="comeback")
         c.off_list = True
         c.comeback_variant = "反转"
-        # streak=3（cross=2+今日）：量能萎缩 0.8<1.0 → 仅 1 个疲劳信号（价格被豁免）。
-        # 若无豁免，价格(-10<8) 会让信号达 2 → 疲劳 -9；豁免后 → 正常连榜 5。
         _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, cross_days=2)
-        assert c.list_momentum_bonus == 5, (
-            f"comeback 不应因负累计吃疲劳罚分, got {c.list_momentum_bonus}")
+        assert c.list_momentum_bonus == 0, (
+            f"off_list 应整体豁免榜单动能, got {c.list_momentum_bonus}")
 
     @patch("scanner.enhancer.rank_trajectory_score", return_value=-2)
-    def test_fatigue_comeback_volume_and_traj_still_count(self, mock_traj):
-        """豁免仅针对价格信号；量能萎缩 + 下行轨迹仍应触发疲劳。"""
+    def test_fatigue_comeback_stale_volume_traj_not_counted(self, mock_traj):
+        """回归（2026-08-14）：掉榜票残留的量能/轨迹信号不再计入疲劳——回踩变体
+        volume_ratio 曾是占位 0.0（恒触发缩量信号）、traj 是掉榜前快照，二者叠加
+        会给回马枪候选误打「疲劳」标签。"""
         c = _make_candidate(accumulated_pct=-10.0, volume_ratio=0.5,
                             percent=-1.0, category="comeback")
         c.off_list = True
-        c.comeback_variant = "反转"
-        # streak=3：价格被豁免，但量能(0.5<1.0) + traj(-2<0) → 2 信号 → 疲劳 -9，
-        # 再加 traj_bonus -2 → 合计 -11
-        _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, cross_days=2)
-        assert c.list_momentum_bonus == -11, (
-            f"comeback 豁免只免价格信号，量能萎缩仍应疲劳, got {c.list_momentum_bonus}")
+        c.comeback_variant = "回踩"
+        _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, cross_days=5)
+        assert c.list_momentum_bonus == 0, (
+            f"off_list 残留数据不得触发疲劳/加分, got {c.list_momentum_bonus}")
 
     @patch("scanner.enhancer.rank_trajectory_score", return_value=0)
     def test_accelerating(self, mock_traj):
@@ -428,7 +427,8 @@ class TestApplyListMomentumBonus:
         _apply_list_momentum_bonus(c, list_streaks={})
         assert c.list_momentum_bonus == 0, (
             f"off-list rank=0 不应有榜单动能加分, got {c.list_momentum_bonus}")
-        assert c.kline.dimensions.get("list_top40_bonus") == 0
+        # off_list 整体豁免后不写榜单动能维度（2026-08-14 口径）
+        assert c.kline.dimensions.get("list_top40_bonus") is None
 
     @patch("scanner.enhancer.rank_trajectory_score", return_value=0)
     def test_no_kline(self, mock_traj):

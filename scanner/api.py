@@ -710,9 +710,12 @@ def analyze_intraday(session: requests.Session, symbol: str,
                     idx = min(i * seg_sz, n - 1)
                     nxt = min((i + 1) * seg_sz, n - 1)
                     if idx != nxt:
-                        c = ((period_items[nxt]["current"] - period_items[idx]["current"])
-                             / period_items[idx]["current"] * 100)
-                        seg_chgs.append(c)
+                        base = period_items[idx]["current"]
+                        if base > 0:
+                            # 分母守卫：current=0 的脏分时 bar（强转失败归 0）不得拖垮
+                            # 整票分时评分（此前 ZeroDivisionError → 整段信号降级 None）
+                            seg_chgs.append(
+                                (period_items[nxt]["current"] - base) / base * 100)
                 attacks = sum(1 for c in seg_chgs if c > 0.15)
                 declines = sum(1 for c in seg_chgs if c < -0.15)
                 net = attacks - declines
