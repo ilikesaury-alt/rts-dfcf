@@ -60,6 +60,7 @@ from scanner.config import (
     V_MO_VOL_SPIKE,
     V_ST_MA_BROKEN,
     V_ST_RANK_LOW,
+    WTS_FAIL_TAG,
     ZT_LIANBAN_BONUS_2,
     ZT_LIANBAN_BONUS_3,
     ZT_LIANBAN_GT3_PENALTY,
@@ -150,6 +151,14 @@ def _set_risk_flags(c: Candidate, fund_risk: dict[str, str] = None):
     # 主力出货：高位派发复合判断
     if _detect_main_force_distribution(c, dims):
         c.risk_flags.append("主力出货")
+    # 弱转强失效（2026-08-14 新增）：弱转强直通特权的前提是"今日转强成功"，
+    # 分时明确走弱（intraday<=-1.0，与 Rule 3 冲高回落同阈值）即转强失败。
+    # 全期 12 样本：大跌(≤-7%) 25% vs 大涨 8.3%，平均次日 -2.61%，含 -16.34/-18.44
+    # 两个极端日（均弱转强+盘中弱）→ 硬过滤（RISK_FLAGS_HARD_FILTER 移出推荐列表）。
+    if ((dims.get("v_st_weak") or 0) > 0
+            and c.intraday_score is not None
+            and c.intraday_score <= DISTRIBUTION_INTRADAY_WEAK):
+        c.risk_flags.append(WTS_FAIL_TAG)
     # 趋势破位：MA 破位合并标签（止损信号）
     if _detect_trend_breakage(dims):
         c.risk_flags.append("趋势破位")

@@ -6,6 +6,7 @@ from scanner.config import (
     V_ST_RANK_LOW,
     V_ST_RANK_TOP10,
     V_ST_RANK_TOP30,
+    WTS_FAIL_TAG,
 )
 from scanner.enhancer import (
     _apply_fund_flow_bonus,
@@ -635,6 +636,63 @@ class TestDistributionRule5BackrowIntradayWeak:
         c = self._rule5_candidate(intraday=-1.5)
         _set_risk_flags(c)
         assert "主力出货" in c.risk_flags, f"应打主力出货标签, flags={c.risk_flags}"
+
+
+# ============================================================
+# 2026-08-14 弱转强失效：弱转强(v_st_weak>0) + 分时明确走弱(intraday<=-1.0)
+# → 硬过滤。依据：全期 12 样本大跌(≤-7%) 25% vs 大涨 8.3%，平均次日 -2.61%，
+# 含 -16.34/-18.44 两个极端日（301230/301583，均弱转强+盘中弱）。
+# ============================================================
+
+class TestWtsFailureHardFilter:
+    """验证弱转强失效标签：弱转强当日分时明确走弱即判定转强失败并硬过滤。"""
+
+    @staticmethod
+    def _wts_candidate(intraday, wts=8):
+        c = _make_candidate(category="short_term", rank=20, percent=5.0)
+        c.kline.dimensions["v_st_weak"] = wts  # 弱转强直通维度
+        c.intraday_score = intraday
+        c.kline.dimensions["intraday_score"] = intraday
+        return c
+
+    def test_wts_intraday_weak_triggers(self):
+        """弱转强 + intraday=-1.0（明确走弱）→ 打弱转强失效标签。"""
+        c = self._wts_candidate(intraday=-1.0)
+        _set_risk_flags(c)
+        assert WTS_FAIL_TAG in c.risk_flags, f"应打弱转强失效, flags={c.risk_flags}"
+
+    def test_wts_intraday_borderline_no_trigger(self):
+        """intraday=-0.9（-1.0 之上）不触发：带宽阈值防闪烁。"""
+        c = self._wts_candidate(intraday=-0.9)
+        _set_risk_flags(c)
+        assert WTS_FAIL_TAG not in c.risk_flags, f"intraday=-0.9 不应触发, flags={c.risk_flags}"
+
+    def test_wts_intraday_positive_no_trigger(self):
+        """弱转强 + 盘中走强（intraday>0）不触发：转强成功。"""
+        c = self._wts_candidate(intraday=1.0)
+        _set_risk_flags(c)
+        assert WTS_FAIL_TAG not in c.risk_flags, f"盘中走强不应判失效, flags={c.risk_flags}"
+
+    def test_non_wts_intraday_weak_no_trigger(self):
+        """非弱转强（v_st_weak=0）即使盘中弱也不触发：仅针对弱转强直通。"""
+        c = self._wts_candidate(intraday=-2.0, wts=0)
+        _set_risk_flags(c)
+        assert WTS_FAIL_TAG not in c.risk_flags, f"非弱转强不应判失效, flags={c.risk_flags}"
+
+    def test_hard_filter_membership(self):
+        """弱转强失效应在 RISK_FLAGS_HARD_FILTER 中（从所有推荐列表移除）。"""
+        from scanner.config import RISK_FLAGS_HARD_FILTER
+        assert WTS_FAIL_TAG in RISK_FLAGS_HARD_FILTER
+
+    def test_end_to_end_hard_filter_removal(self):
+        """端到端：命中弱转强失效的候选被 orchestrator 硬过滤移出。"""
+        from scanner.orchestrator import _candidate_excluded_by_risk
+        c = self._wts_candidate(intraday=-1.5)
+        _set_risk_flags(c)
+        assert _candidate_excluded_by_risk(c), "弱转强失效候选应被硬过滤"
+        c2 = self._wts_candidate(intraday=1.0)
+        _set_risk_flags(c2)
+        assert not _candidate_excluded_by_risk(c2), "转强成功的弱转强候选不应被硬过滤"
 
 
 # ============================================================
