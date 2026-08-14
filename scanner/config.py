@@ -379,6 +379,11 @@ DISTRIBUTION_OPENING_STRONG = 4.0   # 开盘强度阈值（冲高回落场景，
 # 分时走弱判定用负带宽避免闪烁：intraday_score 在 0 附近震荡时不应反复触发/消失。
 # intraday_score 范围 -10~10，0 只是中性，<-1.0 才算明确分时转弱。
 DISTRIBUTION_INTRADAY_WEAK = -1.0
+# Rule 5（后排+盘中走弱）的 intraday 阈值：比 Rule 3 更严（-1.5 vs -1.0），
+# 因后排边际放量票无累计涨幅背书，需更明确的分时走弱才判派发。
+# 2026-08-14 数据校准：short_term 去重 218 条中该画像 12 条，next_day -1.90%/胜率25%，
+# cum_3d -4.24%/胜率12%（n=8）——全历史最强负向组合（300317 珈伟新能 08-13 案例）。
+DISTRIBUTION_RANK_WEAK_INTRADAY = -1.5
 # 主力出货 Rule 2 的换手率门槛：要求"真正过热"而非单纯活跃。
 # enhancer 中以 c.turnover_bonus < 0 判定（turnover_rate > TURNOVER_HIGH=20%，即派发级过热）。
 
@@ -539,7 +544,10 @@ V_ST_SECTOR_COLD = 0
 V_ST_RANK_TOP10 = 8
 V_ST_RANK_TOP20 = 5
 V_ST_RANK_TOP30 = 2
-V_ST_RANK_LOW = -3
+# rank>30（后排/边际上榜）惩罚。2026-08-14 校准：short_term 去重 218 条中
+# rank>30 桶 141 条 next_day -0.71%/胜率43% vs rank≤30 77 条 +1.06%/胜率57%
+# （cum_3d +0.67% vs +2.65%）——65% 的 short_term 都在后排，不能硬砍只能降分。
+V_ST_RANK_LOW = -8
 V_ST_MA_SUPPORT = 5
 V_ST_MA_BROKEN = -5
 

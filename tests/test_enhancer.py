@@ -1,22 +1,28 @@
 from datetime import datetime
 from unittest.mock import patch
 
+from scanner.config import (
+    DISTRIBUTION_RANK_WEAK_INTRADAY,
+    V_ST_RANK_LOW,
+    V_ST_RANK_TOP10,
+    V_ST_RANK_TOP30,
+)
 from scanner.enhancer import (
-    _apply_gap_up_bonus,
     _apply_fund_flow_bonus,
-    _apply_live_vol_bonus,
+    _apply_gap_up_bonus,
     _apply_list_momentum_bonus,
+    _apply_live_vol_bonus,
     _apply_rps_bonus,
     _apply_sector_bonus,
     _apply_sentiment_bonus,
     _apply_turnover_bonus,
     _apply_zt_bonus,
     _detect_main_force_distribution,
-    _set_risk_flags,
     _record_dimensions,
+    _set_risk_flags,
+    accumulate_final_score,
     compute_market_env_bonus,
     compute_time_bonus,
-    accumulate_final_score,
 )
 from scanner.models import Candidate, KlineSummary, StockInfo
 
@@ -568,6 +574,67 @@ class TestRiskFlagTightening:
         c.kline.dimensions["mo_overbought_flag"] = True
         assert not _detect_main_force_distribution(c, c.kline.dimensions), \
             "高累计+低迷换手不应判主力出货（无放量派发特征）"
+
+
+# ============================================================
+# 2026-08-14 Rule 5：后排上榜 + 盘中走弱 → 主力出货（硬过滤）
+# 依据：short_term 去重 218 条中该画像 12 条，next_day -1.90%/胜率25%，
+# cum_3d -4.24%/胜率12%（n=8）——全历史最强负向组合（300317 珈伟新能案例）。
+# ============================================================
+
+class TestDistributionRule5BackrowIntradayWeak:
+    """验证主力出货 Rule 5：short_term 后排上榜（rank>30，v_st_rank 负值）
+    且分时持续走弱（intraday <= -1.5）即判定冲高派发，无需累计涨幅背书。
+    """
+
+    @staticmethod
+    def _rule5_candidate(intraday, v_st_rank=V_ST_RANK_LOW, accumulated=10.0):
+        """构造 300317 型画像：累计 10%（<15%，rule 3 不触发）+ 后排 + 盘中弱。"""
+        c = _make_candidate(category="short_term", rank=99,
+                            accumulated_pct=accumulated, percent=3.5)
+        c.kline.dimensions["v_st_rank"] = v_st_rank
+        c.intraday_score = intraday
+        c.kline.dimensions["intraday_score"] = intraday
+        return c
+
+    def test_backrow_intraday_weak_triggers(self):
+        """后排(rank>30) + intraday<=-1.5：即使累计仅 10% 也应判主力出货。"""
+        c = self._rule5_candidate(intraday=DISTRIBUTION_RANK_WEAK_INTRADAY)
+        assert _detect_main_force_distribution(c, c.kline.dimensions), \
+            "后排+盘中弱应触发 Rule 5（300317 型画像）"
+
+    def test_backrow_intraday_borderline_no_trigger(self):
+        """intraday 在 -1.5 之上（-1.4）不触发：阈值带宽防闪烁。"""
+        c = self._rule5_candidate(intraday=DISTRIBUTION_RANK_WEAK_INTRADAY + 0.1)
+        assert not _detect_main_force_distribution(c, c.kline.dimensions), \
+            "intraday=-1.4 未达 -1.5 阈值不应触发"
+
+    def test_backrow_intraday_neutral_no_trigger(self):
+        """后排但盘中中性（intraday=0）不触发：分时走弱是必要条件。"""
+        c = self._rule5_candidate(intraday=0.0)
+        assert not _detect_main_force_distribution(c, c.kline.dimensions), \
+            "盘中中性不应触发 Rule 5"
+
+    def test_front_rank_intraday_weak_no_trigger(self):
+        """前排上榜（rank<=30）即使盘中弱也不触发：无边际派发语义。"""
+        for bonus in (V_ST_RANK_TOP30, V_ST_RANK_TOP10):
+            c = self._rule5_candidate(intraday=-2.0, v_st_rank=bonus)
+            assert not _detect_main_force_distribution(c, c.kline.dimensions), \
+                f"前排(v_st_rank={bonus})不应触发 Rule 5"
+
+    def test_no_v_st_rank_dim_no_trigger(self):
+        """非 short_term 候选（无 v_st_rank 维度）即使盘中弱也不触发。"""
+        c = _make_candidate(category="momentum", rank=99, accumulated_pct=10.0)
+        c.intraday_score = -2.0
+        c.kline.dimensions["intraday_score"] = -2.0
+        assert not _detect_main_force_distribution(c, c.kline.dimensions), \
+            "momentum（无 v_st_rank）不应触发 Rule 5"
+
+    def test_end_to_end_risk_flag_hard_filter(self):
+        """端到端：_set_risk_flags 应打上'主力出货'标签（RISK_FLAGS_HARD_FILTER）。"""
+        c = self._rule5_candidate(intraday=-1.5)
+        _set_risk_flags(c)
+        assert "主力出货" in c.risk_flags, f"应打主力出货标签, flags={c.risk_flags}"
 
 
 # ============================================================

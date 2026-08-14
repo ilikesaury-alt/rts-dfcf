@@ -6,6 +6,7 @@ from scanner.config import (
     DISTRIBUTION_ACCUM_PULLBACK,
     DISTRIBUTION_INTRADAY_WEAK,
     DISTRIBUTION_OPENING_STRONG,
+    DISTRIBUTION_RANK_WEAK_INTRADAY,
     DISTRIBUTION_TODAY_PCT_LOW,
     DISTRIBUTION_VOL_RATIO,
     EARLY_BONUS,
@@ -58,6 +59,7 @@ from scanner.config import (
     V_MO_MA_NONE,
     V_MO_VOL_SPIKE,
     V_ST_MA_BROKEN,
+    V_ST_RANK_LOW,
     ZT_LIANBAN_BONUS_2,
     ZT_LIANBAN_BONUS_3,
     ZT_LIANBAN_GT3_PENALTY,
@@ -168,11 +170,13 @@ def _set_risk_flags(c: Candidate, fund_risk: dict[str, str] = None):
 def _detect_main_force_distribution(c: Candidate, dims: dict) -> bool:
     """识别主力高位派发迹象。
 
-    四种经典出货模式（满足任一即判定）：
+    五种经典出货模式（满足任一即判定）：
     1. 高位放量滞涨：累计涨幅大 + 量比高 + 今日几乎不涨（量价背离派发）
     2. 高位高换手+超买：高位 + 高换手 + 超买（借势派发）
     3. 冲高回落：开盘强势但分时走弱 + 已有累计涨幅（盘中冲高出货）
     4. 爆量+顶背离：量能爆量 + 顶背离（经典量价顶背离派发）
+    5. 后排+盘中走弱：short_term 后排上榜（rank>30）且分时持续走弱——
+       边际放量票开盘强盘中弱 = 冲高派发，累计涨幅不足 15% 也判定（2026-08-14 新增）。
     """
     accum = c.kline.accumulated_pct if c.kline else 0.0
     vol_ratio = c.kline.volume_ratio if c.kline else 1.0
@@ -202,6 +206,15 @@ def _detect_main_force_distribution(c: Candidate, dims: dict) -> bool:
     # 4. 爆量+顶背离（validator 判定的经典出货信号）
     if (dims.get("v_mo_volume") == V_MO_VOL_SPIKE
             and dims.get("v_mo_divergence") == V_MO_DIVERGENCE_BEAR):
+        return True
+    # 5. 后排+盘中走弱（short_term 专属，2026-08-14 新增）
+    #    dims["v_st_rank"]==V_ST_RANK_LOW 自带 short_term 语义（仅 validate_short_term
+    #    写该字段）且 rank>30；叠加分时持续走弱 → 冲高派发。
+    #    历史校准：12 样本 next_day -1.90%/胜率25%、cum_3d -4.24%/胜率12%（n=8），
+    #    11 股/7 交易日分布（07-20~08-13），非单票集中；弱转强直通亦不可豁免。
+    if (dims.get("v_st_rank") == V_ST_RANK_LOW
+            and intraday is not None
+            and intraday <= DISTRIBUTION_RANK_WEAK_INTRADAY):
         return True
     return False
 
