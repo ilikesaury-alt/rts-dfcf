@@ -444,13 +444,15 @@ def test_display_priority_suggestion_decoupled(monkeypatch, capsys):
 # （图标与「资金流出」标签仍保留展示）。_cand_tier 的 fund_flow 参数供图标相关测试使用。
 def _cand_tier(symbol: str, score: int, category: str = "momentum",
                fund_flow: float | None = None, prominent: bool = False,
-               percent: float = 3.0) -> Candidate:
+               percent: float = 3.0, accum: float = 8.0) -> Candidate:
     # percent 默认 3.0（2~4% 死区，不在次日大涨甜蜜带）：避免候选行被 🎯 误置顶，
     # 使档位测试只由 prominent 决定；需要 🎯 的测试显式传甜蜜带（<2% / 4~8%）。
+    # accum 默认 8.0 ≥ NEXTDAY_ACCUM_MIN（6.0）：甜蜜带 momentum/new_face 票默认可标 🎯，
+    # 保持既有档位测试语义；测试 5 日累计门槛时显式传低值（如 accum=2.0）。
     dims = {}
     if fund_flow is not None:
         dims["fund_flow_main_pct"] = fund_flow
-    k = KlineSummary(trend="", accumulated_pct=0.0, volume_ratio=1.0,
+    k = KlineSummary(trend="", accumulated_pct=accum, volume_ratio=1.0,
                      bottom_confirmed=False, score=score, dimensions=dims)
     c = Candidate(
         stock=StockInfo(symbol=symbol, name="测试", code=symbol[-6:], percent=percent,
@@ -708,3 +710,140 @@ def test_nextday_mark_lifts_tier(monkeypatch, capsys):
     assert "SZ300003" in lines[2], f"无标记高分票(120,档1)应排在档0之后: {lines}"
     assert "🎯" in lines[0] and "🎯" in lines[1]
     assert "🎯" not in lines[2], f"死区带票不应有 🎯 标记: {lines}"
+
+
+# ── 次日大涨画像 5 日累计门槛（2026-08-14）──
+# 用户怕追高只选涨幅小/5日累计低的票 → 实测 0~3 平档 hit 仅 5.4%（全场最差）、10~15 档 21.2%
+# （最好）——「累计低=安全」是反指。甜蜜带+累计≥6 使 hit 16.5%→20.0%。
+# rebound（超跌反弹，负累计天然 hit 33.3%）与 short_term（规律在超买/弱转强）豁免。
+def _insert_rec_pct_accum(conn, symbol: str, name: str, category: str, score: int,
+                          percent: float, accum) -> None:
+    today = now_beijing().date().isoformat()
+    conn.execute(
+        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, accumulated_pct) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (today, "13:00", symbol, name, category, score, percent, accum),
+    )
+    conn.commit()
+
+
+def test_nextday_mark_accum_gate_low(monkeypatch, capsys):
+    """🎯 累计门槛：甜蜜带 momentum 票 5 日累计 <6 不打标记（低累计平盘=无动量，最差档）。"""
+    conn = _rec_db()
+    _insert_rec_pct(conn, "SZ300001", "低累计动量", "momentum", 70, 1.0)
+    pool = {"SZ300001": _cand_tier("SZ300001", 70, "momentum", percent=1.0, accum=2.0)}
+    disp_mod.display_priority(conn, today_pool=pool)
+    out = capsys.readouterr().out
+    line = next(l for l in out.splitlines() if "SZ300001" in l)
+    assert "🎯" not in line, f"累计 2.0(<6) 不应标 🎯: {line}"
+
+
+def test_nextday_mark_accum_gate_pass(monkeypatch, capsys):
+    """🎯 累计门槛：甜蜜带 momentum 票 5 日累计 ≥6 打标记（资金已连续介入的潜伏启动）。"""
+    conn = _rec_db()
+    _insert_rec_pct(conn, "SZ300001", "高累计动量", "momentum", 70, 1.0)
+    pool = {"SZ300001": _cand_tier("SZ300001", 70, "momentum", percent=1.0, accum=9.0)}
+    disp_mod.display_priority(conn, today_pool=pool)
+    out = capsys.readouterr().out
+    line = next(l for l in out.splitlines() if "SZ300001" in l)
+    assert "🎯" in line, f"累计 9.0(≥6) 应标 🎯: {line}"
+
+
+def test_nextday_mark_rebound_exempt_from_accum(monkeypatch, capsys):
+    """🎯 累计门槛：rebound 豁免（超跌反弹负累计天然，hit 33.3% 最强类别，加门槛会误伤）。"""
+    conn = _rec_db()
+    _insert_rec_pct(conn, "SZ300001", "反弹票", "rebound", 50, 1.0)
+    pool = {"SZ300001": _cand_tier("SZ300001", 50, "rebound", percent=1.0, accum=-8.0)}
+    disp_mod.display_priority(conn, today_pool=pool)
+    out = capsys.readouterr().out
+    line = next(l for l in out.splitlines() if "SZ300001" in l)
+    assert "🎯" in line, f"rebound 负累计(-8.0) 应豁免并标 🎯: {line}"
+
+
+def test_nextday_mark_short_term_exempt_from_accum(monkeypatch, capsys):
+    """🎯 累计门槛：short_term 豁免（其规律在超买/弱转强，不适用累计口径，维持现状）。"""
+    conn = _rec_db()
+    _insert_rec_pct(conn, "SZ300001", "超短票", "short_term", 60, 1.0)
+    pool = {"SZ300001": _cand_tier("SZ300001", 60, "short_term", percent=1.0, accum=1.0)}
+    disp_mod.display_priority(conn, today_pool=pool)
+    out = capsys.readouterr().out
+    line = next(l for l in out.splitlines() if "SZ300001" in l)
+    assert "🎯" in line, f"short_term 低累计(1.0) 应豁免并标 🎯: {line}"
+
+
+def test_nextday_mark_accum_db_fallback(monkeypatch, capsys):
+    """🎯 累计兜底：掉榜行（无候选）用 DB 落库 accumulated_pct 判定。"""
+    conn = _rec_db()
+    _insert_rec_pct_accum(conn, "SZ300001", "落库高累计", "momentum", 70, 1.0, 12.0)
+    _insert_rec_pct_accum(conn, "SZ300002", "落库低累计", "momentum", 60, 1.0, 1.0)
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    lines = {sym: next(l for l in out.splitlines() if sym in l)
+             for sym in ["SZ300001", "SZ300002"]}
+    assert "🎯" in lines["SZ300001"], f"DB 累计 12.0(≥6) 应标: {lines['SZ300001']}"
+    assert "🎯" not in lines["SZ300002"], f"DB 累计 1.0(<6) 不应标: {lines['SZ300002']}"
+
+
+def _rec_db_with_kline():
+    conn = _rec_db()
+    conn.execute("""CREATE TABLE daily_kline (
+        symbol TEXT NOT NULL, timestamp INTEGER, date TEXT NOT NULL,
+        open REAL, close REAL, high REAL, low REAL, volume REAL, percent REAL) """)
+    return conn
+
+
+def test_nextday_mark_accum_kline_replay(monkeypatch, capsys):
+    """🎯 累计兜底：DB 未落库时从 daily_kline 回放推荐日前 5 根 bar 现算。"""
+    conn = _rec_db_with_kline()
+    today = now_beijing().date().isoformat()
+    # 无候选、无落库 accumulated_pct：回放 6 根（推荐日往前），累计 = (close[-1]-close[-6])/close[-6]
+    closes = [10.0 + 0.35 * i for i in range(6)]   # 累计约 +17.5%
+    for i, c in enumerate(closes):
+        d = (now_beijing().date() - timedelta(days=5 - i)).isoformat()
+        conn.execute(
+            "INSERT INTO daily_kline (symbol, date, close, percent) VALUES (?, ?, ?, ?)",
+            ("SZ300001", d, c, 1.0),
+        )
+    conn.execute(
+        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (today, "13:00", "SZ300001", "回放票", "momentum", 70, 1.0),
+    )
+    conn.commit()
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    line = next(l for l in out.splitlines() if "SZ300001" in l)
+    assert "🎯" in line, f"kline 回放累计 +17.5%(≥6) 应标 🎯: {line}"
+
+
+def test_nextday_mark_accum_kline_replay_low(monkeypatch, capsys):
+    """🎯 累计兜底：kline 回放累计不足门槛（<6）不打标记。"""
+    conn = _rec_db_with_kline()
+    today = now_beijing().date().isoformat()
+    closes = [10.0 + 0.05 * i for i in range(6)]   # 累计约 +2.5%（平盘）
+    for i, c in enumerate(closes):
+        d = (now_beijing().date() - timedelta(days=5 - i)).isoformat()
+        conn.execute(
+            "INSERT INTO daily_kline (symbol, date, close, percent) VALUES (?, ?, ?, ?)",
+            ("SZ300002", d, c, 1.0),
+        )
+    conn.execute(
+        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (today, "13:00", "SZ300002", "平盘回放", "momentum", 70, 1.0),
+    )
+    conn.commit()
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    line = next(l for l in out.splitlines() if "SZ300002" in l)
+    assert "🎯" not in line, f"kline 回放累计 +2.5%(<6) 不应标 🎯: {line}"
+
+
+def test_nextday_mark_accum_missing_fail_open(monkeypatch, capsys):
+    """🎯 累计兜底：三源皆缺失（无候选/无落库/无 kline）时 fail-open 放行（不因缺数据误杀）。"""
+    conn = _rec_db_with_kline()   # 有表但无数据 → 回放返回 None
+    _insert_rec_pct(conn, "SZ300001", "无累计票", "momentum", 70, 1.0)
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    line = next(l for l in out.splitlines() if "SZ300001" in l)
+    assert "🎯" in line, f"累计缺失应 fail-open 放行（保留旧行为）: {line}"

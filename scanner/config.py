@@ -613,6 +613,12 @@ NEXTDAY_SPIKE_SWEET_MIN = 0.0     # 低吸潜伏带下限（推荐时刻盘中�
 NEXTDAY_SPIKE_SWEET_LOW = 2.0     # 低吸潜伏带上限（<2%）
 NEXTDAY_SPIKE_MID_MIN = 4.0       # 中段启动带下限
 NEXTDAY_SPIKE_MID_MAX = 8.0       # 中段启动带上限（<8%，排除 8-10% 陷阱）
+# 5 日累计门槛（2026-08-14，🎯 判定新增维度）。数据（nextday_attribution kline 回放全量，
+# 含推荐日口径）：推荐前 5 日累计 10~15% 档 hit 21.2%（最好）、0~3 平档仅 5.4%（全场最差）——
+# 「5 日累计低=安全」是反指（平盘=无动量，累计 10%+ = 资金已连续介入的潜伏启动）。
+# 甜蜜带 + 累计≥6 使 hit 从 16.5% 提升至 20.0%（new_face 15.7%→21.1%、momentum 23.7%→26.5%）；
+# rebound（超跌反弹，负累计天然，hit 33.3%）与 short_term（其规律在超买/弱转强，不在此列）豁免。
+NEXTDAY_ACCUM_MIN = 6.0
 # 分类别展示优先：rebound（hit 32%）> short_term（弱转强 11.8%）> momentum（MA3头 11.8%）
 # > known_new_face > new_face。comeback 无 hit 不入区。
 NEXTDAY_CAT_PRIORITY = {

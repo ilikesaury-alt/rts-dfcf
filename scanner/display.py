@@ -11,6 +11,7 @@ from scanner.config import (
     FUND_FLOW_MAIN_PCT_EXTREME,
     FUND_FLOW_MAIN_PCT_STRONG,
     FUND_FLOW_MAIN_PCT_WEAK,
+    NEXTDAY_ACCUM_MIN,
     NEXTDAY_CAT_PRIORITY,
     NEXTDAY_SPIKE_MID_MAX,
     NEXTDAY_SPIKE_MID_MIN,
@@ -409,20 +410,70 @@ def _in_nextday_sweet_band(percent: float) -> bool:
             or NEXTDAY_SPIKE_MID_MIN <= percent < NEXTDAY_SPIKE_MID_MAX)
 
 
-def _is_nextday_marked(entry: dict) -> bool:
-    """次日大涨画像标记（🎯）：推荐时刻涨幅在甜蜜带 且 非超买死亡信号。
+def _nextday_entry_accum(entry: dict, conn=None) -> float | None:
+    """推荐前 5 日累计涨幅（%），用于 🎯 判定；拿不到返回 None（不阻断）。
+
+    回退链（与 _nextday_entry_percent 同构）：候选池 kline 的 accumulated_pct（扫描时
+    已算好，最准）→ DB 落库 accumulated_pct（掉榜/重启行）→ daily_kline 回放兜底
+    （落库缺失时按推荐日往前 5 根 bar 现算，口径同 KlineSummary.accumulated_pct：
+    len(closes)>=6 用 (closes[-1]-closes[-6])/closes[-6]，否则前 5 根 percent 求和）。
+    累计字段历史上大部分类别未落库（new_face 4/1020、momentum 58/481），必须回放兜底。
+    """
+    c = entry.get("_candidate")
+    if c and c.kline and c.kline.accumulated_pct is not None:
+        return float(c.kline.accumulated_pct)
+    db_acc = entry.get("accumulated_pct")
+    if db_acc is not None:
+        return float(db_acc)
+    if conn is None:
+        return None
+    sym = entry.get("symbol")
+    rec_date = entry.get("date")
+    if not sym or not rec_date:
+        return None
+    try:
+        rows = conn.execute(
+            "SELECT close, percent FROM daily_kline WHERE symbol = ? AND date <= ? "
+            "ORDER BY date DESC LIMIT 6",
+            (sym, rec_date[:10]),
+        ).fetchall()
+    except Exception:
+        return None
+    closes = [r[0] for r in rows]
+    if len(closes) >= 6:
+        base = closes[5]
+        if not base or base <= 0:
+            return None
+        return (closes[0] - base) / base * 100.0
+    if not closes:
+        return None
+    return sum(float(r[1] or 0.0) for r in rows[:5])
+
+
+def _is_nextday_marked(entry: dict, conn=None) -> bool:
+    """次日大涨画像标记（🎯）：推荐时刻涨幅在甜蜜带 + 非超买死亡信号 + 5日累计门槛。
 
     2026-08-11：原「◆ 次日大涨候选」独立区与综合排序主表重合度 65%（实测当日
     主表 17 只中 11 只甜蜜带、两表排序几乎一致、辨识度因子空转），改为主表行尾
     标记，消除重复输出。筛形条件与独立区完全一致（nextday_attribution 口径）：
       1. 推荐时刻涨幅在甜蜜带（<2% 低吸潜伏 或 4~8% 中段启动）；
       2. 排除超买（short_term/动量死亡信号：hit 5% vs 非超买 10.5%）。
+    2026-08-14 新增 3. 5 日累计 ≥ NEXTDAY_ACCUM_MIN（用户怕追高只选涨幅小/累计低的票，
+    实测 0~3 平档 hit 仅 5.4% 全场最差、10~15 档 21.2% 最好——「累计低=安全」是反指；
+    甜蜜带+累计≥6 使 hit 16.5%→20.0%）。rebound 豁免（超跌反弹，负累计天然，hit 33.3%）、
+    short_term 豁免（其规律在超买/弱转强，不在此列）。累计缺失 fail-open 不阻断（见
+    _nextday_entry_accum）。
     视觉标记 + 参与综合排序档位（_sort_tier 档0置顶），不改 score / 不落库。
     """
     if entry["category"] not in NEXTDAY_CAT_PRIORITY:
         return False
     if not _in_nextday_sweet_band(_nextday_entry_percent(entry)):
         return False
+    cat = entry["category"]
+    if cat not in ("rebound", "short_term"):
+        accum = _nextday_entry_accum(entry, conn)
+        if accum is not None and accum < NEXTDAY_ACCUM_MIN:
+            return False  # 有累计数据且不达门槛 → 不标；缺数据 fail-open 放行
     c = entry.get("_candidate")
     if c and c.kline and c.kline.dimensions:
         if (c.kline.dimensions.get("st_overbought_flag")
@@ -501,11 +552,17 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
 
     # 档位置顶（2026-08-06 引入；2026-08-11 去掉资金流因子；2026-08-12 档0=辨识度∪次日大涨；
     # 2026-08-12 去掉辨识度排序）：排序键 (档位, 类别优先级, 分数键)，跨类别全局生效。
-    # 档0置前 = 次日大涨画像(🎯)（推荐时刻涨幅甜蜜带 + 非超买）；档1 = 其余。辨识度(↻)
-    # 不再参与排序——次日大涨画像本身即辨识度属性（用户决策），↻ 仅保留行内展示。
-    # 资金流不参与排序/劣后过滤（净流出票正常展示，仅保留「资金流出」标签与图标提醒）。
+    # 档0置前 = 次日大涨画像(🎯)（推荐时刻涨幅甜蜜带 + 非超买 + 5日累计门槛，见 _is_nextday_marked）；
+    # 档1 = 其余。辨识度(↻)不再参与排序——次日大涨画像本身即辨识度属性（用户决策），
+    # ↻ 仅保留行内展示。资金流不参与排序/劣后过滤（净流出票正常展示，仅保留「资金流出」标签与图标提醒）。
+    # 2026-08-14：预计算 mark map（排序+渲染各调一次 _is_nextday_marked 会触发两次 daily_kline
+    # 回放全表扫描；预计算后只查一次，_sort_tier 与渲染共用同一结果保证一致性）。
+    nextday_mark: dict[str, bool] = {}
+    for e in today_recs:
+        nextday_mark[e["symbol"]] = _is_nextday_marked(e, conn)
+
     def _sort_tier(entry):
-        return 0 if _is_nextday_marked(entry) else 1
+        return 0 if nextday_mark.get(entry["symbol"], False) else 1
 
     # 回马枪独立成区（2026-08-07 方案A）：comeback 是 off_list 掉榜跟踪票，语义与榜上票不同，
     # 从主排序表抽出放到末尾独立区块；主表只排榜上五类（rebound/known_new_face/new_face/
@@ -531,7 +588,7 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
            f"{_pad('板块',14)} {_pad('策略',5)} {_pad('评分',4,'r')} {_pad('时间',6)} {_pad('建议',6)}")
     print(hdr)
     for i, entry in enumerate(scored, 1):
-        mark = _is_nextday_marked(entry)
+        mark = nextday_mark.get(entry["symbol"], False)
         _print_priority_row(entry, i, flow_pct_map, nextday_mark=mark, last_ranks=last_ranks)
     print(f"  {'-'*92}")
 
