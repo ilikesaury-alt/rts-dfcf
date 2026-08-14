@@ -323,6 +323,187 @@ class TestScoreStockStaleKlineAudit:
         assert "评分基于缺今日bar旧缓存" not in captured  # 非交易时段不告警
 
 
+class TestCrossFunctionSilentDegradation:
+    """跨函数静默降级集成测试（2026-08-14 网宿类 bug 形态）。
+
+    这类 bug 不在任何单函数逻辑内，而是函数之间的数据流不变量被破坏：
+    上游 `_fetch_all_klines` 补拉失败返回"看似正常"的旧缓存（无今日 bar）→
+    下游 `_score_stock`/`_compute_volume_metrics` 静默消费 → 量比按昨日量
+    误判放量启动票 → 量比硬门误杀。本套件把完整链路串起来验证：
+
+    _fetch_all_klines(补拉失败+分时兜底) → _score_stock(stale 标记+告警)
+      → save_recommendations(stale_kline 落库) → save_scan_quality(血缘日志)
+    """
+
+    def _stock(self, symbol: str = "300001") -> StockInfo:
+        return StockInfo(symbol=symbol, name="测试", code=symbol,
+                         percent=7.0, current=15.5, value=10000,
+                         rank_change=1000, rank=1)
+
+    def _stale_kline(self, n: int = 40, end: str = "2026-06-17") -> list[dict]:
+        base = date.fromisoformat(end)
+        return [
+            {"date": (base - timedelta(days=(n - 1) - i)).isoformat(),
+             "open": 10.0, "close": 10.0, "high": 10.2, "low": 9.8,
+             "volume": 1000, "percent": 0.0}
+            for i in range(n)
+        ]
+
+    def _score_candidate(self, monkeypatch, conn, klines, today="2026-06-18"):
+        """复用 _score_stock 真实链路产出候选（仅注入 analyze/validate 结果）。"""
+        import scanner.orchestrator as o
+        from scanner.candidate_pool import ScanSession
+        from scanner.models import KlineSummary
+        ks = KlineSummary(trend="放量启动", accumulated_pct=3.0, volume_ratio=1.2,
+                          bottom_confirmed=True, score=30, dimensions={},
+                          avg_volume=1_000_000)
+        monkeypatch.setattr(o, "analyze_short_term", lambda *a, **k: ks)
+        monkeypatch.setattr(o, "analyze_new_face", lambda *a, **k: None)
+        monkeypatch.setattr(o, "analyze_momentum", lambda *a, **k: None)
+        monkeypatch.setattr(o, "analyze_rebound", lambda *a, **k: None)
+        monkeypatch.setattr(o, "validate", lambda *a, **k: (True, 0, {}))
+        monkeypatch.setattr(o, "get_symbol_appearances", lambda *a, **k: [])
+        nf, mo, rb, st = o._score_stock(
+            self._stock(), conn=conn, klines=klines, today=today,
+            session_state=ScanSession(), clusters=None,
+        )
+        return st
+
+    def test_full_chain_stale_kline_recommendation(self, monkeypatch, capsys):
+        """链路完整验证：补拉失败(无今日bar)→候选 stale 标记→落库 stale_kline=1。
+
+        模拟网宿形态：日线补拉失败 + 分时兜底也失败（残留场景），候选仍产出，
+        但被显式标记为基于旧缓存评分，不静默吞掉数据质量下降。
+        """
+        import sqlite3
+
+        import scanner.orchestrator as o
+        from scanner.database import save_recommendations
+
+        # 真实 DB（含迁移），真实 save_recommendations 落库
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        # 手动建 recommendations 表（含 stale_kline 列）
+        conn.execute("""CREATE TABLE recommendations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, time TEXT NOT NULL,
+            symbol TEXT NOT NULL, name TEXT NOT NULL, category TEXT NOT NULL,
+            score INTEGER NOT NULL, percent REAL, trend TEXT, next_day_pct REAL,
+            fwd_3d REAL, fwd_5d REAL, score_breakdown TEXT, source TEXT DEFAULT 'xueqiu',
+            concept TEXT, accumulated_pct REAL, excluded INTEGER DEFAULT 0,
+            stale_kline INTEGER DEFAULT 0)""")
+
+        monkeypatch.setattr(o, "is_trading_time", lambda: True)
+        monkeypatch.setattr(o, "now_beijing",
+                            lambda: datetime(2026, 6, 18, 10, 0))
+        # K 线缺今日 bar（旧缓存）
+        klines = {"300001": self._stale_kline()}
+
+        st = self._score_candidate(monkeypatch, conn, klines)
+        assert st is not None
+        assert st.stale_kline is True  # Layer1: 消费点标记
+        capsys.readouterr()  # 清除告警输出
+
+        # Layer2: 落库审计——stale_kline=1 持久化
+        save_recommendations(conn, [st], [])
+        row = conn.execute(
+            "SELECT stale_kline FROM recommendations WHERE symbol='300001'").fetchone()
+        assert row is not None
+        assert row[0] == 1
+
+    def test_fetch_failure_stale_cache_still_scored_with_marker(self, monkeypatch, capsys):
+        """真实 _fetch_all_klines 补拉失败 → _score_stock 识别 stale。
+
+        跨两个函数验证不变量：即使 _fetch_all_klines 返回旧缓存（无今日 bar），
+        下游 _score_stock 仍必须标记 stale 而非静默当作正常数据评分。
+        """
+        import sqlite3
+
+        import scanner.orchestrator as o
+        stale = self._stale_kline()
+
+        monkeypatch.setattr(o, "is_trading_time", lambda: True)
+        monkeypatch.setattr(o, "now_beijing",
+                            lambda: datetime(2026, 6, 18, 10, 0))
+        monkeypatch.setattr(o, "get_cached_klines", lambda conn, syms: {s: stale for s in syms})
+        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
+        monkeypatch.setattr(o, "TODAY_BAR_MINUTE_TIMEOUT", 2.0)
+
+        class _Adapter:
+            def fetch_kline(self, symbol, days=15):
+                return None  # 日线补拉失败
+
+            def fetch_minute(self, symbol):
+                return None  # 分时兜底也失败（残留场景）
+
+        conn = sqlite3.connect(":memory:")
+        klines = o._fetch_all_klines(conn, _Adapter(), [self._stock()])
+        assert klines["300001"] is stale  # 回退旧缓存
+
+        # 下游必须识别 stale（即便分时兜底失败）
+        st = self._score_candidate(monkeypatch, conn, klines)
+        assert st is not None
+        assert st.stale_kline is True
+        captured = capsys.readouterr().out
+        assert "评分基于缺今日bar旧缓存" in captured  # fail-loud 告警
+
+    def test_volume_ratio_stale_kline_misjudgment(self):
+        """核心不变量：缺今日 bar 时量比按昨日量计算 → 放量票误判缩量。
+
+        这是网宿被误杀的直接机制：同一 K 线，缺今日 bar 时 vol_ratio 用昨日
+        全天量（0.5/1.0=0.5 <1.0 硬门），含今日 bar 时才反映真实放量。
+        验证 `_compute_volume_metrics` 对两种输入的口径差异。
+        """
+        from scanner.analysis import _compute_volume_metrics
+        # 历史 5 根全天量 1.0，昨日量为 0.5 → 无今日 bar 时 ratio=0.5
+        no_today = [
+            {"date": f"2026-06-{13+i}", "close": 10.0, "volume": 1.0} for i in range(4)
+        ] + [{"date": "2026-06-17", "close": 10.0, "volume": 0.5}]
+        ratio_stale, _ = _compute_volume_metrics(no_today, "2026-06-18",
+                                                 now=datetime(2026, 6, 18, 10, 0))
+        assert ratio_stale < 1.0  # 昨日量当作今日量 → 误判缩量
+
+        # 含今日 bar（放量启动 2.0）→ 量比反映真实放量
+        with_today = no_today + [
+            {"date": "2026-06-18", "close": 10.5, "volume": 2.0}]
+        ratio_fresh, _ = _compute_volume_metrics(with_today, "2026-06-18",
+                                                 now=datetime(2026, 6, 18, 10, 0))
+        assert ratio_fresh >= 1.0  # 今日放量 → 过硬门
+
+    def test_quality_log_counts_stale_and_fallback(self, monkeypatch):
+        """血缘日志：fetch_failed / minute_fallback 计数器正确。
+
+        上游降级规模必须反映到可查询的日志中（这是审查抓不到 bug 的可观测化）。
+        """
+        import sqlite3
+
+        import scanner.orchestrator as o
+        stale = self._stale_kline()
+
+        monkeypatch.setattr(o, "is_trading_time", lambda: True)
+        monkeypatch.setattr(o, "now_beijing",
+                            lambda: datetime(2026, 6, 18, 10, 0))
+        monkeypatch.setattr(o, "get_cached_klines", lambda conn, syms: {s: stale for s in syms})
+        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
+        monkeypatch.setattr(o, "TODAY_BAR_MINUTE_TIMEOUT", 2.0)
+
+        class _Adapter:
+            def fetch_kline(self, symbol, days=15):
+                return None  # 日线补拉失败
+
+            def fetch_minute(self, symbol):
+                return [  # 分时兜底成功
+                    {"timestamp": 1, "volume": 100.0, "current": 15.0,
+                     "avg_price": 14.9, "high": 15.2, "low": 14.8, "percent": 3.0},
+                ]
+
+        conn = sqlite3.connect(":memory:")
+        stats: dict = {}
+        klines = o._fetch_all_klines(conn, _Adapter(), [self._stock()], stats=stats)
+        assert stats["fetch_failed"] == 1           # 1 只补拉失败
+        assert stats["minute_fallback"] == 1        # 分时兜底成功 1 次
+        assert klines["300001"][-1]["date"] == "2026-06-18"  # 今日 bar 已构造
+
+
 class TestFetchAllKlinesIntradayRefresh:
 
     def _cached(self, today):
