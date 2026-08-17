@@ -503,6 +503,38 @@ class TestCrossFunctionSilentDegradation:
         assert stats["minute_fallback"] == 1        # 分时兜底成功 1 次
         assert klines["300001"][-1]["date"] == "2026-06-18"  # 今日 bar 已构造
 
+    def test_minute_fallback_phase_budget_expired_skips(self, monkeypatch):
+        """分时兜底总量预算（2026-08-17 审查修复）：_merge_minute_today_bar 接收共享
+        deadline，已耗尽时直接返回 None 不再发分时请求——此前单只 join(8s) 限时存在但
+        串行叠加无总量上限（API 故障时补拉 N 只 × 8s 可拖垮单轮扫描，数据质量
+        "看似正常"的假死形态）。"""
+        import scanner.orchestrator as o
+        from datetime import date as _date
+
+        called: list[str] = []
+
+        class _Adapter:
+            def fetch_minute(self, symbol):
+                called.append(symbol)
+                return [{"timestamp": 1, "volume": 100.0, "current": 15.0,
+                         "avg_price": 14.9, "high": 15.2, "low": 14.8, "percent": 3.0}]
+
+        monkeypatch.setattr(o, "is_trading_time", lambda: True)
+        stock = self._stock()
+        stale = self._stale_kline()
+        # deadline 已过（now-1s）→ 兜底整体跳过，不发分时请求
+        res = o._merge_minute_today_bar(
+            _Adapter(), stock, _date(2026, 6, 18), stale,
+            deadline=o.now_beijing().timestamp() - 1)
+        assert res is None
+        assert called == [], f"预算耗尽时不得再发分时请求, called={called}"
+        # 预算尚足（deadline=now+30s）→ 正常构造今日 bar
+        res2 = o._merge_minute_today_bar(
+            _Adapter(), stock, _date(2026, 6, 18), stale,
+            deadline=o.now_beijing().timestamp() + 30)
+        assert res2 is not None and res2[-1]["date"] == "2026-06-18"
+        assert len(called) == 1, f"预算充足时应发出分时请求, called={called}"
+
 
 class TestFetchAllKlinesIntradayRefresh:
 

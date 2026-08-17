@@ -198,6 +198,12 @@ def push_feishu(
     current_symbols = _extract_symbols(new_faces, momentum, short_term_list, rebound_list, comeback_list)
     has_change = current_symbols != _last_push_symbols
 
+    if not current_symbols:
+        # 2026-08-17 审查修复：全空推荐时不再推空卡片。此前 _last_push_symbols 初始为空、
+        # current_symbols 也为空时 has_change=False，但 now-0>=FEISHU_MIN_INTERVAL 恒真 →
+        # 每 5 分钟推一张"0新 0动"空卡刷屏（无推荐时段，如早盘/清淡日）。空卡无信息量。
+        return False
+
     if not has_change and (now - _last_push_time) < FEISHU_MIN_INTERVAL:
         return False
 

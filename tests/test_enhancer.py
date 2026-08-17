@@ -437,6 +437,33 @@ class TestApplyListMomentumBonus:
         _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, cross_days=1)
         assert c.list_momentum_bonus == 3
 
+    @patch("scanner.enhancer.rank_trajectory_score", return_value=0)
+    def test_accelerating_writes_separate_fatigue_accelerate_key(self, mock_traj):
+        """回归（2026-08-17 审查修复）：加速奖励写独立键 fatigue_accelerate（正值），
+        fatigue 键保持「疲劳惩罚」语义。此前同名覆写后 dims["fatigue"] 为 +6——
+        _set_risk_flags 判 <0 才打「疲劳」标签不受影响，但 backtest dimension_ic 按整列
+        归因会把加速奖励解析进「疲劳」因子（正负混用，归因失真）。"""
+        c = _make_candidate(percent=5.0, volume_ratio=1.5)
+        c.category = "momentum"
+        _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, cross_days=2)
+        assert c.list_momentum_bonus == 6
+        assert c.kline.dimensions.get("fatigue_accelerate") == 6
+        assert c.kline.dimensions.get("fatigue") is None, (
+            f"fatigue 键应保持未写入（仅疲劳罚分写负值）, got {c.kline.dimensions.get('fatigue')}")
+
+    @patch("scanner.enhancer.rank_trajectory_score", return_value=0)
+    def test_fatigue_rebound_skips_price_signal(self, mock_traj):
+        """回归（2026-08-17 审查修复）：rebound 加入 is_reversal 豁免——超跌反弹负累计
+        是策略核心前提（与 RPS 豁免同理由），连榜≥3 天时不得按价格判疲劳。
+        此前 rebound 漏在 is_reversal 外：accumulated_pct<8 恒真 + 低量比 0.8<1.0
+        = 2 疲劳信号 → 误打疲劳罚分 -9 与「疲劳」风险标签。"""
+        c = _make_candidate(accumulated_pct=-12.0, volume_ratio=0.8, percent=2.0)
+        c.category = "rebound"
+        _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, cross_days=2)
+        assert c.list_momentum_bonus == 5, (
+            f"rebound 应豁免价格信号 → streak=3 榜单动能 5, got {c.list_momentum_bonus}")
+        assert c.kline.dimensions.get("fatigue") is None
+
 
 # ============================================================
 # _record_dimensions

@@ -112,8 +112,9 @@ def evaluate_comeback(conn, adapter, fetch_klines: _KlineFetcher,
     meta_by_sym = {m["symbol"]: m for m in metas}
 
     # 反转预过滤（DB 缓存零网络成本）：5日跌幅 > 阈值 的票不值得补拉当日 bar。
-    # 回踩变体仅评估"近 N 日推荐"票（有 rec 上下文）。两者都需先过此预筛，
-    # 只对幸存者拉行情，避免对全池（上限 600）逐扫描轰击行情接口。
+    # 回踩变体仅评估"近 N 日推荐"票（有 rec 上下文），走 6 维回踩买点信号、不要求
+    # 超跌，故不套用 5 日跌幅预筛（该预筛是反转变体的语义门 + 成本控制）。
+    # 反转变体必须先过此预筛，只对幸存者拉行情，避免对全池（上限 600）逐扫描轰击行情接口。
     survivors: list[dict] = []
     for sym, m in meta_by_sym.items():
         if "_rec" in m or _passes_drop_prefilter(get_cached_kline(conn, sym), today):

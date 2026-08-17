@@ -543,6 +543,40 @@ class TestMarkReversedRecommendations:
         assert marked == [], "降级行情（current<=0）应 fail-open 不移出"
         assert "300209" in {r["symbol"] for r in self._recs(memory_db)}
 
+    def test_mixed_main_and_comeback_only_main_excluded(self, memory_db):
+        """回归（2026-08-17 审查修复）：同 symbol 当日既有榜上主类别行（触发反转移出）
+        又有早先落库的 comeback 行时，UPDATE 必须带类别守卫（COALESCE(category,'')!='comeback'）
+        ——此前无守卫会把两行全标 excluded=1，综合排序里回马枪候选凭空消失。"""
+        self._insert(memory_db, "300209", percent=3.86, category="short_term")
+        self._insert(memory_db, "300209", percent=3.0, category="comeback")
+        marked = mark_reversed_recommendations(
+            memory_db, self._recs(memory_db), active_syms=set(),
+            live_quotes={"300209": {"percent": -3.15, "high_pct": 12.33}})
+        assert "300209" in marked
+        rows = memory_db.execute(
+            "SELECT category, excluded FROM recommendations WHERE date=? AND symbol=?",
+            (now_beijing().date().isoformat(), "300209")).fetchall()
+        by_cat = {r[0]: r[1] for r in rows}
+        assert by_cat.get("short_term") == 1, "榜上主类别行应被移出"
+        assert by_cat.get("comeback") == 0, "comeback 行不得连带移出"
+
+    def test_first_time_skips_excluded_earlier_rec(self, memory_db):
+        """回归（2026-08-17 审查修复）：首推时间 MIN(time) 必须过滤 excluded 行——
+        早盘已推荐的票盘中反转移出（excluded=1）后，再推荐行的时间不被早先已移出
+        记录的 time 污染（此前 first_time 取到更早的 10:00）。"""
+        today = now_beijing().date().isoformat()
+        memory_db.execute(
+            "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, excluded) "
+            "VALUES (?, '10:00', '300209', '已移出', 'short_term', 80, 3.0, 1)", (today,))
+        memory_db.execute(
+            "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, excluded) "
+            "VALUES (?, '14:00', '300209', '再推荐', 'short_term', 80, 3.0, 0)", (today,))
+        memory_db.commit()
+        recs = self._recs(memory_db)
+        assert len(recs) == 1
+        assert recs[0]["first_time"] == "14:00", (
+            f"首推时间应取未移出记录, got {recs[0]['first_time']}")
+
 
 class TestWatchPoolEviction:
     """WATCH_POOL_MAX 容量上限：超限时淘汰 last_list_date 最旧条目。"""

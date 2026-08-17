@@ -29,6 +29,7 @@ from scanner.config import (
     KLINE_FETCH_DEADLINE,
     MAX_MARKET_CAP,
     MAX_STOCK_PRICE,
+    MINUTE_FALLBACK_PHASE_DEADLINE,
     MINUTE_FETCH_PHASE_DEADLINE,
     MOMENTUM_MIN_SCORE,
     NEW_FACE_FIRST_MIN_SCORE,
@@ -143,15 +144,27 @@ def _build_today_bar_from_minute(adapter, stock: StockInfo, today: date) -> Klin
 
 
 def _merge_minute_today_bar(adapter, stock: StockInfo | None, today: date,
-                            stale: list[KlineBar]) -> list[KlineBar] | None:
+                            stale: list[KlineBar],
+                            deadline: float | None = None) -> list[KlineBar] | None:
     """把分时构造的今日 bar 合并进旧缓存；失败/非盘中返回 None（维持原回退）。
 
     限时 TODAY_BAR_MINUTE_TIMEOUT 兜底：分时接口自身无 timeout，超时线程后台自然
     结束（daemon），主扫描循环不挂死。仅交易时段启用——收盘后缺今日 bar 属正常，
     不值得为每个回退票再发一次分时请求。
+
+    deadline（2026-08-17 审查新增）：整个兜底阶段共享的总预算时间戳——单只 join(8s)
+    限时存在但串行叠加无总量上限（API 故障时 N 只 × 8s 可拖垮单轮扫描），调用方
+    _fetch_all_klines 用 MINUTE_FALLBACK_PHASE_DEADLINE 设好共享 deadline 传入，
+    剩余时间不足即跳过该票（维持旧缓存回退），保证兜底阶段总量有界。
     """
     if not is_trading_time() or not stale or stock is None:
         return None
+    timeout = TODAY_BAR_MINUTE_TIMEOUT
+    if deadline is not None:
+        remaining = deadline - now_beijing().timestamp()
+        if remaining <= 0:
+            return None
+        timeout = min(timeout, remaining)
     box: dict = {}
 
     def _run():
@@ -162,7 +175,7 @@ def _merge_minute_today_bar(adapter, stock: StockInfo | None, today: date,
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
-    t.join(timeout=TODAY_BAR_MINUTE_TIMEOUT)
+    t.join(timeout=timeout)
     bar = box.get("bar")
     if bar is None or t.is_alive():
         return None
@@ -248,6 +261,9 @@ def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo]
         print(f"  [!] K线补拉超时（>{KLINE_FETCH_DEADLINE}s），剩余{deadline_skipped}只回退旧缓存")
 
     # 写入阶段：主线程顺序写 DB，确保 SQLite 线程安全
+    # 分时兜底共享总预算（2026-08-17 审查修复）：两个兜底循环（拉取失败 + deadline 跳过）
+    # 串行逐票 join(8s)，API 故障时 N×8s 无总量上限；设共享 deadline 后整个兜底阶段有界。
+    fallback_deadline = now_beijing().timestamp() + MINUTE_FALLBACK_PHASE_DEADLINE
     for sym, kline in fetched.items():
         if kline:
             if sym in stale_cache:
@@ -265,7 +281,7 @@ def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo]
             # 补拉失败回退旧缓存。盘中时尝试用分时构造今日 bar 兜底（2026-08-14）：
             # 缺今日 bar 会让量比硬门误杀放量启动票（网宿案例），构造 bar 仅本轮使用。
             _merged = _merge_minute_today_bar(adapter, stock_map.get(sym), today,
-                                              stale_cache[sym])
+                                              stale_cache[sym], deadline=fallback_deadline)
             if _merged is not None:
                 _stats["minute_fallback"] = _stats.get("minute_fallback", 0) + 1
             result[sym] = _merged if _merged is not None else stale_cache[sym]
@@ -274,7 +290,7 @@ def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo]
         if sym not in result and sym in stale_cache:
             # deadline 超时未轮到拉取：同样尝试分时今日 bar 兜底
             _merged = _merge_minute_today_bar(adapter, stock_map.get(sym), today,
-                                              stale_cache[sym])
+                                              stale_cache[sym], deadline=fallback_deadline)
             if _merged is not None:
                 _stats["minute_fallback"] = _stats.get("minute_fallback", 0) + 1
             result[sym] = _merged if _merged is not None else stale_cache[sym]

@@ -1,3 +1,4 @@
+import math
 import os
 import re
 import sys
@@ -18,7 +19,6 @@ from scanner.config import (
     NEXTDAY_SPIKE_SWEET_LOW,
     NEXTDAY_SPIKE_SWEET_MIN,
     RISK_FLAGS_DISPLAY_HARD,
-    SECTOR_RESONANCE_WARN_MAX,
     SUGGEST_BY_CAT,
     TOP40_THRESHOLD,
     now_beijing,
@@ -379,16 +379,13 @@ def _print_priority_row(entry: dict, i: int, flow_pct_map: dict,
             extra_str = f"{extra_str} {icon}".strip() if extra_str else icon
     extra_suffix = f" {extra_str}" if extra_str else ""
     nd_mark_str = f" {ANSI['GREEN']}🎯{ANSI['RESET']}" if nextday_mark else ""
-    # 板块普涨避雷标记（2026-08-17，方案C）：小板块共振（count<15）票 hit 5.9-6.7%/
-    # cum_3d -2.2~-2.6 全场最差——局部抱团次日兑现即接盘位。大板块共振（count>=15，如
-    # CPO 20 只集体涨停）接近正常水平（hit 11.0%）不警示，避免板块普涨日主区全标刷屏。
-    # 展示层黄色警告，不改评分不落库不入硬过滤。候选行读 dims、掉榜行读 score_breakdown。
-    sector_warn_str = (f" {ANSI['YELLOW']}⚠板块普涨{ANSI['RESET']}"
-                       if _entry_sector_resonance(entry) else "")
+    # 板块普涨避雷行尾标记已下线（2026-08-17 用户反馈「太扎眼」）：小板块共振避雷
+    # 结论保留于回测（cnt<15 票 hit 5.9-6.7%/cum_3d -2.2~-2.6 最差），但黄色长文本
+    # 移除，避免干扰 🎯 档0 等主信号。
     print(f"  {i:3d}  {entry['symbol']:<12} {_pad(entry['name'],10)} "
           f"{pct_colored(pct)} {accum_str:>8} {price_str:>7} {_pad(rank_str, 8, 'r')} "
           f"{_pad(_trunc(sector,14),14)} {_pad(label_display,5,'r')} {entry['score']:4d} "
-          f"{_pad(first_time,6)} {_pad(suggest_str,6)}{prom_str}{risk_str}{extra_suffix}{nd_mark_str}{sector_warn_str}")
+          f"{_pad(first_time,6)} {_pad(suggest_str,6)}{prom_str}{risk_str}{extra_suffix}{nd_mark_str}")
 
 
 def _nextday_entry_percent(entry: dict) -> float:
@@ -459,14 +456,27 @@ def _nextday_entry_accum(entry: dict, conn=None) -> float | None:
         ).fetchall()
     except Exception:
         rows = []
-    closes = [r[0] for r in rows]
-    if len(closes) >= 6:
-        base = closes[5]
-        if not base or base <= 0:
-            return None
-        return (closes[0] - base) / base * 100.0
-    if closes:
-        return sum(float(r[1] or 0.0) for r in rows[:5])
+    # 2026-08-17 审查修复：回放直读 daily_kline 原始值，历史脏行（契约重构前的
+    # close=NULL/字符串/0/NaN）若不经清洗会抛 TypeError/ValueError 穿透到
+    # display_priority 预计算 → 本轮展示崩溃 + save_recommendations 被跳过。
+    # 统一清洗：close 非有限正数 → 整行剔除；percent 脏值 → 0。
+    valid: list[tuple[float, float]] = []
+    for r in rows:
+        try:
+            close = float(r[0])
+            pct = float(r[1] or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(close) or close <= 0:
+            continue
+        if not math.isfinite(pct):
+            pct = 0.0
+        valid.append((close, pct))
+    if len(valid) >= 6:
+        base = valid[5][0]
+        return (valid[0][0] - base) / base * 100.0
+    if valid:
+        return sum(p for _, p in valid[:5])
     # 回放无数据（daily_kline 缺表/该票无历史）：兜底 DB 落库值
     db_acc = entry.get("accumulated_pct")
     return float(db_acc) if db_acc is not None else None
@@ -476,7 +486,6 @@ def _entry_dims(entry: dict) -> dict:
     """统一维度访问：候选行读 kline.dimensions（最新扫描），掉榜/重启行读 DB score_breakdown。
 
     2026-08-17 新增（配合 get_today_recommendations 返回 score_breakdown）：
-    🎯 分型（short_term 弱转强）与板块普涨避雷标记需要维度字段，掉榜行此前
     拿不到（entry 无 _candidate），现在统一经此函数读取，候选行优先（最新数据）。
     """
     c = entry.get("_candidate")
@@ -496,124 +505,8 @@ def _entry_weak_to_strong(entry: dict) -> bool:
     return bool(d.get("st_weak_to_strong") or d.get("v_st_weak"))
 
 
-def _entry_sector_resonance(entry: dict) -> bool:
-    """板块共振避雷：v_st_sector / v_pb_sector / v_nf_sector >0 且板块规模 count<SECTOR_RESONANCE_WARN_MAX。
 
-    回测细分（2026-08-17，去重样本）：板块共振整体 hit 7.1%/cum_3d -2.22 全场最差，但按
-    板块规模分档差异大——cnt<5 hit 5.9%/均次日 -2.14%（最差，局部抱团次日兑现）、
-    cnt 5-14 hit 6.7%/-0.74、cnt>=15 hit 11.0%/+0.18（接近无共振 11.2%，大板块有持续资金）。
-    只对小板块共振（cnt<15）打 ⚠ 警告：板块普涨日（如 CPO 20 只集体涨停）主区几乎全部板块
-    共振满分，若全标刷屏失去区分度（08-17 实测主区 15 条 short_term 全部 v_st_sector=10）。
-    count 缺失按 0（小板块，保守）处理。展示层警告，不改评分不落库不入硬过滤。
-    """
-    d = _entry_dims(entry)
-    if not (d.get("v_st_sector") or d.get("v_pb_sector") or d.get("v_nf_sector")):
-        return False
-    cnt = (d.get("v_st_sector_count") or d.get("v_pb_sector_count")
-           or d.get("v_nf_sector_count") or 0)
-    return cnt < SECTOR_RESONANCE_WARN_MAX
-
-
-def _entry_band(entry: dict) -> str:
-    """推荐时刻涨幅带分类（与 🎯 甜蜜带同源，nextday_attribution 口径）。
-
-    sweet(0-2%/4-8% 甜蜜带) / down(<0) / dead(2-4% 死区，hit 7%) / trap(8-10% 陷阱，均次日 -0.94%)
-    / over(>=10% 超限追高)。short_term 不看涨幅带（规律在弱转强），仅其余类别用它扣分。
-    """
-    p = _nextday_entry_percent(entry)
-    if p < 0:
-        return "down"
-    if 0.0 <= p < NEXTDAY_SPIKE_SWEET_LOW or NEXTDAY_SPIKE_MID_MIN <= p < NEXTDAY_SPIKE_MID_MAX:
-        return "sweet"
-    if p < NEXTDAY_SPIKE_MID_MIN:
-        return "dead"
-    return "trap"
-
-
-def _entry_fund_flow_pct(entry: dict) -> float | None:
-    """主力净占比（%），候选行读 dims、掉榜行读 score_breakdown；无数据返回 None。"""
-    v = _entry_dims(entry).get("fund_flow_main_pct")
-    return float(v) if v is not None else None
-
-
-def _analyze_entry(entry: dict, conn=None) -> tuple[str, list[str]]:
-    """精选决策：对单只今日推荐票输出 (建议, 原因列表)。
-
-    建议三档——
-     推荐：🎯 次日大涨画像（数据最强，见 _is_nextday_marked）／ comeback 资金流 ≥3%
-           （回踩买点 + 资金回流，comeback 类别 cum_3d +1.24%）／ rebound（hit 28.6% 最强）
-     参考：无任何警示的 short_term/momentum（需次日卖纪律，别当趋势拿）
-     回避：任一警示——超买（死亡信号 hit 5%）、小板块共振（cum_3d -2.2~-2.6 最差）、
-           8-10% 陷阱带（均次日 -0.94%）、2-4% 死区、累计≥50% 过热妖股、资金流出 ≤-8%
-
-    2026-08-17 新增（方案D，独立展示区），纯展示层：不改评分不落库，可回测验证后评估。
-    """
-    cat = entry["category"]
-    d = _entry_dims(entry)
-    reasons: list[str] = []
-    if (d.get("st_overbought_flag") or d.get("mo_overbought_flag")
-            or d.get("v_st_overbought") or d.get("v_mo_overbought")):
-        reasons.append("超买")
-    if _entry_sector_resonance(entry):
-        reasons.append("板块普涨")
-    band = _entry_band(entry)
-    if cat not in ("short_term", "comeback"):
-        # short_term 规律在弱转强、comeback 看 6 维回踩买点信号（甜蜜带/死区对二者无效，
-        # comeback 甜蜜带实测 0 hit）——均不看涨幅带。
-        if band == "trap":
-            reasons.append("8-10%陷阱")
-        elif band == "dead":
-            reasons.append("2-4%死区")
-    acc = _nextday_entry_accum(entry, conn)
-    if acc is not None and acc >= 50:
-        reasons.append(f"累计{acc:.0f}%过热")
-    ff = _entry_fund_flow_pct(entry)
-    if ff is not None and ff <= -8:
-        reasons.append("资金流出")
-
-    if _is_nextday_marked(entry, conn):
-        return "推荐", ["🎯次日画像"]
-    if cat == "comeback" and ff is not None and ff >= 3:
-        return "推荐", reasons + [f"回踩+资金+{ff:.0f}%"]
-    if cat == "rebound":
-        return "推荐", reasons
-    if reasons:
-        return "回避", reasons
-    return "参考", []
-
-
-def _print_pick_zone(today_recs: list[dict], conn) -> None:
-    """精选决策独立区（2026-08-17）：对全部今日推荐逐票分析，输出「推荐/参考/回避」+ 原因。
-
-    解决用户核心痛点「综合排序里不知道选哪个」——把回测证据固化成可执行过滤：
-    推荐组 = 🎯 次日大涨画像 / 回踩买点+资金回流 comeback / rebound；
-    回避组 = 超买/小板块共振/陷阱带/死区/过热妖股/资金流出，附具体原因。
-    排序：推荐 > 参考 > 回避，组内按类别优先级→评分。纯展示层，不改评分不落库。
-    """
-    analyzed = []
-    for e in today_recs:
-        advice, reasons = _analyze_entry(e, conn)
-        analyzed.append((e, advice, reasons))
-    if not analyzed:
-        return
-    rank = {"推荐": 0, "参考": 1, "回避": 2}
-    analyzed.sort(key=lambda x: (rank[x[1]], CAT_DISPLAY_PRIORITY.get(x[0]["category"], 99),
-                                 -x[0]["score"]))
-    adv_color = {"推荐": ANSI["GREEN"], "参考": ANSI["YELLOW"], "回避": ANSI["RED"]}
-    print(f"\n{ANSI['BOLD']}◆ 精选决策 — 过滤分析（推荐/参考/回避）{ANSI['RESET']}")
-    print(f"  {_pad('#',3,'r')} {_pad('代码',12)} {_pad('名称',10)} {_pad('涨幅',8,'r')} "
-          f"{_pad('5日累计',8,'r')} {_pad('类别',10)} {_pad('建议',4)} 原因")
-    for i, (e, advice, reasons) in enumerate(analyzed, 1):
-        pct = _nextday_entry_percent(e)
-        acc = _nextday_entry_accum(e, conn)
-        acc_s = f"{acc:+.1f}%" if acc is not None else "—"
-        reason_str = "、".join(reasons) if reasons else "—"
-        print(f"  {i:3d}  {e['symbol']:<12} {_pad(e['name'],10)} {pct:>+7.2f}% {acc_s:>8} "
-              f"{_pad(e['category'],10)} {adv_color[advice]}{advice}{ANSI['RESET']}  {reason_str}")
-    print(f"  {'-'*92}")
-
-
-def _is_nextday_marked(entry: dict, conn=None) -> bool:
+def _is_nextday_marked(entry: dict, conn=None, accum: float | None = None) -> bool:
     """次日大涨画像标记（🎯）：推荐时刻涨幅在甜蜜带 + 非超买死亡信号 + 5日累计门槛。
 
     2026-08-11：原「◆ 次日大涨候选」独立区与综合排序主表重合度 65%（实测当日
@@ -644,7 +537,8 @@ def _is_nextday_marked(entry: dict, conn=None) -> bool:
         return False
     cat = entry["category"]
     if cat not in ("rebound", "short_term"):
-        accum = _nextday_entry_accum(entry, conn)
+        if accum is None:
+            accum = _nextday_entry_accum(entry, conn)
         if accum is not None and accum < NEXTDAY_ACCUM_MIN:
             return False  # 有累计数据且不达门槛 → 不标；缺数据 fail-open 放行
     # 超买 = 次日大涨死亡信号：候选行读 dims，掉榜/重启行读 score_breakdown（统一 _entry_dims）。
@@ -732,7 +626,10 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     # 回放全表扫描；预计算后只查一次，_sort_tier 与渲染共用同一结果保证一致性）。
     nextday_mark: dict[str, bool] = {}
     for e in today_recs:
-        nextday_mark[e["symbol"]] = _is_nextday_marked(e, conn)
+        # 2026-08-17 审查修复：累计预计算一次，消除掉榜行在排序预计算与渲染之间
+        # 的重复 daily_kline 回放（N+1）。
+        acc = _nextday_entry_accum(e, conn)
+        nextday_mark[e["symbol"]] = _is_nextday_marked(e, conn, accum=acc)
 
     def _sort_tier(entry):
         return 0 if nextday_mark.get(entry["symbol"], False) else 1
@@ -778,11 +675,3 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
         for ci, entry in enumerate(cb_scored, 1):
             _print_priority_row(entry, ci, flow_pct_map, last_ranks=last_ranks)
         print(f"  {'-'*92}")
-
-    # 精选决策独立区（2026-08-17，置于最末尾）：对全部今日推荐（含回马枪）逐票分析，
-    # 输出推荐/参考/回避 + 原因——把回测证据固化成可执行过滤，解决「综合排序里不知道选哪个」。
-    # 纯展示层，不改评分不落库，回测验证后评估是否并入评分。放最末尾避免干扰既有区域测试。
-    try:
-        _print_pick_zone(today_recs, conn)
-    except Exception as e:
-        print(f"  [!] 精选决策区渲染失败: {type(e).__name__}: {e}")

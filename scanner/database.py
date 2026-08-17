@@ -770,8 +770,11 @@ def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
             }
 
     try:
+        # 2026-08-17 审查修复：MIN(time) 过滤 excluded——原查询含已被硬过滤/反转移出的行，
+        # 首推时间列可能取到"已失效记录"的早先时间（展示误导）。与主查询 excluded=0 口径对齐。
         ft_rows = conn.execute(
-            "SELECT symbol, MIN(time) FROM recommendations WHERE date = ? GROUP BY symbol",
+            "SELECT symbol, MIN(time) FROM recommendations "
+            "WHERE date = ? AND COALESCE(excluded, 0) = 0 GROUP BY symbol",
             (today,),
         ).fetchall()
         first_time_map = {r[0]: r[1] for r in ft_rows}
@@ -854,8 +857,13 @@ def mark_reversed_recommendations(conn: sqlite3.Connection,
         return []
     today = now_beijing().date().isoformat()
     try:
+        # 2026-08-17 审查修复：UPDATE 加 COALESCE(category,'')!='comeback' 守卫——
+        # 判定循环已跳过 comeback 行，但 UPDATE 原按 (date, symbol) 全量置 excluded，
+        # 若同 symbol 当日既有榜上主类别行（触发反转移出）又有早先落库的 comeback 行，
+        # 后者也会被连带移出（docstring 声明"回马枪不参与自动移出"）。
         conn.executemany(
-            "UPDATE recommendations SET excluded=1 WHERE date=? AND symbol=?",
+            "UPDATE recommendations SET excluded=1 WHERE date=? AND symbol=? "
+            "AND COALESCE(category, '') != 'comeback'",
             [(today, sym) for sym in reversed_syms])
         conn.commit()
     except Exception as e:

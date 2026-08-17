@@ -414,9 +414,12 @@ def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None
 
     if streak >= FATIGUE_STREAK_MIN:
         # 底部反转类本就期望低 accumulated，跳过价格疲劳信号以免误罚。
-        # new_face/known_new_face：新面孔底部突破；comeback 反转变体：掉榜 5 日跌≤-8% 后企稳，
-        # 负累计是策略核心前提，按价格判疲劳等于惩罚策略本身（与 RPS 豁免同理）。
-        is_reversal = c.category in ("new_face", "known_new_face", "comeback")
+        # new_face/known_new_face：新面孔底部突破；comeback 反转变体：掉榜 5 日跌≤-8% 后企稳；
+        # rebound：超跌反弹（5日跌≤-10% 后企稳），负累计是策略核心前提——按价格判疲劳等于
+        # 惩罚策略本身（与 RPS 豁免同理由，orchestrator._compute_rps 对 rebound 返回 0）。
+        # 2026-08-17 审查修复：此前漏掉 rebound，连榜≥3 天时 accumulated_pct<8 恒真，
+        # 叠加低量比易凑 2 信号 → 误打「疲劳」风险标签。
+        is_reversal = c.category in ("new_face", "known_new_face", "comeback", "rebound")
         fatigue_signals = 0
         if c.kline and c.kline.accumulated_pct < FATIGUE_PRICE_WARN_ACCUM and not is_reversal:
             fatigue_signals += 1
@@ -446,7 +449,11 @@ def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None
             streak_bonus = min(streak * FATIGUE_ACCELERATE_BONUS_PER_DAY,
                                FATIGUE_ACCELERATE_BONUS_CAP)
             if c.kline:
-                c.kline.dimensions["fatigue"] = streak_bonus
+                # 2026-08-17 审查修复：加速分支此前把正值写进 dims["fatigue"]——
+                # 该键语义是「疲劳惩罚」（_set_risk_flags 判 <0、backtest dimension_ic
+                # 按整列归因），正值混入会污染"疲劳"维度 IC（加速奖励被解析进疲劳因子）。
+                # 改写入独立键 fatigue_accelerate，与惩罚键分离，正负语义不再混用。
+                c.kline.dimensions["fatigue_accelerate"] = streak_bonus
                 c.kline.dimensions["fatigue_detail"] = "accelerating"
         else:
             if streak >= 5:

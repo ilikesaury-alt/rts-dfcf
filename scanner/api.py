@@ -540,13 +540,24 @@ def _normalize_minute_item(raw) -> dict:
         current = _num(raw[5])
         amount = _num(raw[9]) if len(raw) > 9 else 0.0
         avg_price = (amount / volume) if (amount and volume) else current
+        # 2026-08-17 审查修复：列序 [ts, volume, open, high, low, close, chg, percent, ...]，
+        # 数组形态此前裁剪掉 high/low/percent → 盘中分时兜底 _build_today_bar_from_minute
+        # 读到的 high/low 恒 0 → 构造今日 bar 的日内最高/最低退化为 current，振幅失真。
+        # 保留三字段（下游三个评分函数只读 current/volume/avg_price，纯增量无破坏）。
+        high = _num(raw[3]) if len(raw) > 3 else 0.0
+        low = _num(raw[4]) if len(raw) > 4 else 0.0
+        percent = _num(raw[7]) if len(raw) > 7 else 0.0
     except (IndexError, TypeError):
-        return {"timestamp": 0, "volume": 0, "avg_price": 0.0, "current": 0.0}
+        return {"timestamp": 0, "volume": 0, "avg_price": 0.0, "current": 0.0,
+                "high": 0.0, "low": 0.0, "percent": 0.0}
     return {
         "timestamp": ts,
         "volume": volume,
         "avg_price": avg_price,
         "current": current,
+        "high": high,
+        "low": low,
+        "percent": percent,
     }
 
 
