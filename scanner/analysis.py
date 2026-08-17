@@ -784,6 +784,11 @@ def analyze_short_term(stock: StockInfo, kline: list[KlineBar] | None,
     elif accumulated >= 5:
         score += W["accum_5_10"]
         dims["st_accumulated"] = W["accum_5_10"]
+    else:
+        # 2026-08-17 审计修复：原 [0,5) 区间（今日刚启动、前几日横盘的票）无兜底分支，
+        # 既不加分也不写 st_accumulated dim，比命中 >=5 的票系统性少拿 10 分。补最低正区间。
+        score += W["accum_0_5"]
+        dims["st_accumulated"] = W["accum_0_5"]
 
     if vol_ratio >= 1.5:
         score += W["vol_surge"]

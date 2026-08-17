@@ -76,6 +76,7 @@ SHORT_TERM_WEIGHTS: dict[str, int] = {
     "today_pct_4_6": 8,
     "today_pct_6_8": 12,
     "today_pct_8_12": 15,   # P1-1: 8-12% 档（2026-08-10 由 8 上调，数据支持）
+    "accum_0_5": 5,      # 2026-08-17 审计修复：原 [0,5) 区间无分支，静默漏 accumulation 分
     "accum_5_10": 10,
     "accum_10_15": 15,
     "accum_15_20": 8,
