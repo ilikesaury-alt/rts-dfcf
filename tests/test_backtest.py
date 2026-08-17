@@ -118,7 +118,7 @@ def _ranking_db():
     conn = sqlite3.connect(":memory:")
     conn.execute(
         "CREATE TABLE recommendations "
-        "(date TEXT, category TEXT, score REAL, cum_3d REAL, score_breakdown TEXT)"
+        "(date TEXT, category TEXT, score REAL, next_day_pct REAL, cum_3d REAL, score_breakdown TEXT)"
     )
     return conn
 
@@ -175,15 +175,15 @@ def test_rank_category_stats_recent_window_filters_by_date():
     assert abs(stats[0].avg_return - 0.5) < 1e-9
 
 
-def test_rank_category_stats_metric_is_cum_3d():
-    # 默认口径为 cum_3d（3日持有收益），与排序决策一致
+def test_rank_category_stats_metric_is_next_day_pct():
+    # 2026-08-18 统一口径：默认口径为 next_day_pct（次日大涨），与排序决策一致
     conn = _ranking_db()
     rows = [
         ("2026-07-01", "momentum", 50, 2.5),
         ("2026-07-01", "momentum", 40, -0.5),
     ]
     conn.executemany(
-        "INSERT INTO recommendations (date, category, score, cum_3d) VALUES (?,?,?,?)",
+        "INSERT INTO recommendations (date, category, score, next_day_pct) VALUES (?,?,?,?)",
         rows,
     )
     conn.commit()
@@ -219,11 +219,11 @@ def test_ranking_report_runs_without_gbk_crash(capsys):
     assert "new_face" in out
 
 
-def test_print_report_default_metric_is_cum3d_and_all_baseline(capsys):
-    # P1-5 (2026-08-10): 默认口径为 cum_3d（匹配持有 2-3 天操作），且报告含
+def test_print_report_default_metric_is_nextday_and_all_baseline(capsys):
+    # 2026-08-18 统一口径：默认口径为 next_day_pct（次日大涨），报告仍含
     # "ALL(全推荐基准)" 汇总行（不挑选买入全部推荐的无选择基准）。
     import scanner.backtest as bt
-    assert bt.build_parser().get_default("metric") == "cum_3d"
+    assert bt.build_parser().get_default("metric") == "next_day_pct"
     conn = _ranking_db()
     rows = [
         ("2026-07-01", "momentum", 50, 2.0),
@@ -231,11 +231,11 @@ def test_print_report_default_metric_is_cum3d_and_all_baseline(capsys):
         ("2026-07-01", "new_face", 30, -2.0),
     ]
     conn.executemany(
-        "INSERT INTO recommendations (date, category, score, cum_3d) VALUES (?,?,?,?)",
+        "INSERT INTO recommendations (date, category, score, next_day_pct) VALUES (?,?,?,?)",
         rows,
     )
     conn.commit()
-    bt.print_report(conn, metric="cum_3d", days=0)
+    bt.print_report(conn, metric="next_day_pct", days=0)
     out = capsys.readouterr().out
     assert "ALL(全推荐基准)" in out
-    assert "推荐后到收盘涨幅" in out  # P1-6 高估方向标注
+    assert "next_day_pct" in out  # 报告头标注当前口径

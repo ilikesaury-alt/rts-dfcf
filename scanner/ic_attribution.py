@@ -2,9 +2,11 @@
 
 目标：把 new_face 打分引擎的每个维度（RSI<30 / MACD金叉 / KDJ / 更高低 /
 板块共振 / 放量 / 今日涨幅 / 累计涨幅 / BOLL / ATR / OBV / MA多头）在「信号当日」
-的真实取值重建出来，与 recommendations 表里已回填的真实前向收益
-（cum_3d = T+3 累计收益，fwd_3d = 第3交易日单日涨幅）做 Spearman 秩相关（IC），
-并给出「信号触发 vs 未触发」两组的均值收益与胜率。
+的真实取值重建出来，与 recommendations 表里已回填的真实前向收益做 Spearman 秩相关
+（IC），并给出「信号触发 vs 未触发」两组的均值收益与胜率。
+
+口径（2026-08-18 统一）：默认 --metric next_day_pct（次日大涨，综合排序唯一决策口径）；
+cum_3d（T+3 累计）等保留为对照，--metric 可选。
 
 维度还原口径与分析端 analyze_new_face / validator.validate_nf 完全一致：
 - historical_kline = 不含今日 bar 的历史 K 线
@@ -14,7 +16,7 @@
   数据末根已是完整量能，投影倍数为 1.0，行为等价）
 
 输出两张表：
-  A. 连续特征 IC（Spearman(feature, cum_3d)）
+  A. 连续特征 IC（Spearman(feature, metric)）
   B. 二元信号 IC / 触发组 vs 未触发组 均值收益与胜率
 均按 combined + new_face / known_new_face 分拆。
 
@@ -90,17 +92,18 @@ def _vol_ratio(kline: list[KlineBar], today_str: str) -> float:
     return today_vol / avg_vol if avg_vol > 0 else 1.0
 
 
-def load_recommendations(conn: sqlite3.Connection) -> list[dict]:
+def load_recommendations(conn: sqlite3.Connection,
+                         metric: str = "next_day_pct") -> list[dict]:
     cur = conn.execute(
-        """SELECT date, symbol, name, category, score, cum_3d, fwd_3d, score_breakdown
+        f"""SELECT date, symbol, name, category, score, {metric}, score_breakdown
            FROM recommendations
            WHERE category IN ('new_face','known_new_face')"""
     )
     recs = []
-    for date, symbol, name, category, score, cum_3d, fwd_3d, sb in cur.fetchall():
+    for date, symbol, name, category, score, metric_val, sb in cur.fetchall():
         recs.append({
             "date": date, "symbol": symbol, "name": name, "category": category,
-            "score": score, "cum_3d": cum_3d, "fwd_3d": fwd_3d,
+            "score": score, "metric": metric_val,
             "score_breakdown": sb,
         })
     return recs
@@ -296,16 +299,16 @@ def fmt(x, w=7):
     return f"{x:+.2f}".rjust(w)
 
 
-def print_tables(title: str, rows: list[tuple[float, dict]]):
+def print_tables(title: str, rows: list[tuple[float, dict]], metric: str = "next_day_pct"):
     print(f"\n{'='*78}\n{title}  (n={len(rows)})\n{'='*78}")
     if not rows:
         print("  (无可用样本)")
         return
-    print("-- 连续特征 IC（Spearman 与 cum_3d） --")
-    print(f"  {'维度':<22}{'n':>5}{'IC':>9}{'均值cum_3d':>11}")
+    print(f"-- 连续特征 IC（Spearman 与 {metric}） --")
+    print(f"  {'维度':<22}{'n':>5}{'IC':>9}{f'均值{metric}':>11}")
     for d in cont_ic_table(rows):
         print(f"  {d['label']:<22}{d['n']:>5}{fmt(d['ic']):>9}{fmt(d['mean_cum']):>11}")
-    print("-- 二元信号：触发 vs 未触发（cum_3d） --")
+    print(f"-- 二元信号：触发 vs 未触发（{metric}） --")
     print(f"  {'信号':<22}{'n_on':>5}{'均值(on)':>10}{'胜率(on)':>9}{'均值(off)':>10}{'胜率(off)':>9}{'IC':>8}")
     for d in bin_ic_table(rows):
         won = f"{d['win_on']:.1f}%"
@@ -406,11 +409,15 @@ def project_rank_ic(rows: list[tuple[float, dict]], cur_W: dict, prop_W: dict):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", default=None, help="可选：导出 CSV 前缀")
+    ap.add_argument("--metric", default="next_day_pct",
+                    choices=["next_day_pct", "fwd_3d", "fwd_5d", "cum_2d", "cum_3d"],
+                    help="收益口径（2026-08-18 默认 next_day_pct，统一「次日大涨」）")
     args = ap.parse_args()
+    metric = args.metric
 
     clear_screen()
     conn = sqlite3.connect("scanner.db")
-    recs = load_recommendations(conn)
+    recs = load_recommendations(conn, metric=metric)
     syms = {r["symbol"] for r in recs}
     kline_map = load_kline_by_symbol(conn, syms)
     sec_by_date = sector_counts_by_date(recs)
@@ -419,7 +426,7 @@ def main():
     combined = []
     by_cat: dict[str, list] = defaultdict(list)
     for r in recs:
-        if r["cum_3d"] is None:
+        if r["metric"] is None:
             continue
         kl = kline_map.get(r["symbol"])
         if not kl:
@@ -429,17 +436,17 @@ def main():
         feats = extract_features(kl, r["date"], peers)
         if feats is None:
             continue
-        row = (r["cum_3d"], feats)
+        row = (r["metric"], feats)
         combined.append(row)
         by_cat[r["category"]].append(row)
 
-    print_tables("【Combined】new_face + known_new_face", combined)
-    print_tables("【new_face】仅新面孔", by_cat.get("new_face", []))
-    print_tables("【known_new_face】仅已知面孔", by_cat.get("known_new_face", []))
+    print_tables("【Combined】new_face + known_new_face", combined, metric=metric)
+    print_tables("【new_face】仅新面孔", by_cat.get("new_face", []), metric=metric)
+    print_tables("【known_new_face】仅已知面孔", by_cat.get("known_new_face", []), metric=metric)
 
     # ── rank-IC 投影：旧权重 vs 新权重（同特征集，苹果对苹果）──
     print("\n" + "=" * 78)
-    print("【rank-IC 投影】reconstruct_score 的 Spearman(重建分, cum_3d)")
+    print(f"【rank-IC 投影】reconstruct_score 的 Spearman(重建分, {metric})")
     print("=" * 78)
     print(f"  {'样本':<22}{'旧IC':>10}{'新IC':>10}{'ΔIC':>9}")
     for tag, rows in (("Combined", combined),

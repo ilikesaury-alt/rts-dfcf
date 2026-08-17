@@ -574,37 +574,37 @@ V_ST_MA_BROKEN = -5
 # 超买判定 20 日涨幅阈值（validator._is_overbought 使用；pullback 下线后仅此一处消费）
 PULLBACK_20D_GAIN_EXTREME = 60    # 20-day gain > 60% → extreme (overbought)
 
-# ── 综合排序展示优先级与操作建议（2026-08-07 复核重排）──
+# ── 综合排序展示优先级与操作建议（2026-08-18 统一口径为「次日大涨」）──
 # CAT_DISPLAY_PRIORITY：仅决定综合排序「类别分组展示顺序」，与操作建议解耦。
-# 校准依据（recommendations 历史 cum_3d / next_day 双口径 + 全期/近期双窗口）：
-#   - 全期（库内约60个交易日）：rebound(+4.74) > momentum(+2.58) > short_term(-0.82)
-#     > known_new_face(-0.44) > new_face(-1.61) > pullback(-7.14, 已下线)
-#   - 近30天 cum_3d：rebound(+4.74) > short_term(-0.82) > new_face(-4.07)
-#     > momentum(-4.92) ≈ known_new_face(-4.92) > pullback(-7.44)
-#   - 近30天 next_day：rebound(+3.45) > known_new_face(+0.87) > short_term(-0.58)
-#     > new_face(-0.98) > momentum(-1.20) > pullback(-5.63)
-# 2026-08-07 调整：short_term 上移至 1（两口径均稳定、IC 正效、近30天唯一接近打平）；
-# momentum 由 1 下调至 2（近30天 cum_3d -4.92 垫底且 next_day 亦负，动量策略弱市天然脆弱；
-# 但全期 +2.58 仍居第 2，故只下调一位折中，不按单一近期窗口过度反应）。
-# known_new_face 维持 3：next_day 近期 +0.87 系"次日冲高"，cum_3d -4.92 为 3 日高开低走，
-# 且 score IC 反指（-0.134/-0.179 双口径），类别内分数不可靠，不置顶。
-# 用 `python -m scanner.backtest --ranking` 校准此顺序，人工复核后更新。
+# 校准依据（scanner.nextday_attribution 去重 1184 条，next_day≥7% hit 口径，全期）：
+#   rebound 28.6%/+2.78% > known_new_face 12.7%/+0.97% > momentum 10.2%/-0.74%
+#   > new_face 9.6%/+0.19% > short_term 8.4%/+0.02% > pullback 5.3%/-3.74%(已下线)
+#   > comeback 3.3%/+0.42%（6 维回踩买点是 cum_3d 语义，次日大涨口径全场最差）
+# 2026-08-18 统一口径：此前按 cum_3d/next_day 双口径混排（comeback 第 2、short_term 第 2、
+# kNF 第 4），与综合排序置顶的 🎯 次日大涨画像口径不一致；现全部按 next_day 排序——
+# kNF 由 4 升 1（hit 12.7% 全场第二，🎯 子集 hit 21.2%）、short_term 由 2 降 4（整体 hit 8.4%
+# 低于基准 9.7%，仅弱转强子集 10.3% 可用）、comeback 由 1 降 5（hit 3.3% 最差，但 avg +0.42
+# 不亏——`backtest --ranking` 按均收益会给 comeback 排第 3，人工复核时以 hit 口径为准，
+# 因为次日大涨目标是「大涨概率」而非平均收益）。
+# 用 `python -m scanner.backtest --ranking --metric next_day_pct` 校准此顺序，人工复核后更新。
 CAT_DISPLAY_PRIORITY = {
-    "known_new_face": 4, "rebound": 0, "new_face": 5,
-    "momentum": 3, "short_term": 2, "pullback": 6,
-    "comeback": 1,
+    "known_new_face": 1, "rebound": 0, "new_face": 3,
+    "momentum": 2, "short_term": 4, "pullback": 6,
+    "comeback": 5,
 }
 
 # SUGGEST_BY_CAT：操作建议按类别独立映射（与优先级解耦，语义不变）。
 # 值含 ANSI 颜色码，由 display 端渲染；排序位置变化不影响建议。
-# 2026-08-10: known_new_face 由「推荐」改「超短」——next_day +0.91 但 cum_3d -0.44
-# （3 日高开低走回吐），且分数反指，正确操作是次日卖而非持有 3 日。
+# 2026-08-18 统一 next_day 口径：所有建议语义 = 「次日大涨概率」排序（次日常规操作即
+# 次日卖，不再区分持有 2-3 天口径）。kNF 由「超短」改「推荐」——原依据 cum_3d -0.44
+# 回吐已不适用，next_day 下 kNF hit 12.7%（全场第二）理应推荐；short_term 由「超短」改
+# 「参考」——整体 hit 8.4% 低于基准 9.7%，弱转强子集才高于基准。
 SUGGEST_BY_CAT = {
-    "known_new_face": "\033[91m超短\033[0m",
+    "known_new_face": "\033[96m推荐\033[0m",
     "rebound": "\033[96m推荐\033[0m",
     "new_face": "参考",
     "momentum": "参考",
-    "short_term": "\033[91m超短\033[0m",
+    "short_term": "参考",
     "pullback": "\033[91m回避\033[0m",
     "comeback": "\033[96m回马\033[0m",
 }

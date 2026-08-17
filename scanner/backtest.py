@@ -12,10 +12,12 @@
 3. 分维度 IC（dimension_ic）：解析 score_breakdown JSON，逐维度计算
    IC，输出"正 IC 维度 / 反指维度"表，指导权重调整。
 
-口径选择：
-- 用户操作「当日买入，次日 10 点卖出」→ 无分钟数据时仍用 next_day_pct 近似
-- 用户操作「持有 2-3 天卖出」→ **应优先使用 cum_2d / cum_3d**（累计收益）
-- IC 决策应优先基于 cum_2d / cum_3d，而非 next_day_pct（口径错配会误导）
+口径选择（2026-08-18 统一为「次日大涨」）：
+- 综合排序 / 类别优先级 / 档位 / 建议列全部校准于 next_day_pct（次日≥7% hit 口径，
+  scanner.nextday_attribution 1184 去重样本）——筛选系统当前唯一决策口径。
+- IC 决策与分桶解读均基于 next_day_pct；cum_2d / cum_3d 保留为对照（--metric 可选），
+  不再作为排序与调参依据（曾因「持有 2-3 天」语义与综合排序 🎯 置顶口径冲突，现统一）。
+- next_day_pct 为单日口径，次日大涨票多为高开冲高，结论只用于「次日大涨」子目标。
 
 定位（必读）：本项目是**筛选系统，不是交易系统**，本模块是**权重校准仪表盘**，
 只回答"分数排序是否等于好坏排序"（IC / 胜率 / 分桶 / 维度 IC），用于调 MIN_SCORE、
@@ -103,11 +105,12 @@ def compute_outcome(
     - next_day: 推荐日次一交易日涨幅（percent 字段）
     - fwd_3d / fwd_5d: 推荐日之后第 3/5 个交易日的"当日涨幅"（代理，非累计）
 
-    累计收益指标（新口径，匹配用户「持有 2-3 天卖出」操作）：
+    累计收益指标（对照口径，--metric 可选））：
     - cum_2d: (close[T+2] - close[T]) / close[T] * 100
     - cum_3d: (close[T+3] - close[T]) / close[T] * 100
 
-    旧口径仍保留用于向后兼容与对照；IC 决策应优先使用 cum_2d / cum_3d。
+    2026-08-18 统一口径：决策/排序/调参以 next_day_pct（次日大涨≥7% hit）为准，
+    cum_2d / cum_3d 仅保留为对照，不再作为调参依据。
     """
     sym_kl = kline_map.get(symbol)
     if not sym_kl or rec_date not in sym_kl:
@@ -233,8 +236,8 @@ def strategy_performance(
 ) -> list[StrategyStat]:
     """按策略类别聚合表现。metric ∈ {next_day_pct, fwd_3d, fwd_5d, cum_2d, cum_3d}。
 
-    - next_day_pct / fwd_3d / fwd_5d：单日涨幅口径（旧）
-    - cum_2d / cum_3d：累计收益口径（新，匹配用户「持有 2-3 天卖出」操作）
+    - next_day_pct：单日涨幅口径（2026-08-18 起为唯一决策口径，统一「次日大涨」）
+    - cum_2d / cum_3d：累计收益对照口径（--metric 可选）
 
     days > 0 时仅分析最近 N 天的推荐（基于 date 列过滤）。
     """
@@ -374,11 +377,13 @@ class RankCategoryStat:
 RANK_MIN_SAMPLE = 20
 
 
-def rank_category_stats(conn: sqlite3.Connection, metric: str = "cum_3d", days: int = 0) -> list[RankCategoryStat]:
+def rank_category_stats(conn: sqlite3.Connection, metric: str = "next_day_pct",
+                        days: int = 0) -> list[RankCategoryStat]:
     """各现役类别在给定口径下的表现（按均收益降序）。
 
-    metric ∈ {cum_2d, cum_3d, next_day_pct, ...}。days > 0 时仅用最近 N 天推荐。
+    metric ∈ {next_day_pct, cum_2d, cum_3d, ...}。days > 0 时仅用最近 N 天推荐。
     类别内 IC 为 IC(score → return)，用于识别「分数反指」的类别（IC 为负）。
+    2026-08-18 默认口径改为 next_day_pct（统一「次日大涨」）。
     """
     params = list(ACTIVE_CATEGORIES)
     if days > 0:
@@ -421,7 +426,7 @@ def suggest_priority(stats: list[RankCategoryStat]) -> list[str]:
     return [s.category for s in sorted(stats, key=lambda s: -s.avg_return)]
 
 
-def print_ranking_report(conn: sqlite3.Connection, metric: str = "cum_3d", recent_days: int = 30) -> None:
+def print_ranking_report(conn: sqlite3.Connection, metric: str = "next_day_pct", recent_days: int = 30) -> None:
     """综合排序类别优先级校准报告。
 
     同时展示全期与近期两个窗口：全期样本大但混入历史配置，近期反映当前市场环境但样本小。
@@ -485,7 +490,7 @@ def print_ranking_report(conn: sqlite3.Connection, metric: str = "cum_3d", recen
     print("确认后人工更新 config.CAT_DISPLAY_PRIORITY")
 
 
-def print_report(conn: sqlite3.Connection, metric: str = "cum_3d", days: int = 0) -> None:
+def print_report(conn: sqlite3.Connection, metric: str = "next_day_pct", days: int = 0) -> None:
     print("=" * 70)
     days_label = f", 最近{days}天" if days > 0 else ", 全部历史"
     print(f"回测归因报告 (metric={metric}{days_label})")
@@ -529,10 +534,10 @@ def print_report(conn: sqlite3.Connection, metric: str = "cum_3d", days: int = 0
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="创业板扫描策略回测归因")
     parser.add_argument("--days", type=int, default=0, help="仅分析最近 N 天的推荐（0=全部）")
-    parser.add_argument("--metric", default="cum_3d",
+    parser.add_argument("--metric", default="next_day_pct",
                         choices=["next_day_pct", "fwd_3d", "fwd_5d", "cum_2d", "cum_3d"])
     parser.add_argument("--ranking", action="store_true",
-                        help="综合排序类别优先级校准报告（默认 cum_3d，近期30天窗口）")
+                        help="综合排序类别优先级校准报告（默认 next_day_pct，近期30天窗口）")
     parser.add_argument("--backfill", action="store_true", help="回填 N 日收益字段")
     parser.add_argument("--dry-run", action="store_true", help="回填预览不写库")
     return parser

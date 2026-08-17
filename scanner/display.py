@@ -520,8 +520,9 @@ def _entry_overbought(entry: dict) -> bool:
 def _entry_band(entry: dict) -> str:
     """推荐时刻涨幅带分类（与 🎯 甜蜜带同源，nextday_attribution 口径）。
 
-    sweet(0-2%/4-8% 甜蜜带) / down(<0) / dead(2-4% 死区，hit 6.5%) /
-    trap(8-10% 陷阱，均次日 -0.94% 且 cum_3d -1.87 回吐最狠)。
+    sweet(0-2%/4-8% 甜蜜带) / down(<0) / dead(2-4% 死区，next_day hit 7.0%) /
+    trap(8-10%：全量 9.0% 不差但被 short_term 拉高，momentum/new_face 分类别 hit 0%，
+    由 _entry_tier 仅对非 short_term 生效)。
     """
     p = _nextday_entry_percent(entry)
     if p < 0:
@@ -542,8 +543,9 @@ def _entry_fund_flow_pct(entry: dict) -> float | None:
 def _entry_sector_resonance(entry: dict) -> bool:
     """小板块共振：v_st_sector / v_pb_sector / v_nf_sector >0 且板块规模 count<SECTOR_RESONANCE_WARN_MAX。
 
-    回测细分（2026-08-17）：板块共振整体 hit 7.1%/cum_3d -2.22 全场最差，但 cnt>=15
-    大板块接近正常（hit 11.0%）——只对小板块（cnt<15，局部抱团次日兑现）档位劣后。
+    回测细分（2026-08-17）：板块共振整体 next_day hit 5.6% 全场最差（无共振 13.7%），
+    但按规模分档差异大——cnt<5 hit 5.3%、cnt 5-14 hit 6.3%、cnt>=15 hit 12.9%（接近
+    无共振 11.9%，大板块有持续资金）——只对小板块（cnt<15，局部抱团次日兑现）档位劣后。
     count 缺失按 0（小板块，保守）。2026-08-17 行尾 ⚠板块普涨 文本下线后，本函数
     仅服务 _entry_tier 档位劣后（排序），不渲染任何文本。
     """
@@ -557,15 +559,19 @@ def _entry_sector_resonance(entry: dict) -> bool:
 
 def _entry_tier(entry: dict, conn=None, accum: float | None = None,
                 marked: bool | None = None) -> int:
-    """综合排序档位（2026-08-17 二值 → 4 级）：把今日总结的全部选股规则编码进排序键。
+    """综合排序档位（2026-08-17 二值 → 4 级；2026-08-18 统一口径为「次日大涨」）。
 
     档0 = 🎯 次日大涨画像（数据最强，见 _is_nextday_marked，short_term 弱转强分型）
-    档1 = 强信号：rebound（hit 28.6%/cum_3d +7.31 最强类别）／ comeback 资金流≥3%
-          （回踩买点+资金回流，comeback 类别 cum_3d +1.24%）
-    档2 = 普通：无警示（参考，需次日卖纪律）
-    档3 = 警示劣后：累计≥50% 过热（优先于 🎯，精选区校准）/ 超买（hit 5-8%）/
-          8-10% 陷阱带（均次日 -0.94%）/ 2-4% 死区（hit 6.5%）/ 资金流出≤-8%。
-          short_term（规律在弱转强）与 comeback（6 维回踩信号，甜蜜带 0 hit）不看涨幅带。
+    档1 = 强信号：rebound（next_day 口径 hit 28.6%/+2.78%，全场最强类别）
+    档2 = 普通：无警示（参考）
+    档3 = 警示劣后：累计≥50% 过热 / 超买（hit 6.8%）/ 小板块共振 cnt<15（hit 5.6%）/
+          2-4% 死区（hit 7.0%）/ momentum、new_face 的 8-10% 陷阱（hit 0%）/ 资金流出≤-8%。
+          short_term（规律在弱转强）与 comeback（6 维回踩信号，不看涨幅带）豁免涨幅带。
+
+    2026-08-18 口径统一：全部档位判定因子均校准于 next_day（次日大涨≥7% hit 口径，
+    scanner.nextday_attribution 1184 去重样本）。comeback 由档1 移除——其 6 维回踩买点
+    信号是 cum_3d 语义（回踩企稳等 3 日修复），next_day 口径下 hit 仅 3.3% 全场最差，
+    不再置顶，统一回档2（独立区补充参考）。
 
     纯排序层：不改评分不落库，档位只重排展示顺序（跨类别全局生效）。
     """
@@ -582,19 +588,20 @@ def _entry_tier(entry: dict, conn=None, accum: float | None = None,
     if cat == "rebound":
         return 1
     if cat == "comeback":
-        ff = _entry_fund_flow_pct(entry)
-        if ff is not None and ff >= 3:
-            return 1
         return 2
     if _entry_overbought(entry):
         return 3
     ff = _entry_fund_flow_pct(entry)
     if ff is not None and ff <= -8:
         return 3
-    # 小板块共振（cnt<15）档3 劣后：板块普涨日冲进去即接盘位（cum_3d -2.2~-2.6 最差）。
+    # 小板块共振（cnt<15）档3 劣后：板块普涨日冲进去即接盘位（next_day hit 5.6% vs 无共振 13.7%）。
     # 仅非 🎯 票生效（🎯∩板块普涨 hit 12.2% 仍有效，太辰光案例）；不渲染文本，只排序。
     if _entry_sector_resonance(entry):
         return 3
+    # 涨幅带劣后（next_day 口径，全量 1184 样本）：2-4% 死区 hit 7.0%（基准 9.7%）；
+    # 8-10% 全量 9.0% 不差但被 short_term 拉高——momentum（n=18）与 new_face（n=26）
+    # 在 8-10% 的 next_day hit 均为 0%，kNF 仅 2 条样本；short_term 豁免（8-10% 是其
+    # 最差与最好并存的双峰带，weak_to_strong 子集可用）；rebound 已提前档1 返回。
     if cat != "short_term":
         if _entry_band(entry) in ("trap", "dead"):
             return 3
@@ -650,7 +657,7 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
                      rank_map: dict[str, int] | None = None,
                      today_pool: dict[str, Candidate] | None = None,
                      last_ranks: dict[str, int] | None = None):
-    """从本地数据库读取今日所有进入过推荐的票，按档位(辨识度)+展示优先级(CAT_DISPLAY_PRIORITY)+评分键展示。
+    """从本地数据库读取今日所有进入过推荐的票，按档位 + 展示优先级(CAT_DISPLAY_PRIORITY) + 评分键展示。
 
     live_quotes: {symbol: {percent, current}} 实时行情覆盖，优先于候选池和数据库数据。
     rank_map: {symbol: 飙升榜排名} 当前扫描的榜单排名，为掉榜/重启行补实时排名。
@@ -658,7 +665,9 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     渲染最新候选数据（实时候选 > DB 快照）。
     last_ranks: 上一轮扫描的榜单排名 {symbol: rank}，供「排名」列显示雪球榜单排名变化
     （+N 升 / -N 降），与已下线策略桶同口径；缺省 None 不显示变化。
-    排序键 = (档位, CAT_DISPLAY_PRIORITY, 分数键)：档0置前(次日大涨🎯) < 档1普通。
+    排序键 = (档位, CAT_DISPLAY_PRIORITY, 分数键)：档0置前(次日大涨🎯) < 档1强信号 < 档2普通 < 档3警示劣后。
+    2026-08-18 统一口径为「次日大涨」：档位因子与 CAT_DISPLAY_PRIORITY 均校准于
+    next_day（≥7% hit）口径（scanner.nextday_attribution 1184 去重样本），不再混用 cum_3d。
     2026-08-11 起资金流不再参与档位排序/劣后过滤（净流出票正常展示，仅保留图标与「资金流出」标签）。
     2026-08-12 次日大涨画像(🎯)置顶；辨识度(↻)不再参与排序（次日大涨本身即辨识度属性），
     仅保留行内 ↻ 展示。档位只影响排序，不改评分列/不落库。

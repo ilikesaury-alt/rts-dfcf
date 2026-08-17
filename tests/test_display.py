@@ -394,7 +394,9 @@ def _insert_rec_cat(conn, symbol: str, name: str, category: str, score: int):
 
 
 def test_display_priority_new_group_order(monkeypatch, capsys):
-    """综合排序按 CAT_DISPLAY_PRIORITY 分组：即使 kNF 分数最高也排到 rebound/short_term 之后。"""
+    """综合排序按 CAT_DISPLAY_PRIORITY 分组（2026-08-18 统一 next_day 口径后重排）。
+    percent=3.0 死区使 kNF/momentum/new_face 落档3，档3 内按 next_day 类别优先级：
+    kNF(12.7%) > momentum(10.2%) > new_face(9.6%)；rebound 档1、short_term 档2（涨幅带豁免）。"""
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300001", "新面孔", "new_face", 80)
     _insert_rec_cat(conn, "SZ300002", "已知新", "known_new_face", 90)
@@ -406,7 +408,8 @@ def test_display_priority_new_group_order(monkeypatch, capsys):
     # 2026-08-11：次日大涨独立区已并入主表行尾 🎯 标记，无重复区块，直接取全部输出
     lines = _main_lines(out)
     assert len(lines) == 5
-    order = ["SZ300003", "SZ300005", "SZ300004", "SZ300002", "SZ300001"]
+    # 档1 rebound → 档2 short_term → 档3 内 kNF(1) > momentum(2) > new_face(3)
+    order = ["SZ300003", "SZ300005", "SZ300002", "SZ300004", "SZ300001"]
     for i, sym in enumerate(order):
         assert sym in lines[i], f"{sym} 应在第 {i} 行，实际顺序: {lines}"
 
@@ -429,7 +432,8 @@ def test_display_priority_knf_score_ascending(monkeypatch, capsys):
 
 
 def test_display_priority_suggestion_decoupled(monkeypatch, capsys):
-    """建议列与优先级解耦：new_face 位次垫底仍显示「参考」，kNF/short_term 显示「超短」，rebound 显示「推荐」。"""
+    """建议列与优先级解耦（2026-08-18 统一 next_day 口径）：new_face 位次垫底仍显示「参考」，
+    kNF 显示「推荐」（next_day hit 12.7% 全场第二），rebound 显示「推荐」，short_term 显示「参考」。"""
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300001", "新面孔", "new_face", 80)
     _insert_rec_cat(conn, "SZ300002", "已知新", "known_new_face", 90)
@@ -439,10 +443,10 @@ def test_display_priority_suggestion_decoupled(monkeypatch, capsys):
     out = capsys.readouterr().out
     lines = {sym: next(l for l in out.splitlines() if sym in l)
              for sym in ["SZ300001", "SZ300002", "SZ300003", "SZ300004"]}
-    assert "超短" in lines["SZ300002"]  # known_new_face 次日卖
+    assert "推荐" in lines["SZ300002"]  # known_new_face next_day hit 12.7%
     assert "推荐" in lines["SZ300003"]  # rebound
     assert "参考" in lines["SZ300001"]  # new_face 位次虽低仍参考，非回避
-    assert "超短" in lines["SZ300004"]  # short_term
+    assert "参考" in lines["SZ300004"]  # short_term 整体 hit 8.4% 低于基准
     assert "回避" not in lines["SZ300001"]
 
 
@@ -489,8 +493,8 @@ def test_display_priority_tier_front_cross_category(monkeypatch, capsys):
     out = capsys.readouterr().out
     lines = _main_lines(out)
     assert len(lines) == 3
-    # 档0 内按 CAT_DISPLAY_PRIORITY：short_term(1) < momentum(2)，超短置前在前
-    order = ["SZ300003", "SZ300002", "SZ300004"]
+    # 档0 内按 CAT_DISPLAY_PRIORITY（2026-08-18 next_day 口径）：momentum(2) < short_term(4)
+    order = ["SZ300002", "SZ300003", "SZ300004"]
     for i, sym in enumerate(order):
         assert sym in lines[i], f"{sym} 应在第 {i} 行，实际: {lines}"
 
@@ -981,18 +985,19 @@ def test_display_priority_tier4_rules_applied(monkeypatch, capsys):
 
 
 def test_display_priority_tier4_comeback_fundflow(monkeypatch, capsys):
-    """档位 4 级：comeback 资金流≥3%（回踩+资金回流）档1 排前，无资金流 comeback 档2。"""
+    """档位 4 级（2026-08-18 统一 next_day 口径）：comeback 不再按资金流分档（其 6 维回踩
+    信号为 cum_3d 语义，next_day hit 仅 3.3%），统一档2，独立区按 score 降序。"""
     conn = _rec_db()
     _insert_rec_sb(conn, "SZ300101", "回踩回流", "comeback", 102, 1.0,
-                   '{"fund_flow_main_pct": 8.6}')      # 档1
+                   '{"fund_flow_main_pct": 8.6}')      # 档2（原档1，已统一）
     _insert_rec_sb(conn, "SZ300102", "回踩无资金", "comeback", 120, 1.0, "{}")  # 档2
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     assert "◆ 回马枪" in out
     cb_part = out.split("◆ 精选决策", 1)[0].split("◆ 回马枪", 1)[1]
     cb_lines = [l for l in cb_part.splitlines() if "SZ30010" in l]
-    assert "SZ300101" in cb_lines[0], f"comeback 资金流≥3% 应档1 排前: {cb_lines}"
-    assert "SZ300102" in cb_lines[1]
+    assert "SZ300102" in cb_lines[0], f"comeback 统一档2 按 score 降序: {cb_lines}"
+    assert "SZ300101" in cb_lines[1]
 
 
 def test_display_priority_tier4_sector_resonance_low(monkeypatch, capsys):
