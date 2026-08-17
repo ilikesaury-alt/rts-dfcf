@@ -84,6 +84,14 @@ def test_market_extra_str_zt_kept():
 
 
 # ── 综合排序资金流图标：DB 快照回退（重启/掉榜后仍显示）──
+
+def _main_lines(out: str) -> list[str]:
+    """综合排序主表区行（精选决策区之前）——排除精选决策独立区（2026-08-17 新增）
+    的行干扰主表排序/标记断言。"""
+    main_part = out.split("◆ 精选决策")[0]
+    return [l for l in main_part.splitlines() if "SZ30000" in l]
+
+
 def _rec_db():
     conn = sqlite3.connect(":memory:")
     conn.execute("""CREATE TABLE appearances (
@@ -172,7 +180,11 @@ def test_display_priority_comeback_hidden_when_main_has_recs(monkeypatch, capsys
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     assert "◆ 回马枪" not in out
-    assert "SZ300007" not in out         # comeback 行随区块整体隐藏
+    # 2026-08-17 精选决策区承载全部推荐（含 comeback）：comeback 行在精选区可见，
+    # 不在回马枪独立区（主区 ≥ 阈值时回马枪区仍整体隐藏）。
+    assert "◆ 精选决策" in out
+    pick_part = out.split("◆ 精选决策", 1)[1]
+    assert "SZ300007" in pick_part
 
 
 def test_display_priority_comeback_shown_when_main_scarce(monkeypatch, capsys):
@@ -396,8 +408,7 @@ def test_display_priority_new_group_order(monkeypatch, capsys):
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     # 2026-08-11：次日大涨独立区已并入主表行尾 🎯 标记，无重复区块，直接取全部输出
-    main_out = out
-    lines = [l for l in main_out.splitlines() if "SZ30000" in l]
+    lines = _main_lines(out)
     assert len(lines) == 5
     order = ["SZ300003", "SZ300005", "SZ300004", "SZ300002", "SZ300001"]
     for i, sym in enumerate(order):
@@ -413,7 +424,7 @@ def test_display_priority_knf_score_ascending(monkeypatch, capsys):
     _insert_rec_cat(conn, "SZ300004", "动量低分", "momentum", 30)
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
-    lines = [l for l in out.splitlines() if "SZ30000" in l]
+    lines = _main_lines(out)
     # 类别组内：kNF 低分(20) 在 高分(90) 前；momentum 高分(90) 在 低分(30) 前（仍降序）
     assert lines.index(next(l for l in lines if "SZ300001" in l)) < \
         lines.index(next(l for l in lines if "SZ300002" in l)), "kNF 应升序（低分在前）"
@@ -476,10 +487,11 @@ def test_display_priority_tier_front_cross_category(monkeypatch, capsys):
     pool = {"SZ300002": _cand_tier("SZ300002", 80, percent=1.0),
             "SZ300003": _cand_tier("SZ300003", 90, category="short_term", percent=1.0),
             "SZ300004": _cand_tier("SZ300004", 125)}
+    # 2026-08-17 分型：short_term 带 🎯 需弱转强（甜蜜带不再生效）
+    pool["SZ300003"].kline.dimensions.update({"v_st_weak": 8})
     disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
-    main_out = out
-    lines = [l for l in main_out.splitlines() if "SZ30000" in l]
+    lines = _main_lines(out)
     assert len(lines) == 3
     # 档0 内按 CAT_DISPLAY_PRIORITY：short_term(1) < momentum(2)，超短置前在前
     order = ["SZ300003", "SZ300002", "SZ300004"]
@@ -496,7 +508,7 @@ def test_display_priority_tier_front_within_category(monkeypatch, capsys):
             "SZ300002": _cand_tier("SZ300002", 150)}
     disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
-    lines = [l for l in out.splitlines() if "SZ30000" in l]
+    lines = _main_lines(out)
     assert "SZ300001" in lines[0], f"甜蜜带票(60)应排在普通高分票(150)之前: {lines}"
     assert "SZ300002" in lines[1]
 
@@ -510,7 +522,7 @@ def test_prominence_no_longer_sorts(monkeypatch, capsys):
             "SZ300002": _cand_tier("SZ300002", 150)}
     disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
-    lines = [l for l in out.splitlines() if "SZ30000" in l]
+    lines = _main_lines(out)
     assert "SZ300002" in lines[0], f"辨识度票(60)不再置顶，高分票(150)应在前: {lines}"
     assert "SZ300001" in lines[1]
     assert "↻" in lines[1], "辨识度标记应保留行内展示"
@@ -526,7 +538,7 @@ def test_display_priority_fund_flow_no_longer_sorts(monkeypatch, capsys):
             "SZ300002": _cand_tier("SZ300002", 65)}
     disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
-    lines = [l for l in out.splitlines() if "SZ30000" in l]
+    lines = _main_lines(out)
     assert "SZ300002" in lines[0], f"高分普通票(65)应排在强流入票(55)之前(资金流不再置前): {lines}"
     assert "SZ300001" in lines[1]
 
@@ -541,8 +553,7 @@ def test_display_priority_fund_flow_outflow_not_hidden(monkeypatch, capsys):
             "SZ300002": _cand_tier("SZ300002", 50)}
     disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
-    main_out = out
-    lines = [l for l in main_out.splitlines() if "SZ30000" in l]
+    lines = _main_lines(out)
     assert len(lines) == 2, f"净流出票不应被过滤，两条都展示: {lines}"
     assert "SZ300001" in lines[0], f"🎯 置前票应置前: {lines}"
     assert "SZ300002" in lines[1]
@@ -570,7 +581,7 @@ def test_display_priority_tier_db_source_for_dropped(monkeypatch, capsys):
     conn.commit()
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
-    lines = [l for l in out.splitlines() if "SZ30000" in l]
+    lines = _main_lines(out)
     assert "SZ300001" in lines[0], f"掉榜甜蜜带票(60,档0)应排在普通票(90,档1)之前: {lines}"
     assert "SZ300002" in lines[1]
 
@@ -590,8 +601,7 @@ def test_display_priority_tier_banner_separates_groups(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "▶ 置顶档" not in out
     assert "▶ 普通档" not in out
-    main_out = out
-    lines = [l for l in main_out.splitlines() if "SZ30000" in l]
+    lines = _main_lines(out)
     assert len(lines) == 3, f"净流出票(SZ300003)应正常展示，不再被劣后过滤: {lines}"
     # 档0（🎯）内按类别优先级+分数降序：SZ300003(rebound,90) 与 SZ300001(rebound,50) 同档，高分在前
     assert "SZ300003" in lines[0], f"🎯 档高分票应在前: {lines}"
@@ -627,7 +637,9 @@ def test_display_priority_comeback_capped(monkeypatch, capsys):
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     assert "◆ 回马枪" in out
-    cb_part = out.split("◆ 回马枪", 1)[1]
+    # 截到精选决策区之前，避免精选区（2026-08-17 新增，承载全部推荐含 comeback）
+    # 的 comeback 行混入回马枪独立区行数断言
+    cb_part = out.split("◆ 精选决策", 1)[0].split("◆ 回马枪", 1)[1]
     cb_lines = [l for l in cb_part.splitlines() if "SZ3003" in l]
     assert len(cb_lines) == disp_mod.COMEBACK_DISPLAY_MAX
 
@@ -649,23 +661,31 @@ def _insert_rec_pct(conn, symbol: str, name: str, category: str, score: int, per
 
 
 def test_nextday_mark_sweet_band(monkeypatch, capsys):
-    """🎯 标记：甜蜜带票（<2% 低吸潜伏 / 4-8% 中段启动）行尾打标记；陷阱带(8-10%)不打。"""
+    """🎯 标记：甜蜜带票（<2% 低吸潜伏 / 4-8% 中段启动）行尾打标记；陷阱带(8-10%)不打。
+    2026-08-17 分型：short_term 不看甜蜜带（实测负效 5.7%），改看弱转强——
+    甜蜜带但无弱转强的 short_term 不再标 🎯；rebound/momentum 等仍看甜蜜带。"""
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "低吸", "rebound", 50, 1.0)      # <2% 甜蜜带
-    _insert_rec_pct(conn, "SZ300002", "中段", "short_term", 60, 5.0)   # 4-8% 甜蜜带
+    _insert_rec_pct(conn, "SZ300002", "中段超短", "short_term", 60, 5.0)  # 甜蜜带但无弱转强
     _insert_rec_pct(conn, "SZ300003", "陷阱", "momentum", 70, 9.0)     # 8-10% 陷阱带
-    disp_mod.display_priority(conn, today_pool={})
+    _insert_rec_pct(conn, "SZ300004", "弱转强超短", "short_term", 62, 1.0)  # 甜蜜带+弱转强
+    pool = {
+        "SZ300004": _cand_tier("SZ300004", 62, category="short_term", percent=1.0),
+    }
+    pool["SZ300004"].kline.dimensions.update({"v_st_weak": 8})
+    disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
     lines = {sym: next(l for l in out.splitlines() if sym in l)
-             for sym in ["SZ300001", "SZ300002", "SZ300003"]}
+             for sym in ["SZ300001", "SZ300002", "SZ300003", "SZ300004"]}
     assert "🎯" in lines["SZ300001"], "<2% 甜蜜带票应有 🎯 标记"
-    assert "🎯" in lines["SZ300002"], "4-8% 甜蜜带票应有 🎯 标记"
+    assert "🎯" not in lines["SZ300002"], "short_term 甜蜜带无弱转强不再标 🎯（2026-08-17 分型）"
     assert "🎯" not in lines["SZ300003"], "8-10% 陷阱带票不应有 🎯 标记"
+    assert "🎯" in lines["SZ300004"], "short_term 弱转强票应有 🎯 标记"
     assert "次日大涨画像" not in out, "2026-08-13 起底部图例已隐藏，不再打印"
 
 
 def test_nextday_mark_excludes_overbought(monkeypatch, capsys):
-    """🎯 标记：short_term 超买（死亡信号 hit 5%）不打标记。"""
+    """🎯 标记：short_term 超买（死亡信号 hit 5%）不打标记；弱转强+非超买才标。"""
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "超买超短", "short_term", 60, 1.0)
     _insert_rec_pct(conn, "SZ300002", "正常超短", "short_term", 55, 1.0)
@@ -673,12 +693,14 @@ def test_nextday_mark_excludes_overbought(monkeypatch, capsys):
         "SZ300001": _cand_tier("SZ300001", 60, "short_term", percent=1.0),
         "SZ300002": _cand_tier("SZ300002", 55, "short_term", percent=1.0),
     }
-    pool["SZ300001"].kline.dimensions.update({"st_overbought_flag": True})
+    # 两票均弱转强，仅 SZ300001 超买（死亡信号）
+    pool["SZ300001"].kline.dimensions.update({"v_st_weak": 8, "st_overbought_flag": True})
+    pool["SZ300002"].kline.dimensions.update({"v_st_weak": 8})
     disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
     lines = {sym: next(l for l in out.splitlines() if sym in l)
              for sym in ["SZ300001", "SZ300002"]}
-    assert "🎯" in lines["SZ300002"], "正常超短应有 🎯 标记"
+    assert "🎯" in lines["SZ300002"], "弱转强+非超买应有 🎯 标记"
     assert "🎯" not in lines["SZ300001"], "超买票不应有 🎯 标记"
 
 
@@ -706,7 +728,7 @@ def test_nextday_mark_lifts_tier(monkeypatch, capsys):
     }
     disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
-    lines = [l for l in out.splitlines() if "SZ30000" in l]
+    lines = _main_lines(out)
     assert len(lines) == 3
     # 档0（辨识度+🎯）内同类别按分数降序：甜蜜票(80) > 辨识票(50)；无标记高分票(120)落档1
     assert "SZ300002" in lines[0], f"🎯 甜蜜带票(80,档0)应排在辨识度票(50,档0)前: {lines}"
@@ -765,14 +787,16 @@ def test_nextday_mark_rebound_exempt_from_accum(monkeypatch, capsys):
 
 
 def test_nextday_mark_short_term_exempt_from_accum(monkeypatch, capsys):
-    """🎯 累计门槛：short_term 豁免（其规律在超买/弱转强，不适用累计口径，维持现状）。"""
+    """🎯 累计门槛：short_term 豁免累计（其规律在弱转强/超买，不适用累计口径）。
+    2026-08-17 分型后 short_term 另需弱转强才标 🎯。"""
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "超短票", "short_term", 60, 1.0)
     pool = {"SZ300001": _cand_tier("SZ300001", 60, "short_term", percent=1.0, accum=1.0)}
+    pool["SZ300001"].kline.dimensions.update({"v_st_weak": 8})
     disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
     line = next(l for l in out.splitlines() if "SZ300001" in l)
-    assert "🎯" in line, f"short_term 低累计(1.0) 应豁免并标 🎯: {line}"
+    assert "🎯" in line, f"short_term 弱转强低累计(1.0) 应豁免并标 🎯: {line}"
 
 
 def test_nextday_mark_accum_db_fallback(monkeypatch, capsys):
@@ -900,3 +924,175 @@ def test_nextday_mark_accum_missing_fail_open(monkeypatch, capsys):
     out = capsys.readouterr().out
     line = next(l for l in out.splitlines() if "SZ300001" in l)
     assert "🎯" in line, f"累计缺失应 fail-open 放行（保留旧行为）: {line}"
+
+
+# ── 次日大涨画像 🎯 分型（2026-08-17，方案B）──
+# 组合信号分析（去重 1224 样本）：short_term 次日大涨规律在弱转强（弱转强∩非超买
+# hit 15.8%），甜蜜带对 short_term 反而负效（5.7% vs 全类 8.5%）——原「甜蜜带+非超买」
+# 判定把甜蜜带 short_term 里 1/7 命中的侥幸票顶进档0。改判定：short_term 要求弱转强。
+def test_nextday_mark_short_term_weak_to_strong_dropped_row(monkeypatch, capsys):
+    """🎯 分型：掉榜/重启行（无候选）经 score_breakdown 判定 short_term 弱转强。"""
+    conn = _rec_db()
+    today = now_beijing().date().isoformat()
+    conn.execute(
+        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, score_breakdown) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (today, "13:00", "SZ300001", "弱转强掉榜", "short_term", 70, 1.0,
+         '{"st_weak_to_strong": 8, "v_st_overbought": false}'),
+    )
+    conn.execute(
+        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, score_breakdown) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (today, "13:00", "SZ300002", "非弱转强", "short_term", 60, 1.0, "{}"),
+    )
+    conn.commit()
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    lines = {sym: next(l for l in out.splitlines() if sym in l)
+             for sym in ["SZ300001", "SZ300002"]}
+    assert "🎯" in lines["SZ300001"], "掉榜行弱转强(score_breakdown)应标 🎯"
+    assert "🎯" not in lines["SZ300002"], "掉榜行无弱转强不标 🎯"
+
+
+# ── 板块普涨避雷标记（2026-08-17，方案C）──
+# 板块共振满分票 hit 7.9%（基准 10%）、cum_3d -1.51 全场最差——板块普涨日冲进去即接盘位。
+# 展示层黄色警告，不改评分不落库不入硬过滤（34% 票都带，误伤太大）。
+def test_sector_resonance_warn_candidate(monkeypatch, capsys):
+    """板块普涨避雷：候选行 v_st_sector 命中打 ⚠板块普涨。"""
+    conn = _rec_db()
+    _insert_rec_pct(conn, "SZ300001", "板块共振", "short_term", 60, 1.0)
+    _insert_rec_pct(conn, "SZ300002", "无共振", "momentum", 60, 1.0)
+    pool = {
+        "SZ300001": _cand_tier("SZ300001", 60, "short_term", percent=1.0),
+        "SZ300002": _cand_tier("SZ300002", 60, percent=1.0),
+    }
+    pool["SZ300001"].kline.dimensions.update({"v_st_sector": 10})
+    disp_mod.display_priority(conn, today_pool=pool)
+    out = capsys.readouterr().out
+    lines = {sym: next(l for l in out.splitlines() if sym in l)
+             for sym in ["SZ300001", "SZ300002"]}
+    assert "板块普涨" in lines["SZ300001"], "板块共振票应打 ⚠板块普涨"
+    assert "板块普涨" not in lines["SZ300002"], "无板块共振不打标记"
+
+
+def test_sector_resonance_warn_dropped_row(monkeypatch, capsys):
+    """板块普涨避雷：掉榜/重启行经 score_breakdown 判定（v_pb_sector）。"""
+    conn = _rec_db()
+    today = now_beijing().date().isoformat()
+    conn.execute(
+        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, score_breakdown) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (today, "13:00", "SZ300001", "掉榜共振", "rebound", 60, 1.0,
+         '{"v_pb_sector": 10}'),
+    )
+    conn.execute(
+        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, score_breakdown) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (today, "13:00", "SZ300002", "掉榜无共振", "momentum", 60, 1.0, "{}"),
+    )
+    conn.commit()
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    lines = {sym: next(l for l in out.splitlines() if sym in l)
+             for sym in ["SZ300001", "SZ300002"]}
+    assert "板块普涨" in lines["SZ300001"], "掉榜行 v_pb_sector 应打 ⚠板块普涨"
+    assert "板块普涨" not in lines["SZ300002"], "掉榜行无共振不打标记"
+
+
+def test_sector_resonance_warn_big_sector_exempt(monkeypatch, capsys):
+    """板块普涨避雷：大板块共振（count>=15，如 CPO 20 只集体涨停）不打标记——\n    接近正常水平（hit 11.0%），避免板块普涨日主区全标刷屏（08-17 实测 15 条全标教训）。"""
+    conn = _rec_db()
+    _insert_rec_pct(conn, "SZ300001", "大板块共振", "short_term", 60, 1.0)
+    _insert_rec_pct(conn, "SZ300002", "小板块共振", "short_term", 60, 1.0)
+    pool = {
+        "SZ300001": _cand_tier("SZ300001", 60, "short_term", percent=1.0),
+        "SZ300002": _cand_tier("SZ300002", 60, "short_term", percent=1.0),
+    }
+    pool["SZ300001"].kline.dimensions.update({"v_st_sector": 10, "v_st_sector_count": 20})
+    pool["SZ300002"].kline.dimensions.update({"v_st_sector": 10, "v_st_sector_count": 8})
+    disp_mod.display_priority(conn, today_pool=pool)
+    out = capsys.readouterr().out
+    lines = {sym: next(l for l in out.splitlines() if sym in l)
+             for sym in ["SZ300001", "SZ300002"]}
+    assert "板块普涨" not in lines["SZ300001"], f"count=20(>=15) 大板块共振不打标记: {lines['SZ300001']}"
+    assert "板块普涨" in lines["SZ300002"], f"count=8(<15) 小板块共振应打 ⚠板块普涨: {lines['SZ300002']}"
+
+
+def test_nextday_mark_dropped_row_overbought_blocked(monkeypatch, capsys):
+    """🎯 掉榜行超买拦截（2026-08-17 修复）：score_breakdown 含 v_st_overbought 的弱转强票
+    不打标记——兆日科技案例（超买+累计74.7%妖股此前被误标）。"""
+    conn = _rec_db()
+    today = now_beijing().date().isoformat()
+    conn.execute(
+        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, score_breakdown) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (today, "13:00", "SZ300001", "超买妖股", "short_term", 68, 9.5,
+         '{"st_weak_to_strong": 8, "v_st_overbought": true}'),
+    )
+    conn.execute(
+        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, score_breakdown) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (today, "13:00", "SZ300002", "正常弱转强", "short_term", 68, 1.0,
+         '{"st_weak_to_strong": 8, "v_st_overbought": false}'),
+    )
+    conn.commit()
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    lines = {sym: next(l for l in out.splitlines() if sym in l)
+             for sym in ["SZ300001", "SZ300002"]}
+    assert "🎯" not in lines["SZ300001"], f"掉榜行超买(score_breakdown)不应标 🎯: {lines['SZ300001']}"
+    assert "🎯" in lines["SZ300002"], f"掉榜行弱转强非超买应标 🎯: {lines['SZ300002']}"
+
+
+# ── 精选决策独立区（2026-08-17，方案D）──
+# 把「综合排序里不知道选哪个」的分析固化成独立展示区：对全部今日推荐逐票输出
+# 推荐/参考/回避 + 原因。数据依据见 _analyze_entry（回测：🎯 最强、comeback 资金流≥3%
+# 正收益、超买/小板块共振/陷阱带/死区/过热/资金流出回避）。
+def _insert_rec_sb(conn, symbol: str, name: str, category: str, score: int,
+                   percent: float, sb: str = "{}") -> None:
+    today = now_beijing().date().isoformat()
+    conn.execute(
+        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, score_breakdown) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (today, "13:00", symbol, name, category, score, percent, sb),
+    )
+    conn.commit()
+
+
+def test_pick_zone_recommend_and_avoid(monkeypatch, capsys):
+    """精选决策区：comeback 资金流≥3% → 推荐；超买/小板块共振 → 回避（带原因）。"""
+    conn = _rec_db()
+    _insert_rec_sb(conn, "SZ300001", "回踩回流", "comeback", 102, 1.0,
+                   '{"fund_flow_main_pct": 8.6}')
+    _insert_rec_sb(conn, "SZ300002", "超买妖股", "short_term", 68, 9.5,
+                   '{"st_weak_to_strong": 8, "v_st_overbought": true}')
+    _insert_rec_sb(conn, "SZ300003", "小板块", "short_term", 70, 6.0,
+                   '{"v_st_sector": 10, "v_st_sector_count": 8}')
+    _insert_rec_sb(conn, "SZ300004", "普通超短", "short_term", 80, 6.0, "{}")
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    assert "◆ 精选决策" in out
+    lines = {sym: next(l for l in out.split("◆ 精选决策")[1].splitlines() if sym in l)
+             for sym in ["SZ300001", "SZ300002", "SZ300003", "SZ300004"]}
+    assert "推荐" in lines["SZ300001"], f"comeback 资金流+8.6% 应推荐: {lines['SZ300001']}"
+    assert "回踩+资金+9%" in lines["SZ300001"]
+    assert "回避" in lines["SZ300002"], f"超买妖股应回避: {lines['SZ300002']}"
+    assert "超买" in lines["SZ300002"]
+    assert "回避" in lines["SZ300003"], f"小板块共振应回避: {lines['SZ300003']}"
+    assert "板块普涨" in lines["SZ300003"]
+    assert "参考" in lines["SZ300004"], f"无警示动量应为参考: {lines['SZ300004']}"
+    # 排序：推荐 > 参考 > 回避
+    pick_lines = [l for l in out.split("◆ 精选决策")[1].splitlines() if "SZ3000" in l]
+    assert "SZ300001" in pick_lines[0], f"推荐应排最前: {pick_lines}"
+
+
+def test_pick_zone_mark_still_recommend(monkeypatch, capsys):
+    """精选决策区：🎯 次日画像票（weak_to_strong + 非超买）→ 推荐。"""
+    conn = _rec_db()
+    _insert_rec_sb(conn, "SZ300001", "弱转强", "short_term", 68, 1.0,
+                   '{"st_weak_to_strong": 8, "v_st_overbought": false}')
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    assert "◆ 精选决策" in out
+    line = next(l for l in out.split("◆ 精选决策")[1].splitlines() if "SZ300001" in l)
+    assert "推荐" in line and "次日画像" in line, f"🎯 票应推荐: {line}"

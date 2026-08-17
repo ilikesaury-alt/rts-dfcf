@@ -1,3 +1,4 @@
+import json
 import logging
 import sqlite3
 from datetime import date, timedelta
@@ -726,12 +727,15 @@ def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
     返回列表未排序，每项包含：
       symbol, name, category, score, trend, first_time,
       live_percent (from appearances), live_rank (from appearances),
-      rank_score（类内百分位，综合排序跨类别可比用）
+      rank_score（类内百分位，综合排序跨类别可比用）,
+      score_breakdown（2026-08-17 新增：解析为 dict，供掉榜/重启行的 🎯 分型
+      （short_term 弱转强）与板块普涨避雷标记判定，见 display._entry_dims）
     """
     today = now_beijing().date().isoformat()
     try:
         rows = conn.execute(
-            "SELECT symbol, name, category, score, trend, time, percent, concept, accumulated_pct "
+            "SELECT symbol, name, category, score, trend, time, percent, concept, accumulated_pct, "
+            "score_breakdown "
             "FROM recommendations WHERE date = ? AND COALESCE(excluded, 0) = 0 "
             "ORDER BY CASE WHEN category = 'comeback' THEN 1 ELSE 0 END, score DESC",
             (today,),
@@ -744,6 +748,13 @@ def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
     for r in rows:
         sym = r[0]
         if sym not in seen:
+            sb_raw = r[9]
+            sb = {}
+            if sb_raw:
+                try:
+                    sb = json.loads(sb_raw)
+                except Exception:
+                    sb = {}
             seen[sym] = {
                 "symbol": sym,
                 "name": r[1],
@@ -755,6 +766,7 @@ def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
                 "percent": r[6] or 0.0,
                 "concept": r[7] or "",
                 "accumulated_pct": r[8],
+                "score_breakdown": sb,
             }
 
     try:
