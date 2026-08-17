@@ -627,6 +627,12 @@ NEXTDAY_SPIKE_MID_MAX = 8.0       # 中段启动带上限（<8%，排除 8-10% �
 # 甜蜜带 + 累计≥6 使 hit 从 16.5% 提升至 20.0%（new_face 15.7%→21.1%、momentum 23.7%→26.5%）；
 # rebound（超跌反弹，负累计天然，hit 33.3%）与 short_term（其规律在超买/弱转强，不在此列）豁免。
 NEXTDAY_ACCUM_MIN = 6.0
+# 小板块共振劣后的板块规模门槛（2026-08-17，档位4级）：板块共振整体 cum_3d -2.22 全场最差，
+# 但按规模分档差异大——cnt<5 hit 5.9%/均次日 -2.14%（最差，局部抱团次日兑现）、
+# cnt 5-14 hit 6.7%/-0.74、cnt>=15 hit 11.0%/+0.18（接近无共振 11.2%，大板块有持续资金）。
+# 只对 cnt<15 的小板块共振档位劣后（display._entry_tier 档3）；⚠板块普涨 文本已按用户
+# 反馈下线（太扎眼），此配置仅用于排序，不渲染任何行尾文本。
+SECTOR_RESONANCE_WARN_MAX = 15
 NEXTDAY_CAT_PRIORITY = {
     "rebound": 0, "short_term": 1, "momentum": 2,
     "known_new_face": 3, "new_face": 4,

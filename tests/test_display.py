@@ -677,7 +677,7 @@ def test_nextday_mark_sweet_band(monkeypatch, capsys):
     assert "🎯" not in lines["SZ300002"], "short_term 甜蜜带无弱转强不再标 🎯（2026-08-17 分型）"
     assert "🎯" not in lines["SZ300003"], "8-10% 陷阱带票不应有 🎯 标记"
     assert "🎯" in lines["SZ300004"], "short_term 弱转强票应有 🎯 标记"
-    assert "次日大涨画像" not in out, "2026-08-13 起底部图例已隐藏，不再打印"
+    assert "── 档0 🎯 次日大涨画像" in out, "2026-08-17 档位组标题应显示（替代旧底部图例）"
 
 
 def test_nextday_mark_excludes_overbought(monkeypatch, capsys):
@@ -706,7 +706,7 @@ def test_nextday_mark_no_hits_omitted(monkeypatch, capsys):
     _insert_rec_pct(conn, "SZ300001", "陷阱票", "momentum", 70, 9.0)   # 8-10% 陷阱带
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
-    assert "次日大涨画像" not in out, "无甜蜜带票时不应打印 🎯 图例行"
+    assert "次日大涨画像" not in out, "无甜蜜带票时不应有 🎯 组标题（档0 应无票）"
     assert "SZ300001" in out  # 主表仍正常显示
 
 
@@ -948,3 +948,69 @@ def test_nextday_mark_short_term_weak_to_strong_dropped_row(monkeypatch, capsys)
              for sym in ["SZ300001", "SZ300002"]}
     assert "🎯" in lines["SZ300001"], "掉榜行弱转强(score_breakdown)应标 🎯"
     assert "🎯" not in lines["SZ300002"], "掉榜行无弱转强不标 🎯"
+
+
+def _insert_rec_sb(conn, symbol: str, name: str, category: str, score: int,
+                   percent: float, sb: str = "{}") -> None:
+    today = now_beijing().date().isoformat()
+    conn.execute(
+        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, score_breakdown) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (today, "13:00", symbol, name, category, score, percent, sb),
+    )
+    conn.commit()
+
+
+# ── 档位 4 级（2026-08-17）：今日总结的选股规则全部编码进排序键 ──
+# 档0=🎯 次日画像 / 档1=rebound·comeback资金流≥3% / 档2=普通 / 档3=警示劣后
+# （超买·陷阱带·死区·累计≥50%过热·资金流出≤-8%）。跨类别全局生效，纯排序层不改评分。
+def test_display_priority_tier4_rules_applied(monkeypatch, capsys):
+    """档位 4 级：rebound(档1) > 无警示 short_term(档2) > 死区/陷阱/过热(档3)。"""
+    conn = _rec_db()
+    _insert_rec_pct(conn, "SZ300004", "反弹票", "rebound", 80, 3.0)      # 档1（rebound 豁免涨幅带）
+    _insert_rec_pct(conn, "SZ300003", "普通超短", "short_term", 60, 6.0)  # 档2（无弱转强、无警示）
+    _insert_rec_pct(conn, "SZ300001", "死区动量", "momentum", 120, 3.0)   # 档3 死区
+    _insert_rec_pct(conn, "SZ300002", "陷阱动量", "momentum", 100, 9.0)   # 档3 陷阱带
+    _insert_rec_pct_accum(conn, "SZ300005", "过热妖股", "momentum", 90, 1.0, 74.7)  # 档3 过热（甜蜜带 🎯 仍劣后）
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    lines = [l for l in _main_lines(out) if "SZ3000" in l]
+    order = ["SZ300004", "SZ300003", "SZ300001", "SZ300002", "SZ300005"]
+    for i, sym in enumerate(order):
+        assert sym in lines[i], f"{sym} 应在第 {i} 行（档位优先于分数）: {lines}"
+
+
+def test_display_priority_tier4_comeback_fundflow(monkeypatch, capsys):
+    """档位 4 级：comeback 资金流≥3%（回踩+资金回流）档1 排前，无资金流 comeback 档2。"""
+    conn = _rec_db()
+    _insert_rec_sb(conn, "SZ300101", "回踩回流", "comeback", 102, 1.0,
+                   '{"fund_flow_main_pct": 8.6}')      # 档1
+    _insert_rec_sb(conn, "SZ300102", "回踩无资金", "comeback", 120, 1.0, "{}")  # 档2
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    assert "◆ 回马枪" in out
+    cb_part = out.split("◆ 精选决策", 1)[0].split("◆ 回马枪", 1)[1]
+    cb_lines = [l for l in cb_part.splitlines() if "SZ30010" in l]
+    assert "SZ300101" in cb_lines[0], f"comeback 资金流≥3% 应档1 排前: {cb_lines}"
+    assert "SZ300102" in cb_lines[1]
+
+
+def test_display_priority_tier4_sector_resonance_low(monkeypatch, capsys):
+    """档位 4 级：小板块共振（cnt<15）档3 劣后；大板块（cnt>=15）豁免；🎯 票豁免。"""
+    conn = _rec_db()
+    _insert_rec_pct(conn, "SZ300001", "普通超短", "short_term", 60, 6.0)   # 档2 无警示
+    _insert_rec_sb(conn, "SZ300002", "小板块共振", "short_term", 80, 6.0,
+                   '{"v_st_sector": 10, "v_st_sector_count": 8}')           # 档3 小板块
+    _insert_rec_sb(conn, "SZ300003", "大板块共振", "short_term", 70, 6.0,
+                   '{"v_st_sector": 10, "v_st_sector_count": 20}')          # 档2 大板块豁免
+    _insert_rec_sb(conn, "SZ300004", "弱转强共振", "short_term", 68, 1.0,
+                   '{"st_weak_to_strong": 8, "v_st_sector": 10, "v_st_sector_count": 8, "v_st_overbought": false}')  # 档0 🎯 豁免
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    lines = [l for l in _main_lines(out) if "SZ3000" in l]
+    # 档0(SZ300004) > 档2(SZ300001, SZ300003) > 档3(SZ300002)
+    assert "SZ300004" in lines[0], f"🎯 弱转强应档0 置顶（板块共振豁免）: {lines}"
+    assert lines.index(next(l for l in lines if "SZ300001" in l)) < \
+        lines.index(next(l for l in lines if "SZ300002" in l)), f"小板块共振应劣后: {lines}"
+    assert lines.index(next(l for l in lines if "SZ300003" in l)) < \
+        lines.index(next(l for l in lines if "SZ300002" in l)), f"大板块豁免不劣后: {lines}"

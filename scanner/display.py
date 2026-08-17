@@ -19,6 +19,7 @@ from scanner.config import (
     NEXTDAY_SPIKE_SWEET_LOW,
     NEXTDAY_SPIKE_SWEET_MIN,
     RISK_FLAGS_DISPLAY_HARD,
+    SECTOR_RESONANCE_WARN_MAX,
     SUGGEST_BY_CAT,
     TOP40_THRESHOLD,
     now_beijing,
@@ -506,6 +507,100 @@ def _entry_weak_to_strong(entry: dict) -> bool:
 
 
 
+def _entry_overbought(entry: dict) -> bool:
+    """超买死亡信号：候选 dims / 掉榜 score_breakdown 统一判定（_entry_dims）。
+
+    数据（nextday_attribution）：short_term/动量超买 hit 5-8%（非超买 10.5%）。
+    """
+    d = _entry_dims(entry)
+    return bool(d.get("st_overbought_flag") or d.get("mo_overbought_flag")
+                or d.get("v_st_overbought") or d.get("v_mo_overbought"))
+
+
+def _entry_band(entry: dict) -> str:
+    """推荐时刻涨幅带分类（与 🎯 甜蜜带同源，nextday_attribution 口径）。
+
+    sweet(0-2%/4-8% 甜蜜带) / down(<0) / dead(2-4% 死区，hit 6.5%) /
+    trap(8-10% 陷阱，均次日 -0.94% 且 cum_3d -1.87 回吐最狠)。
+    """
+    p = _nextday_entry_percent(entry)
+    if p < 0:
+        return "down"
+    if 0.0 <= p < NEXTDAY_SPIKE_SWEET_LOW or NEXTDAY_SPIKE_MID_MIN <= p < NEXTDAY_SPIKE_MID_MAX:
+        return "sweet"
+    if p < NEXTDAY_SPIKE_MID_MIN:
+        return "dead"
+    return "trap"
+
+
+def _entry_fund_flow_pct(entry: dict) -> float | None:
+    """主力净占比（%），候选行读 dims、掉榜行读 score_breakdown；无数据返回 None。"""
+    v = _entry_dims(entry).get("fund_flow_main_pct")
+    return float(v) if v is not None else None
+
+
+def _entry_sector_resonance(entry: dict) -> bool:
+    """小板块共振：v_st_sector / v_pb_sector / v_nf_sector >0 且板块规模 count<SECTOR_RESONANCE_WARN_MAX。
+
+    回测细分（2026-08-17）：板块共振整体 hit 7.1%/cum_3d -2.22 全场最差，但 cnt>=15
+    大板块接近正常（hit 11.0%）——只对小板块（cnt<15，局部抱团次日兑现）档位劣后。
+    count 缺失按 0（小板块，保守）。2026-08-17 行尾 ⚠板块普涨 文本下线后，本函数
+    仅服务 _entry_tier 档位劣后（排序），不渲染任何文本。
+    """
+    d = _entry_dims(entry)
+    if not (d.get("v_st_sector") or d.get("v_pb_sector") or d.get("v_nf_sector")):
+        return False
+    cnt = (d.get("v_st_sector_count") or d.get("v_pb_sector_count")
+           or d.get("v_nf_sector_count") or 0)
+    return cnt < SECTOR_RESONANCE_WARN_MAX
+
+
+def _entry_tier(entry: dict, conn=None, accum: float | None = None,
+                marked: bool | None = None) -> int:
+    """综合排序档位（2026-08-17 二值 → 4 级）：把今日总结的全部选股规则编码进排序键。
+
+    档0 = 🎯 次日大涨画像（数据最强，见 _is_nextday_marked，short_term 弱转强分型）
+    档1 = 强信号：rebound（hit 28.6%/cum_3d +7.31 最强类别）／ comeback 资金流≥3%
+          （回踩买点+资金回流，comeback 类别 cum_3d +1.24%）
+    档2 = 普通：无警示（参考，需次日卖纪律）
+    档3 = 警示劣后：累计≥50% 过热（优先于 🎯，精选区校准）/ 超买（hit 5-8%）/
+          8-10% 陷阱带（均次日 -0.94%）/ 2-4% 死区（hit 6.5%）/ 资金流出≤-8%。
+          short_term（规律在弱转强）与 comeback（6 维回踩信号，甜蜜带 0 hit）不看涨幅带。
+
+    纯排序层：不改评分不落库，档位只重排展示顺序（跨类别全局生效）。
+    """
+    if accum is None:
+        accum = _nextday_entry_accum(entry, conn)
+    # 过热妖股优先于一切：累计≥50% 即使命中 🎯 画像也劣后（精选区校准，hit 最低区）
+    if accum is not None and accum >= 50:
+        return 3
+    if marked is None:
+        marked = _is_nextday_marked(entry, conn, accum=accum)
+    if marked:
+        return 0
+    cat = entry["category"]
+    if cat == "rebound":
+        return 1
+    if cat == "comeback":
+        ff = _entry_fund_flow_pct(entry)
+        if ff is not None and ff >= 3:
+            return 1
+        return 2
+    if _entry_overbought(entry):
+        return 3
+    ff = _entry_fund_flow_pct(entry)
+    if ff is not None and ff <= -8:
+        return 3
+    # 小板块共振（cnt<15）档3 劣后：板块普涨日冲进去即接盘位（cum_3d -2.2~-2.6 最差）。
+    # 仅非 🎯 票生效（🎯∩板块普涨 hit 12.2% 仍有效，太辰光案例）；不渲染文本，只排序。
+    if _entry_sector_resonance(entry):
+        return 3
+    if cat != "short_term":
+        if _entry_band(entry) in ("trap", "dead"):
+            return 3
+    return 2
+
+
 def _is_nextday_marked(entry: dict, conn=None, accum: float | None = None) -> bool:
     """次日大涨画像标记（🎯）：推荐时刻涨幅在甜蜜带 + 非超买死亡信号 + 5日累计门槛。
 
@@ -625,14 +720,19 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     # 2026-08-14：预计算 mark map（排序+渲染各调一次 _is_nextday_marked 会触发两次 daily_kline
     # 回放全表扫描；预计算后只查一次，_sort_tier 与渲染共用同一结果保证一致性）。
     nextday_mark: dict[str, bool] = {}
+    tier_map: dict[str, int] = {}
     for e in today_recs:
         # 2026-08-17 审查修复：累计预计算一次，消除掉榜行在排序预计算与渲染之间
         # 的重复 daily_kline 回放（N+1）。
         acc = _nextday_entry_accum(e, conn)
-        nextday_mark[e["symbol"]] = _is_nextday_marked(e, conn, accum=acc)
+        marked = _is_nextday_marked(e, conn, accum=acc)
+        nextday_mark[e["symbol"]] = marked
+        # 2026-08-17 档位 4 级：tier_map 与 nextday_mark 同源预计算（_entry_tier 复用
+        # 同一 accum/marked，避免二次回放），排序与任何行内展示共用同一结果。
+        tier_map[e["symbol"]] = _entry_tier(e, conn, accum=acc, marked=marked)
 
     def _sort_tier(entry):
-        return 0 if nextday_mark.get(entry["symbol"], False) else 1
+        return tier_map.get(entry["symbol"], 2)
 
     # 回马枪独立成区（2026-08-07 方案A）：comeback 是 off_list 掉榜跟踪票，语义与榜上票不同，
     # 从主排序表抽出放到末尾独立区块；主表只排榜上五类（rebound/known_new_face/new_face/
@@ -657,9 +757,22 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
            f"{_pad('涨幅',8,'r')} {_pad('5日累计',8,'r')} {_pad('现价',7,'r')} {_pad('排名',8,'r')} "
            f"{_pad('板块',14)} {_pad('策略',5)} {_pad('评分',4,'r')} {_pad('时间',6)} {_pad('建议',6)}")
     print(hdr)
-    for i, entry in enumerate(scored, 1):
+    # 档位组标题（2026-08-17）：4 级档位切换时打印分隔行，直观看到「该买/别碰」边界。
+    # 纯展示层；组内序号重新编号，与组标题配合更清晰。
+    tier_names = {0: "次日大涨画像", 1: "强信号", 2: "普通", 3: "警示劣后"}
+    tier_color = {0: ANSI["GREEN"], 1: ANSI["CYAN"], 2: "", 3: ANSI["RED"]}
+    last_tier = None
+    rank_in_tier = 0
+    for entry in scored:
+        tier = tier_map.get(entry["symbol"], 2)
+        if tier != last_tier:
+            rank_in_tier = 0
+            last_tier = tier
+            prefix = "🎯 " if tier == 0 else ""
+            print(f"  {tier_color[tier]}── 档{tier} {prefix}{tier_names[tier]}{ANSI['RESET']}")
+        rank_in_tier += 1
         mark = nextday_mark.get(entry["symbol"], False)
-        _print_priority_row(entry, i, flow_pct_map, nextday_mark=mark, last_ranks=last_ranks)
+        _print_priority_row(entry, rank_in_tier, flow_pct_map, nextday_mark=mark, last_ranks=last_ranks)
     print(f"  {'-'*92}")
 
     # 回马枪独立成区（2026-08-11 移到最末尾）：主表仅排榜上五类，comeback 抽到此处独立成区。
