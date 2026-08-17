@@ -22,6 +22,28 @@ def _stock(percent=5.0, rank_change=1500, value=8000, current=15.0, rank=10, mar
     )
 
 
+def _kline_with_today(hist_pcts, today_pct, today_str="2026-02-01"):
+    """历史 N 根（日期 2026-01-XX）+ 一根日期为 today_str 的今日 bar。
+
+    真实扫描时 kline 含今日 bar，_split_today 按其日期剔除——本 fixture 复刻该形态，
+    使历史口径（accumulated_pct，不含今日）与含今日口径（accumulated_incl_today）可分。
+    """
+    base = 100.0
+    closes = [base]
+    for p in hist_pcts:
+        closes.append(closes[-1] * (1 + p / 100))
+    bars = []
+    for i, c in enumerate(closes[1:], 1):
+        bars.append({"date": f"2026-01-{i:02d}", "open": closes[i - 1], "close": c,
+                     "high": c * 1.02, "low": c * 0.98, "volume": 1.0,
+                     "percent": hist_pcts[i - 1]})
+    today_close = closes[-1] * (1 + today_pct / 100)
+    bars.append({"date": today_str, "open": closes[-1], "close": today_close,
+                 "high": today_close * 1.02, "low": closes[-1] * 0.98,
+                 "volume": 2.0, "percent": today_pct})
+    return bars
+
+
 class TestAnalyzeNewFace:
 
     def test_golden_path_returns_scored_candidate(self):
@@ -319,6 +341,42 @@ class TestAccumulatedCalculation:
         accumulated = (cb[-1] - cb[-6]) / cb[-6] * 100
         # sum(pcts[-5:]) = -4+5-4+5-4 = -2% (wrong), close-based = -2.46% (correct)
         assert round(accumulated, 2) == -2.46
+
+    def test_incl_today_dim_momentum_includes_today_bar(self):
+        # 2026-08-17 修复回归：momentum 的 accumulated_pct 为历史口径（不含今日，
+        # RPS/评分用），accumulated_incl_today 维度须含今日 bar——🎯 门槛即用后者。
+        # 6 根历史各 +1.7%（5 日复利 ≈ +8.79%）+ 今日 +6%；含今日窗口前移一根 → ≈ +13.4%。
+        kline = _kline_with_today([1.7] * 6, 6.0)
+        result = analyze_momentum(_stock(percent=6.0, rank_change=2000, value=12000),
+                                  kline, today_str="2026-02-01")
+        assert result is not None
+        assert 8.0 < result.accumulated_pct < 9.5, f"历史口径应≈8.79%: {result.accumulated_pct}"
+        assert result.dimensions["accumulated_incl_today"] > 12.0, \
+            f"含今日维度应≈13.4%: {result.dimensions['accumulated_incl_today']}"
+
+    def test_incl_today_dim_new_face_includes_today_bar(self):
+        kline = _kline_with_today([1.7] * 6, 6.0)
+        result = analyze_new_face(_stock(percent=6.0, rank_change=2500, value=12000),
+                                  kline, today_str="2026-02-01")
+        assert result is not None
+        assert result.dimensions["accumulated_incl_today"] > result.accumulated_pct + 3.0
+
+    def test_incl_today_dim_short_term_equals_accumulated(self):
+        # short_term 的 accumulated_pct 本身含今日（策略语义），维度值应与之一致。
+        kline = _kline_with_today([1.7] * 6, 6.0)
+        result = analyze_short_term(_stock(percent=6.0), kline, today_str="2026-02-01")
+        assert result is not None
+        assert result.dimensions["accumulated_incl_today"] == result.accumulated_pct
+
+    def test_incl_today_dim_rebound_negative_with_today_gain(self):
+        # rebound 超跌场景：历史连跌（含今日前已 -8% 复利），今日企稳 +3%，
+        # accumulated_pct（不含今日）仍为负，含今日维度应抬高但方向不变。
+        hist = [-2.0] * 6
+        kline = _kline_with_today(hist, 3.0)
+        result = analyze_rebound(_stock(percent=3.0), kline, today_str="2026-02-01")
+        assert result is not None, "超跌企稳场景应命中 rebound"
+        assert result.accumulated_pct < -5.0
+        assert result.dimensions["accumulated_incl_today"] > result.accumulated_pct
 
 
 class TestAnalyzeShortTerm:

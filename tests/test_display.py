@@ -444,14 +444,18 @@ def test_display_priority_suggestion_decoupled(monkeypatch, capsys):
 # （图标与「资金流出」标签仍保留展示）。_cand_tier 的 fund_flow 参数供图标相关测试使用。
 def _cand_tier(symbol: str, score: int, category: str = "momentum",
                fund_flow: float | None = None, prominent: bool = False,
-               percent: float = 3.0, accum: float = 8.0) -> Candidate:
+               percent: float = 3.0, accum: float = 8.0,
+               incl_accum: float | None = None) -> Candidate:
     # percent 默认 3.0（2~4% 死区，不在次日大涨甜蜜带）：避免候选行被 🎯 误置顶，
     # 使档位测试只由 prominent 决定；需要 🎯 的测试显式传甜蜜带（<2% / 4~8%）。
     # accum 默认 8.0 ≥ NEXTDAY_ACCUM_MIN（6.0）：甜蜜带 momentum/new_face 票默认可标 🎯，
     # 保持既有档位测试语义；测试 5 日累计门槛时显式传低值（如 accum=2.0）。
+    # incl_accum：accumulated_incl_today 维度（含今日口径，2026-08-17 起 🎯 优先取用它）。
     dims = {}
     if fund_flow is not None:
         dims["fund_flow_main_pct"] = fund_flow
+    if incl_accum is not None:
+        dims["accumulated_incl_today"] = incl_accum
     k = KlineSummary(trend="", accumulated_pct=accum, volume_ratio=1.0,
                      bottom_confirmed=False, score=score, dimensions=dims)
     c = Candidate(
@@ -782,6 +786,55 @@ def test_nextday_mark_accum_db_fallback(monkeypatch, capsys):
              for sym in ["SZ300001", "SZ300002"]}
     assert "🎯" in lines["SZ300001"], f"DB 累计 12.0(≥6) 应标: {lines['SZ300001']}"
     assert "🎯" not in lines["SZ300002"], f"DB 累计 1.0(<6) 不应标: {lines['SZ300002']}"
+
+
+def test_nextday_mark_accum_prefers_incl_today_dim(monkeypatch, capsys):
+    """🎯 累计口径修复（2026-08-17）：候选行优先取 accumulated_incl_today（含今日）。
+
+    回归：momentum 的 accumulated_pct 为历史口径（不含今日，此处 2.0 会误拒），
+    但含今日口径 9.0 ≥ 6 应标——此前直接用 accumulated_pct 导致今日大涨票漏标。"""
+    conn = _rec_db()
+    _insert_rec_pct(conn, "SZ300001", "含今日动量", "momentum", 70, 1.0)
+    pool = {"SZ300001": _cand_tier("SZ300001", 70, "momentum",
+                                   percent=1.0, accum=2.0, incl_accum=9.0)}
+    disp_mod.display_priority(conn, today_pool=pool)
+    out = capsys.readouterr().out
+    line = next(l for l in out.splitlines() if "SZ300001" in l)
+    assert "🎯" in line, f"含今日累计 9.0(≥6) 应标 🎯（accumulated_pct=2.0 仅为历史口径）: {line}"
+
+
+def test_nextday_mark_accum_incl_today_dim_low(monkeypatch, capsys):
+    """🎯 累计口径修复：含今日维度值不足门槛同样不标（维值优先级不绕过门槛）。"""
+    conn = _rec_db()
+    _insert_rec_pct(conn, "SZ300001", "含今日低累计", "momentum", 70, 1.0)
+    pool = {"SZ300001": _cand_tier("SZ300001", 70, "momentum",
+                                   percent=1.0, accum=9.0, incl_accum=2.0)}
+    disp_mod.display_priority(conn, today_pool=pool)
+    out = capsys.readouterr().out
+    line = next(l for l in out.splitlines() if "SZ300001" in l)
+    assert "🎯" not in line, f"含今日累计 2.0(<6) 不应标 🎯: {line}"
+
+
+def test_nextday_mark_accum_offlist_prefers_replay_over_db(monkeypatch, capsys):
+    """🎯 累计口径修复：掉榜行（无候选）优先回放含推荐日口径，不再优先 DB 落库的历史口径。
+
+    回归：DB accumulated_pct=12.0（扫描时刻不含今日的快照），但 daily_kline 回放
+    含推荐日口径仅 +2.5%——门槛应基于含推荐日口径，此前 DB 值优先会误标。"""
+    conn = _rec_db_with_kline()
+    today = now_beijing().date().isoformat()
+    closes = [10.0 + 0.05 * i for i in range(6)]   # 含推荐日累计约 +2.5%（平盘）
+    for i, c in enumerate(closes):
+        d = (now_beijing().date() - timedelta(days=5 - i)).isoformat()
+        conn.execute(
+            "INSERT INTO daily_kline (symbol, date, close, percent) VALUES (?, ?, ?, ?)",
+            ("SZ300001", d, c, 1.0),
+        )
+    _insert_rec_pct_accum(conn, "SZ300001", "回放优先", "momentum", 70, 1.0, 12.0)
+    conn.commit()
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    line = next(l for l in out.splitlines() if "SZ300001" in l)
+    assert "🎯" not in line, f"回放累计 +2.5%(<6) 应压过 DB 落库 12.0（历史口径）不标: {line}"
 
 
 def _rec_db_with_kline():

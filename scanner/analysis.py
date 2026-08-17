@@ -130,6 +130,23 @@ def _split_today(kline: list[KlineBar], today_str: str) -> tuple[list[KlineBar],
     return historical_kline, pcts, closes
 
 
+def _accum_incl_today(kline: list[KlineBar], today_str: str, today_pct: float) -> float:
+    """5 日累计涨幅（含今日 bar，复利口径），存入 accumulated_incl_today 维度。
+
+    用途：次日大涨 🎯 门槛 NEXTDAY_ACCUM_MIN 校准于「含推荐日」口径（含今日 bar），
+    但 new_face/momentum/rebound 的 accumulated_pct 为历史口径（_split_today 剔除今日）。
+    此处另算含今日值供展示层判定，消除门槛口径错位（short_term 的 accumulated_pct
+    本身即此口径，维度值与之相等，统一存放）。今日 bar 缺失（旧缓存/补拉失败）时
+    all_closes 末根为昨日，值回退为历史口径——与 short_term 同行为，不额外处理。
+    """
+    all_closes = [k["close"] for k in kline]
+    if len(all_closes) >= 6:
+        return (all_closes[-1] - all_closes[-6]) / all_closes[-6] * 100
+    hist = [k for k in kline if k["date"] != today_str]
+    pcts = [k["percent"] for k in hist]
+    return sum(pcts[-5:]) + today_pct
+
+
 def _get_features(closes: list[float], historical_kline: list[KlineBar],
                   features: dict | None = None) -> dict:
     """构建特征（调用方已预计算则复用，否则从 historical_kline 抽取 high/low/volume 现算）。"""
@@ -420,6 +437,7 @@ def analyze_new_face(stock: StockInfo, kline: list[KlineBar] | None,
         return None
     if accumulated > 20:
         return None
+    accum_incl_today = _accum_incl_today(kline, today_str, today_pct)
 
     feats = _get_features(closes, historical_kline, features)
 
@@ -449,6 +467,7 @@ def analyze_new_face(stock: StockInfo, kline: list[KlineBar] | None,
 
     # Score and dims in one pass
     dims: dict[str, int | float] = {}
+    dims["accumulated_incl_today"] = round(accum_incl_today, 2)
 
     # 今日涨幅 >= 6% 由显式分支处理（对齐 STRATEGY.md：6~8%→+5、>8%→-15），
     # 不进入 _score_today_pct，避免其 today_pct_6_7 / today_pct_7_12 分支被覆盖却仍被读取。
@@ -547,6 +566,7 @@ def analyze_momentum(stock: StockInfo, kline: list[KlineBar] | None,
         accumulated = (closes[-1] - closes[-6]) / closes[-6] * 100
     else:
         accumulated = sum(pcts[-5:])
+    accum_incl_today = _accum_incl_today(kline, today_str, today_pct)
 
     feats = _get_features(closes, historical_kline, features)
 
@@ -574,6 +594,7 @@ def analyze_momentum(stock: StockInfo, kline: list[KlineBar] | None,
                 "momentum_volume": MOMENTUM_WEIGHTS["vol_healthy"],
                 "momentum_first_launch": 1,
                 "momentum_vol_ratio": round(vol_ratio, 2),
+                "accumulated_incl_today": round(accum_incl_today, 2),
             }
             score += MOMENTUM_WEIGHTS["vol_healthy"]
             ma_boost = _ma_bull_score(closes, feats)
@@ -607,6 +628,7 @@ def analyze_momentum(stock: StockInfo, kline: list[KlineBar] | None,
 
     score = 0
     dims: dict[str, int | float] = {}
+    dims["accumulated_incl_today"] = round(accum_incl_today, 2)
 
     if today_pct > MAX_MOMENTUM_TODAY_PCT:
         return None
@@ -726,11 +748,13 @@ def analyze_short_term(stock: StockInfo, kline: list[KlineBar] | None,
         accumulated = (all_closes[-1] - all_closes[-6]) / all_closes[-6] * 100
     else:
         accumulated = sum(pcts[-5:]) + today_pct
+    accum_incl_today = accumulated
 
     vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str, now)
 
     score = 0
     dims: dict[str, int | float] = {}
+    dims["accumulated_incl_today"] = round(accum_incl_today, 2)
 
     if today_pct >= 8:
         score += W["today_pct_8_12"]
@@ -902,6 +926,7 @@ def analyze_rebound(stock: StockInfo, kline: list[KlineBar] | None,
         accumulated = (closes[-1] - closes[-6]) / closes[-6] * 100
     else:
         accumulated = sum(pcts[-5:])
+    accum_incl_today = _accum_incl_today(kline, today_str, today_pct)
 
     # 量比
     vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str, now)
@@ -913,6 +938,7 @@ def analyze_rebound(stock: StockInfo, kline: list[KlineBar] | None,
         near_20d_low = (closes[-1] - low_20d) / max(low_20d, 0.01) < REBOUND_NEAR_LOW_PCT
 
     dims: dict[str, int | float] = {}
+    dims["accumulated_incl_today"] = round(accum_incl_today, 2)
     score = 0
 
     # 今日涨幅档

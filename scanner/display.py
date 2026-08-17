@@ -413,24 +413,31 @@ def _in_nextday_sweet_band(percent: float) -> bool:
 def _nextday_entry_accum(entry: dict, conn=None) -> float | None:
     """推荐前 5 日累计涨幅（%），用于 🎯 判定；拿不到返回 None（不阻断）。
 
-    回退链（与 _nextday_entry_percent 同构）：候选池 kline 的 accumulated_pct（扫描时
-    已算好，最准）→ DB 落库 accumulated_pct（掉榜/重启行）→ daily_kline 回放兜底
-    （落库缺失时按推荐日往前 5 根 bar 现算，口径同 KlineSummary.accumulated_pct：
-    len(closes)>=6 用 (closes[-1]-closes[-6])/closes[-6]，否则前 5 根 percent 求和）。
-    累计字段历史上大部分类别未落库（new_face 4/1020、momentum 58/481），必须回放兜底。
+    口径：NEXTDAY_ACCUM_MIN=6.0 校准于「含推荐日」口径（5 日复利，含推荐日 bar）。
+    - short_term 的 KlineSummary.accumulated_pct 本身含今日（策略语义）；
+    - new_face/known_new_face/momentum/rebound 的 accumulated_pct 不含今日（历史口径，
+      RPS/评分用），其「含今日」值由分析侧另存于 dimensions["accumulated_incl_today"]。
 
-    已知口径时差（2026-08-14 自检确认，非 bug）：回放读「收盘后」daily_kline（含推荐日
-    bar），DB 落库值是「扫描时刻」快照——盘中扫描时两者窗口可能差 1 根（落库值基于
-    缓存 kline，回放基于已收盘的 daily_kline），实测最大偏差 ~24pp、阈值判定 ~10% 不一致。
-    仅影响历史回放/掉榜行兜底：实时展示优先候选池 kline（扫描时刻，含今日 bar），
-    回放只是掉榜/重启行的兜底；历史 1253 条推荐日 bar 全齐不会窗口前移。
+    回退链（与 _nextday_entry_percent 同构）：
+      候选池 kline 的 accumulated_incl_today（扫描时刻，含今日 bar，最准）
+      → 候选池 kline 的 accumulated_pct（short_term 含今日，可直接用）
+      → daily_kline 回放（掉榜/重启行；date<=推荐日，含推荐日 bar，口径同校准）
+      → DB 落库 accumulated_pct（仅回放无数据时兜底：short_term 含今日；nf/mom 为
+        不含今日的历史口径，兜底值口径不符但优于 fail-open 误放行）。
+
+    2026-08-17 修复（原口径错位）：此前候选行直接返回 c.kline.accumulated_pct，
+    对 new_face/momentum/known_new_face 该值不含今日，而门槛校准于含推荐日口径——
+    今日大涨票系统性被低估（漏标 🎯 / 丢档0置顶）、今日下跌票被高估（误标）。
+    现候选行优先用 accumulated_incl_today 维度；掉榜行优先回放（含推荐日），
+    DB 落库的历史口径值不再优先于回放。
     """
     c = entry.get("_candidate")
-    if c and c.kline and c.kline.accumulated_pct is not None:
-        return float(c.kline.accumulated_pct)
-    db_acc = entry.get("accumulated_pct")
-    if db_acc is not None:
-        return float(db_acc)
+    if c and c.kline:
+        incl = (c.kline.dimensions or {}).get("accumulated_incl_today")
+        if incl is not None:
+            return float(incl)
+        if c.kline.accumulated_pct is not None:
+            return float(c.kline.accumulated_pct)
     if conn is None:
         return None
     sym = entry.get("symbol")
@@ -444,16 +451,18 @@ def _nextday_entry_accum(entry: dict, conn=None) -> float | None:
             (sym, rec_date[:10]),
         ).fetchall()
     except Exception:
-        return None
+        rows = []
     closes = [r[0] for r in rows]
     if len(closes) >= 6:
         base = closes[5]
         if not base or base <= 0:
             return None
         return (closes[0] - base) / base * 100.0
-    if not closes:
-        return None
-    return sum(float(r[1] or 0.0) for r in rows[:5])
+    if closes:
+        return sum(float(r[1] or 0.0) for r in rows[:5])
+    # 回放无数据（daily_kline 缺表/该票无历史）：兜底 DB 落库值
+    db_acc = entry.get("accumulated_pct")
+    return float(db_acc) if db_acc is not None else None
 
 
 def _is_nextday_marked(entry: dict, conn=None) -> bool:
@@ -468,7 +477,8 @@ def _is_nextday_marked(entry: dict, conn=None) -> bool:
     实测 0~3 平档 hit 仅 5.4% 全场最差、10~15 档 21.2% 最好——「累计低=安全」是反指；
     甜蜜带+累计≥6 使 hit 16.5%→20.0%）。rebound 豁免（超跌反弹，负累计天然，hit 33.3%）、
     short_term 豁免（其规律在超买/弱转强，不在此列）。累计缺失 fail-open 不阻断（见
-    _nextday_entry_accum）。
+    _nextday_entry_accum）。累计口径 = 校准口径（含推荐日 bar，_nextday_entry_accum
+    优先取候选 kline 的 accumulated_incl_today 维度；2026-08-17 修复口径错位）。
     视觉标记 + 参与综合排序档位（_sort_tier 档0置顶），不改 score / 不落库。
     """
     if entry["category"] not in NEXTDAY_CAT_PRIORITY:
