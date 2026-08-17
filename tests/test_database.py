@@ -200,17 +200,21 @@ class TestRecordAppearances:
 
 class TestSaveKline:
     def test_save_and_get_cached(self, memory_db):
+        # 日期用相对今天（近 60 天窗口内）：get_cached_klines 有 `date >= now-60d`
+        # 滚动过滤，硬编码旧日期会随窗口前移而失效（2026-08-17 实测 06-17 被滤掉）。
+        today = now_beijing().date()
+        d1, d2 = (today - timedelta(days=2)).isoformat(), (today - timedelta(days=1)).isoformat()
         kline = [
-            {"date": "2026-06-17", "open": 100, "close": 102, "high": 103,
+            {"date": d1, "open": 100, "close": 102, "high": 103,
              "low": 99, "volume": 1_000_000, "percent": 2.0, "timestamp": 1},
-            {"date": "2026-06-18", "open": 102, "close": 105, "high": 106,
+            {"date": d2, "open": 102, "close": 105, "high": 106,
              "low": 101, "volume": 1_200_000, "percent": 2.9, "timestamp": 2},
         ]
         save_kline_to_db(memory_db, "300001", kline)
         cached = get_cached_kline(memory_db, "300001")
         assert cached is not None
         assert len(cached) == 2
-        assert cached[0]["date"] == "2026-06-17"
+        assert cached[0]["date"] == d1
 
     def test_get_cached_nonexistent(self, memory_db):
         cached = get_cached_kline(memory_db, "999999")
@@ -219,27 +223,34 @@ class TestSaveKline:
     def test_get_cached_filters_bad_close_bars(self, memory_db):
         """回归：历史脏数据 close 为 None/0 的行必须被剔除，不能漏进下游
         closes 算术（analyze_* 减法抛 TypeError）。正常 bar 保留。"""
+        today = now_beijing().date()
+        d1 = (today - timedelta(days=3)).isoformat()
+        d2 = (today - timedelta(days=2)).isoformat()  # close=None → 剔除
+        d3 = (today - timedelta(days=1)).isoformat()  # close=0 → 剔除
+        d4 = today.isoformat()
         kline = [
-            {"date": "2026-06-17", "open": 100, "close": 102, "high": 103,
+            {"date": d1, "open": 100, "close": 102, "high": 103,
              "low": 99, "volume": 1_000_000, "percent": 2.0, "timestamp": 1},
-            {"date": "2026-06-18", "open": 102, "close": None, "high": 106,
+            {"date": d2, "open": 102, "close": None, "high": 106,
              "low": 101, "volume": 1_200_000, "percent": 2.9, "timestamp": 2},
-            {"date": "2026-06-19", "open": 106, "close": 0, "high": 107,
+            {"date": d3, "open": 106, "close": 0, "high": 107,
              "low": 104, "volume": 1_100_000, "percent": 1.0, "timestamp": 3},
-            {"date": "2026-06-22", "open": 107, "close": 110, "high": 111,
+            {"date": d4, "open": 107, "close": 110, "high": 111,
              "low": 106, "volume": 1_300_000, "percent": 3.0, "timestamp": 4},
         ]
         save_kline_to_db(memory_db, "300001", kline)
         cached = get_cached_kline(memory_db, "300001")
         assert cached is not None
         dates = [k["date"] for k in cached]
-        assert dates == ["2026-06-17", "2026-06-22"]
+        assert dates == [d1, d4]
         assert all(k["close"] > 0 for k in cached)
 
     def test_get_cached_all_bad_returns_none(self, memory_db):
         """全部 bar 均为脏数据时返回 None（与无数据语义一致，不返回空列表）。"""
+        today = now_beijing().date()
+        d = (today - timedelta(days=1)).isoformat()
         kline = [
-            {"date": "2026-06-18", "open": 102, "close": None, "high": 106,
+            {"date": d, "open": 102, "close": None, "high": 106,
              "low": 101, "volume": 1_200_000, "percent": 2.9, "timestamp": 2},
         ]
         save_kline_to_db(memory_db, "300001", kline)
