@@ -218,6 +218,7 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
 
     tier0 = [e for e in main if e["_tier"] == 0][:top_n] if top_n else [e for e in main if e["_tier"] == 0]
     tier1 = [e for e in main if e["_tier"] == 1]
+    tier2 = [e for e in main if e["_tier"] == 2]
     tier3 = [e for e in main if e["_tier"] == 3]
 
     # 档0 分析 + 组内相对排序
@@ -307,6 +308,8 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
         "tier0": analyzed, "tier1": [
             {"symbol": e["symbol"], "name": e["name"], "category": e["category"],
              "score": e["score"], "trend": e.get("trend", "")} for e in tier1],
+        "tier2": [{"symbol": e["symbol"], "name": e["name"], "category": e["category"],
+                    "score": e["score"], "trend": e.get("trend", "")} for e in tier2],
         "tier3": [{"symbol": e["symbol"], "name": e["name"], "category": e["category"],
                    "score": e["score"], "rec_pct": e.get("percent", 0.0),
                    "trend": e.get("trend", "")} for e in tier3],

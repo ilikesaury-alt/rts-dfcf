@@ -1,0 +1,331 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""综合排序历史复盘（2026-08-18 新增）：把历史 N 日的「综合排序各组 → 次日表现」
+汇总统计，检验档位排序是否真的有效。
+
+用户诉求（2026-08-18）：昨日复盘只看单日太单一——把前面所有交易日的综合排序
+数据（档0🎯/档1强信号/档2普通/档3警示/回马枪/被移出）与次日表现（next_day_pct
+落库回填）汇总，回答：档0 是否真的比档3 好？回马枪值不值得看？避雷区是否避开了
+大坑？普涨日/普跌日次日表现差异？
+
+口径：
+  - 档位/🎯 判定逐日重建，与 today_report.py / display_priority 同源（_build_report，
+    纯展示规则回放历史 = 「若今日规则应用在历史日」视角）。
+  - 表现 = next_day_pct（daily_kline 收盘回填，与 nextday_attribution 一致）。
+  - 市场环境 = 推荐日全 GEM 样本均值（daily_kline percent 代理）。
+  - ⚠️ 08-04 前落库 score_breakdown 缺超买/弱转强维度：档0 的超买排除与 short_term
+    弱转强分型不生效（fail-open），档0 判定退化——近端窗口（默认最近 30 日）可信，
+    --days 0 全期对照仅供参考。
+
+用法：
+    python prevday_perf.py                 # 最近 30 交易日
+    python prevday_perf.py --days 0        # 全期（57 天）
+    python prevday_perf.py --days 10       # 自定义窗口
+    python prevday_perf.py --json          # 机器可读 JSON
+"""
+import argparse
+import json
+import sqlite3
+import statistics
+import sys
+
+sys.stdout.reconfigure(encoding="utf-8")
+
+from scanner.config import DB_PATH  # noqa: E402  (reconfigure 后导入避免编码异常)
+from today_report import _build_report  # noqa: E402
+
+# 档位组标签（与 today_report/_entry_tier 对应）
+GROUPS = ("tier0", "tier1", "tier2", "tier3", "comeback", "excluded")
+GROUP_LABEL = {
+    "tier0": "档0 🎯 次日大涨画像",
+    "tier1": "档1 强信号",
+    "tier2": "档2 普通",
+    "tier3": "档3 警示劣后",
+    "comeback": "回马枪",
+    "excluded": "被移出",
+}
+HIT_THRESHOLD = 7.0   # 次日大涨阈值（与 nextday_attribution 一致）
+MARKET_UP = 1.0       # 普涨日（推荐日 GEM 均值 ≥ +1%）
+MARKET_DOWN = -1.0    # 普跌日（≤ -1%）
+# 近端可信窗口起点（08-04 起落库维度含超买/弱转强，档0 判定完整）
+DIMS_COMPLETE_SINCE = "2026-08-04"
+
+
+def _gem_market_avg(conn, date):
+    """推荐日市场环境代理：当日全 GEM 样本涨跌均值（daily_kline percent）。"""
+    try:
+        row = conn.execute(
+            "SELECT AVG(percent) FROM daily_kline WHERE date = ? "
+            "AND (symbol LIKE 'SZ300%' OR symbol LIKE 'SZ301%') AND percent IS NOT NULL",
+            (date,),
+        ).fetchone()
+        return row[0] if row and row[0] is not None else None
+    except Exception:
+        return None
+
+
+def _next_day_map(conn, date):
+    """当日推荐 → 次日涨跌（next_day_pct 落库回填值）。"""
+    rows = conn.execute(
+        "SELECT symbol, next_day_pct FROM recommendations "
+        "WHERE date = ? AND next_day_pct IS NOT NULL", (date,),
+    ).fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def _stats(pcts):
+    """(n, 均值, hit≥7%率, 胜率>0, 中位)；空样本返回 n=0。"""
+    ps = [p for p in pcts if p is not None]
+    n = len(ps)
+    if not n:
+        return (0, None, None, None, None)
+    hit = sum(1 for p in ps if p >= HIT_THRESHOLD) / n * 100
+    win = sum(1 for p in ps if p > 0) / n * 100
+    return (n, statistics.mean(ps), hit, win, statistics.median(ps))
+
+
+def _market_bucket(avg):
+    if avg is None:
+        return "未知"
+    if avg >= MARKET_UP:
+        return "普涨日(≥+1%)"
+    if avg <= MARKET_DOWN:
+        return "普跌日(≤-1%)"
+    return "震荡日"
+
+
+def _build_history(conn, dates):
+    """逐日重建综合排序并收集各组次日表现（一次遍历，全部数据就绪）。"""
+    history = []
+    for d in dates:
+        rep = _build_report(conn, d, None)
+        if rep.get("empty"):
+            continue
+        nd_map = _next_day_map(conn, d)
+        day = {"date": d, "market": _gem_market_avg(conn, d)}
+
+        # 档0 内部类别（含 short_term 弱转强子集）→ 次日
+        t0_cats: dict[str, list] = {}
+        for a in rep["tier0"]:
+            key = ("short_term·弱转强" if (a["category"] == "short_term" and a["pos"] == "弱转强低位")
+                   else "short_term·其他" if a["category"] == "short_term" else a["category"])
+            p = nd_map.get(a["symbol"])
+            if p is not None:
+                t0_cats.setdefault(key, []).append(p)
+        day["tier0_cats"] = t0_cats
+
+        groups = {
+            "tier0": [a["symbol"] for a in rep["tier0"]],
+            "tier1": [e["symbol"] for e in rep["tier1"]],
+            "tier2": [e["symbol"] for e in rep["tier2"]],
+            "tier3": [e["symbol"] for e in rep["tier3"]],
+            "comeback": [c["symbol"] for c in rep["comeback_flow"]],
+            "excluded": [e["symbol"] for e in rep["excluded"]],
+        }
+        for g, syms in groups.items():
+            day[g] = [nd_map[s] for s in syms if s in nd_map]
+
+        # 案例样本（档0 命中 / 档3 大坑 / 回马枪最佳）
+        def _case(items):
+            return [{"date": d, "name": x["name"], "symbol": x["symbol"],
+                     "score": x["score"], "next": x["next"]} for x in items]
+        day["cases"] = {
+            "tier0": _case([{"name": a["name"], "symbol": a["symbol"], "score": a["score"],
+                              "next": nd_map.get(a["symbol"])} for a in rep["tier0"]
+                             if a["symbol"] in nd_map]),
+            "tier3": _case([{"name": e["name"], "symbol": e["symbol"], "score": e["score"],
+                              "next": nd_map.get(e["symbol"])} for e in rep["tier3"]
+                             if e["symbol"] in nd_map]),
+            "comeback": _case([{"name": c["name"], "symbol": c["symbol"], "score": c["score"],
+                                 "next": nd_map.get(c["symbol"])} for c in rep["comeback_flow"]
+                                if c["symbol"] in nd_map]),
+        }
+        history.append(day)
+    return history
+
+
+def _fmt_pct(v, width=7):
+    if v is None:
+        return "—".rjust(width)
+    return f"{v:+.2f}%".rjust(width)
+
+
+def _render(hist, days_arg):
+    out = []
+    dates = [h["date"] for h in hist]
+    start, end = dates[0], dates[-1]
+    recent = [h for h in hist if h["date"] >= DIMS_COMPLETE_SINCE]
+    window = (f"最近 {len(hist)} 交易日（{start} ~ {end}）" if days_arg
+              else f"全期 {len(hist)} 交易日（{start} ~ {end}）")
+    out.append(f"\n◆ 综合排序历史复盘：{window}")
+    out.append(f"  口径：档位/🎯 逐日重建（today_report 同源）；表现=次日收盘涨跌（next_day_pct，"
+               f"hit 阈值 ≥+{HIT_THRESHOLD:.0f}%）；市场=推荐日 GEM 均值代理")
+    if recent and recent != hist:
+        out.append(f"  ⚠️ {DIMS_COMPLETE_SINCE} 前落库缺超买/弱转强维度，档0 判定退化——"
+                   f"下方主表用近端窗口（{recent[0]['date']} 起，{len(recent)} 日，维度完整）")
+
+    def _table(title, rows):
+        out.append(f"\n{title}")
+        out.append(f"  {'组':<22}{'n':>5} {'均次日':>8} {'hit≥7%':>8} {'胜率':>7} {'中位':>8}")
+        out.append("  " + "-" * 58)
+        for label, stats in rows:
+            n, avg, hit, win, med = stats
+            if n == 0:
+                out.append(f"  {label:<22}{0:>5} {'—':>8} {'—':>8} {'—':>7} {'—':>8}")
+            else:
+                out.append(f"  {label:<22}{n:>5} {_fmt_pct(avg)} {f'{hit:.1f}%':>8} "
+                           f"{f'{win:.1f}%':>7} {_fmt_pct(med)}")
+
+    # 一、各组次日表现（近端窗口为主表，全期对照）
+    base = recent if recent else hist
+    agg = {g: [] for g in GROUPS}
+    for h in base:
+        for g in GROUPS:
+            agg[g].extend(h[g])
+    _table("一、各组次日表现（维度完整窗口）", [(GROUP_LABEL[g], _stats(agg[g])) for g in GROUPS])
+    if recent and recent != hist:
+        agg_all = {g: [] for g in GROUPS}
+        for h in hist:
+            for g in GROUPS:
+                agg_all[g].extend(h[g])
+        _table("对照：全期（含维度退化期，仅供参考）",
+               [(GROUP_LABEL[g], _stats(agg_all[g])) for g in GROUPS])
+
+    # 二、档0 内部类别 × 次日
+    t0_cat_agg: dict[str, list] = {}
+    for h in base:
+        for key, pcts in h["tier0_cats"].items():
+            t0_cat_agg.setdefault(key, []).extend(pcts)
+    if t0_cat_agg:
+        _table("二、档0 内部（类别 × 次日）",
+               [(k, _stats(v)) for k, v in sorted(t0_cat_agg.items())])
+
+    # 三、市场环境分层（推荐日 GEM 均值 → 次日表现）
+    buckets = {"普涨日(≥+1%)": {"tier0": [], "tier3": [], "all": []},
+               "震荡日": {"tier0": [], "tier3": [], "all": []},
+               "普跌日(≤-1%)": {"tier0": [], "tier3": [], "all": []}}
+    for h in base:
+        b = _market_bucket(h["market"])
+        if b not in buckets:
+            continue
+        buckets[b]["tier0"].extend(h["tier0"])
+        buckets[b]["tier3"].extend(h["tier3"])
+        buckets[b]["all"].extend(h["tier0"] + h["tier1"] + h["tier2"] + h["tier3"])
+    out.append("\n三、市场环境分层（推荐日 GEM 均值 → 次日表现）")
+    out.append(f"  {'市场':<14}{'组':<24}{'n':>5} {'均次日':>8} {'hit≥7%':>8}")
+    out.append("  " + "-" * 60)
+    for b, d in buckets.items():
+        for label, key in (("档0 🎯", "tier0"), ("档3 警示", "tier3"), ("全部主表", "all")):
+            n, avg, hit, _, _ = _stats(d[key])
+            if n == 0:
+                continue
+            out.append(f"  {b:<14}{label:<24}{n:>5} {_fmt_pct(avg)} {f'{hit:.1f}%':>8}")
+
+    # 四、档0 vs 档3 单调性（每日对比）
+    t0_win = t3_win = tie = 0
+    for h in base:
+        if not h["tier0"] or not h["tier3"]:
+            continue
+        a, b = statistics.mean(h["tier0"]), statistics.mean(h["tier3"])
+        if a > b:
+            t0_win += 1
+        elif a < b:
+            t3_win += 1
+        else:
+            tie += 1
+    s0 = _stats(agg["tier0"])
+    s3 = _stats(agg["tier3"])
+    out.append("\n四、档0 vs 档3 单调性（逐日对比）")
+    if s0[0] and s3[0]:
+        out.append(f"  档0 胜 {t0_win} 天 / 档3 胜 {t3_win} 天 / 平 {tie} 天"
+                   f"（档0 整体 {s0[1]:+.2f}% vs 档3 {s3[1]:+.2f}%）")
+
+    # 五、案例
+    all_cases = {g: [c for h in hist for c in h["cases"][g]] for g in ("tier0", "tier3", "comeback")}
+    out.append("\n五、案例")
+    hits = sorted(all_cases["tier0"], key=lambda x: x["next"], reverse=True)[:5]
+    if hits:
+        out.append("  🎯 档0 次日大涨 top5（信号命中案例）：")
+        for c in hits:
+            out.append(f"    {c['date']} {c['name']} {c['symbol'][-6:]} 评分{c['score']} → 次日 {c['next']:+.2f}%")
+    pits = sorted(all_cases["tier3"], key=lambda x: x["next"])[:5]
+    if pits:
+        out.append("  档3 最大坑 top5（避雷价值）：")
+        for c in pits:
+            out.append(f"    {c['date']} {c['name']} {c['symbol'][-6:]} 评分{c['score']} → 次日 {c['next']:+.2f}%")
+    cb_best = sorted(all_cases["comeback"], key=lambda x: x["next"], reverse=True)[:3]
+    if cb_best:
+        out.append("  回马枪最佳 top3：")
+        for c in cb_best:
+            out.append(f"    {c['date']} {c['name']} {c['symbol'][-6:]} 评分{c['score']} → 次日 {c['next']:+.2f}%")
+
+    # 六、结论（数据驱动）
+    out.append("\n六、结论")
+    t0_avg, t0_hit = s0[1], s0[2]
+    c_avg, c_hit = _stats(agg["comeback"])[1], _stats(agg["comeback"])[2]
+    e_avg = _stats(agg["excluded"])[1]
+    verdicts = []
+    if s0[0] >= 30:
+        if t0_avg is not None and s3[1] is not None and t0_avg > s3[1]:
+            verdicts.append(f"档位排序有效：档0 均次日 {t0_avg:+.2f}% > 档3 {s3[1]:+.2f}%"
+                            f"（hit {t0_hit:.1f}% vs {s3[2]:.1f}%），胜 {t0_win} 天")
+        else:
+            verdicts.append(f"档位排序未跑赢：档0 {t0_avg:+.2f}% ≤ 档3 {s3[1]:+.2f}%"
+                            f"（hit {t0_hit:.1f}% vs {s3[2]:.1f}%），样本 {s0[0]}")
+    if _stats(agg["comeback"])[0] >= 20:
+        verdicts.append(f"回马枪（低吸语义）整体 {c_avg:+.2f}%/hit {c_hit:.1f}%——"
+                        + ("在回调日更抗跌" if c_avg is not None and c_avg > (t0_avg or 0) else "与主表相当"))
+    if _stats(agg["excluded"])[0] >= 10 and e_avg is not None and e_avg < 0:
+        verdicts.append(f"被移出票均次日 {e_avg:+.2f}%——硬过滤/反转移出排除有效（避开了下跌）")
+    up_s, dn_s = _stats(buckets["普涨日(≥+1%)"]["all"]), _stats(buckets["普跌日(≤-1%)"]["all"])
+    if up_s[0] >= 20 and dn_s[0] >= 20 and up_s[1] is not None and dn_s[1] is not None:
+        diff = up_s[1] - dn_s[1]
+        verdicts.append(f"市场环境影响显著：普涨日次日 {up_s[1]:+.2f}%（hit {up_s[2]:.1f}%）vs "
+                        f"普跌日次日 {dn_s[1]:+.2f}%（hit {dn_s[2]:.1f}%），差 {diff:+.2f}pp——"
+                        + ("普涨次日兑现，追高需谨慎" if diff < 0 else "普涨次日延续性强"))
+    if not verdicts:
+        verdicts.append("样本不足（窗口内有效交易日太少），结论待数据积累。")
+    for v in verdicts:
+        out.append(f"  • {v}")
+    out.append("")
+    out.append("  说明：本复盘为筛选系统选股质量自检尺（校验档位/避雷/低吸假设），"
+               "非实盘收益预测；单日样本小，结论以整体统计为准。")
+    return "\n".join(out)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="综合排序历史复盘：各组次日表现汇总")
+    parser.add_argument("--days", type=int, default=30, help="最近 N 个交易日（0=全期）")
+    parser.add_argument("--json", action="store_true", help="机器可读 JSON 输出")
+    args = parser.parse_args()
+
+    conn = sqlite3.connect(DB_PATH, timeout=15)
+    rows = conn.execute("SELECT DISTINCT date FROM recommendations ORDER BY date").fetchall()
+    all_dates = [r[0] for r in rows]
+    # 只保留有次日表现的日期（最新一天 next_day_pct 未回填则自动排除）
+    dates = [d for d in all_dates if _next_day_map(conn, d)]
+    if args.days and args.days > 0:
+        dates = dates[-args.days:]
+    hist = _build_history(conn, dates)
+    conn.close()
+
+    if args.json:
+        base = [h for h in hist if h["date"] >= DIMS_COMPLETE_SINCE] or hist
+        payload = {
+            "window": f"{hist[0]['date']}~{hist[-1]['date']}" if hist else "",
+            "days": len(hist),
+            "days_arg": args.days,
+            "dim_complete_since": DIMS_COMPLETE_SINCE,
+            "groups": {},
+        }
+        for g in GROUPS:
+            pcts = [p for h in base for p in h[g]]
+            n, avg, hit, win, med = _stats(pcts)
+            payload["groups"][g] = {"n": n, "avg": avg, "hit": hit, "win": win, "median": med}
+        print(json.dumps(payload, ensure_ascii=False, indent=1))
+    else:
+        print(_render(hist, args.days))
+
+
+if __name__ == "__main__":
+    main()
