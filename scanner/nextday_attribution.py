@@ -34,6 +34,7 @@ from datetime import timedelta
 
 from scanner.backtest import ACTIVE_CATEGORIES, _ic
 from scanner.config import DB_PATH, now_beijing
+from scanner.data_health import check_kline_health, health_banner
 from scanner.database import get_prominence_map
 from scanner.display import clear_screen
 
@@ -314,6 +315,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
                         help="次日大涨阈值 %%（默认 7）")
     parser.add_argument("--csv", default=None, help="导出 CSV 前缀")
+    parser.add_argument("--force", action="store_true",
+                        help="跳过数据健康检查（交叉验证不符时仍强行出报告）")
     return parser
 
 
@@ -323,6 +326,20 @@ def main() -> None:
     conn = sqlite3.connect(DB_PATH)
     recs = _load_dedup(conn, days=args.days)
     _attach_prominence(conn, recs)
+    # 数据真实性前置检查（2026-08-18 拓斯达脏数据事故）：daily_kline 盘中残留未定稿
+    # bar 会静默污染 next_day_pct → 全口径失真；出报告前抽样与独立源（新浪 qfq）交叉
+    # 验证，不符比例超阈值即中止，防止「回测验证的是脏数据」再次发生。
+    if not args.force:
+        dates = sorted({r["date"] for r in recs})
+        report = check_kline_health(conn, dates=dates or None)
+        banner = health_banner(report)
+        if banner:
+            print(banner)
+        if report.blocked:
+            print("  [中止] 数据疑似污染，先跑 python repair_kline.py 修复后重试"
+                  "（--force 强行出报告）")
+            conn.close()
+            return
     conn.close()
     print_report(recs, args.threshold)
     if args.csv:

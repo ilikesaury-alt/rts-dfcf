@@ -83,6 +83,16 @@ def _expected_date_range(rec_dates: list[str], days: int) -> set[str]:
     return result
 
 
+def _select_rows_to_write(kline: list, missing_dates: set, today) -> list:
+    """筛选回填写入行：缺口日期 + 今日 bar（收盘定稿覆盖盘中残留）。
+
+    盘中扫描把未收盘的部分今日 bar 写入 daily_kline，收盘后回填必须用最终
+    收盘 bar 覆盖（2026-08-18 拓斯达案例），否则残留永久保留。
+    """
+    today_str = today.isoformat()
+    return [k for k in kline if k["date"] in missing_dates or k["date"] == today_str]
+
+
 def backfill(dry_run: bool = False, days: int = 60, verbose: bool = True) -> dict:
     """主入口：补全推荐历史股票的 K 线数据。
 
@@ -101,6 +111,7 @@ def backfill(dry_run: bool = False, days: int = 60, verbose: bool = True) -> dic
         "outcomes_updated": 0,
     }
 
+    today = now_beijing().date()
     conn = sqlite3.connect(DB_PATH)
     try:
         sym_dates = _get_recommended_symbols(conn)
@@ -148,9 +159,11 @@ def backfill(dry_run: bool = False, days: int = 60, verbose: bool = True) -> dic
                         kline = fetch_kline(session, sym, days=days)
                         stats["fetched_symbols"] += 1
                         if kline:
-                            # 仅写入缺口日期，避免无谓覆盖
-                            missing_set = missing_dates
-                            new_rows = [k for k in kline if k["date"] in missing_set]
+                            # 仅写入缺口日期，避免无谓覆盖；但今日 bar 例外：盘中扫描把
+                            # 未收盘的部分 bar（盘中价/部分量能）写入 daily_kline，收盘后
+                            # 必须用最终收盘 bar 覆盖（2026-08-18 拓斯达案例：盘中 36.27
+                            # 残留、真实收盘 37.90，导致复盘/回测用脏数据）。
+                            new_rows = _select_rows_to_write(kline, missing_dates, today)
                             if new_rows:
                                 save_kline_to_db(conn, sym, new_rows)
                                 conn.commit()

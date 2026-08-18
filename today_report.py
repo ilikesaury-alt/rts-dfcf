@@ -280,6 +280,17 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
     except Exception:
         quality = {}
 
+    # 今日K线定稿状态（2026-08-18 拓斯达事故后）：盘中残留未定稿 bar 数，>0 表示
+    # 读数可能非最终收盘价（盘中属正常，收盘定稿后应归零）。
+    unfinalized = 0
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM daily_kline WHERE date=? AND finalized=0", (target_date,),
+        ).fetchone()
+        unfinalized = row[0] if row else 0
+    except Exception:
+        unfinalized = 0
+
     # 最近推荐时间：盘中报告 = 截至当前扫描轮的当日累计推荐，标注新鲜度避免误读
     last_rec_time = None
     try:
@@ -318,6 +329,7 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
         "excluded": excluded,
         "quality": quality,
         "quality_time": quality_time,
+        "unfinalized": unfinalized,
         "last_rec_time": last_rec_time,
     }
 
@@ -355,6 +367,8 @@ def _render(report: dict) -> str:
     out.append(f"  推荐 {report['total']} 只（主表 {report['main']} + 回马枪 {report['comeback']}）| "
                f"档0🎯 {len(report['tier0'])} 只 / 档1强信号 {len(report['tier1'])} / "
                f"档3警示 {len(report['tier3'])} | 数据质量: {q_str}")
+    if report.get("unfinalized"):
+        out.append(f"  ⚠ 今日K线未定稿 {report['unfinalized']} 只（盘中快照，收盘定稿后刷新本报告）")
     fresh = f"最近推荐 {report.get('last_rec_time') or '—'}"
     if report.get("quality_time"):
         fresh += f" · 质量快照 {str(report['quality_time'])[:8]}"

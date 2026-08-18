@@ -46,6 +46,7 @@ def memory_db():
             low REAL,
             volume REAL,
             percent REAL,
+            finalized INTEGER DEFAULT 1,
             PRIMARY KEY(symbol, date)
         )
     """)

@@ -45,7 +45,7 @@ def _in_mem_db():
         score_breakdown TEXT, source TEXT DEFAULT 'xueqiu', concept TEXT, accumulated_pct REAL)""")
     conn.execute("""CREATE TABLE daily_kline (
         symbol TEXT NOT NULL, date TEXT NOT NULL, open REAL, close REAL,
-        high REAL, low REAL, volume REAL, percent REAL)""")
+        high REAL, low REAL, volume REAL, percent REAL, finalized INTEGER DEFAULT 1)""")
     conn.execute("""CREATE TABLE market_extra_cache (
         symbol TEXT NOT NULL, date TEXT NOT NULL, data_type TEXT NOT NULL,
         payload_json TEXT NOT NULL, updated TEXT NOT NULL, PRIMARY KEY(symbol, data_type))""")

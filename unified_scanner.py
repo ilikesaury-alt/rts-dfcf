@@ -16,13 +16,17 @@
 import os
 import sys
 import time
+from datetime import datetime, timedelta
 
 import requests
 
 from scanner.backtest import backfill_outcomes
 from scanner.config import (
+    AFTERNOON_END,
     CROSS_SOURCE_BONUS,
     DB_PATH,
+    KLINE_FETCH_DAYS,
+    KLINE_FETCH_DEADLINE,
     LOG_DIR,
     NEW_FACE_LOOKBACK_DAYS,
     REFRESH_INTERVAL,
@@ -39,13 +43,19 @@ from scanner.database import (
     get_today_recommendations,
     init_db,
     mark_reversed_recommendations,
+    save_kline_to_db,
     save_recommendations,
 )
 from scanner.display import clear_screen, display
 from scanner.feishu import push_feishu
 from scanner.log_utils import log_results
 from scanner.orchestrator import scan_with_raw
-from scanner.trading_session import is_trading_time, next_session_label, seconds_until_next_session
+from scanner.trading_session import (
+    is_trading_day,
+    is_trading_time,
+    next_session_label,
+    seconds_until_next_session,
+)
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -122,6 +132,77 @@ def _ensure_conn(conn):
         return init_db()
 
 
+# 收盘定稿标记：记录已完成「今日 bar → 最终收盘 bar」覆盖的日期，防止重复拉取。
+_finalize_date: str | None = None
+
+
+def _finalize_today_klines(conn, adapter) -> None:
+    """收盘后自动定稿今日 K 线（每个交易日只执行一次，fail-open）。
+
+    盘中扫描把「未收盘的今日 bar」（盘中价 + 部分量能）写入 daily_kline，若收盘后
+    无定稿覆盖，残留 bar 永久留在库里——次日复盘/回测/个股报告读到错误收盘价
+    （2026-08-18 拓斯达案例：盘中 36.27 残留，真实收盘 37.90，DB 一度显示 -3.36%）。
+    backfill_kline.py 收盘后手动跑也能兜底，这里在主循环非交易时段自动做一次。
+    """
+    global _finalize_date
+    now = now_beijing()
+    today = now.date()
+    if _finalize_date == today.isoformat():
+        return
+    if not is_trading_day(today) or is_trading_time(now):
+        return
+    if now.time() < AFTERNOON_END:
+        return  # 开盘前/午间不算收盘后，跳过
+    _finalize_date = today.isoformat()
+    # 等数据源完成收盘结算（一般 15:00 即定稿，留 2 分钟余量防尾盘最后一笔延迟）
+    target = datetime.combine(today, AFTERNOON_END, tzinfo=now.tzinfo) + timedelta(minutes=2)
+    remaining = (target - now).total_seconds()
+    if remaining > 0:
+        print(f"\r  🌙 非交易时段 | 等待收盘定稿 ({int(remaining)}s)  ", end="", flush=True)
+        time.sleep(min(remaining, 120))
+    symbols = [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT symbol FROM daily_kline WHERE date=?", (today.isoformat(),)
+        ).fetchall()
+    ]
+    if not symbols:
+        return
+    # 定稿前快照：记录今日 bar 现有收盘价，定稿后统计「修正」数（与盘中残留不同的票数），
+    # 写入 logs/finalize.log 供审计——某日修正数异常大 = 盘中残留集中（数据源/机制异常信号）。
+    old_closes = {r[0]: r[1] for r in conn.execute(
+        "SELECT symbol, close FROM daily_kline WHERE date=?", (today.isoformat(),)
+    ).fetchall()}
+    deadline = now_beijing().timestamp() + KLINE_FETCH_DEADLINE
+    refreshed = 0
+    corrected = 0
+    for sym in symbols:
+        if now_beijing().timestamp() >= deadline:
+            break
+        try:
+            kline = adapter.fetch_kline(sym, KLINE_FETCH_DAYS)
+            if kline:
+                today_bars = [k for k in kline if k["date"] == today.isoformat()]
+                if today_bars:
+                    save_kline_to_db(conn, sym, today_bars)
+                    refreshed += 1
+                    new_close = today_bars[-1]["close"]
+                    if old_closes.get(sym) is not None and abs(old_closes[sym] - new_close) > 0.011:
+                        corrected += 1
+        except Exception:
+            continue  # fail-open：单只失败跳过，backfill_kline 手动兜底
+    line = (f"{today.isoformat()} {now_beijing().strftime('%H:%M:%S')} "
+            f"refreshed={refreshed}/{len(symbols)} corrected={corrected}")
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        with open(os.path.join(LOG_DIR, "finalize.log"), "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+    print(f"\r  [收盘定稿] 覆盖 {refreshed}/{len(symbols)} 只今日K线为最终收盘价"
+          f"（修正 {corrected} 只）  ", flush=True)
+
+
 def run_scanner(interval: int, no_feishu: bool) -> None:
     """单进程扫描循环（可被子进程 supervise 拉起）。"""
     conn = init_db()
@@ -144,6 +225,9 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 clear_screen()
                 now = now_beijing()
                 if not is_trading_time(now):
+                    # 收盘后自动定稿今日K线（每个交易日一次）：盘中残留的部分 bar 用
+                    # 最终收盘 bar 覆盖，防止次日复盘/回测读到脏数据（拓斯达案例）。
+                    _finalize_today_klines(conn, adapter)
                     wait = seconds_until_next_session(now)
                     label = next_session_label(now)
                     print(f"\r  🌙 非交易时段 | {label} ({wait // 60}分后)  ", end="", flush=True)

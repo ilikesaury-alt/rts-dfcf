@@ -40,6 +40,7 @@ import sys
 sys.stdout.reconfigure(encoding="utf-8")
 
 from scanner.config import DB_PATH  # noqa: E402  (reconfigure 后导入避免编码异常)
+from scanner.data_health import check_kline_health, health_banner  # noqa: E402
 from scanner.nextday_attribution import DEFAULT_THRESHOLD, _hit_stats  # noqa: E402  (复用主决策口径统计，防口径漂移)
 from today_report import _build_report  # noqa: E402
 
@@ -310,6 +311,8 @@ def main():
     parser = argparse.ArgumentParser(description="综合排序历史复盘：各组次日表现汇总")
     parser.add_argument("--days", type=int, default=30, help="最近 N 个交易日（0=全期）")
     parser.add_argument("--json", action="store_true", help="机器可读 JSON 输出")
+    parser.add_argument("--force", action="store_true",
+                        help="跳过数据健康检查（交叉验证不符时仍强行出报告）")
     args = parser.parse_args()
 
     conn = sqlite3.connect(DB_PATH, timeout=15)
@@ -319,6 +322,19 @@ def main():
     dates = [d for d in all_dates if _next_day_map(conn, d)]
     if args.days and args.days > 0:
         dates = dates[-args.days:]
+    # 数据真实性前置检查（2026-08-18 拓斯达脏数据事故）：复盘口径基于落库
+    # next_day_pct（daily_kline 回填），脏 bar 会静默污染各组统计；出报告前抽样
+    # 与独立源交叉验证，不符比例超阈值即中止。
+    if not args.force:
+        report = check_kline_health(conn, dates=dates or None)
+        banner = health_banner(report)
+        if banner:
+            print(banner)
+        if report.blocked:
+            print("  [中止] 数据疑似污染，先跑 python repair_kline.py 修复后重试"
+                  "（--force 强行出报告）")
+            conn.close()
+            return
     hist = _build_history(conn, dates)
     conn.close()
 

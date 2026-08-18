@@ -14,7 +14,7 @@ from scanner.config import (
     now_beijing,
 )
 from scanner.models import KlineBar, make_kline_bar
-from scanner.trading_session import is_trading_day
+from scanner.trading_session import is_trading_day, is_trading_time
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +127,14 @@ def init_db() -> sqlite3.Connection:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sql_date ON scan_quality_log(date)")
+    # 收盘定稿标记（2026-08-18 拓斯达脏数据事故后新增）：盘中扫描把未收盘的今日 bar
+    # （盘中价+部分量能）写入 daily_kline 属预期（today_report 盘中读），但收盘后无
+    # 定稿覆盖会残留污染 next_day_pct → 回测/归因/复盘全口径。finalized=0 表示
+    # 「盘中快照，可能非最终收盘价」；收盘定稿/收盘后写入的 bar 置 1。
+    cur = conn.execute("PRAGMA table_info(daily_kline)")
+    kline_cols = {row[1] for row in cur.fetchall()}
+    if "finalized" not in kline_cols:
+        conn.execute("ALTER TABLE daily_kline ADD COLUMN finalized INTEGER DEFAULT 1")
     cur = conn.execute("PRAGMA table_info(recommendations)")
     cols = {row[1] for row in cur.fetchall()}
     if "source" not in cols:
@@ -249,16 +257,21 @@ def get_symbol_appearances(conn: sqlite3.Connection, symbol: str, days: int,
 
 def save_kline_to_db(conn: sqlite3.Connection, symbol: str, kline: list[KlineBar]):
     rows = []
+    today_str = now_beijing().date().isoformat()
+    trading = is_trading_time()
     for k in kline:
+        # 定稿标记：盘中写入的今日 bar 是未收盘快照（可能非最终收盘价），置 0；
+        # 收盘后写入（定稿/backfill/repair）或历史 bar 置 1。
+        finalized = 0 if (k["date"] == today_str and trading) else 1
         rows.append((
             symbol, k.get("timestamp"), k["date"], k["open"], k["close"],
-            k["high"], k["low"], k["volume"], k["percent"],
+            k["high"], k["low"], k["volume"], k["percent"], finalized,
         ))
     try:
         conn.executemany(
             "INSERT OR REPLACE INTO daily_kline "
-            "(symbol, timestamp, date, open, close, high, low, volume, percent) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(symbol, timestamp, date, open, close, high, low, volume, percent, finalized) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
         conn.commit()
@@ -268,8 +281,8 @@ def save_kline_to_db(conn: sqlite3.Connection, symbol: str, kline: list[KlineBar
             try:
                 conn.execute(
                     "INSERT OR REPLACE INTO daily_kline "
-                    "(symbol, timestamp, date, open, close, high, low, volume, percent) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "(symbol, timestamp, date, open, close, high, low, volume, percent, finalized) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     row,
                 )
             except Exception as e2:
@@ -291,14 +304,16 @@ def get_cached_klines(conn: sqlite3.Connection, symbols: list[str]) -> dict[str,
     by_sym: dict[str, list[KlineBar]] = {}
     try:
         cur = conn.execute(
-            f"SELECT symbol, date, open, close, high, low, volume, percent FROM daily_kline "
+            f"SELECT symbol, date, open, close, high, low, volume, percent, finalized "
+            f"FROM daily_kline "
             f"WHERE symbol IN ({placeholders}) AND date >= ? ORDER BY symbol, date",
             (*uniq, lookback),
         )
-        for sym, d, o, c, h, low, vol, pct in cur.fetchall():
+        for sym, d, o, c, h, low, vol, pct, fin in cur.fetchall():
             bar = make_kline_bar({"date": d, "open": o, "close": c,
                                   "high": h, "low": low, "volume": vol, "percent": pct})
             if bar is not None:
+                bar["finalized"] = bool(fin)  # 0=盘中未定稿快照，1=最终收盘
                 by_sym.setdefault(sym, []).append(bar)
     except Exception as e:
         logger.warning(f"get_cached_klines failed: {e}")
