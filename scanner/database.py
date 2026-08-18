@@ -715,8 +715,12 @@ def prune_watch_pool(conn: sqlite3.Connection,
         return 0
 
 
-def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
-    """查询今日所有进入过推荐列表的票（按 symbol 去重）。
+def get_today_recommendations(conn: sqlite3.Connection, as_of=None) -> list[dict]:
+    """查询（默认今日）所有进入过推荐列表的票（按 symbol 去重）。
+
+    as_of: 目标日期（date 或 'YYYY-MM-DD' 字符串），缺省为今日（now_beijing）。
+    2026-08-18 新增（配合 today_report.py 历史回放）：历史日期按该日推荐/上榜
+    快照查询，去重口径与今日一致。
 
     去重优先级：榜上类别（非 comeback）优先于 comeback，同优先级内保留最高分——
     防止同票同时有 comeback（掉榜跟踪）与榜上推荐（如 short_term）时，因 comeback
@@ -731,7 +735,11 @@ def get_today_recommendations(conn: sqlite3.Connection) -> list[dict]:
       score_breakdown（2026-08-17 新增：解析为 dict，供掉榜/重启行的 🎯 分型
       （short_term 弱转强）与板块普涨避雷标记判定，见 display._entry_dims）
     """
-    today = now_beijing().date().isoformat()
+    if as_of is None:
+        as_of = now_beijing().date()
+    if isinstance(as_of, str):
+        as_of = date.fromisoformat(as_of)
+    today = as_of.isoformat()
     try:
         rows = conn.execute(
             "SELECT symbol, name, category, score, trend, time, percent, concept, accumulated_pct, "

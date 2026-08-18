@@ -391,6 +391,28 @@ class TestTodayRecommendationsExcluded:
         assert "300001" in syms
         assert "300002" not in syms, "excluded=1 的硬过滤票不应出现在综合排序"
 
+    def test_as_of_historical_date(self, memory_db):
+        """2026-08-18 新增（配合 today_report.py 历史回放）：as_of 指定日期时按
+        该日推荐/上榜快照查询，去重口径与今日一致；默认行为不受影响。"""
+        memory_db.executemany(
+            "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, excluded) "
+            "VALUES (?, '13:00', ?, '测试', ?, ?, 2.0, ?)",
+            [
+                ("2026-08-17", "300001", "momentum", 60, 0),
+                ("2026-08-17", "300002", "comeback", 90, 0),
+                ("2026-08-18", "300003", "short_term", 70, 0),
+            ],
+        )
+        memory_db.commit()
+        recs_hist = get_today_recommendations(memory_db, as_of="2026-08-17")
+        syms_hist = {r["symbol"] for r in recs_hist}
+        assert syms_hist == {"300001", "300002"}, "as_of 应只返回该日记录"
+        # 字符串与 date 对象均可
+        recs_hist2 = get_today_recommendations(memory_db, as_of=date(2026, 8, 17))
+        assert {r["symbol"] for r in recs_hist2} == {"300001", "300002"}
+        recs_today = get_today_recommendations(memory_db)
+        assert {r["symbol"] for r in recs_today} == {"300003"}, "默认仍查今日"
+
 
 class TestTodayRecommendationsComebackShadowing:
     """同票同日既有榜上类别（如 short_term）又有 comeback（掉榜跟踪）时，
