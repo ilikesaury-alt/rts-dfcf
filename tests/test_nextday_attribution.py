@@ -19,6 +19,7 @@ from scanner.nextday_attribution import (
     _load_dedup,
     _hit_stats,
     _attach_prominence,
+    MIN_SAMPLE,
     conditional_hit_table,
     gain_band_matrix,
     score_bucket_table,
@@ -105,6 +106,25 @@ def test_score_bucket_boundaries():
     assert by["70-90"] == 1
     assert by["90-110"] == 1
     assert by[">=110"] == 2
+
+
+def test_small_sample_warn_flag():
+    """2026-08-18 样本门槛：组样本 < MIN_SAMPLE 标 warn=True（防噪声行动）。
+    8-10% 反转案例（n=41 vs 全期 1184）证明小样本差异大概率是噪声——
+    分桶/因子表按 warn 标注，打印层追加「⚠样本不足」。"""
+    # n=1 的组 → warn
+    bands = gain_band_matrix([_mk_rec(percent=1.0)], threshold=7.0)
+    assert all(b["warn"] for b in bands)
+    # n>=MIN_SAMPLE 的组 → 无 warn
+    big = [_mk_rec(percent=5.0) for _ in range(MIN_SAMPLE)]
+    bands2 = gain_band_matrix(big, threshold=7.0)
+    b5 = next(b for b in bands2 if b["band"] == "4-6%")
+    assert b5["warn"] is False
+    # score 分桶与因子表同口径
+    buckets = score_bucket_table([_mk_rec(score=60)], threshold=7.0)
+    assert buckets[0]["warn"] is True
+    rows = conditional_hit_table(big, threshold=7.0)
+    assert rows  # 无因子命中时为空，不报错
 
 
 def test_dim_compare_positive_diff():

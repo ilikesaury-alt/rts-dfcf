@@ -40,6 +40,11 @@ from scanner.display import clear_screen
 DEFAULT_THRESHOLD = 7.0   # 次日大涨阈值（%）
 DEFAULT_RECENT_DAYS = 0   # 0=全部历史；>0=最近 N 天
 
+# 分桶样本门槛（2026-08-18，防噪声行动）：组样本 < MIN_SAMPLE 标「⚠样本不足」，
+# 结论不可信、仅作观察——8-10% 反转案例（n=41 的 14.6% vs 全期 n=1184 的 7.5%）
+# 证明小样本差异大概率是噪声。与 AGENTS.md 回测纪律（样本不足不下结论）对齐。
+MIN_SAMPLE = 20
+
 # 维度归因只关心「正值与否」即可区分，避免数值口径差异
 _BIN_DIMS = ("v_st_overbought", "v_st_weak", "v_mo_divergence", "v_nf_volume",
              "v_st_ma", "rank_trend_bonus", "validation_bonus")
@@ -142,7 +147,7 @@ def strategy_table(recs: list[dict], threshold: float) -> list[dict]:
         scores = [r["score"] for r in g]
         ic = _ic(scores, [r["next_day"] for r in g]) or 0.0
         out.append({"category": cat, "n": len(g), "hits": hits, "hit_rate": hr,
-                    "avg_next": avg, "ic": ic})
+                    "avg_next": avg, "ic": ic, "warn": len(g) < MIN_SAMPLE})
     out.sort(key=lambda x: -x["hit_rate"])
     return out
 
@@ -168,7 +173,8 @@ def gain_band_matrix(recs: list[dict], threshold: float) -> list[dict]:
         if not g:
             continue
         hits, hr, avg = _hit_stats(g, threshold)
-        out.append({"band": lab, "n": len(g), "hits": hits, "hit_rate": hr, "avg_next": avg})
+        out.append({"band": lab, "n": len(g), "hits": hits, "hit_rate": hr, "avg_next": avg,
+                    "warn": len(g) < MIN_SAMPLE})
     return out
 
 
@@ -193,7 +199,8 @@ def score_bucket_table(recs: list[dict], threshold: float) -> list[dict]:
         if not g:
             continue
         hits, hr, avg = _hit_stats(g, threshold)
-        out.append({"bucket": lab, "n": len(g), "hits": hits, "hit_rate": hr, "avg_next": avg})
+        out.append({"bucket": lab, "n": len(g), "hits": hits, "hit_rate": hr, "avg_next": avg,
+                    "warn": len(g) < MIN_SAMPLE})
     return out
 
 
@@ -233,7 +240,7 @@ def conditional_hit_table(recs: list[dict], threshold: float) -> list[dict]:
             continue
         hits, hr, avg = _hit_stats(g, threshold)
         out.append({"factor": label, "n": len(g), "hits": hits,
-                    "hit_rate": hr, "avg_next": avg})
+                    "hit_rate": hr, "avg_next": avg, "warn": len(g) < MIN_SAMPLE})
     return out
 
 
@@ -259,21 +266,24 @@ def print_report(recs: list[dict], threshold: float) -> None:
     print("[1] 分策略")
     rows = []
     for s in strategy_table(recs, threshold):
-        rows.append([s["category"], str(s["n"]), str(s["hits"]),
+        label = f"{s['category']} ⚠样本不足" if s["warn"] else s["category"]
+        rows.append([label, str(s["n"]), str(s["hits"]),
                      f"{s['hit_rate']*100:.1f}%", f"{s['avg_next']:+.2f}%", f"{s['ic']:+.3f}"])
     _print_table(["类别", "样本", "hit", "hit率", "平均次日", "rank-IC"], rows)
 
     print("\n[2] 推荐时刻盘中涨幅带（找次日大涨甜蜜区/陷阱）")
     rows = []
     for b in gain_band_matrix(recs, threshold):
-        rows.append([b["band"], str(b["n"]), str(b["hits"]),
+        label = f"{b['band']} ⚠样本不足" if b["warn"] else b["band"]
+        rows.append([label, str(b["n"]), str(b["hits"]),
                      f"{b['hit_rate']*100:.1f}%", f"{b['avg_next']:+.2f}%"])
     _print_table(["涨幅带", "样本", "hit", "hit率", "平均次日"], rows)
 
     print("\n[3] score 分桶（找分数反指区）")
     rows = []
     for b in score_bucket_table(recs, threshold):
-        rows.append([b["bucket"], str(b["n"]), str(b["hits"]),
+        label = f"{b['bucket']} ⚠样本不足" if b["warn"] else b["bucket"]
+        rows.append([label, str(b["n"]), str(b["hits"]),
                      f"{b['hit_rate']*100:.1f}%", f"{b['avg_next']:+.2f}%"])
     _print_table(["score桶", "样本", "hit", "hit率", "平均次日"], rows)
 
@@ -287,12 +297,14 @@ def print_report(recs: list[dict], threshold: float) -> None:
     print("\n[5] 二元因子条件 hit 率")
     rows = []
     for f in conditional_hit_table(recs, threshold):
-        rows.append([f["factor"], str(f["n"]), str(f["hits"]),
+        label = f"{f['factor']} ⚠样本不足" if f["warn"] else f["factor"]
+        rows.append([label, str(f["n"]), str(f["hits"]),
                      f"{f['hit_rate']*100:.1f}%", f"{f['avg_next']:+.2f}%"])
     _print_table(["因子", "样本", "hit", "hit率", "平均次日"], rows)
 
     print("\n  注: next_day 为单日口径，次日大涨票多为高开冲高；结论只用于「次日大涨」")
     print("      子目标校准。2026-08-18 起本口径为综合排序唯一决策口径（cum_3d 不再复核）。")
+    print(f"      ⚠样本不足 = 该组样本 < {MIN_SAMPLE}，差异大概率是噪声，仅作观察不下结论")
 
 
 def build_parser() -> argparse.ArgumentParser:
