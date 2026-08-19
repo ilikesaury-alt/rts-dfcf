@@ -129,7 +129,6 @@ class ScanResult:
     rebound: list[Candidate] = field(default_factory=list)
     short_term: list[Candidate] = field(default_factory=list)
     comeback: list[Candidate] = field(default_factory=list)
-    stale_candidates: list[Candidate] = field(default_factory=list)
     gem_stocks: list[StockInfo] = field(default_factory=list)
     filtered_large_cap: int = 0
     current_quotes: dict[str, dict] = field(default_factory=dict)

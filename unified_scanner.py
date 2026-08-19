@@ -283,7 +283,6 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 rebound_list = res.rebound
                 short_term_list = res.short_term
                 comeback_list = res.comeback
-                stale_candidates = res.stale_candidates
                 all_gem = res.gem_stocks
                 filtered_large_cap = res.filtered_large_cap
                 current_quotes = res.current_quotes
@@ -342,9 +341,8 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 last_ranks = dict(current_rank_map)
                 log_results(new_faces, momentum + rebound_list + short_term_list + comeback_list)
                 if not no_feishu:
-                    pushed = push_feishu(new_faces, momentum, stale_candidates,
+                    pushed = push_feishu(new_faces, momentum,
                                         len(all_gem), filtered_large_cap=filtered_large_cap,
-                                        current_rank_map=current_rank_map,
                                         short_term_list=short_term_list,
                                         rebound_list=rebound_list,
                                         comeback_list=comeback_list)

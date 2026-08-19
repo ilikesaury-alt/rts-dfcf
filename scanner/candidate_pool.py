@@ -1,6 +1,6 @@
-from datetime import datetime, timedelta
+from datetime import datetime
 
-from scanner.config import STALE_TIMEOUT_MINUTES, now_beijing
+from scanner.config import now_beijing
 from scanner.models import Candidate
 
 
@@ -60,23 +60,3 @@ class ScanSession:
                 c.is_stale = True
                 c.stale_since = now.isoformat()
 
-    def get_stale_candidates(self, now: datetime | None = None) -> list[Candidate]:
-        now = now or now_beijing()
-        stale_cutoff = now - timedelta(minutes=STALE_TIMEOUT_MINUTES)
-        result: list[Candidate] = []
-        for c in self.today_pool.values():
-            if c.is_stale:
-                stale_dt = datetime.fromisoformat(c.stale_since).replace(tzinfo=now.tzinfo)
-                if stale_dt >= stale_cutoff:
-                    result.append(c)
-        result.sort(key=lambda c: -c.score)
-        return result
-
-
-
-    def update_stale_quotes(self, stale: list[Candidate], market_caps: dict[str, dict]):
-        for c in stale:
-            cap_data = market_caps.get(c.stock.symbol)
-            if cap_data and cap_data.get("current"):
-                c.stock.current = cap_data["current"]
-                c.stock.percent = cap_data["percent"]

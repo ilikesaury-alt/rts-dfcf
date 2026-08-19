@@ -11,10 +11,8 @@ _last_push_symbols: set[str] = set()
 def _build_card(
     new_faces: list[Candidate],
     momentum: list[Candidate],
-    stale_candidates: list[Candidate],
     gem_total: int,
     filtered_large_cap: int = 0,
-    current_rank_map: dict[str, int] | None = None,
     short_term_list: list[Candidate] | None = None,
     rebound_list: list[Candidate] | None = None,
     comeback_list: list[Candidate] | None = None,
@@ -49,8 +47,6 @@ def _build_card(
     header_text = (f"**{now}** | 🟢新{len(new_faces)} 📈动{len(momentum)} "
                    f"🔄反{len(rebound_list)} 🌀马{len(comeback_list)} "
                    f"🔴超{len(short_term_list)}{env_tag}")
-    if stale_candidates:
-        header_text += f" ⏳掉{len(stale_candidates)}"
     if sec_line:
         header_text += f" | 🔥 {sec_line}"
 
@@ -70,10 +66,10 @@ def _build_card(
     # 双挂去重：同一 symbol 在多个桶出现时，仅在先展示的桶显示一次
     displayed_syms: set[str] = set()
 
-    def _fmt_row(c: Candidate, rank_str: str = "") -> str:
+    def _fmt_row(c: Candidate) -> str:
         s = c.stock
         # rank=0（回马枪掉榜票）显示 — 与 display.py 口径一致，不显示虚假名次 0
-        rs = rank_str or (f"{s.rank:>3}" if s.rank else "  —")
+        rs = f"{s.rank:>3}" if s.rank else "  —"
         pct_str = f"+{s.percent:.1f}%" if s.percent >= 0 else f"{s.percent:.1f}%"
         acc_val = c.kline.accumulated_pct if c.kline else None
         acc_str = f"{acc_val:+.1f}%" if acc_val is not None else "N/A"
@@ -129,18 +125,7 @@ def _build_card(
             content += _fmt_row(c) + "\n"
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": content.rstrip("\n")}})
 
-    if stale_candidates:
-        elements.append({"tag": "hr"})
-        content = "**⏳ 掉榜回顾**\n"
-        if current_rank_map is None:
-            current_rank_map = {}
-        for c in stale_candidates[:5]:
-            cur_rank = current_rank_map.get(c.stock.symbol)
-            rank_str = f"{cur_rank:>3}" if isinstance(cur_rank, int) else f"{'—':>3}"
-            content += _fmt_row(c, rank_str=rank_str) + "\n"
-        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": content.rstrip("\n")}})
-
-    if not first or stale_candidates:
+    if not first:
         elements.append({"tag": "hr"})
     elements.append({
         "tag": "note",
@@ -173,10 +158,8 @@ def _extract_symbols(new_faces: list[Candidate], momentum: list[Candidate],
 def push_feishu(
     new_faces: list[Candidate],
     momentum: list[Candidate],
-    stale_candidates: list[Candidate],
     gem_total: int,
     filtered_large_cap: int = 0,
-    current_rank_map: dict[str, int] | None = None,
     short_term_list: list[Candidate] | None = None,
     rebound_list: list[Candidate] | None = None,
     comeback_list: list[Candidate] | None = None,
@@ -208,8 +191,8 @@ def push_feishu(
         return False
 
     try:
-        card = _build_card(new_faces, momentum, stale_candidates,
-                           gem_total, filtered_large_cap, current_rank_map,
+        card = _build_card(new_faces, momentum,
+                           gem_total, filtered_large_cap,
                            short_term_list, rebound_list, comeback_list)
         resp = requests.post(FEISHU_WEBHOOK,
                              json={"msg_type": "interactive", "card": card},

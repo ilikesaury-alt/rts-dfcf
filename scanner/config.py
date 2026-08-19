@@ -452,7 +452,6 @@ RISK_FLAGS_HARD_FILTER: set[str] = {
 }
 
 # Time-based bonus thresholds (minutes since midnight)
-STALE_TIMEOUT_MINUTES = 30  # 掉榜后保留时长（进程内 today_pool 掉榜保留，与 watch_pool 无关）
 
 # 推荐后快速反转移出（2026-08-13）：今日已推荐（榜上主类别，不含回马枪跟踪池）且当前不在
 # 候选池的票，命中以下任一条件即视为推荐失败，标 excluded=1 移出综合排序展示（保留落库记录）：

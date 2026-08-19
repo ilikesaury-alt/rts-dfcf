@@ -806,8 +806,6 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     update_rank_history({s.symbol: s.rank for s in gem_stocks_filtered})
 
     session_state.update_pool(all_candidates)
-    stale_candidates = session_state.get_stale_candidates()
-    session_state.update_stale_quotes(stale_candidates, market_caps)
 
     # 风险硬过滤：命中"卖出/止损"级标签（主力出货/趋势破位）的候选直接移出推荐列表。
     # 此步在 update_pool/update_stale 之后执行，不影响候选池掉榜与排名历史，
@@ -893,7 +891,6 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         rebound=rebound_list,
         short_term=short_term_list,
         comeback=comeback_list,
-        stale_candidates=stale_candidates,
         gem_stocks=gem_stocks_filtered,
         filtered_large_cap=filtered_large_cap,
         current_quotes=current_quotes,
