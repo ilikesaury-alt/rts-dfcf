@@ -1,13 +1,13 @@
-"""FallbackAdapter 去重回归测试。
+"""FallbackAdapter 统一兜底回归测试。
 
-锁定 _call_with_none_fallback 与原三处手写降级（fetch_kline / fetch_market_caps_batch
-/ fetch_market_index）行为等价：
-- kline/index：仅 result is None 触发 secondary（空 list 是合法结果，不降级）；
-- caps：空 dict 也触发 secondary（treat_empty_as_failure=True）；
-- primary 正常 / 抛异常 / 无 secondary 各路径与原实现一致。
+锁定 _call 的"返回空也降级"语义（覆盖原 _call_with_none_fallback，已删除）：
+- kline/index：仅 None 触发 secondary（空 list 是合法结果，不降级；0.0 平盘合法不降级）；
+- caps：空 dict {} 也触发 secondary；
+- primary 正常 / 抛异常 / 无 secondary 各路径与预期一致。
+
+不依赖 pandas，作为 _call 契约的独立回归锁（test_data_source 的 TestFallbackAdapter
+也覆盖同等语义，但它在受管 Python 下因 pandas import 被跳过）。
 """
-
-from types import SimpleNamespace
 
 import scanner.data_source as ds
 
@@ -64,6 +64,12 @@ def test_index_none_falls_to_secondary():
     sec = _Ad("sec", index=1.5)
     fa = _make(_Ad("pri", index=None), sec)
     assert fa.fetch_market_index() == 1.5
+
+
+def test_index_zero_is_legal_no_fallback():
+    # 大盘平盘 0.0 是合法值，绝不能当失败去兜底
+    fa = _make(_Ad("pri", index=0.0), _Ad("sec", index=-6.26))
+    assert fa.fetch_market_index() == 0.0  # 不调 secondary
 
 
 def test_primary_ok_no_fallback():
