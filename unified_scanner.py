@@ -32,7 +32,9 @@ from scanner.config import (
     REFRESH_INTERVAL,
     SUPERVISE_CHILD_GRACE,
     SUPERVISE_CHILD_TIMEOUT,
+    SUPERVISE_CRASH_BASELINE_SECONDS,
     SUPERVISE_LOG_FILE,
+    SUPERVISE_MAX_CONSECUTIVE_CRASHES,
     SUPERVISE_RESET_AFTER_SECONDS,
     SUPERVISE_RESTART_DELAY,
     SUPERVISE_RESTART_MAX_DELAY,
@@ -486,6 +488,7 @@ def _supervise(interval: int, no_feishu: bool) -> int:
     import subprocess
 
     delay = SUPERVISE_RESTART_DELAY
+    consecutive_crashes = 0  # 连续启动时崩溃计数，用于熔断判定
     while True:
         cmd = _build_child_cmd(interval, no_feishu)
         start = time.time()
@@ -509,15 +512,37 @@ def _supervise(interval: int, no_feishu: bool) -> int:
             return 0
         except Exception as e:
             _supervise_log(f"启动子进程失败: {e}")
+            # 启动期异常同样计入连续崩溃（多为确定性环境/配置 bug），达阈值熔断
+            consecutive_crashes += 1
+            if consecutive_crashes >= SUPERVISE_MAX_CONSECUTIVE_CRASHES:
+                _supervise_log(
+                    f"连续 {consecutive_crashes} 次启动失败，判定为确定性故障，"
+                    f"停止自动重启以防反复污染。请排查环境/配置后人工重启。"
+                )
+                return 1
             time.sleep(delay)
             continue
         uptime = time.time() - start
         _supervise_log(f"子进程退出 code={code} uptime={int(uptime)}s")
         if not _should_restart(code):
             return 0
+        # 熔断判定：仅 uptime 低于基线（启动/早期崩溃）才累计，长跑后偶发崩溃清零容忍。
+        if uptime < SUPERVISE_CRASH_BASELINE_SECONDS:
+            consecutive_crashes += 1
+            if consecutive_crashes >= SUPERVISE_MAX_CONSECUTIVE_CRASHES:
+                _supervise_log(
+                    f"连续 {consecutive_crashes} 次短崩溃(uptime<{SUPERVISE_CRASH_BASELINE_SECONDS}s)，"
+                    f"判定为确定性启动/逻辑故障，停止自动重启以防重复污染 DB。"
+                    f"请修复后人工重启。"
+                )
+                return 1
+        else:
+            consecutive_crashes = 0
         if uptime >= SUPERVISE_RESET_AFTER_SECONDS:
             delay = SUPERVISE_RESTART_DELAY
-        _supervise_log(f"{delay}s 后重启")
+        _supervise_log(
+            f"{delay}s 后重启（连续短崩溃 {consecutive_crashes}/{SUPERVISE_MAX_CONSECUTIVE_CRASHES}）"
+        )
         time.sleep(delay)
         delay = min(delay * 3, SUPERVISE_RESTART_MAX_DELAY)
     return 0
