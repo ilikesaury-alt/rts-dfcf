@@ -17,6 +17,9 @@ import random
 import sqlite3
 from dataclasses import dataclass, field
 
+import requests
+
+from scanner.config import now_beijing
 from scanner.utils import to_float
 
 # 抽验最少对数：不足时只能警告不能阻断（避免小样本误判）
@@ -25,6 +28,9 @@ MIN_CHECKED = 5
 BLOCK_RATIO = 0.3
 # 容差：1 分钱以上视为不符（qfq 舍入噪声）
 TOLERANCE = 0.011
+# 大盘指数对账（2026-08-19）：扫描快照时点 vs 审计时点，同一天内允许的涨幅偏差(pp)。
+# 隔日错位（如 -6.26% 崩盘被读成昨日 -0.93%）偏差 5.3pp 远超容差，必被命中。
+INDEX_PCT_TOLERANCE = 0.5
 
 
 @dataclass
@@ -121,6 +127,99 @@ def count_unfinalized_today(conn: sqlite3.Connection, date_str: str | None = Non
         ).fetchone()[0]
     except sqlite3.OperationalError:
         return 0  # 旧库无 finalized 列（未迁移）→ 无法判定，按 0 处理
+
+
+def _eastmoney_index_pct() -> float | None:
+    """独立数据源（东财 push2delay，本机实测可达）取创业板指(399006)当前涨跌幅。
+
+    与雪球异源（东财 vs 雪球），是唯一可靠地验证「扫描器当时读到的大盘涨幅是否属实」
+    的手段——本地契约检查抓不到自洽错值（-0.93 与 -6.26 都是合法 float，只有跨源
+    对比或 bar 日期证据能区分）。东财 f170 单位与项目大盘涨幅一致（百分比，-626 → -6.26%）。
+    """
+    try:
+        url = "https://push2delay.eastmoney.com/api/qt/stock/get?secid=0.399006&fields=f43,f170"
+        r = requests.get(url, timeout=(5, 10),
+                         headers={"User-Agent": "Mozilla/5.0"})
+        data = (r.json() or {}).get("data") or {}
+        pct = to_float(data.get("f170"), None)
+        if pct is not None:
+            return pct / 100.0
+        return None
+    except Exception:  # noqa: BLE001  网络/解析失败 → None，按 source_ok 处理
+        return None
+
+
+@dataclass
+class IndexHealthReport:
+    checked: int = 0
+    stale_bar: bool = False        # 记录 bar 日期滞后（读到旧 bar = 涨幅可能非当日）
+    mismatch: bool = False         # 同日内扫描涨幅与独立源偏差超容差
+    recorded_pct: float | None = None
+    recorded_bar: str | None = None
+    recorded_time: str | None = None
+    ref_pct: float | None = None
+    source_ok: bool = True
+
+
+def check_market_index_health(conn: sqlite3.Connection,
+                              date_str: str | None = None) -> IndexHealthReport:
+    """对账大盘指数血缘日志（market_index_log）与独立源（东财）。
+
+    背景（2026-08-19）：大盘标签曾因雪球 kline 接口 begin/count 语义错位，把当日
+    -6.26% 崩盘读成昨日 -0.93%（展示"大盘中性"）而无痕——涨幅是瞬时值、不进
+    daily_kline，daily_kline 交叉验证覆盖不到。此检查把「扫描器当时读到什么」变成
+    可审计对象。
+
+    三层检查：
+    1. 有无当日记录（无记录 → 扫描没跑/落库失败，无法审计，source_ok=False）
+    2. bar 日期滞后（bar_date < 被审计日期且扫描时间 ≥ 09:30 → 读到旧 bar）
+    3. 涨幅与独立源偏差（仅当记录 bar 日期 == 被审计日期时对比；跨日记录读的是前一日
+       收盘，与今日 spot 无对比意义，只靠第 2 层判断）
+
+    盘中扫描时点与审计时点同一天内指数有自然波动，容差 INDEX_PCT_TOLERANCE=0.5pp。
+    """
+    from scanner.database import get_market_index_log  # 惰性导入避免与 database 循环依赖
+
+    report = IndexHealthReport()
+    rec = get_market_index_log(conn, date_str)
+    if not rec or rec.get("index_pct") is None:
+        report.source_ok = False
+        return report
+    report.recorded_pct = rec.get("index_pct")
+    report.recorded_bar = rec.get("bar_date")
+    report.recorded_time = rec.get("time")
+    report.checked = 1
+    if date_str is None:
+        date_str = now_beijing().date().isoformat()
+    # 交易日 09:30 后扫描应读到当日 bar（开盘前今日 bar 尚未生成，读到昨日属正常）
+    if (report.recorded_bar and report.recorded_bar < date_str
+            and (report.recorded_time or "") >= "09:30"):
+        report.stale_bar = True
+    ref = _eastmoney_index_pct()
+    if ref is None:
+        report.source_ok = False
+        return report
+    report.ref_pct = ref
+    if report.recorded_bar == date_str and abs(report.recorded_pct - ref) > INDEX_PCT_TOLERANCE:
+        report.mismatch = True
+    return report
+
+
+def index_health_banner(report: IndexHealthReport) -> str:
+    """把 IndexHealthReport 渲染成终端横幅；无异常返回空串。"""
+    if report.checked == 0:
+        return "  ⚠ 大盘指数审计：无当日血缘记录（扫描未跑/落库失败），无法对账"
+    lines = []
+    if report.stale_bar:
+        lines.append(f"  ❌ 大盘指数审计：扫描读到旧 bar（{report.recorded_bar}，"
+                     f"时间 {report.recorded_time}）——涨幅非当日，大盘标签失真！")
+    if report.mismatch:
+        lines.append(f"  ❌ 大盘指数审计：扫描涨幅 {report.recorded_pct}% vs 独立源(东财) "
+                     f"{report.ref_pct}%（偏差 {abs(report.recorded_pct - report.ref_pct):.2f}pp，"
+                     f"容差 {INDEX_PCT_TOLERANCE}pp）——数据源口径异常！")
+    if not report.source_ok:
+        lines.append("  ⚠ 大盘指数审计：独立源（东财）不可达或记录缺失，跳过涨幅对比")
+    return "\n".join(lines)
 
 
 def health_banner(report: HealthReport) -> str:

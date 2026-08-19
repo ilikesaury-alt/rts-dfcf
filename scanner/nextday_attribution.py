@@ -340,6 +340,15 @@ def main() -> None:
                   "（--force 强行出报告）")
             conn.close()
             return
+        # 大盘指数对账（2026-08-19）：大盘标签曾把当日 -6.26% 崩盘读成昨日 -0.93%
+        # （展示"大盘中性"）而无痕——涨幅不进 daily_kline，上面的 K 线交叉验证覆盖
+        # 不到。读 market_index_log 血缘记录对账独立源（东财），旧 bar/偏差即告警。
+        from scanner.data_health import check_market_index_health, index_health_banner
+
+        idx_report = check_market_index_health(conn)
+        idx_banner = index_health_banner(idx_report)
+        if idx_banner:
+            print(idx_banner)
     conn.close()
     print_report(recs, args.threshold)
     if args.csv:

@@ -8,11 +8,13 @@ from scanner.database import (
     _n_trading_days_ago,
     get_cached_kline,
     get_consecutive_appearance_days,
+    get_market_index_log,
     get_symbol_appearances,
     get_today_recommendations,
     mark_reversed_recommendations,
     record_appearances,
     save_kline_to_db,
+    save_market_index_log,
     save_recommendations,
     save_scan_quality,
 )
@@ -115,6 +117,16 @@ def memory_db():
             symbol_snapshot TEXT,
             updated TEXT DEFAULT '',
             PRIMARY KEY (date, time, source)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS market_index_log (
+            date TEXT PRIMARY KEY,
+            time TEXT,
+            index_pct REAL,
+            bar_date TEXT,
+            source TEXT,
+            updated TEXT DEFAULT ''
         )
     """)
     conn.commit()
@@ -453,6 +465,40 @@ class TestSaveScanQuality:
         assert len(rows) == 1
         assert rows[0][3] == 0  # fetch_failed 缺省 → 0
         assert rows[0][4] == 0  # today_bar_missing 缺省 → 0
+
+
+class TestSaveMarketIndexLog:
+    """大盘指数血缘日志（2026-08-19）：每轮扫描使用的大盘涨幅 + bar 日期落库。
+
+    大盘标签曾把当日 -6.26% 崩盘读成昨日 -0.93%（展示"大盘中性"）而无痕——涨幅是
+    瞬时值、不进 daily_kline，不落库就无法审计"当时读到了什么"。bar 日期是「读到
+    哪一天的数据」的权威证据，供 data_health 对账。
+    """
+
+    def test_save_and_overwrite_same_day(self, memory_db):
+        save_market_index_log(memory_db, -0.93, "2026-08-18", "xueqiu")
+        save_market_index_log(memory_db, -6.26, "2026-08-19", "xueqiu")
+        rows = memory_db.execute("SELECT * FROM market_index_log").fetchall()
+        assert len(rows) == 1  # 同日覆盖，只留最新快照
+        today = now_beijing().date().isoformat()
+        assert rows[0][0] == today
+        assert rows[0][2] == pytest.approx(-6.26)
+        assert rows[0][3] == "2026-08-19"
+
+    def test_get_roundtrip(self, memory_db):
+        save_market_index_log(memory_db, -6.26, "2026-08-19", "akshare")
+        rec = get_market_index_log(memory_db)
+        assert rec is not None
+        assert rec["index_pct"] == pytest.approx(-6.26)
+        assert rec["bar_date"] == "2026-08-19"
+        assert rec["source"] == "akshare"
+
+    def test_get_none_no_record(self, memory_db):
+        assert get_market_index_log(memory_db) is None
+
+    def test_get_old_library_no_table(self):
+        conn = sqlite3.connect(":memory:")  # 无 market_index_log 表（未迁移）
+        assert get_market_index_log(conn) is None
 
 
 class TestTodayRecommendationsExcluded:

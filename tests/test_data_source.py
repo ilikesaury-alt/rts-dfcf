@@ -8,11 +8,13 @@
 - get_adapter 工厂 + 单例
 """
 import sys
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
 
+from scanner.config import BEIJING_TZ
 from scanner.data_source import (
     AkshareAdapter,
     FallbackAdapter,
@@ -75,6 +77,15 @@ class TestXueqiuAdapter:
             mock_api.fetch_market_index.return_value = 1.5
             result = adapter.fetch_market_index()
             assert result == 1.5
+
+    def test_get_market_index_meta_delegates(self):
+        """指数血缘元数据委托 api.get_market_index_meta（bar 日期 = 读到哪一天的证据）。"""
+        adapter = XueqiuAdapter()
+        with patch("scanner.data_source.api") as mock_api:
+            mock_api.make_session.return_value = MagicMock()
+            mock_api.get_market_index_meta.return_value = (-6.26, "2026-08-19")
+            result = adapter.get_market_index_meta()
+            assert result == (-6.26, "2026-08-19", "xueqiu")
 
 
 class TestAkshareAdapter:
@@ -275,6 +286,29 @@ class TestAkshareAdapter:
         adapter._ak = mock_ak
         assert adapter.fetch_market_index() is None
 
+    def test_get_market_index_meta_same_day(self):
+        """东财 spot 恒为当日实况 → bar 日期 = 今日（same-day 语义，区别于雪球旧 bar）。"""
+        adapter = AkshareAdapter()
+        mock_df = pd.DataFrame({
+            "代码": ["399006"],
+            "涨跌幅": [-6.26],
+        })
+        mock_ak = MagicMock()
+        mock_ak.stock_zh_index_spot_em.return_value = mock_df
+        adapter._ak = mock_ak
+        adapter.fetch_market_index()
+        pct, bar, source = adapter.get_market_index_meta()
+        assert pct == -6.26 and source == "akshare"
+        assert bar == datetime.now(BEIJING_TZ).date().isoformat()
+
+    def test_get_market_index_meta_failure_resets(self):
+        adapter = AkshareAdapter()
+        mock_ak = MagicMock()
+        mock_ak.stock_zh_index_spot_em.side_effect = Exception("net")
+        adapter._ak = mock_ak
+        assert adapter.fetch_market_index() is None
+        assert adapter.get_market_index_meta() == (None, None, "akshare")
+
     def test_fetch_biaosheng_returns_empty(self):
         adapter = AkshareAdapter()
         assert adapter.fetch_biaosheng() == []
@@ -376,6 +410,40 @@ class TestFallbackAdapter:
         adapter.is_available()
         result = adapter.fetch_market_caps_batch(["SZ300001"])
         assert result == {}
+
+    def test_fetch_market_index_none_falls_back(self):
+        """回归（2026-08-19）：api.fetch_market_index 内部吞异常返回 None（不抛给 _call），
+        原"仅异常降级"对指数形同死代码——雪球指数失败时大盘标签退化为中性且无兜底。
+        primary 返回 None 应视为失败并降级到 secondary。"""
+        primary = MagicMock()
+        primary.is_available.return_value = True
+        primary.name = "xueqiu"
+        primary.fetch_market_index.return_value = None   # 雪球失败返回 None
+        secondary = MagicMock()
+        secondary.name = "akshare"
+        secondary.fetch_market_index.return_value = -6.26
+
+        adapter = FallbackAdapter(primary, secondary)
+        adapter.is_available()
+        result = adapter.fetch_market_index()
+        assert result == -6.26
+        secondary.fetch_market_index.assert_called_once()
+
+    def test_get_market_index_meta_delegates_used_source(self):
+        """指数血缘元数据委托实际生效的数据源。"""
+        primary = MagicMock()
+        primary.is_available.return_value = True
+        primary.name = "xueqiu"
+        primary.get_market_index_meta.return_value = (-6.26, "2026-08-19", "xueqiu")
+        secondary = MagicMock()
+        secondary.name = "akshare"
+        secondary.get_market_index_meta.return_value = (-6.26, "2026-08-19", "akshare")
+
+        adapter = FallbackAdapter(primary, secondary)
+        adapter.is_available()
+        assert adapter.get_market_index_meta() == (-6.26, "2026-08-19", "xueqiu")
+        primary.get_market_index_meta.assert_called_once()
+        secondary.get_market_index_meta.assert_not_called()
 
 
 class TestGetAdapter:

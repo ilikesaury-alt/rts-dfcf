@@ -55,6 +55,7 @@ from scanner.database import (
     prune_watch_pool,
     record_appearances,
     save_kline_to_db,
+    save_market_index_log,
     save_scan_quality,
     upsert_watch_symbols,
 )
@@ -784,6 +785,17 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
 
     market_idx_pct = adapter.fetch_market_index()
     time_bonus = compute_time_bonus()
+
+    # 大盘指数血缘日志（2026-08-19）：把本轮实际使用的大盘涨幅 + 其 bar 日期落库，
+    # 供 data_health.check_market_index_health 对账。大盘标签曾把当日 -6.26% 崩盘读成
+    # 昨日 -0.93%（展示"大盘中性"）而无痕——涨幅不落库就永远无法审计"当时读到了什么"。
+    try:
+        _idx_pct, _idx_bar, _idx_src = adapter.get_market_index_meta()
+        if market_idx_pct is not None:
+            _idx_pct = market_idx_pct  # 以实际使用值为准（兜底路径 meta 可能滞后）
+        save_market_index_log(conn, _idx_pct, _idx_bar, _idx_src or "xueqiu")
+    except Exception as e:
+        print(f"  [!] 大盘指数血缘日志落库失败: {e}")
 
     apply_all_bonuses(all_candidates, gem_stocks_filtered, intraday_scores,
                       opening_scores, live_volumes, market_caps,

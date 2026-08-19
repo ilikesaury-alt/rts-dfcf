@@ -293,6 +293,20 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
     except Exception:
         unfinalized = 0
 
+    # 大盘指数血缘记录（2026-08-19）：展示本轮扫描读到的大盘涨幅 + bar 日期。
+    # bar 日期 ≠ 报告日期（交易日 09:30 后）说明读到旧 bar，大盘标签可能失真。
+    index_log = {}
+    try:
+        row = conn.execute(
+            "SELECT index_pct, bar_date, time, source FROM market_index_log "
+            "WHERE date = ? ORDER BY updated DESC LIMIT 1",
+            (target_date,),
+        ).fetchone()
+        if row:
+            index_log = {"pct": row[0], "bar": row[1], "time": row[2], "source": row[3]}
+    except Exception:
+        index_log = {}
+
     # 最近推荐时间：盘中报告 = 截至当前扫描轮的当日累计推荐，标注新鲜度避免误读
     last_rec_time = None
     try:
@@ -334,6 +348,7 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
         "excluded": excluded,
         "quality": quality,
         "quality_time": quality_time,
+        "index_log": index_log,
         "unfinalized": unfinalized,
         "last_rec_time": last_rec_time,
     }
@@ -375,6 +390,12 @@ def _render(report: dict) -> str:
                f"档3警示 {len(report['tier3'])} | 数据质量: {q_str}")
     if report.get("unfinalized"):
         out.append(f"  ⚠ 今日K线未定稿 {report['unfinalized']} 只（盘中快照，收盘定稿后刷新本报告）")
+    idx = report.get("index_log") or {}
+    if idx:
+        bar_ok = idx.get("bar") == report["date"]
+        stale = "" if bar_ok else f" ⚠ bar={idx.get('bar')}≠今日，大盘标签可能失真"
+        out.append(f"  大盘指数: {idx.get('pct')}%（{idx.get('source')} {idx.get('time')}）"
+                   f" 当日bar={idx.get('bar')}{stale}")
     fresh = f"最近推荐 {report.get('last_rec_time') or '—'}"
     if report.get("quality_time"):
         fresh += f" · 质量快照 {str(report['quality_time'])[:8]}"

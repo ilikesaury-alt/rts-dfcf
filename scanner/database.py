@@ -130,6 +130,20 @@ def init_db() -> sqlite3.Connection:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sql_date ON scan_quality_log(date)")
+    # 大盘指数血缘日志（2026-08-19）：每轮扫描使用的大盘涨幅（创业板指）+ 其 bar 日期落库。
+    # 大盘标签（display._market_env_tag）曾因 kline 接口 begin/count 语义错位把当日 -6.26%
+    # 读成昨日 -0.93%（展示"大盘中性"）而无痕——涨幅是瞬时值，不落库就无法审计"当时读到
+    # 了什么"。bar_date 是「读到的是哪一天的数据」的权威证据，供 data_health 对账。
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS market_index_log (
+            date TEXT PRIMARY KEY,
+            time TEXT,
+            index_pct REAL,        -- 本轮扫描使用的大盘涨幅（创业板指）
+            bar_date TEXT,         -- 该涨幅对应的 bar 日期（None=未取得/降级源）
+            source TEXT,           -- 'xueqiu' | 'akshare'
+            updated TEXT DEFAULT ''
+        )
+    """)
     # 榜单可观测性（2026-08-19）：把雪球飙升榜/热搜榜的成分+排名分布的每轮快照落库为
     # 时间序列（区别于 scan_quality_log 的日级覆盖，这里是逐扫描保留）。目的：把上游
     # （雪球）的口径/样本变更变成可查询信号——雪球一旦改排序键/分页/样本过滤条件，
@@ -542,6 +556,59 @@ def save_scan_quality(conn: sqlite3.Connection,
         conn.commit()
     except Exception as e:
         logger.warning(f"save_scan_quality failed: {e}")
+
+
+def save_market_index_log(conn: sqlite3.Connection, index_pct: float | None,
+                          bar_date: str | None = None, source: str = "xueqiu") -> None:
+    """落库单轮扫描使用的大盘指数（大盘指数血缘日志，2026-08-19）。
+
+    大盘标签曾因 kline 接口 begin/count 语义错位把当日 -6.26% 崩盘读成昨日 -0.93%
+    （展示"大盘中性"）而无痕：涨幅是瞬时值、不进 daily_kline、不参与评分，任何落库
+    数值对账都碰不到它。此表记录「每轮扫描当时读到的大盘涨幅 + 其 bar 日期」，
+    bar 日期是「读到哪一天的数据」的权威证据，供 data_health.check_market_index_health
+    对账审计（读到旧 bar / 与独立源涨幅偏差超容差 → 告警）。
+
+    同日多轮扫描按最新一轮覆盖（与 scan_quality_log 同语义）。
+    """
+    today = now_beijing().date().isoformat()
+    now = now_beijing().strftime("%H:%M:%S")
+    try:
+        conn.execute(
+            """INSERT INTO market_index_log (date, time, index_pct, bar_date, source, updated)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(date) DO UPDATE SET
+                 time = excluded.time,
+                 index_pct = excluded.index_pct,
+                 bar_date = excluded.bar_date,
+                 source = excluded.source,
+                 updated = excluded.updated""",
+            (today, now,
+             index_pct if index_pct is not None else None,
+             bar_date, source, now),
+        )
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"save_market_index_log failed: {e}")
+
+
+def get_market_index_log(conn: sqlite3.Connection,
+                         date_str: str | None = None) -> dict | None:
+    """读取某日最近一轮的大盘指数血缘记录；无记录/旧库无表返回 None。"""
+    if date_str is None:
+        date_str = now_beijing().date().isoformat()
+    try:
+        row = conn.execute(
+            "SELECT * FROM market_index_log WHERE date = ? ORDER BY updated DESC LIMIT 1",
+            (date_str,),
+        ).fetchone()
+        if not row:
+            return None
+        # 不依赖 conn.row_factory（部分调用方传裸 sqlite3.Connection），按列名组装
+        cols = [c[0] for c in conn.execute(
+            "SELECT * FROM market_index_log WHERE 1=0").description]
+        return dict(zip(cols, row))
+    except sqlite3.OperationalError:
+        return None  # 旧库无表（未迁移）→ 无法审计，fail-open
 
 
 def record_leaderboard_log(conn: sqlite3.Connection, source: str, items: list[dict],

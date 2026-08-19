@@ -1,4 +1,5 @@
 from unittest.mock import MagicMock, PropertyMock, patch
+from datetime import datetime as _real_dt
 
 import pytest
 import requests
@@ -12,6 +13,20 @@ from scanner.api import (
     compute_surge_sentiment,
     estimate_live_volume,
 )
+from scanner.config import BEIJING_TZ
+
+
+class _FakeDatetime:
+    """datetime 替身：fromtimestamp 走真实转换，now() 固定为指定时刻（模拟盘中时点）。"""
+
+    def __init__(self, fixed):
+        self._fixed = fixed
+
+    def fromtimestamp(self, ts, tz=None):
+        return _real_dt.fromtimestamp(ts, tz) if tz else _real_dt.fromtimestamp(ts)
+
+    def now(self, tz=None):
+        return self._fixed
 
 
 class TestComputeSurgeSentiment:
@@ -524,7 +539,7 @@ class TestFetchMarketIndexCoercion:
         # 列序: [ts, volume, open, high, low, close, chg, percent, ...]
         with patch("scanner.api._request_with_retry",
                    return_value=self._fake_resp([1700000000000, 1, 10, 11, 9, 10, 0.1, "-0.12", 1.2])):
-            api._market_index_cache = (None, 0)  # 清缓存防跨测试污染
+            api._market_index_cache = (None, None, 0)  # 清缓存防跨测试污染
             pct = api.fetch_market_index(MagicMock())
         assert isinstance(pct, float) and pct == pytest.approx(-0.12)
         # 下游比较不再崩溃
@@ -534,7 +549,7 @@ class TestFetchMarketIndexCoercion:
         import scanner.api as api
         with patch("scanner.api._request_with_retry",
                    return_value=self._fake_resp([1700000000000, 1, 10, 11, 9, 10, 0.1, float("nan"), 1.2])):
-            api._market_index_cache = (None, 0)
+            api._market_index_cache = (None, None, 0)
             pct = api.fetch_market_index(MagicMock())
         assert pct == 0.0  # NaN → 0（中性，不触发大盘强弱标签）
 
@@ -542,9 +557,86 @@ class TestFetchMarketIndexCoercion:
         import scanner.api as api
         with patch("scanner.api._request_with_retry",
                    return_value=self._fake_resp([1700000000000, 1, 10, 11, 9, 10, 0.1, None, 1.2])):
-            api._market_index_cache = (None, 0)
+            api._market_index_cache = (None, None, 0)
             pct = api.fetch_market_index(MagicMock())
         assert pct is None
+
+    def test_picks_latest_bar_in_window(self):
+        """回归（2026-08-19）：count=2 & begin=now-3d 只返回窗口内最旧两根 bar，
+        items[-1] 错取昨日涨幅（创业板指当日 -6.26% 被读成昨日 -0.93% → 大盘中性）。
+        窗口内 3 根 bar 时必须取最后一根（当日）且 URL 用 count=5。"""
+        import scanner.api as api
+        # 列序: [ts, volume, open, high, low, close, chg, percent, ...]
+        # ts = 北京时区当日 00:00 的 epoch ms（雪球日K时间戳语义）
+        bars = [
+            [1786896000000, 1, 10, 11, 9, 10, 0.1, 3.14, 1.2],    # 08-17
+            [1786982400000, 1, 10, 11, 9, 10, 0.1, -0.93, 1.2],   # 08-18
+            [1787068800000, 1, 10, 11, 9, 10, 0.1, -6.26, 1.2],   # 08-19（当日崩盘）
+        ]
+        resp = MagicMock()
+        resp.json.return_value = {"data": {"item": bars}}
+        url_seen = {}
+        def fake_get(_session, url):
+            url_seen["url"] = url
+            return resp
+        with patch("scanner.api._request_with_retry", side_effect=fake_get):
+            api._market_index_cache = (None, None, 0)
+            pct = api.fetch_market_index(MagicMock())
+        assert pct == pytest.approx(-6.26), f"应取当日涨幅，got {pct}"
+        assert "count=5" in url_seen["url"], "窗口内最多 3 根交易日 bar，count 必须覆盖全部"
+
+    def test_meta_exposes_bar_date(self):
+        """bar 日期是「读到哪一天的数据」的权威证据（曾把 -6.26% 读成 -0.93% 而无痕）。"""
+        import scanner.api as api
+        bars = [
+            [1786896000000, 1, 10, 11, 9, 10, 0.1, 3.14, 1.2],   # 08-17
+            [1786982400000, 1, 10, 11, 9, 10, 0.1, -0.93, 1.2],  # 08-18
+            [1787068800000, 1, 10, 11, 9, 10, 0.1, -6.26, 1.2],  # 08-19（当日崩盘）
+        ]
+        resp = MagicMock()
+        resp.json.return_value = {"data": {"item": bars}}
+        with patch("scanner.api._request_with_retry", return_value=resp):
+            api._market_index_cache = (None, None, 0)
+            api.fetch_market_index(MagicMock())
+        pct, bar_date = api.get_market_index_meta()
+        assert pct == pytest.approx(-6.26)
+        assert bar_date == "2026-08-19"
+
+    def test_stale_bar_warns_and_meta_records(self, monkeypatch, capsys):
+        """读到旧 bar（bar 日期 < 今日且交易日 09:30 后）→ fail-loud 告警 + meta 记录证据。"""
+        import scanner.api as api
+        now = _real_dt(2026, 8, 19, 14, 59, tzinfo=BEIJING_TZ)
+        monkeypatch.setattr("scanner.api.datetime", _FakeDatetime(now))
+        bars = [
+            [1786896000000, 1, 10, 11, 9, 10, 0.1, 3.14, 1.2],   # 08-17
+            [1786982400000, 1, 10, 11, 9, 10, 0.1, -0.93, 1.2],  # 08-18（旧 bar）
+        ]
+        resp = MagicMock()
+        resp.json.return_value = {"data": {"item": bars}}
+        with patch("scanner.api._request_with_retry", return_value=resp):
+            api._market_index_cache = (None, None, 0)
+            pct = api.fetch_market_index(MagicMock())
+        assert pct == pytest.approx(-0.93)
+        assert api.get_market_index_meta()[1] == "2026-08-18"
+        out = capsys.readouterr().out
+        assert "读到旧 bar" in out and "2026-08-18" in out
+
+    def test_no_stale_warning_before_open(self, monkeypatch, capsys):
+        """开盘前（<09:30）今日 bar 尚未生成，读到昨日 bar 属正常 → 不告警。"""
+        import scanner.api as api
+        now = _real_dt(2026, 8, 19, 9, 15, tzinfo=BEIJING_TZ)
+        monkeypatch.setattr("scanner.api.datetime", _FakeDatetime(now))
+        bars = [
+            [1786896000000, 1, 10, 11, 9, 10, 0.1, 3.14, 1.2],
+            [1786982400000, 1, 10, 11, 9, 10, 0.1, -0.93, 1.2],
+        ]
+        resp = MagicMock()
+        resp.json.return_value = {"data": {"item": bars}}
+        with patch("scanner.api._request_with_retry", return_value=resp):
+            api._market_index_cache = (None, None, 0)
+            api.fetch_market_index(MagicMock())
+        out = capsys.readouterr().out
+        assert "读到旧 bar" not in out
 
 
 class TestSessionExpirySelfHeal:

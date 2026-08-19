@@ -38,6 +38,14 @@ class DataSourceAdapter(Protocol):
     def fetch_hot_list(self, size: int = 100) -> list[dict]: ...
     def fetch_market_caps_batch(self, symbols: list[str]) -> dict[str, dict]: ...
     def fetch_market_index(self) -> float | None: ...
+    def get_market_index_meta(self) -> tuple[float | None, str | None, str]:
+        """大盘指数取数的血缘元数据 (涨幅, bar日期, 数据源名)，供落库审计。
+
+        bar 日期是「读到的是哪一天的数据」的权威证据——曾因 kline 接口 begin/count
+        语义错位把当日 -6.26% 读成昨日 -0.93%（展示"大盘中性"）而无痕。涨幅本身
+        是瞬时值，不落库就无法事后审计"当时读到了什么"。
+        """
+        return (None, None, self.name)
     def fetch_minute(self, symbol: str) -> list[dict] | None:
         """当日分时数据（分钟 bar 列表），无数据/不支持的源返回 None（降级为无分时信号）。
 
@@ -81,6 +89,10 @@ class XueqiuAdapter:
 
     def fetch_market_index(self) -> float | None:
         return api.fetch_market_index(self._get_session())
+
+    def get_market_index_meta(self) -> tuple[float | None, str | None, str]:
+        pct, bar_date = api.get_market_index_meta()
+        return pct, bar_date, self.name
 
     def fetch_minute(self, symbol: str) -> list[dict] | None:
         return api._fetch_minute_data(self._get_session(), symbol)
@@ -296,15 +308,25 @@ class AkshareAdapter:
             ak = self._get_ak()
             df = ak.stock_zh_index_spot_em()
             if df is None or df.empty:
+                self._last_index_meta = (None, None, self.name)
                 return None
             # 过滤创业板指 399006
             row = df[df["代码"] == "399006"]
             if row.empty:
+                self._last_index_meta = (None, None, self.name)
                 return None
-            return _as_float(row.iloc[0].get("涨跌幅")) or 0
+            pct = _as_float(row.iloc[0].get("涨跌幅")) or 0
+            # 东财 spot 恒为当日实况 → bar 日期即今日（same-day 语义，区别于雪球 kline 旧 bar）
+            today = datetime.now(BEIJING_TZ).date().isoformat()
+            self._last_index_meta = (pct, today, self.name)
+            return pct
         except Exception as e:
             logger.warning("AKShare 大盘指数获取失败: %s", e)
+            self._last_index_meta = (None, None, self.name)
             return None
+
+    def get_market_index_meta(self) -> tuple[float | None, str | None, str]:
+        return getattr(self, "_last_index_meta", (None, None, self.name))
 
     def fetch_minute(self, symbol: str) -> list[dict] | None:
         logger.warning("AKShare 暂无分时数据兜底（字段差异大），%s 分时信号整体降级", symbol)
@@ -415,7 +437,40 @@ class FallbackAdapter:
         raise RuntimeError("无可用数据源")
 
     def fetch_market_index(self) -> float | None:
-        return self._call("fetch_market_index")
+        """雪球大盘指数失败（返回 None）时降级到 AKShare spot。
+
+        api.fetch_market_index 内部吞异常返回 None，不会抛给 _call —— 原"仅异常降级"
+        策略对指数形同死代码（与 fetch_kline/fetch_market_caps_batch 同族修复）。
+        """
+        if self._use_primary:
+            try:
+                result = self._primary.fetch_market_index()
+                if result is not None:
+                    return result
+                if self._secondary:
+                    logger.warning("%s.fetch_market_index 返回空，降级到 %s",
+                                   self._primary.name, self._secondary.name)
+                    return self._secondary.fetch_market_index()
+                return None
+            except Exception as e:
+                if self._secondary:
+                    logger.warning("%s.fetch_market_index 异常: %s，降级到 %s",
+                                   self._primary.name, e, self._secondary.name)
+                    return self._secondary.fetch_market_index()
+                raise
+        elif self._secondary:
+            return self._secondary.fetch_market_index()
+        raise RuntimeError("无可用数据源")
+
+    def get_market_index_meta(self) -> tuple[float | None, str | None, str]:
+        """委托实际生效的数据源返回指数血缘元数据。"""
+        used = self._primary if self._use_primary else self._secondary
+        if used is not None and hasattr(used, "get_market_index_meta"):
+            try:
+                return used.get_market_index_meta()
+            except Exception:  # noqa: BLE001
+                pass
+        return (None, None, used.name if used is not None else "unknown")
 
     def fetch_minute(self, symbol: str) -> list[dict] | None:
         return self._call("fetch_minute", symbol)

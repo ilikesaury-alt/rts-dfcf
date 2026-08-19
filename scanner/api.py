@@ -163,7 +163,7 @@ _kline_cache_lock = threading.Lock()
 _intraday_cache_lock = threading.Lock()
 _minute_data_cache_lock = threading.Lock()
 
-_market_index_cache: tuple[float | None, float] = (None, 0)
+_market_index_cache: tuple[float | None, str | None, float] = (None, None, 0)
 
 _kline_cache: dict[str, tuple[list[KlineBar] | None, float]] = {}
 # TTL=0 禁用 API 层缓存：避免与 orchestrator.KLINE_REFRESH_TTL 双层叠加导致 K 线陈旧。
@@ -171,27 +171,76 @@ _kline_cache: dict[str, tuple[list[KlineBar] | None, float]] = {}
 _kline_cache_ttl = 0
 
 
+def _bar_date_of(item: list) -> str | None:
+    """kline item 首列时间戳 → 'YYYY-MM-DD'；脏值/缺列返回 None。"""
+    try:
+        ts = item[0]
+        if isinstance(ts, (int, float)) and ts > 0:
+            return datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _warn_stale_index_bar(bar_date: str | None) -> None:
+    """交易时段内读到非当日 bar → 告警（大盘标签可能按昨日涨幅失真）。
+
+    2026-08-19 曾因 kline 接口 begin/count 语义错位，把当日 -6.26% 崩盘读成
+    昨日 -0.93%（展示"大盘中性"）。count 修复后正常必取当日 bar，这里兜住
+    "接口本身滞后"的残留场景——fail-loud 不静默。
+    """
+    if bar_date is None:
+        return
+    try:
+        from scanner.trading_session import is_trading_day  # 惰性导入避免低层依赖上移
+
+        now = datetime.now(BEIJING_TZ)
+        if now.strftime("%H:%M") < "09:30":
+            return  # 开盘前今日 bar 尚未生成，读到昨日属正常
+        today = now.date().isoformat()
+        if bar_date < today and is_trading_day(now.date()):
+            print(f"  [!] 大盘指数读到旧 bar (date={bar_date}, 今日={today})——大盘标签可能失真")
+    except Exception:  # noqa: BLE001  交易日历异常不阻塞指数取数
+        pass
+
+
+def get_market_index_meta() -> tuple[float | None, str | None]:
+    """返回最近一次大盘指数取数的 (涨幅, bar 日期)，供落库审计。
+
+    bar 日期是「读到的是哪一天的数据」的权威证据——2026-08-19 曾把当日 -6.26%
+    读成昨日 -0.93%，单看涨幅无法分辨（两者都是合法 float），bar 日期直接暴露隔日错位。
+    """
+    with _index_cache_lock:
+        return _market_index_cache[0], _market_index_cache[1]
+
+
 def fetch_market_index(session: requests.Session) -> float | None:
     global _market_index_cache
     now = time.time()
     with _index_cache_lock:
-        if _market_index_cache[0] is not None and now - _market_index_cache[1] < 60:
+        if _market_index_cache[0] is not None and now - _market_index_cache[2] < 60:
             return _market_index_cache[0]
     try:
         ts_ms = int(time.time() * 1000)
+        # count 必须 ≥ 窗口内可能出现的最大 bar 数（3 天窗口最多 3 根交易日 bar）。
+        # 雪球 kline 接口按 begin 返回**窗口内前 count 根**（非最近 count 根）：
+        # begin=now-3d & count=2 只会拿到最旧两根 → items[-1] 错取昨日涨幅，
+        # 当日崩盘/大涨全部失真（2026-08-19 实测创业板指 -6.26% 被读成昨日 -0.93%）。
         url = (f"https://stock.xueqiu.com/v5/stock/chart/kline.json"
-               f"?symbol=SZ399006&begin={ts_ms - 86400*1000*3}&period=day&count=2&_={ts_ms}")
+               f"?symbol=SZ399006&begin={ts_ms - 86400*1000*3}&period=day&count=5&_={ts_ms}")
         resp = _request_with_retry(session, url)
         items = resp.json().get("data", {}).get("item", [])
         if items and len(items[-1]) > 7:
             pct_raw = items[-1][7]
+            bar_date = _bar_date_of(items[-1])
             if pct_raw is not None:
                 # 类型防御（与 _num 同族）：大盘涨幅列偶发为字符串/NaN/inf 时统一强转，
                 # 否则下游 enhancer._record_dimensions 的 `market_idx_pct > MARKET_STRONG_THRESHOLD`
                 # 对字符串抛 TypeError，整轮扫描异常丢失。强转后 0.0 语义=中性，无加分。
                 pct = _num(pct_raw)
+                _warn_stale_index_bar(bar_date)
                 with _index_cache_lock:
-                    _market_index_cache = (pct, now)
+                    _market_index_cache = (pct, bar_date, now)
                 return pct
     except Exception as e:
         print(f"  [!] 获取大盘指数失败: {e}")
