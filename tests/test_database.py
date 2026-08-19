@@ -96,8 +96,91 @@ def memory_db():
             updated TEXT DEFAULT ''
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS leaderboard_log (
+            date TEXT,
+            time TEXT,
+            source TEXT,
+            total INTEGER DEFAULT 0,
+            gem_listed INTEGER DEFAULT 0,
+            up_count INTEGER DEFAULT 0,
+            down_count INTEGER DEFAULT 0,
+            flat_count INTEGER DEFAULT 0,
+            median_pct REAL,
+            mean_pct REAL,
+            top10_mean_pct REAL,
+            max_pct REAL,
+            overlap_prev REAL,
+            median_rank_change REAL,
+            symbol_snapshot TEXT,
+            updated TEXT DEFAULT '',
+            PRIMARY KEY (date, time, source)
+        )
+    """)
     conn.commit()
     return conn
+
+
+class TestRecordLeaderboardLog:
+    def _items(self, syms):
+        out = []
+        for i, s in enumerate(syms, 1):
+            out.append({'symbol': s, 'name': f'n{i}', 'code': s[2:],
+                        'percent': float(i), 'rank': i, 'rank_change': i * 5})
+        return out
+
+    def test_basic_stats(self, memory_db):
+        from scanner.database import record_leaderboard_log
+        items = self._items(['SZ300607', 'SZ300438', 'SH600000'])
+        syms = record_leaderboard_log(memory_db, 'biaosheng', items, set())
+        assert syms == {'SZ300607', 'SZ300438', 'SH600000'}
+        row = memory_db.execute("SELECT * FROM leaderboard_log").fetchone()
+        assert row[3] == 3          # total
+        assert row[4] == 2          # gem_listed
+        assert row[5] == 3          # up_count (全部正涨幅)
+        assert row[6] == 0          # down_count
+        assert row[12] == 0.0       # 首轮 overlap
+        assert row[9] == 2.0        # mean_pct
+
+    def test_median_and_dirty_guard(self, memory_db):
+        from scanner.database import record_leaderboard_log
+        items = [
+            {'symbol': 'SZ300001', 'name': 'a', 'code': '300001', 'percent': 5.0, 'rank': 1, 'rank_change': 10},
+            {'symbol': 'SZ300002', 'name': 'b', 'code': '300002', 'percent': -2.2, 'rank': 2, 'rank_change': '-'},
+            {'symbol': 'SZ300003', 'name': 'c', 'code': '300003', 'percent': 3.1, 'rank': 3, 'rank_change': None},
+            {'symbol': 'SZ300004', 'name': 'd', 'code': '300004', 'percent': 'bad', 'rank': 4, 'rank_change': 7},
+        ]
+        record_leaderboard_log(memory_db, 'biaosheng', items, set())
+        row = memory_db.execute("SELECT * FROM leaderboard_log").fetchone()
+        # percent 有效值 [5.0, -2.2, 3.1] → 中位数 3.1、涨2跌1
+        assert row[8] == 3.1        # median_pct
+        assert row[5] == 2          # up
+        assert row[6] == 1          # down
+        # rank_change 有效值 [10, 7] → 中位数 8.5（脏值 '-'/None 被过滤）
+        assert abs(row[13] - 8.5) < 1e-6
+
+    def test_overlap_second_round(self, memory_db, monkeypatch):
+        import datetime
+
+        from scanner import database as db_mod
+        from scanner.database import record_leaderboard_log
+        clock = [datetime.datetime(2026, 8, 19, 10, 0, 0)]
+        monkeypatch.setattr(db_mod, 'now_beijing', lambda: clock[0])
+
+        items = self._items(['SZ300607', 'SZ300438', 'SH600000'])
+        syms = record_leaderboard_log(memory_db, 'biaosheng', items, set())
+        clock[0] = clock[0] + datetime.timedelta(seconds=60)  # 下一轮不同秒
+        syms2 = record_leaderboard_log(memory_db, 'biaosheng', items[:2], syms)
+        assert syms2 == {'SZ300607', 'SZ300438'}
+        rows = memory_db.execute("SELECT overlap_prev FROM leaderboard_log ORDER BY time").fetchall()
+        assert rows[0][0] == 0.0
+        assert rows[1][0] == 1.0
+
+    def test_fail_open_returns_prev(self, memory_db):
+        from scanner.database import record_leaderboard_log
+        memory_db.execute("DROP TABLE leaderboard_log")
+        # 表不存在 → 函数不抛，返回 prev_symbols（fail-open，不污染扫描主流程）
+        assert record_leaderboard_log(memory_db, 'biaosheng', self._items(['SZ300001']), {'SZ300001'}) == {'SZ300001'}
 
 
 class TestRecordAppearances:

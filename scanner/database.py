@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import sqlite3
 from datetime import date, timedelta
 
@@ -15,6 +16,7 @@ from scanner.config import (
 )
 from scanner.models import KlineBar, make_kline_bar
 from scanner.trading_session import is_trading_day, is_trading_time
+from scanner.utils import is_gem, to_float
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +129,33 @@ def init_db() -> sqlite3.Connection:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sql_date ON scan_quality_log(date)")
+    # 榜单可观测性（2026-08-19）：把雪球飙升榜/热搜榜的成分+排名分布的每轮快照落库为
+    # 时间序列（区别于 scan_quality_log 的日级覆盖，这里是逐扫描保留）。目的：把上游
+    # （雪球）的口径/样本变更变成可查询信号——雪球一旦改排序键/分页/样本过滤条件，
+    # 系统行为会悄悄漂移（榜单中位数/涨跌结构/重叠率会突变），单函数审查看不出。
+    # 由 unified_scanner 主循环每轮调用 record_leaderboard_log 记录。
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS leaderboard_log (
+            date TEXT,
+            time TEXT,
+            source TEXT,                 -- 'biaosheng' | 'hot'
+            total INTEGER DEFAULT 0,     -- 榜单返回条数
+            gem_listed INTEGER DEFAULT 0, -- 其中 GEM(300xxx) 数
+            up_count INTEGER DEFAULT 0,
+            down_count INTEGER DEFAULT 0,
+            flat_count INTEGER DEFAULT 0,
+            median_pct REAL,             -- 全榜涨幅中位数（口径变更的最强信号）
+            mean_pct REAL,
+            top10_mean_pct REAL,         -- 前10平均涨幅（涨速强度）
+            max_pct REAL,
+            overlap_prev REAL,           -- 与上一轮榜单成员重叠比例 0-1（样本稳定性）
+            median_rank_change REAL,     -- 排名变化中位数（排序口径变更信号）
+            symbol_snapshot TEXT,        -- JSON：前40成员 {symbol,name,percent,rank,rank_change}
+            updated TEXT DEFAULT '',
+            PRIMARY KEY (date, time, source)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_lb_date ON leaderboard_log(date, source)")
     # 收盘定稿标记（2026-08-18 拓斯达脏数据事故后新增）：盘中扫描把未收盘的今日 bar
     # （盘中价+部分量能）写入 daily_kline 属预期（today_report 盘中读），但收盘后无
     # 定稿覆盖会残留污染 next_day_pct → 回测/归因/复盘全口径。finalized=0 表示
@@ -512,6 +541,100 @@ def save_scan_quality(conn: sqlite3.Connection,
         conn.commit()
     except Exception as e:
         logger.warning(f"save_scan_quality failed: {e}")
+
+
+def record_leaderboard_log(conn: sqlite3.Connection, source: str, items: list[dict],
+                            prev_symbols: set[str]) -> set[str]:
+    """落库单轮榜单快照（榜单可观测性，2026-08-19）。
+
+    把雪球飙升榜/热搜榜每轮成分 + 排名分布写进 leaderboard_log 时间序列，maintainer 与
+    scan_quality_log 互补：scan_quality_log 看「下游扫描数据质量」降级，本表看「上游源
+    本身」的口径漂移。stats 全用可直接查询的列，symbol_snapshot 存前 40 成员 JSON 供
+    重建成分分析。
+
+    上游口径变更信号（对照历史即可识别）：
+      - median_pct / up:down 结构突变（如从涨幅榜变热度榜，中位会失真/趋 0）
+      - overlap_prev 骤降（排序键或分页变更导致成员剧烈抖动）
+      - total / gem_listed 突变（样本过滤条件变更）
+
+    统计口径防御：percent/rank_change 脏值（None/NaN/str）统一 to_float 过滤，
+    不参与中位数/均值（与 _filter_gem_stocks 的数值强转同族防御）。
+
+    返回本轮的 symbol 集合，调用方应保存为下一轮的 prev_symbols（用于重叠率）。
+    """
+    today = now_beijing().date().isoformat()
+    now = now_beijing().strftime("%H:%M:%S")
+    try:
+        syms = [str(i.get("symbol") or "") for i in items]
+        valid_syms = [s for s in syms if s]
+        cur_syms = set(valid_syms)
+        total = len(items)
+        gem_listed = sum(1 for cs in valid_syms if is_gem(cs))
+
+        # 涨幅分布（防御：percent 可能为 None/字符串/NaN）
+        pcts: list[float] = []
+        for i in items:
+            v = to_float(i.get("percent"), None)
+            if v is not None and math.isfinite(v):
+                pcts.append(v)
+        up = sum(1 for p in pcts if p > 0)
+        down = sum(1 for p in pcts if p < 0)
+        flat = len(pcts) - up - down
+        median_pct = _median(pcts) if pcts else None
+        mean_pct = sum(pcts) / len(pcts) if pcts else None
+        top10 = sorted(pcts, reverse=True)[:10]
+        top10_mean = sum(top10) / len(top10) if top10 else None
+        max_pct = max(pcts) if pcts else None
+
+        # 排名变化中位数（防御：rank_change 可能为 "-"/None/NaN）
+        rcs: list[float] = []
+        for i in items:
+            v = to_float(i.get("rank_change"), None)
+            if v is not None and math.isfinite(v):
+                rcs.append(v)
+        median_rc = _median(rcs) if rcs else None
+
+        # 与上一轮成员重叠比例
+        overlap = 0.0
+        if prev_symbols and cur_syms:
+            overlap = len(cur_syms & prev_symbols) / len(cur_syms)
+
+        # 前 40 成员紧凑快照（供成分重建，不全存以控体积：100条×6KB×240轮/日≈1.4MB/日）
+        snapshot = [
+            {"symbol": str(i.get("symbol") or ""),
+             "name": str(i.get("name") or ""),
+             "percent": pcts[idx] if idx < len(pcts) else None,
+             "rank": int(to_float(i.get("rank"), idx + 1) or idx + 1),
+             "rank_change": to_float(i.get("rank_change"), None)}
+            for idx, i in enumerate(items[:40])
+        ]
+        conn.execute(
+            """INSERT OR REPLACE INTO leaderboard_log
+               (date, time, source, total, gem_listed, up_count, down_count, flat_count,
+                median_pct, mean_pct, top10_mean_pct, max_pct, overlap_prev,
+                median_rank_change, symbol_snapshot, updated)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (today, now, source, total, gem_listed, up, down, flat,
+             median_pct, mean_pct, top10_mean, max_pct, overlap,
+             median_rc, json.dumps(snapshot, ensure_ascii=False), now),
+        )
+        conn.commit()
+        return cur_syms
+    except Exception as e:
+        logger.warning(f"record_leaderboard_log failed: {e}")
+        # fail-open：落库失败不影响扫描主流程，返回空集（不污染后续重叠率）
+        return prev_symbols
+
+
+def _median(vals: list[float]) -> float | None:
+    if not vals:
+        return None
+    s = sorted(vals)
+    n = len(s)
+    mid = n // 2
+    if n % 2 == 1:
+        return s[mid]
+    return (s[mid - 1] + s[mid]) / 2.0
 
 
 def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, source: str | None = None):

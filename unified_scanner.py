@@ -43,6 +43,7 @@ from scanner.database import (
     get_today_recommendations,
     init_db,
     mark_reversed_recommendations,
+    record_leaderboard_log,
     save_kline_to_db,
     save_recommendations,
 )
@@ -217,6 +218,8 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
 
     # 上一轮扫描的榜单排名快照：综合排序「排名」列据此显示雪球榜单排名变化（+N 升 / -N 降）。
     last_ranks: dict[str, int] = {}
+    # 榜单可观测性：上一轮飙升榜成员集合，用于算本轮重叠率（探测上游样本口径抖动）。
+    prev_board_syms: set[str] = set()
 
     try:
         while True:
@@ -263,6 +266,16 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
 
                 both_count = sum(1 for i in xq_raw if i.get("source_tag") == "both")
                 print(f"\r  📡 飙升榜{len(xq_raw)}只 (双榜{both_count}只)", end="", flush=True)
+
+                # 榜单可观测性（2026-08-19）：每轮把飙升榜/热搜榜成分+排名分布落库。
+                # 探测雪球上游口径漂移（排序键/分页/样本过滤变更 → 中位数/重叠率/涨跌结构突变）。
+                # fail-open：落库失败不阻塞扫描主流程。
+                try:
+                    prev_board_syms = record_leaderboard_log(conn, "biaosheng", xq_raw, prev_board_syms)
+                    if hot_list:
+                        record_leaderboard_log(conn, "hot", hot_list, set())
+                except Exception as e:
+                    print(f"  [!] 榜单可观测性落库失败: {e}")
 
                 res = scan_with_raw(xq_raw, conn, adapter)
                 new_faces = res.new_faces
