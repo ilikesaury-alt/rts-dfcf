@@ -951,7 +951,7 @@ def get_today_recommendations(conn: sqlite3.Connection, as_of=None) -> list[dict
       live_percent (from appearances), live_rank (from appearances),
       rank_score（类内百分位，综合排序跨类别可比用）,
       score_breakdown（2026-08-17 新增：解析为 dict，供掉榜/重启行的 🎯 分型
-      （short_term 弱转强）与板块普涨避雷标记判定，见 display._entry_dims）
+      （short_term 弱转强）与板块普涨避雷标记判定，见 ranking._entry_dims）
     """
     if as_of is None:
         as_of = now_beijing().date()

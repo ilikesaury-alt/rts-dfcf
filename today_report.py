@@ -53,6 +53,9 @@ from scanner.display import (  # noqa: E402
     ANSI,
     CAT_COLOR,
     CAT_LABEL,
+    fund_flow_signal,
+)
+from scanner.ranking import (  # noqa: E402  (纯排序逻辑单源，与 display 解耦)
     _entry_band,
     _entry_dims,
     _entry_overbought,
@@ -61,7 +64,6 @@ from scanner.display import (  # noqa: E402
     _is_nextday_marked,
     _nextday_entry_accum,
     _nextday_entry_percent,
-    fund_flow_signal,
 )
 
 # 档0 评级阈值（纯展示，依据已回测结论）
