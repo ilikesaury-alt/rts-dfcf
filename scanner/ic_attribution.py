@@ -8,12 +8,21 @@
 口径（2026-08-18 统一）：默认 --metric next_day_pct（次日大涨，综合排序唯一决策口径）；
 cum_3d（T+3 累计）等保留为对照，--metric 可选。
 
-维度还原口径与分析端 analyze_new_face / validator.validate_nf 完全一致：
-- historical_kline = 不含今日 bar 的历史 K 线
+维度还原口径**近似于**分析端 analyze_new_face / validator.validate_nf（非完全一致，见下方 ⚠）：
+- historical_kline = 不含今日 bar 的历史 K 线（同引擎）
 - closes = historical_kline 的收盘价序列
-- feats = build_features(closes, highs, lows, volumes)
+- feats = build_features(closes, highs, lows, volumes)（指标数学与引擎同源，细节阈值略异）
 - vol_ratio 复刻 analysis._compute_volume_metrics（含早盘投影封顶，但 DB 回填
   数据末根已是完整量能，投影倍数为 1.0，行为等价）
+
+⚠ 已知漂移（设计审查 P0 #2，2026-08-19 实证）：extract_features 手写重建的维度值
+与线上引擎真实 dimensions 存在系统性偏差——两者都基于「不含今日 historical」但
+指标阈值 / vol_ratio / value / pattern 细节不同。实测 ma_bull 符号一致率 0.809、
+Spearman(reconstruct_score, 冻结score) ≈ 0.18。IC 归因当前跑在漂移特征集上，但
+方向性结论（维度 IC 排序、rsi_bonus / kdj_bonus 调参依据）仍有效，故保留手写重建。
+根治（让 extract_features 改调 analyze_new_face 真实 dimensions）会丢失
+RSI(6) / MACD 柱 / KDJ 等连续特征 IC，已决策「方案 A：锁定现状 + 诚实化」，不改调参依据。
+漂移度由 tests/test_ic_attribution_faithful.py 的 Spearman 诊断常驻监控。
 
 输出两张表：
   A. 连续特征 IC（Spearman(feature, metric)）

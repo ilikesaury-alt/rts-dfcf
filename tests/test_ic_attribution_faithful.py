@@ -13,15 +13,15 @@
     冻结 breakdown 的 new_face_rsi/bollinger/obv_trend 也**未被记录** → 两套维度集已分叉。
   - Spearman(reconstruct_score, 冻结score) ≈ 0.18 → IC 归因当前跑在漂移特征集上。
 
-正确治本（设计审查 P0 #2，需方案评审，不宜盲改）：让 ic_attribution 复用线上 pipeline 的
-真实 dimensions（`features_for_signal_date`），不再手写重建。届时本测试的秩相关应升至 ~1.0。
+决策（2026-08-19，用户选方案 A）：**锁定现状 + 诚实化，暂不根治**。根治（让 extract_features 改调
+analyze_new_face 真实 dimensions）会丢失 RSI(6)/MACD 柱 / KDJ 等连续特征 IC——这些是用户调 rsi_bonus / kdj_bonus 的依据——故保留手写重建，仅把不实 docstring「与分析端完全一致」改为诚实标注已知漂移。本测试的 Spearman 诊断即常驻健康度标记（目标 ≥0.8 仅在根治后可达，当前已知 ≈0.18）。
 
 本测试锁定「不会进一步分叉」的不变量（当前已知漂移下仍可绿的回归下限）：
   1. 结构锁：冻结 breakdown 必须含 new_face_ma_bull，且 extract_features 也产出 ma_bull →
      两工具至少共享该维度；任一方移除即说明特征集彻底分叉。
   2. 回归下限：ma_bull 符号一致率不得低于 0.75（当前 0.809，已知部分漂移）。
   3. 冒烟：extract_features 在真实 new_face 样本上成功率 ≥ 30%（保证 IC 工具随引擎演进不崩）。
-  4. 诊断：打印当前 Spearman(reconstruct_score, 冻结score)，作为漂移健康度标记（目标 ≥0.8 在根治后）。
+  4. 诊断：打印当前 Spearman(reconstruct_score, 冻结score)，作为漂移健康度常驻标记（方案 A 下永久监控，当前已知 ≈0.18）。
 """
 
 import json
