@@ -13,6 +13,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import Protocol, runtime_checkable
 
+import requests
+
 from scanner import api
 from scanner.config import BEIJING_TZ, DATA_SOURCE
 from scanner.models import KlineBar, make_kline_bar
@@ -229,25 +231,60 @@ class AkshareAdapter:
         return []
 
     def fetch_market_caps_batch(self, symbols: list[str]) -> dict[str, dict]:
+        """市值批量查询：直连东财 push2delay（可达）ulist.np/get 按 secids 精确查。
+
+        2026-08-19 修复：原走 akshare stock_zh_a_spot_em()（内部硬编码
+        push2.eastmoney.com），本机直连/代理均不可达（ProxyError），兜底形同虚设。
+        push2delay.eastmoney.com 提供相同 clist/ulist API 且可达（数据可能延迟，
+        与资金流同款注，见 market_extra.py）；ulist.np/get 按 secids 只查请求的
+        票（无需拉全市场 5292 只再过滤，更快更稳）。仅作雪球失败兜底。
+        """
         if not symbols:
             return {}
         try:
-            ak = self._get_ak()
-            df = ak.stock_zh_a_spot_em()
-            if df is None or df.empty:
-                return {}
-            wanted = {_xq_to_ak(s) for s in symbols}
+            unique = sorted({_xq_to_ak(s) for s in symbols})
+            # 东财 secids 前缀：0=SZ 深市(含300), 1=SH 沪市(含60), 2=BJ
+            secids = ",".join(
+                ("1." if c.startswith("6") else
+                 "2." if c.startswith("8") or c.startswith("4") else "0.") + c
+                for c in unique
+            )
+            params = {
+                "secids": secids,
+                "fields": "f12,f14,f2,f3,f8,f20,f21",
+                "fltt": "2", "invt": "2",
+                "ut": "b2884a393a59ad64002292a3e90d46a5",
+            }
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Referer": "https://emweb.securities.eastmoney.com/",
+            }
+            resp = requests.get(
+                "https://push2delay.eastmoney.com/api/qt/ulist.np/get",
+                params=params, timeout=10, headers=headers,
+            )
+            data = resp.json().get("data") or {}
+            rows = data.get("diff") or []
             result: dict[str, dict] = {}
-            for _, row in df.iterrows():
-                code = str(row["代码"])
-                if code not in wanted:
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                code = str(row.get("f12") or "").strip()
+                if not code:
+                    continue
+                # 只保留请求的票（防御接口返回额外行）
+                if code not in unique:
                     continue
                 result[_ak_to_xq(code)] = {
-                    "market_cap": _as_float(row.get("总市值")) or 0,
-                    "circ_market_cap": _as_float(row.get("流通市值")) or 0,
-                    "turnover_rate": _as_float(row.get("换手率")) or 0,
-                    "current": _as_float(row.get("最新价")) or 0,
-                    "percent": _as_float(row.get("涨跌幅")) or 0,
+                    "market_cap": _as_float(row.get("f20")) or 0,
+                    "circ_market_cap": _as_float(row.get("f21")) or 0,
+                    "turnover_rate": _as_float(row.get("f8")) or 0,
+                    "current": _as_float(row.get("f2")) or 0,
+                    "percent": _as_float(row.get("f3")) or 0,
                 }
             return result
         except Exception as e:
@@ -349,7 +386,33 @@ class FallbackAdapter:
         return self._call("fetch_hot_list", size)
 
     def fetch_market_caps_batch(self, symbols: list[str]) -> dict[str, dict]:
-        return self._call("fetch_market_caps_batch", symbols)
+        """雪球市值批量查询失败时降级到 AKShare 补拉。
+
+        api.fetch_market_caps_batch 在内部 catch 所有异常/空结果后返回 {}（不抛给
+        _call），导致原 FallbackAdapter 的"仅异常降级"策略对市值形同死代码——
+        雪球临时失败（cookie 过期/403/429/网络残留）时告警"市值数据获取失败，小
+        而美规则暂不生效"且 {} 静默传播，小而美过滤整体失效。这里显式处理：
+        primary 返回空 dict 视为失败，尝试 secondary 兜底（与 fetch_kline 同款）。
+        """
+        if self._use_primary:
+            try:
+                result = self._primary.fetch_market_caps_batch(symbols)
+                if result:
+                    return result
+                if self._secondary:
+                    logger.warning("%s.fetch_market_caps_batch 返回空，降级到 %s 补拉市值",
+                                   self._primary.name, self._secondary.name)
+                    return self._secondary.fetch_market_caps_batch(symbols)
+                return result
+            except Exception as e:
+                if self._secondary:
+                    logger.warning("%s.fetch_market_caps_batch 异常: %s，降级到 %s",
+                                   self._primary.name, e, self._secondary.name)
+                    return self._secondary.fetch_market_caps_batch(symbols)
+                raise
+        elif self._secondary:
+            return self._secondary.fetch_market_caps_batch(symbols)
+        raise RuntimeError("无可用数据源")
 
     def fetch_market_index(self) -> float | None:
         return self._call("fetch_market_index")

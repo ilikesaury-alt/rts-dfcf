@@ -179,21 +179,22 @@ class TestAkshareAdapter:
         assert adapter.fetch_kline("SZ300001") is None
 
     def test_fetch_market_caps_batch(self):
+        """2026-08-19 重构：直连 push2delay ulist.np/get 按 secids 精确查，
+        不再走 akshare stock_zh_a_spot_em（其内部硬编码 push2.eastmoney.com
+        在本机不可达）。仅返回请求的票。"""
+        import requests
         adapter = AkshareAdapter()
-        mock_df = pd.DataFrame({
-            "代码": ["300001", "300002", "600000"],
-            "名称": ["股票A", "股票B", "股票C"],
-            "最新价": [10.5, 20.0, 5.0],
-            "涨跌幅": [5.0, -2.0, 0.0],
-            "总市值": [1e9, 2e9, 3e9],
-            "流通市值": [8e8, 1.5e9, 2.5e9],
-            "换手率": [1.5, 2.0, 0.5],
-        })
-        mock_ak = MagicMock()
-        mock_ak.stock_zh_a_spot_em.return_value = mock_df
-        adapter._ak = mock_ak
-
-        result = adapter.fetch_market_caps_batch(["SZ300001", "SZ300002"])
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"data": {"diff": [
+            {"f12": "300001", "f14": "股票A", "f2": 10.5, "f3": 5.0,
+             "f8": 1.5, "f20": 1e9, "f21": 8e8},
+            {"f12": "300002", "f14": "股票B", "f2": 20.0, "f3": -2.0,
+             "f8": 2.0, "f20": 2e9, "f21": 1.5e9},
+            {"f12": "600000", "f14": "股票C", "f2": 5.0, "f3": 0.0,
+             "f8": 0.5, "f20": 3e9, "f21": 2.5e9},
+        ]}}
+        with patch("scanner.data_source.requests.get", return_value=mock_resp) as m:
+            result = adapter.fetch_market_caps_batch(["SZ300001", "SZ300002"])
         assert "SZ300001" in result
         assert "SZ300002" in result
         assert "SH600000" not in result  # 未请求的不返回
@@ -202,32 +203,37 @@ class TestAkshareAdapter:
         assert result["SZ300001"]["turnover_rate"] == 1.5
         assert result["SZ300001"]["current"] == 10.5
         assert result["SZ300001"]["percent"] == 5.0
+        # 只查请求的票（secids 不含 600000）
+        secids = m.call_args.kwargs["params"]["secids"]
+        assert "600000" not in secids
+        assert "0.300001" in secids and "0.300002" in secids
 
     def test_fetch_market_caps_batch_nan_inf_coerced(self):
-        """回归：停牌/异常行为 NaN/inf（DataFrame 常态脏值）→ 0，
-        不产出 NaN 市值/现价（此前 float(NaN or 0)=NaN 漏进下游比较）。"""
+        """回归：接口脏值（None/NaN/inf 字符串）→ 0，不产出 NaN 市值/现价。"""
         import math
+        import requests
         adapter = AkshareAdapter()
-        mock_df = pd.DataFrame({
-            "代码": ["300001"],
-            "名称": ["股票A"],
-            "最新价": [float("nan")],
-            "涨跌幅": [float("inf")],
-            "总市值": [float("nan")],
-            "流通市值": [float("-inf")],
-            "换手率": [None],
-        })
-        mock_ak = MagicMock()
-        mock_ak.stock_zh_a_spot_em.return_value = mock_df
-        adapter._ak = mock_ak
-
-        result = adapter.fetch_market_caps_batch(["SZ300001"])
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"data": {"diff": [
+            {"f12": "300001", "f14": "股票A", "f2": "nan", "f3": "inf",
+             "f20": None, "f21": "-inf", "f8": None},
+        ]}}
+        with patch("scanner.data_source.requests.get", return_value=mock_resp):
+            result = adapter.fetch_market_caps_batch(["SZ300001"])
         e = result["SZ300001"]
         assert e["current"] == 0.0 and e["percent"] == 0.0
         assert e["market_cap"] == 0.0 and e["circ_market_cap"] == 0.0
         assert e["turnover_rate"] == 0.0
         for v in e.values():
             assert math.isfinite(v)
+
+    def test_fetch_market_caps_batch_network_error(self):
+        """push2delay 请求异常 → 返回 {} 不抛（上层 FallbackAdapter 干净降级）。"""
+        import requests
+        adapter = AkshareAdapter()
+        with patch("scanner.data_source.requests.get", side_effect=requests.ConnectionError("x")):
+            result = adapter.fetch_market_caps_batch(["SZ300001"])
+        assert result == {}
 
     def test_fetch_market_index_nan_coerced(self):
         adapter = AkshareAdapter()
@@ -324,6 +330,52 @@ class TestFallbackAdapter:
 
         adapter = FallbackAdapter(primary, secondary)
         assert adapter.is_available() is False
+
+    def test_market_caps_empty_falls_back_to_secondary(self):
+        """回归（2026-08-19）：api.fetch_market_caps_batch 在内部 catch 异常后返回 {}
+        （不抛给 _call），原 FallbackAdapter 的"仅异常降级"对市值形同死代码。
+        雪球临时失败时 {} 静默传播 → 小而美规则整体失效。
+        primary 返回空 dict 应视为失败并降级到 secondary 补拉。"""
+        primary = MagicMock()
+        primary.is_available.return_value = True
+        primary.name = "xueqiu"
+        primary.fetch_market_caps_batch.return_value = {}   # 雪球失败返回空
+        secondary = MagicMock()
+        secondary.name = "akshare"
+        secondary.fetch_market_caps_batch.return_value = {"SZ300001": {"market_cap": 1e9}}
+
+        adapter = FallbackAdapter(primary, secondary)
+        adapter.is_available()
+        result = adapter.fetch_market_caps_batch(["SZ300001"])
+        assert result == {"SZ300001": {"market_cap": 1e9}}
+        secondary.fetch_market_caps_batch.assert_called_once_with(["SZ300001"])
+
+    def test_market_caps_exception_falls_back_to_secondary(self):
+        """雪球市值批量查询抛异常 → 降级到 secondary 补拉。"""
+        primary = MagicMock()
+        primary.is_available.return_value = True
+        primary.name = "xueqiu"
+        primary.fetch_market_caps_batch.side_effect = Exception("403")
+        secondary = MagicMock()
+        secondary.name = "akshare"
+        secondary.fetch_market_caps_batch.return_value = {"SZ300002": {"market_cap": 2e9}}
+
+        adapter = FallbackAdapter(primary, secondary)
+        adapter.is_available()
+        result = adapter.fetch_market_caps_batch(["SZ300002"])
+        assert result == {"SZ300002": {"market_cap": 2e9}}
+
+    def test_market_caps_empty_no_secondary_returns_empty(self):
+        """primary 返回空且无 secondary → 返回空 dict（不抛错，调用方干净降级）。"""
+        primary = MagicMock()
+        primary.is_available.return_value = True
+        primary.name = "xueqiu"
+        primary.fetch_market_caps_batch.return_value = {}
+
+        adapter = FallbackAdapter(primary, None)
+        adapter.is_available()
+        result = adapter.fetch_market_caps_batch(["SZ300001"])
+        assert result == {}
 
 
 class TestGetAdapter:
