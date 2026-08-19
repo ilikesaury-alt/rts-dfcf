@@ -878,6 +878,15 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     except Exception as e:
         print(f"  [!] 数据血缘日志落库失败: {e}")
 
+    # 核心方向低吸落库（2026-08-19）：在榜主类别外单独 category=core_dip（与 comeback
+    # 同族），供 display 独立低吸区读取 + nextday_attribution/prevday_perf 复盘验证。
+    # DB-only 推导、成本 ~0.1s（无需 TTL）；fail-open 不阻塞扫描。
+    try:
+        from scanner.core_themes import find_core_theme_dips, save_core_dips
+        save_core_dips(conn, find_core_theme_dips(conn, today), today)
+    except Exception as e:
+        print(f"  [!] 核心方向低吸落库失败: {e}")
+
     return ScanResult(
         new_faces=new_faces,
         momentum=momentum,

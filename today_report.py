@@ -42,6 +42,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 from scanner.config import (  # noqa: E402  (stdout reconfigure 在导入前，防编码异常)
     CAT_DISPLAY_PRIORITY,
+    CORE_DIP_CATEGORY,
     DB_PATH,
     FUND_OUTFLOW_NET_PCT,
     NEXTDAY_SPIKE_SWEET_LOW,
@@ -212,8 +213,9 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
         e["_marked"] = _is_nextday_marked(e, conn, accum=acc)
         e["_tier"] = _entry_tier(e, conn, accum=acc, marked=e["_marked"])
 
-    main = [e for e in recs if e["category"] != "comeback"]
+    main = [e for e in recs if e["category"] not in ("comeback", CORE_DIP_CATEGORY)]
     comeback = [e for e in recs if e["category"] == "comeback"]
+    core_dip = [e for e in recs if e["category"] == CORE_DIP_CATEGORY]
     main.sort(key=lambda x: (x["_tier"], CAT_DISPLAY_PRIORITY.get(x["category"], 99), -x["score"]))
 
     tier0 = [e for e in main if e["_tier"] == 0][:top_n] if top_n else [e for e in main if e["_tier"] == 0]
@@ -326,6 +328,9 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
                    "trend": e.get("trend", "")} for e in tier3],
         "tier3_reasons": tier3_reasons,
         "comeback_flow": cb_flow,
+        "core_dip": [{"symbol": e["symbol"], "name": e["name"],
+                        "category": e["category"], "score": e["score"]}
+                       for e in core_dip],
         "excluded": excluded,
         "quality": quality,
         "quality_time": quality_time,
@@ -364,7 +369,8 @@ def _render(report: dict) -> str:
     q_str = "无扫描质量日志" if not q else (
         f"gem={q['gem_count']} 拉取失败={q['fetch_failed']} 缺今日bar={q['today_bar_missing']} "
         f"分时兜底={q['minute_fallback']} 旧缓存评分={q['stale_recs']}")
-    out.append(f"  推荐 {report['total']} 只（主表 {report['main']} + 回马枪 {report['comeback']}）| "
+    out.append(f"  推荐 {report['total']} 只（主表 {report['main']} + 回马枪 {report['comeback']} + "
+               f"核心方向低吸 {len(report['core_dip'])}）| "
                f"档0🎯 {len(report['tier0'])} 只 / 档1强信号 {len(report['tier1'])} / "
                f"档3警示 {len(report['tier3'])} | 数据质量: {q_str}")
     if report.get("unfinalized"):
@@ -410,8 +416,16 @@ def _render(report: dict) -> str:
         out.append(f"  {len(report['tier3'])} 只，劣后原因: {reasons}")
         out.append("  全部均为板块普涨/超买/资金流出等避雷区，追高次日大概率兑现。")
 
-    # 五、回马枪资金质量
-    out.append(f"\n{ANSI['BOLD']}五、回马枪（掉榜跟踪·cum_3d 语义·参考）{ANSI['RESET']}")
+    # 五、核心方向低吸（2026-08-19 落库后归入复盘，主表之外独立类别）
+    out.append(f"\n{ANSI['BOLD']}五、核心方向低吸（主线核心股回调·次日验证类别）{ANSI['RESET']}")
+    if not report["core_dip"]:
+        out.append("  今日无核心方向低吸候选。")
+    else:
+        for c in report["core_dip"]:
+            out.append(f"  {c['name']} {c['symbol']} 评分{c['score']}")
+
+    # 六、回马枪资金质量
+    out.append(f"\n{ANSI['BOLD']}六、回马枪（掉榜跟踪·cum_3d 语义·参考）{ANSI['RESET']}")
     if not report["comeback_flow"]:
         out.append("  今日无回马枪。")
     else:
@@ -422,8 +436,8 @@ def _render(report: dict) -> str:
             out.append(f"  {c['name']} {c['symbol']} 评分{c['score']} [{c['variant']}] "
                        f"{flow_str} → {verdict}（信号: {c['signals'] or '—'}）")
 
-    # 六、结论
-    out.append(f"\n{ANSI['BOLD']}六、结论{ANSI['RESET']}")
+    # 七、结论
+    out.append(f"\n{ANSI['BOLD']}七、结论{ANSI['RESET']}")
     picks = [a for a in report["tier0"] if a["verdict"] >= _VERDICT_STRONG]
     watches = [a for a in report["tier0"] if a["verdict"] == _VERDICT_OK]
     if picks:

@@ -49,7 +49,8 @@ if sys.platform == "win32":
 
 
 # 当前有效策略类别（过滤已废弃的 old_face / early_momentum）
-ACTIVE_CATEGORIES = {"new_face", "known_new_face", "momentum", "pullback", "rebound", "short_term", "comeback"}
+ACTIVE_CATEGORIES = {"new_face", "known_new_face", "momentum", "pullback", "rebound",
+                     "short_term", "comeback", "core_dip"}
 
 
 @dataclass

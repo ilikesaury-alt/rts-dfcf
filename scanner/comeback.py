@@ -73,6 +73,10 @@ def collect_comeback_symbols(conn, today: str, on_list_symbols: set[str]) -> lis
         if w["symbol"] not in on_list_symbols:
             symbols[w["symbol"]] = w
     for r in recs:
+        # 2026-08-19：core_dip（核心方向低吸）是展示/复盘用途的独立类别，不入回马枪
+        # 回踩候选域，避免两个低吸区跨区互换污染（回马枪=榜上推荐回调，core_dip=主线核心股回调）。
+        if r.get("category") == "core_dip":
+            continue
         sym = r["symbol"]
         if sym in on_list_symbols:
             continue

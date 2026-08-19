@@ -45,13 +45,14 @@ from scanner.nextday_attribution import DEFAULT_THRESHOLD, _hit_stats  # noqa: E
 from today_report import _build_report  # noqa: E402
 
 # 档位组标签（与 today_report/_entry_tier 对应）
-GROUPS = ("tier0", "tier1", "tier2", "tier3", "comeback", "excluded")
+GROUPS = ("tier0", "tier1", "tier2", "tier3", "comeback", "core_dip", "excluded")
 GROUP_LABEL = {
     "tier0": "档0 🎯 次日大涨画像",
     "tier1": "档1 强信号",
     "tier2": "档2 普通",
     "tier3": "档3 警示劣后",
     "comeback": "回马枪",
+    "core_dip": "核心方向低吸",
     "excluded": "被移出",
 }
 HIT_THRESHOLD = DEFAULT_THRESHOLD   # 次日大涨阈值（与 nextday_attribution 主决策口径同源，防漂移）
@@ -134,6 +135,7 @@ def _build_history(conn, dates):
             "tier2": [e["symbol"] for e in rep["tier2"]],
             "tier3": [e["symbol"] for e in rep["tier3"]],
             "comeback": [c["symbol"] for c in rep["comeback_flow"]],
+            "core_dip": [c["symbol"] for c in rep["core_dip"]],
             "excluded": [e["symbol"] for e in rep["excluded"]],
         }
         for g, syms in groups.items():

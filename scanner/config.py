@@ -516,6 +516,30 @@ COMEBACK_REENTRY_DISPLAY_WATCH_MAX = 0      # "观察中"补充最多显示条�
 COMEBACK_DISPLAY_MAX = 10                   # 回马枪区最多显示条数
 COMEBACK_DISPLAY_MIN_MAIN = 3               # 主区推荐条数低于此值 → 补充显示回马枪区
 
+# 核心方向低吸（2026-08-19，`scanner/core_themes.py` + display 独立区）：
+# 大跌市中找「当前市场主线方向（核心概念）的核心股低吸」机会。纯展示层推导（DB-only，
+# 零新增网络请求，不写 recommendations、不进综合排序/回测口径），作为独立区块参考。
+# 方法论：① 近 N 日推荐按概念聚合「持续上榜天数 + 主题相对强度」识别核心方向；
+# ② 核心方向里近期已走强的成员股（龙头属性）；③ 从近期高点健康回调（非破位）的低吸窗口。
+CORE_THEME_LOOKBACK_DAYS = 10       # 识别核心方向回看交易日数
+CORE_THEME_MIN_DAYS = 3             # 概念持续上榜 ≥ 此天数才算“核心方向”（吃频次）
+CORE_THEME_TOP_N = 4                # 核心方向最多取前 N 个（防板块普涨刷屏）
+CORE_THEME_MAX_PER_THEME = 3        # 每核心方向最多显示核心股数
+CORE_THEME_MAX_TOTAL = 9            # 低吸区总显示条数上限
+CORE_RUN_MIN = 0.12                 # 20日累计涨幅 ≥ 此值 → 有上涨（核心/龙头属性）
+CORE_PULLBACK_MIN = -0.18           # 距20日高点回撤 ≥ 此值（更深）才可能够便宜
+CORE_PULLBACK_MAX = -0.03           # 回撤 ≤ 此值（不能过早，还在尖顶附近）
+CORE_NOT_OVERHEATED = 0.60          # 20日涨幅 > 此值 = 超买死亡区，排除低吸
+CORE_TODAY_FLOOR = -6.0             # 今日涨幅 ≥ 此值（不追崩盘票）
+CORE_MA20_BELOW_SLACK = 0.03        # 允许跌破 MA20 不超过此比例（未破位）
+CORE_FLOW_FLOOR = -10.0             # 主力净占比 ≥ 此值（资金未大幅出逃）
+CORE_THEME_NOISE = {"其他", ""}    # 聚合时排除的噪声概念
+# 落库类别（2026-08-19）：核心方向低吸候选写入 recommendations 表的 category，
+# 以便进 prevday_perf / nextday_attribution 复盘验证「主线回调低吸」假设（回马枪同款路径）。
+# 与 comeback 同族（掉榜/跟踪类）：不入综合排序主表、不参与 mark_reversed 反转移出、
+# 不进回马枪回踩候选域（避免跨区互换污染）。
+CORE_DIP_CATEGORY = "core_dip"
+
 # 辨识度标签 — 反复上榜
 PROMINENCE_LOOKBACK_DAYS = 5     # 回溯 N 个交易日
 PROMINENCE_REPEAT_THRESHOLD = 3  # 出现 ≥ N 天 → "↻"

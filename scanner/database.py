@@ -977,7 +977,7 @@ def mark_reversed_recommendations(conn: sqlite3.Connection,
         sym = r["symbol"]
         if sym in active_syms:
             continue
-        if r.get("category") == "comeback":
+        if r.get("category") in ("comeback", "core_dip"):
             continue
         rec_pct = r.get("percent")
         q = live_quotes.get(sym)
@@ -1007,9 +1007,10 @@ def mark_reversed_recommendations(conn: sqlite3.Connection,
         # 判定循环已跳过 comeback 行，但 UPDATE 原按 (date, symbol) 全量置 excluded，
         # 若同 symbol 当日既有榜上主类别行（触发反转移出）又有早先落库的 comeback 行，
         # 后者也会被连带移出（docstring 声明"回马枪不参与自动移出"）。
+        # 2026-08-19：core_dip 与 comeback 同族，同样不被反转移出连带。
         conn.executemany(
             "UPDATE recommendations SET excluded=1 WHERE date=? AND symbol=? "
-            "AND COALESCE(category, '') != 'comeback'",
+            "AND COALESCE(category, '') NOT IN ('comeback', 'core_dip')",
             [(today, sym) for sym in reversed_syms])
         conn.commit()
     except Exception as e:

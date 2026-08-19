@@ -9,6 +9,7 @@ from scanner.config import (
     CAT_DISPLAY_PRIORITY,
     COMEBACK_DISPLAY_MAX,
     COMEBACK_DISPLAY_MIN_MAIN,
+    CORE_DIP_CATEGORY,
     FUND_FLOW_MAIN_PCT_EXTREME,
     FUND_FLOW_MAIN_PCT_STRONG,
     FUND_FLOW_MAIN_PCT_WEAK,
@@ -24,6 +25,7 @@ from scanner.config import (
     TOP40_THRESHOLD,
     now_beijing,
 )
+from scanner.core_themes import _low_buy_quality as _core_dip_quality
 from scanner.database import get_fund_flow_pct_map, get_prominence_map, get_today_recommendations
 from scanner.models import Candidate
 from scanner.sector import classify_sector
@@ -748,7 +750,8 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     # 从主排序表抽出放到末尾独立区块；主表只排榜上五类（rebound/known_new_face/new_face/
     # momentum/short_term，不含 comeback/pullback）。
     comeback_recs = [e for e in today_recs if e["category"] == "comeback"]
-    main_recs = [e for e in today_recs if e["category"] != "comeback"]
+    core_dip_recs = [e for e in today_recs if e["category"] == CORE_DIP_CATEGORY]
+    main_recs = [e for e in today_recs if e["category"] not in ("comeback", CORE_DIP_CATEGORY)]
 
     # 2026-08-10: known_new_face 分数反指（回测分桶：低分档[18,37) cum_3d +5.58/64%胜率，
     # 高分档[77,98) -3.76/33%）——分区内 score 升序，把"低调二次上榜"的低分票排前，
@@ -797,4 +800,44 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
         print(hdr)
         for ci, entry in enumerate(cb_scored, 1):
             _print_priority_row(entry, ci, flow_pct_map, last_ranks=last_ranks)
+        print(f"  {'-'*92}")
+
+    # 核心方向低吸独立区（2026-08-19，`scanner/core_themes.py`）：大跌市中找「当前主线
+    # 方向核心股低吸」参考。2026-08-19 起随扫描落库 category=core_dip（同 comeback 族），
+    # 本区改从今日 recommendations 读取（与回马枪区同源），不再 display 内自行计算——
+    # 落库后同样进 nextday_attribution/prevday_perf 复盘验证「主线回调低吸」假设。
+    core_dips: list[dict] = []
+    for e in core_dip_recs:
+        sb = _entry_dims(e)
+        run = sb.get("run")
+        pullback = sb.get("pullback")
+        if run is None or pullback is None:
+            continue
+        core_dips.append({
+            "symbol": e["symbol"], "name": e["name"],
+            "concept": (e.get("concept") or sb.get("concept") or ""),
+            "run": float(run), "pullback": float(pullback),
+            "today_pct": sb.get("today_pct"),
+            "below_ma20_ratio": sb.get("below_ma20_ratio"),
+            "flow_pct": sb.get("flow_pct"),
+        })
+    core_dips.sort(key=_core_dip_quality)
+    if core_dips:
+        print(f"\n{ANSI['GREEN']}◆ 核心方向低吸 — 主线方向核心股回调参考（大跌市低吸观察，非追高）{ANSI['RESET']}")
+        dip_hdr = (f"  {_pad('#',3,'r')} {_pad('代码',10)} {_pad('名称',10)} "
+                   f"{_pad('主线概念',10)} {_pad('20日',7,'r')} {_pad('回撤',7,'r')} "
+                   f"{_pad('今涨幅',7,'r')} {_pad('主力',7,'r')}")
+        print(dip_hdr)
+        for di, c in enumerate(core_dips, 1):
+            today_s = (f"{c['today_pct'] * 100:+.1f}%"
+                       if c.get('today_pct') is not None else "  -- ")
+            flow_s = (f"{c['flow_pct']:+.1f}%" if c.get('flow_pct') is not None else "  -- ")
+            run_s = f"{c['run'] * 100:+.1f}%"
+            pb_s = f"{c['pullback'] * 100:+.1f}%"
+            print(f"  {_pad(str(di),3,'r')} {_pad(c['symbol'],10)} {_pad(c['name'],10)} "
+                  f"{_pad(c['concept'],10)} {_pad(run_s,7,'r')} "
+                  f"{_pad(pb_s,7,'r')} {_pad(today_s,7,'r')} "
+                  f"{_pad(flow_s,7,'r')}")
+        print("  排序=低吸质量（主力回流→回撤深→龙头强→今日企稳）；回撤=距20日高点，")
+        print("  负值越深越低吸位；20日=20日累计涨幅（龙头属性）。")
         print(f"  {'-'*92}")
