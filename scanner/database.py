@@ -27,6 +27,11 @@ def init_db() -> sqlite3.Connection:
     # 扫描器主线程独占写，但 stock_report/backtest 等独立进程可能同时读写。
     conn = sqlite3.connect(DB_PATH, timeout=10.0)
     conn.execute("PRAGMA busy_timeout=10000")
+    # WAL：写者不阻塞读者，实时扫描（每 60s 写）与回测/归因（读同一库）可并发，
+    # 消除 "database is locked" / 最长 10s 等待。模式持久化在库文件，其他直连
+    # scanner.db 的进程（backtest/prevday/nextday/ic_attribution 等）自动继承，
+    # 无需逐个改连接点（见 grep sqlite3.connect 的十余处散点连接）。
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS appearances (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,6 +117,9 @@ def init_db() -> sqlite3.Connection:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_date ON appearances(date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_sym ON appearances(symbol)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_date ON recommendations(date)")
+    # daily_kline 此前无 (symbol,date) 复合索引：回测/归因按 symbol+date 区间全量
+    # 回放走全表扫描，库一大即慢且占锁。与 appearances/recommendations 索引对齐。
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_kline_sym_date ON daily_kline(symbol, date)")
     # 扫描数据质量血缘日志（2026-08-14）：每轮扫描的数据质量快照。
     # 跨函数静默降级（K线补拉失败/缺今日bar/兜底构造）是本项目最难发现的 bug 类别——
     # 单函数审查看不出来（每个函数都"对"），只存在于函数之间的数据流不变量。
