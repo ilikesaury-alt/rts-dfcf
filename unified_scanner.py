@@ -153,7 +153,6 @@ def _finalize_today_klines(conn, adapter) -> None:
         return
     if now.time() < AFTERNOON_END:
         return  # 开盘前/午间不算收盘后，跳过
-    _finalize_date = today.isoformat()
     # 等数据源完成收盘结算（一般 15:00 即定稿，留 2 分钟余量防尾盘最后一笔延迟）
     target = datetime.combine(today, AFTERNOON_END, tzinfo=now.tzinfo) + timedelta(minutes=2)
     remaining = (target - now).total_seconds()
@@ -199,6 +198,9 @@ def _finalize_today_klines(conn, adapter) -> None:
             f.write(line + "\n")
     except Exception:
         pass
+    # 全部工作完成后才标记当日已定稿：此前置位若中途抛异常（如 DB 锁/`conn.execute`
+    # 未包 try），当日会被误标为已定稿而实际零写入，且进程不重启不再重试。
+    _finalize_date = today.isoformat()
     print(f"\r  [收盘定稿] 覆盖 {refreshed}/{len(symbols)} 只今日K线为最终收盘价"
           f"（修正 {corrected} 只）  ", flush=True)
 

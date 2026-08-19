@@ -17,6 +17,8 @@ import random
 import sqlite3
 from dataclasses import dataclass, field
 
+from scanner.utils import to_float
+
 # 抽验最少对数：不足时只能警告不能阻断（避免小样本误判）
 MIN_CHECKED = 5
 # 阻断阈值：抽验样本中不符比例 ≥ 30% 判定数据疑似污染
@@ -83,13 +85,19 @@ def check_kline_health(conn: sqlite3.Connection,
 
     report = HealthReport()
     for sym, d, db_close in sample:
+        # 历史脏行 close 可能为 NULL/字符串/0/NaN（契约重构前遗留）：无法与独立源
+        # 交叉验证，跳过该样本（与源不可达同语义），避免 abs() 对 None/str 抛
+        # TypeError 崩溃整检查（此工具的目的正是处理脏数据，不能遇脏即崩）。
+        db_close_f = to_float(db_close, None)
+        if db_close_f is None or db_close_f <= 0:
+            continue
         ref = _sina_close(sym, d)
         if ref is None:
             continue  # 源不可达/无该日数据 → 该样本不参与统计
         report.checked += 1
-        if abs(db_close - ref) > TOLERANCE:
+        if abs(db_close_f - ref) > TOLERANCE:
             report.mismatched += 1
-            report.samples.append((sym, d, db_close, ref))
+            report.samples.append((sym, d, db_close_f, ref))
     if report.checked == 0:
         report.source_ok = False  # 全部样本源不可达，无法验证
     return report

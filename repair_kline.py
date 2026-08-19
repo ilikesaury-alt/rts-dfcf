@@ -23,6 +23,7 @@ from collections import Counter
 
 from scanner.api import fetch_kline, make_session
 from scanner.config import DB_PATH
+from scanner.utils import to_float
 
 EPS = 0.011  # 1 分钱以上视为差异
 
@@ -69,7 +70,11 @@ def main() -> None:
                 if d not in db_rows:
                     continue  # 只修已有行，不新增
                 db_close, db_vol = db_rows[d]
-                if abs(db_close - bar["close"]) <= EPS:
+                # 历史脏行 close 可能为 NULL/字符串/0/NaN（契约重构前遗留）：清洗后
+                # 无效值视为「必须修复」（由权威值覆盖），避免 abs() 对 None/str 抛
+                # TypeError 中止整批修复（此前会连 conn.commit() 都到不了、零写入）。
+                db_close_f = to_float(db_close, None)
+                if db_close_f is not None and abs(db_close_f - bar["close"]) <= EPS:
                     continue
                 total_fixed += 1
                 fixed_rows.append((sym, d, db_close, bar["close"]))

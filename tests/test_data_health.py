@@ -7,7 +7,7 @@
   - save_kline_to_db 的 finalized 标记（盘中今日=0，收盘后/历史=1）
 """
 import sqlite3
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -74,6 +74,18 @@ class TestCheckKlineHealth:
         monkeypatch.setattr(dh, "_sina_close", lambda sym, d: None)  # 源不可达
         r = dh.check_kline_health(conn, dates=["2026-08-18"])
         assert r.checked == 0 and not r.source_ok and not r.blocked
+
+    def test_dirty_close_row_skipped_no_crash(self, conn, monkeypatch):
+        """2026-08-19 修复回归：历史脏行 close 为字符串/NULL 时（契约重构前遗留）
+        跳过该样本（无法与独立源交叉验证），abs() 不再对 None/str 抛 TypeError
+        崩溃整检查——此工具的目的正是处理脏数据，不能遇脏即崩。"""
+        _seed(conn, [("SZ300001", "2026-08-18", "abc", 0.0, 1),  # 非数值字符串脏行
+                     ("SZ300002", "2026-08-18", None, 0.0, 1),   # NULL 脏行
+                     ("SZ300003", "2026-08-18", 37.90, 0.0, 1)])  # 干净行
+        monkeypatch.setattr(dh, "_sina_close", lambda sym, d: 37.90)
+        r = dh.check_kline_health(conn, dates=["2026-08-18"], sample_n=10)
+        assert r.checked == 1 and r.mismatched == 0  # 仅干净行参与统计
+        assert r.source_ok and not r.blocked
 
     def test_empty_db(self, conn, monkeypatch):
         r = dh.check_kline_health(conn, dates=["2026-08-18"])

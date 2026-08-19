@@ -566,7 +566,8 @@ def _entry_tier(entry: dict, conn=None, accum: float | None = None,
     档2 = 普通：无警示（参考）
     档3 = 警示劣后：累计≥50% 过热 / 超买（hit 6.8%）/ 小板块共振 cnt<15（hit 5.6%）/
           2-4% 死区（hit 7.0%）/ momentum、new_face 的 8-10% 陷阱（hit 0%）/ 资金流出≤-8%。
-          short_term（规律在弱转强）与 comeback（6 维回踩信号，不看涨幅带）豁免涨幅带。
+          short_term 豁免涨幅带（规律在弱转强）；comeback 统一档2——除累计≥50%
+          过热外不看任何警示因子（超买/资金流/板块共振/涨幅带，2026-08-18 设计）。
 
     2026-08-18 口径统一：全部档位判定因子均校准于 next_day（次日大涨≥7% hit 口径，
     scanner.nextday_attribution 1184 去重样本）。comeback 由档1 移除——其 6 维回踩买点
