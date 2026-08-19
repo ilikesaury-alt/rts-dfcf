@@ -331,6 +331,50 @@ def _low_buy_quality(c: dict) -> tuple:
     return (-flow_tier, c["pullback"], -c["run"], -today)
 
 
+def core_stock_symbols(conn: sqlite3.Connection | None,
+                       today: str | None = None) -> set[str]:
+    """当前「核心股」集合（2026-08-19）：属于核心方向（主线概念）且已走强（龙头属性）。
+
+    判定 = identify_core_themes 识别核心主题 → _theme_members 取主题成员
+    → 成员 20 日累计涨幅 ≥ CORE_RUN_MIN（走强/龙头属性）。
+
+    **与核心低吸区（core_dip）的关系**：core_dip 候选必须满足「核心主题成员 + run ≥
+    CORE_RUN_MIN + 低吸回撤窗口（-18%~-3% 等）」，因此 {core_dip 符号} ⊆ 本集合——
+    本集合是其严格超集。综合排序/回马枪高亮用本集合而非 core_dip 列表：低吸区只含
+    「回调中的核心股」，会漏掉创新高走强中的主线龙头（如 2026-08-19 江天化学，
+    央国企改革主题成员、20 日累计 +22.3%，但距 20 日高点回撤 0% 落不进低吸窗口）。
+
+    全程 fail-open：任何异常返回空集，不阻塞 display 主流程。
+    """
+    if conn is None:
+        return set()
+    today = today or now_beijing().date().isoformat()
+    try:
+        themes = identify_core_themes(conn, today)
+        if not themes:
+            return set()
+        members = _theme_members(conn, [t["name"] for t in themes])
+        all_syms = list(dict.fromkeys(
+            s for syms in members.values() for s in syms))
+        if not all_syms:
+            return set()
+        klines = get_cached_klines(conn, all_syms)
+        out: set[str] = set()
+        for sym in all_syms:
+            k = klines.get(sym)
+            if not k:
+                continue
+            m = _dip_metrics([b["close"] for b in k],
+                             [b["date"] for b in k], today)
+            if m is None or m["run"] < CORE_RUN_MIN:
+                continue
+            out.add(sym)
+        return out
+    except Exception as e:
+        logger.warning(f"core_stock_symbols failed: {e}")
+        return set()
+
+
 def find_core_theme_dips(conn: sqlite3.Connection | None,
                          today: str | None = None) -> list[dict]:
     """核心方向低吸主入口：识别核心方向 → 找核心股 → 筛低吸窗口。

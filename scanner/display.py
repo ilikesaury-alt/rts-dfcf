@@ -26,6 +26,7 @@ from scanner.config import (
     now_beijing,
 )
 from scanner.core_themes import _low_buy_quality as _core_dip_quality
+from scanner.core_themes import core_stock_symbols
 from scanner.database import get_fund_flow_pct_map, get_prominence_map, get_today_recommendations
 from scanner.models import Candidate
 from scanner.sector import classify_sector
@@ -51,10 +52,12 @@ else:
 if _supports_ansi:
     ANSI = {
         "RED": "\033[91m", "YELLOW": "\033[93m", "GREEN": "\033[92m",
-        "CYAN": "\033[96m", "BOLD": "\033[1m", "RESET": "\033[0m",
+        "CYAN": "\033[96m", "MAGENTA": "\033[95m", "BOLD": "\033[1m",
+        "RESET": "\033[0m",
     }
 else:
-    ANSI = {"RED": "", "YELLOW": "", "GREEN": "", "CYAN": "", "BOLD": "", "RESET": ""}
+    ANSI = {"RED": "", "YELLOW": "", "GREEN": "", "CYAN": "",
+            "MAGENTA": "", "BOLD": "", "RESET": ""}
 
 # 类别展示标签/颜色：综合排序与回马枪独立区共用（提出模块级供 _print_priority_row 复用）。
 CAT_LABEL = {
@@ -385,7 +388,13 @@ def _print_priority_row(entry: dict, i: int, flow_pct_map: dict,
     # 板块普涨避雷行尾标记已下线（2026-08-17 用户反馈「太扎眼」）：小板块共振避雷
     # 结论保留于回测（cnt<15 票 hit 5.9-6.7%/cum_3d -2.2~-2.6 最差），但黄色长文本
     # 移除，避免干扰 🎯 档0 等主信号。
-    print(f"  {i:3d}  {entry['symbol']:<12} {_pad(entry['name'],10)} "
+    # 核心股高亮（2026-08-19）：该票今日在核心方向低吸区（category=core_dip）→ 判定
+    # 为核心股，名称加粗品红高亮（判定在 display_priority 预计算 _core_stock，主表与
+    # 回马枪区共用本函数同规则）。纯展示层不改评分不落库。
+    name_str = entry["name"]
+    if entry.get("_core_stock"):
+        name_str = f"{ANSI['BOLD']}{ANSI['MAGENTA']}{name_str}{ANSI['RESET']}"
+    print(f"  {i:3d}  {entry['symbol']:<12} {_pad(name_str,10)} "
           f"{pct_colored(pct)} {accum_str:>8} {price_str:>7} {_pad(rank_str, 8, 'r')} "
           f"{_pad(_trunc(sector,14),14)} {_pad(label_display,5,'r')} {entry['score']:4d} "
           f"{_pad(first_time,6)} {_pad(suggest_str,6)}{prom_str}{risk_str}{extra_suffix}{nd_mark_str}")
@@ -752,6 +761,16 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     comeback_recs = [e for e in today_recs if e["category"] == "comeback"]
     core_dip_recs = [e for e in today_recs if e["category"] == CORE_DIP_CATEGORY]
     main_recs = [e for e in today_recs if e["category"] not in ("comeback", CORE_DIP_CATEGORY)]
+
+    # 核心股高亮（2026-08-19）：综合排序/回马枪列表里属于当前主线方向核心股的票，
+    # 名称加粗高亮。**判定 = core_stock_symbols（核心主题成员 + 20日累计≥CORE_RUN_MIN
+    # 走强龙头），不用 core_dip 列表**——低吸区只含「回调中的核心股」，会漏掉创新高走强
+    # 中的主线龙头（2026-08-19 江天化学案例：央国企改革成员、20日+22.3%，回撤0%落不进
+    # 低吸窗口）；core_dip 候选必然同时满足「主题成员+走强」，故本集合是低吸区的严格超集，
+    # 低吸区里的票全部仍会高亮。单次 DB-only 推导 ~0.1s，纯展示层不改评分不落库。
+    core_syms = core_stock_symbols(conn)
+    for e in today_recs:
+        e["_core_stock"] = e["symbol"] in core_syms
 
     # 2026-08-10: known_new_face 分数反指（回测分桶：低分档[18,37) cum_3d +5.58/64%胜率，
     # 高分档[77,98) -3.76/33%）——分区内 score 升序，把"低调二次上榜"的低分票排前，

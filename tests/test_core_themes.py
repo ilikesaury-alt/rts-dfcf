@@ -6,6 +6,7 @@ import pytest
 from scanner.core_themes import (
     _dip_metrics,
     _recent_10d_return,
+    core_stock_symbols,
     find_core_theme_dips,
     identify_core_themes,
 )
@@ -184,6 +185,66 @@ class TestFindCoreThemeDips:
         dips = find_core_theme_dips(db, '2026-08-19')
         got = {c['symbol'] for c in dips}
         assert 'SZ300002' in got
+
+
+class TestCoreStockSymbols:
+    """核心股判定（2026-08-19）：核心主题成员 + 20日累计≥CORE_RUN_MIN（走强龙头）。
+
+    **与核心低吸区（core_dip）的边界**：core_dip 候选必须满足「主题成员 + 走强 + 低吸
+    回撤窗口」；高亮用本集合不含低吸窗口——低吸区只捕获「回调中的核心股」，会漏掉创新高
+    走强中的主线龙头（2026-08-19 江天化学：央国企改革成员、20日+22.3%，回撤0%落不进
+    低吸窗口，但它是核心股应高亮）。{core_dip} ⊆ 本集合（低吸区候选必然同时满足两条）。
+    """
+
+    @staticmethod
+    def _seed_theme(db, monkeypatch, member_syms):
+        """造一个核心主题（华为概念，3 个推荐日）+ concept_cache 成员。"""
+        monkeypatch.setattr(
+            'scanner.core_themes._n_trading_days_ago', lambda *a, **k: '2026-08-01')
+        for d in ('2026-08-12', '2026-08-14', '2026-08-18'):
+            _insert_rec(db, 'SZ300099', '主题日', '华为概念', d)
+        for sym, concepts in member_syms:
+            db.execute("INSERT INTO concept_cache (symbol, concepts, updated) "
+                       "VALUES (?, ?, '2026-08-19')", (sym, concepts))
+        db.commit()
+
+    def test_none_conn_returns_empty(self):
+        assert core_stock_symbols(None, '2026-08-19') == set()
+
+    def test_running_leader_at_high_included(self, db, monkeypatch):
+        """江天化学式：核心主题成员、20日+25%（走强）但创新高（回撤0）——不在低吸窗口，
+        但按用户口径只要「核心股」就高亮，应被本集合捕获。"""
+        self._seed_theme(db, monkeypatch, [('SZ300001', '["华为概念"]')])
+        dates, closes = _mk_series(10.0, 0.25, 0.0)   # 走强 + 创新高（无回撤）
+        _write_klines(db, 'SZ300001', dates, closes)
+        got = core_stock_symbols(db, '2026-08-19')
+        assert 'SZ300001' in got
+
+    def test_weak_member_excluded(self, db, monkeypatch):
+        """核心主题成员但 20 日累计 < CORE_RUN_MIN（未走强）→ 非核心股不高亮。"""
+        self._seed_theme(db, monkeypatch, [('SZ300001', '["华为概念"]')])
+        dates, closes = _mk_series(10.0, 0.05, 0.0)   # 20日仅 +5% < 12%
+        _write_klines(db, 'SZ300001', dates, closes)
+        got = core_stock_symbols(db, '2026-08-19')
+        assert 'SZ300001' not in got
+
+    def test_non_member_excluded(self, db, monkeypatch):
+        """非核心主题成员（concept_cache 无核心概念）→ 非核心股。"""
+        self._seed_theme(db, monkeypatch, [('SZ300001', '["冷门概念"]')])
+        dates, closes = _mk_series(10.0, 0.30, 0.0)
+        _write_klines(db, 'SZ300001', dates, closes)
+        got = core_stock_symbols(db, '2026-08-19')
+        assert 'SZ300001' not in got
+
+    def test_dip_candidate_is_core_stock_subset(self, db, monkeypatch):
+        """一致性：回调中的走强核心股既进 core_dip（低吸候选）也进 core_stock_symbols——
+        「低吸区里的票都是核心股」原语义保留。"""
+        self._seed_theme(db, monkeypatch, [('SZ300001', '["华为概念"]')])
+        dates, closes = _mk_series(10.0, 0.20, -0.05)  # 涨20%回撤5% = 低吸候选
+        _write_klines(db, 'SZ300001', dates, closes)
+        dips = {c['symbol'] for c in find_core_theme_dips(db, '2026-08-19')}
+        assert 'SZ300001' in dips
+        assert 'SZ300001' in core_stock_symbols(db, '2026-08-19')
 
 
 class TestLowBuyQualitySort:

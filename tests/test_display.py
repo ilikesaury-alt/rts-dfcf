@@ -3,7 +3,7 @@ import sqlite3
 from datetime import timedelta
 
 import scanner.display as disp_mod
-from scanner.config import now_beijing
+from scanner.config import CORE_DIP_CATEGORY, now_beijing
 from scanner.models import Candidate, KlineSummary, StockInfo
 
 
@@ -346,7 +346,8 @@ def _force_ansi(monkeypatch):
     monkeypatch.setattr(disp_mod, "_supports_ansi", True)
     monkeypatch.setattr(disp_mod, "ANSI", {
         "RED": "\033[91m", "YELLOW": "\033[93m", "GREEN": "\033[92m",
-        "CYAN": "\033[96m", "BOLD": "\033[1m", "RESET": "\033[0m",
+        "CYAN": "\033[96m", "MAGENTA": "\033[95m", "BOLD": "\033[1m",
+        "RESET": "\033[0m",
     })
 
 
@@ -380,6 +381,56 @@ def test_display_priority_rank_top40_highlight_with_delta(monkeypatch, capsys):
     out = capsys.readouterr().out
     line = next(row for row in out.splitlines() if "SZ300001" in row)
     assert disp_mod.ANSI["BOLD"] in line and "+3" in line
+
+
+# ── 核心股名称高亮（2026-08-19）：判定 = core_themes.core_stock_symbols ──
+# 核心主题成员 + 20日累计≥CORE_RUN_MIN（走强龙头）。core_dip 候选必然满足这两条，
+# {core_dip} ⊆ 核心股集——高亮比低吸区更宽：可覆盖「创新高走强中的主线龙头」（江天化学
+# 08-19 案例：央国企改革成员、20日+22.3%，回撤0%落不进低吸窗口）。
+def test_display_priority_core_stock_name_highlight(monkeypatch, capsys):
+    """综合排序/回马枪列表里属于核心股（core_stock_symbols 判定）的票名称加粗品红高亮；
+    非核心股不亮。两区共用 _print_priority_row 同规则。
+
+    回马核心同时有 comeback 与 core_dip 记录时，靠 get_today_recommendations 的去重桶修复
+    （2026-08-19）保住 comeback 行，再按 core_stock_symbols 符号集高亮。
+    """
+    _force_ansi(monkeypatch)
+    # 模拟 core_stock_symbols：SZ300001（主表）与 SZ300003（回马枪）今日为核心股
+    monkeypatch.setattr(disp_mod, "core_stock_symbols",
+                        lambda conn, today=None: {"SZ300001", "SZ300003"})
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "核心动量", "momentum", 70)
+    _insert_rec_cat(conn, "SZ300002", "普通动量", "momentum", 65)
+    _insert_rec_cat(conn, "SZ300003", "回马核心", "comeback", 80)
+    _insert_rec_cat(conn, "SZ300004", "回马普通", "comeback", 70)
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    # 主表行先于回马枪区渲染，next() 取到的是主表/回马枪区行
+    lines = {sym: next(row for row in out.splitlines() if sym in row)
+             for sym in ["SZ300001", "SZ300002", "SZ300003", "SZ300004"]}
+    # 主表：核心动量名称高亮，普通动量不亮
+    assert disp_mod.ANSI["MAGENTA"] in lines["SZ300001"]
+    assert disp_mod.ANSI["BOLD"] in lines["SZ300001"]
+    assert disp_mod.ANSI["MAGENTA"] not in lines["SZ300002"]
+    # 回马枪区：回马核心高亮，回马普通不亮
+    assert "◆ 回马枪" in out
+    assert disp_mod.ANSI["MAGENTA"] in lines["SZ300003"]
+    assert disp_mod.ANSI["MAGENTA"] not in lines["SZ300004"]
+
+
+def test_display_priority_no_core_stock_no_highlight(monkeypatch, capsys):
+    """今日无核心股（core_stock_symbols 空集）时，主表/回马枪均无高亮（空集判定不误伤）。"""
+    _force_ansi(monkeypatch)
+    monkeypatch.setattr(disp_mod, "core_stock_symbols",
+                        lambda conn, today=None: set())
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "动量票", "momentum", 70)
+    _insert_rec_cat(conn, "SZ300002", "回马票", "comeback", 70)
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    lines = [row for row in out.splitlines() if "SZ30000" in row]
+    for line in lines:
+        assert disp_mod.ANSI["MAGENTA"] not in line, f"无核心股不应有高亮: {line}"
 
 
 # ── 综合排序分组顺序（2026-08-07 复核：rebound > short_term > momentum > known_new_face > new_face > pullback）──
