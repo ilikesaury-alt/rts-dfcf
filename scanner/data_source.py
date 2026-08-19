@@ -374,32 +374,46 @@ class FallbackAdapter:
             return getattr(self._secondary, method)(*args, **kwargs)
         raise RuntimeError("无可用数据源")
 
+    def _call_with_none_fallback(self, method: str, *args,
+                                 treat_empty_as_failure: bool = False, **kwargs):
+        """primary 返回 None/空时降级到 secondary（覆盖 api 吞异常返 None 的接口）。
+
+        仅用于 fetch_kline / fetch_market_caps_batch / fetch_market_index —— 这三个
+        api 内部吞异常返 None/{}，不会抛给通用 _call，原"仅异常降级"策略对它们形同死代码。
+        其余接口仍走 _call（仅异常降级，None/空列表是合法结果）。
+
+        treat_empty_as_failure:
+          - False（kline/index）：仅 result is None 才降级 secondary；空 list 视为合法结果。
+          - True（caps）：result 为空（空 dict/list）也降级 secondary。
+        """
+        _is_empty = (lambda r: r is None) if not treat_empty_as_failure else (lambda r: not r)
+        if self._use_primary:
+            try:
+                result = getattr(self._primary, method)(*args, **kwargs)
+                if not _is_empty(result):
+                    return result
+                if self._secondary:
+                    logger.warning("%s.%s 返回空，降级到 %s",
+                                   self._primary.name, method, self._secondary.name)
+                    return getattr(self._secondary, method)(*args, **kwargs)
+                return result
+            except Exception as e:
+                if self._secondary:
+                    logger.warning("%s.%s 异常: %s，降级到 %s",
+                                   self._primary.name, method, e, self._secondary.name)
+                    return getattr(self._secondary, method)(*args, **kwargs)
+                raise
+        elif self._secondary:
+            return getattr(self._secondary, method)(*args, **kwargs)
+        raise RuntimeError("无可用数据源")
+
     def fetch_kline(self, symbol: str, days: int = 15) -> list[KlineBar] | None:
         """雪球 K 线失败时降级到 AKShare 补拉。
 
-        api.fetch_kline 内部吞异常返回 None（网络失败/无数据），不会抛给
-        _call，导致原 FallbackAdapter 的"仅异常降级"策略对 K 线形同死代码。
-        这里显式处理：primary 返回 None 时视为失败，尝试 secondary 兜底。
+        api.fetch_kline 内部吞异常返回 None（网络失败/无数据），不会抛给 _call，
+        故走 _call_with_none_fallback（仅 None 触发 secondary 兜底）。
         """
-        if self._use_primary:
-            try:
-                result = self._primary.fetch_kline(symbol, days)
-                if result is not None:
-                    return result
-                if self._secondary:
-                    logger.warning("%s.fetch_kline 返回空，降级到 %s 补拉 %s",
-                                   self._primary.name, self._secondary.name, symbol)
-                    return self._secondary.fetch_kline(symbol, days)
-                return None
-            except Exception as e:
-                if self._secondary:
-                    logger.warning("%s.fetch_kline 异常: %s，降级到 %s",
-                                   self._primary.name, e, self._secondary.name)
-                    return self._secondary.fetch_kline(symbol, days)
-                raise
-        elif self._secondary:
-            return self._secondary.fetch_kline(symbol, days)
-        raise RuntimeError("无可用数据源")
+        return self._call_with_none_fallback("fetch_kline", symbol, days)
 
     def fetch_biaosheng(self, size: int = 100) -> list[dict]:
         return self._call("fetch_biaosheng", size)
@@ -410,57 +424,19 @@ class FallbackAdapter:
     def fetch_market_caps_batch(self, symbols: list[str]) -> dict[str, dict]:
         """雪球市值批量查询失败时降级到 AKShare 补拉。
 
-        api.fetch_market_caps_batch 在内部 catch 所有异常/空结果后返回 {}（不抛给
-        _call），导致原 FallbackAdapter 的"仅异常降级"策略对市值形同死代码——
-        雪球临时失败（cookie 过期/403/429/网络残留）时告警"市值数据获取失败，小
-        而美规则暂不生效"且 {} 静默传播，小而美过滤整体失效。这里显式处理：
-        primary 返回空 dict 视为失败，尝试 secondary 兜底（与 fetch_kline 同款）。
+        api.fetch_market_caps_batch 内部 catch 异常/空结果返回 {}（不抛给 _call），
+        空 dict 视为失败，故走 _call_with_none_fallback(treat_empty_as_failure=True)。
         """
-        if self._use_primary:
-            try:
-                result = self._primary.fetch_market_caps_batch(symbols)
-                if result:
-                    return result
-                if self._secondary:
-                    logger.warning("%s.fetch_market_caps_batch 返回空，降级到 %s 补拉市值",
-                                   self._primary.name, self._secondary.name)
-                    return self._secondary.fetch_market_caps_batch(symbols)
-                return result
-            except Exception as e:
-                if self._secondary:
-                    logger.warning("%s.fetch_market_caps_batch 异常: %s，降级到 %s",
-                                   self._primary.name, e, self._secondary.name)
-                    return self._secondary.fetch_market_caps_batch(symbols)
-                raise
-        elif self._secondary:
-            return self._secondary.fetch_market_caps_batch(symbols)
-        raise RuntimeError("无可用数据源")
+        return self._call_with_none_fallback(
+            "fetch_market_caps_batch", symbols, treat_empty_as_failure=True)
 
     def fetch_market_index(self) -> float | None:
         """雪球大盘指数失败（返回 None）时降级到 AKShare spot。
 
-        api.fetch_market_index 内部吞异常返回 None，不会抛给 _call —— 原"仅异常降级"
-        策略对指数形同死代码（与 fetch_kline/fetch_market_caps_batch 同族修复）。
+        api.fetch_market_index 内部吞异常返回 None，不会抛给 _call，
+        故走 _call_with_none_fallback（仅 None 触发 secondary 兜底）。
         """
-        if self._use_primary:
-            try:
-                result = self._primary.fetch_market_index()
-                if result is not None:
-                    return result
-                if self._secondary:
-                    logger.warning("%s.fetch_market_index 返回空，降级到 %s",
-                                   self._primary.name, self._secondary.name)
-                    return self._secondary.fetch_market_index()
-                return None
-            except Exception as e:
-                if self._secondary:
-                    logger.warning("%s.fetch_market_index 异常: %s，降级到 %s",
-                                   self._primary.name, e, self._secondary.name)
-                    return self._secondary.fetch_market_index()
-                raise
-        elif self._secondary:
-            return self._secondary.fetch_market_index()
-        raise RuntimeError("无可用数据源")
+        return self._call_with_none_fallback("fetch_market_index")
 
     def get_market_index_meta(self) -> tuple[float | None, str | None, str]:
         """委托实际生效的数据源返回指数血缘元数据。"""
