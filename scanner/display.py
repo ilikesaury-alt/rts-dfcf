@@ -822,8 +822,13 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
             "flow_pct": sb.get("flow_pct"),
         })
     core_dips.sort(key=_core_dip_quality)
-    if core_dips:
-        print(f"\n{ANSI['GREEN']}◆ 核心方向低吸 — 主线方向核心股回调参考（大跌市低吸观察，非追高）{ANSI['RESET']}")
+    # 2026-08-19: 核心方向低吸区显示逻辑与回马枪同规则——主区（榜上五类）推荐条数 ≥
+    # COMEBACK_DISPLAY_MIN_MAIN 时不渲染（避免与主区重复刷屏）；主区推荐条数 < 阈值
+    # （含为空）时补充展示，最多前 COMEBACK_DISPLAY_MAX 条。core_dip 为空同样跳过。
+    if core_dips and len(main_recs) < COMEBACK_DISPLAY_MIN_MAIN:
+        if len(core_dips) > COMEBACK_DISPLAY_MAX:
+            core_dips = core_dips[:COMEBACK_DISPLAY_MAX]
+        print(f"\n{ANSI['GREEN']}◆ 核心方向低吸 — 主线方向核心股回调参考（主区推荐较少·补充参考）{ANSI['RESET']}")
         dip_hdr = (f"  {_pad('#',3,'r')} {_pad('代码',10)} {_pad('名称',10)} "
                    f"{_pad('主线概念',10)} {_pad('20日',7,'r')} {_pad('回撤',7,'r')} "
                    f"{_pad('今涨幅',7,'r')} {_pad('主力',7,'r')}")

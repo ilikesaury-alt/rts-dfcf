@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
+import requests
 
 from scanner.api import (
     _biaosheng_circuit_breaker,
@@ -560,10 +561,15 @@ class TestSessionExpirySelfHeal:
 
     class _FakeResp:
         def __init__(self, status_code, content_type="application/json",
-                     url="https://stock.xueqiu.com/v5/stock/chart/kline.json"):
+                     url="https://stock.xueqiu.com/v5/stock/chart/kline.json",
+                     body=None):
             self.status_code = status_code
             self.headers = {"Content-Type": content_type}
             self.url = url
+            self._body = body if body is not None else {}
+
+        def json(self):
+            return self._body
 
         def raise_for_status(self):
             if self.status_code >= 400:
@@ -626,3 +632,44 @@ class TestSessionExpirySelfHeal:
             _request_with_retry(sess, "https://stock.xueqiu.com/v5/x", max_retries=3)
         # 只重建过一次（重建握手 + 3 次 API 请求 = 4 次 get）
         assert sess.calls.count("https://xueqiu.com/hq") == 1
+
+    def test_400_400016_triggers_rebuild(self):
+        """2026-08-19 回归：cookie 过期后雪球返回 HTTP 400 + error_code=400016
+        （而非 401/403）。此前漏检导致自愈不触发 → 市值批量查询全批失败。
+        400016 签名应触发重建并重试成功。"""
+        from scanner.api import _request_with_retry
+        expired = self._FakeResp(400, body={
+            "error_description": "遇到错误，请刷新页面或者重新登录帐号后再试",
+            "error_uri": "/v5/stock/batch/quote.json",
+            "error_code": "400016",
+        })
+        sess = self._FakeSession([expired, self._FakeResp(200)])
+        resp = _request_with_retry(sess, "https://stock.xueqiu.com/v5/stock/batch/quote.json?symbol=x",
+                                   max_retries=2)
+        assert resp.status_code == 200
+        assert sess.cookies.cleared
+        assert any("xueqiu.com/hq" in u for u in sess.calls)
+
+    def test_400_other_error_no_rebuild(self):
+        """普通 400 业务错误（非 400016）不应触发 cookie 重建——防止误判
+        参数错误为会话失效而清 cookie 打断正常请求。"""
+        from scanner.api import _request_with_retry
+        bad_request = self._FakeResp(400, body={"error_code": "405000",
+                                                "error_description": "参数错误"})
+        sess = self._FakeSession([bad_request, self._FakeResp(200)])
+        with pytest.raises(Exception):
+            _request_with_retry(sess, "https://stock.xueqiu.com/v5/x", max_retries=2)
+        assert not sess.cookies.cleared
+
+    def test_400_non_json_no_rebuild(self):
+        """400 但响应不是 JSON（网关错误页）不触发重建。"""
+        from scanner.api import _request_with_retry
+        resp = requests.Response()
+        resp.status_code = 400
+        resp.headers = {"Content-Type": "text/plain"}
+        resp._content = b"Bad Gateway"
+        resp.url = "https://stock.xueqiu.com/v5/x"
+        sess = self._FakeSession([resp, self._FakeResp(200)])
+        with pytest.raises(Exception):
+            _request_with_retry(sess, "https://stock.xueqiu.com/v5/x", max_retries=1)
+        assert not sess.cookies.cleared

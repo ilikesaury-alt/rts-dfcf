@@ -39,9 +39,28 @@ _session_refresh_lock = threading.Lock()
 
 
 def _is_session_expired(resp: requests.Response) -> bool:
-    """session 失效信号：401/403、被重定向到 passport 登录、200 却返回 HTML 登录页。"""
+    """session 失效信号：401/403、400(token 过期)、被重定向到 passport 登录、
+    200 却返回 HTML 登录页。
+
+    2026-08-19 实测补 400/400016：cookie 失效/被清空后，雪球所有 v5 接口
+    （batch/quote、kline、biaosheng、minute）统一返回
+    HTTP 400 + {"error_code":"400016","error_description":"遇到错误，请刷新页面或者重新登录帐号后再试"}，
+    而不是 401/403。此前只识别 401/403 → 自愈不触发 → 全批 400 重试失败 →
+    市值批量查询返回空（"市值数据获取失败，小而美规则暂不生效"），K 线/榜单
+    同链路静默失败。
+    """
     if resp.status_code in (401, 403):
         return True
+    if resp.status_code == 400:
+        # token 过期信号（400016）—— 只对真正的失效签名触发重建，普通 400
+        # 业务错误（参数错等）不误伤。
+        try:
+            body = resp.json()
+        except (ValueError, AttributeError):
+            return False
+        if isinstance(body, dict) and str(body.get("error_code")) == "400016":
+            return True
+        return False
     resp_url = getattr(resp, "url", "") or ""
     if "passport" in resp_url:
         return True
