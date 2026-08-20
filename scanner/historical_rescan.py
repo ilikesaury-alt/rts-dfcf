@@ -62,27 +62,11 @@ from scanner.orchestrator import (
 )
 from scanner.portfolio_backtest import Signal, _assign_rank_scores, _dedup_signals
 from scanner.sector import get_sector_clusters
-from scanner.trading_session import is_trading_day
-
-# 可忠实重扫的类别（comeback 为 off-list 变体，无法从 appearances 重建，保持冻结分）
-RESCANABLE_CATEGORIES = ("new_face", "known_new_face", "momentum", "short_term", "rebound")
+from scanner.trading_session import _nth_trading_day_after
 
 # K 线最少根数：低于此值所有 analyze_* 直接返回 None，提前跳过省掉切片开销
 _MIN_KLINE_BARS = 5
 
-
-def _nth_trading_day_after(d: date, n: int) -> date | None:
-    """返回 d 之后第 n 个交易日（不含 d）。与 portfolio_backtest 同口径。"""
-    cursor = d
-    max_iter = max(n * 10, 365)
-    for _ in range(n):
-        cursor += timedelta(days=1)
-        while not is_trading_day(cursor):
-            cursor += timedelta(days=1)
-            max_iter -= 1
-            if max_iter <= 0:
-                return None
-    return cursor
 
 
 def _post_close(d: str) -> datetime:

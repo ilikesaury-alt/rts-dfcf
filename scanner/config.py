@@ -624,11 +624,17 @@ PULLBACK_20D_GAIN_EXTREME = 60    # 20-day gain > 60% → extreme (overbought)
 # 不亏——`backtest --ranking` 按均收益会给 comeback 排第 3，人工复核时以 hit 口径为准，
 # 因为次日大涨目标是「大涨概率」而非平均收益）。
 # 用 `python -m scanner.backtest --ranking --metric next_day_pct` 校准此顺序，人工复核后更新。
-CAT_DISPLAY_PRIORITY = {
-    "known_new_face": 1, "rebound": 0, "new_face": 3,
-    "momentum": 2, "short_term": 4, "pullback": 6,
-    "comeback": 5,
-}
+# 2026-08-20 收敛：类别宇宙单一事实来源见 scanner/categories.py（注册表 + 派生集合），
+# 下方常量由该注册表派生并 re-export，保持既有 `from scanner.config import ...` 导入路径不变。
+from scanner.categories import (  # noqa: E402, F401  (re-export)
+    CAT_DISPLAY_PRIORITY,
+    NEXTDAY_CAT_PRIORITY,
+    SUGGEST_BY_CAT,
+)
+
+# 注意：config 不导出颜色（ANSI 在 display 层定义，避免循环依赖）；展示层从
+# scanner.categories.CATEGORY_COLOR_KEYS 经 display.ANSI 解析；CAT_LABEL 由展示层直接从
+# scanner.categories 导入。
 
 # SUGGEST_BY_CAT：操作建议按类别独立映射（与优先级解耦，语义不变）。
 # 值含 ANSI 颜色码，由 display 端渲染；排序位置变化不影响建议。
@@ -636,16 +642,7 @@ CAT_DISPLAY_PRIORITY = {
 # 次日卖，不再区分持有 2-3 天口径）。kNF 由「超短」改「推荐」——原依据 cum_3d -0.44
 # 回吐已不适用，next_day 下 kNF hit 12.7%（全场第二）理应推荐；short_term 由「超短」改
 # 「参考」——整体 hit 8.4% 低于基准 9.7%，弱转强子集才高于基准。
-SUGGEST_BY_CAT = {
-    "known_new_face": "\033[96m推荐\033[0m",
-    "rebound": "\033[96m推荐\033[0m",
-    "new_face": "参考",
-    "momentum": "参考",
-    "short_term": "参考",
-    "pullback": "\033[91m回避\033[0m",
-    "comeback": "\033[96m回马\033[0m",
-    "core_dip": "低吸",
-}
+# 具体映射值由 scanner/categories.py 注册表派生（见上文 from scanner.categories import SUGGEST_BY_CAT）。
 
 # ── 次日大涨候选独立区（display-only，2026-08-10）──
 # 依据 scanner.nextday_attribution（去重 1006 条，next_day≥7% hit 10.2%）：

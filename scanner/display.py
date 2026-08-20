@@ -76,16 +76,11 @@ else:
             "MAGENTA": "", "BOLD": "", "RESET": ""}
 
 # 类别展示标签/颜色：综合排序与回马枪独立区共用（提出模块级供 _print_priority_row 复用）。
-CAT_LABEL = {
-    "known_new_face": "kNF", "rebound": "RBD", "new_face": "NEW",
-    "momentum": "MOM", "short_term": "ST", "pullback": "PB",
-    "comeback": "CB", "core_dip": "DIP",
-}
-CAT_COLOR = {
-    "known_new_face": ANSI["GREEN"], "rebound": ANSI["CYAN"], "new_face": ANSI["GREEN"],
-    "momentum": ANSI["YELLOW"], "short_term": ANSI["RED"], "pullback": ANSI["RED"],
-    "comeback": ANSI["CYAN"], "core_dip": ANSI["GREEN"],
-}
+# 2026-08-20 收敛：CAT_LABEL / 颜色键统一来自 scanner/categories 注册表（单一事实来源），
+# 颜色键经本模块 ANSI 字典解析为色码，避免与 config 循环依赖。
+from scanner.categories import CAT_LABEL, CATEGORY_COLOR_KEYS  # noqa: E402
+
+CAT_COLOR = {name: ANSI[key] for name, key in CATEGORY_COLOR_KEYS.items()}
 
 
 def _rank_delta_str(symbol: str, current_rank: int, last_ranks: dict[str, int]) -> str:

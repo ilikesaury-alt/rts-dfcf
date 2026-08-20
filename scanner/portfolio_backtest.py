@@ -63,15 +63,9 @@ if sys.platform == "win32":
     sys.stderr.reconfigure(encoding="utf-8")  # parser.error 走 stderr，防中文提示乱码
 
 
-# ── 组合回测使用的现役策略类别（排除已废弃的 old_face / early_momentum / pullback 离线）──
-PORTFOLIO_CATEGORIES: set[str] = {
-    "new_face",
-    "known_new_face",
-    "momentum",
-    "rebound",
-    "short_term",
-    "comeback",
-}
+# ── 组合回测使用的现役策略类别（排除仅展示用、不入组合评分的 core_dip；含 comeback 观察区）──
+# 2026-08-20 收敛：单一事实来源见 scanner/categories.PORTFOLIO_CATEGORIES。
+from scanner.categories import PORTFOLIO_CATEGORIES  # noqa: E402
 
 # 热度放大器组件键（与 enhancer.HEAT_AMPLIFIER_BONUS_ATTRS 对应）：在 score_breakdown(JSON)
 # 中记录，用于从历史 recommendations.score（旧 orchestrator 含热度写出的）重建「去热度分」，

@@ -41,16 +41,17 @@ from datetime import date, timedelta
 
 from scanner.config import DB_PATH, now_beijing
 from scanner.display import clear_screen
-from scanner.trading_session import is_trading_day
+from scanner.trading_session import _nth_trading_day_after
 
 # Windows GBK 控制台无法编码 ‱ 等字符，统一走 UTF-8（项目其它入口同款处理）
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
 
 
-# 当前有效策略类别（过滤已废弃的 old_face / early_momentum）
-ACTIVE_CATEGORIES = {"new_face", "known_new_face", "momentum", "pullback", "rebound",
-                     "short_term", "comeback", "core_dip"}
+# 当前有效策略类别（过滤已废弃的 old_face / early_momentum）。
+# 2026-08-20 收敛：类别宇宙单一事实来源见 scanner/categories.py；
+# 回测/归因处理 DB 中全部已知类别（含已下线的 pullback，用于历史校准）。
+from scanner.categories import ATTRIBUTION_CATEGORIES as ACTIVE_CATEGORIES  # noqa: E402
 
 
 @dataclass
