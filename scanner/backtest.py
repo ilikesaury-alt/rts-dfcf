@@ -172,8 +172,12 @@ def backfill_outcomes(conn: sqlite3.Connection, dry_run: bool = False) -> int:
     return updated
 
 
-def _ic(values: list[float], returns: list[float]) -> float | None:
-    """Rank IC：values 与 returns 的 spearman 近似（用秩相关系数）。"""
+def spearman(values: list[float], returns: list[float]) -> float | None:
+    """Rank IC（Spearman 秩相关）：values 与 returns 的秩 Pearson 系数。
+
+    2026-08-20 收敛单源：ic_attribution / nextday_attribution 此前各抄一份等价实现，
+    tie 处理规则不同（1e-9 容差 vs 严格相等）导致浮点近邻分数算出不同 IC。统一到此。
+    """
     if len(values) < 5 or len(values) != len(returns):
         return None
     n = len(values)
@@ -259,7 +263,7 @@ def strategy_performance(
         avg_gain = sum(gains) / len(gains) if gains else 0.0
         avg_loss = sum(losses) / len(losses) if losses else 0.0
         pl = (avg_gain / avg_loss) if avg_loss > 0 else 0.0
-        ic = _ic(scores, returns) or 0.0
+        ic = spearman(scores, returns) or 0.0
         stats.append(
             StrategyStat(
                 category=cat,
@@ -332,7 +336,7 @@ def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct", days: i
     for dim, vals in dim_vals.items():
         if len(vals) < 20:
             continue
-        ic = _ic(vals, dim_rets[dim]) or 0.0
+        ic = spearman(vals, dim_rets[dim]) or 0.0
         pos_rets = [dim_rets[dim][i] for i in range(len(vals)) if vals[i] > 0]
         # 浮点判等改用阈值，避免累加误差使 zero_rets 恒为空
         zero_rets = [dim_rets[dim][i] for i in range(len(vals)) if abs(vals[i]) < 1e-9]
@@ -395,7 +399,7 @@ def rank_category_stats(conn: sqlite3.Connection, metric: str = "next_day_pct",
     for cat, pairs in by.items():
         rets = [p[1] for p in pairs]
         scores = [p[0] for p in pairs]
-        ic = _ic(scores, rets) or 0.0
+        ic = spearman(scores, rets) or 0.0
         stats.append(
             RankCategoryStat(
                 category=cat,

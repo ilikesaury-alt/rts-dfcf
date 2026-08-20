@@ -41,6 +41,9 @@ import sqlite3
 import sys
 from collections import Counter, defaultdict
 
+# 2026-08-20 收敛单源：Spearman IC 统一用 scanner.backtest.spearman（与 nextday_attribution / backtest 同源），
+# 删除本地 _rankdata + spearman 等价实现（tie 处理规则曾不同，浮点近邻分数算出不同 IC）。
+from scanner.backtest import spearman
 from scanner.config import (
     BOTTOM_VOL_SURGE,
     MA_BEAR_SCORE,
@@ -52,31 +55,6 @@ from scanner.display import clear_screen
 from scanner.features import build_features
 from scanner.models import KlineBar, make_kline_bar
 from scanner.sector import classify_sector
-
-
-def _rankdata(xs: list[float]) -> list[float]:
-    """平均秩（处理并列）。"""
-    order = sorted(range(len(xs)), key=lambda i: xs[i])
-    ranks = [0.0] * len(xs)
-    i = 0
-    while i < len(order):
-        j = i
-        while j + 1 < len(order) and xs[order[j + 1]] == xs[order[i]]:
-            j += 1
-        avg = (i + j) / 2.0 + 1.0
-        for k in range(i, j + 1):
-            ranks[order[k]] = avg
-        i = j + 1
-    return ranks
-
-
-def spearman(xs: list[float], ys: list[float]) -> float | None:
-    n = len(xs)
-    if n < 3:
-        return None
-    rx, ry = _rankdata(xs), _rankdata(ys)
-    d2 = sum((a - b) ** 2 for a, b in zip(rx, ry))
-    return 1.0 - 6.0 * d2 / (n * (n * n - 1))
 
 
 def _ma_bull_score(closes: list[float], feats: dict) -> int:

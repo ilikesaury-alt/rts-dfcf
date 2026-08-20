@@ -4,13 +4,13 @@ from datetime import date
 import pytest
 
 from scanner.backtest import (
-    _ic,
     _nth_trading_day_after,
     _rank,
     RankCategoryStat,
     compute_outcome,
     print_ranking_report,
     rank_category_stats,
+    spearman,
     suggest_priority,
     strategy_performance,
     dimension_ic,
@@ -26,14 +26,29 @@ def test_rank_tie_averaging():
     assert _rank([2.0, 1.0, 2.0, 4.0]) == [2.5, 1.0, 2.5, 4.0]
 
 
+def test_rank_float_tie_averaging():
+    # 浮点近邻（差 < 1e-9）也应视为并列取平均秩，避免浮点累加误差让本应并列的分数分到不同秩
+    assert _rank([1.0, 1.0 + 1e-10, 3.0]) == [1.5, 1.5, 3.0]
+
+
+def test_ic_single_source():
+    # P0-4 收敛单源：ic_attribution / nextday_attribution 必须复用同一 spearman 对象，
+    # 杜绝再次分叉出 tie 处理规则不同的等价实现（浮点近邻算出不同 IC）。
+    import scanner.ic_attribution as ic_attribution
+    import scanner.nextday_attribution as nextday_attribution
+
+    assert ic_attribution.spearman is spearman
+    assert nextday_attribution.spearman is spearman
+
+
 def test_ic_perfect_positive():
     # 完全正相关
-    ic = _ic([1, 2, 3, 4, 5], [2, 4, 6, 8, 10])
+    ic = spearman([1, 2, 3, 4, 5], [2, 4, 6, 8, 10])
     assert ic is not None and ic > 0.99
 
 
 def test_ic_perfect_negative():
-    ic = _ic([1, 2, 3, 4, 5], [10, 8, 6, 4, 2])
+    ic = spearman([1, 2, 3, 4, 5], [10, 8, 6, 4, 2])
     assert ic is not None and ic < -0.99
 
 

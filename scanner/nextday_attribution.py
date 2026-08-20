@@ -32,13 +32,13 @@ import sqlite3
 from collections import Counter, defaultdict
 from datetime import timedelta
 
-from scanner.backtest import ACTIVE_CATEGORIES, _ic
-from scanner.config import DB_PATH, now_beijing
+from scanner.backtest import ACTIVE_CATEGORIES, spearman
+from scanner.config import DB_PATH, NEXTDAY_HIT_THRESHOLD, now_beijing
 from scanner.data_health import check_kline_health, health_banner
 from scanner.database import get_prominence_map
 from scanner.display import clear_screen
 
-DEFAULT_THRESHOLD = 7.0   # 次日大涨阈值（%）
+DEFAULT_THRESHOLD = NEXTDAY_HIT_THRESHOLD   # 单源见 config，兼容旧 import
 DEFAULT_RECENT_DAYS = 0   # 0=全部历史；>0=最近 N 天
 
 # 分桶样本门槛（2026-08-18，防噪声行动）：组样本 < MIN_SAMPLE 标「⚠样本不足」，
@@ -146,7 +146,7 @@ def strategy_table(recs: list[dict], threshold: float) -> list[dict]:
         g = by_cat[cat]
         hits, hr, avg = _hit_stats(g, threshold)
         scores = [r["score"] for r in g]
-        ic = _ic(scores, [r["next_day"] for r in g]) or 0.0
+        ic = spearman(scores, [r["next_day"] for r in g]) or 0.0
         out.append({"category": cat, "n": len(g), "hits": hits, "hit_rate": hr,
                     "avg_next": avg, "ic": ic, "warn": len(g) < MIN_SAMPLE})
     out.sort(key=lambda x: -x["hit_rate"])
