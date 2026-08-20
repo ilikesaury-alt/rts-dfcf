@@ -62,8 +62,8 @@ from scanner.ranking import (  # noqa: E402  (纯排序逻辑单源，与 displa
     _entry_tier,
     _entry_weak_to_strong,
     _is_nextday_marked,
-    _nextday_entry_accum,
     _nextday_entry_percent,
+    build_accum_map,
     sort_main_entries,
 )
 
@@ -210,11 +210,14 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
         return {"date": target_date, "empty": True}
 
     flow_map = get_fund_flow_pct_map(conn, [e["symbol"] for e in recs])
+    # P1-9（2026-08-20）：全部推荐一次性批量回放累计（build_accum_map 单查询），
+    # 替代逐行 _nextday_entry_accum 的 N+1 daily_kline 查询。
+    accum_map = build_accum_map(conn, recs)
     for e in recs:
-        acc = _nextday_entry_accum(e, conn)
+        acc = accum_map.get(e["symbol"])
         e["_accum"] = acc
-        e["_marked"] = _is_nextday_marked(e, conn, accum=acc)
-        e["_tier"] = _entry_tier(e, conn, accum=acc, marked=e["_marked"])
+        e["_marked"] = _is_nextday_marked(e, conn, accum_map=accum_map)
+        e["_tier"] = _entry_tier(e, conn, accum_map=accum_map, marked=e["_marked"])
 
     main = [e for e in recs if e["category"] not in ("comeback", CORE_DIP_CATEGORY)]
     comeback = [e for e in recs if e["category"] == "comeback"]

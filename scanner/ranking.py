@@ -47,6 +47,37 @@ def _in_nextday_sweet_band(percent: float) -> bool:
             or NEXTDAY_SPIKE_MID_MIN <= percent < NEXTDAY_SPIKE_MID_MAX)
 
 
+def _replay_accum_from_rows(rows: list, rec_date: str) -> float | None:
+    """从 daily_kline 原始行（单 symbol，未截断）回放推荐前 5 日累计（含推荐日）。
+
+    rows: [(date, close, percent), ...]（已按该 symbol 过滤，未截断、未限 date）。
+    返回含推荐日 5 日累计涨幅(%)，或 None（无数据/不足）。脏值（close 非有限正数/
+    percent 非有限）统一清洗——与 _nextday_entry_accum 回退链同源，避免 TypeError
+    穿透到 display 预计算崩溃。
+    """
+    valid: list[tuple[str, float, float]] = []
+    for dt, close, pct in rows:
+        try:
+            cl = float(close)
+            pc = float(pct or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(cl) or cl <= 0:
+            continue
+        if not math.isfinite(pc):
+            pc = 0.0
+        valid.append((dt, cl, pc))
+    within = [v for v in valid if v[0] <= rec_date]
+    within.sort(key=lambda v: v[0], reverse=True)
+    window = within[:6]
+    if len(window) >= 6:
+        base = window[5][1]
+        return (window[0][1] - base) / base * 100.0
+    if window:
+        return sum(v[2] for v in window[:5])
+    return None
+
+
 def _nextday_entry_accum(entry: dict, conn=None) -> float | None:
     """推荐前 5 日累计涨幅（%），用于 🎯 判定；拿不到返回 None（不阻断）。
 
@@ -83,36 +114,68 @@ def _nextday_entry_accum(entry: dict, conn=None) -> float | None:
         return None
     try:
         rows = conn.execute(
-            "SELECT close, percent FROM daily_kline WHERE symbol = ? AND date <= ? "
-            "ORDER BY date DESC LIMIT 6",
+            "SELECT date, close, percent FROM daily_kline WHERE symbol = ? AND date <= ? "
+            "ORDER BY date DESC",
             (sym, rec_date[:10]),
         ).fetchall()
     except Exception:
         rows = []
-    # 2026-08-17 审查修复：回放直读 daily_kline 原始值，历史脏行（契约重构前的
-    # close=NULL/字符串/0/NaN）若不经清洗会抛 TypeError/ValueError 穿透到
-    # display_priority 预计算 → 本轮展示崩溃 + save_recommendations 被跳过。
-    # 统一清洗：close 非有限正数 → 整行剔除；percent 脏值 → 0。
-    valid: list[tuple[float, float]] = []
-    for r in rows:
-        try:
-            close = float(r[0])
-            pct = float(r[1] or 0.0)
-        except (TypeError, ValueError):
-            continue
-        if not math.isfinite(close) or close <= 0:
-            continue
-        if not math.isfinite(pct):
-            pct = 0.0
-        valid.append((close, pct))
-    if len(valid) >= 6:
-        base = valid[5][0]
-        return (valid[0][0] - base) / base * 100.0
-    if valid:
-        return sum(p for _, p in valid[:5])
+    accum = _replay_accum_from_rows(rows, rec_date[:10])
+    if accum is not None:
+        return accum
     # 回放无数据（daily_kline 缺表/该票无历史）：兜底 DB 落库值
     db_acc = entry.get("accumulated_pct")
     return float(db_acc) if db_acc is not None else None
+
+
+def build_accum_map(conn, entries: list[dict]) -> dict[str, float | None]:
+    """预计算推荐前 5 日累计（含推荐日），单批次查询替代逐行 N+1 回放（P1-9）。
+
+    返回 {symbol: accum_or_None}。候选行（有 _candidate 且维度含 accumulated_incl_today）
+    直接取维度，不查 DB；掉榜/重启行批量 SELECT ... WHERE symbol IN (...) 一次取回，
+    逐 symbol 经 _replay_accum_from_rows 回放。把 display / today_report 每轮渲染的
+    N 次 daily_kline 查询降为 1 次（N = 掉榜/重启行数）。
+    """
+    result: dict[str, float | None] = {}
+    dropped: list[dict] = []
+    for e in entries:
+        c = e.get("_candidate")
+        if c and c.kline:
+            incl = (c.kline.dimensions or {}).get("accumulated_incl_today")
+            if incl is not None:
+                result[e["symbol"]] = float(incl)
+                continue
+            if c.kline.accumulated_pct is not None:
+                result[e["symbol"]] = float(c.kline.accumulated_pct)
+                continue
+        if e.get("symbol") and e.get("date"):
+            dropped.append(e)
+    if not dropped:
+        return result
+    syms = sorted({e["symbol"] for e in dropped})
+    try:
+        rows = conn.execute(
+            "SELECT symbol, date, close, percent FROM daily_kline "
+            "WHERE symbol IN ({})".format(",".join("?" * len(syms))),
+            tuple(syms),
+        ).fetchall()
+    except Exception:
+        rows = []
+    by_sym: dict[str, list[tuple[str, float, float]]] = {}
+    for sym, dt, close, pct in rows:
+        by_sym.setdefault(sym, []).append((dt, close, pct))
+    for e in dropped:
+        sym = e["symbol"]
+        rec_date = e.get("date") or ""
+        accum = _replay_accum_from_rows(by_sym.get(sym, []), rec_date[:10])
+        if accum is None:
+            # 回放无数据：兜底 DB 落库 accumulated_pct（short_term 含今日；nf/mom 为
+            # 不含今日历史口径，兜底值口径不符但优于 fail-open 误放行），与
+            # _nextday_entry_accum 回退链同源。
+            db_acc = e.get("accumulated_pct")
+            accum = float(db_acc) if db_acc is not None else None
+        result[sym] = accum
+    return result
 
 
 def _entry_dims(entry: dict) -> dict:
@@ -190,7 +253,7 @@ def _entry_sector_resonance(entry: dict) -> bool:
 
 
 def _entry_tier(entry: dict, conn=None, accum: float | None = None,
-                marked: bool | None = None) -> int:
+                marked: bool | None = None, accum_map: dict | None = None) -> int:
     """综合排序档位（2026-08-17 二值 → 4 级；2026-08-18 统一口径为「次日大涨」）。
 
     档0 = 🎯 次日大涨画像（数据最强，见 _is_nextday_marked，short_term 弱转强分型）
@@ -208,13 +271,15 @@ def _entry_tier(entry: dict, conn=None, accum: float | None = None,
 
     纯排序层：不改评分不落库，档位只重排展示顺序（跨类别全局生效）。
     """
-    if accum is None:
+    if accum_map is not None:
+        accum = accum_map.get(entry.get("symbol"))
+    elif accum is None:
         accum = _nextday_entry_accum(entry, conn)
     # 过热妖股优先于一切：累计≥50% 即使命中 🎯 画像也劣后（精选区校准，hit 最低区）
     if accum is not None and accum >= 50:
         return 3
     if marked is None:
-        marked = _is_nextday_marked(entry, conn, accum=accum)
+        marked = _is_nextday_marked(entry, conn, accum=accum, accum_map=accum_map)
     if marked:
         return 0
     cat = entry["category"]
@@ -241,7 +306,8 @@ def _entry_tier(entry: dict, conn=None, accum: float | None = None,
     return 2
 
 
-def _is_nextday_marked(entry: dict, conn=None, accum: float | None = None) -> bool:
+def _is_nextday_marked(entry: dict, conn=None, accum: float | None = None,
+                      accum_map: dict | None = None) -> bool:
     """次日大涨画像标记（🎯）：推荐时刻涨幅在甜蜜带 + 非超买死亡信号 + 5日累计门槛。
 
     2026-08-11：原「◆ 次日大涨候选」独立区与综合排序主表重合度 65%（实测当日
@@ -272,7 +338,9 @@ def _is_nextday_marked(entry: dict, conn=None, accum: float | None = None) -> bo
         return False
     cat = entry["category"]
     if cat not in ("rebound", "short_term"):
-        if accum is None:
+        if accum_map is not None:
+            accum = accum_map.get(entry.get("symbol"))
+        elif accum is None:
             accum = _nextday_entry_accum(entry, conn)
         if accum is not None and accum < NEXTDAY_ACCUM_MIN:
             return False  # 有累计数据且不达门槛 → 不标；缺数据 fail-open 放行

@@ -41,6 +41,7 @@ from scanner.ranking import (  # noqa: F401
     _is_nextday_marked,
     _nextday_entry_accum,
     _nextday_entry_percent,
+    build_accum_map,
     sort_main_entries,
 )
 from scanner.sector import classify_sector
@@ -542,15 +543,16 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     # 回放全表扫描；预计算后只查一次，_sort_tier 与渲染共用同一结果保证一致性）。
     nextday_mark: dict[str, bool] = {}
     tier_map: dict[str, int] = {}
+    # P1-9（2026-08-20）：全部推荐一次性批量回放累计（build_accum_map 单查询），
+    # 替代逐行 _nextday_entry_accum 的 N+1 daily_kline 查询。
+    accum_map = build_accum_map(conn, today_recs)
     for e in today_recs:
-        # 2026-08-17 审查修复：累计预计算一次，消除掉榜行在排序预计算与渲染之间
-        # 的重复 daily_kline 回放（N+1）。
-        acc = _nextday_entry_accum(e, conn)
-        marked = _is_nextday_marked(e, conn, accum=acc)
-        nextday_mark[e["symbol"]] = marked
+        sym = e["symbol"]
+        marked = _is_nextday_marked(e, conn, accum_map=accum_map)
+        nextday_mark[sym] = marked
         # 2026-08-17 档位 4 级：tier_map 与 nextday_mark 同源预计算（_entry_tier 复用
         # 同一 accum/marked，避免二次回放），排序与任何行内展示共用同一结果。
-        tier_map[e["symbol"]] = _entry_tier(e, conn, accum=acc, marked=marked)
+        tier_map[sym] = _entry_tier(e, conn, accum_map=accum_map, marked=marked)
 
     # 回马枪独立成区（2026-08-07 方案A）：comeback 是 off_list 掉榜跟踪票，语义与榜上票不同，
     # 从主排序表抽出放到末尾独立区块；主表只排榜上五类（rebound/known_new_face/new_face/
