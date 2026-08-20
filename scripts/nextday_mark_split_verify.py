@@ -7,6 +7,9 @@
 """
 import json
 import sqlite3
+import sys
+
+sys.path.insert(0, ".")
 
 from scanner.config import NEXTDAY_HIT_THRESHOLD
 
