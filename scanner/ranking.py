@@ -9,6 +9,7 @@ prevday_perf / scripts 现统一从此处取数，消除层违规与对渲染层
 import math
 
 from scanner.config import (
+    CAT_DISPLAY_PRIORITY,
     NEXTDAY_ACCUM_MIN,
     NEXTDAY_CAT_PRIORITY,
     NEXTDAY_SPIKE_MID_MAX,
@@ -283,3 +284,36 @@ def _is_nextday_marked(entry: dict, conn=None, accum: float | None = None) -> bo
             or d.get("v_st_overbought") or d.get("v_mo_overbought")):
         return False
     return True
+
+
+# ── 排序组合层（2026-08-20 收敛单源）──
+# display.py / today_report.py 此前各写一份排序键装配（tier_map 预计算 + 类别分流 +
+# 分数键），且已实际分化：today_report 漏掉 known_new_face 分数反指升序特判（display
+# 有，2026-08-10 加）。现把「同一行该排第几」的唯一逻辑收归此处，两处消费同一结果。
+
+def score_sort_key(entry: dict) -> float:
+    """分数键：known_new_face 分数反指（低分档 hit 更高）→ 升序在前；其余类别降序。
+
+    回测分桶（2026-08-10）：kNF 低分档[18,37) cum_3d +5.58/64%胜率 vs 高分档[77,98)
+    -3.76/33%，单调反指且低分档样本充足。统一入口避免展示端与报告端排序分化。
+    """
+    if entry["category"] == "known_new_face":
+        return entry["score"]
+    return -entry["score"]
+
+
+def sort_main_entries(main_recs: list[dict], tier_map: dict[str, int]) -> list[dict]:
+    """综合排序主表排序键 = (档位, 类别展示优先级, 分数键)。
+
+    tier_map：{symbol: 档位(0..3)}，由调用方预计算（display 用 _entry_tier 统一预计算，
+    today_report 用逐行 _entry_tier 结果）。类别优先级取 CAT_DISPLAY_PRIORITY（值越小越靠前，
+    未知类别落 99）。档位只影响排序，不改评分/不落库。
+    """
+    return sorted(
+        main_recs,
+        key=lambda x: (
+            tier_map.get(x["symbol"], 2),
+            CAT_DISPLAY_PRIORITY.get(x["category"], 99),
+            score_sort_key(x),
+        ),
+    )

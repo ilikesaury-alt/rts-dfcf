@@ -5,7 +5,6 @@ import sys
 import wcwidth
 
 from scanner.config import (
-    CAT_DISPLAY_PRIORITY,
     COMEBACK_DISPLAY_MAX,
     COMEBACK_DISPLAY_MIN_MAIN,
     CORE_DIP_CATEGORY,
@@ -43,6 +42,7 @@ from scanner.ranking import (  # noqa: F401
     _is_nextday_marked,
     _nextday_entry_accum,
     _nextday_entry_percent,
+    sort_main_entries,
 )
 from scanner.sector import classify_sector
 from scanner.utils import to_float, to_int
@@ -570,9 +570,6 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
         # 同一 accum/marked，避免二次回放），排序与任何行内展示共用同一结果。
         tier_map[e["symbol"]] = _entry_tier(e, conn, accum=acc, marked=marked)
 
-    def _sort_tier(entry):
-        return tier_map.get(entry["symbol"], 2)
-
     # 回马枪独立成区（2026-08-07 方案A）：comeback 是 off_list 掉榜跟踪票，语义与榜上票不同，
     # 从主排序表抽出放到末尾独立区块；主表只排榜上五类（rebound/known_new_face/new_face/
     # momentum/short_term，不含 comeback/pullback）。
@@ -593,14 +590,9 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     # 2026-08-10: known_new_face 分数反指（回测分桶：低分档[18,37) cum_3d +5.58/64%胜率，
     # 高分档[77,98) -3.76/33%）——分区内 score 升序，把"低调二次上榜"的低分票排前，
     # 避免把最差的追高票顶在最前。其余类别仍降序。
-    def _score_sort_key(entry):
-        if entry["category"] == "known_new_face":
-            return entry["score"]
-        return -entry["score"]
-
-    scored = sorted(main_recs, key=lambda x: (_sort_tier(x),
-                                               CAT_DISPLAY_PRIORITY.get(x["category"], 99),
-                                               _score_sort_key(x)))
+    # 2026-08-20 收敛：排序组合层（档位+类别优先级+分数键含 kNF 升序）统一走 ranking.sort_main_entries，
+    # 与 today_report 同源，消除两处排序分化。
+    scored = sort_main_entries(main_recs, tier_map)
 
     print(f"\n{ANSI['BOLD']}◆ 综合排序 — 今日上榜推荐{ANSI['RESET']}")
     hdr = (f"  {_pad('#',3,'r')} {_pad('代码',12)} {_pad('名称',10)} "
@@ -633,7 +625,7 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     # ② 回马枪/核心低吸都是「弱市低吸工具」（掉榜超跌/主线回调），仅大盘弱势
     # （market_index_log index_pct < MARKET_WEAK_THRESHOLD）才显示，强势/中性市不渲染。
     if comeback_recs and len(main_recs) <= COMEBACK_DISPLAY_MIN_MAIN and _market_is_weak(conn, today_pool):
-        cb_scored = sorted(comeback_recs, key=lambda x: (_sort_tier(x), -x["score"]))
+        cb_scored = sorted(comeback_recs, key=lambda x: (tier_map.get(x["symbol"], 2), -x["score"]))
         if len(cb_scored) > COMEBACK_DISPLAY_MAX:
             cb_scored = cb_scored[:COMEBACK_DISPLAY_MAX]
         print(f"\n{ANSI['CYAN']}◆ 回马枪 — 掉榜跟踪/回调买点（弱市·主区推荐较少·补充参考）{ANSI['RESET']}")

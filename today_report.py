@@ -64,6 +64,7 @@ from scanner.ranking import (  # noqa: E402  (纯排序逻辑单源，与 displa
     _is_nextday_marked,
     _nextday_entry_accum,
     _nextday_entry_percent,
+    sort_main_entries,
 )
 
 # 档0 评级阈值（纯展示，依据已回测结论）
@@ -218,7 +219,10 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
     main = [e for e in recs if e["category"] not in ("comeback", CORE_DIP_CATEGORY)]
     comeback = [e for e in recs if e["category"] == "comeback"]
     core_dip = [e for e in recs if e["category"] == CORE_DIP_CATEGORY]
-    main.sort(key=lambda x: (x["_tier"], CAT_DISPLAY_PRIORITY.get(x["category"], 99), -x["score"]))
+    # 2026-08-20 收敛：排序组合层（档位+类别优先级+分数键含 kNF 升序）统一走 ranking.sort_main_entries，
+    # 与综合排序终端同源（此前 today_report 漏掉 kNF 升序特判，两处排序分化）。
+    tier_map = {e["symbol"]: e["_tier"] for e in main}
+    main = sort_main_entries(main, tier_map)
 
     tier0 = [e for e in main if e["_tier"] == 0][:top_n] if top_n else [e for e in main if e["_tier"] == 0]
     tier1 = [e for e in main if e["_tier"] == 1]
