@@ -65,20 +65,6 @@ class Outcome:
     cum_3d: float | None = None
 
 
-def _nth_trading_day_after(d: date, n: int) -> date | None:
-    """Return the date n trading days after d (exclusive of d)."""
-    cursor = d
-    # max_iter 安全上限：防止 holidays.json 损坏导致 while 无限循环
-    # 正常情况每次 while 最多跳周末+假期(≤3天)，n*10 足够冗余
-    max_iter = max(n * 10, 365)
-    for _ in range(n):
-        cursor += timedelta(days=1)
-        while not is_trading_day(cursor) and max_iter > 0:
-            cursor += timedelta(days=1)
-            max_iter -= 1
-    return cursor
-
-
 def _load_sym_kline(conn: sqlite3.Connection, symbol: str) -> dict[str, dict[str, float]]:
     """{date: {"close": float, "percent": float}} for a single symbol.
 

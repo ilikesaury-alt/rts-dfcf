@@ -11,6 +11,25 @@ def is_trading_day(d: date) -> bool:
     return True
 
 
+def _nth_trading_day_after(d: date, n: int) -> date | None:
+    """返回 d 之后第 n 个交易日（不含 d）。
+
+    2026-08-20 收敛单源：此前 backtest / portfolio_backtest / historical_rescan 各抄一份，
+    backtest 版在 max_iter 耗尽时静默返回非交易日（holidays.json 损坏会算错 next_day 收益）。
+    统一在此：节假日数据异常导致跳过非交易日超过安全上限时返回 None，由调用方跳过该信号。
+    """
+    cursor = d
+    max_iter = max(n * 10, 365)
+    for _ in range(n):
+        cursor += timedelta(days=1)
+        while not is_trading_day(cursor):
+            cursor += timedelta(days=1)
+            max_iter -= 1
+            if max_iter <= 0:
+                return None
+    return cursor
+
+
 def is_trading_time(now: datetime | None = None) -> bool:
     now = now or now_beijing()
     if not is_trading_day(now.date()):

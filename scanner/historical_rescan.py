@@ -54,6 +54,10 @@ from datetime import date, datetime, timedelta
 from typing import Iterable
 
 from scanner.candidate_pool import ScanSession
+
+# 可忠实重扫的类别（comeback 为 off-list 变体，无法从 appearances 重建，保持冻结分）。
+# 2026-08-20 收敛：单一事实来源见 scanner/categories.RESCANABLE_CATEGORIES。
+from scanner.categories import RESCANABLE_CATEGORIES  # noqa: E402
 from scanner.config import MAX_STOCK_PRICE
 from scanner.models import Candidate, KlineBar, make_kline_bar
 from scanner.orchestrator import (

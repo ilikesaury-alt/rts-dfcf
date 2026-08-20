@@ -55,7 +55,7 @@ from datetime import date, timedelta
 
 from scanner.config import CROSS_SOURCE_BONUS, DB_PATH
 from scanner.display import clear_screen
-from scanner.trading_session import is_trading_day
+from scanner.trading_session import _nth_trading_day_after, is_trading_day
 
 # Windows GBK 控制台无法编码 ‱/🎯 等字符，统一走 UTF-8（项目其它入口同款处理）
 if sys.platform == "win32":
@@ -203,21 +203,6 @@ def _load_prices(conn: sqlite3.Connection, symbols: set[str]) -> dict[str, dict[
     return prices
 
 
-def _nth_trading_day_after(d: date, n: int) -> date | None:
-    """返回 d 之后第 n 个交易日（不含 d）。
-
-    若节假日数据异常导致跳过非交易日时超过安全上限，返回 None（调用方据此跳过该信号）。
-    """
-    cursor = d
-    max_iter = max(n * 10, 365)
-    for _ in range(n):
-        cursor += timedelta(days=1)
-        while not is_trading_day(cursor):
-            cursor += timedelta(days=1)
-            max_iter -= 1
-            if max_iter <= 0:
-                return None
-    return cursor
 
 
 # ── 信号加载 ────────────────────────────────────────────────────────────────
