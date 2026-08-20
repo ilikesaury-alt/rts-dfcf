@@ -201,6 +201,14 @@ FUND_FLOW_TTL_SEC = 300
 # 资金流超时部分结果的进程缓存 TTL：仅缓存一扫描周期，下一轮重试补全缺页，
 # 避免"超时拿到的部分数据"被冻结 5 分钟造成静默缺数据
 FUND_FLOW_PARTIAL_TTL_SEC = 60
+# 进程内缓存 TTL 收敛（P2-12，2026-08-20）：原散落 api/orchestrator/concept 模块内定义，
+# 与上方 *_TTL_SEC 双份且指数缓存曾内联魔法数 60，难追溯。统一收到此处单源。
+INTRADAY_CACHE_TTL_SEC = 120      # api 分时强度评分缓存（2 分钟刷新）
+INTRADAY_CACHE_FAIL_TTL_SEC = 60  # api 分时拉取失败短退避
+MINUTE_DATA_CACHE_TTL_SEC = 60    # api 分时数据缓存（1 分钟刷新）
+INDEX_CACHE_TTL_SEC = 60          # api 大盘指数缓存（原内联 60）
+CONCEPT_PROCESS_TTL_SEC = 300     # concept 进程内短 TTL（5 分钟，避免同轮重复读 DB）
+KLINE_REFRESH_TTL = 120           # orchestrator K 线补拉节流间隔（刷新时机，非缓存 TTL）
 # 单次拉取限时：AKShare 内部请求可能无 timeout（涨停池）或全市场分页很慢
 # （资金流约 53 页，6 线程并行实测 ~17s）。限时保护 60s 扫描循环不被外部 host 挂死。
 ZT_POOL_FETCH_TIMEOUT = 20        # 涨停池单次拉取上限（秒）

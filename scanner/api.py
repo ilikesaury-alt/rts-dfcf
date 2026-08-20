@@ -8,6 +8,10 @@ import requests
 from scanner.config import (
     BEIJING_TZ,
     HEADERS,
+    INDEX_CACHE_TTL_SEC,
+    INTRADAY_CACHE_FAIL_TTL_SEC,
+    INTRADAY_CACHE_TTL_SEC,
+    MINUTE_DATA_CACHE_TTL_SEC,
     REQUEST_CONNECT_TIMEOUT,
     REQUEST_TIMEOUT,
     SENTIMENT_AVG_TOP10_BOILING,
@@ -218,7 +222,7 @@ def fetch_market_index(session: requests.Session) -> float | None:
     global _market_index_cache
     now = time.time()
     with _index_cache_lock:
-        if _market_index_cache[0] is not None and now - _market_index_cache[2] < 60:
+        if _market_index_cache[0] is not None and now - _market_index_cache[2] < INDEX_CACHE_TTL_SEC:
             return _market_index_cache[0]
     try:
         ts_ms = int(time.time() * 1000)
@@ -566,13 +570,7 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
 
 
 _INTRADAY_CACHE: dict[str, tuple[float | None, float]] = {}
-# 300→120：分时强度评分 2 分钟刷新，让盘中异动更快反映到 intraday_score
-_INTRADAY_CACHE_TTL = 120
-_INTRADAY_CACHE_FAIL_TTL = 60
-
 _MINUTE_DATA_CACHE: dict[str, tuple[list[dict] | None, float]] = {}
-# 120→60：分时数据 1 分钟刷新，配合 opening_strength/live_volume 更及时
-_MINUTE_DATA_CACHE_TTL = 60
 
 
 def _normalize_minute_item(raw) -> dict:
@@ -624,7 +622,7 @@ def _fetch_minute_data(session: requests.Session, symbol: str) -> list[dict] | N
     with _minute_data_cache_lock:
         if symbol in _MINUTE_DATA_CACHE:
             data, ts = _MINUTE_DATA_CACHE[symbol]
-            if now - ts < _MINUTE_DATA_CACHE_TTL:
+            if now - ts < MINUTE_DATA_CACHE_TTL_SEC:
                 return data
     try:
         ts_ms = int(time.time() * 1000)
@@ -731,9 +729,9 @@ def analyze_intraday(session: requests.Session, symbol: str,
         with _intraday_cache_lock:
             if symbol in _INTRADAY_CACHE:
                 val, ts = _INTRADAY_CACHE[symbol]
-                if val is not None and now - ts < _INTRADAY_CACHE_TTL:
+                if val is not None and now - ts < INTRADAY_CACHE_TTL_SEC:
                     return val
-                if val is None and now - ts < _INTRADAY_CACHE_FAIL_TTL:
+                if val is None and now - ts < INTRADAY_CACHE_FAIL_TTL_SEC:
                     return None
 
     if items is None:

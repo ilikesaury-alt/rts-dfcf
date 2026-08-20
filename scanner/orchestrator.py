@@ -27,6 +27,7 @@ from scanner.config import (
     HIGH_RISK_TRENDS,
     KLINE_FETCH_DAYS,
     KLINE_FETCH_DEADLINE,
+    KLINE_REFRESH_TTL,
     MAX_MARKET_CAP,
     MAX_STOCK_PRICE,
     MCAP_CACHE_MAX_AGE_DAYS,
@@ -88,7 +89,7 @@ _session_state = ScanSession()
 # 盘中今日 K 线刷新 TTL（秒）：盘中时段已缓存今日 bar 时，超过该时长仍强制补拉，
 # 避免整日复用早盘残次 bar（stock.current 实时价与缓存 close 脱节）。
 # 300→120：缩短到 2 分钟，让盘中异动更快反映到 K 线打分（缓解"涨起来了才推"滞后）。
-KLINE_REFRESH_TTL = 120
+# 常量已收敛至 config.KLINE_REFRESH_TTL（P2-12 单源）。
 _last_kline_fetch: dict[str, float] = {}
 
 # 盘中 K 线补拉失败兜底（2026-08-14）：分时数据构造今日 bar 的限时（秒）。

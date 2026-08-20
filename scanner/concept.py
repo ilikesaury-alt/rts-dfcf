@@ -23,6 +23,7 @@ from scanner.config import (
     CONCEPT_MAX_FETCH_THREADS,
     CONCEPT_NOISE_BOARD_SUFFIXES,
     CONCEPT_NOISE_BOARDS,
+    CONCEPT_PROCESS_TTL_SEC,
 )
 from scanner.database import get_concepts_cache, save_concepts_cache
 from scanner.sector import classify_sector
@@ -44,7 +45,6 @@ _EM_HEADERS = {
 # 进程内缓存：symbol → (concepts, fetched_ts)，跨 scan 复用、避免同轮重复查 DB
 _concept_ttl_cache: dict[str, tuple[list[str], float]] = {}
 _concept_lock = threading.Lock()
-_CONCEPT_PROCESS_TTL = 300  # 5 分钟
 
 
 def _is_noise_board(name: str) -> bool:
@@ -134,7 +134,7 @@ def _collect_concepts(conn, symbols: list[str]) -> dict[str, list[str]]:
     for sym in set(symbols):
         with _concept_lock:
             hit = _concept_ttl_cache.get(sym)
-            if hit and now - hit[1] < _CONCEPT_PROCESS_TTL:
+            if hit and now - hit[1] < CONCEPT_PROCESS_TTL_SEC:
                 result[sym] = hit[0]
                 continue
         missing.append(sym)
