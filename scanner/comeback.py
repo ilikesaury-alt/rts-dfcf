@@ -336,7 +336,8 @@ def _evaluate_buy_signals(historical: list[KlineBar]) -> tuple[str, int, list[st
     if len(volumes) >= 6:
         avg_vol = sum(volumes[-6:-1]) / 5
         today_vol = volumes[-1]
-        vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
+        # avg_vol==0（脏基准）fail-closed → 0.0，避免脏量能票误判为"未缩量"放过
+        vol_ratio = today_vol / avg_vol if avg_vol > 0 else 0.0
         if vol_ratio < COMEBACK_REENTRY_VOL_SHRINK_RATIO:
             signals.append("缩量")
 

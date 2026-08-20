@@ -745,4 +745,20 @@ class TestComputeVolumeMetrics:
                                              now=datetime(2026, 6, 18, 14, 0))
         assert ratio == round(1.5 * 240 / 180, 2)
 
+    def test_zero_baseline_fails_closed(self):
+        # 基准窗口全 0（脏数据残留：NaN→0 等）→ avg_vol==0，量比 fail-closed 返回 0.0
+        # 而非旧 1.0 白过 short_term 量比硬门（validator: vol_ratio < 1.0 → fail）。
+        # 今日（末根）即便真实放量(3.0)也无法抵消不可信基准 → 仍判 0.0。
+        kline = [
+            {"date": "2026-01-02", "close": 10.0, "volume": 0.0},
+            {"date": "2026-01-03", "close": 10.0, "volume": 0.0},
+            {"date": "2026-01-04", "close": 10.0, "volume": 0.0},
+            {"date": "2026-01-05", "close": 10.0, "volume": 0.0},
+            {"date": "2026-01-06", "close": 10.5, "volume": 3.0},
+        ]
+        ratio, avg = _compute_volume_metrics(kline, "2026-01-06",
+                                             now=datetime(2026, 1, 6, 10, 0))
+        assert avg == 0.0
+        assert ratio == 0.0
+
 

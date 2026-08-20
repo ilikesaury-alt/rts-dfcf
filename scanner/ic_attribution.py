@@ -93,12 +93,16 @@ def _ma_bull_score(closes: list[float], feats: dict) -> int:
 
 
 def _vol_ratio(kline: list[KlineBar], today_str: str) -> float:
-    """复刻 analysis._compute_volume_metrics 的 vol_ratio（无今日 bar 投影）。"""
+    """复刻 analysis._compute_volume_metrics 的 vol_ratio（无今日 bar 投影）。
+
+    avg_vol==0（脏基准）时返回 0.0（fail-closed），与 analysis 保持一致——
+    不返回 1.0 以免脏量能票误过量比相关信号阈值。
+    """
     volumes = [k["volume"] for k in kline]
     vol_window = volumes[-11:-1] if len(volumes) >= 11 else volumes[:-1]
     avg_vol = sum(vol_window) / max(len(vol_window), 1)
     today_vol = kline[-1]["volume"]
-    return today_vol / avg_vol if avg_vol > 0 else 1.0
+    return today_vol / avg_vol if avg_vol > 0 else 0.0
 
 
 def load_recommendations(conn: sqlite3.Connection,

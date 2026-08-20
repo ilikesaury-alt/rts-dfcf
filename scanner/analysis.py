@@ -115,7 +115,10 @@ def _compute_volume_metrics(kline: list[KlineBar], today_str: str,
     avg_vol = sum(vol_window) / max(len(vol_window), 1)
     today_vol = _project_today_vol(kline, today_str, now)
 
-    vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
+    # avg_vol==0（基准窗口全 0，几乎必为脏数据残留：NaN→0 等）时无法信任量比，
+    # 必须 fail-closed 返回 0.0 而非 1.0——否则脏量能票会白过 short_term 量比硬门
+    # （validator.v_st_vol_gate: vol_ratio < 1.0 → fail）。
+    vol_ratio = today_vol / avg_vol if avg_vol > 0 else 0.0
     return round(vol_ratio, 2), round(avg_vol, 2)
 
 
