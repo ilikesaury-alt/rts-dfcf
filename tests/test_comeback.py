@@ -380,6 +380,27 @@ class TestEvaluateComeback:
                                                lambda s: {}, today, set(), None)
         assert rb == [] and re_ == [] and quotes == {}
 
+    def test_stale_kline_no_today_bar_not_marked(self):
+        """回归（2026-08-20）：补拉返回 stale 缓存（truthy 但无今日 bar，如 deadline
+        被榜上批次耗尽/单票拉取失败回退旧缓存）时，不得标记 last_eval_date=today——
+        此前把池冻结（当日永不再评估、漏推荐）+ 用旧 K 线失真评分。"""
+        conn = self._conn()
+        today = now_beijing().date().isoformat()
+
+        def _stale_fetcher(stocks):
+            # 无今日 bar 的旧 K 线（模拟补拉失败回退旧缓存）
+            return {s.symbol: [
+                {"date": "2026-08-18", "open": 10, "close": 10.5, "high": 10.6,
+                 "low": 9.9, "volume": 100, "percent": 0.5}
+                for s in stocks]}
+
+        rb, re_, _ = cb.evaluate_comeback(conn, self._Adapter(), _stale_fetcher,
+                                          today, set(), None)
+        assert rb == [] and re_ == []
+        # 不得标记已评估 → 下轮 KLINE_REFRESH_TTL 后可重试
+        rows = {r["symbol"]: r for r in get_watch_symbols(conn)}
+        assert rows["SZ300986"]["last_eval_date"] is None
+
     def test_filters_by_market_cap(self):
         conn = self._conn()
         today = now_beijing().date().isoformat()

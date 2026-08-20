@@ -169,6 +169,14 @@ def evaluate_comeback(conn, adapter, fetch_klines: _KlineFetcher,
         kline = klines.get(sym)
         if not kline:
             continue  # 拉取失败，不标记已评估，下轮重试
+        # 2026-08-20 修复：补拉失败回退的「stale 缓存」truthy 但无今日 bar。此前仅判
+        # `not kline` 会把 stale 也当成评估成功 → mark_watch_evaluated 写 last_eval_date=today
+        # → 当日永不再评估（池冻结、漏推荐）+ 用旧 K 线+实时 percent 评分（drop_5d/累计失真）。
+        # 现与在榜票同款 stale 语义：无今日 bar 一律不标记、跳过本轮，下轮 KLINE_REFRESH_TTL
+        # 重试。分时兜底成功时返回的 merged bar 含今日 date，可正常通过。
+        if not any(k["date"] == today for k in kline):
+            print(f"  [~] 回马枪 {st.name}({sym}) 缺今日bar（stale缓存），跳过本轮评估（下轮重试）")
+            continue
         evaluated.append(sym)
         # 反转变体：超跌企稳首阳（off_list rebound）
         if _passes_drop_prefilter(kline, today):

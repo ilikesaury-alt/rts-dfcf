@@ -43,6 +43,16 @@ def test_trunc_handles_ansi_and_wide_chars():
     assert disp_mod._vis_len(t) <= 10 and t.endswith("…")
 
 
+def test_trunc_preserves_ansi_escape_reset():
+    """回归（2026-08-20）：_trunc 截断含 ANSI 的文本时不得在转义序列中间切断、
+    丢失 \x1b[0m（否则终端后续行残留颜色）。"""
+    s = "\033[91m半导体半导体\033[0m"
+    t = disp_mod._trunc(s, 10)
+    assert disp_mod._vis_len(t) <= 10 and t.endswith("…")
+    assert t.startswith("\033[91m")
+    assert t.endswith("\033[0m…")
+
+
 def test_fund_flow_signal_boundaries():
     """阈值端点语义：≥8 强流入、[5,8) 流入、(-5,5) 中性、( -8,-5] 流出、≤-8 强流出。"""
     assert disp_mod.fund_flow_signal(None) == ""
@@ -367,6 +377,22 @@ def test_display_priority_dropped_live_percent_zero_not_fallback(monkeypatch, ca
     line = next(l for l in out.splitlines() if "SZ300002" in l)
     assert "+0.00%" in line
     assert "+2.00%" not in line
+
+
+def test_display_priority_dropped_never_appeared_uses_db_percent(monkeypatch, capsys):
+    """回归（2026-08-20）：掉榜行今日从未上榜（无 appearances 行）、无候选、无 live_quotes
+    时，涨幅列应回退到推荐时落库 percent（DB），不能恒显 +0.00%。
+    此前 get_today_recommendations 对无 appearances 行的 live_percent 填 0.0（而非 None），
+    使 display._print_priority_row 的回退链永远走 0.0——与 ranking._nextday_entry_percent
+    判档用 DB percent 形成同表两套口径（可「判档用 +5%、显示 +0.00%」）。"""
+    conn = _rec_db()
+    _insert_rec(conn, "SZ300002", "掉榜票", 2.0)
+    # 关键：不写入任何 appearances 行（该票今日从未上榜）
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    line = next(l for l in out.splitlines() if "SZ300002" in l)
+    assert "+2.00%" in line
+    assert "+0.00%" not in line
 
 
 def test_display_priority_rank_map_for_dropped(monkeypatch, capsys):

@@ -237,6 +237,9 @@ RISK_FLAGS_DISPLAY_HARD = {"超买", "主力出货", "趋势破位"}
 CONCEPT_API_TIMEOUT = 8          # 单只个股概念拉取超时（秒）
 CONCEPT_CACHE_TTL_DAYS = 7       # concept_cache 缓存天数（概念归属低频变动，7 天足够新鲜）
 CONCEPT_MAX_FETCH_THREADS = 8    # 概念归属并行拉取线程数
+# 概念拉取阶段总限时（秒）：首次/DB 过期时全量补拉，接口挂起时最坏 ceil(N/8)×8s
+# 无上限（2026-08-20 修复）。与 KLINE_FETCH_DEADLINE 同族：保证单轮扫描有界。
+CONCEPT_FETCH_PHASE_DEADLINE = 30
 # 噪音板块黑名单：地域/风格/指数成分/涨停梯队等不反映"推动逻辑"的标签，不参与驱动概念聚合
 CONCEPT_NOISE_BOARDS: set[str] = {
     "北京板块", "上海板块", "广东板块", "深圳板块", "江苏板块", "浙江板块",

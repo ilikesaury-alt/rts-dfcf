@@ -1,4 +1,5 @@
 import requests
+import wcwidth
 
 from scanner.config import FEISHU_KEYWORD, FEISHU_MIN_INTERVAL, FEISHU_WEBHOOK, now_beijing
 from scanner.display import fund_flow_signal, split_risk_flags
@@ -6,6 +7,14 @@ from scanner.models import Candidate
 
 _last_push_time: float = 0.0
 _last_push_symbols: set[str] = set()
+
+
+def _pad_vis(s: str, width: int) -> str:
+    """按显示宽度补空格（中文全角按 2 列，与 display._pad 同口径）。
+    2026-08-20 修复：原 `{s.name:<8}` 按字符数补位，3 字中文名（6 列）与 4 字名（8 列）
+    在飞书等宽字体下错位。"""
+    pad = max(0, width - sum(max(0, wcwidth.wcwidth(ch)) for ch in s))
+    return f"{s}{' ' * pad}"
 
 
 def _build_card(
@@ -102,7 +111,7 @@ def _build_card(
         if dims.get("zt_lianban"):
             extra_parts.append(f"📈{dims['zt_lianban']}板")
         extra_str = (" " + " ".join(extra_parts)) if extra_parts else ""
-        return f"`{rs} {s.name:<8} {s.symbol} {pct_str:>7} {acc_str:>7}  {c.score:>2}分{risk_str}{extra_str}`"
+        return f"`{rs} {_pad_vis(s.name, 8)} {s.symbol} {pct_str:>7} {acc_str:>7}  {c.score:>2}分{risk_str}{extra_str}`"
 
     first = True
     for title, items in sections:

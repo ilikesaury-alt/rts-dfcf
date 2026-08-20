@@ -1,4 +1,3 @@
-import math
 import os
 import re
 import sys
@@ -14,14 +13,7 @@ from scanner.config import (
     FUND_FLOW_MAIN_PCT_STRONG,
     FUND_FLOW_MAIN_PCT_WEAK,
     MARKET_WEAK_THRESHOLD,
-    NEXTDAY_ACCUM_MIN,
-    NEXTDAY_CAT_PRIORITY,
-    NEXTDAY_SPIKE_MID_MAX,
-    NEXTDAY_SPIKE_MID_MIN,
-    NEXTDAY_SPIKE_SWEET_LOW,
-    NEXTDAY_SPIKE_SWEET_MIN,
     RISK_FLAGS_DISPLAY_HARD,
-    SECTOR_RESONANCE_WARN_MAX,
     SUGGEST_BY_CAT,
     TOP40_THRESHOLD,
     now_beijing,
@@ -35,7 +27,25 @@ from scanner.database import (
     get_today_recommendations,
 )
 from scanner.models import Candidate
+
+# 纯排序逻辑已迁至 scanner.ranking（单源）；此处全量 re-export 供内部调用与
+# scripts/review_tier_replay.py 的 display._entry_* 属性访问保持兼容。
+# F401 为有意导出（test_ranking_single_source.py 断言 display.X is ranking.X）。
+from scanner.ranking import (  # noqa: F401
+    _entry_band,
+    _entry_dims,
+    _entry_fund_flow_pct,
+    _entry_overbought,
+    _entry_sector_resonance,
+    _entry_tier,
+    _entry_weak_to_strong,
+    _in_nextday_sweet_band,
+    _is_nextday_marked,
+    _nextday_entry_accum,
+    _nextday_entry_percent,
+)
 from scanner.sector import classify_sector
+from scanner.utils import to_float, to_int
 
 # ANSI SGR 转义序列（\x1b[...m：颜色/加粗/复位）。_vis_len 必须先剥离它们再量宽度，
 # 否则 `[`、数字、`;`、`m` 等可打印字符各被 wcwidth 计 1 列，彩色文本被高估宽度，
@@ -120,14 +130,29 @@ def _pad(s: str, width: int, align: str = "l") -> str:
 
 
 def _trunc(s: str, width: int) -> str:
-    """按可见宽度截断（中文全角按 2 列计），超长时尾部补 …。"""
+    """按可见宽度截断（中文全角按 2 列计），超长时尾部补 …。
+
+    2026-08-20 修复：ANSI 感知——转义序列按 0 列计并原样透传（不逐字符复制导致在
+    序列中间切断、丢失 \x1b[0m 使终端后续行残留颜色）；被截掉的尾部若含 RESET，
+    末尾补一个 RESET 兜底。
+    """
     if _vis_len(s) <= width:
         return s
     out = ""
+    vis = 0
     for ch in s:
-        if _vis_len(out) + max(0, wcwidth.wcwidth(ch)) > width - 1:
+        if ch == "\x1b":
+            m = _ANSI_ESCAPE.match(s[len(out):])
+            if m:
+                out += m.group(0)
+                continue
+        w = max(0, wcwidth.wcwidth(ch))
+        if vis + w > width - 1:
             break
+        vis += w
         out += ch
+    if "\x1b[" in out and "\x1b[0m" not in out:
+        out += "\x1b[0m"
     return out + "…"
 
 
@@ -150,8 +175,7 @@ def clear_screen():
 
 
 def pct_colored(pct: float | None, width: int = 8) -> str:
-    if pct is None:
-        pct = 0.0
+    pct = to_float(pct, default=0.0)
     s = f"{pct:+.2f}%"
     if pct >= 9:
         c = ANSI["RED"]
@@ -210,9 +234,10 @@ _FUND_FLOW_ICON = {
 
 def _fund_flow_icon_str(ff_pct) -> str:
     """主力净占比 → 5 档图标（ANSI 着色）；无数据返回空串。"""
+    ff_pct = to_float(ff_pct, default=None)
     if ff_pct is None:
         return ""
-    return _FUND_FLOW_ICON.get(fund_flow_signal(float(ff_pct)), "")
+    return _FUND_FLOW_ICON.get(fund_flow_signal(ff_pct), "")
 
 
 def _market_extra_str(c: Candidate) -> str:
@@ -252,11 +277,18 @@ def _market_env_tag(today_pool: dict[str, Candidate] | None) -> str:
     return "[大盘中性]"
 
 
-def _core_dip_extra_str(run: float, pullback: float, flow_pct) -> str:
-    """核心低吸行尾绿色后缀：20日累计 / 回撤 / 主力净占比（2026-08-20）。"""
-    parts = [f"20日{run * 100:+.1f}%", f"回撤{pullback * 100:+.1f}%"]
-    if flow_pct is not None:
-        parts.append(f"主力{float(flow_pct):+.1f}%")
+def _core_dip_extra_str(run, pullback, flow_pct) -> str:
+    """核心低吸行尾绿色后缀：20日累计 / 回撤 / 主力净占比（2026-08-20）。
+
+    2026-08-20 加固：run/pullback/flow_pct 来自 DB score_breakdown JSON，脏库
+    可能为字符串/NaN，to_float 统一防御（此前 float() 直接抛 ValueError 中断整屏渲染）。
+    """
+    run_f = to_float(run, default=0.0)
+    pullback_f = to_float(pullback, default=0.0)
+    parts = [f"20日{run_f * 100:+.1f}%", f"回撤{pullback_f * 100:+.1f}%"]
+    flow_f = to_float(flow_pct, default=None)
+    if flow_f is not None:
+        parts.append(f"主力{flow_f:+.1f}%")
     return f"{ANSI['GREEN']}{' '.join(parts)}{ANSI['RESET']}"
 
 
@@ -268,10 +300,10 @@ def _core_dip_entry_quality(entry: dict) -> tuple:
     """
     sb = _entry_dims(entry)
     return _core_dip_quality({
-        "flow_pct": sb.get("flow_pct"),
-        "today_pct": sb.get("today_pct"),
-        "run": sb.get("run") or 0.0,
-        "pullback": sb.get("pullback") or 0.0,
+        "flow_pct": to_float(sb.get("flow_pct"), default=None),
+        "today_pct": to_float(sb.get("today_pct"), default=0.0),
+        "run": to_float(sb.get("run"), default=0.0),
+        "pullback": to_float(sb.get("pullback"), default=0.0),
     })
 
 
@@ -452,26 +484,8 @@ def _print_priority_row(entry: dict, i: int, flow_pct_map: dict,
         name_str = f"{ANSI['BOLD']}{ANSI['MAGENTA']}{name_str}{ANSI['RESET']}"
     print(f"  {i:3d}  {entry['symbol']:<12} {_pad(name_str,10)} "
           f"{pct_colored(pct)} {accum_str:>8} {price_str:>7} {_pad(rank_str, 8, 'r')} "
-          f"{_pad(_trunc(sector,14),14)} {_pad(label_display,5,'r')} {entry['score']:4d} "
+          f"{_pad(_trunc(sector,14),14)} {_pad(label_display,5,'r')} {to_int(entry['score']):4d} "
           f"{_pad(first_time,6)} {_pad(suggest_str,6)}{prom_str}{risk_str}{extra_suffix}{nd_mark_str}")
-
-
-# 纯排序逻辑已迁至 scanner.ranking（单源）；此处 re-export 供内部调用与
-# scripts/review_tier_replay.py 的 display._entry_tier 属性访问保持兼容。
-from scanner.ranking import (
-    _entry_band,
-    _entry_dims,
-    _entry_fund_flow_pct,
-    _entry_overbought,
-    _entry_sector_resonance,
-    _entry_tier,
-    _entry_weak_to_strong,
-    _in_nextday_sweet_band,
-    _is_nextday_marked,
-    _nextday_entry_accum,
-    _nextday_entry_percent,
-)
-
 
 
 def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,

@@ -172,7 +172,9 @@ def fetch_zt_pool(today: str | None = None) -> dict[str, dict]:
         return result
     except Exception as e:
         print(f"  [!] 涨停池获取失败: {e}")
-        _cache_put_all(_zt_cache, {}, key)  # 短退避：TTL 内不重复重试，避免每轮刷屏/轰击
+        # 短退避：失败空结果只冻结 FUND_FLOW_PARTIAL_TTL_SEC(60s) 而非默认 300s——
+        # 默认 TTL 会让失败在 5 分钟内零重试（2026-08-20 修复，此前注释声称"短退避"实际 300s）。
+        _cache_put_all(_zt_cache, {}, key, ttl=FUND_FLOW_PARTIAL_TTL_SEC)
         return {}
 
 
@@ -299,7 +301,9 @@ def fetch_fund_flow_rank() -> dict[str, dict]:
     except Exception as e:
         _last_ff_partial = True
         print(f"  [!] 个股资金流获取失败: {e}")
-        _cache_put_all(_ff_cache, {}, key)  # 短退避：TTL 内不重复重试，避免每轮刷屏/轰击
+        # 短退避：失败空结果只冻结 FUND_FLOW_PARTIAL_TTL_SEC(60s) 而非默认 300s
+        # （2026-08-20 修复，此前注释声称"短退避"实际 300s 内零重试）。
+        _cache_put_all(_ff_cache, {}, key, ttl=FUND_FLOW_PARTIAL_TTL_SEC)
         return {}
 
 

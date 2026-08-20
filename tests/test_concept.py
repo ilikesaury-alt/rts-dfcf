@@ -2,9 +2,10 @@
 import os
 import sqlite3
 import tempfile
+import time
 from unittest.mock import patch
 
-from scanner.concept import _is_noise_board, compute_driving_concepts, fetch_stock_boards
+from scanner.concept import _fetch_many, _is_noise_board, compute_driving_concepts, fetch_stock_boards
 from scanner.database import get_concepts_cache, save_concepts_cache
 
 
@@ -156,3 +157,20 @@ def test_concepts_cache_expired():
         conn.close()
     finally:
         os.remove(path)
+
+
+def test_fetch_many_deadline_returns_partial():
+    """回归（2026-08-20）：_fetch_many 必须受阶段限时约束，超时后返回已收集部分，
+    不能无限等待挂起线程（此前 as_completed 无 timeout，首次/DB 过期日最坏
+    ceil(N/8)×8s 阻塞主扫描线程，违反 KLINE_FETCH_DEADLINE 同族「单轮有界」承诺）。"""
+    def _slow(sym):
+        time.sleep(10)
+        return [f"概念{sym}"]
+
+    with patch("scanner.concept.fetch_stock_boards", side_effect=_slow):
+        t0 = time.time()
+        got = _fetch_many(["SZ300001", "SZ300002"], deadline=time.time() + 0.5)
+    elapsed = time.time() - t0
+    assert elapsed < 5, f"阶段限时失效，耗时 {elapsed:.1f}s（应受 deadline 约束）"
+    assert got == {}  # 所有任务都挂起 → 超时后空结果（fail-open，本轮无概念）
+    assert isinstance(got, dict)

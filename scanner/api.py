@@ -87,7 +87,13 @@ def _request_with_retry(session: requests.Session, url: str,
                         timeout: int | tuple | None = None) -> requests.Response:
     last_exc = None
     rebuilt = False
-    for attempt in range(max_retries):
+    # 2026-08-20 修复：session 重建后必须再给一次真正用上新 cookie 的尝试。
+    # 原 range(max_retries)：若最后一次尝试（attempt=max_retries-1）才检测到 400016 失效，
+    # refresh 成功后 continue 出循环 → raise 的是前几次的陈旧 Timeout（且 refresh 白做）。
+    # 现多留 1 个配额给「已重建」场景；未重建则第 max_retries 次直接 break 保持原语义。
+    for attempt in range(max_retries + 1):
+        if attempt == max_retries and not rebuilt:
+            break
         try:
             _throttle()
             # (connect, read) 双段超时：connect 短超时避免连不上挂死拖垮整轮扫描

@@ -469,13 +469,21 @@ def _filter_gem_stocks(raw: list[dict]) -> list[StockInfo]:
             value = 0.0
         rank_change = int(rc_val) if math.isfinite(rc_val) else 0
         rank = int(rank_val) if math.isfinite(rank_val) else i
+        # 换手率（2026-08-20）：与 rank_change 同族脏值（"-"/空串/NaN/inf）——非数字串
+        # 时 float() 直接抛 ValueError（曾放 try 外，整批扫描崩溃）。此处 fail-soft 到
+        # 0.0（仅停牌/僵尸识别用，不应整只票跳过）。bool 也算脏（float(True)=1.0）。
+        tr_raw = item.get("turnover_rate")
+        try:
+            tr = float(tr_raw) if tr_raw not in (None, "", True, False) else 0.0
+            turnover_rate = tr if math.isfinite(tr) else 0.0
+        except (TypeError, ValueError):
+            turnover_rate = 0.0
         gem_stocks.append(StockInfo(
             symbol=symbol, name=name, code=code,
             percent=percent, current=current, value=value,
             rank_change=rank_change, rank=rank,
             source_tag=item.get("source_tag", "xueqiu"),
-            turnover_rate=float(item.get("turnover_rate") or 0.0)
-            if math.isfinite(float(item.get("turnover_rate") or 0.0)) else 0.0,
+            turnover_rate=turnover_rate,
         ))
     return gem_stocks
 

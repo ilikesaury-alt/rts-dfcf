@@ -1132,6 +1132,28 @@ class TestFilterGemStocks:
         # int symbol 300001 → str "300001"（GEM 代码保留），int name 12345 → "12345"
         assert [s.symbol for s in stocks] == ["300001", "SZ300002"]
 
+    def test_turnover_rate_dirty_string_fail_soft(self):
+        """回归（2026-08-20）：turnover_rate="-"（API 偶发非数字串）此前放 try 外
+        float() 直接抛 ValueError 拖垮整批 _filter_gem_stocks；现 fail-soft 到 0.0，
+        该票保留（换手率仅停牌/僵尸识别用，不应整票跳过）。"""
+        from scanner.orchestrator import _filter_gem_stocks
+        raw = [
+            {"symbol": "SZ300001", "code": "300001", "name": "测试A",
+             "percent": 5.0, "current": 10.0, "value": 8000,
+             "rank_change": 100, "rank": 1, "turnover_rate": "-"},
+            {"symbol": "SZ300002", "code": "300002", "name": "测试B",
+             "percent": 3.1, "current": 10.0, "value": 8000,
+             "rank_change": 1200, "rank": 2, "turnover_rate": "3.5"},
+            {"symbol": "SZ300003", "code": "300003", "name": "测试C",
+             "percent": 2.0, "current": 9.0, "value": 7000,
+             "rank_change": 50, "rank": 3, "turnover_rate": float("nan")},
+        ]
+        stocks = _filter_gem_stocks(raw)
+        assert [s.symbol for s in stocks] == ["SZ300001", "SZ300002", "SZ300003"]
+        assert stocks[0].turnover_rate == 0.0   # "-" → 0
+        assert stocks[1].turnover_rate == 3.5   # 正常值保留
+        assert stocks[2].turnover_rate == 0.0   # NaN → 0
+
     def test_nan_inf_coerced_to_zero(self):
         """回归：percent/current/value 为 NaN/inf（Python json 可解析 JSON 字面量）
         必须强转 0，否则 NaN 绕过 `s.current > MAX_STOCK_PRICE` 等数值过滤、

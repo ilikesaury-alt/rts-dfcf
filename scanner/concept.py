@@ -19,6 +19,7 @@ from scanner import api
 from scanner.config import (
     CONCEPT_API_TIMEOUT,
     CONCEPT_CACHE_TTL_DAYS,
+    CONCEPT_FETCH_PHASE_DEADLINE,
     CONCEPT_MAX_FETCH_THREADS,
     CONCEPT_NOISE_BOARD_SUFFIXES,
     CONCEPT_NOISE_BOARDS,
@@ -88,14 +89,22 @@ def fetch_stock_boards(symbol: str) -> list[str]:
     return boards
 
 
-def _fetch_many(symbols: list[str]) -> dict[str, list[str]]:
-    """并行拉取多只股票的概念归属（线程池 + 节流）。"""
+def _fetch_many(symbols: list[str], deadline: float | None = None) -> dict[str, list[str]]:
+    """并行拉取多只股票的概念归属（线程池 + 节流 + 阶段限时）。
+
+    2026-08-20：此前 as_completed 无限等待全部完成——首次/DB 过期日最坏
+    ceil(N/8)×CONCEPT_API_TIMEOUT ≈ 40s 阻塞主扫描线程（与 KLINE_FETCH_DEADLINE
+    的"单轮有界"承诺不一致）。现加 CONCEPT_FETCH_PHASE_DEADLINE 上限，超时剩余票
+    不回填（本轮无概念 → 回退 classify_sector/"其他"，下轮 TTL/DB 再补）。
+    """
     result: dict[str, list[str]] = {}
     if not symbols:
         return result
-    with ThreadPoolExecutor(max_workers=CONCEPT_MAX_FETCH_THREADS) as pool:
-        futs = {pool.submit(fetch_stock_boards, s): s for s in symbols}
-        for fut in as_completed(futs):
+    dl = deadline if deadline is not None else time.time() + CONCEPT_FETCH_PHASE_DEADLINE
+    pool = ThreadPoolExecutor(max_workers=CONCEPT_MAX_FETCH_THREADS)
+    futs = {pool.submit(fetch_stock_boards, s): s for s in symbols}
+    try:
+        for fut in as_completed(futs, timeout=max(0.0, dl - time.time())):
             sym = futs[fut]
             try:
                 boards = fut.result()
@@ -103,6 +112,14 @@ def _fetch_many(symbols: list[str]) -> dict[str, list[str]]:
                     result[sym] = boards
             except Exception as e:
                 logger.warning("概念拉取异常 %s: %s", sym, e)
+    except TimeoutError:
+        remaining = sum(1 for f in futs if not f.done())
+        logger.warning("概念拉取阶段超时（>%.0fs），剩余 %d 只未拉取", CONCEPT_FETCH_PHASE_DEADLINE, remaining)
+    finally:
+        # 关键：shutdown(wait=False) + cancel_futures——不用 `with` 语句（其退出时
+        # wait=True 会等挂起线程全部完成，deadline 形同虚设）。取消剩余任务让 daemon
+        # 线程自行结束，立即返回不阻塞主扫描线程。
+        pool.shutdown(wait=False, cancel_futures=True)
     return result
 
 

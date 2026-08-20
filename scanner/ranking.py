@@ -17,6 +17,8 @@ from scanner.config import (
     NEXTDAY_SPIKE_SWEET_MIN,
     SECTOR_RESONANCE_WARN_MAX,
 )
+from scanner.utils import to_float
+
 
 def _nextday_entry_percent(entry: dict) -> float:
     """推荐时刻盘中涨幅（用于次日大涨候选区筛形）。
@@ -28,10 +30,10 @@ def _nextday_entry_percent(entry: dict) -> float:
     """
     c = entry.get("_candidate")
     if c and c.stock:
-        return float(c.stock.percent)
+        return to_float(c.stock.percent, default=0.0)
     if entry.get("live_quote_available") and entry.get("live_percent") is not None:
-        return float(entry["live_percent"])
-    return float(entry.get("percent", 0.0))
+        return to_float(entry["live_percent"], default=0.0)
+    return to_float(entry.get("percent"), default=0.0)
 
 
 def _in_nextday_sweet_band(percent: float) -> bool:
@@ -166,7 +168,7 @@ def _entry_band(entry: dict) -> str:
 def _entry_fund_flow_pct(entry: dict) -> float | None:
     """主力净占比（%），候选行读 dims、掉榜行读 score_breakdown；无数据返回 None。"""
     v = _entry_dims(entry).get("fund_flow_main_pct")
-    return float(v) if v is not None else None
+    return to_float(v, default=None) if v is not None else None
 
 
 def _entry_sector_resonance(entry: dict) -> bool:

@@ -365,10 +365,15 @@ def _mo_volume_uniformity(historical_kline: list[KlineBar]) -> tuple[int, str]:
     # 量能判定须先剔除停牌/脏数据的零量 bar：单根 volume=0（KlineBar 契约允许）
     # 会让 min()==0 → 原逻辑 ratio 置 99 → 误判 vol_spike(-5) 惩罚整个 momentum 候选。
     positive = [v for v in recent_5 if v > 0]
-    if len(positive) < 2:
-        # 5 日窗口几乎全停牌/零量，无法判定量能均匀性 → 中性（不惩罚、不计正维度）
+    if len(positive) < 3:
+        # 5 日窗口 ≥3 根零量（连续停牌/脏数据），无法判定量能均匀性 → 中性（不惩罚、
+        # 不计正维度）。2026-08-20 收紧：原 `< 2` 使 [0,0,0,100,100]（3 停牌+2 交易）
+        # 仍被判 vol_up(+8)——前导零量让 inc 恒 True 且 ratio=1.0<3，虚抬动量量能分。
         return 0, "vol_flat"
-    inc = all(recent_5[i] <= recent_5[i + 1] for i in range(len(recent_5) - 1))
+    # inc 与 ratio 同口径：都只对剔除零量后的 positive 判定（2026-08-20 修复）。
+    # 此前 inc 遍历原始 recent_5——窗口内零量（停牌/脏数据）参与单调性比较，制造
+    # 「0<=0<=0<=100<=100 → 放量」假象（[0,0,0,100,100] → vol_up_r1.0）。
+    inc = all(positive[i] <= positive[i + 1] for i in range(len(positive) - 1))
     ratio = max(positive) / max(min(positive), 0.01)
 
     # 放宽：去掉"严格非递减"硬要求；仅当 5 日内量能爆量（ratio>=3.0）才判异常

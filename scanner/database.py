@@ -777,10 +777,18 @@ def record_leaderboard_log(conn: sqlite3.Connection, source: str, items: list[di
             overlap = len(cur_syms & prev_symbols) / len(cur_syms)
 
         # 前 40 成员紧凑快照（供成分重建，不全存以控体积：100条×6KB×240轮/日≈1.4MB/日）
+        # 2026-08-20 修复：此前 percent 用 `pcts[idx]`，但 pcts 是过滤非法值后的列表——
+        # 任一早期 item percent 为 None/字符串/NaN 时，其后的 symbol percent 全部错位。
+        # 现逐条独立清洗（与中位数口径一致，脏值存 None 不误导消费方）。
+
+        def _valid_pct(v):
+            f = to_float(v, None)
+            return f if f is not None and math.isfinite(f) else None
+
         snapshot = [
             {"symbol": str(i.get("symbol") or ""),
              "name": str(i.get("name") or ""),
-             "percent": pcts[idx] if idx < len(pcts) else None,
+             "percent": _valid_pct(i.get("percent")),
              "rank": int(to_float(i.get("rank"), idx + 1) or idx + 1),
              "rank_change": to_float(i.get("rank_change"), None)}
             for idx, i in enumerate(items[:40])
@@ -1124,9 +1132,14 @@ def get_today_recommendations(conn: sqlite3.Connection, as_of=None) -> list[dict
         app_rows = []
     app_map = {r[0]: {"percent": r[1], "rank": r[2]} for r in app_rows}
     for sym, entry in seen.items():
-        a = app_map.get(sym, {})
-        entry["live_percent"] = a.get("percent", 0.0)
-        entry["live_rank"] = a.get("rank")
+        a = app_map.get(sym)
+        # 2026-08-20 修复：今日从未上榜的掉榜/回马枪/核心低吸行，live_percent 置 None
+        # 而非 0.0——此前恒 0.0 使 display._print_priority_row 的回退链永远走 0.0，
+        # 该行涨幅恒显 +0.00%（而 ranking._nextday_entry_percent 判档用 DB percent，
+        # 同表两套口径：可「判档用 +5%、显示 +0.00%」）。今日上榜行 percent=0.0
+        # 是合法 0.00% 涨幅，保持 0.0 不误伤（test_display_priority_dropped_live_percent_zero_not_fallback）。
+        entry["live_percent"] = a["percent"] if a else None
+        entry["live_rank"] = a["rank"] if a else None
 
     result = list(seen.values())
     _assign_rank_scores(result)

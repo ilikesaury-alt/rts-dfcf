@@ -182,6 +182,25 @@ class TestValidateMomentumHelpers:
         bonus, detail = _mo_volume_uniformity(k[:-1])
         assert bonus == 0 and "flat" in detail
 
+    def test_volume_uniformity_leading_zeros_not_vol_up(self):
+        # 回归（2026-08-20）：前导零量 bar（停牌/脏数据）此前让 inc 恒 True 且 ratio=1.0
+        # → 误判 vol_up(+8)（[0,0,0,100,100] → 'vol_up_r1.0'）。5 日窗口 ≥3 根零量
+        # 无法判定量能均匀性 → 中性 vol_flat(0)。
+        bonus, detail = _mo_volume_uniformity([
+            {"volume": 0}, {"volume": 0}, {"volume": 0},
+            {"volume": 100}, {"volume": 100}])
+        assert bonus == 0 and "flat" in detail, f"{bonus} ({detail})"
+
+    def test_volume_uniformity_mid_zero_uses_positive_monotonic(self):
+        # 回归（2026-08-20）：inc 与 ratio 同口径（都剔除零量）。窗口中间停牌日
+        # （100,0,0,100,200）此前 raw 单调性被 0 打断 → vol_stable(+5)；现按
+        # positive=[100,100,200] 非递减 → vol_up(+8)（放量确认，不被停牌日掩埋）。
+        bonus, detail = _mo_volume_uniformity([
+            {"volume": 100}, {"volume": 0}, {"volume": 0},
+            {"volume": 100}, {"volume": 200}])
+        assert bonus > 0, f"{bonus} ({detail})"
+        assert "spike" not in detail
+
     def test_ma_alignment_uses_ema_consistent_with_analysis(self):
         # P0 回归：validator 的 _mo_ma_alignment 必须与 analysis._ma_bull_score
         # 使用同一 EMA 约定，否则评分加分与验证维度会脱节。
