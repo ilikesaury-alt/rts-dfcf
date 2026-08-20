@@ -1,5 +1,7 @@
 /logs
 /*.db
+*.db-shm
+*.db-wal
 /__pycache__
 /.claude
 /.opencode
