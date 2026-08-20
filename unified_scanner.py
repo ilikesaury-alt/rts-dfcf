@@ -49,7 +49,7 @@ from scanner.database import (
     save_kline_to_db,
     save_recommendations,
 )
-from scanner.display import clear_screen, display
+from scanner.display import display
 from scanner.feishu import push_feishu
 from scanner.log_utils import log_results
 from scanner.orchestrator import scan_with_raw
@@ -59,6 +59,7 @@ from scanner.trading_session import (
     next_session_label,
     seconds_until_next_session,
 )
+from scanner.utils import clear_screen
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")

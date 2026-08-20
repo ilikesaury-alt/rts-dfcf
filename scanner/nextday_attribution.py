@@ -36,7 +36,7 @@ from scanner.backtest import ACTIVE_CATEGORIES, spearman
 from scanner.config import DB_PATH, NEXTDAY_HIT_THRESHOLD, now_beijing
 from scanner.data_health import check_kline_health, health_banner
 from scanner.database import get_prominence_map
-from scanner.display import clear_screen
+from scanner.utils import clear_screen
 
 DEFAULT_THRESHOLD = NEXTDAY_HIT_THRESHOLD   # 单源见 config，兼容旧 import
 DEFAULT_RECENT_DAYS = 0   # 0=全部历史；>0=最近 N 天

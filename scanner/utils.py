@@ -1,4 +1,6 @@
 import math
+import os
+import sys
 
 from scanner.config import CACHE_MAX_ENTRIES
 
@@ -81,3 +83,41 @@ def is_hk_stock(symbol: str) -> bool:
     if len(symbol) == 6 and symbol[:2] in _A_SHARE_PREFIXES:
         return False
     return True
+
+
+# ── 终端清屏（P1-8：从 scanner.display 迁出不依赖渲染层）──────────────────────
+# 此前 11 处工具/回测层 `from scanner.display import clear_screen` 反向依赖渲染层，
+# 现收敛到此（utils 为叶子模块，display 与工具层均 import 它，无环）。
+if os.name == "nt":
+    import ctypes
+    _clr_kernel32 = ctypes.windll.kernel32
+    _clr_handle = _clr_kernel32.GetStdHandle(-11)
+    _clr_mode = ctypes.c_uint32()
+    # 是否「真实 Windows conhost」：GetConsoleMode 仅对真实控制台成功；
+    # pty/终端模拟器/重定向管道均失败（返回 0），但它们通常讲 ANSI/VT 协议。
+    _clr_is_console = _clr_kernel32.GetConsoleMode(_clr_handle, ctypes.byref(_clr_mode)) != 0
+    _clr_supports_ansi = (
+        _clr_is_console
+        and _clr_kernel32.SetConsoleMode(_clr_handle, _clr_mode.value | 0x0004) != 0
+    )
+else:
+    _clr_is_console = False
+    _clr_supports_ansi = True
+
+
+def clear_screen() -> None:
+    """清空终端屏幕（主扫描器 display() 渲染前调用，避免上一屏内容逐行叠加）。
+
+    清屏策略（2026-08-13 修订，修复 pty/终端模拟器下 os.system("cls") 无效）：
+    - 输出被重定向/管道（isatty=False）→ 跳过，不注入 ANSI 序列污染日志文件。
+    - 仅「真实 Windows conhost 但不支持 VT 的旧版控制台」用 os.system("cls")。
+    - 其余一律 ANSI \033[2J\033[H：现代 conhost（导入时已启用 VT）、Windows
+      Terminal、pty 终端模拟器等均讲 ANSI/VT 协议；pty 下 cls 不生效（cmd 不
+      共享 pty 的屏幕缓冲），正是此前「创业板飙升榜监控」表头逐轮叠加的根因。
+    """
+    if not sys.stdout.isatty():
+        return
+    if os.name == "nt" and _clr_is_console and not _clr_supports_ansi:
+        os.system("cls")
+        return
+    print("\033[2J\033[H", end="", flush=True)

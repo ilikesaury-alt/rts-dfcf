@@ -12,7 +12,6 @@ sys.path.insert(0, BASE_DIR)
 
 from scanner.config import DB_PATH, now_beijing  # noqa: E402  (BASE_DIR 路径注入后导入)
 from scanner.database import get_cached_kline, get_consecutive_appearance_days  # noqa: E402
-from scanner.display import clear_screen  # noqa: E402
 from scanner.indicators import (  # noqa: E402
     compute_adx,
     compute_bollinger_bands,
@@ -20,6 +19,7 @@ from scanner.indicators import (  # noqa: E402
     compute_macd,
     compute_rsi,
 )
+from scanner.utils import clear_screen  # noqa: E402
 
 SEP = "━" * 55
 SUB_SEP = "─" * 55

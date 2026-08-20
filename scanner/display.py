@@ -1,6 +1,5 @@
 import os
 import re
-import sys
 
 import wcwidth
 
@@ -45,7 +44,7 @@ from scanner.ranking import (  # noqa: F401
     sort_main_entries,
 )
 from scanner.sector import classify_sector
-from scanner.utils import to_float, to_int
+from scanner.utils import clear_screen, to_float, to_int
 
 # ANSI SGR 转义序列（\x1b[...m：颜色/加粗/复位）。_vis_len 必须先剥离它们再量宽度，
 # 否则 `[`、数字、`;`、`m` 等可打印字符各被 wcwidth 计 1 列，彩色文本被高估宽度，
@@ -150,23 +149,6 @@ def _trunc(s: str, width: int) -> str:
         out += "\x1b[0m"
     return out + "…"
 
-
-def clear_screen():
-    """清空终端屏幕（主扫描器 display() 渲染前调用，避免上一屏内容逐行叠加）。
-
-    清屏策略（2026-08-13 修订，修复 pty/终端模拟器下 os.system("cls") 无效）：
-    - 输出被重定向/管道（isatty=False）→ 跳过，不注入 ANSI 序列污染日志文件。
-    - 仅「真实 Windows conhost 但不支持 VT 的旧版控制台」用 os.system("cls")。
-    - 其余一律 ANSI \\033[2J\\033[H：现代 conhost（导入时已启用 VT）、Windows
-      Terminal、pty 终端模拟器等均讲 ANSI/VT 协议；pty 下 cls 不生效（cmd 不
-      共享 pty 的屏幕缓冲），正是此前「创业板飙升榜监控」表头逐轮叠加的根因。
-    """
-    if not sys.stdout.isatty():
-        return
-    if os.name == "nt" and _is_console and not _supports_ansi:
-        os.system("cls")
-        return
-    print("\033[2J\033[H", end="", flush=True)
 
 
 def pct_colored(pct: float | None, width: int = 8) -> str:

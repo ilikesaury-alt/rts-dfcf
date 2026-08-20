@@ -8,7 +8,7 @@ from datetime import datetime
 
 import requests
 
-from scanner.display import clear_screen
+from scanner.utils import clear_screen
 
 
 def fetch_biaosheng(page=1, size=100):

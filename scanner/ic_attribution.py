@@ -51,10 +51,10 @@ from scanner.config import (
     MA_BULL_3_TIER_SCORE,
     NEW_FACE_WEIGHTS,
 )
-from scanner.display import clear_screen
 from scanner.features import build_features
 from scanner.models import KlineBar, make_kline_bar
 from scanner.sector import classify_sector
+from scanner.utils import clear_screen
 
 
 def _ma_bull_score(closes: list[float], feats: dict) -> int:

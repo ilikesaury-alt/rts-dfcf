@@ -40,8 +40,8 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from scanner.config import DB_PATH, now_beijing
-from scanner.display import clear_screen
 from scanner.trading_session import _nth_trading_day_after
+from scanner.utils import clear_screen
 
 # Windows GBK 控制台无法编码 ‱ 等字符，统一走 UTF-8（项目其它入口同款处理）
 if sys.platform == "win32":

@@ -11,7 +11,7 @@ parser.add_argument('--date', default=None, help='目标日期 (YYYY-MM-DD)，�
 args = parser.parse_args()
 
 from scanner.config import DB_PATH, now_beijing  # noqa: E402  (reconfigure 后导入避免编码异常)
-from scanner.display import clear_screen  # noqa: E402
+from scanner.utils import clear_screen  # noqa: E402
 
 clear_screen()
 conn = sqlite3.connect(DB_PATH)
