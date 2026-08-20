@@ -106,6 +106,9 @@ def _rec_db():
     conn.execute("""CREATE TABLE market_extra_cache (
         symbol TEXT NOT NULL, date TEXT NOT NULL, data_type TEXT NOT NULL,
         payload_json TEXT NOT NULL, updated TEXT NOT NULL, PRIMARY KEY(symbol, data_type))""")
+    conn.execute("""CREATE TABLE market_index_log (
+        date TEXT PRIMARY KEY, time TEXT, index_pct REAL, bar_date TEXT,
+        source TEXT, updated TEXT DEFAULT '')""")
     return conn
 
 
@@ -199,6 +202,92 @@ def test_display_priority_comeback_shown_when_main_scarce(monkeypatch, capsys):
     main_part = out.split("◆ 回马枪", 1)[0]
     assert "SZ300001" in main_part
     assert "SZ300003" in main_part
+
+
+def _set_market_index(conn, index_pct: float):
+    today = now_beijing().date().isoformat()
+    conn.execute(
+        "INSERT OR REPLACE INTO market_index_log (date, time, index_pct, bar_date, source, updated) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (today, "10:00", index_pct, today, "test", now_beijing().isoformat()),
+    )
+    conn.commit()
+
+
+def test_display_priority_comeback_shown_only_when_market_weak(monkeypatch, capsys):
+    """2026-08-20：回马枪是「弱市低吸工具」——仅大盘弱势（index_pct <
+    MARKET_WEAK_THRESHOLD=-1.0）才显示；强势/中性市不渲染。"""
+    # 主区 2 条（≤ 阈值 3）+ 弱市 → 显示
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "反弹", "rebound", 50)
+    _insert_rec_cat(conn, "SZ300002", "回马", "comeback", 90)
+    _insert_rec_cat(conn, "SZ300003", "超短", "short_term", 80)
+    _set_market_index(conn, -3.0)
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    assert "◆ 回马枪" in out
+    # 同条件但强市 → 隐藏
+    conn2 = _rec_db()
+    _insert_rec_cat(conn2, "SZ300001", "反弹", "rebound", 50)
+    _insert_rec_cat(conn2, "SZ300002", "回马", "comeback", 90)
+    _insert_rec_cat(conn2, "SZ300003", "超短", "short_term", 80)
+    _set_market_index(conn2, 2.0)
+    disp_mod.display_priority(conn2, today_pool={})
+    out2 = capsys.readouterr().out
+    assert "◆ 回马枪" not in out2
+    assert "SZ300002" not in out2
+    # 中性市（-1.0 不触发弱市）→ 隐藏
+    conn3 = _rec_db()
+    _insert_rec_cat(conn3, "SZ300001", "反弹", "rebound", 50)
+    _insert_rec_cat(conn3, "SZ300002", "回马", "comeback", 90)
+    _insert_rec_cat(conn3, "SZ300003", "超短", "short_term", 80)
+    _set_market_index(conn3, 0.0)
+    disp_mod.display_priority(conn3, today_pool={})
+    out3 = capsys.readouterr().out
+    assert "◆ 回马枪" not in out3
+
+
+def test_display_priority_core_dip_shown_only_when_market_weak(monkeypatch, capsys):
+    """2026-08-20：核心方向低吸同回马枪——仅大盘弱势才显示。"""
+    import json as _json
+
+    def _mk(conn, idx):
+        _insert_rec_cat(conn, "SZ300001", "反弹", "rebound", 50)
+        conn.execute(
+            "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, score_breakdown) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (now_beijing().date().isoformat(), "13:00", "SZ300002", "低吸", "core_dip", 70, 3.0,
+             _json.dumps({"run": 0.2, "pullback": -0.1, "flow_pct": 5.0})),
+        )
+        _set_market_index(conn, idx)
+        conn.commit()
+
+    conn = _rec_db()
+    _mk(conn, -2.5)
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    assert "◆ 核心方向低吸" in out
+    # 2026-08-20：与回马枪同款标准行渲染（DIP 标签 + 行尾绿色 20日/回撤/主力后缀）
+    dip_line = next(l for l in out.split("◆ 核心方向低吸", 1)[1].splitlines() if "SZ300002" in l)
+    assert "DIP" in dip_line
+    assert "20日" in dip_line and "回撤" in dip_line and "主力" in dip_line
+    conn2 = _rec_db()
+    _mk(conn2, 1.5)
+    disp_mod.display_priority(conn2, today_pool={})
+    out2 = capsys.readouterr().out
+    assert "◆ 核心方向低吸" not in out2
+
+
+def test_market_is_weak_fail_open_without_log(capsys):
+    """2026-08-20：market_index_log 无记录（旧库未迁移/扫描未跑）+ 无候选 dims →
+    fail-open 按弱势处理（弱市工具宁可多显示不误杀）。"""
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "反弹", "rebound", 50)
+    _insert_rec_cat(conn, "SZ300002", "回马", "comeback", 90)
+    _insert_rec_cat(conn, "SZ300003", "超短", "short_term", 80)
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    assert "◆ 回马枪" in out
 
 
 # ── 综合排序实时行情覆盖：live_quotes 对所有行优先（候选/非候选一致）──

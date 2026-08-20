@@ -515,11 +515,11 @@ COMEBACK_REENTRY_STATUS_BUY = 4             # 信号数≥此值 → "到买点"
 COMEBACK_REENTRY_STATUS_WATCH = 3           # 信号数≥此值 → "观察中"，否则 "未到买点"（过滤）
 COMEBACK_REENTRY_DISPLAY_BUY_MAX = 10       # "到买点"最多显示条数
 COMEBACK_REENTRY_DISPLAY_WATCH_MAX = 0      # "观察中"补充最多显示条数（0 = 不显示，只看到买点）
-# 回马枪独立区仅作兜底参考（2026-08-12 放宽）：主区（榜上五类）推荐条数 ≥
-# COMEBACK_DISPLAY_MIN_MAIN 时不展示回马枪（避免刷屏）；主区推荐条数 < 该值（含为空）
-# 时补充展示，最多前 COMEBACK_DISPLAY_MAX 条（回马枪为掉榜无热榜背书票，评分语义弱于榜上推荐）。
+# 回马枪独立区仅作兜底参考（2026-08-12 放宽，2026-08-20 收紧隐藏条件）：主区（榜上五类）
+# 推荐条数 > COMEBACK_DISPLAY_MIN_MAIN 时才隐藏回马枪（避免刷屏）；主区推荐条数 ≤ 该值
+# （含为空）时补充展示，最多前 COMEBACK_DISPLAY_MAX 条（回马枪为掉榜无热榜背书票，评分语义弱于榜上推荐）。
 COMEBACK_DISPLAY_MAX = 10                   # 回马枪区最多显示条数
-COMEBACK_DISPLAY_MIN_MAIN = 3               # 主区推荐条数低于此值 → 补充显示回马枪区
+COMEBACK_DISPLAY_MIN_MAIN = 3               # 主区推荐条数大于此值 → 隐藏回马枪区；≤ 此值 → 补充显示
 
 # 核心方向低吸（2026-08-19，`scanner/core_themes.py` + display 独立区）：
 # 大跌市中找「当前市场主线方向（核心概念）的核心股低吸」机会。纯展示层推导（DB-only，
@@ -636,6 +636,7 @@ SUGGEST_BY_CAT = {
     "short_term": "参考",
     "pullback": "\033[91m回避\033[0m",
     "comeback": "\033[96m回马\033[0m",
+    "core_dip": "低吸",
 }
 
 # ── 次日大涨候选独立区（display-only，2026-08-10）──

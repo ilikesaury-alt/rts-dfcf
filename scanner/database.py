@@ -940,7 +940,7 @@ def get_today_recommendations(conn: sqlite3.Connection, as_of=None) -> list[dict
     同优先级内保留最高分——
     防止同票同时有 comeback（掉榜跟踪）与榜上推荐（如 short_term）时，因 comeback
     基线分更高（40+15×信号数）而遮蔽榜上记录，导致该票在综合排序主表消失
-    （回马枪区仅在主区条数 < COMEBACK_DISPLAY_MIN_MAIN 时展示，平时整体隐藏）。
+    （回马枪区仅在主区条数 ≤ COMEBACK_DISPLAY_MIN_MAIN 且大盘弱势时展示，平时整体隐藏）。
     comeback 仅是"榜上之外单独评估"的补充信号，在榜票应以主表类别展示。
     2026-08-19：core_dip 与 comeback 同族（不入综合排序主表，display/today_report 的
     main 均排除），归入同一低优桶——否则 core_dip 记录（CASE 0）会按 score 遮蔽榜上五类
