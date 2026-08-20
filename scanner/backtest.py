@@ -32,7 +32,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sqlite3
 import sys
 from collections import defaultdict
@@ -40,6 +39,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from scanner.config import DB_PATH, now_beijing
+from scanner.models import parse_score_breakdown
 from scanner.trading_session import _nth_trading_day_after
 from scanner.utils import clear_screen
 
@@ -320,10 +320,7 @@ def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct", days: i
     dim_vals: dict[str, list[float]] = defaultdict(list)
     dim_rets: dict[str, list[float]] = defaultdict(list)
     for breakdown, ret in rows:
-        try:
-            d = json.loads(breakdown)
-        except (json.JSONDecodeError, TypeError):
-            continue
+        d = parse_score_breakdown(breakdown)
         for dim, val in d.items():
             if dim in dead_dim_keys:
                 continue

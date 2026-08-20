@@ -7,7 +7,7 @@ data_source AKShare adapter）的**唯一入口**，其校验行为必须稳定�
 """
 import math
 
-from scanner.models import make_kline_bar
+from scanner.models import make_kline_bar, parse_score_breakdown
 
 
 class TestMakeKlineBar:
@@ -116,3 +116,35 @@ class TestMakeKlineBar:
         assert len(kept) == 1
         assert kept[0]["date"] == "2026-08-11"
         assert kept[0]["close"] == 10.8
+
+
+class TestParseScoreBreakdown:
+    """score_breakdown JSON 解析单源（P1-7）契约测试。
+
+    parse_score_breakdown 是 backtest / nextday_attribution / portfolio_backtest /
+    display / ranking 读取维度的**唯一入口**，其「解析失败→{}」契约必须稳定——
+    任何消费方改为自行 json.loads 都会回到「异常/静默 None 口径漂移」（曾导致
+    掉榜行 🎯 分型判错）。
+    """
+
+    def test_none_returns_empty(self):
+        assert parse_score_breakdown(None) == {}
+
+    def test_empty_string_returns_empty(self):
+        assert parse_score_breakdown("") == {}
+
+    def test_valid_json_string(self):
+        sb = '{"st_weak_to_strong": 1, "fund_flow_main_pct": 3.2}'
+        assert parse_score_breakdown(sb) == {"st_weak_to_strong": 1, "fund_flow_main_pct": 3.2}
+
+    def test_invalid_json_returns_empty(self):
+        assert parse_score_breakdown("{not json") == {}
+        assert parse_score_breakdown("[1, 2, 3]") == {}  # 非 dict JSON → 空
+
+    def test_already_dict_passthrough(self):
+        d = {"v_st_overbought": 1}
+        assert parse_score_breakdown(d) is d  # 已解析 dict 原样返回（含 DB 预解析路径）
+
+    def test_non_str_non_dict_returns_empty(self):
+        assert parse_score_breakdown(123) == {}
+        assert parse_score_breakdown([]) == {}

@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import sqlite3
 import sys
 from collections import defaultdict
@@ -54,6 +53,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 
 from scanner.config import CROSS_SOURCE_BONUS, DB_PATH
+from scanner.models import parse_score_breakdown
 from scanner.trading_session import _nth_trading_day_after, is_trading_day
 from scanner.utils import clear_screen
 
@@ -239,11 +239,8 @@ def _deheat_score(raw_score: int, breakdown_json: str | None, source: str | None
     """
     if not breakdown_json:
         return raw_score
-    try:
-        dims = json.loads(breakdown_json)
-    except (json.JSONDecodeError, TypeError):
-        return raw_score
-    if not isinstance(dims, dict):
+    dims = parse_score_breakdown(breakdown_json)
+    if not dims:
         return raw_score
     total = raw_score
     for key in HEAT_BONUS_KEYS:

@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import sqlite3
 from collections import Counter, defaultdict
 from datetime import timedelta
@@ -36,6 +35,7 @@ from scanner.backtest import ACTIVE_CATEGORIES, spearman
 from scanner.config import DB_PATH, NEXTDAY_HIT_THRESHOLD, now_beijing
 from scanner.data_health import check_kline_health, health_banner
 from scanner.database import get_prominence_map
+from scanner.models import parse_score_breakdown
 from scanner.utils import clear_screen
 
 DEFAULT_THRESHOLD = NEXTDAY_HIT_THRESHOLD   # 单源见 config，兼容旧 import
@@ -95,11 +95,7 @@ def _load_dedup(conn: sqlite3.Connection, days: int = 0) -> list[dict]:
 
 
 def _parse(d: dict) -> dict:
-    try:
-        bd = json.loads(d["breakdown"])
-        return bd if isinstance(bd, dict) else {}
-    except (json.JSONDecodeError, TypeError):
-        return {}
+    return parse_score_breakdown(d.get("breakdown"))
 
 
 def _attach_prominence(conn: sqlite3.Connection, recs: list[dict]) -> list[dict]:

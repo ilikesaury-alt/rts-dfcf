@@ -15,7 +15,7 @@ from scanner.config import (
     WATCH_POOL_MAX,
     now_beijing,
 )
-from scanner.models import KlineBar, make_kline_bar
+from scanner.models import KlineBar, RecommendationRow, make_kline_bar, parse_score_breakdown
 from scanner.trading_session import is_trading_day, is_trading_time
 from scanner.utils import is_gem, to_float
 
@@ -1040,7 +1040,7 @@ def prune_watch_pool(conn: sqlite3.Connection,
         return 0
 
 
-def get_today_recommendations(conn: sqlite3.Connection, as_of=None) -> list[dict]:
+def get_today_recommendations(conn: sqlite3.Connection, as_of=None) -> list[RecommendationRow]:
     """查询（默认今日）所有进入过推荐列表的票（按 symbol 去重）。
 
     as_of: 目标日期（date 或 'YYYY-MM-DD' 字符串），缺省为今日（now_beijing）。
@@ -1087,12 +1087,7 @@ def get_today_recommendations(conn: sqlite3.Connection, as_of=None) -> list[dict
         sym = r[0]
         if sym not in seen:
             sb_raw = r[9]
-            sb = {}
-            if sb_raw:
-                try:
-                    sb = json.loads(sb_raw)
-                except Exception:
-                    sb = {}
+            sb = parse_score_breakdown(sb_raw)
             seen[sym] = {
                 "symbol": sym,
                 "name": r[1],
