@@ -494,7 +494,6 @@ REVERSAL_OVERSHOOT_DROP = 10.0
 # 每票每日最多评估一次（last_eval_date 落库，重启不丢）。
 WATCH_POOL_MAX = 600                 # 掉榜跟踪池上限（超限时淘汰 last_list_date 最旧）
 WATCH_OFFLIST_KEEP_DAYS = 15         # 掉榜后保留交易日数（覆盖三周级掉榜，见志特新材案例）
-COMEBACK_MIN_SCORE = 18              # 回马枪最低分（反转变体复用 rebound 阈值）
 # 反转变体：超跌企稳（复用 analyze_rebound 语义，off_list 收紧）
 COMEBACK_MIN_TODAY_PCT = 2.0         # off_list 今日涨幅下限（比 rebound 0.5 更严，反转确认）
 COMEBACK_MAX_TODAY_PCT = 12.0        # 与 short_term 上限同源：覆盖 8-12% 续涨（掉榜日无热榜背书）
@@ -571,9 +570,6 @@ LATE_BONUS = 3
 # New face
 V_NF_CONVERGE_STRONG = 13
 V_NF_CONVERGE_PARTIAL = 8
-V_NF_HL_CLEAR = 5
-V_NF_HL_STABLE = 2
-V_NF_HL_FAIL = -5
 V_NF_SECTOR_STRONG = 8
 V_NF_SECTOR_MOD = 5
 V_NF_SECTOR_WEAK = 0

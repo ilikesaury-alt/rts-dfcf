@@ -165,16 +165,10 @@ def _throttle(min_interval: float = 0.15):
 
 _cache_lock = threading.Lock()
 _index_cache_lock = threading.Lock()
-_kline_cache_lock = threading.Lock()
 _intraday_cache_lock = threading.Lock()
 _minute_data_cache_lock = threading.Lock()
 
 _market_index_cache: tuple[float | None, str | None, float] = (None, None, 0)
-
-_kline_cache: dict[str, tuple[list[KlineBar] | None, float]] = {}
-# TTL=0 禁用 API 层缓存：避免与 orchestrator.KLINE_REFRESH_TTL 双层叠加导致 K 线陈旧。
-# K 线新鲜度统一由 orchestrator 层 TTL 控制，补拉时真正发请求而非命中旧缓存。
-_kline_cache_ttl = 0
 
 
 def _bar_date_of(item: list) -> str | None:
@@ -306,13 +300,6 @@ def make_session() -> requests.Session:
 def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[KlineBar] | None:
     now = time.time()
 
-    with _kline_cache_lock:
-        cached = _kline_cache.get(symbol)
-        if cached:
-            data, ts = cached
-            if data is not None and now - ts < _kline_cache_ttl:
-                return data
-
     now_ms = int(now * 1000)
     begin_ms = now_ms - days * 86400 * 1000
     url = (
@@ -323,9 +310,6 @@ def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[
         resp = _request_with_retry(session, url)
     except Exception as e:
         logger.warning("K线获取失败 %s: %s", symbol, e)
-        if cached and cached[0] is not None:
-            logger.info("  返回缓存K线(%s, %.0fs前)", symbol, now - cached[1])
-            return cached[0]
         return None
     data = resp.json().get("data")
     if not data:
@@ -366,9 +350,6 @@ def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[
         if bar is not None:
             bar["timestamp"] = ts_f
             result.append(bar)
-    if _kline_cache_ttl > 0:
-        with _kline_cache_lock:
-            _cache_put(_kline_cache, symbol, (result, now))
     return result
 
 

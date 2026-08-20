@@ -308,19 +308,6 @@ def print_tables(title: str, rows: list[tuple[float, dict]], metric: str = "next
               f"{won.rjust(9)}{fmt(d['mean_off']):>10}{woff.rjust(9)}{fmt(d['ic']):>8}")
 
 
-# 提议权重：依据 IC 归因结果重新平衡 new_face 打分维度。
-# 核心逻辑：new_face 是"超卖反转"策略，应奖励反转触发信号（KDJ/RSI/MACD），
-# 压制动量确认信号（今日大涨/放量/更高低），后者在该场景 IC 为负。
-PROPOSED_WEIGHTS: dict[str, int] = {
-    "today_pct_2_6": 8, "today_pct_1_2": 6, "today_pct_0_5_1": 4,
-    "today_pct_lt_0_5": 3, "today_pct_6_8": 5, "today_pct_gt_8": -15,
-    "accum_neg5_10": 6, "accum_lt_neg5": 0, "accum_10_15": 3, "accum_15_20": -5,
-    "v_shape": 8, "volume_surge": 0,            # 放量 IC 负，归零
-    "rsi_bonus": 5, "macd_bonus": 6, "rsi14_oversold_bonus": 4,
-    "bollinger_oversold": 5, "kdj_bonus": 6,    # KDJ 是最佳信号，强提权
-    "atr_contraction": 2, "obv_not_negative": 3, "bottom_confirmed": 0,
-}
-
 # Step 2 之前的旧权重（用于投影对比「旧→新」的 rank-IC 提升）。
 OLD_NEW_FACE_WEIGHTS: dict[str, int] = {
     "today_pct_2_6": 20, "today_pct_1_2": 10, "today_pct_0_5_1": 5,
