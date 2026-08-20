@@ -5,10 +5,10 @@ import sys, sqlite3, json
 sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, ".")
 from scanner import display
-from scanner.config import NEXTDAY_CAT_PRIORITY
+from scanner.config import NEXTDAY_CAT_PRIORITY, NEXTDAY_HIT_THRESHOLD
 from scanner.database import init_db
 
-THRESH = 7.0
+THRESH = NEXTDAY_HIT_THRESHOLD   # 单源见 config
 
 def main():
     conn = init_db()

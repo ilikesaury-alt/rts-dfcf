@@ -41,11 +41,11 @@ import sys
 sys.stdout.reconfigure(encoding="utf-8")
 
 from scanner.config import (  # noqa: E402  (stdout reconfigure 在导入前，防编码异常)
-    CAT_DISPLAY_PRIORITY,
     CORE_DIP_CATEGORY,
     DB_PATH,
     FUND_OUTFLOW_NET_PCT,
     NEXTDAY_SPIKE_SWEET_LOW,
+    SECTOR_RESONANCE_WARN_MAX,
     now_beijing,
 )
 from scanner.database import get_fund_flow_pct_map, get_today_recommendations  # noqa: E402
@@ -247,8 +247,9 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
             tier3_reasons["超买"] = tier3_reasons.get("超买", 0) + 1
         if flow is not None and flow <= FUND_OUTFLOW_NET_PCT:
             tier3_reasons["主力净流出≤-8%"] = tier3_reasons.get("主力净流出≤-8%", 0) + 1
-        if cnt and cnt < 15:
-            tier3_reasons["小板块共振cnt<15"] = tier3_reasons.get("小板块共振cnt<15", 0) + 1
+        if cnt and cnt < SECTOR_RESONANCE_WARN_MAX:
+            key = f"小板块共振cnt<{SECTOR_RESONANCE_WARN_MAX}"
+            tier3_reasons[key] = tier3_reasons.get(key, 0) + 1
         if band in ("dead", "trap") and e["category"] != "short_term":
             tier3_reasons["涨幅带死区/陷阱"] = tier3_reasons.get("涨幅带死区/陷阱", 0) + 1
 

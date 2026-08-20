@@ -7,7 +7,9 @@
 import json
 import sqlite3
 
-THRESHOLD = 7.0
+from scanner.config import NEXTDAY_HIT_THRESHOLD
+
+THRESHOLD = NEXTDAY_HIT_THRESHOLD   # 单源见 config
 
 
 def _dedup(conn):
