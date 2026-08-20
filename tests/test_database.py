@@ -71,7 +71,8 @@ def memory_db():
             concept TEXT,
             accumulated_pct REAL,
             excluded INTEGER DEFAULT 0,
-            stale_kline INTEGER DEFAULT 0
+            stale_kline INTEGER DEFAULT 0,
+            excluded_reason TEXT
         )
     """)
     conn.execute("""

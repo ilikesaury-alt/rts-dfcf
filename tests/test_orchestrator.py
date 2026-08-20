@@ -352,7 +352,7 @@ class TestCrossFunctionSilentDegradation:
             score INTEGER NOT NULL, percent REAL, trend TEXT, next_day_pct REAL,
             fwd_3d REAL, fwd_5d REAL, score_breakdown TEXT, source TEXT DEFAULT 'xueqiu',
             concept TEXT, accumulated_pct REAL, excluded INTEGER DEFAULT 0,
-            stale_kline INTEGER DEFAULT 0)""")
+            stale_kline INTEGER DEFAULT 0, excluded_reason TEXT)""")
 
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
         monkeypatch.setattr(o, "now_beijing",
