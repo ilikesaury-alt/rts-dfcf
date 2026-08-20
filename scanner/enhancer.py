@@ -133,11 +133,17 @@ def _set_risk_flags(c: Candidate, fund_risk: dict[str, str] = None):
     """
     dims = c.kline.dimensions if c.kline else {}
 
+    # 硬过滤命中标签收集（仅 RISK_FLAGS_HARD_FILTER 成员），写 excluded_reason 落库审计。
+    # 与展示型标签（超买/疲劳/弱市/资金流出/炸板）区分：后者不进 excluded_reason。
+    hard_hits: list[str] = []
+
     # 财务风险：资不抵债等基本面硬伤（排除式硬过滤，2026-08-12 新增）。
     # fund_risk 由 orchestrator 从 pywencai 问财反向查询全市场资不抵债股获得，
     # 命中即打 FUND_RISK_TAG 标签，RISK_FLAGS_HARD_FILTER 据此移出推荐列表。
     if fund_risk and c.stock.symbol in fund_risk:
+        reason = f"{FUND_RISK_TAG}:{fund_risk[c.stock.symbol]}"
         c.risk_flags.append(FUND_RISK_TAG)
+        hard_hits.append(reason)
 
     # 超买：末周期鱼尾段（BOLL %B>1.0 或 KDJ J>105 或 20日涨幅>60%）
     if dims.get("st_overbought_flag") or dims.get("mo_overbought_flag"):
@@ -151,6 +157,7 @@ def _set_risk_flags(c: Candidate, fund_risk: dict[str, str] = None):
     # 主力出货：高位派发复合判断
     if _detect_main_force_distribution(c, dims):
         c.risk_flags.append("主力出货")
+        hard_hits.append("主力出货")
     # 弱转强失效（2026-08-14 新增）：弱转强直通特权的前提是"今日转强成功"，
     # 分时明确走弱（intraday<=-1.0，与 Rule 3 冲高回落同阈值）即转强失败。
     # 全期 12 样本：大跌(≤-7%) 25% vs 大涨 8.3%，平均次日 -2.61%，含 -16.34/-18.44
@@ -159,9 +166,11 @@ def _set_risk_flags(c: Candidate, fund_risk: dict[str, str] = None):
             and c.intraday_score is not None
             and c.intraday_score <= DISTRIBUTION_INTRADAY_WEAK):
         c.risk_flags.append(WTS_FAIL_TAG)
+        hard_hits.append(WTS_FAIL_TAG)
     # 趋势破位：MA 破位合并标签（止损信号）
     if _detect_trend_breakage(dims):
         c.risk_flags.append("趋势破位")
+        hard_hits.append("趋势破位")
     # 涨幅过大：追高风险
     if _detect_overvalued(c):
         c.risk_flags.append("涨幅过大")
@@ -174,6 +183,12 @@ def _set_risk_flags(c: Candidate, fund_risk: dict[str, str] = None):
     # 炸板：今日曾涨停但盘中炸板（封板未稳，追高/筹码松动风险，展示型警告）
     if (dims.get("zt_zhaban") or 0) >= ZT_ZHA_BAN_MIN:
         c.risk_flags.append("炸板")
+
+    # 落库审计：硬过滤命中标签串（逗号分隔）。被硬过滤砍的票从 DB 可反推原因，
+    # 消除"无审计依据的误杀"盲点（08-19 复盘发现 excluded=1 但 breakdown 无任何
+    # 硬过滤信号，因 risk_flags 此前从不落库）。
+    if hard_hits:
+        c.excluded_reason = ",".join(hard_hits)
 
 
 def _detect_main_force_distribution(c: Candidate, dims: dict) -> bool:

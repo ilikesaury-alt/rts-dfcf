@@ -834,8 +834,9 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     try:
         if excluded_by_risk:
             conn.executemany(
-                "UPDATE recommendations SET excluded=1 WHERE date=? AND symbol=?",
-                [(today, c.stock.symbol) for c in excluded_by_risk])
+                "UPDATE recommendations SET excluded=1, excluded_reason=? "
+                "WHERE date=? AND symbol=?",
+                [(c.excluded_reason, today, c.stock.symbol) for c in excluded_by_risk])
         passed_syms = [(today, c.stock.symbol) for c in all_candidates]
         if passed_syms:
             conn.executemany(

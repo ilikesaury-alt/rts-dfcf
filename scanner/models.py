@@ -114,6 +114,8 @@ class Candidate:
     off_list: bool = False    # 掉榜跟踪候选（回马枪）：不在当次热榜上，无热榜背书
     comeback_variant: str = ""  # 回马枪变体："反转" / "回踩"（展示与持久化区分）
     stale_kline: bool = False  # 评分所用 K 线缺今日 bar（补拉失败旧缓存兜底）——审计用（2026-08-14）
+    excluded_reason: str = ""  # 硬过滤命中标签串（审计用，2026-08-20）：excluded=1 时记录
+                           # 命中哪些 RISK_FLAGS_HARD_FILTER 标签，消除"无依据误杀"盲点
 
 
 @dataclass
