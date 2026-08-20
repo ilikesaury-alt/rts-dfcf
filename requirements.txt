@@ -1,3 +1,6 @@
 requests>=2.28
 wcwidth>=0.2
 akshare>=1.12  # 可选：数据源兜底（未安装时自动降级为仅雪球模式）
+# 可选：财务风险硬过滤（FUND_RISK）。未安装时 RTS_ENABLE_FUND_RISK=1 下静默失效并告警，
+# 不影响主扫描。属重依赖（连带 numpy/pandas/ipykernel），故默认不强制安装，按需 `pip install pywencai`。
+pywencai>=0.13  # 可选：基本面风险过滤（同花顺问财，反向条件查询资不抵债股）

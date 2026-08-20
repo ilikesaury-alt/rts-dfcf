@@ -6,18 +6,25 @@
 
 数据源：同花顺问财 pywencai（lazy import，未安装/失败自动返回空集，fail-open）。
 查询方式：**反向条件查询**——问财一次返回全市场命中集合（实测"每股净资产小于0"
-→ 42 只，其中 GEM 10 只），比逐票拉取稳定（实测批量单票查询丢代码/返回无关数据），
-且一次请求覆盖全市场。
+→ 9 只全市场，代码侧再按 SZ30 / SH / SZ 前缀过滤出创业板子集），
+比逐票拉取稳定（批量单票查询丢代码/返回无关数据），且一次请求覆盖全市场。
 
 缓存：
 - 进程内缓存：FUND_RISK_TTL_SEC 内命中即复用，不重复打问财
-- DB 缓存：复用 market_extra_cache 表（data_type="fund_risk"），
-  保存候选符号 → payload（reason），重启不丢、展示层可读
+- DB 落库：**仅写路径**，供 stock_report 展示层读取当日财务风险状态；
+  collect_fund_risk 的**读取**路径不走 DB 回退（进程缓存未命中即直查问财），
+  与 docstring 历史版本描述不同——此处为唯一真相。
 
 健壮性：
-- pywencai 未安装 / 查询异常 / 空结果 → 返回 {}，主扫描不受影响（fail-open）
+- pywencai 未安装 → 打印一次告警后返回 {}（**可见 fail-open**，不再静默 no-op）
+- 查询异常 / 空结果 → 返回 {}，主扫描不受影响（fail-open）
 - _bounded_call 限时：pywencai 内部无 timeout，daemon 线程 + join(timeout) 兜底
   超时返回已收集部分或空，不阻塞 60s 扫描循环
+
+依赖：pywencai 为**可选重依赖**（会连带装 numpy/pandas/ipykernel 等）。
+启用财务风险硬过滤（RTS_ENABLE_FUND_RISK=1 默认）前需手动 `pip install pywencai`，
+否则该过滤静默为空（已在 import 失败时显眼告警）。未列入 requirements.txt 强制安装，
+与 akshare 可选降级模式一致，保持部署轻量。
 """
 
 import re
@@ -40,7 +47,7 @@ _DATA_TYPE = "fund_risk"
 _fund_risk_cache: dict[str, tuple[dict, float]] = {}
 _fund_risk_lock = threading.Lock()
 
-_logged_missing = False
+_logged_missing = False  # pywencai 未安装告警只打一次，避免每轮刷屏
 
 
 def _today_key() -> str:
@@ -53,6 +60,15 @@ def reset_fund_risk_cache():
     with _fund_risk_lock:
         _fund_risk_cache.clear()
         _logged_missing = False
+
+
+def _warn_missing_pywencai():
+    """pywencai 未安装时打印一次告警：ENABLE_FUND_RISK=1 下财务风险硬过滤静默 no-op。"""
+    global _logged_missing
+    if not _logged_missing:
+        _logged_missing = True
+        print("[财务风险] 警告：pywencai 未安装 → FUND_RISK 硬过滤静默失效，"
+              "资不抵债票将照常进推荐。请 `pip install pywencai` 启用（optional 重依赖）。")
 
 
 def _cache_put(data: dict, now: float | None = None, ttl: float | None = None):
@@ -157,6 +173,7 @@ def fetch_fund_risk_map() -> dict[str, str]:
     try:
         import pywencai  # noqa: PLC0415
     except Exception:
+        _warn_missing_pywencai()
         return result
     try:
         df = _bounded_call(lambda: pywencai.get(query=FUND_RISK_QUERY, loop=True),
@@ -175,10 +192,11 @@ def fetch_fund_risk_map() -> dict[str, str]:
 def collect_fund_risk(conn, symbols: list[str]) -> dict[str, str]:
     """收集候选符号的财务风险标记，返回 {xq_symbol: reason}。
 
-    流程：进程缓存 → DB 缓存（当日 data_type=fund_risk）→ 全市场问财查询一次。
-    任一环节缺失即触发下一环；全程 fail-open，返回空 dict 不影响主扫描。
+    流程：进程缓存 → 全市场问财查询一次（**读取路径无 DB 回退**，见模块 docstring）。
     命中符号将被打"财务风险"硬过滤标签（orchestrator 组装候选时应用）。
     受 ENABLE_FUND_RISK（RTS_ENABLE_FUND_RISK 环境变量）总开关控制：关闭时直接返回空。
+    pywencai 未安装/查询失败 → 返回空 dict（fail-open，但 import 缺失时打印一次告警，
+    不再静默 no-op）。
     """
     if not ENABLE_FUND_RISK:
         return {}

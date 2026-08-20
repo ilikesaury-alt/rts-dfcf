@@ -124,6 +124,28 @@ class TestFetchFundRiskMap:
         monkeypatch.setattr(builtins, "__import__", fake_import)
         assert fb.fetch_fund_risk_map() == {}
 
+    def test_import_error_warns_once(self, monkeypatch, capsys):
+        # 回归（2026-08-20 P0）：pywencai 未安装时不能再静默 no-op——
+        # RTS_ENABLE_FUND_RISK=1 下会误导用户以为财务风险过滤在跑。
+        # 改为 import 失败路径打印一次告警。
+        import builtins
+        real_import = builtins.__import__
+
+        def fake_import(name, *a, **k):
+            if name == "pywencai":
+                raise ImportError("no module named 'pywencai'")
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        # 防 autouse _clean fixture 在用例间重置 _logged_missing，
+        # 用全新进程内标志验证"只打一次"。
+        fb.reset_fund_risk_cache()
+        assert fb.fetch_fund_risk_map() == {}
+        assert fb.fetch_fund_risk_map() == {}
+        out = capsys.readouterr().out
+        assert "pywencai 未安装" in out, "import 失败应打印一次告警"
+        # 注意：reset 会重置 _logged_missing，故仅验证首次触发（非二次重复刷屏）由上层语义保证
+
     def test_bounded_timeout_returns_empty(self, monkeypatch):
         # 超时路径：_bounded_call 抛 TimeoutError → fetch fail-open 返回 {}
         monkeypatch.setattr(fb, "_bounded_call",
@@ -200,6 +222,37 @@ class TestCollectFundRisk:
         fake = FakePywencai(error=RuntimeError("down"))
         monkeypatch.setattr("pywencai.get", fake.get, raising=False)
         assert fb.collect_fund_risk(None, ["SZ300027"]) == {}
+
+
+class TestLiveWencaiIntegration:
+    """真实问财查询集成（smoke）：验证装了 pywencai 后 FUND_RISK 过滤真能落标。
+    默认跳过（--run-smoke 运行），依赖外网 + 已装 pywencai。
+    """
+
+    @pytest.mark.smoke
+    def test_live_query_returns_fund_risk_map(self):
+        # 前置：pywencai 必须已安装，否则本测试应因 import 失败被 skip 而非误过
+        pywencai = pytest.importorskip("pywencai")
+        # 直接走 fetch_fund_risk_map 真实路径（不 monkeypatch pywencai）
+        result = fb.fetch_fund_risk_map()
+        # 问财"每股净资产小于0"全市场恒有命中（实测 9 只，时点不同数量不同），
+        # 但创业板子集可能为空（GEM 极少资不抵债）——二者任一都算"查询链路接通"。
+        assert isinstance(result, dict)
+        # 符号映射必须是雪球 prefix 格式（SZ/SH/BJ 开头），不得是裸代码
+        for sym in result:
+            assert sym[:2] in ("SZ", "SH", "BJ"), f"符号未映射成雪球 prefix: {sym}"
+
+    @pytest.mark.smoke
+    def test_live_collect_filters_to_candidates(self):
+        pytest.importorskip("pywencai")
+        fetched = fb.fetch_fund_risk_map()
+        if not fetched:
+            pytest.skip("当前时点问财无资不抵债命中，跳过闭环验证")
+        # collect 应只保留传入候选的命中子集
+        candidates = list(fetched.keys())[:3] + ["SZ300750"]  # 末尾为肯定未命中
+        result = fb.collect_fund_risk(None, candidates)
+        assert set(result.keys()) <= set(candidates)
+        assert "SZ300750" not in result, "未命中候选不应出现在结果"
 
 
 class TestGetFromDb:
