@@ -838,3 +838,58 @@ class TestProminenceWindow:
         # 若排名窗口错误多算 one_before（rank=999），平均会被拉低；正确实现则忽略它。
         assert result.get("300111") is True, (
             f"窗口外 bad-rank 日期不得计入排名平均，got {result}")
+
+
+class TestMarketCapCache:
+    """市值缓存兜底（2026-08-20）：市值批量全失败时回退陈旧缓存，避免小叶美规则静默失效。"""
+
+    import tempfile
+
+    @pytest.fixture
+    def cap_db(self, tmp_path):
+        import scanner.database as dbmod
+        import scanner.config as cfgmod
+        # 用真实临时库，确保 market_cap_cache 表随 init_db 创建
+        p = tmp_path / "test_mc.db"
+        old = cfgmod.DB_PATH
+        cfgmod.DB_PATH = str(p)
+        try:
+            conn = dbmod.init_db()
+            yield conn
+        finally:
+            conn.close()
+            cfgmod.DB_PATH = old
+
+    def test_save_then_read_back(self, cap_db):
+        from scanner.database import save_market_caps, get_cached_market_caps
+        written = save_market_caps(cap_db, {
+            "SZ300001": {"market_cap": 1e10, "circ_market_cap": 9e9,
+                         "turnover_rate": 1.2, "current": 36.5, "percent": 0.3},
+        }, source="xueqiu")
+        assert written == 1
+        cached = get_cached_market_caps(cap_db, ["SZ300001"], max_age_days=0)
+        assert cached["SZ300001"]["circ_market_cap"] == 9e9
+        assert cached["SZ300001"]["current"] == 36.5
+
+    def test_zero_value_not_cached(self, cap_db):
+        from scanner.database import save_market_caps, get_cached_market_caps
+        save_market_caps(cap_db, {
+            # 停牌/降级条目 market_cap 与 circ 均 0 → 不入缓存，避免污染兜底
+            "SZ300862": {"market_cap": 0, "circ_market_cap": 0,
+                         "turnover_rate": 0, "current": 0, "percent": 0},
+        }, source="xueqiu")
+        assert get_cached_market_caps(cap_db, ["SZ300862"], max_age_days=0) == {}
+
+    def test_max_age_days_filter(self, cap_db):
+        from scanner.database import save_market_caps, get_cached_market_caps
+        save_market_caps(cap_db, {
+            "SZ300001": {"market_cap": 1e10, "circ_market_cap": 9e9,
+                         "turnover_rate": 1.0, "current": 36.5, "percent": 0.3},
+        })
+        # 把 updated 改成 3 天前，验证 max_age_days 过滤口径
+        from datetime import timedelta as _td
+        old = (date.today() - _td(days=3)).isoformat()
+        cap_db.execute("UPDATE market_cap_cache SET updated=?", (old,))
+        cap_db.commit()
+        assert get_cached_market_caps(cap_db, ["SZ300001"], max_age_days=0) == {}  # 仅当日 → 空
+        assert "SZ300001" in get_cached_market_caps(cap_db, ["SZ300001"], max_age_days=7)  # 近7天 → 命中

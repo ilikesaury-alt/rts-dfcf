@@ -29,6 +29,7 @@ from scanner.config import (
     KLINE_FETCH_DEADLINE,
     MAX_MARKET_CAP,
     MAX_STOCK_PRICE,
+    MCAP_CACHE_MAX_AGE_DAYS,
     MINUTE_FALLBACK_PHASE_DEADLINE,
     MINUTE_FETCH_PHASE_DEADLINE,
     MOMENTUM_MIN_SCORE,
@@ -51,10 +52,12 @@ from scanner.config import (
 )
 from scanner.database import (
     get_cached_klines,
+    get_cached_market_caps,
     get_symbol_appearances,
     prune_watch_pool,
     record_appearances,
     save_kline_to_db,
+    save_market_caps,
     save_market_index_log,
     save_scan_quality,
     upsert_watch_symbols,
@@ -305,16 +308,27 @@ def _fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo]
 
     # C修复: 盘中已有 K 线但缺今日 bar 的票（静默回退旧缓存会基于昨日数据打分）。
     # 仅交易时段统计——收盘后缺今日 bar 属正常，避免噪音。下次周期 max_date<today 仍会强制补拉。
+    # 2026-08-20 拆分：换手率≈0 + 末端非今日的票多为停牌/僵尸股（确无今日 bar 与分时，
+    # 告警准确但非故障）→ 降级为 [~] 提示，避免每轮假警；其余（真未知缺数据）保持 [!]。
     if is_trading_time():
         today_bar_missing = [
             sym for sym, kl in result.items()
             if kl and max(k["date"] for k in kl) < today.isoformat()
         ]
         if today_bar_missing:
+            halted = [sym for sym in today_bar_missing
+                      if stock_map.get(sym) is not None and stock_map[sym].turnover_rate == 0.0]
+            genuine = [sym for sym in today_bar_missing if sym not in halted]
             _stats["today_bar_missing"] = _stats.get("today_bar_missing", 0) + len(today_bar_missing)
-            preview = ", ".join(today_bar_missing[:5])
-            suffix = f" 等{len(today_bar_missing)}只" if len(today_bar_missing) > 5 else ""
-            print(f"  [!] 今日K线缺失{len(today_bar_missing)}只: {preview}{suffix}（旧缓存评分，下次刷新重试）")
+            if halted:
+                preview = ", ".join(halted[:5])
+                suffix = f" 等{len(halted)}只" if len(halted) > 5 else ""
+                print(f"  [~] 今日K线缺失{len(halted)}只(停牌/僵尸股,换手率0): {preview}{suffix}（旧缓存评分，非故障）")
+            if genuine:
+                _stats["today_bar_missing_genuine"] = _stats.get("today_bar_missing_genuine", 0) + len(genuine)
+                preview = ", ".join(genuine[:5])
+                suffix = f" 等{len(genuine)}只" if len(genuine) > 5 else ""
+                print(f"  [!] 今日K线缺失{len(genuine)}只(数据异常): {preview}{suffix}（旧缓存评分，下次刷新重试）")
 
     return result
 
@@ -460,6 +474,8 @@ def _filter_gem_stocks(raw: list[dict]) -> list[StockInfo]:
             percent=percent, current=current, value=value,
             rank_change=rank_change, rank=rank,
             source_tag=item.get("source_tag", "xueqiu"),
+            turnover_rate=float(item.get("turnover_rate") or 0.0)
+            if math.isfinite(float(item.get("turnover_rate") or 0.0)) else 0.0,
         ))
     return gem_stocks
 
@@ -521,9 +537,13 @@ def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, l
     # fail-loud：交易时段仍以缺今日 bar 旧缓存评分（日线补拉 + 分时兜底均失败）→ 逐票告警。
     # 不静默吞掉数据质量下降——这正是网宿类 bug 的隐蔽点（上游降级无感知，下游静默消费）。
     # 非交易时段缺今日 bar 属正常（缓存未更新），不告警。
+    # 2026-08-20：停牌/僵尸股（turnover_rate==0，确无今日盘面）降级为 [~] 提示，不炸 [!]。
     if _stale and is_trading_time():
-        print(f"  [!] {stock.name}({stock.symbol}) 评分基于缺今日bar旧缓存（补拉与分时兜底均失败），"
-              f"量比/涨幅按昨日数据，可能误判")
+        if stock.turnover_rate == 0.0:
+            print(f"  [~] {stock.name}({stock.symbol}) 停牌/僵尸股，今日无交易（旧缓存评分，非故障）")
+        else:
+            print(f"  [!] {stock.name}({stock.symbol}) 评分基于缺今日bar旧缓存（补拉与分时兜底均失败），"
+                  f"量比/涨幅按昨日数据，可能误判")
 
     category = _classify_category(stock, is_new, c_mo, c_nf, c_st, c_rb)
     if category == "short_term":
@@ -634,6 +654,16 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     stale_syms = list(sym for sym, c in session_state.today_pool.items() if c.is_stale)
     mc_syms = list(set(s.symbol for s in gem_stocks) | set(stale_syms))
     market_caps = adapter.fetch_market_caps_batch(mc_syms) if mc_syms else {}
+    # 市值缓存兜底（2026-08-20）：批量查询全失败时回退陈旧缓存，避免 小而美 规则
+    # 整轮静默失效。fetch 成功即落库；全失败按"盘中限当日、非交易放宽到 N 天"取陈旧值。
+    used_stale_mc = False
+    if market_caps:
+        save_market_caps(conn, market_caps, source=adapter.name if hasattr(adapter, "name") else "xueqiu")
+    else:
+        max_age = 0 if is_trading_time() else MCAP_CACHE_MAX_AGE_DAYS
+        market_caps = get_cached_market_caps(conn, mc_syms, max_age_days=max_age)
+        if market_caps:
+            used_stale_mc = True
 
     gem_stocks_filtered: list[StockInfo] = []
     filtered_large_cap = 0
@@ -652,6 +682,15 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
             filtered_large_cap += 1
             continue
         gem_stocks_filtered.append(s)
+
+    # 市值数据可用性最终判定（2026-08-20）：
+    # - 实时取到 → 正常（已落库）。
+    # - 全失败但陈旧缓存兜底命中 → 降级提示（非 [!]），小叶美规则仍生效（基于旧值）。
+    # - 全失败且无任何陈旧缓存 → 真正 [!] 告警"小叶美规则暂不生效"。
+    if used_stale_mc:
+        print(f"  [~] 市值实时查询失败，已回退陈旧缓存({len(market_caps)}只)——小叶美规则基于旧市值生效")
+    elif not market_caps and mc_syms:
+        print("  [!] 警告: 市值数据全失败且无陈旧缓存，小而美规则暂不生效")
 
     # 回马枪掉榜跟踪池维护（2026-08-07）：
     # 1) 在榜 GEM 票保活（刷新 last_list_date，掉榜后保留 WATCH_OFFLIST_KEEP_DAYS 个交易日）

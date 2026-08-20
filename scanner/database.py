@@ -138,6 +138,22 @@ def init_db() -> sqlite3.Connection:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sql_date ON scan_quality_log(date)")
+    # 市值缓存（2026-08-20）：市值批量查询（雪球 batch/quote + akshare 兜底）曾瞬时双源
+    # 同时失败 → 返回空 → "小叶美规则暂不生效"。市值本身变化缓慢（日级），落库后可在
+    # 全失时回退陈旧缓存，避免单轮静默失效。盘中限当日（涨停/停牌股本就无新市值），
+    # 非交易时段放宽到 MCAP_CACHE_MAX_AGE_DAYS 天（收盘后批量接口可能滞后）。
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS market_cap_cache (
+            symbol TEXT PRIMARY KEY,
+            market_cap REAL,
+            circ_market_cap REAL,
+            turnover_rate REAL,
+            current REAL,
+            percent REAL,
+            source TEXT,
+            updated TEXT DEFAULT ''
+        )
+    """)
     # 大盘指数血缘日志（2026-08-19）：每轮扫描使用的大盘涨幅（创业板指）+ 其 bar 日期落库。
     # 大盘标签（display._market_env_tag）曾因 kline 接口 begin/count 语义错位把当日 -6.26%
     # 读成昨日 -0.93%（展示"大盘中性"）而无痕——涨幅是瞬时值，不落库就无法审计"当时读到
@@ -383,6 +399,84 @@ def get_cached_klines(conn: sqlite3.Connection, symbols: list[str]) -> dict[str,
 def get_cached_kline(conn: sqlite3.Connection, symbol: str) -> list[KlineBar] | None:
     """单只股票缓存日线（委托批量实现，口径一致）。"""
     return get_cached_klines(conn, [symbol]).get(symbol)
+
+
+def save_market_caps(conn: sqlite3.Connection, caps: dict[str, dict], source: str = "xueqiu") -> int:
+    """把成功的市值批量结果落库（陈旧缓存兜底源）。
+
+    仅写本次查询返回的有效条目（market_cap 或 circ_market_cap > 0），0 值（停牌/降级）
+    不入缓存以免污染兜底。返回写入条数。
+    """
+    if not caps:
+        return 0
+    rows = []
+    for sym, d in caps.items():
+        mc = d.get("market_cap") or 0
+        cmc = d.get("circ_market_cap") or 0
+        if mc <= 0 and cmc <= 0:
+            continue
+        rows.append((
+            sym, mc, cmc,
+            d.get("turnover_rate") or 0.0,
+            d.get("current") or 0.0,
+            d.get("percent") or 0.0,
+            source, now_beijing().date().isoformat(),
+        ))
+    if not rows:
+        return 0
+    try:
+        conn.executemany(
+            "INSERT OR REPLACE INTO market_cap_cache "
+            "(symbol, market_cap, circ_market_cap, turnover_rate, current, percent, source, updated) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        conn.commit()
+        return len(rows)
+    except Exception as e:
+        logger.warning(f"save_market_caps failed: {e}")
+        return 0
+
+
+def get_cached_market_caps(conn: sqlite3.Connection, symbols: list[str],
+                           max_age_days: int = 0) -> dict[str, dict]:
+    """读取市值陈旧缓存（市值批量全失败时的兜底）。
+
+    max_age_days=0：仅返回当日写入的缓存（最严格，适合盘中）。非 0：放宽到近 N 天
+    （收盘后/非交易时段批量接口滞后时仍可用）。返回结构与 fetch_market_caps_batch 一致。
+    """
+    if not symbols:
+        return {}
+    uniq = list(dict.fromkeys(symbols))
+    placeholders = ",".join("?" * len(uniq))
+    today = now_beijing().date().isoformat()
+    if max_age_days > 0:
+        # 放宽到近 N 天（非交易时段批量接口滞后仍可兜底）
+        min_date = (now_beijing().date() - timedelta(days=max_age_days)).isoformat()
+        cur = conn.execute(
+            f"SELECT symbol, market_cap, circ_market_cap, turnover_rate, current, percent, source "
+            f"FROM market_cap_cache WHERE symbol IN ({placeholders}) AND updated >= ?",
+            (*uniq, min_date),
+        )
+    else:
+        # max_age_days=0：仅当日写入的缓存（最严格，盘中口径）
+        cur = conn.execute(
+            f"SELECT symbol, market_cap, circ_market_cap, turnover_rate, current, percent, source "
+            f"FROM market_cap_cache WHERE symbol IN ({placeholders}) AND updated = ?",
+            (*uniq, today),
+        )
+    out: dict[str, dict] = {}
+    try:
+        for sym, mc, cmc, tr, cur_, pct, src in cur.fetchall():
+            out[sym] = {
+                "market_cap": mc, "circ_market_cap": cmc,
+                "turnover_rate": tr, "current": cur_,
+                "percent": pct, "source": src,
+            }
+    except Exception as e:
+        logger.warning(f"get_cached_market_caps failed: {e}")
+        return {}
+    return out
 
 
 def _count_consecutive_days(dates: list[str]) -> int:
@@ -750,7 +844,8 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, 
                         "stale_kline = ?, excluded_reason = ? "
                         "WHERE id = ?",
                         (now, c.score, c.stock.percent, c.kline.trend if c.kline else None,
-                         breakdown, rec_source, concept, accumulated, stale_kline, excluded_reason, existing[0]),
+                         breakdown, rec_source, concept, accumulated, stale_kline,
+                         excluded_reason, existing[0]),
                     )
                 continue
             conn.execute(

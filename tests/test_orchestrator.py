@@ -249,6 +249,9 @@ class TestScoreStockStaleKlineAudit:
         ks = KlineSummary(trend="t", accumulated_pct=2.0, volume_ratio=0.9,
                           bottom_confirmed=True, score=30, dimensions={},
                           avg_volume=1_000_000)
+        # 非停牌股（换手率>0）才走真实 [!] 告警分支；停牌股(turnover_rate==0)降级为 [~]。
+        stock = self._stock()
+        stock.turnover_rate = 3.5
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
         monkeypatch.setattr(o, "analyze_new_face", lambda *a, **k: ks)
         monkeypatch.setattr(o, "analyze_momentum", lambda *a, **k: None)
@@ -256,7 +259,7 @@ class TestScoreStockStaleKlineAudit:
         monkeypatch.setattr(o, "get_symbol_appearances", lambda *a, **k: [])
 
         o._score_stock(
-            self._stock(), conn=None, klines=self._klines(with_today=False),
+            stock, conn=None, klines=self._klines(with_today=False),
             today="2026-06-18", session_state=ScanSession(), clusters=None,
         )
         captured = capsys.readouterr().out
@@ -319,6 +322,10 @@ class TestCrossFunctionSilentDegradation:
         ks = KlineSummary(trend="放量启动", accumulated_pct=3.0, volume_ratio=1.2,
                           bottom_confirmed=True, score=30, dimensions={},
                           avg_volume=1_000_000)
+        # 非停牌股（换手率>0）→ 走真实 [!] 告警分支；停牌股(turnover_rate==0)已降级为 [~]，
+        # 与本测试要验证的"缺今日bar真实告警"意图分离（见 _score_stock 2026-08-20 改动）。
+        sc = self._stock()
+        sc.turnover_rate = 3.5
         monkeypatch.setattr(o, "analyze_short_term", lambda *a, **k: ks)
         monkeypatch.setattr(o, "analyze_new_face", lambda *a, **k: None)
         monkeypatch.setattr(o, "analyze_momentum", lambda *a, **k: None)
@@ -326,7 +333,7 @@ class TestCrossFunctionSilentDegradation:
         monkeypatch.setattr(o, "validate", lambda *a, **k: (True, 0, {}))
         monkeypatch.setattr(o, "get_symbol_appearances", lambda *a, **k: [])
         nf, mo, rb, st = o._score_stock(
-            self._stock(), conn=conn, klines=klines, today=today,
+            sc, conn=conn, klines=klines, today=today,
             session_state=ScanSession(), clusters=None,
         )
         return st
@@ -398,7 +405,9 @@ class TestCrossFunctionSilentDegradation:
                 return None  # 分时兜底也失败（残留场景）
 
         conn = sqlite3.connect(":memory:")
-        klines = o._fetch_all_klines(conn, _Adapter(), [self._stock()])
+        stale_stock = self._stock()
+        stale_stock.turnover_rate = 3.5  # 非停牌股 → 走真实 [!] 告警分支
+        klines = o._fetch_all_klines(conn, _Adapter(), [stale_stock])
         assert klines["300001"] is stale  # 回退旧缓存
 
         # 下游必须识别 stale（即便分时兜底失败）

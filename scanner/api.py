@@ -570,7 +570,10 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
             continue
 
     if not result:
-        print("\n  [!] 警告: 市值数据获取失败，小而美规则暂不生效")
+        # 注意：此处只代表「雪球单源失败」。上层 FallbackAdapter 会先尝试 akshare 兜底，
+        # 且 scan_with_raw 还有 DB 陈旧缓存兜底。故降级为 logger，不在此打印 [!] 告警——
+        # 否则会先于兜底链路误报"市值获取失败"，造成双源抖动时虚假恐慌（2026-08-20）。
+        logger.warning("雪球市值批量查询返回空（上层将尝试 akshare / DB 陈旧缓存兜底）")
 
     return result
 

@@ -67,6 +67,11 @@ REBOUND_MIN_SCORE = 18
 
 YI = 100_000_000
 MAX_MARKET_CAP = 500 * YI
+
+# 市值缓存兜底窗口（2026-08-20）：fetch_market_caps_batch 全失败时回退陈旧缓存，
+# 非交易时段批量接口可能滞后，放宽到近 N 天（盘中仍限当日，由 scan_with_raw 按
+# is_trading_time() 决定 max_age_days=0 vs 此值）。
+MCAP_CACHE_MAX_AGE_DAYS = 7
 MAX_STOCK_PRICE = 200.0
 MAX_NEW_FACE_TODAY_PCT = 12
 MAX_MOMENTUM_TODAY_PCT = 10  # P1-2: 8→10，让 9-10% 加速票能进 momentum（主升浪中段）
