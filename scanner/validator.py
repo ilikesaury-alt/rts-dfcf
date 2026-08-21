@@ -130,14 +130,16 @@ def _has_macd_bull_divergence(closes: list[float], macd: dict | None) -> bool:
 
     # 寻找两个价格低点：现低（最近5日）和前低（5-20日前窗口）
     n = len(closes)
-    recent_start = max(34, n - 5)
+    # recent_start 只定义近低搜索窗口（最近5日）；histogram 已在全序列上算好，
+    # 只要 len>=34（上方门禁）索引即有效，无需 34 地板（n==34 时 34>=n 会越界）。
+    recent_start = max(0, n - 5)
     recent_low_idx = recent_start
     for i in range(recent_start, n):
         if closes[i] < closes[recent_low_idx]:
             recent_low_idx = i
 
-    prev_start = max(34, recent_low_idx - 20)
-    prev_end = max(34, recent_low_idx - 5)
+    prev_start = max(0, recent_low_idx - 20)
+    prev_end = max(0, recent_low_idx - 5)
     if prev_end <= prev_start:
         return False
     prev_low_idx = prev_start

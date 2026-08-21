@@ -539,7 +539,10 @@ def _score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, l
     # 缺今日 bar → 量比基于昨日量（vol_ratio 失真）→ 可能被量比硬门误杀（网宿案例）或
     # 基于旧数据误推。落库供事后审计"该推荐基于什么数据评分"。兜底已由 _fetch_all_klines
     # 的分时构造今日 bar 尽量消除，此处标记残留的兜底失败场景。
-    _stale = bool(kline) and max(k["date"] for k in kline) < today
+    # 非交易时段缓存本就停在最近交易日，缺今日 bar 属正常，不打 stale（与 fail-loud
+    # 告警同口径：仅交易时段缺今日 bar 才是数据降级）。historical_rescan 直接调用本函数
+    # 时 now_ref 若落在非交易时段同样不应误标。
+    _stale = bool(kline) and max(k["date"] for k in kline) < today and is_trading_time()
     for _c in (c_nf, c_mo, c_rb, c_st):
         if _c is not None:
             _c.stale_kline = _stale
@@ -888,7 +891,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         passed_syms = [(today, c.stock.symbol) for c in all_candidates]
         if passed_syms:
             conn.executemany(
-                "UPDATE recommendations SET excluded=0 WHERE date=? AND symbol=?",
+                "UPDATE recommendations SET excluded=0, excluded_reason='' WHERE date=? AND symbol=?",
                 passed_syms)
         conn.commit()
     except Exception as e:

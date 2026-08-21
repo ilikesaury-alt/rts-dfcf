@@ -287,6 +287,30 @@ class TestScoreStockStaleKlineAudit:
         captured = capsys.readouterr().out
         assert "评分基于缺今日bar旧缓存" not in captured  # 非交易时段不告警
 
+    def test_stale_kline_not_marked_outside_trading_hours(self, monkeypatch):
+        # 2026-08-21 修复：非交易时段缓存本就停在最近交易日，缺今日 bar 属正常，
+        # 不应打 stale_kline=True（否则污染 scan_quality_log 的 stale_recs 计数
+        # 与 recommendations.stale_kline 落库，historical_rescan 直接调用时尤甚）。
+        import scanner.orchestrator as o
+        from scanner.candidate_pool import ScanSession
+        from scanner.models import KlineSummary
+
+        ks = KlineSummary(trend="t", accumulated_pct=2.0, volume_ratio=0.9,
+                          bottom_confirmed=True, score=30, dimensions={},
+                          avg_volume=1_000_000)
+        monkeypatch.setattr(o, "is_trading_time", lambda: False)
+        monkeypatch.setattr(o, "analyze_new_face", lambda *a, **k: ks)
+        monkeypatch.setattr(o, "analyze_momentum", lambda *a, **k: None)
+        monkeypatch.setattr(o, "validate", lambda *a, **k: (True, 0, {}))
+        monkeypatch.setattr(o, "get_symbol_appearances", lambda *a, **k: [])
+
+        nf, *_ = o._score_stock(
+            self._stock(), conn=None, klines=self._klines(with_today=False),
+            today="2026-06-18", session_state=ScanSession(), clusters=None,
+        )
+        assert nf is not None
+        assert nf.stale_kline is False  # 非交易时段缺今日 bar → 不误标
+
 
 class TestCrossFunctionSilentDegradation:
     """跨函数静默降级集成测试（2026-08-14 网宿类 bug 形态）。

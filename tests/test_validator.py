@@ -19,6 +19,7 @@ from scanner.validator import (
     _nf_convergence,
     _nf_higher_low,
     _nf_sector,
+    _has_macd_bull_divergence,
     _st_is_overbought,
     validate,
     validate_momentum,
@@ -78,6 +79,20 @@ class TestValidateNewFaceHelpers:
     def test_sector_none(self):
         bonus, count = _nf_sector("测试", None)
         assert count == 0
+
+    def test_macd_bull_divergence_detected_at_n_minus_5(self):
+        # 2026-08-21 修复：prev 窗口被 max(34, ...) 地板截断，当最近低点落在
+        # n-5（last-5-day 起点）时 prev_end<=prev_start 直接短路 False，导致
+        # 44 根历史 K 线（交易时段缺今日 bar）的 new_face 底背离信号静默失效。
+        # 构造真实双底背离：前低(约 idx20, 10.0) 价格高于 近低(idx38, 9.5)，
+        # 且近低处 histogram 收敛（>-0.42 vs 前低 -0.42 更浅）< 0 → 应判 True。
+        closes = []
+        closes += [20 - i * (10 / 20) for i in range(21)]   # idx0..20 缓跌 20->10
+        closes += [10 + i * (4 / 9) for i in range(1, 10)]   # idx21..29 反弹 10->14
+        closes += [14 - i * (5 / 9) for i in range(1, 9)]    # idx30..37 回落 14->9.56
+        closes += [9 + i * 0.5 for i in range(1, 5)]         # idx38..41 回升 9->11
+        # macd 参数仅作非空门禁（函数内部自行按 closes 重算 histogram）
+        assert _has_macd_bull_divergence(closes, [0] * len(closes)) is True
 
 
 class TestValidateNewFace:
