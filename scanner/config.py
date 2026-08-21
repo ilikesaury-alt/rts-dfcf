@@ -370,23 +370,6 @@ KLINE_MIN_LENGTH = 32     # Minimum kline bars required for analysis
 # 2000 条远超 A 股活跃标的数量（飙升榜 100 只 + 候选池），正常不会触发淘汰。
 CACHE_MAX_ENTRIES = 2000
 
-# ── 崩溃自动重启（--supervise）──
-SUPERVISE_RESTART_DELAY = 10        # 重启基础延迟（秒），失败后指数退避
-SUPERVISE_RESTART_MAX_DELAY = 300   # 退避封顶（秒）
-SUPERVISE_RESET_AFTER_SECONDS = 600 # 子进程存活超过此秒数则重置退避计数
-SUPERVISE_CHILD_TIMEOUT = 1800      # 子进程无输出/心跳超时（秒）：超时判定假死并强制重启
-# 启动宽限期：Popen 后此窗口内不判心跳超时。目的有二：
-#  1) 子进程完成导入/建连需要时间，宽限内不论心跳文件状态都不强杀，避免与首拍 touch 竞态；
-#  2) 配合父进程启动前清理陈旧心跳文件，杜绝"上一轮冻结残留旧 mtime → 首轮 poll 误杀健康新进程"的死循环。
-SUPERVISE_CHILD_GRACE = 60          # 子进程启动宽限期（秒）
-# 熔断：连续短时崩溃达到阈值即停止自动重启，避免"确定性逻辑 bug → 无限重启
-# → 每轮重复污染 DB"的死循环。区分两类失败：
-#  - 启动/早期崩溃（uptime < 基线）：多为确定性导入/建连/逻辑 bug，重启也必崩，应熔断等人修；
-#  - 长跑后崩溃（uptime >= 基线）：多为偶发 I/O/网络故障，应继续容忍重启。
-SUPERVISE_CRASH_BASELINE_SECONDS = 120  # uptime < 此秒数视为"启动/早期崩溃"
-SUPERVISE_MAX_CONSECUTIVE_CRASHES = 5   # 连续短崩溃达此数 → 熔断停止自动重启
-SUPERVISE_LOG_FILE = os.path.join(LOG_DIR, "supervisor.log")
-
 # Fatigue detection for multi-day list appearances
 FATIGUE_PRICE_WARN_ACCUM = 8    # 5-day accum below this after 3+ days → price fatigue
 FATIGUE_VOL_WARN_RATIO = 1.0   # vol_ratio below this → volume fatigue

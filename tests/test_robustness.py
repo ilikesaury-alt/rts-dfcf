@@ -1,9 +1,7 @@
-"""长跑健壮性相关测试：缓存淘汰、K线拉取 deadline、supervisor 退出码判定。"""
-import sys
+"""长跑健壮性相关测试：缓存淘汰、K线拉取 deadline、stdout 降级。"""
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
-from unified_scanner import _build_child_cmd, _should_restart
 from scanner.models import StockInfo
 from scanner.utils import cache_put as _cache_put
 
@@ -40,29 +38,6 @@ class TestBoundedCache:
         mod._concept_ttl_cache.clear()
 
 
-class TestSuperviseDecision:
-
-    def test_clean_exit_no_restart(self):
-        assert _should_restart(0) is False
-
-    def test_crash_exit_restarts(self):
-        assert _should_restart(1) is True
-        assert _should_restart(-1) is True
-        assert _should_restart(2) is True
-
-    def test_build_child_cmd_forwards_args(self):
-        cmd = _build_child_cmd(120, no_feishu=True)
-        assert cmd[0] == sys.executable
-        assert cmd[1].endswith("unified_scanner.py")
-        assert str(120) in cmd
-        assert cmd[-1] == "--no-feishu"
-
-    def test_build_child_cmd_without_no_feishu(self):
-        cmd = _build_child_cmd(60, no_feishu=False)
-        assert "--no-feishu" not in cmd
-        assert str(60) in cmd
-
-
 class TestSilenceStdout:
 
     def test_silenced_stdout_is_writable(self, monkeypatch):
@@ -77,57 +52,6 @@ class TestSilenceStdout:
         sys.stdout.write("x")
         sys.stdout.flush()
         assert mod._STDOUT_SILENCED is True
-
-
-class TestSuperviseLoop:
-
-    def test_restarts_after_crash_then_stops_on_clean_exit(self):
-        from unittest.mock import MagicMock
-
-        from unified_scanner import _supervise
-
-        procs = [MagicMock(), MagicMock()]  # 崩溃(1) → 重启 → 干净退出(0)
-        with patch("subprocess.Popen", side_effect=procs), \
-             patch("unified_scanner._wait_or_kill", side_effect=[1, 0]), \
-             patch("unified_scanner.time.sleep") as mock_sleep, \
-             patch("unified_scanner._supervise_log"):
-            code = _supervise(60, no_feishu=True)
-        assert code == 0
-        # 崩溃(1)后 sleep 退避一次再重启，干净退出(0)时不再 sleep
-        assert mock_sleep.call_count == 1
-
-    def test_clean_exit_no_restart(self):
-        from unittest.mock import MagicMock
-
-        from unified_scanner import _supervise
-
-        procs = [MagicMock()]
-        with patch("subprocess.Popen", side_effect=procs), \
-             patch("unified_scanner._wait_or_kill", return_value=0), \
-             patch("unified_scanner.time.sleep") as mock_sleep, \
-             patch("unified_scanner._supervise_log"):
-            code = _supervise(60, no_feishu=False)
-        assert code == 0
-        assert mock_sleep.call_count == 0
-
-    def test_frozen_child_killed_via_heartbeat(self):
-        from unittest.mock import MagicMock
-
-        from unified_scanner import _wait_or_kill
-
-        proc = MagicMock()
-        proc.poll.return_value = None  # 永不退出
-        with patch("unified_scanner.SUPERVISE_CHILD_TIMEOUT", 1), \
-             patch.object(proc, "kill") as mock_kill, \
-             patch("unified_scanner._heartbeat_age", return_value=999), \
-             patch("unified_scanner.time.sleep") as mock_sleep, \
-             patch("unified_scanner._supervise_log"):
-            # grace=0：跳过启动宽限期（默认 SUPERVISE_CHILD_GRACE=60 会让本测试
-            # 真实等待 60s 才进心跳判定，纯测试成本）。SUPERVISE_CHILD_TIMEOUT 是
-            # 函数内读模块属性、patch 生效；grace 是默认参数、定义时已绑定，须显式传。
-            code = _wait_or_kill(proc, grace=0)
-        assert code == -9
-        mock_kill.assert_called_once()
 
 
 def _stock(symbol: str, rank: int = 1) -> StockInfo:

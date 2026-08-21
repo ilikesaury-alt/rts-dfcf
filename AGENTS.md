@@ -2,10 +2,9 @@
 
 ## Quick Commands
 
-- **Run scanner**: `python unified_scanner.py` (default 60s interval) or `python unified_scanner.py 120` (custom seconds)
+- **Run scanner**: `python unified_scanner.py`（默认每 60s 一轮；`python unified_scanner.py 120` 自定义间隔；`--no-feishu` 禁用飞书推送）
 - **综合排序分析报告**: `python today_report.py`（今日档0🎯逐票分析+选股决策报告；`--date YYYY-MM-DD` 历史回放 / `--top N` / `--json`）。独立命令不刷屏扫描输出（2026-08-18 用户决策：分析不塞进 display 渲染路径），配合 skill `priority-report`（`.opencode/skills/`，触发语「综合排序怎么选」「/today-report」）
 - **综合排序历史复盘**: `python prevday_perf.py`（历史 N 日「综合排序各组 → 次日表现」汇总统计，检验档位排序有效性；`--days 0` 全期 / `--days 10` 自定义 / `--json`）。档位逐日重建与 today_report 同源，表现用落库 next_day_pct；08-04 前缺超买/弱转强维度自动标注口径退化
-- **Crash-proof run**: `python unified_scanner.py --supervise` (父进程拉起子进程，崩溃后指数退避自动重启；重启事件写入 `logs/supervisor.log`)
 - **K线数据修复**: `python repair_kline.py`（全表比对雪球 qfq 权威源覆盖盘中残留脏 bar；`--dry-run` 先看差异量 / `--since YYYY-MM-DD` 限窗口）
 - **榜单可观测性**: `python leaderboard_obs.py`（雪球飙升榜/热搜榜逐扫描成分+排名分布；`--date` 指定日 / `--days N` 回看 / `--source hot` 切热搜榜；口径漂移自动标 `⚠`）
 - **Run tests**: `python -m pytest tests/ -v`（默认跳过真实库/外网集成测试，~5s 快跑；加 `--run-smoke` 跑全部含集成，~27s）

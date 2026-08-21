@@ -70,7 +70,7 @@ def _get_ak():
     """lazy import akshare；不可用返回 None（上层按空数据降级）。
 
     顺带禁用 tqdm 进度条（akshare 部分接口向 stderr 打印进度，
-    在 supervised 长跑模式下污染日志）。
+    在长跑模式下污染日志）。
     """
     global _ak
     if _ak is not None:
