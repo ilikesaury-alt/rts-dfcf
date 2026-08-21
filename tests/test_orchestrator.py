@@ -1307,3 +1307,41 @@ class TestFetchAllKlinesShortCacheTtl:
         assert res["300126"] is not None
 
 
+
+
+class TestParallelFetchNoSessionHandshake:
+    """三相 compute 在 items 路径下不得触发 session 握手（2026-08-21 审查修复）。
+
+    executor 每轮新建 → thread-local session 必为空 → 旧实现 _get_session() 每轮
+    对每工作线程做一次阻塞 make_session() 握手（items 路径根本不用 session）。
+    """
+
+    def test_compute_phases_never_create_session(self, monkeypatch):
+        from concurrent.futures import ThreadPoolExecutor
+
+        import scanner.orchestrator as orch
+
+        def _boom():
+            raise AssertionError("compute 相不应创建 session（items 路径不发网络请求）")
+
+        monkeypatch.setattr(orch, "_get_session", _boom)
+
+        items = [{"current": 10.0 + i * 0.01, "volume": 100} for i in range(10)]
+
+        class _Adp:
+            def fetch_minute(self, s):
+                return list(items)
+
+        cand = _make_candidate("SZ300001")
+        pool = ThreadPoolExecutor(max_workers=2)
+        try:
+            intraday: dict = {}
+            opening: dict = {}
+            vols: dict = {}
+            orch._parallel_fetch(pool, [cand], intraday, opening, vols, _Adp(),
+                                 phase_deadline=5.0)
+        finally:
+            pool.shutdown(wait=True)
+        assert intraday.get("SZ300001") is not None
+        assert opening.get("SZ300001") is not None
+        assert vols.get("SZ300001") is not None

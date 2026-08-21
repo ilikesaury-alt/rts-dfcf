@@ -1177,3 +1177,18 @@ def test_display_priority_tier4_sector_resonance_low(monkeypatch, capsys):
         lines.index(next(l for l in lines if "SZ300002" in l)), f"小板块共振应劣后: {lines}"
     assert lines.index(next(l for l in lines if "SZ300003" in l)) < \
         lines.index(next(l for l in lines if "SZ300002" in l)), f"大板块豁免不劣后: {lines}"
+
+
+def test_nextday_mark_dropped_row_ignores_drifted_live_quote(monkeypatch, capsys):
+    """掉榜行 🎯 判定用落库推荐时刻口径，不被漂移的 live_quotes 否决（2026-08-21 审查修复）。
+
+    场景：momentum 掉榜票落库甜蜜带 1.0%（<2% 低吸潜伏）+ 累计达标，盘中已冲到
+    9%（陷阱带）。旧实现吃 live_percent → 陷阱带 → 漏标 🎯 且档位闪变。
+    """
+    conn = _rec_db()
+    _insert_rec_pct_accum(conn, "SZ300001", "漂移票", "momentum", 80, 1.0, 10.0)
+    disp_mod.display_priority(conn, today_pool={},
+                              live_quotes={"SZ300001": {"percent": 9.0, "current": 11.0}})
+    out = capsys.readouterr().out
+    line = next(ln for ln in out.splitlines() if "SZ300001" in ln)
+    assert "🎯" in line, "掉榜行应按落库甜蜜带(1.0%)判 🎯，不被漂移 live(9% 陷阱带)否决"

@@ -117,3 +117,21 @@ class TestBuildAccumMap:
               "score": 50, "_candidate": cand}
         batch = build_accum_map(conn, [e])
         assert batch["SZ300003"] == 8.5  # 维度优先，不查 DB
+
+
+def test_dropped_row_prefers_db_percent_over_live():
+    """掉榜行（无候选）🎯/涨幅带判定用落库推荐时刻口径，不吃漂移的 live_quotes。
+
+    2026-08-21 审查修复：unified_scanner 会为掉榜票主动补拉实时行情，旧实现把
+    live_percent 排在 DB percent 之前 → 判定随盘中价格逐轮漂移、偏离校准口径。
+    """
+    e = {"symbol": "SZ300010", "date": "2026-08-21", "category": "momentum",
+         "percent": 5.0, "live_quote_available": True, "live_percent": 15.0}
+    assert R._nextday_entry_percent(e) == 5.0
+
+
+def test_dropped_row_live_fallback_without_db_percent():
+    """落库 percent 缺失时才兜底 live_quotes。"""
+    e = {"symbol": "SZ300011", "date": "2026-08-21", "category": "momentum",
+         "live_quote_available": True, "live_percent": 7.5}
+    assert R._nextday_entry_percent(e) == 7.5
