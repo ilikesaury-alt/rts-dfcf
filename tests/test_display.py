@@ -183,8 +183,8 @@ def test_display_comeback_section(monkeypatch, capsys):
 
 
 def test_display_priority_comeback_hidden_when_main_has_recs(monkeypatch, capsys):
-    """2026-08-12：主区（榜上五类）推荐条数 ≥ COMEBACK_DISPLAY_MIN_MAIN 时不显示
-    回马枪独立区（避免刷屏）；comeback 行随区块整体隐藏。"""
+    """主区（榜上五类）推荐条数 ≥ COMEBACK_DISPLAY_MIN_MAIN 时不显示回马枪独立区（避免刷屏）；
+    2026-08-21 弱市门控撤销后，唯一隐藏条件 = 主区充足（>阈值），comeback 行随区块整体隐藏。"""
     conn = _rec_db()
     # 主区 6 条（≥ 阈值 3）→ 隐藏回马枪
     for i in range(1, 7):
@@ -224,80 +224,72 @@ def _set_market_index(conn, index_pct: float):
     conn.commit()
 
 
-def test_display_priority_comeback_shown_only_when_market_weak(monkeypatch, capsys):
-    """2026-08-20：回马枪是「弱市低吸工具」——仅大盘弱势（index_pct <
-    MARKET_WEAK_THRESHOLD=-1.0）才显示；强势/中性市不渲染。"""
-    # 主区 2 条（≤ 阈值 3）+ 弱市 → 显示
-    conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "反弹", "rebound", 50)
-    _insert_rec_cat(conn, "SZ300002", "回马", "comeback", 90)
-    _insert_rec_cat(conn, "SZ300003", "超短", "short_term", 80)
-    _set_market_index(conn, -3.0)
-    disp_mod.display_priority(conn, today_pool={})
-    out = capsys.readouterr().out
-    assert "◆ 回马枪" in out
-    # 同条件但强市 → 隐藏
-    conn2 = _rec_db()
-    _insert_rec_cat(conn2, "SZ300001", "反弹", "rebound", 50)
-    _insert_rec_cat(conn2, "SZ300002", "回马", "comeback", 90)
-    _insert_rec_cat(conn2, "SZ300003", "超短", "short_term", 80)
-    _set_market_index(conn2, 2.0)
-    disp_mod.display_priority(conn2, today_pool={})
-    out2 = capsys.readouterr().out
-    assert "◆ 回马枪" not in out2
-    assert "SZ300002" not in out2
-    # 中性市（-1.0 不触发弱市）→ 隐藏
-    conn3 = _rec_db()
-    _insert_rec_cat(conn3, "SZ300001", "反弹", "rebound", 50)
-    _insert_rec_cat(conn3, "SZ300002", "回马", "comeback", 90)
-    _insert_rec_cat(conn3, "SZ300003", "超短", "short_term", 80)
-    _set_market_index(conn3, 0.0)
-    disp_mod.display_priority(conn3, today_pool={})
-    out3 = capsys.readouterr().out
-    assert "◆ 回马枪" not in out3
+def test_display_priority_comeback_shown_when_main_sparse(monkeypatch, capsys):
+    """回马枪/核心低吸显示门控（2026-08-21 弱市门控撤销）：唯一显示条件 =
+    主区（榜上五类）推荐条数 ≤ COMEBACK_DISPLAY_MIN_MAIN（含为空）。
+    - 主区稀少（≤3）无论大盘强弱都显示（解决强市主表稀少时盲区）
+    - 主区充足（>3）无论大盘强弱都隐藏（避免刷屏）"""
+    def _build_main2(pct):
+        conn = _rec_db()
+        _insert_rec_cat(conn, "SZ300001", "反弹", "rebound", 50)
+        _insert_rec_cat(conn, "SZ300002", "回马", "comeback", 90)
+        _insert_rec_cat(conn, "SZ300003", "超短", "short_term", 80)
+        _set_market_index(conn, pct)
+        disp_mod.display_priority(conn, today_pool={})
+        return capsys.readouterr().out
+
+    # 主区 2 条（≤ 阈值 3）：弱市 / 强市 / 中性 均显示
+    assert "◆ 回马枪" in _build_main2(-3.0)
+    assert "◆ 回马枪" in _build_main2(2.0)
+    assert "◆ 回马枪" in _build_main2(0.0)
+
+    # 主区充足（6 条）> 阈值 3：弱市 / 强市 均隐藏
+    def _build_dense(pct):
+        conn = _rec_db()
+        for i in range(1, 7):
+            _insert_rec_cat(conn, f"SZ3000{i}", f"反弹{i}", "rebound", 50 + i)
+        _insert_rec_cat(conn, "SZ300007", "回马", "comeback", 90)
+        _set_market_index(conn, pct)
+        disp_mod.display_priority(conn, today_pool={})
+        return capsys.readouterr().out
+    assert "◆ 回马枪" not in _build_dense(-3.0)
+    assert "◆ 回马枪" not in _build_dense(2.0)
 
 
-def test_display_priority_core_dip_shown_only_when_market_weak(monkeypatch, capsys):
-    """2026-08-20：核心方向低吸同回马枪——仅大盘弱势才显示。"""
+def test_display_priority_core_dip_shown_when_main_sparse(monkeypatch, capsys):
+    """核心方向低吸显示门控（2026-08-21 弱市门控撤销）：唯一显示条件 =
+    主区（榜上五类）推荐条数 ≤ COMEBACK_DISPLAY_MIN_MAIN（含为空）；
+    弱市门控撤销后，主区稀少（≤3）无论强弱都显示。"""
     import json as _json
 
-    def _mk(conn, idx):
-        _insert_rec_cat(conn, "SZ300001", "反弹", "rebound", 50)
+    def _run(main_n, idx):
+        conn = _rec_db()
+        for i in range(1, main_n + 1):
+            _insert_rec_cat(conn, f"SZ3000{i}", f"反弹{i}", "rebound", 50)
         conn.execute(
             "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, score_breakdown) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (now_beijing().date().isoformat(), "13:00", "SZ300002", "低吸", "core_dip", 70, 3.0,
+            (now_beijing().date().isoformat(), "13:00", "SZ300099", "低吸", "core_dip", 70, 3.0,
              _json.dumps({"run": 0.2, "pullback": -0.1, "flow_pct": 5.0})),
         )
         _set_market_index(conn, idx)
         conn.commit()
+        disp_mod.display_priority(conn, today_pool={})
+        return capsys.readouterr().out
 
-    conn = _rec_db()
-    _mk(conn, -2.5)
-    disp_mod.display_priority(conn, today_pool={})
-    out = capsys.readouterr().out
+    # 主区 1 条（≤ 阈值 3）+ 弱市 → 显示 + 标准行渲染
+    out = _run(1, -2.5)
     assert "◆ 核心方向低吸" in out
-    # 2026-08-20：与回马枪同款标准行渲染（DIP 标签 + 行尾绿色 20日/回撤/主力后缀）
-    dip_line = next(l for l in out.split("◆ 核心方向低吸", 1)[1].splitlines() if "SZ300002" in l)
+    dip_line = next(l for l in out.split("◆ 核心方向低吸", 1)[1].splitlines() if "SZ300099" in l)
     assert "DIP" in dip_line
     assert "20日" in dip_line and "回撤" in dip_line and "主力" in dip_line
-    conn2 = _rec_db()
-    _mk(conn2, 1.5)
-    disp_mod.display_priority(conn2, today_pool={})
-    out2 = capsys.readouterr().out
-    assert "◆ 核心方向低吸" not in out2
+    # 主区 1 条 + 强市 → 显示（2026-08-21 撤销弱市门控：只看主表数量）
+    assert "◆ 核心方向低吸" in _run(1, 1.5)
+    # 主区充足（6 条）> 阈值 3：弱市 / 强市 均隐藏
+    assert "◆ 核心方向低吸" not in _run(6, 1.5)
+    assert "◆ 核心方向低吸" not in _run(6, -2.5)
 
 
-def test_market_is_weak_fail_open_without_log(capsys):
-    """2026-08-20：market_index_log 无记录（旧库未迁移/扫描未跑）+ 无候选 dims →
-    fail-open 按弱势处理（弱市工具宁可多显示不误杀）。"""
-    conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "反弹", "rebound", 50)
-    _insert_rec_cat(conn, "SZ300002", "回马", "comeback", 90)
-    _insert_rec_cat(conn, "SZ300003", "超短", "short_term", 80)
-    disp_mod.display_priority(conn, today_pool={})
-    out = capsys.readouterr().out
-    assert "◆ 回马枪" in out
 
 
 # ── 综合排序实时行情覆盖：live_quotes 对所有行优先（候选/非候选一致）──

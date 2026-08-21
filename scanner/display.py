@@ -10,7 +10,6 @@ from scanner.config import (
     FUND_FLOW_MAIN_PCT_EXTREME,
     FUND_FLOW_MAIN_PCT_STRONG,
     FUND_FLOW_MAIN_PCT_WEAK,
-    MARKET_WEAK_THRESHOLD,
     RISK_FLAGS_DISPLAY_HARD,
     SUGGEST_BY_CAT,
     TOP40_THRESHOLD,
@@ -20,7 +19,6 @@ from scanner.core_themes import _low_buy_quality as _core_dip_quality
 from scanner.core_themes import core_stock_symbols
 from scanner.database import (
     get_fund_flow_pct_map,
-    get_market_index_log,
     get_prominence_map,
     get_today_recommendations,
 )
@@ -285,26 +283,6 @@ def _core_dip_entry_quality(entry: dict) -> tuple:
     })
 
 
-def _market_is_weak(conn, today_pool: dict[str, Candidate] | None) -> bool:
-    """大盘弱势判定（2026-08-20 回马枪/核心低吸仅弱市展示的硬门）。
-
-    优先读 market_index_log 当日血缘记录（可审计、重启不丢、与今日大盘涨幅同源）；
-    无记录（旧库未迁移/扫描未跑）时回退 today_pool 候选 dims 的 market_env_bonus<0；
-    两者皆不可得 → fail-open 按"弱势"处理（弱市工具宁可多显示不误杀）。
-    阈值与 config.MARKET_WEAK_THRESHOLD（-1.0）对齐。
-    """
-    try:
-        rec = get_market_index_log(conn)
-        if rec and rec.get("index_pct") is not None:
-            return float(rec["index_pct"]) < MARKET_WEAK_THRESHOLD
-    except Exception:
-        pass
-    for c in (today_pool or {}).values():
-        if c.kline and c.kline.dimensions:
-            bonus = c.kline.dimensions.get("market_env_bonus", 0) or 0
-            if bonus != 0:
-                return bonus < 0
-    return True
 
 
 def display(gem_total: int, interval: int, filtered_large_cap: int = 0,
@@ -605,14 +583,16 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     # 2026-08-12 放宽兜底条件：主区推荐条数 ≤ COMEBACK_DISPLAY_MIN_MAIN（含为空）时也显示，
     # 解决主区稀少（如盘中仅 1-2 条）时回马枪大量条目被整体隐藏的盲区；主区数量大于阈值
     # 才隐藏（避免刷屏）。仅显示前 COMEBACK_DISPLAY_MAX 条。comeback 为空同样跳过。
-    # 2026-08-20：① 综合排序数量大于 3（COMEBACK_DISPLAY_MIN_MAIN）才隐藏回马枪，等于 3 仍显示；
-    # ② 回马枪/核心低吸都是「弱市低吸工具」（掉榜超跌/主线回调），仅大盘弱势
-    # （market_index_log index_pct < MARKET_WEAK_THRESHOLD）才显示，强势/中性市不渲染。
-    if comeback_recs and len(main_recs) <= COMEBACK_DISPLAY_MIN_MAIN and _market_is_weak(conn, today_pool):
+    # 2026-08-20：综合排序数量大于 3（COMEBACK_DISPLAY_MIN_MAIN）才隐藏回马枪，等于 3 仍显示。
+    # 2026-08-21：撤销弱市门控——唯一显示条件 = 主区（榜上五类）推荐条数 ≤ COMEBACK_DISPLAY_MIN_MAIN
+    # （含为空）。无论大盘强弱，只要主表推荐稀少即补充展示回马枪/核心低吸（避免主表稀缺时盲区）。
+    _main_sparse = len(main_recs) <= COMEBACK_DISPLAY_MIN_MAIN
+    if comeback_recs and _main_sparse:
         cb_scored = sorted(comeback_recs, key=lambda x: (tier_map.get(x["symbol"], 2), -x["score"]))
         if len(cb_scored) > COMEBACK_DISPLAY_MAX:
             cb_scored = cb_scored[:COMEBACK_DISPLAY_MAX]
-        print(f"\n{ANSI['CYAN']}◆ 回马枪 — 掉榜跟踪/回调买点（弱市·主区推荐较少·补充参考）{ANSI['RESET']}")
+        print(f"\n{ANSI['CYAN']}◆ 回马枪 — 掉榜跟踪/回调买点"
+              f"（主区推荐≤{COMEBACK_DISPLAY_MIN_MAIN}·补充参考）{ANSI['RESET']}")
         print(hdr)
         for ci, entry in enumerate(cb_scored, 1):
             _print_priority_row(entry, ci, flow_pct_map, last_ranks=last_ranks)
@@ -633,18 +613,18 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
         if run is None or pullback is None:
             continue
         e["_core_dip_extra"] = _core_dip_extra_str(
-            float(run), float(pullback), sb.get("flow_pct"))
+            to_float(run), to_float(pullback), sb.get("flow_pct"))
         core_dips.append(e)
     core_dips.sort(key=_core_dip_entry_quality)
     # 2026-08-19: 核心方向低吸区显示逻辑与回马枪同规则——主区（榜上五类）推荐条数 ≥
-    # COMEBACK_DISPLAY_MIN_MAIN 时不渲染（避免与主区重复刷屏）；主区推荐条数 < 阈值
+    # COMEBACK_DISPLAY_MIN_MAIN 时默认不渲染（避免与主区重复刷屏）；主区推荐条数 < 阈值
     # （含为空）时补充展示，最多前 COMEBACK_DISPLAY_MAX 条。core_dip 为空同样跳过。
-    # 2026-08-20：与回马枪同款弱市门控——仅大盘弱势才显示（核心低吸=大跌市中找主线
-    # 回调低吸，强市核心股在拉升无低吸窗口）。
-    if core_dips and len(main_recs) <= COMEBACK_DISPLAY_MIN_MAIN and _market_is_weak(conn, today_pool):
+    # 2026-08-21：与回马枪同款，撤销弱市门控，唯一显示条件 = 主区推荐 ≤ COMEBACK_DISPLAY_MIN_MAIN（复用 _main_sparse）。
+    if core_dips and _main_sparse:
         if len(core_dips) > COMEBACK_DISPLAY_MAX:
             core_dips = core_dips[:COMEBACK_DISPLAY_MAX]
-        print(f"\n{ANSI['GREEN']}◆ 核心方向低吸 — 主线方向核心股回调参考（弱市·主区推荐较少·补充参考）{ANSI['RESET']}")
+        print(f"\n{ANSI['GREEN']}◆ 核心方向低吸 — 主线方向核心股回调参考"
+              f"（主区推荐≤{COMEBACK_DISPLAY_MIN_MAIN}·补充参考）{ANSI['RESET']}")
         print(hdr)
         for di, entry in enumerate(core_dips, 1):
             _print_priority_row(entry, di, flow_pct_map, last_ranks=last_ranks)
