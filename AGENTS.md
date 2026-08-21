@@ -31,6 +31,7 @@ unified_scanner.py        # Single entry point (dual-source fusion)
 stock_report.py           # Individual stock deep-dive report tool
 scanner/
   orchestrator.py         # Core scan pipeline
+  kline_fetch.py          # K 线补拉数据层（TTL 节流 + deadline 限时 + 失败兑底，2026-08-21 自 orchestrator 抽出）
   minute_bar.py           # 分时兑底数据层（补拉失败→分时构造今日 bar，2026-08-21 自 orchestrator 抽出）
   analysis.py             # Scoring engines (new_face, momentum, rebound, short_term)
   comeback.py             # 回马枪：掉榜跟踪池（反转 + 回踩变体）
