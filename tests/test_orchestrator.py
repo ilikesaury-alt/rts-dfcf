@@ -2,10 +2,10 @@ from datetime import date, datetime, timedelta
 
 from scanner.candidate_pool import ScanSession
 from scanner.models import Candidate, KlineSummary, StockInfo
+import scanner.kline_fetch as kf
 from scanner.orchestrator import (
     _candidate_excluded_by_risk,
     _enrich_candidate_market_cap,
-    _fetch_all_klines,
 )
 
 
@@ -416,10 +416,14 @@ class TestCrossFunctionSilentDegradation:
         stale = self._stale_kline()
 
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
+        monkeypatch.setattr(kf, "is_trading_time", lambda: True)
+        monkeypatch.setattr(o, "is_trading_time", lambda: True)
         monkeypatch.setattr(o, "now_beijing",
                             lambda: datetime(2026, 6, 18, 10, 0))
-        monkeypatch.setattr(o, "get_cached_klines", lambda conn, syms: {s: stale for s in syms})
-        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
+        monkeypatch.setattr(kf, "now_beijing",
+                            lambda: datetime(2026, 6, 18, 10, 0))
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: stale for s in syms})
+        monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
         monkeypatch.setattr(mb, "is_trading_time", lambda: True)
         monkeypatch.setattr(mb, "now_beijing",
                             lambda: datetime(2026, 6, 18, 10, 0))
@@ -435,7 +439,7 @@ class TestCrossFunctionSilentDegradation:
         conn = sqlite3.connect(":memory:")
         stale_stock = self._stock()
         stale_stock.turnover_rate = 3.5  # 非停牌股 → 走真实 [!] 告警分支
-        klines = o._fetch_all_klines(conn, _Adapter(), [stale_stock])
+        klines = kf.fetch_all_klines(conn, _Adapter(), [stale_stock])
         assert klines["300001"] is stale  # 回退旧缓存
 
         # 下游必须识别 stale（即便分时兜底失败）
@@ -480,10 +484,14 @@ class TestCrossFunctionSilentDegradation:
         stale = self._stale_kline()
 
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
+        monkeypatch.setattr(kf, "is_trading_time", lambda: True)
+        monkeypatch.setattr(o, "is_trading_time", lambda: True)
         monkeypatch.setattr(o, "now_beijing",
                             lambda: datetime(2026, 6, 18, 10, 0))
-        monkeypatch.setattr(o, "get_cached_klines", lambda conn, syms: {s: stale for s in syms})
-        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
+        monkeypatch.setattr(kf, "now_beijing",
+                            lambda: datetime(2026, 6, 18, 10, 0))
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: stale for s in syms})
+        monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
         monkeypatch.setattr(mb, "is_trading_time", lambda: True)
         monkeypatch.setattr(mb, "now_beijing",
                             lambda: datetime(2026, 6, 18, 10, 0))
@@ -501,7 +509,7 @@ class TestCrossFunctionSilentDegradation:
 
         conn = sqlite3.connect(":memory:")
         stats: dict = {}
-        klines = o._fetch_all_klines(conn, _Adapter(), [self._stock()], stats=stats)
+        klines = kf.fetch_all_klines(conn, _Adapter(), [self._stock()], stats=stats)
         assert stats["fetch_failed"] == 1           # 1 只补拉失败
         assert stats["minute_fallback"] == 1        # 分时兜底成功 1 次
         assert klines["300001"][-1]["date"] == "2026-06-18"  # 今日 bar 已构造
@@ -553,10 +561,12 @@ class TestFetchAllKlinesIntradayRefresh:
 
         today = date.today().isoformat()
         cached = self._cached(today)
-        monkeypatch.setattr(o, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(o, "is_trading_time", lambda: True)
+        monkeypatch.setattr(kf, "is_trading_time", lambda: True)
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
         # last fetch 10s ago (within TTL)
-        o._last_kline_fetch["300001"] = o.now_beijing().timestamp() - 10
+        kf._last_kline_fetch["300001"] = o.now_beijing().timestamp() - 10
         fetched = {}
 
         class _FakeAdapter:
@@ -564,9 +574,9 @@ class TestFetchAllKlinesIntradayRefresh:
                 fetched["called"] = True
                 return cached
 
-        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
+        monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
 
-        res = o._fetch_all_klines(None, _FakeAdapter(), [StockInfo(symbol="300001", name="T", code="300001", percent=3.0, current=10.0, value=10000, rank_change=1000, rank=1)])
+        res = kf.fetch_all_klines(None, _FakeAdapter(), [StockInfo(symbol="300001", name="T", code="300001", percent=3.0, current=10.0, value=10000, rank_change=1000, rank=1)])
         assert res["300001"] is cached
         assert "called" not in fetched  # no refetch
 
@@ -577,10 +587,12 @@ class TestFetchAllKlinesIntradayRefresh:
 
         today = date.today().isoformat()
         cached = self._cached(today)
-        monkeypatch.setattr(o, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(o, "is_trading_time", lambda: True)
+        monkeypatch.setattr(kf, "is_trading_time", lambda: True)
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
         # last fetch 600s ago (past TTL)
-        o._last_kline_fetch["300001"] = o.now_beijing().timestamp() - 600
+        kf._last_kline_fetch["300001"] = o.now_beijing().timestamp() - 600
         fetched = {}
         fresh = [{"date": today, "close": 11.0}] * 45
 
@@ -589,9 +601,9 @@ class TestFetchAllKlinesIntradayRefresh:
                 fetched["called"] = True
                 return fresh
 
-        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
+        monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
 
-        res = o._fetch_all_klines(None, _FakeAdapter(), [StockInfo(symbol="300001", name="T", code="300001", percent=3.0, current=10.0, value=10000, rank_change=1000, rank=1)])
+        res = kf.fetch_all_klines(None, _FakeAdapter(), [StockInfo(symbol="300001", name="T", code="300001", percent=3.0, current=10.0, value=10000, rank_change=1000, rank=1)])
         assert "called" in fetched  # refetch triggered
         assert res["300001"] is not None
         # merge 后结果包含 stale_cache + API 数据，不再是同一对象
@@ -606,10 +618,12 @@ class TestFetchAllKlinesIntradayRefresh:
 
         yesterday = (date.today() - timedelta(days=1)).isoformat()
         cached = [{"date": yesterday, "close": 10.0}] * 40
-        monkeypatch.setattr(o, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(o, "is_trading_time", lambda: True)
+        monkeypatch.setattr(kf, "is_trading_time", lambda: True)
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
         # 即便上次拉取在 TTL 内，缺少今日 Bar 也应强制补拉
-        o._last_kline_fetch["300001"] = o.now_beijing().timestamp() - 10
+        kf._last_kline_fetch["300001"] = o.now_beijing().timestamp() - 10
         fetched = {}
         fresh = [{"date": date.today().isoformat(), "close": 11.0}] * 45
 
@@ -618,15 +632,15 @@ class TestFetchAllKlinesIntradayRefresh:
                 fetched["called"] = True
                 return fresh
 
-        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
+        monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
 
-        res = o._fetch_all_klines(None, _FakeAdapter(), [StockInfo(symbol="300001", name="T", code="300001", percent=3.0, current=10.0, value=10000, rank_change=1000, rank=1)])
+        res = kf.fetch_all_klines(None, _FakeAdapter(), [StockInfo(symbol="300001", name="T", code="300001", percent=3.0, current=10.0, value=10000, rank_change=1000, rank=1)])
         assert "called" in fetched  # 必须补拉
         assert res["300001"] is not None
         # merge 后 40 条旧日期 → 1 条(key 相同), 45 条今日 → 1 条 = 2 条
         assert len(res["300001"]) == 2
         assert res["300001"][-1]["close"] == 11.0
-        assert res["300001"][-1]["date"] == o.date.today().isoformat()
+        assert res["300001"][-1]["date"] == kf.now_beijing().date().isoformat()
 
 
 class TestTryCandidateHighRiskTrend:
@@ -721,9 +735,12 @@ class TestFetchAllKlinesTodayBarWarning:
         conn = None
         cached = self._kline(40, "2026-07-30")
         monkeypatch.setattr("scanner.orchestrator.is_trading_time", lambda *a, **k: True)
+        monkeypatch.setattr("scanner.kline_fetch.is_trading_time", lambda *a, **k: True)
         monkeypatch.setattr("scanner.orchestrator.now_beijing",
                             lambda: datetime(2026, 7, 31, 10, 0))
-        monkeypatch.setattr("scanner.orchestrator.get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr("scanner.kline_fetch.now_beijing",
+                            lambda: datetime(2026, 7, 31, 10, 0))
+        monkeypatch.setattr("scanner.kline_fetch.get_cached_klines", lambda conn, syms: {s: cached for s in syms})
         monkeypatch.setattr("scanner.minute_bar.is_trading_time", lambda *a, **k: True)
         monkeypatch.setattr("scanner.minute_bar.now_beijing",
                             lambda: datetime(2026, 7, 31, 10, 0))
@@ -732,9 +749,9 @@ class TestFetchAllKlinesTodayBarWarning:
             def fetch_kline(self, symbol, days=15):
                 return None
 
-        monkeypatch.setattr("scanner.orchestrator.save_kline_to_db", lambda *a, **k: None)
+        monkeypatch.setattr("scanner.kline_fetch.save_kline_to_db", lambda *a, **k: None)
 
-        result = _fetch_all_klines(conn, _FakeAdapter(), [self._stock()])
+        result = kf.fetch_all_klines(conn, _FakeAdapter(), [self._stock()])
         captured = capsys.readouterr().out
         assert "今日K线缺失" in captured
         assert "300999" in captured
@@ -745,9 +762,12 @@ class TestFetchAllKlinesTodayBarWarning:
         conn = None
         cached = self._kline(40, "2026-07-31")
         monkeypatch.setattr("scanner.orchestrator.is_trading_time", lambda *a, **k: True)
+        monkeypatch.setattr("scanner.kline_fetch.is_trading_time", lambda *a, **k: True)
         monkeypatch.setattr("scanner.orchestrator.now_beijing",
                             lambda: datetime(2026, 7, 31, 10, 0))
-        monkeypatch.setattr("scanner.orchestrator.get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr("scanner.kline_fetch.now_beijing",
+                            lambda: datetime(2026, 7, 31, 10, 0))
+        monkeypatch.setattr("scanner.kline_fetch.get_cached_klines", lambda conn, syms: {s: cached for s in syms})
         monkeypatch.setattr("scanner.minute_bar.is_trading_time", lambda *a, **k: True)
         monkeypatch.setattr("scanner.minute_bar.now_beijing",
                             lambda: datetime(2026, 7, 31, 10, 0))
@@ -756,9 +776,9 @@ class TestFetchAllKlinesTodayBarWarning:
             def fetch_kline(self, symbol, days=15):
                 return None
 
-        monkeypatch.setattr("scanner.orchestrator.save_kline_to_db", lambda *a, **k: None)
+        monkeypatch.setattr("scanner.kline_fetch.save_kline_to_db", lambda *a, **k: None)
 
-        _fetch_all_klines(conn, _FakeAdapter(), [self._stock()])
+        kf.fetch_all_klines(conn, _FakeAdapter(), [self._stock()])
         captured = capsys.readouterr().out
         assert "今日K线缺失" not in captured
 
@@ -789,8 +809,10 @@ class TestFetchAllKlinesSharedDeadline:
         import scanner.orchestrator as o
 
         monkeypatch.setattr(o, "is_trading_time", lambda *a, **k: True)
-        monkeypatch.setattr(o, "get_cached_klines", lambda conn, syms: {s: None for s in syms})
-        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
+        monkeypatch.setattr(kf, "is_trading_time", lambda *a, **k: True)
+        monkeypatch.setattr(o, "is_trading_time", lambda *a, **k: True)
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: None for s in syms})
+        monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
 
         fetch_calls = {"n": 0}
 
@@ -805,11 +827,11 @@ class TestFetchAllKlinesSharedDeadline:
         deadline = o.now_beijing().timestamp() + 0.03
         stocks = [self._stock(f"30000{i}") for i in range(1, 6)]
         # 第一批：短暂 deadline 内只能拉少量几只（首只检查后再拉，能拉 1~2 只）
-        r1 = o._fetch_all_klines(None, _SlowAdapter(), stocks, deadline=deadline)
+        r1 = kf.fetch_all_klines(None, _SlowAdapter(), stocks, deadline=deadline)
         n_after_first = fetch_calls["n"]
         assert 1 <= n_after_first < 5, f"首批只应拉 1~2 只（30ms 窗口），got {n_after_first}"
         # 第二批：同一（已过期）deadline → 一只都不拉
-        r2 = o._fetch_all_klines(None, _SlowAdapter(), stocks[:1], deadline=deadline)
+        r2 = kf.fetch_all_klines(None, _SlowAdapter(), stocks[:1], deadline=deadline)
         n_after_second = fetch_calls["n"]
         assert n_after_second == n_after_first, (
             f"共享 deadline 下第二批不得重新计时补拉，{n_after_first}→{n_after_second}")
@@ -818,17 +840,21 @@ class TestFetchAllKlinesSharedDeadline:
         # 未传 deadline 时沿用默认 KLINE_FETCH_DEADLINE 行为（向后兼容）
         import scanner.orchestrator as o
         monkeypatch.setattr(o, "is_trading_time", lambda *a, **k: True)
+        monkeypatch.setattr(kf, "is_trading_time", lambda *a, **k: True)
+        monkeypatch.setattr(o, "is_trading_time", lambda *a, **k: True)
         monkeypatch.setattr(o, "now_beijing",
                             lambda: datetime(2026, 7, 31, 10, 0))
-        monkeypatch.setattr(o, "get_cached_klines", lambda conn, syms: {s: None for s in syms})
-        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
+        monkeypatch.setattr(kf, "now_beijing",
+                            lambda: datetime(2026, 7, 31, 10, 0))
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: None for s in syms})
+        monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
         fresh = self._kline_fresh(40)
 
         class _FakeAdapter:
             def fetch_kline(self, symbol, days=15):
                 return fresh
 
-        res = o._fetch_all_klines(None, _FakeAdapter(), [self._stock("300999")])
+        res = kf.fetch_all_klines(None, _FakeAdapter(), [self._stock("300999")])
         assert res["300999"] is not None
 
 
@@ -859,10 +885,14 @@ class TestFetchAllKlinesMinuteTodayBarFallback:
         import scanner.minute_bar as mb
         cached = self._kline_stale()
         monkeypatch.setattr(o, "is_trading_time", lambda *a, **k: True)
+        monkeypatch.setattr(kf, "is_trading_time", lambda *a, **k: True)
+        monkeypatch.setattr(o, "is_trading_time", lambda *a, **k: True)
         monkeypatch.setattr(o, "now_beijing",
                             lambda: datetime(2026, 7, 31, 10, 0))
-        monkeypatch.setattr(o, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
-        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
+        monkeypatch.setattr(kf, "now_beijing",
+                            lambda: datetime(2026, 7, 31, 10, 0))
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
         monkeypatch.setattr(mb, "is_trading_time", lambda *a, **k: True)
         monkeypatch.setattr(mb, "now_beijing",
                             lambda: datetime(2026, 7, 31, 10, 0))
@@ -880,7 +910,7 @@ class TestFetchAllKlinesMinuteTodayBarFallback:
                      "avg_price": 15.1, "high": 15.6, "low": 15.0, "percent": 7.0},
                 ]
 
-        res = o._fetch_all_klines(None, _FakeAdapter(), [self._stock()])
+        res = kf.fetch_all_klines(None, _FakeAdapter(), [self._stock()])
         kl = res["300999"]
         assert kl is not None
         # 今日 bar 已 merge 进返回的 kline（供本轮评分）
@@ -896,12 +926,16 @@ class TestFetchAllKlinesMinuteTodayBarFallback:
         import scanner.minute_bar as mb
         cached = self._kline_stale()
         monkeypatch.setattr(o, "is_trading_time", lambda *a, **k: False)
+        monkeypatch.setattr(kf, "is_trading_time", lambda *a, **k: False)
+        monkeypatch.setattr(o, "is_trading_time", lambda *a, **k: False)
         monkeypatch.setattr(mb, "is_trading_time", lambda *a, **k: False)
         monkeypatch.setattr(o, "now_beijing",
                             lambda: datetime(2026, 7, 31, 16, 0))
+        monkeypatch.setattr(kf, "now_beijing",
+                            lambda: datetime(2026, 7, 31, 16, 0))
         monkeypatch.setattr(mb, "now_beijing",
                             lambda: datetime(2026, 7, 31, 16, 0))
-        monkeypatch.setattr(o, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
 
         class _FakeAdapter:
             def fetch_kline(self, symbol, days=15):
@@ -910,7 +944,7 @@ class TestFetchAllKlinesMinuteTodayBarFallback:
             def fetch_minute(self, symbol):
                 raise AssertionError("非交易时段不应拉分时兜底")
 
-        res = o._fetch_all_klines(None, _FakeAdapter(), [self._stock()])
+        res = kf.fetch_all_klines(None, _FakeAdapter(), [self._stock()])
         # 维持旧回退行为：返回 stale 缓存，不 merge 今日 bar
         assert res["300999"] is cached
 
@@ -919,10 +953,14 @@ class TestFetchAllKlinesMinuteTodayBarFallback:
         import scanner.minute_bar as mb
         cached = self._kline_stale()
         monkeypatch.setattr(o, "is_trading_time", lambda *a, **k: True)
+        monkeypatch.setattr(kf, "is_trading_time", lambda *a, **k: True)
+        monkeypatch.setattr(o, "is_trading_time", lambda *a, **k: True)
         monkeypatch.setattr(o, "now_beijing",
                             lambda: datetime(2026, 7, 31, 10, 0))
-        monkeypatch.setattr(o, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
-        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
+        monkeypatch.setattr(kf, "now_beijing",
+                            lambda: datetime(2026, 7, 31, 10, 0))
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
         monkeypatch.setattr(mb, "is_trading_time", lambda *a, **k: True)
         monkeypatch.setattr(mb, "now_beijing",
                             lambda: datetime(2026, 7, 31, 10, 0))
@@ -935,7 +973,7 @@ class TestFetchAllKlinesMinuteTodayBarFallback:
             def fetch_minute(self, symbol):
                 return None  # 分时也不可用
 
-        res = o._fetch_all_klines(None, _FakeAdapter(), [self._stock()])
+        res = kf.fetch_all_klines(None, _FakeAdapter(), [self._stock()])
         assert res["300999"] is cached
 
 
@@ -1242,9 +1280,11 @@ class TestFetchAllKlinesShortCacheTtl:
 
         today = date.today().isoformat()
         cached = self._cached(today)
-        monkeypatch.setattr(o, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
-        o._last_kline_fetch["300123"] = o.now_beijing().timestamp() - 10
+        monkeypatch.setattr(kf, "is_trading_time", lambda: True)
+        monkeypatch.setattr(o, "is_trading_time", lambda: True)
+        kf._last_kline_fetch["300123"] = o.now_beijing().timestamp() - 10
         fetched = {}
 
         class _FakeAdapter:
@@ -1252,8 +1292,8 @@ class TestFetchAllKlinesShortCacheTtl:
                 fetched["called"] = True
                 return cached
 
-        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
-        res = o._fetch_all_klines(None, _FakeAdapter(), [StockInfo(
+        monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
+        res = kf.fetch_all_klines(None, _FakeAdapter(), [StockInfo(
             symbol="300123", name="T", code="300123", percent=3.0,
             current=10.0, value=10000, rank_change=1000, rank=1)])
         assert "called" not in fetched  # TTL 内短缓存复用
@@ -1266,9 +1306,11 @@ class TestFetchAllKlinesShortCacheTtl:
 
         today = date.today().isoformat()
         cached = self._cached(today)
-        monkeypatch.setattr(o, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
-        o._last_kline_fetch["300124"] = o.now_beijing().timestamp() - 600
+        monkeypatch.setattr(kf, "is_trading_time", lambda: True)
+        monkeypatch.setattr(o, "is_trading_time", lambda: True)
+        kf._last_kline_fetch["300124"] = o.now_beijing().timestamp() - 600
         fetched = {}
         fresh = [{"date": today, "close": 11.0}] * 45
 
@@ -1277,8 +1319,8 @@ class TestFetchAllKlinesShortCacheTtl:
                 fetched["called"] = True
                 return fresh
 
-        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
-        res = o._fetch_all_klines(None, _FakeAdapter(), [StockInfo(
+        monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
+        res = kf.fetch_all_klines(None, _FakeAdapter(), [StockInfo(
             symbol="300124", name="T", code="300124", percent=3.0,
             current=10.0, value=10000, rank_change=1000, rank=1)])
         assert "called" in fetched  # 超 TTL 后仍补拉（跨日增长 K 线根数）
@@ -1291,7 +1333,9 @@ class TestFetchAllKlinesShortCacheTtl:
 
         today = date.today().isoformat()
         cached = self._cached(today)
-        monkeypatch.setattr(o, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(o, "is_trading_time", lambda: False)
+        monkeypatch.setattr(kf, "is_trading_time", lambda: False)
         monkeypatch.setattr(o, "is_trading_time", lambda: False)
         fetched = {}
 
@@ -1300,8 +1344,8 @@ class TestFetchAllKlinesShortCacheTtl:
                 fetched["called"] = True
                 return cached
 
-        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
-        res = o._fetch_all_klines(None, _FakeAdapter(), [StockInfo(
+        monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
+        res = kf.fetch_all_klines(None, _FakeAdapter(), [StockInfo(
             symbol="300125", name="T", code="300125", percent=3.0,
             current=10.0, value=10000, rank_change=1000, rank=1)])
         assert "called" not in fetched  # 非交易时段一律复用缓存
@@ -1315,9 +1359,11 @@ class TestFetchAllKlinesShortCacheTtl:
 
         bad_cached = [{"date": "2026-6-7", "close": 10.0},
                       {"date": "2026-06-08", "close": 10.5}]
-        monkeypatch.setattr(o, "get_cached_klines", lambda conn, syms: {s: bad_cached for s in syms})
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: bad_cached for s in syms})
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
-        o._last_kline_fetch.pop("300126", None)
+        monkeypatch.setattr(kf, "is_trading_time", lambda: True)
+        monkeypatch.setattr(o, "is_trading_time", lambda: True)
+        kf._last_kline_fetch.pop("300126", None)
         fetched = {}
         fresh = [{"date": "2026-06-08", "close": 10.5}] * 45
 
@@ -1326,8 +1372,8 @@ class TestFetchAllKlinesShortCacheTtl:
                 fetched["called"] = True
                 return fresh
 
-        monkeypatch.setattr(o, "save_kline_to_db", lambda *a, **k: None)
-        res = o._fetch_all_klines(None, _FakeAdapter(), [StockInfo(
+        monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
+        res = kf.fetch_all_klines(None, _FakeAdapter(), [StockInfo(
             symbol="300126", name="T", code="300126", percent=3.0,
             current=10.0, value=10000, rank_change=1000, rank=1)])
         assert "called" in fetched  # 脏日期按"需补拉"处理

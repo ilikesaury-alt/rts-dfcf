@@ -2,7 +2,7 @@
 
 盘中 K 线补拉失败时，用分时数据构造今日 bar 的兜底逻辑（2026-08-14 网宿科技
 案例引入）。只依赖通用件（models/trading_session/utils），不感知扫描流水线，
-orchestrator._fetch_all_klines 是唯一生产调用方。
+kline_fetch.fetch_all_klines 是唯一生产调用方。
 """
 
 import threading
@@ -79,7 +79,7 @@ def merge_minute_today_bar(adapter, stock: StockInfo | None, today: date,
 
     deadline（2026-08-17 审查新增）：整个兜底阶段共享的总预算时间戳——单只 join(8s)
     限时存在但串行叠加无总量上限（API 故障时 N 只 × 8s 可拖垮单轮扫描），调用方
-    _fetch_all_klines 用 MINUTE_FALLBACK_PHASE_DEADLINE 设好共享 deadline 传入，
+    kline_fetch.fetch_all_klines 用 MINUTE_FALLBACK_PHASE_DEADLINE 设好共享 deadline 传入，
     剩余时间不足即跳过该票（维持旧缓存回退），保证兜底阶段总量有界。
     """
     if not is_trading_time() or not stale or stock is None:

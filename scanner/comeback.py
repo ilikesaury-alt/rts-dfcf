@@ -10,7 +10,7 @@ category="comeback"（recommendations 表结构不变，用 trend 列存变体�
 - 回踩（吸收原 tracker 模块）：近 N 日推荐回调到买点（6 维买点信号 ≥4 到买点），
   二次上车。硬过滤：今日±5% / 累计±10% / 主力净占比≤-5%（无数据 fail-open）。
 
-成本控制：WATCH_POOL_MAX 上限 + 预过滤 + _fetch_all_klines 的 KLINE_FETCH_DEADLINE
+成本控制：WATCH_POOL_MAX 上限 + 预过滤 + kline_fetch.fetch_all_klines 的 KLINE_FETCH_DEADLINE
 限时兜底，掉榜票每交易日每票最多评估一次（last_eval_date 落库，重启不丢）。
 """
 from collections.abc import Callable

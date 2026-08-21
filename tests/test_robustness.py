@@ -65,7 +65,7 @@ def _stock(symbol: str, rank: int = 1) -> StockInfo:
 class TestKlineFetchDeadline:
 
     def test_breaks_at_deadline_falls_back_to_stale(self):
-        import scanner.orchestrator as orch
+        import scanner.kline_fetch as orch
 
         stale_kline = [
             {"date": "2026-08-04", "open": 9.0, "close": 10.0,
@@ -80,7 +80,7 @@ class TestKlineFetchDeadline:
              patch.object(orch, "is_trading_time", return_value=True), \
              patch.object(orch, "get_cached_klines", return_value={s.symbol: stale_kline for s in stocks}), \
              patch.object(orch, "KLINE_FETCH_DEADLINE", 0):
-            result = orch._fetch_all_klines(conn, adapter, stocks)
+            result = orch.fetch_all_klines(conn, adapter, stocks)
 
         # deadline=0 → 首轮即超时，不发起任何拉取
         adapter.fetch_kline.assert_not_called()
@@ -90,7 +90,7 @@ class TestKlineFetchDeadline:
         assert result["SZ300002"] is stale_kline
 
     def test_fetches_within_deadline(self):
-        import scanner.orchestrator as orch
+        import scanner.kline_fetch as orch
 
         stale_kline = [
             {"date": "2026-08-04", "open": 9.0, "close": 10.0,
@@ -110,7 +110,7 @@ class TestKlineFetchDeadline:
              patch.object(orch, "is_trading_time", return_value=True), \
              patch.object(orch, "get_cached_klines", return_value={s.symbol: stale_kline for s in stocks}), \
              patch.object(orch, "KLINE_FETCH_DEADLINE", 3600):
-            result = orch._fetch_all_klines(conn, adapter, stocks)
+            result = orch.fetch_all_klines(conn, adapter, stocks)
 
         adapter.fetch_kline.assert_called_once_with("SZ300001", orch.KLINE_FETCH_DAYS)
         # 新旧合并，含今日 bar
