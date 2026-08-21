@@ -740,13 +740,13 @@ class TestWtsFailureHardFilter:
 
     def test_end_to_end_hard_filter_removal(self):
         """端到端：命中弱转强失效的候选被 orchestrator 硬过滤移出。"""
-        from scanner.orchestrator import _candidate_excluded_by_risk
+        from scanner.candidates import candidate_excluded_by_risk
         c = self._wts_candidate(intraday=-1.5)
         _set_risk_flags(c)
-        assert _candidate_excluded_by_risk(c), "弱转强失效候选应被硬过滤"
+        assert candidate_excluded_by_risk(c), "弱转强失效候选应被硬过滤"
         c2 = self._wts_candidate(intraday=1.0)
         _set_risk_flags(c2)
-        assert not _candidate_excluded_by_risk(c2), "转强成功的弱转强候选不应被硬过滤"
+        assert not candidate_excluded_by_risk(c2), "转强成功的弱转强候选不应被硬过滤"
 
 
 # ============================================================

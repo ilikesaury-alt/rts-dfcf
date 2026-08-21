@@ -15,8 +15,8 @@ retrospective 生效。所以 `portfolio_backtest` replay 的永远是旧权重�
 基于它得出的 P&L 结论全部作废。
 
 现在的做法：**直接复用 orchestrator 的真实流水线**
-    _filter_gem_stocks → _score_stock（内含 5 路 analyze_* + HIGH_RISK_TRENDS
-    + MIN_SCORE + validate/validation_bonus + _classify_category）
+    filter_gem_stocks → score_stock（内含 5 路 analyze_* + HIGH_RISK_TRENDS
+    + MIN_SCORE + validate/validation_bonus + classify_category）
     只把数据来源从「实时 API」换成「历史表」。逻辑只有一份，不会再漂移。
     （同板块上限 2026-08-12 已整体移除，此处无需复现。）
 
@@ -37,7 +37,7 @@ retrospective 生效。所以 `portfolio_backtest` replay 的永远是旧权重�
    （MAX_STOCK_PRICE 价格过滤可用当日收盘价重建，已实现。）
 3. 实时增强项：资金流、涨停池、盘中/开盘分、RPS、板块情绪、time_bonus、
    list_streak 等 `apply_all_bonuses` / `accumulate_final_score` 的加分，
-   以及依赖风险标签的 `_candidate_excluded_by_risk` 硬过滤 —— 均需实时 API，
+   以及依赖风险标签的 `candidate_excluded_by_risk` 硬过滤 —— 均需实时 API，
    重扫不复现。这些是**跨候选普遍加分**，对同日排序的扰动小于上面两项。
 4. `comeback`（回马枪）：掉榜 off-list 变体，需实时 watch_pool / adapter，
    不在重扫宇宙内（由调用方合并 `recommendations` 的冻结分补上）。
@@ -54,16 +54,13 @@ from datetime import date, datetime, timedelta
 from typing import Iterable
 
 from scanner.candidate_pool import ScanSession
+from scanner.candidates import filter_gem_stocks, score_stock
 
 # 可忠实重扫的类别（comeback 为 off-list 变体，无法从 appearances 重建，保持冻结分）。
 # 2026-08-20 收敛：单一事实来源见 scanner/categories.RESCANABLE_CATEGORIES。
 from scanner.categories import RESCANABLE_CATEGORIES  # noqa: E402
 from scanner.config import MAX_STOCK_PRICE
 from scanner.models import Candidate, KlineBar, make_kline_bar
-from scanner.orchestrator import (
-    _filter_gem_stocks,
-    _score_stock,
-)
 from scanner.portfolio_backtest import Signal, _assign_rank_scores, _dedup_signals
 from scanner.sector import get_sector_clusters
 from scanner.trading_session import _nth_trading_day_after
@@ -76,7 +73,7 @@ _MIN_KLINE_BARS = 5
 def _post_close(d: str) -> datetime:
     """信号日收盘后的时刻（15:30）。
 
-    传给 `_score_stock` → `analyze_*` → `_project_today_vol`，使盘中量能投影关闭
+    传给 `score_stock` → `analyze_*` → `_project_today_vol`，使盘中量能投影关闭
     （elapsed=240，倍数恒为 1）。不传的话会用「跑回测那一刻」的真实时间算 elapsed，
     早盘跑回测会把历史上已收盘的完整量能再放大 ~10 倍，结果随运行时刻漂移。
     """
@@ -118,9 +115,9 @@ def _load_all_klines(conn: sqlite3.Connection) -> dict[str, tuple[list[str], lis
 
 def _primary_candidate(nf: Candidate | None, mo: Candidate | None,
                        rb: Candidate | None, st: Candidate | None) -> Candidate | None:
-    """从 `_score_stock` 的返回桶中还原 `_classify_category` 选中的那一个标签。
+    """从 `score_stock` 的返回桶中还原 `classify_category` 选中的那一个标签。
 
-    `_score_stock` 对「首板票同时满足超短」会双挂（同时返回 nf 与 st），线上两个桶
+    `score_stock` 对「首板票同时满足超短」会双挂（同时返回 nf 与 st），线上两个桶
     都会落库；但组合回测里同一票同一天只能建一个仓位，所以取分类主标签。
     桶的互斥性保证了这个优先级能唯一还原分类结果。
     （同板块上限已移除，st 不再有保留/丢弃分支。）
@@ -174,7 +171,7 @@ def rescan_all_signals(conn: sqlite3.Connection, cfg, calendar: list[str],
              "rank_change": 0, "rank": rank}
             for sym, name, rank, pct, val in by_date[d]
         ]
-        stocks = _filter_gem_stocks(raw)
+        stocks = filter_gem_stocks(raw)
 
         # 2) 按信号日切片 K 线；顺带用当日收盘价补 current 并复现价格上限过滤
         klines: dict[str, list[KlineBar] | None] = {}
@@ -204,7 +201,7 @@ def rescan_all_signals(conn: sqlite3.Connection, cfg, calendar: list[str],
 
         scored: list[tuple] = []
         for s in usable:
-            nf, mo, rb, st = _score_stock(
+            nf, mo, rb, st = score_stock(
                 s, conn, klines, d, session, clusters, now=now_ref)
             if nf is None and mo is None and rb is None and st is None:
                 continue

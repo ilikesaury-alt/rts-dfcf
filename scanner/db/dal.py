@@ -280,7 +280,7 @@ def record_leaderboard_log(conn: sqlite3.Connection, source: str, items: list[di
       - total / gem_listed 突变（样本过滤条件变更）
 
     统计口径防御：percent/rank_change 脏值（None/NaN/str）统一 to_float 过滤，
-    不参与中位数/均值（与 _filter_gem_stocks 的数值强转同族防御）。
+    不参与中位数/均值（与 candidates.filter_gem_stocks 的数值强转同族防御）。
 
     返回本轮的 symbol 集合，调用方应保存为下一轮的 prev_symbols（用于重叠率）。
     """

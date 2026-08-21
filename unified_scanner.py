@@ -255,7 +255,7 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 all_gem = res.gem_stocks
                 filtered_large_cap = res.filtered_large_cap
                 current_quotes = res.current_quotes
-                # 各桶已在 scan_with_raw 内排序（new_face 用 _new_face_sort_key，其余按 score 降序）
+                # 各桶已在 scan_with_raw 内排序（new_face 用 candidates.new_face_sort_key，其余按 score 降序）
 
                 current_rank_map = {s.symbol: s.rank for s in all_gem}
 

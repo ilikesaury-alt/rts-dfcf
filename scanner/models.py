@@ -189,7 +189,7 @@ class Candidate:
 class ScanResult:
     """单轮扫描的输出汇总（替代 scan_with_raw 的 9 元组返回）。
 
-    new_faces 已按 _new_face_sort_key 排序，其余各桶按 score 降序。
+    new_faces 已按 candidates.new_face_sort_key 排序，其余各桶按 score 降序。
     today_pool 为本轮候选池快照（symbol → Candidate，含掉榜 stale 条目），
     供展示层读取实时候选数据，避免 display 直接访问 orchestrator 内部全局。
     """

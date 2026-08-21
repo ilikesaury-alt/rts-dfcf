@@ -431,7 +431,7 @@ def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None
         # 底部反转类本就期望低 accumulated，跳过价格疲劳信号以免误罚。
         # new_face/known_new_face：新面孔底部突破；comeback 反转变体：掉榜 5 日跌≤-8% 后企稳；
         # rebound：超跌反弹（5日跌≤-10% 后企稳），负累计是策略核心前提——按价格判疲劳等于
-        # 惩罚策略本身（与 RPS 豁免同理由，orchestrator._compute_rps 对 rebound 返回 0）。
+        # 惩罚策略本身（与 RPS 豁免同理由，candidates.compute_rps 对 rebound 返回 0）。
         # 2026-08-17 审查修复：此前漏掉 rebound，连榜≥3 天时 accumulated_pct<8 恒真，
         # 叠加低量比易凑 2 信号 → 误打「疲劳」风险标签。
         is_reversal = c.category in ("new_face", "known_new_face", "comeback", "rebound")

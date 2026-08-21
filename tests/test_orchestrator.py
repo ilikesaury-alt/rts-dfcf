@@ -2,11 +2,9 @@ from datetime import date, datetime, timedelta
 
 from scanner.candidate_pool import ScanSession
 from scanner.models import Candidate, KlineSummary, StockInfo
+import scanner.candidates as cd
 import scanner.kline_fetch as kf
-from scanner.orchestrator import (
-    _candidate_excluded_by_risk,
-    _enrich_candidate_market_cap,
-)
+from scanner.candidates import candidate_excluded_by_risk, enrich_candidate_market_cap
 
 
 def _make_candidate(symbol: str, score: int = 20, kline_dims: dict | None = None,
@@ -37,7 +35,7 @@ class TestEnrichCandidateMarketCap:
     def test_sets_stock_market_cap_in_yi(self):
         from scanner.enhancer import _apply_market_cap_bonus
         c = self._cand()
-        _enrich_candidate_market_cap(c, {"market_cap": 5_000_000_000, "circ_market_cap": 3_000_000_000})
+        enrich_candidate_market_cap(c, {"market_cap": 5_000_000_000, "circ_market_cap": 3_000_000_000})
         assert c.market_cap == 5_000_000_000
         assert c.circ_market_cap == 3_000_000_000
         assert c.stock.market_cap == 30.0  # 30 亿元（流通市值优先）
@@ -46,19 +44,19 @@ class TestEnrichCandidateMarketCap:
 
     def test_circ_preferred_over_total(self):
         c = self._cand()
-        _enrich_candidate_market_cap(c, {"market_cap": 2_000_000_000, "circ_market_cap": 200_000_000_000})
+        enrich_candidate_market_cap(c, {"market_cap": 2_000_000_000, "circ_market_cap": 200_000_000_000})
         assert c.stock.market_cap == 2000.0  # 用流通市值
 
     def test_missing_cap_data_keeps_zero(self):
         c = self._cand()
-        _enrich_candidate_market_cap(c, {})
+        enrich_candidate_market_cap(c, {})
         assert c.market_cap == 0
         assert c.stock.market_cap == 0.0
 
     def test_large_cap_no_bonus(self):
         from scanner.enhancer import _apply_market_cap_bonus
         c = self._cand()
-        _enrich_candidate_market_cap(c, {"circ_market_cap": 50_000_000_000})
+        enrich_candidate_market_cap(c, {"circ_market_cap": 50_000_000_000})
         _apply_market_cap_bonus(c)
         assert c.market_cap_bonus == 0  # 500 亿超大市值不加分
 
@@ -103,50 +101,50 @@ class TestClassifyCategory:
                          rank_change=1000, rank=1)
 
     def test_new_stock_prefers_new_face(self):
-        from scanner.orchestrator import _classify_category
+        from scanner.candidates import classify_category
         c_nf = _make_candidate("300001")
-        assert _classify_category(self._stock(5), True, None, c_nf) == "new_face"
+        assert classify_category(self._stock(5), True, None, c_nf) == "new_face"
 
     def test_known_stock_up_day_prefers_momentum(self):
-        from scanner.orchestrator import _classify_category
+        from scanner.candidates import classify_category
         c_mo = _make_candidate("300002")
-        assert _classify_category(self._stock(3), False, c_mo, None) == "momentum"
+        assert classify_category(self._stock(3), False, c_mo, None) == "momentum"
 
     def test_known_stock_only_new_face_fallback(self):
-        from scanner.orchestrator import _classify_category
+        from scanner.candidates import classify_category
         c_nf = _make_candidate("300001")
-        assert _classify_category(self._stock(3), False, None, c_nf) == "known_new_face"
+        assert classify_category(self._stock(3), False, None, c_nf) == "known_new_face"
 
     def test_no_candidate(self):
-        from scanner.orchestrator import _classify_category
-        assert _classify_category(self._stock(3), False, None, None) is None
+        from scanner.candidates import classify_category
+        assert classify_category(self._stock(3), False, None, None) is None
 
     def test_known_stock_up_day_weak_to_strong_prefers_short_term(self):
-        from scanner.orchestrator import _classify_category
+        from scanner.candidates import classify_category
         c_mo = _make_candidate("300001")
         c_st = _make_candidate("300002",
                                kline_dims={"st_weak_to_strong": 8})
         # 弱转强超短即便同时过动量也优先归超短
-        assert _classify_category(self._stock(3), False, c_mo, None, c_st) == "short_term"
+        assert classify_category(self._stock(3), False, c_mo, None, c_st) == "short_term"
 
     def test_known_stock_up_day_non_wts_short_term_falls_to_momentum(self):
-        from scanner.orchestrator import _classify_category
+        from scanner.candidates import classify_category
         c_mo = _make_candidate("300001")
         c_st = _make_candidate("300002")
         # 非弱转强超短合格票若同时过动量 → 归动量（避免掏空动量桶）
-        assert _classify_category(self._stock(3), False, c_mo, None, c_st) == "momentum"
+        assert classify_category(self._stock(3), False, c_mo, None, c_st) == "momentum"
 
     def test_known_stock_up_day_non_wts_short_term_only_stays_short_term(self):
-        from scanner.orchestrator import _classify_category
+        from scanner.candidates import classify_category
         c_st = _make_candidate("300002")
         # 仅过非弱转强超短、不过动量 → 仍留超短（不丢票）
-        assert _classify_category(self._stock(3), False, None, None, c_st) == "short_term"
+        assert classify_category(self._stock(3), False, None, None, c_st) == "short_term"
 
     def test_new_stock_prefers_short_term_over_momentum(self):
-        from scanner.orchestrator import _classify_category
+        from scanner.candidates import classify_category
         c_mo = _make_candidate("300001")
         c_st = _make_candidate("300002")
-        assert _classify_category(self._stock(5), True, c_mo, None, c_st) == "short_term"
+        assert classify_category(self._stock(5), True, c_mo, None, c_st) == "short_term"
 
 
 class TestScoreStockKnownNewFace:
@@ -160,17 +158,17 @@ class TestScoreStockKnownNewFace:
         ks = KlineSummary(trend="t", accumulated_pct=2.0, volume_ratio=1.5,
                           bottom_confirmed=True, score=30, dimensions={},
                           avg_volume=1_000_000)
-        monkeypatch.setattr(o, "analyze_new_face", lambda *a, **k: ks)
-        monkeypatch.setattr(o, "analyze_momentum", lambda *a, **k: None)
-        monkeypatch.setattr(o, "validate", lambda *a, **k: (True, 0, {}))
+        monkeypatch.setattr(cd, "analyze_new_face", lambda *a, **k: ks)
+        monkeypatch.setattr(cd, "analyze_momentum", lambda *a, **k: None)
+        monkeypatch.setattr(cd, "validate", lambda *a, **k: (True, 0, {}))
         # 返回非空历史 -> is_new=False
-        monkeypatch.setattr(o, "get_symbol_appearances",
+        monkeypatch.setattr(cd, "get_symbol_appearances",
                             lambda *a, **k: [{"date": "2026-06-01"}])
 
         stock = StockInfo(symbol="300001", name="Test", code="300001",
                           percent=3.0, current=10.0, value=10000,
                           rank_change=1000, rank=1)
-        nf, mo, rb, st = o._score_stock(
+        nf, mo, rb, st = cd.score_stock(
             stock, conn=None, klines={}, today="2026-06-18",
             session_state=ScanSession(), clusters=None,
         )
@@ -208,12 +206,13 @@ class TestScoreStockStaleKlineAudit:
                           bottom_confirmed=True, score=30, dimensions={},
                           avg_volume=1_000_000)
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
-        monkeypatch.setattr(o, "analyze_new_face", lambda *a, **k: ks)
-        monkeypatch.setattr(o, "analyze_momentum", lambda *a, **k: None)
-        monkeypatch.setattr(o, "validate", lambda *a, **k: (True, 0, {}))
-        monkeypatch.setattr(o, "get_symbol_appearances", lambda *a, **k: [])
+        monkeypatch.setattr(cd, "is_trading_time", lambda: True)
+        monkeypatch.setattr(cd, "analyze_new_face", lambda *a, **k: ks)
+        monkeypatch.setattr(cd, "analyze_momentum", lambda *a, **k: None)
+        monkeypatch.setattr(cd, "validate", lambda *a, **k: (True, 0, {}))
+        monkeypatch.setattr(cd, "get_symbol_appearances", lambda *a, **k: [])
 
-        nf, *_ = o._score_stock(
+        nf, *_ = cd.score_stock(
             self._stock(), conn=None, klines=self._klines(with_today=False),
             today="2026-06-18", session_state=ScanSession(), clusters=None,
         )
@@ -229,12 +228,13 @@ class TestScoreStockStaleKlineAudit:
                           bottom_confirmed=True, score=30, dimensions={},
                           avg_volume=1_000_000)
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
-        monkeypatch.setattr(o, "analyze_new_face", lambda *a, **k: ks)
-        monkeypatch.setattr(o, "analyze_momentum", lambda *a, **k: None)
-        monkeypatch.setattr(o, "validate", lambda *a, **k: (True, 0, {}))
-        monkeypatch.setattr(o, "get_symbol_appearances", lambda *a, **k: [])
+        monkeypatch.setattr(cd, "is_trading_time", lambda: True)
+        monkeypatch.setattr(cd, "analyze_new_face", lambda *a, **k: ks)
+        monkeypatch.setattr(cd, "analyze_momentum", lambda *a, **k: None)
+        monkeypatch.setattr(cd, "validate", lambda *a, **k: (True, 0, {}))
+        monkeypatch.setattr(cd, "get_symbol_appearances", lambda *a, **k: [])
 
-        nf, *_ = o._score_stock(
+        nf, *_ = cd.score_stock(
             self._stock(), conn=None, klines=self._klines(with_today=True),
             today="2026-06-18", session_state=ScanSession(), clusters=None,
         )
@@ -253,12 +253,13 @@ class TestScoreStockStaleKlineAudit:
         stock = self._stock()
         stock.turnover_rate = 3.5
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
-        monkeypatch.setattr(o, "analyze_new_face", lambda *a, **k: ks)
-        monkeypatch.setattr(o, "analyze_momentum", lambda *a, **k: None)
-        monkeypatch.setattr(o, "validate", lambda *a, **k: (True, 0, {}))
-        monkeypatch.setattr(o, "get_symbol_appearances", lambda *a, **k: [])
+        monkeypatch.setattr(cd, "is_trading_time", lambda: True)
+        monkeypatch.setattr(cd, "analyze_new_face", lambda *a, **k: ks)
+        monkeypatch.setattr(cd, "analyze_momentum", lambda *a, **k: None)
+        monkeypatch.setattr(cd, "validate", lambda *a, **k: (True, 0, {}))
+        monkeypatch.setattr(cd, "get_symbol_appearances", lambda *a, **k: [])
 
-        o._score_stock(
+        cd.score_stock(
             stock, conn=None, klines=self._klines(with_today=False),
             today="2026-06-18", session_state=ScanSession(), clusters=None,
         )
@@ -275,12 +276,13 @@ class TestScoreStockStaleKlineAudit:
                           bottom_confirmed=True, score=30, dimensions={},
                           avg_volume=1_000_000)
         monkeypatch.setattr(o, "is_trading_time", lambda: False)
-        monkeypatch.setattr(o, "analyze_new_face", lambda *a, **k: ks)
-        monkeypatch.setattr(o, "analyze_momentum", lambda *a, **k: None)
-        monkeypatch.setattr(o, "validate", lambda *a, **k: (True, 0, {}))
-        monkeypatch.setattr(o, "get_symbol_appearances", lambda *a, **k: [])
+        monkeypatch.setattr(cd, "is_trading_time", lambda: False)
+        monkeypatch.setattr(cd, "analyze_new_face", lambda *a, **k: ks)
+        monkeypatch.setattr(cd, "analyze_momentum", lambda *a, **k: None)
+        monkeypatch.setattr(cd, "validate", lambda *a, **k: (True, 0, {}))
+        monkeypatch.setattr(cd, "get_symbol_appearances", lambda *a, **k: [])
 
-        o._score_stock(
+        cd.score_stock(
             self._stock(), conn=None, klines=self._klines(with_today=False),
             today="2026-06-18", session_state=ScanSession(), clusters=None,
         )
@@ -299,12 +301,13 @@ class TestScoreStockStaleKlineAudit:
                           bottom_confirmed=True, score=30, dimensions={},
                           avg_volume=1_000_000)
         monkeypatch.setattr(o, "is_trading_time", lambda: False)
-        monkeypatch.setattr(o, "analyze_new_face", lambda *a, **k: ks)
-        monkeypatch.setattr(o, "analyze_momentum", lambda *a, **k: None)
-        monkeypatch.setattr(o, "validate", lambda *a, **k: (True, 0, {}))
-        monkeypatch.setattr(o, "get_symbol_appearances", lambda *a, **k: [])
+        monkeypatch.setattr(cd, "is_trading_time", lambda: False)
+        monkeypatch.setattr(cd, "analyze_new_face", lambda *a, **k: ks)
+        monkeypatch.setattr(cd, "analyze_momentum", lambda *a, **k: None)
+        monkeypatch.setattr(cd, "validate", lambda *a, **k: (True, 0, {}))
+        monkeypatch.setattr(cd, "get_symbol_appearances", lambda *a, **k: [])
 
-        nf, *_ = o._score_stock(
+        nf, *_ = cd.score_stock(
             self._stock(), conn=None, klines=self._klines(with_today=False),
             today="2026-06-18", session_state=ScanSession(), clusters=None,
         )
@@ -317,10 +320,10 @@ class TestCrossFunctionSilentDegradation:
 
     这类 bug 不在任何单函数逻辑内，而是函数之间的数据流不变量被破坏：
     上游 `_fetch_all_klines` 补拉失败返回"看似正常"的旧缓存（无今日 bar）→
-    下游 `_score_stock`/`_compute_volume_metrics` 静默消费 → 量比按昨日量
+    下游 `score_stock`/`_compute_volume_metrics` 静默消费 → 量比按昨日量
     误判放量启动票 → 量比硬门误杀。本套件把完整链路串起来验证：
 
-    _fetch_all_klines(补拉失败+分时兜底) → _score_stock(stale 标记+告警)
+    _fetch_all_klines(补拉失败+分时兜底) → score_stock(stale 标记+告警)
       → save_recommendations(stale_kline 落库) → save_scan_quality(血缘日志)
     """
 
@@ -339,7 +342,7 @@ class TestCrossFunctionSilentDegradation:
         ]
 
     def _score_candidate(self, monkeypatch, conn, klines, today="2026-06-18"):
-        """复用 _score_stock 真实链路产出候选（仅注入 analyze/validate 结果）。"""
+        """复用 score_stock 真实链路产出候选（仅注入 analyze/validate 结果）。"""
         import scanner.orchestrator as o
         from scanner.candidate_pool import ScanSession
         from scanner.models import KlineSummary
@@ -347,16 +350,16 @@ class TestCrossFunctionSilentDegradation:
                           bottom_confirmed=True, score=30, dimensions={},
                           avg_volume=1_000_000)
         # 非停牌股（换手率>0）→ 走真实 [!] 告警分支；停牌股(turnover_rate==0)已降级为 [~]，
-        # 与本测试要验证的"缺今日bar真实告警"意图分离（见 _score_stock 2026-08-20 改动）。
+        # 与本测试要验证的"缺今日bar真实告警"意图分离（见 score_stock 2026-08-20 改动）。
         sc = self._stock()
         sc.turnover_rate = 3.5
-        monkeypatch.setattr(o, "analyze_short_term", lambda *a, **k: ks)
-        monkeypatch.setattr(o, "analyze_new_face", lambda *a, **k: None)
-        monkeypatch.setattr(o, "analyze_momentum", lambda *a, **k: None)
-        monkeypatch.setattr(o, "analyze_rebound", lambda *a, **k: None)
-        monkeypatch.setattr(o, "validate", lambda *a, **k: (True, 0, {}))
-        monkeypatch.setattr(o, "get_symbol_appearances", lambda *a, **k: [])
-        nf, mo, rb, st = o._score_stock(
+        monkeypatch.setattr(cd, "analyze_short_term", lambda *a, **k: ks)
+        monkeypatch.setattr(cd, "analyze_new_face", lambda *a, **k: None)
+        monkeypatch.setattr(cd, "analyze_momentum", lambda *a, **k: None)
+        monkeypatch.setattr(cd, "analyze_rebound", lambda *a, **k: None)
+        monkeypatch.setattr(cd, "validate", lambda *a, **k: (True, 0, {}))
+        monkeypatch.setattr(cd, "get_symbol_appearances", lambda *a, **k: [])
+        nf, mo, rb, st = cd.score_stock(
             sc, conn=conn, klines=klines, today=today,
             session_state=ScanSession(), clusters=None,
         )
@@ -386,6 +389,7 @@ class TestCrossFunctionSilentDegradation:
             stale_kline INTEGER DEFAULT 0, excluded_reason TEXT)""")
 
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
+        monkeypatch.setattr(cd, "is_trading_time", lambda: True)
         monkeypatch.setattr(o, "now_beijing",
                             lambda: datetime(2026, 6, 18, 10, 0))
         # K 线缺今日 bar（旧缓存）
@@ -404,10 +408,10 @@ class TestCrossFunctionSilentDegradation:
         assert row[0] == 1
 
     def test_fetch_failure_stale_cache_still_scored_with_marker(self, monkeypatch, capsys):
-        """真实 _fetch_all_klines 补拉失败 → _score_stock 识别 stale。
+        """真实 _fetch_all_klines 补拉失败 → score_stock 识别 stale。
 
         跨两个函数验证不变量：即使 _fetch_all_klines 返回旧缓存（无今日 bar），
-        下游 _score_stock 仍必须标记 stale 而非静默当作正常数据评分。
+        下游 score_stock 仍必须标记 stale 而非静默当作正常数据评分。
         """
         import sqlite3
 
@@ -417,7 +421,6 @@ class TestCrossFunctionSilentDegradation:
 
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
         monkeypatch.setattr(kf, "is_trading_time", lambda: True)
-        monkeypatch.setattr(o, "is_trading_time", lambda: True)
         monkeypatch.setattr(o, "now_beijing",
                             lambda: datetime(2026, 6, 18, 10, 0))
         monkeypatch.setattr(kf, "now_beijing",
@@ -428,6 +431,7 @@ class TestCrossFunctionSilentDegradation:
         monkeypatch.setattr(mb, "now_beijing",
                             lambda: datetime(2026, 6, 18, 10, 0))
         monkeypatch.setattr(mb, "TODAY_BAR_MINUTE_TIMEOUT", 2.0)
+        monkeypatch.setattr(cd, "is_trading_time", lambda: True)
 
         class _Adapter:
             def fetch_kline(self, symbol, days=15):
@@ -485,7 +489,6 @@ class TestCrossFunctionSilentDegradation:
 
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
         monkeypatch.setattr(kf, "is_trading_time", lambda: True)
-        monkeypatch.setattr(o, "is_trading_time", lambda: True)
         monkeypatch.setattr(o, "now_beijing",
                             lambda: datetime(2026, 6, 18, 10, 0))
         monkeypatch.setattr(kf, "now_beijing",
@@ -564,7 +567,6 @@ class TestFetchAllKlinesIntradayRefresh:
         monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
         monkeypatch.setattr(kf, "is_trading_time", lambda: True)
-        monkeypatch.setattr(o, "is_trading_time", lambda: True)
         # last fetch 10s ago (within TTL)
         kf._last_kline_fetch["300001"] = o.now_beijing().timestamp() - 10
         fetched = {}
@@ -590,7 +592,6 @@ class TestFetchAllKlinesIntradayRefresh:
         monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
         monkeypatch.setattr(kf, "is_trading_time", lambda: True)
-        monkeypatch.setattr(o, "is_trading_time", lambda: True)
         # last fetch 600s ago (past TTL)
         kf._last_kline_fetch["300001"] = o.now_beijing().timestamp() - 600
         fetched = {}
@@ -621,7 +622,6 @@ class TestFetchAllKlinesIntradayRefresh:
         monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
         monkeypatch.setattr(kf, "is_trading_time", lambda: True)
-        monkeypatch.setattr(o, "is_trading_time", lambda: True)
         # 即便上次拉取在 TTL 内，缺少今日 Bar 也应强制补拉
         kf._last_kline_fetch["300001"] = o.now_beijing().timestamp() - 10
         fetched = {}
@@ -654,7 +654,7 @@ class TestTryCandidateHighRiskTrend:
         kline_s = KlineSummary(trend="回踩整理", accumulated_pct=2.0,
                                 volume_ratio=1.5, bottom_confirmed=True,
                                 score=50, dimensions={}, avg_volume=1_000_000)
-        result = o._try_candidate(stock, kline_s, "momentum",
+        result = cd.try_candidate(stock, kline_s, "momentum",
                                    True, "2026-07-21", [], [], [], None)
         assert result is None
 
@@ -668,7 +668,7 @@ class TestTryCandidateHighRiskTrend:
         kline_s = KlineSummary(trend="破位回调", accumulated_pct=2.0,
                                 volume_ratio=1.5, bottom_confirmed=True,
                                 score=50, dimensions={}, avg_volume=1_000_000)
-        result = o._try_candidate(stock, kline_s, "momentum",
+        result = cd.try_candidate(stock, kline_s, "momentum",
                                    True, "2026-07-21", [], [], [], None)
         # Should not be rejected by trend filter (may fail later validation, but not here)
         # We only care that the trend filter didn't block it
@@ -686,32 +686,32 @@ class TestRiskFlagHardFilter:
         return c
 
     def test_main_force_distribution_excluded(self):
-        assert _candidate_excluded_by_risk(self._cand(["主力出货"]))
+        assert candidate_excluded_by_risk(self._cand(["主力出货"]))
 
     def test_trend_breakage_excluded(self):
-        assert _candidate_excluded_by_risk(self._cand(["趋势破位"]))
+        assert candidate_excluded_by_risk(self._cand(["趋势破位"]))
 
     def test_both_excluded(self):
-        assert _candidate_excluded_by_risk(self._cand(["主力出货", "趋势破位"]))
+        assert candidate_excluded_by_risk(self._cand(["主力出货", "趋势破位"]))
 
     def test_weak_market_not_excluded(self):
         # 弱市是展示型警告，不应硬过滤
-        assert not _candidate_excluded_by_risk(self._cand(["弱市"]))
+        assert not candidate_excluded_by_risk(self._cand(["弱市"]))
 
     def test_overbought_not_excluded(self):
         # 超买维持现状（仅 short_term 条件性否决），不应在此硬过滤
-        assert not _candidate_excluded_by_risk(self._cand(["超买"]))
+        assert not candidate_excluded_by_risk(self._cand(["超买"]))
 
     def test_volume_divergence_not_excluded(self):
         # 用户要求仅留 主力出货+趋势破位，量价背离不硬过滤
-        assert not _candidate_excluded_by_risk(self._cand(["量价背离"]))
+        assert not candidate_excluded_by_risk(self._cand(["量价背离"]))
 
     def test_multiple_warning_flags_not_excluded(self):
         # 涨幅过大 + 疲劳 + 弱市 等展示型标签组合，仍保留
-        assert not _candidate_excluded_by_risk(self._cand(["涨幅过大", "疲劳", "弱市"]))
+        assert not candidate_excluded_by_risk(self._cand(["涨幅过大", "疲劳", "弱市"]))
 
     def test_no_flags_not_excluded(self):
-        assert not _candidate_excluded_by_risk(self._cand([]))
+        assert not candidate_excluded_by_risk(self._cand([]))
 
 
 class TestFetchAllKlinesTodayBarWarning:
@@ -997,14 +997,14 @@ class TestComputeRps:
     def test_baseline_branch_percentile_in_baseline(self):
         from scanner.config import (RPS_BONUS_HIGH, RPS_BONUS_LOW,
                                     RPS_BONUS_MEDIUM)
-        from scanner.orchestrator import _compute_rps
+        from scanner.candidates import compute_rps
         baseline = [0.0, 5.0, 8.0, 10.0, 12.0, 15.0, 20.0, 30.0]
         cands = [
             self._cand("300001", 12.0),  # lo=5 -> 62 -> MEDIUM
             self._cand("300002", 5.0),   # lo=2 -> 25 -> LOW
             self._cand("300003", 25.0),  # lo=7 -> 87 -> HIGH
         ]
-        scores = _compute_rps(cands, baseline=baseline)
+        scores = compute_rps(cands, baseline=baseline)
         assert scores["300001"] == RPS_BONUS_MEDIUM
         assert scores["300002"] == RPS_BONUS_LOW
         assert scores["300003"] == RPS_BONUS_HIGH
@@ -1013,14 +1013,14 @@ class TestComputeRps:
         # 回归：最强票必须拿 HIGH，最弱票拿 LOW（此前按列表顺序反了）
         from scanner.config import (RPS_BONUS_HIGH, RPS_BONUS_LOW,
                                     RPS_BONUS_MEDIUM)
-        from scanner.orchestrator import _compute_rps
+        from scanner.candidates import compute_rps
         cands = [
             self._cand("300001", 10.0),
             self._cand("300002", 5.0),
             self._cand("300003", 8.0),
             self._cand("300004", 3.0),
         ]
-        scores = _compute_rps(cands, baseline=[])
+        scores = compute_rps(cands, baseline=[])
         # pctiles: 100 / 50 / 75 / 25  -> HIGH / 中性 / MEDIUM / LOW
         assert scores["300001"] == RPS_BONUS_HIGH
         assert scores["300002"] == 0
@@ -1028,24 +1028,24 @@ class TestComputeRps:
         assert scores["300004"] == RPS_BONUS_LOW
 
     def test_rebound_exempt_from_rps(self):
-        from scanner.orchestrator import _compute_rps
+        from scanner.candidates import compute_rps
         cands = [
             self._cand("300001", 10.0),
             self._cand("300002", -12.0, category="rebound"),
         ]
-        scores = _compute_rps(cands, baseline=[])
+        scores = compute_rps(cands, baseline=[])
         assert scores["300002"] == 0  # 超跌反弹豁免 RPS 惩罚
 
     def test_accum_map_overrides_kline(self):
         # short_term 的 kline.accumulated_pct 含今日 bar，accum_map 用历史口径覆盖
         from scanner.config import RPS_BONUS_LOW, RPS_BONUS_MEDIUM
-        from scanner.orchestrator import _compute_rps
+        from scanner.candidates import compute_rps
         baseline = [0.0, 5.0, 8.0, 10.0, 12.0, 15.0, 20.0, 30.0]
         cands = [
             self._cand("300001", 50.0, category="short_term"),  # kline 50 但被覆盖为 5.0
             self._cand("300002", 15.0),  # lo=6 -> 75 -> MEDIUM
         ]
-        scores = _compute_rps(cands, baseline=baseline,
+        scores = compute_rps(cands, baseline=baseline,
                               accum_map={"300001": 5.0})
         # 历史口径 5.0 -> 25 -> LOW（若未覆盖则 50 -> 100 -> HIGH）
         assert scores["300001"] == RPS_BONUS_LOW
@@ -1053,13 +1053,13 @@ class TestComputeRps:
 
     def test_dual_listed_symbol_counted_once(self):
         # 双挂票（同代码出现在多个桶）只计一次，避免拉高 total 扭曲分位
-        from scanner.orchestrator import _compute_rps
+        from scanner.candidates import compute_rps
         cands = [
             self._cand("300001", 10.0, category="new_face"),
             self._cand("300001", 10.0, category="short_term"),
             self._cand("300002", 5.0),
         ]
-        scores = _compute_rps(cands, baseline=[])
+        scores = compute_rps(cands, baseline=[])
         assert set(scores) == {"300001", "300002"}
 
 
@@ -1137,13 +1137,13 @@ class TestFilterGemStocks:
     """回归：原始行情字段必须强转数值，脏数据整票跳过（防 TypeError 拖垮整轮扫描）。"""
 
     def test_coerces_string_numbers(self):
-        from scanner.orchestrator import _filter_gem_stocks
+        from scanner.candidates import filter_gem_stocks
         raw = [
             {"symbol": "SZ300001", "code": "300001", "name": "测试A",
              "percent": "5.23", "current": "12.5", "value": "10000",
              "rank_change": "1200", "rank": "3"},
         ]
-        stocks = _filter_gem_stocks(raw)
+        stocks = filter_gem_stocks(raw)
         assert len(stocks) == 1
         s = stocks[0]
         assert isinstance(s.percent, float) and s.percent == 5.23
@@ -1155,19 +1155,19 @@ class TestFilterGemStocks:
     def test_rank_numeric_string_with_decimal_kept(self):
         """回归：rank="3.0" 这类数值字符串此前 int("3.0") 抛 ValueError 导致整票被跳过
         （漏推荐）；现与 rank_change 同口径 float 中转后正常解析保留。"""
-        from scanner.orchestrator import _filter_gem_stocks
+        from scanner.candidates import filter_gem_stocks
         raw = [
             {"symbol": "SZ300001", "code": "300001", "name": "测试A",
              "percent": 5.0, "current": 10.0, "value": 8000,
              "rank_change": 100, "rank": "3.0"},
         ]
-        stocks = _filter_gem_stocks(raw)
+        stocks = filter_gem_stocks(raw)
         assert len(stocks) == 1
         assert stocks[0].rank == 3
 
     def test_skips_garbage_numeric_row(self):
         # rank_change="-" 无法解析 → 该票跳过，其余票正常进入（不再抛 TypeError）
-        from scanner.orchestrator import _filter_gem_stocks
+        from scanner.candidates import filter_gem_stocks
         raw = [
             {"symbol": "SZ300001", "code": "300001", "name": "测试A",
              "percent": "5.23", "current": "12.5", "value": "10000",
@@ -1176,7 +1176,7 @@ class TestFilterGemStocks:
              "percent": 3.1, "current": 10.0, "value": 8000,
              "rank_change": 1200, "rank": 2},
         ]
-        stocks = _filter_gem_stocks(raw)
+        stocks = filter_gem_stocks(raw)
         assert [s.symbol for s in stocks] == ["SZ300002"]
         # 下游比较不再崩溃
         assert (stocks[0].current > 200.0) is (stocks[0].current > 200.0)
@@ -1184,7 +1184,7 @@ class TestFilterGemStocks:
     def test_none_symbol_code_name_skipped_not_crash(self):
         # symbol/code/name 为 None（键存在但值为 null）时，is_hk_stock/is_gem/is_st
         # 不能抛 AttributeError/TypeError 拖垮整轮扫描；脏值按空串处理，被过滤掉。
-        from scanner.orchestrator import _filter_gem_stocks
+        from scanner.candidates import filter_gem_stocks
         raw = [
             {"symbol": None, "code": None, "name": None,
              "percent": 5.0, "current": 10.0, "value": 8000,
@@ -1193,22 +1193,22 @@ class TestFilterGemStocks:
              "percent": 3.1, "current": 10.0, "value": 8000,
              "rank_change": 1200, "rank": 2},
         ]
-        stocks = _filter_gem_stocks(raw)
+        stocks = filter_gem_stocks(raw)
         assert [s.symbol for s in stocks] == ["SZ300002"]
 
     def test_missing_symbol_code_name_ok(self):
         # 键完全缺失时默认空串，同样不崩溃且被过滤
-        from scanner.orchestrator import _filter_gem_stocks
+        from scanner.candidates import filter_gem_stocks
         raw = [{"percent": 5.0, "current": 10.0, "value": 8000,
                 "rank_change": 100, "rank": 1}]
-        stocks = _filter_gem_stocks(raw)
+        stocks = filter_gem_stocks(raw)
         assert stocks == []
 
     def test_int_symbol_code_name_coerced_not_crash(self):
         """回归：symbol/code/name 为 int（API 偶发数值类型，docstring 声称"强转 str"
         但此前只处理 None，int 会让 is_hk_stock.isdigit()/is_gem.startswith() 抛
         AttributeError 拖垮整轮扫描）。现 str() 强转后正常过滤/保留。"""
-        from scanner.orchestrator import _filter_gem_stocks
+        from scanner.candidates import filter_gem_stocks
         raw = [
             {"symbol": 300001, "code": "300001", "name": 12345,
              "percent": 5.0, "current": 10.0, "value": 8000,
@@ -1217,15 +1217,15 @@ class TestFilterGemStocks:
              "percent": 3.1, "current": 10.0, "value": 8000,
              "rank_change": 1200, "rank": 2},
         ]
-        stocks = _filter_gem_stocks(raw)
+        stocks = filter_gem_stocks(raw)
         # int symbol 300001 → str "300001"（GEM 代码保留），int name 12345 → "12345"
         assert [s.symbol for s in stocks] == ["300001", "SZ300002"]
 
     def test_turnover_rate_dirty_string_fail_soft(self):
         """回归（2026-08-20）：turnover_rate="-"（API 偶发非数字串）此前放 try 外
-        float() 直接抛 ValueError 拖垮整批 _filter_gem_stocks；现 fail-soft 到 0.0，
+        float() 直接抛 ValueError 拖垮整批 filter_gem_stocks；现 fail-soft 到 0.0，
         该票保留（换手率仅停牌/僵尸识别用，不应整票跳过）。"""
-        from scanner.orchestrator import _filter_gem_stocks
+        from scanner.candidates import filter_gem_stocks
         raw = [
             {"symbol": "SZ300001", "code": "300001", "name": "测试A",
              "percent": 5.0, "current": 10.0, "value": 8000,
@@ -1237,7 +1237,7 @@ class TestFilterGemStocks:
              "percent": 2.0, "current": 9.0, "value": 7000,
              "rank_change": 50, "rank": 3, "turnover_rate": float("nan")},
         ]
-        stocks = _filter_gem_stocks(raw)
+        stocks = filter_gem_stocks(raw)
         assert [s.symbol for s in stocks] == ["SZ300001", "SZ300002", "SZ300003"]
         assert stocks[0].turnover_rate == 0.0   # "-" → 0
         assert stocks[1].turnover_rate == 3.5   # 正常值保留
@@ -1247,7 +1247,7 @@ class TestFilterGemStocks:
         """回归：percent/current/value 为 NaN/inf（Python json 可解析 JSON 字面量）
         必须强转 0，否则 NaN 绕过 `s.current > MAX_STOCK_PRICE` 等数值过滤、
         产出 NaN 评分写库为 NULL；inf 同理。rank/rank_change 为 NaN 时不得整票跳过。"""
-        from scanner.orchestrator import _filter_gem_stocks
+        from scanner.candidates import filter_gem_stocks
         raw = [
             {"symbol": "SZ300001", "code": "300001", "name": "测试A",
              "percent": float("nan"), "current": float("nan"), "value": 8000,
@@ -1256,7 +1256,7 @@ class TestFilterGemStocks:
              "percent": float("inf"), "current": float("-inf"), "value": 8000,
              "rank_change": float("nan"), "rank": float("nan")},
         ]
-        stocks = _filter_gem_stocks(raw)
+        stocks = filter_gem_stocks(raw)
         assert len(stocks) == 2
         s1, s2 = stocks
         assert s1.percent == 0.0 and s1.current == 0.0
@@ -1283,7 +1283,6 @@ class TestFetchAllKlinesShortCacheTtl:
         monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
         monkeypatch.setattr(kf, "is_trading_time", lambda: True)
-        monkeypatch.setattr(o, "is_trading_time", lambda: True)
         kf._last_kline_fetch["300123"] = o.now_beijing().timestamp() - 10
         fetched = {}
 
@@ -1309,7 +1308,6 @@ class TestFetchAllKlinesShortCacheTtl:
         monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
         monkeypatch.setattr(kf, "is_trading_time", lambda: True)
-        monkeypatch.setattr(o, "is_trading_time", lambda: True)
         kf._last_kline_fetch["300124"] = o.now_beijing().timestamp() - 600
         fetched = {}
         fresh = [{"date": today, "close": 11.0}] * 45
@@ -1362,7 +1360,6 @@ class TestFetchAllKlinesShortCacheTtl:
         monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: bad_cached for s in syms})
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
         monkeypatch.setattr(kf, "is_trading_time", lambda: True)
-        monkeypatch.setattr(o, "is_trading_time", lambda: True)
         kf._last_kline_fetch.pop("300126", None)
         fetched = {}
         fresh = [{"date": "2026-06-08", "close": 10.5}] * 45
