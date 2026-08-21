@@ -136,24 +136,25 @@ class TestSaveKlineFinalizedMark:
 
     def test_trading_hours_today_bar_marked_unfinalized(self, conn, monkeypatch):
         """盘中写入今日 bar → finalized=0（未定稿快照）。"""
-        monkeypatch.setattr("scanner.database.now_beijing", lambda: _now(10, 30))
-        monkeypatch.setattr("scanner.database.is_trading_time", lambda: True)
+        # P1-6 拆分后 save_kline_to_db 实现在 scanner.db.dal，patch 须打在实现模块
+        monkeypatch.setattr("scanner.db.dal.now_beijing", lambda: _now(10, 30))
+        monkeypatch.setattr("scanner.db.dal.is_trading_time", lambda: True)
         save_kline_to_db(conn, "SZ300607", [self._bar("2026-08-18", 36.27)])
         bars = get_cached_kline(conn, "SZ300607")
         assert bars and bars[-1]["finalized"] is False
 
     def test_after_close_today_bar_finalized(self, conn, monkeypatch):
         """收盘后（定稿/backfill）写入今日 bar → finalized=1。"""
-        monkeypatch.setattr("scanner.database.now_beijing", lambda: _now(18, 0))
-        monkeypatch.setattr("scanner.database.is_trading_time", lambda: False)
+        monkeypatch.setattr("scanner.db.dal.now_beijing", lambda: _now(18, 0))
+        monkeypatch.setattr("scanner.db.dal.is_trading_time", lambda: False)
         save_kline_to_db(conn, "SZ300607", [self._bar("2026-08-18", 37.90)])
         bars = get_cached_kline(conn, "SZ300607")
         assert bars and bars[-1]["finalized"] is True
 
     def test_historical_bar_always_finalized(self, conn, monkeypatch):
         """历史 bar（非今日）盘中写入也置 finalized=1。"""
-        monkeypatch.setattr("scanner.database.now_beijing", lambda: _now(10, 30))
-        monkeypatch.setattr("scanner.database.is_trading_time", lambda: True)
+        monkeypatch.setattr("scanner.db.dal.now_beijing", lambda: _now(10, 30))
+        monkeypatch.setattr("scanner.db.dal.is_trading_time", lambda: True)
         save_kline_to_db(conn, "SZ300607", [self._bar("2026-08-17", 37.53)])
         bars = get_cached_kline(conn, "SZ300607")
         assert bars and bars[-1]["finalized"] is True

@@ -175,10 +175,10 @@ class TestRecordLeaderboardLog:
     def test_overlap_second_round(self, memory_db, monkeypatch):
         import datetime
 
-        from scanner import database as db_mod
         from scanner.database import record_leaderboard_log
         clock = [datetime.datetime(2026, 8, 19, 10, 0, 0)]
-        monkeypatch.setattr(db_mod, 'now_beijing', lambda: clock[0])
+        # P1-6 拆分后 record_leaderboard_log 实现在 scanner.db.dal，patch 须打在实现模块
+        monkeypatch.setattr('scanner.db.dal.now_beijing', lambda: clock[0])
 
         items = self._items(['SZ300607', 'SZ300438', 'SH600000'])
         syms = record_leaderboard_log(memory_db, 'biaosheng', items, set())
@@ -751,7 +751,8 @@ class TestWatchPoolEviction:
 
     def test_evicts_oldest_beyond_max(self, memory_db, monkeypatch):
         from scanner.database import upsert_watch_symbols
-        monkeypatch.setattr("scanner.database.WATCH_POOL_MAX", 3)
+        # P1-6 拆分后实现移到 scanner.db.dal，patch 须打在实现模块命名空间
+        monkeypatch.setattr("scanner.db.dal.WATCH_POOL_MAX", 3)
         today = now_beijing().date().isoformat()
         self._seed(memory_db, [
             ("300001", "2026-01-01"),  # 最旧
@@ -768,7 +769,7 @@ class TestWatchPoolEviction:
 
     def test_eviction_keeps_newest_when_upserting(self, memory_db, monkeypatch):
         from scanner.database import upsert_watch_symbols
-        monkeypatch.setattr("scanner.database.WATCH_POOL_MAX", 2)
+        monkeypatch.setattr("scanner.db.dal.WATCH_POOL_MAX", 2)
         today = now_beijing().date().isoformat()
         self._seed(memory_db, [
             ("300001", "2026-01-01"),
@@ -782,7 +783,7 @@ class TestWatchPoolEviction:
 
     def test_no_eviction_within_limit(self, memory_db, monkeypatch):
         from scanner.database import upsert_watch_symbols
-        monkeypatch.setattr("scanner.database.WATCH_POOL_MAX", 10)
+        monkeypatch.setattr("scanner.db.dal.WATCH_POOL_MAX", 10)
         self._seed(memory_db, [
             ("300001", "2026-01-01"),
             ("300002", "2026-01-02"),
@@ -847,8 +848,8 @@ class TestMarketCapCache:
 
     @pytest.fixture
     def cap_db(self, tmp_path):
-        import scanner.database as dbmod
         import scanner.config as cfgmod
+        import scanner.database as dbmod
         # 用真实临时库，确保 market_cap_cache 表随 init_db 创建
         p = tmp_path / "test_mc.db"
         old = cfgmod.DB_PATH
@@ -861,7 +862,7 @@ class TestMarketCapCache:
             cfgmod.DB_PATH = old
 
     def test_save_then_read_back(self, cap_db):
-        from scanner.database import save_market_caps, get_cached_market_caps
+        from scanner.database import get_cached_market_caps, save_market_caps
         written = save_market_caps(cap_db, {
             "SZ300001": {"market_cap": 1e10, "circ_market_cap": 9e9,
                          "turnover_rate": 1.2, "current": 36.5, "percent": 0.3},
@@ -872,7 +873,7 @@ class TestMarketCapCache:
         assert cached["SZ300001"]["current"] == 36.5
 
     def test_zero_value_not_cached(self, cap_db):
-        from scanner.database import save_market_caps, get_cached_market_caps
+        from scanner.database import get_cached_market_caps, save_market_caps
         save_market_caps(cap_db, {
             # 停牌/降级条目 market_cap 与 circ 均 0 → 不入缓存，避免污染兜底
             "SZ300862": {"market_cap": 0, "circ_market_cap": 0,
@@ -881,7 +882,7 @@ class TestMarketCapCache:
         assert get_cached_market_caps(cap_db, ["SZ300862"], max_age_days=0) == {}
 
     def test_max_age_days_filter(self, cap_db):
-        from scanner.database import save_market_caps, get_cached_market_caps
+        from scanner.database import get_cached_market_caps, save_market_caps
         save_market_caps(cap_db, {
             "SZ300001": {"market_cap": 1e10, "circ_market_cap": 9e9,
                          "turnover_rate": 1.0, "current": 36.5, "percent": 0.3},
