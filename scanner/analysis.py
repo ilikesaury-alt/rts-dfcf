@@ -73,6 +73,7 @@ from scanner.patterns import (
     detect_short_term_patterns,
 )
 from scanner.trading_session import trading_minutes_elapsed
+from scanner.utils import today_close_from_kline, today_pct_from_kline
 from scanner.validator import _mo_divergence
 
 # 盘中把今日部分量能投影为全天量能的最大倍数（9:31 开盘瞬间量能爆表时封顶）。
@@ -411,7 +412,8 @@ def analyze_new_face(stock: StockInfo, kline: list[KlineBar] | None,
 
     W = NEW_FACE_WEIGHTS
 
-    today_pct = stock.percent
+    today_str = today_str or now_beijing().date().isoformat()
+    today_pct = today_pct_from_kline(kline, today_str, stock.percent)
 
     if today_pct <= 0:
         return None
@@ -419,7 +421,6 @@ def analyze_new_face(stock: StockInfo, kline: list[KlineBar] | None,
     if today_pct > MAX_NEW_FACE_TODAY_PCT:
         return None
 
-    today_str = today_str or now_beijing().date().isoformat()
     historical_kline, pcts, closes = _split_today(kline, today_str)
 
     recent_5_pcts = pcts[-5:]
@@ -559,11 +560,11 @@ def analyze_momentum(stock: StockInfo, kline: list[KlineBar] | None,
 
     W = MOMENTUM_WEIGHTS
 
-    today_pct = stock.percent
+    today_str = today_str or now_beijing().date().isoformat()
+    today_pct = today_pct_from_kline(kline, today_str, stock.percent)
     if today_pct <= 0:
         return None
 
-    today_str = today_str or now_beijing().date().isoformat()
     historical_kline, pcts, closes = _split_today(kline, today_str)
     if len(closes) >= 6:
         accumulated = (closes[-1] - closes[-6]) / closes[-6] * 100
@@ -736,11 +737,11 @@ def analyze_short_term(stock: StockInfo, kline: list[KlineBar] | None,
 
     W = SHORT_TERM_WEIGHTS
 
-    today_pct = stock.percent
+    today_str = today_str or now_beijing().date().isoformat()
+    today_pct = today_pct_from_kline(kline, today_str, stock.percent)
     if today_pct < SHORT_TERM_MIN_TODAY_PCT or today_pct > SHORT_TERM_MAX_TODAY_PCT:
         return None
 
-    today_str = today_str or now_beijing().date().isoformat()
     historical_kline, pcts, closes = _split_today(kline, today_str)
 
     feats = _get_features(closes, historical_kline, features)
@@ -906,7 +907,9 @@ def analyze_rebound(stock: StockInfo, kline: list[KlineBar] | None,
         return None
 
     W = REBOUND_WEIGHTS
-    today_pct = stock.percent
+
+    today_str = today_str or now_beijing().date().isoformat()
+    today_pct = today_pct_from_kline(kline, today_str, stock.percent)
 
     # 入池硬筛：今日企稳阳线（温和涨幅）；off_list 用回马枪档位
     min_today = COMEBACK_MIN_TODAY_PCT if off_list else REBOUND_MIN_TODAY_PCT
@@ -914,7 +917,6 @@ def analyze_rebound(stock: StockInfo, kline: list[KlineBar] | None,
     if today_pct < min_today or today_pct > max_today:
         return None
 
-    today_str = today_str or now_beijing().date().isoformat()
     historical_kline, pcts, closes = _split_today(kline, today_str)
 
     if len(pcts) < 5:
@@ -939,11 +941,12 @@ def analyze_rebound(stock: StockInfo, kline: list[KlineBar] | None,
     # 量比
     vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str, now)
 
-    # 距20日低点比例（确认仍在低位区）
+    # 距20日低点比例（确认仍在低位区）；用今日收盘而非昨收，反映反弹后实际位置
     near_20d_low = False
     if len(closes) >= 20:
         low_20d = min(closes[-20:])
-        near_20d_low = (closes[-1] - low_20d) / max(low_20d, 0.01) < REBOUND_NEAR_LOW_PCT
+        today_close = today_close_from_kline(kline, today_str, stock.current or closes[-1])
+        near_20d_low = (today_close - low_20d) / max(low_20d, 0.01) < REBOUND_NEAR_LOW_PCT
 
     dims: dict[str, int | float] = {}
     dims["accumulated_incl_today"] = round(accum_incl_today, 2)

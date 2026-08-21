@@ -39,6 +39,7 @@ from scanner.config import (
     V_ST_SECTOR_WARM,
     V_ST_VOL_HEALTHY,
     V_ST_VOL_SURGE,
+    now_beijing,
 )
 from scanner.features import build_features
 from scanner.indicators import (
@@ -48,6 +49,7 @@ from scanner.indicators import (
 )
 from scanner.models import KlineBar
 from scanner.sector import classify_sector
+from scanner.utils import today_close_from_kline
 
 
 def _get_features(closes: list[float], historical_kline: list[KlineBar],
@@ -387,9 +389,9 @@ def _mo_volume_uniformity(historical_kline: list[KlineBar]) -> tuple[int, str]:
 
 
 def validate_momentum(stock, kline_summary, closes: list[float],
-                      historical_kline: list[KlineBar], clusters: dict[str, list[str]] | None,
-                      feats: dict | None = None
-                      ) -> tuple[bool, int, dict]:
+                       historical_kline: list[KlineBar], clusters: dict[str, list[str]] | None,
+                       feats: dict | None = None, kline: list[KlineBar] | None = None
+                       ) -> tuple[bool, int, dict]:
     feats = _get_features(closes, historical_kline, feats)
     ma_bonus, ma_detail = _mo_ma_alignment(closes, feats)
     div_bonus, div_detail = _mo_divergence(closes, historical_kline, feats)
@@ -408,7 +410,7 @@ def validate_momentum(stock, kline_summary, closes: list[float],
 
     # 末周期超买（鱼尾段）：仅标记，不压制 total——硬否决交给标准 passed 门禁判定。
     # momentum 是趋势延续策略，高 BOLL%/J 部分属正常强势特征，硬否决会误杀主升浪。
-    overbought = _mo_is_overbought(closes, historical_kline, stock)
+    overbought = _mo_is_overbought(closes, historical_kline, stock, kline)
     details["v_mo_overbought"] = overbought
 
     # 中等处置：_mo_divergence 仅返回 0（无背离）或 -10（顶背离），从不计入正维度。
@@ -522,9 +524,9 @@ def validate_rebound(stock, kline_summary, closes: list[float],
 
 
 def validate_short_term(stock, kline_summary, closes: list[float],
-                        historical_kline: list[KlineBar], clusters: dict[str, list[str]] | None,
-                        feats: dict | None = None
-                        ) -> tuple[bool, int, dict]:
+                         historical_kline: list[KlineBar], clusters: dict[str, list[str]] | None,
+                         feats: dict | None = None, kline: list[KlineBar] | None = None
+                         ) -> tuple[bool, int, dict]:
     # 硬门禁：量比 < 1.0 直接淘汰（超短必须放量）。软维度为下方 4 项。
     # 放行条件（P0-sector 单维度刷屏修复）：弱转强直接放行；否则要求 ≥2 正维度
     # 且至少 1 项非 sector —— 杜绝板块普涨日仅靠 sector 单维度批量放行。
@@ -600,7 +602,7 @@ def validate_short_term(stock, kline_summary, closes: list[float],
     non_sector_pos = sum(1 for b in (rank_bonus, ma_bonus, wts_bonus) if b > 0)
 
     # 末周期超买判定（鱼尾段）：用 closes（历史）+ 今日收盘，复用与分析侧一致阈值。
-    overbought = _st_is_overbought(closes, historical_kline, stock)
+    overbought = _st_is_overbought(closes, historical_kline, stock, kline)
     details["v_st_overbought"] = overbought
 
     # 超买时：弱转强不再享受"无条件直通"特权，且放量/板块/MA 共振这些"确认信号"
@@ -623,16 +625,19 @@ def validate_short_term(stock, kline_summary, closes: list[float],
 
 
 def _is_overbought(closes: list[float], historical_kline: list[KlineBar],
-                   stock: object) -> bool:
+                   stock: object, kline: list[KlineBar] | None = None) -> bool:
     """判定候选是否处于末周期超买（鱼尾段）。
 
     BOLL %B 用 closes + 今日收盘（series，反映最新价）；
     KDJ J 只算纯历史 bar（今日急拉会污染 J，见下方注释）；
     20日涨幅用历史 closes（不含今日）。
     short_term 硬否决，momentum 仅标记不硬否决（由各自 validate 函数决定）。
+
+    今日收盘统一取 K 线今日 bar（与评分端同源），回退 stock.current（实时价快照）。
     """
+    today_str = now_beijing().date().isoformat()
+    today_close = today_close_from_kline(kline, today_str, getattr(stock, "current", 0) or 0)
     series = list(closes)
-    today_close = getattr(stock, "current", 0) or 0
     append_today = today_close > 0 and (not series or today_close != series[-1])
     if append_today:
         series.append(today_close)
@@ -670,14 +675,15 @@ _mo_is_overbought = _is_overbought
 
 
 def validate(cat: str, stock, kline_summary, closes: list[float],
-             historical_kline: list[KlineBar], clusters: dict[str, list[str]] | None = None,
-             feats: dict | None = None,
-             off_list: bool = False,
-             ) -> tuple[bool, int, dict]:
+              historical_kline: list[KlineBar], clusters: dict[str, list[str]] | None = None,
+              feats: dict | None = None,
+              off_list: bool = False,
+              kline: list[KlineBar] | None = None,
+              ) -> tuple[bool, int, dict]:
     if cat in ("new_face", "known_new_face"):
         return validate_nf(stock, kline_summary, closes, historical_kline, clusters, feats)
     if cat == "momentum":
-        return validate_momentum(stock, kline_summary, closes, historical_kline, clusters, feats)
+        return validate_momentum(stock, kline_summary, closes, historical_kline, clusters, feats, kline)
     if cat == "rebound":
         passed, bonus, details = validate_rebound(stock, kline_summary, closes, historical_kline, clusters, feats)
         if off_list and details.get("_pos_dims", 0) < COMEBACK_POS_DIMS:
@@ -685,5 +691,5 @@ def validate(cat: str, stock, kline_summary, closes: list[float],
             return False, 0, details
         return passed, bonus, details
     if cat == "short_term":
-        return validate_short_term(stock, kline_summary, closes, historical_kline, clusters, feats)
+        return validate_short_term(stock, kline_summary, closes, historical_kline, clusters, feats, kline)
     return False, 0, {}

@@ -54,6 +54,44 @@ def is_st(name: str) -> bool:
     return name.startswith("*ST") or name.startswith("ST") or "退市" in name or name.startswith("退")
 
 
+def today_kline_bar(kline, today_str):
+    """返回 K 线序列中日期 == today_str 的今日 bar；无今日 bar 返回 None。"""
+    if not kline:
+        return None
+    last = kline[-1]
+    if last.get("date") == today_str:
+        return last
+    return None
+
+
+def today_pct_from_kline(kline, today_str, fallback: float = 0.0) -> float:
+    """统一取「今日涨幅」：优先 K 线今日 bar 的 percent（与量比/MA/RSI/形态同源、盘中实时），
+
+    缺失/非法时回退 fallback（通常为 stock.percent 榜单快照）。
+    消除策略内「今日收益」三源不一致（stock.percent 榜单快照 / stock.current 实时价 /
+    kline 今日 bar）导致的评分与超买/🎯 标记基准漂移。
+    """
+    bar = today_kline_bar(kline, today_str)
+    if bar is not None:
+        p = to_float(bar.get("percent"))
+        if p is not None and math.isfinite(p):
+            return p
+    return fallback
+
+
+def today_close_from_kline(kline, today_str, fallback: float = 0.0) -> float:
+    """统一取「今日收盘价」：优先 K 线今日 bar 的 close（与量比/MA/RSI 同源），
+
+    缺失/非法时回退 fallback（通常为 stock.current 实时价）。
+    """
+    bar = today_kline_bar(kline, today_str)
+    if bar is not None:
+        c = to_float(bar.get("close"))
+        if c is not None and math.isfinite(c) and c > 0:
+            return c
+    return fallback
+
+
 def _strip_exchange(code: str) -> str:
     if len(code) > 2 and code[:2] in ("SH", "SZ", "BJ"):
         return code[2:]

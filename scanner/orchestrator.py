@@ -367,7 +367,7 @@ def _try_candidate(stock: StockInfo, kline_summary: KlineSummary | None, categor
     }[category]
     if kline_summary.score < min_score:
         return None
-    passed, bonus, dims = validate(category, stock, kline_summary, closes, historical, clusters, feats)
+    passed, bonus, dims = validate(category, stock, kline_summary, closes, historical, clusters, feats, kline=kline)
     if not passed:
         return None
     new_dims = dict(kline_summary.dimensions)
