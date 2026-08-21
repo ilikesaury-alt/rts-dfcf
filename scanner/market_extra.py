@@ -35,7 +35,7 @@ from scanner.config import (
 )
 from scanner.data_source import _ak_to_xq
 from scanner.database import get_market_extra_cache, save_market_extra_cache
-from scanner.net import EASTMONEY_HEADERS, _bounded_call
+from scanner.net import EASTMONEY_HEADERS, EASTMONEY_UT_TOKEN, _bounded_call
 from scanner.utils import cache_put as _cache_put
 from scanner.utils import to_float
 
@@ -159,7 +159,7 @@ def _collect_fund_flow(box: dict, deadline: float) -> dict:
         return result
     base = {
         "fid": "f62", "po": "1", "pz": str(_FUND_FLOW_PAGE_SIZE), "np": "1",
-        "fltt": "2", "invt": "2", "ut": "b2884a393a59ad64002292a3e90d46a5",
+        "fltt": "2", "invt": "2", "ut": EASTMONEY_UT_TOKEN,
         "fs": _FUND_FLOW_FS, "fields": _FUND_FLOW_FIELDS,
     }
     url = f"https://{FUND_FLOW_HOST}/api/qt/clist/get"

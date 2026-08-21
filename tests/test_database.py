@@ -356,6 +356,26 @@ class TestSaveKline:
 
 
 class TestSaveRecommendations:
+    def test_same_batch_duplicate_keeps_highest_score(self, memory_db):
+        """同批传入重复 (symbol, category)：只落一行、保留最高分（预载去重语义）。"""
+        def _cand(score: float) -> Candidate:
+            stock = StockInfo(symbol="300090", name="Dup", code="300090",
+                              percent=3.0, current=10.0, value=10000,
+                              rank_change=1000, rank=1)
+            kline = KlineSummary(trend="底部启动", accumulated_pct=2.0,
+                                 volume_ratio=1.5, bottom_confirmed=True,
+                                 score=score, dimensions={}, avg_volume=1_000_000)
+            return Candidate(stock=stock, category="new_face", score=score,
+                             reason="r", kline=kline, first_seen="09:30")
+
+        save_recommendations(memory_db, [_cand(20), _cand(50), _cand(35)], [])
+
+        rows = memory_db.execute(
+            "SELECT score FROM recommendations WHERE symbol = '300090'"
+        ).fetchall()
+        assert len(rows) == 1, "同批重复 (symbol,category) 不应产生多行"
+        assert rows[0][0] == 50, "应保留最高分"
+
     def test_save_and_deduplicate(self, memory_db):
         stock = StockInfo(symbol="300001", name="Test", code="300001",
                           percent=5.0, current=10.0, value=10000,

@@ -319,15 +319,29 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, 
 
     rest 在调用方由 momentum/rebound/short_term/comeback 各桶合并传入，
     与 new_faces 在本函数内同等对待（统一去重 + 取当日最高分）。
+
+    去重实现（审查卫生项：原逐候选 SELECT 一次，N 只票 N 次查询）：单次预载当日
+    全部 (symbol, category) → (id, score)，循环内维护内存 map——同批重复
+    (symbol, category) 与跨轮重复同语义（仅更高分覆盖）。写入仍逐行 execute，
+    保留单票失败不拖垮整批的错误隔离。
     """
     today = now_beijing().date().isoformat()
     now = now_beijing().strftime("%H:%M:%S")
+    try:
+        existing_map: dict[tuple[str, str], list] = {
+            (r[0], r[1]): [r[2], r[3]]
+            for r in conn.execute(
+                "SELECT symbol, category, id, score FROM recommendations WHERE date = ?",
+                (today,),
+            ).fetchall()
+        }
+    except Exception as e:
+        logger.warning(f"save_recommendations 预载已有记录失败: {e}")
+        existing_map = {}
     for c in new_faces + rest:
         try:
-            existing = conn.execute(
-                "SELECT id, score FROM recommendations WHERE date = ? AND symbol = ? AND category = ? LIMIT 1",
-                (today, c.stock.symbol, c.category),
-            ).fetchone()
+            key = (c.stock.symbol, c.category)
+            existing = existing_map.get(key)
             breakdown = json.dumps(c.kline.dimensions, ensure_ascii=False) if c.kline and c.kline.dimensions else None
             rec_source = source or getattr(c.stock, "source_tag", "unified")
             concept = getattr(c, "driving_concept", "") or ""
@@ -346,8 +360,9 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, 
                          breakdown, rec_source, concept, accumulated, stale_kline,
                          excluded_reason, existing[0]),
                     )
+                    existing[1] = c.score  # 同批后续重复项按最新最高分比较
                 continue
-            conn.execute(
+            cur = conn.execute(
                 "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, "
                 "trend, score_breakdown, source, concept, accumulated_pct, stale_kline, excluded_reason) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -355,6 +370,8 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, 
                  c.score, c.stock.percent, c.kline.trend if c.kline else None,
                  breakdown, rec_source, concept, accumulated, stale_kline, excluded_reason),
             )
+            # 记录真实 rowid：同批后续重复项走高分 UPDATE 时需要定位到本行
+            existing_map[key] = [cur.lastrowid, c.score]
         except Exception as e:
             print(f"  [!] 保存推荐记录失败 {c.stock.symbol}: {e}")
     conn.commit()

@@ -126,7 +126,9 @@ def _collect_concepts(conn, symbols: list[str]) -> dict[str, list[str]]:
         with _concept_lock:
             hit = _concept_ttl_cache.get(sym)
             if hit and now - hit[1] < CONCEPT_PROCESS_TTL_SEC:
-                result[sym] = hit[0]
+                # 返回拷贝：直接吐内部 list 引用的话，调用方原地 mutate 会污染缓存，
+                # 后续 TTL 窗口内的所有读取都拿到被改坏的数据（审查卫生项）。
+                result[sym] = list(hit[0])
                 continue
         missing.append(sym)
 

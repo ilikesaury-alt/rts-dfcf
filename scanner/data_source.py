@@ -19,7 +19,7 @@ import requests
 from scanner import api
 from scanner.config import BEIJING_TZ, DATA_SOURCE
 from scanner.models import KlineBar, make_kline_bar
-from scanner.net import EASTMONEY_HEADERS
+from scanner.net import EASTMONEY_HEADERS, EASTMONEY_UT_TOKEN
 from scanner.utils import to_float
 
 logger = logging.getLogger(__name__)
@@ -272,7 +272,7 @@ class AkshareAdapter:
                 "secids": secids,
                 "fields": "f12,f14,f2,f3,f8,f20,f21",
                 "fltt": "2", "invt": "2",
-                "ut": "b2884a393a59ad64002292a3e90d46a5",
+                "ut": EASTMONEY_UT_TOKEN,
             }
             headers = EASTMONEY_HEADERS
             resp = requests.get(
@@ -425,6 +425,7 @@ class FallbackAdapter:
 
 
 _adapter_instance: DataSourceAdapter | None = None
+_adapter_lock = threading.Lock()
 
 
 def get_adapter() -> DataSourceAdapter:
@@ -434,35 +435,41 @@ def get_adapter() -> DataSourceAdapter:
     - "auto"（默认）：雪球优先 + AKShare 兜底
     - "xueqiu"：仅雪球（向后兼容）
     - "akshare"：仅 AKShare（调试/雪球全挂时强制）
+
+    双检锁：is_available() 走真实网络探测（秒级），多线程同时首次调用会重复
+    探测甚至构造多个适配器——锁保证只初始化一次（审查卫生项，原判「良性竞态」）。
     """
     global _adapter_instance
     if _adapter_instance is not None:
         return _adapter_instance
-
-    mode = DATA_SOURCE.lower()
-    if mode == "xueqiu":
-        _adapter_instance = XueqiuAdapter()
-    elif mode == "akshare":
-        _adapter_instance = AkshareAdapter()
-    else:  # auto
-        xq = XueqiuAdapter()
-        if xq.is_available():
-            ak = AkshareAdapter()
-            if ak.is_available():
-                _adapter_instance = FallbackAdapter(xq, ak)
-            else:
-                _adapter_instance = xq
-                logger.info("AKShare 不可用，仅使用雪球")
-        else:
-            logger.warning("雪球不可用，尝试 AKShare")
-            ak = AkshareAdapter()
-            if ak.is_available():
-                _adapter_instance = ak
-            else:
-                raise RuntimeError("无可用数据源（雪球和 AKShare 均不可用）")
-
+    with _adapter_lock:
+        if _adapter_instance is not None:
+            return _adapter_instance
+        _adapter_instance = _build_adapter()
     logger.info("数据源已就绪: %s", _adapter_instance.name)
     return _adapter_instance
+
+
+def _build_adapter() -> DataSourceAdapter:
+    """按 DATA_SOURCE 模式构造适配器（仅 get_adapter 持锁调用）。"""
+    mode = DATA_SOURCE.lower()
+    if mode == "xueqiu":
+        return XueqiuAdapter()
+    if mode == "akshare":
+        return AkshareAdapter()
+    # auto：雪球优先 + AKShare 兜底
+    xq = XueqiuAdapter()
+    if xq.is_available():
+        ak = AkshareAdapter()
+        if ak.is_available():
+            return FallbackAdapter(xq, ak)
+        logger.info("AKShare 不可用，仅使用雪球")
+        return xq
+    logger.warning("雪球不可用，尝试 AKShare")
+    ak = AkshareAdapter()
+    if ak.is_available():
+        return ak
+    raise RuntimeError("无可用数据源（雪球和 AKShare 均不可用）")
 
 
 def reset_adapter():

@@ -30,6 +30,10 @@ EASTMONEY_HEADERS: dict[str, str] = {
 # 东财可达 host（push2 直连/代理在本机均不可达，push2delay 提供相同 API 且可达）。
 EASTMONEY_PUSH2DELAY_HOST = "push2delay.eastmoney.com"
 
+# 东财公开 ulist/clist 接口的固定 token（网页端同一值，非密钥）。
+# 原 data_source / market_extra 各硬编码一份，收敛单源防漂移。
+EASTMONEY_UT_TOKEN = "b2884a393a59ad64002292a3e90d46a5"
+
 
 def _bounded_call(fn: Callable[[], Any], timeout: float, label: str = "网络调用") -> Any:
     """带限时执行网络调用：超时抛 TimeoutError，调用方按失败降级。

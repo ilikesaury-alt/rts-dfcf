@@ -400,9 +400,10 @@ def get_today_recommendations(conn: sqlite3.Connection, as_of=None) -> list[Reco
             "SELECT symbol, name, category, score, trend, time, percent, concept, accumulated_pct, "
             "score_breakdown "
             "FROM recommendations WHERE date = ? AND COALESCE(excluded, 0) = 0 "
-            f"ORDER BY CASE WHEN category IN ('comeback', '{CORE_DIP_CATEGORY}') THEN 1 ELSE 0 END, "
+            # 低优桶类别用参数占位（审查 P3：全参数化纪律，不因「可信常量」破例）
+            "ORDER BY CASE WHEN category IN ('comeback', ?) THEN 1 ELSE 0 END, "
             "score DESC",
-            (today,),
+            (today, CORE_DIP_CATEGORY),
         ).fetchall()
     except Exception as e:
         logger.warning(f"get_today_recommendations failed: {e}")
