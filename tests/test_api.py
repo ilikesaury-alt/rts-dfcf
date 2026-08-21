@@ -243,7 +243,7 @@ class TestNormalizeMinuteItem:
 
     def test_array_preserves_high_low_percent(self):
         """2026-08-17 审查修复：数组形态保留 high/low/percent——盘中分时兜底
-        _build_today_bar_from_minute 依赖 high/low 构造今日 bar 振幅、percent 构造
+        minute_bar.build_today_bar_from_minute 依赖 high/low 构造今日 bar 振幅、percent 构造
         今日涨幅，此前被裁剪丢弃（high/low 恒=current）致振幅失真。"""
         raw = [1609459200000, 500, 99.0, 102.0, 98.0, 101.0, 1.0, 1.5, 0.5, 50500.0]
         d = _normalize_minute_item(raw)

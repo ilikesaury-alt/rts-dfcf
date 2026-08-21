@@ -41,7 +41,7 @@ KLINE_FETCH_DEADLINE = 45
 MINUTE_FETCH_PHASE_DEADLINE = 30
 
 # 分时兜底全阶段总预算（秒，2026-08-17 审查新增）：K 线补拉失败时的分时今日 bar 兜底
-# （_merge_minute_today_bar）对每只补拉失败票 join(TODAY_BAR_MINUTE_TIMEOUT=8s) 串行，
+# （minute_bar.merge_minute_today_bar）对每只补拉失败票 join(TODAY_BAR_MINUTE_TIMEOUT=8s) 串行，
 # 单只限时存在但 N 只串行叠加无总量上限——API 整体故障时 100 只 × 8s = 800s 停滞，
 # 违反"单轮扫描有界"承诺（KLINE_FETCH_DEADLINE 只包住拉取阶段，不含兜底阶段）。
 # 给整个兜底阶段设总预算，超时即停止剩余票兜底（维持旧缓存回退），与
