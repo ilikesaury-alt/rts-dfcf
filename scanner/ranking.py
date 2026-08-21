@@ -9,6 +9,10 @@ prevday_perf / scripts 现统一从此处取数，消除层违规与对渲染层
 import math
 
 from scanner.config import (
+    BREAKOUT_ACCUM_MAX,
+    BREAKOUT_PULLBACK_MAX,
+    BREAKOUT_PULLBACK_MIN,
+    BREAKOUT_T1_VOL_RATIO,
     CAT_DISPLAY_PRIORITY,
     NEXTDAY_ACCUM_MIN,
     NEXTDAY_CAT_PRIORITY,
@@ -352,6 +356,122 @@ def _is_nextday_marked(entry: dict, conn=None, accum: float | None = None,
             or d.get("v_st_overbought") or d.get("v_mo_overbought")):
         return False
     return True
+
+
+# ── 蓄势突破观察画像（2026-08-21，纯展示层 ⚡ 标记）──
+# 来源：历史涨停复盘（「推荐后当日封板」20 只 vs 全部推荐对照，见 config BREAKOUT_* 注释）。
+# 定位：观察标记——不改排序、不改评分、不落库；样本达标后经 nextday_attribution
+# 复盘再决定是否升级。判定全部基于 T-1 及更早的结构（推荐日盘中 bar 不完整不参与）。
+
+def build_breakout_kline_map(conn, entries: list[dict]) -> dict[str, list[tuple[str, float, float, float]]]:
+    """批量取蓄势突破判定所需 K 线（单查询防 N+1），返回 {symbol: [(date, high, close, volume), ...]}。
+
+    仅保留 date < 推荐日的行（结构基准 = T-1 及更早；推荐日盘中 bar 未定稿不参与，
+    且收盘后回放口径一致）。脏值清洗与 _replay_accum_from_rows 同族：close/high 非有限
+    正数整行剔除，volume 非有限置 0。
+    """
+    syms = sorted({e["symbol"] for e in entries if e.get("symbol") and e.get("date")})
+    if not syms:
+        return {}
+    try:
+        rows = conn.execute(
+            "SELECT symbol, date, high, close, volume FROM daily_kline "
+            "WHERE symbol IN ({})".format(",".join("?" * len(syms))),
+            tuple(syms),
+        ).fetchall()
+    except Exception:
+        return {}
+    by_sym: dict[str, list[tuple[str, float, float, float]]] = {}
+    for sym, dt, high, close, vol in rows:
+        try:
+            h = float(high)
+            cl = float(close)
+            v = float(vol) if vol is not None else 0.0
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(h) or h <= 0 or not math.isfinite(cl) or cl <= 0:
+            continue
+        if not math.isfinite(v) or v < 0:
+            v = 0.0
+        by_sym.setdefault(sym, []).append((dt, h, cl, v))
+    result: dict[str, list[tuple[str, float, float, float]]] = {}
+    for e in entries:
+        sym = e.get("symbol")
+        rec_date = (e.get("date") or "")[:10]
+        lst = sorted(by_sym.get(sym, []))
+        result[sym] = [r for r in lst if r[0] < rec_date]
+    return result
+
+
+def _is_breakout_setup(entry: dict, conn=None, accum: float | None = None,
+                       accum_map: dict | None = None,
+                       klines: list[tuple[str, float, float, float]] | None = None) -> bool:
+    """蓄势突破画像（⚡ 观察标记）：新面孔/首推 + 横盘缩量回调位 + MA 多头。
+
+    条件（阈值见 config BREAKOUT_*，校准于涨停复盘 A 组中位数附近）：
+      1. 类别 new_face/known_new_face，或首推（dims.first_today_bonus>0）——
+         涨停组 65% 为新面孔、首推占 61%；
+      2. 前5日累计（含推荐日，复用 🎯 的 accum 口径链）≤ BREAKOUT_ACCUM_MAX——
+         涨停前是横盘蓄势而非连涨加速；缺失不标（观察标记 fail-closed）；
+      3. T-1 缩量：T-1 量 / 前5日均量 ≤ BREAKOUT_T1_VOL_RATIO；
+      4. T-1 收盘距20日高点回撤 ∈ [BREAKOUT_PULLBACK_MIN, BREAKOUT_PULLBACK_MAX]；
+      5. MA5>MA10>MA20（截至 T-1 收盘）。
+
+    klines：build_breakout_kline_map 的单票切片（已滤 date<推荐日）；None 时退化为
+    单票查询（conn 缺失则不标）。数据不足（<21 根）任一条件拿不到 → 不标。
+    """
+    cat = entry["category"]
+    d = _entry_dims(entry)
+    first_push = bool(d.get("first_today_bonus"))
+    if cat not in ("new_face", "known_new_face") and not first_push:
+        return False
+    if accum_map is not None:
+        accum = accum_map.get(entry.get("symbol"))
+    elif accum is None:
+        accum = _nextday_entry_accum(entry, conn)
+    if accum is None or accum > BREAKOUT_ACCUM_MAX:
+        return False
+    if klines is None:
+        if conn is None or not entry.get("symbol") or not entry.get("date"):
+            return False
+        try:
+            rows = conn.execute(
+                "SELECT date, high, close, volume FROM daily_kline "
+                "WHERE symbol = ? AND date < ? ORDER BY date",
+                (entry["symbol"], entry["date"][:10]),
+            ).fetchall()
+        except Exception:
+            return False
+        cleaned: list[tuple[str, float, float, float]] = []
+        for dt, high, close, vol in rows:
+            try:
+                h = float(high)
+                cl = float(close)
+                v = float(vol) if vol is not None else 0.0
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(h) or h <= 0 or not math.isfinite(cl) or cl <= 0:
+                continue
+            cleaned.append((dt, h, cl, v))
+        klines = cleaned
+    if len(klines) < 21:
+        return False
+    t1_close, t1_vol = klines[-1][2], klines[-1][3]
+    prev_vols = [b[3] for b in klines[-6:-1]]
+    mean_vol = sum(prev_vols) / len(prev_vols) if prev_vols else 0.0
+    if mean_vol <= 0 or t1_vol <= 0:
+        return False
+    if t1_vol / mean_vol > BREAKOUT_T1_VOL_RATIO:
+        return False
+    h20 = max(b[1] for b in klines[-20:])
+    pullback = (t1_close / h20 - 1.0) * 100.0
+    if not (BREAKOUT_PULLBACK_MIN <= pullback <= BREAKOUT_PULLBACK_MAX):
+        return False
+    closes = [b[2] for b in klines]
+    ma5 = sum(closes[-5:]) / 5.0
+    ma10 = sum(closes[-10:]) / 10.0
+    ma20 = sum(closes[-20:]) / 20.0
+    return ma5 > ma10 > ma20
 
 
 # ── 排序组合层（2026-08-20 收敛单源）──

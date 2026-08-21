@@ -20,9 +20,11 @@ RANKING_FUNCS = [
     "_entry_tier",
     "_entry_weak_to_strong",
     "_in_nextday_sweet_band",
+    "_is_breakout_setup",
     "_is_nextday_marked",
     "_nextday_entry_accum",
     "_nextday_entry_percent",
+    "build_breakout_kline_map",
 ]
 
 

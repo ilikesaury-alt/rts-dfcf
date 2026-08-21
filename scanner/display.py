@@ -36,10 +36,12 @@ from scanner.ranking import (  # noqa: F401
     _entry_tier,
     _entry_weak_to_strong,
     _in_nextday_sweet_band,
+    _is_breakout_setup,
     _is_nextday_marked,
     _nextday_entry_accum,
     _nextday_entry_percent,
     build_accum_map,
+    build_breakout_kline_map,
     sort_main_entries,
 )
 from scanner.sector import classify_sector
@@ -313,11 +315,14 @@ def display(gem_total: int, interval: int, filtered_large_cap: int = 0,
 
 def _print_priority_row(entry: dict, i: int, flow_pct_map: dict,
                         nextday_mark: bool = False,
+                        breakout_mark: bool = False,
                         last_ranks: dict[str, int] | None = None) -> None:
     """综合排序单行的统一渲染（主表与回马枪独立区共用），避免两处复制大段渲染逻辑。
 
     flow_pct_map: {symbol: 主力净占比} DB 快照回退（候选缺失/扫描失败时仍显示资金流图标）。
     nextday_mark: 次日大涨画像（🎯）——推荐时刻涨幅甜蜜带 + 非超买（见 _is_nextday_marked）。
+    breakout_mark: 蓄势突破观察画像（⚡）——新面孔/首推+横盘缩量回调位（见
+    _is_breakout_setup）。纯观察标记，不参与排序/评分/落库。
     视觉标记 + 参与综合排序档位置顶（display_priority._sort_tier 档0），不改 score / 不落库。
     last_ranks: 上一轮扫描的榜单排名 {symbol: rank}，用于「排名」列展示雪球榜单排名变化
     （+N 升 / -N 降），与已下线策略桶的 _rank_delta_str 同口径；缺省 None 不显示变化。
@@ -424,6 +429,7 @@ def _print_priority_row(entry: dict, i: int, flow_pct_map: dict,
             extra_str = f"{extra_str} {icon}".strip() if extra_str else icon
     extra_suffix = f" {extra_str}" if extra_str else ""
     nd_mark_str = f" {ANSI['GREEN']}🎯{ANSI['RESET']}" if nextday_mark else ""
+    bo_mark_str = f" {ANSI['CYAN']}⚡{ANSI['RESET']}" if breakout_mark else ""
     # 核心低吸行尾绿色后缀（2026-08-20）：20日累计/回撤/主力净占比。仅核心低吸区
     # 条目带 _core_dip_extra，主表/回马枪行不受影响（复用标准 _print_priority_row）。
     core_dip_extra = entry.get("_core_dip_extra")
@@ -441,7 +447,7 @@ def _print_priority_row(entry: dict, i: int, flow_pct_map: dict,
     print(f"  {i:3d}  {entry['symbol']:<12} {_pad(name_str,10)} "
           f"{pct_colored(pct)} {accum_str:>8} {price_str:>7} {_pad(rank_str, 8, 'r')} "
           f"{_pad(_trunc(sector,14),14)} {_pad(label_display,5,'r')} {to_int(entry['score']):4d} "
-          f"{_pad(first_time,6)} {_pad(suggest_str,6)}{prom_str}{risk_str}{extra_suffix}{nd_mark_str}")
+          f"{_pad(first_time,6)} {_pad(suggest_str,6)}{prom_str}{risk_str}{extra_suffix}{nd_mark_str}{bo_mark_str}")
 
 
 def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
@@ -556,6 +562,16 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     # 与 today_report 同源，消除两处排序分化。
     scored = sort_main_entries(main_recs, tier_map)
 
+    # 蓄势突破观察标记（2026-08-21，⚡）：新面孔/首推 + 横盘缩量回调位 + MA 多头。
+    # 纯展示层观察——不改排序/评分/落库（用户决策：先观察积累样本，达标后再评估
+    # 是否升级为排序因子）。仅主表五类参与判定；批量取 K 线防 N+1。
+    breakout_kmap = build_breakout_kline_map(conn, main_recs)
+    breakout_mark: dict[str, bool] = {
+        e["symbol"]: _is_breakout_setup(e, conn, accum_map=accum_map,
+                                        klines=breakout_kmap.get(e["symbol"]))
+        for e in main_recs
+    }
+
     print(f"\n{ANSI['BOLD']}◆ 综合排序 — 今日上榜推荐{ANSI['RESET']}")
     hdr = (f"  {_pad('#',3,'r')} {_pad('代码',12)} {_pad('名称',10)} "
            f"{_pad('涨幅',8,'r')} {_pad('5日累计',8,'r')} {_pad('现价',7,'r')} {_pad('排名',8,'r')} "
@@ -576,8 +592,13 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
             print(f"  {tier_color[tier]}── 档{tier} {prefix}{tier_names[tier]}{ANSI['RESET']}")
         rank_in_tier += 1
         mark = nextday_mark.get(entry["symbol"], False)
-        _print_priority_row(entry, rank_in_tier, flow_pct_map, nextday_mark=mark, last_ranks=last_ranks)
+        _print_priority_row(entry, rank_in_tier, flow_pct_map, nextday_mark=mark,
+                            breakout_mark=breakout_mark.get(entry["symbol"], False),
+                            last_ranks=last_ranks)
     print(f"  {'-'*92}")
+    if any(breakout_mark.values()):
+        print(f"  {ANSI['CYAN']}⚡ 蓄势突破观察{ANSI['RESET']}（新面孔/首推+横盘缩量回调位，"
+              f"样本收集中·非排序因子）")
 
     # 回马枪独立成区（2026-08-11 移到最末尾）：主表仅排榜上五类，comeback 抽到此处独立成区。
     # 2026-08-12 放宽兜底条件：主区推荐条数 ≤ COMEBACK_DISPLAY_MIN_MAIN（含为空）时也显示，

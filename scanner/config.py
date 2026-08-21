@@ -659,5 +659,16 @@ NEXTDAY_HIT_THRESHOLD = 7.0
 # 只对 cnt<15 的小板块共振档位劣后（ranking._entry_tier 档3）；⚠板块普涨 文本已按用户
 # 反馈下线（太扎眼），此配置仅用于排序，不渲染任何行尾文本。
 SECTOR_RESONANCE_WARN_MAX = 15
+# ── 蓄势突破观察画像（2026-08-21 新增，纯展示层 ⚡ 标记，不参与排序/评分/落库）──
+# 来源：历史涨停复盘（全库去重 1453 条推荐，「推荐后当日封板」20 只 vs 全部推荐对照）：
+# 涨停票共性 = new_face/kNF 或首推(61%) + 前5日横盘(累计中位 +2.0% vs 对照 +4.1%) +
+# T-1 缩量(0.87x 前5均量) + 回调至20日高点下方(-13.8% 中位，非新高追涨) + MA多头(100%)。
+# ⚠️ 样本仅 20 只（基础率 20/1453≈1.4%），且与 nextday_attribution「累计 0~3 带 hit 最差」
+# 结论存在张力——按开放假设清单 SOP 先观察积累样本，达标后经 nextday_attribution
+# 复盘再决定是否升级为排序因子。阈值取 A 组中位数附近的保守档。
+BREAKOUT_ACCUM_MAX = 5.0        # 前5日累计（含推荐日口径）上限：横盘蓄势而非连涨加速
+BREAKOUT_T1_VOL_RATIO = 0.9     # T-1 缩量阈值：T-1 量 / 前5日均量 ≤ 0.9
+BREAKOUT_PULLBACK_MIN = -18.0   # T-1 收盘距20日高点回撤下限（%）
+BREAKOUT_PULLBACK_MAX = -8.0    # 回撤上限：太浅=还在高位，太深=趋势可能已破
 # NEXTDAY_CAT_PRIORITY（🎯 次日大涨画像可标记类别集合）已迁至 scanner/categories
 # 单一事实来源，config 仅 re-export，见上方 from scanner.categories import。
