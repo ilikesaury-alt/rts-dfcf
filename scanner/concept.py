@@ -26,21 +26,12 @@ from scanner.config import (
     CONCEPT_PROCESS_TTL_SEC,
 )
 from scanner.database import get_concepts_cache, save_concepts_cache
+from scanner.net import EASTMONEY_HEADERS
 from scanner.sector import classify_sector
 from scanner.utils import cache_put as _cache_put
 
 logger = logging.getLogger(__name__)
 
-_EM_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "zh-CN,zh;q=0.9",
-    "Referer": "https://emweb.securities.eastmoney.com/",
-}
 
 # 进程内缓存：symbol → (concepts, fetched_ts)，跨 scan 复用、避免同轮重复查 DB
 _concept_ttl_cache: dict[str, tuple[list[str], float]] = {}
@@ -70,7 +61,7 @@ def fetch_stock_boards(symbol: str) -> list[str]:
         pass
     url = f"https://emweb.securities.eastmoney.com/PC_HSF10/CoreConception/PageAjax?code={symbol}"
     try:
-        resp = requests.get(url, headers=_EM_HEADERS, timeout=CONCEPT_API_TIMEOUT)
+        resp = requests.get(url, headers=EASTMONEY_HEADERS, timeout=CONCEPT_API_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:

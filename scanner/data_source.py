@@ -19,6 +19,7 @@ import requests
 from scanner import api
 from scanner.config import BEIJING_TZ, DATA_SOURCE
 from scanner.models import KlineBar, make_kline_bar
+from scanner.net import EASTMONEY_HEADERS
 from scanner.utils import to_float
 
 logger = logging.getLogger(__name__)
@@ -273,14 +274,7 @@ class AkshareAdapter:
                 "fltt": "2", "invt": "2",
                 "ut": "b2884a393a59ad64002292a3e90d46a5",
             }
-            headers = {
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
-                "Referer": "https://emweb.securities.eastmoney.com/",
-            }
+            headers = EASTMONEY_HEADERS
             resp = requests.get(
                 "https://push2delay.eastmoney.com/api/qt/ulist.np/get",
                 params=params, timeout=10, headers=headers,

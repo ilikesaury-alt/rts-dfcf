@@ -35,6 +35,7 @@ from scanner.config import (
 )
 from scanner.data_source import _ak_to_xq
 from scanner.database import get_market_extra_cache, save_market_extra_cache
+from scanner.net import EASTMONEY_HEADERS, _bounded_call
 from scanner.utils import cache_put as _cache_put
 from scanner.utils import to_float
 
@@ -42,18 +43,6 @@ logger = logging.getLogger(__name__)
 
 _ZT_POOL = "zt_pool"
 _FUND_FLOW = "fund_flow"
-
-# 东财 clist 请求头（与 concept.py _EM_HEADERS 同风格：浏览器 UA + Referer）
-_EM_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "zh-CN,zh;q=0.9",
-    "Referer": "https://emweb.securities.eastmoney.com/",
-}
 
 # 资金流 clist API：与 akshare stock_individual_fund_flow_rank("今日") 同参数。
 # 字段码：f12=代码, f62=主力净流入净额, f184=主力净流入净占比, f66=超大单净流入净额
@@ -117,29 +106,6 @@ def _cache_put_all(cache: dict, data: dict, key: str, now: float | None = None,
         _cache_put(cache, key, (data, now if now is not None else time.time(), ttl))
 
 
-def _bounded_call(fn, timeout: float):
-    """带限时执行网络调用：超时抛 TimeoutError，调用方按失败降级。
-
-    用 daemon 线程 + join(timeout) 而非 ThreadPoolExecutor，超时后线程在后台
-    自然结束（daemon 不阻塞进程退出），主扫描循环不被外部 host 挂死。
-    """
-    box: dict = {}
-
-    def _run():
-        try:
-            box["value"] = fn()
-        except BaseException as e:  # noqa: BLE001
-            box["error"] = e
-
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    t.join(timeout=timeout)
-    if t.is_alive():
-        raise TimeoutError(f"AKShare 调用超过 {timeout}s 已放弃")
-    if "error" in box:
-        raise box["error"]
-    return box.get("value")
-
 
 def fetch_zt_pool(today: str | None = None) -> dict[str, dict]:
     """拉取今日涨停池（东财），返回 {6位代码: {lianban, zt_stat, fengban_amt, zhaban, industry}}。
@@ -202,7 +168,7 @@ def _collect_fund_flow(box: dict, deadline: float) -> dict:
         p = dict(base)
         p["pn"] = str(pn)
         try:
-            resp = _requests.get(url, params=p, timeout=10, headers=_EM_HEADERS)
+            resp = _requests.get(url, params=p, timeout=10, headers=EASTMONEY_HEADERS)
             j = resp.json()
             data = j.get("data") if isinstance(j, dict) else None
             if not isinstance(data, dict):

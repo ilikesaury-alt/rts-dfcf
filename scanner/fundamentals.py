@@ -41,6 +41,7 @@ from scanner.config import (
     now_beijing,
 )
 from scanner.database import get_market_extra_cache, save_market_extra_cache
+from scanner.net import _bounded_call
 
 _DATA_TYPE = "fund_risk"
 
@@ -85,30 +86,6 @@ def _cache_get() -> dict | None:
             if time.time() - entry[1] < eff_ttl:
                 return entry[0]
     return None
-
-
-def _bounded_call(fn, timeout: float):
-    """带限时执行网络调用：超时抛 TimeoutError，调用方按失败降级。
-
-    与 market_extra._bounded_call 同构：daemon 线程 + join(timeout)，
-    超时后线程在后台自然结束，主扫描循环不被外部 host 挂死。
-    """
-    box: dict = {}
-
-    def _run():
-        try:
-            box["value"] = fn()
-        except BaseException as e:  # noqa: BLE001
-            box["error"] = e
-
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    t.join(timeout=timeout)
-    if t.is_alive():
-        raise TimeoutError(f"pywencai 查询超过 {timeout}s 已放弃")
-    if "error" in box:
-        raise box["error"]
-    return box.get("value")
 
 
 def _extract_xq_symbols(df) -> set[str]:
