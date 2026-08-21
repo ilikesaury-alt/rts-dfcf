@@ -1023,7 +1023,10 @@ def _parallel_fetch(pool: ThreadPoolExecutor,
         futs: dict[Future, str] = {}
 
         def _compute_one(s: str, it: list[dict]):
-            return fn(_get_session(), s, it)
+            # items 路径下三相 compute 不发网络请求（session 仅 items=None 旧路径用）。
+            # 传 None 避免每轮新建的工作线程经 thread-local 触发 make_session() 的
+            # 阻塞握手（每轮最多 max_workers 次无用 GET，白耗 phase_deadline 预算）。
+            return fn(None, s, it)
 
         for sym in syms:
             items = items_map.get(sym)

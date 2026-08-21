@@ -86,6 +86,11 @@ def save_kline_to_db(conn: sqlite3.Connection, symbol: str, kline: list[KlineBar
         )
         conn.commit()
     except Exception as e:
+        # 回滚残留在打开事务里的部分行，再逐行重写（与 record_appearances 同模式）
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         print(f"  [!] 批量写入kline失败: {e}, 逐行回退写入")
         for row in rows:
             try:

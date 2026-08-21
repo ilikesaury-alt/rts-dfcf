@@ -28,17 +28,25 @@ from scanner.utils import to_float
 def _nextday_entry_percent(entry: dict) -> float:
     """推荐时刻盘中涨幅（用于次日大涨候选区筛形）。
 
-    回退链：候选池当前扫描快照（最新）→ live_quotes（有实时覆盖）→ DB 落库 percent。
-    次日大涨画像依据的是「推荐时刻涨幅带」，故优先用扫描快照的 percent
-    （与 nextday_attribution 落库 percent 同源）；实时 live_percent 可能已随盘中
-    涨跌漂移，仅在无候选/无落库时兜底。
+    回退链：候选池当前扫描快照（最新）→ DB 落库 percent（推荐时刻口径）→
+    live_quotes（仅落库缺失时兜底）。
+
+    2026-08-21 审查修复（口径漂移）：掉榜行此前在 DB percent 之前就吃
+    live_quotes——而 unified_scanner 会为今日曾推荐但已掉榜的票主动补拉实时行情，
+    导致 🎯 甜蜜带 / _entry_band 涨幅带判定随盘中价格逐轮漂移（档位闪变），且偏离
+    校准口径（nextday_attribution 落库的是推荐时刻 percent）。现掉榜行优先 DB
+    落库值，live 仅在落库缺失时兜底。展示列的实时涨幅由 display 独立回退链负责，
+      不受本函数影响。
     """
     c = entry.get("_candidate")
     if c and c.stock:
         return to_float(c.stock.percent, default=0.0)
+    db_pct = entry.get("percent")
+    if db_pct is not None:
+        return to_float(db_pct, default=0.0)
     if entry.get("live_quote_available") and entry.get("live_percent") is not None:
         return to_float(entry["live_percent"], default=0.0)
-    return to_float(entry.get("percent"), default=0.0)
+    return 0.0
 
 
 def _in_nextday_sweet_band(percent: float) -> bool:
