@@ -217,6 +217,54 @@ def save_market_index_log(conn: sqlite3.Connection, index_pct: float | None,
         logger.warning(f"save_market_index_log failed: {e}")
 
 
+def save_minute_snapshots(conn: sqlite3.Connection, samples: list[dict]) -> int:
+    """落库单轮候选分时快照（分时可观测性，2026-08-21）。
+
+    每轮扫描把最终候选的 {symbol, price, pct} 采样进 minute_snapshot 时间序列，
+    使历史分时形态可回放（涨停共性复盘曾因历史分时未落库只能看单例）。每轮一次
+    批量写入，同 (date,time,symbol) 覆盖。fail-open：落库失败不阻塞扫描主流程。
+
+    samples: [{"symbol", "price", "pct"}, ...]；price/pct 非有限正数/负数按脏值
+    剔除该行（与 KlineBar 契约同族），不阻断其余行。
+    返回写入行数。
+    """
+    if not samples:
+        return 0
+    today = now_beijing().date().isoformat()
+    now = now_beijing().strftime("%H:%M:%S")
+    hhmm = now[:5]
+    rows = []
+    for s in samples:
+        sym = s.get("symbol")
+        if not sym:
+            continue
+        try:
+            price = float(s.get("price"))
+            pct = float(s.get("pct"))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(price) or price <= 0 or not math.isfinite(pct):
+            continue
+        rows.append((today, hhmm, sym, price, pct, now))
+    if not rows:
+        return 0
+    try:
+        conn.executemany(
+            """INSERT INTO minute_snapshot (date, time, symbol, price, pct, updated)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(date, time, symbol) DO UPDATE SET
+                 price = excluded.price,
+                 pct = excluded.pct,
+                 updated = excluded.updated""",
+            rows,
+        )
+        conn.commit()
+        return len(rows)
+    except Exception as e:
+        logger.warning(f"save_minute_snapshots failed: {e}")
+        return 0
+
+
 def record_leaderboard_log(conn: sqlite3.Connection, source: str, items: list[dict],
                             prev_symbols: set[str]) -> set[str]:
     """落库单轮榜单快照（榜单可观测性，2026-08-19）。

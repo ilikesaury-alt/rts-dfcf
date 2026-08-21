@@ -60,6 +60,7 @@ from scanner.database import (
     save_kline_to_db,
     save_market_caps,
     save_market_index_log,
+    save_minute_snapshots,
     save_scan_quality,
     upsert_watch_symbols,
 )
@@ -939,6 +940,17 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         save_scan_quality(conn, quality_stats)
     except Exception as e:
         print(f"  [!] 数据血缘日志落库失败: {e}")
+
+    # 分时快照落库（2026-08-21）：每轮把最终候选的 {现价, 涨幅} 采样进时间序列，
+    # 历史分时形态可回放（涨停复盘曾因分时未落库只能看单例）。fail-open 不阻塞扫描。
+    try:
+        save_minute_snapshots(conn, [
+            {"symbol": c.stock.symbol, "price": c.stock.current,
+             "pct": c.stock.percent}
+            for c in all_candidates
+        ])
+    except Exception as e:
+        print(f"  [!] 分时快照落库失败: {e}")
 
     # 核心方向低吸落库（2026-08-19）：在榜主类别外单独 category=core_dip（与 comeback
     # 同族），供 display 独立低吸区读取 + nextday_attribution/prevday_perf 复盘验证。
