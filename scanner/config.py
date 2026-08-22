@@ -485,6 +485,11 @@ REVERSAL_OVERSHOOT_DROP = 10.0
 # 每票每日最多评估一次（last_eval_date 落库，重启不丢）。
 WATCH_POOL_MAX = 600                 # 掉榜跟踪池上限（超限时淘汰 last_list_date 最旧）
 WATCH_OFFLIST_KEEP_DAYS = 15         # 掉榜后保留交易日数（覆盖三周级掉榜，见志特新材案例）
+
+# 分时快照保留窗口（2026-08-22 剪枝，orchestrator 每交易日一次调 prune_minute_snapshots）：
+# minute_snapshot ~1 万行/日落库且无剪枝会无限膨胀（年级 300w+ 行）；复盘价值集中在近端
+# （涨停共性回放看近期形态），60 交易日 ≈ 3 个月足够。
+MINUTE_SNAPSHOT_KEEP_DAYS = 60        # 保留交易日数，更旧的分时快照每日首扫时删除
 # 反转变体：超跌企稳（复用 analyze_rebound 语义，off_list 收紧）
 COMEBACK_MIN_TODAY_PCT = 2.0         # off_list 今日涨幅下限（比 rebound 0.5 更严，反转确认）
 COMEBACK_MAX_TODAY_PCT = 12.0        # 与 short_term 上限同源：覆盖 8-12% 续涨（掉榜日无热榜背书）

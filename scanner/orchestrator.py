@@ -19,6 +19,7 @@ from scanner.config import (
     MAX_MARKET_CAP,
     MAX_STOCK_PRICE,
     MCAP_CACHE_MAX_AGE_DAYS,
+    MINUTE_SNAPSHOT_KEEP_DAYS,
     SHORT_TERM_MAX_TODAY_PCT,
     WATCH_OFFLIST_KEEP_DAYS,
     YI,
@@ -26,6 +27,7 @@ from scanner.config import (
 )
 from scanner.database import (
     get_cached_market_caps,
+    prune_minute_snapshots,
     prune_watch_pool,
     record_appearances,
     save_market_caps,
@@ -47,6 +49,8 @@ from scanner.sector import get_sector_clusters
 from scanner.trading_session import is_trading_time
 
 _session_state = ScanSession()
+# minute_snapshot 每日剪枝守卫（2026-08-22）：每交易日首扫执行一次，避免每轮 60s 重复 DELETE
+_minute_prune_state = {"date": ""}
 
 def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
                   adapter) -> ScanResult:
@@ -121,6 +125,17 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         prune_watch_pool(conn, WATCH_OFFLIST_KEEP_DAYS)
     except Exception as e:
         print(f"  [!] 掉榜跟踪池维护失败: {e}")
+
+    # 分时快照剪枝（2026-08-22）：每交易日首扫一次，删 MINUTE_SNAPSHOT_KEEP_DAYS 交易日
+    # 之前的 minute_snapshot 行，防 ~1 万行/日 无限膨胀。fail-open 不阻塞扫描。
+    if _minute_prune_state["date"] != today:
+        try:
+            removed = prune_minute_snapshots(conn, MINUTE_SNAPSHOT_KEEP_DAYS)
+            if removed:
+                print(f"  [~] 分时快照剪枝: 删除 {removed} 行（>{MINUTE_SNAPSHOT_KEEP_DAYS} 交易日前）")
+            _minute_prune_state["date"] = today
+        except Exception as e:
+            print(f"  [!] 分时快照剪枝失败: {e}")
 
     # 双批 K 线拉取共用同一个 deadline：榜上票 45s + 回马枪幸存者再 45s 会串行 ~90s，
     # 超 60s 扫描间隔。共用一个 deadline 保证两批总耗时仍被 KLINE_FETCH_DEADLINE 兜底。

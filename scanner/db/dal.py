@@ -9,6 +9,7 @@ import math
 import sqlite3
 
 from scanner.config import (
+    MINUTE_SNAPSHOT_KEEP_DAYS,
     REVERSAL_OVERSHOOT_DROP,
     REVERSAL_TURNED_RED_DROP,
     WATCH_POOL_MAX,
@@ -514,6 +515,25 @@ def prune_watch_pool(conn: sqlite3.Connection,
         return cur.rowcount
     except Exception as e:
         logger.warning(f"prune_watch_pool failed: {e}")
+        return 0
+
+
+def prune_minute_snapshots(conn: sqlite3.Connection,
+                           keep_trading_days: int = MINUTE_SNAPSHOT_KEEP_DAYS) -> int:
+    """删除 keep_trading_days 个交易日之前的分时快照（2026-08-22 剪枝）。
+
+    minute_snapshot ~1 万行/日量级且此前无剪枝，长跑会无限膨胀；复盘价值集中在
+    近端形态，按 date < 交易日回溯 cutoff 整批删除（走 idx_ms_date_sym 索引）。
+    fail-open：失败只告警不阻塞扫描主流程。返回删除行数。
+    """
+    cutoff = _n_trading_days_ago(keep_trading_days)
+    try:
+        cur = conn.execute(
+            "DELETE FROM minute_snapshot WHERE date < ?", (cutoff,))
+        conn.commit()
+        return cur.rowcount
+    except Exception as e:
+        logger.warning(f"prune_minute_snapshots failed: {e}")
         return 0
 
 

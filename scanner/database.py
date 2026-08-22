@@ -32,6 +32,7 @@ from scanner.db import (  # noqa: F401
     is_prominent,
     mark_reversed_recommendations,
     mark_watch_evaluated,
+    prune_minute_snapshots,
     prune_watch_pool,
     record_appearances,
     record_leaderboard_log,

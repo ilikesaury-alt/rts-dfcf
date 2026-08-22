@@ -1,11 +1,11 @@
 """minute_snapshot 分时快照落库测试（2026-08-21）。
 
 每轮扫描把最终候选 {现价, 涨幅} 采样进时间序列，历史分时形态可回放。
-锁定：批量写入/同刻覆盖/脏值剔除/fail-open。
+锁定：批量写入/同刻覆盖/脏值剔除/fail-open/剪枝（2026-08-22）。
 """
 import sqlite3
 
-from scanner.database import save_minute_snapshots
+from scanner.database import prune_minute_snapshots, save_minute_snapshots
 
 
 def _db():
@@ -72,3 +72,31 @@ class TestSaveMinuteSnapshots:
         row = conn.execute("SELECT date FROM minute_snapshot").fetchone()
         from scanner.config import now_beijing
         assert row[0] == now_beijing().date().isoformat()
+
+
+class TestPruneMinuteSnapshots:
+    def test_prunes_old_keeps_recent(self):
+        """只删 keep_trading_days 个交易日之前的行，窗口内（含当日）保留。"""
+        from scanner.db import _n_trading_days_ago
+
+        cutoff = _n_trading_days_ago(60)
+        recent = _n_trading_days_ago(30)
+        conn = _db()
+        for d in (cutoff, "2020-01-01", recent, "2099-01-01"):
+            conn.execute(
+                "INSERT INTO minute_snapshot (date, time, symbol, price, pct)"
+                " VALUES (?, '10:00', 'SZ300001', 10.0, 1.0)",
+                (d,))
+        removed = prune_minute_snapshots(conn, 60)
+        assert removed == 1  # 仅严格早于 cutoff 的删除；cutoff 当天/recent/future 保留
+        dates = {r[0] for r in conn.execute("SELECT date FROM minute_snapshot").fetchall()}
+        assert dates == {cutoff, recent, "2099-01-01"}
+
+    def test_fail_open_on_broken_conn(self):
+        """表不存在 → fail-open 返回 0 不抛异常。"""
+        broken = sqlite3.connect(":memory:")
+        assert prune_minute_snapshots(broken, 60) == 0
+
+    def test_empty_table_returns_zero(self):
+        conn = _db()
+        assert prune_minute_snapshots(conn, 60) == 0
