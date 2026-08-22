@@ -32,6 +32,7 @@ stock_report.py           # Individual stock deep-dive report tool
 scanner/
   orchestrator.py         # Core scan pipeline
   candidates.py           # 候选构建层（榜单过滤/单票评分/分类/RPS，2026-08-21 自 orchestrator 抽出）
+  intraday_fetch.py       # 分时信号并行层（三相+拉取相 deadline 并行，2026-08-21 自 orchestrator 抽出）
   kline_fetch.py          # K 线补拉数据层（TTL 节流 + deadline 限时 + 失败兑底，2026-08-21 自 orchestrator 抽出）
   minute_bar.py           # 分时兑底数据层（补拉失败→分时构造今日 bar，2026-08-21 自 orchestrator 抽出）
   analysis.py             # Scoring engines (new_face, momentum, rebound, short_term)
