@@ -259,6 +259,16 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
 
                 current_rank_map = {s.symbol: s.rank for s in all_gem}
 
+                # 先落库再展示（2026-08-21 审查修复）：save_recommendations 原在
+                # display() 之后，而综合排序（display_priority）从 DB 读今日推荐——
+                # 导致终端恒渲染上一轮数据（当日首轮推荐不显示、之后每轮滞后一个
+                # 刷新周期），与同轮已实时推送的飞书不一致。移到读取
+                # today_recs/mark_reversed/display 之前，终端与本轮扫描同源。
+                # 本轮候选随后由 mark_reversed 经 active_syms 跳过、不被反转评估，
+                # 行为等价；orchestrator 的 excluded 置 0/1 更新仍在其内部先行完成。
+                save_recommendations(conn, new_faces,
+                                     momentum + rebound_list + short_term_list + comeback_list)
+
                 # 为综合推荐补拉今日曾推荐但不在 current_quotes 中的票的实时行情
                 live_quotes: dict[str, dict] = {}
                 live_quotes.update(current_quotes)
@@ -344,8 +354,6 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     print(f"  ▶ 超短次日首选: {top_s.stock.name}({top_s.stock.symbol}) [{src}] "
                           f"{top_s.stock.percent:+.2f}% | RPS:{top_s.rps_bonus}")
 
-                save_recommendations(conn, new_faces,
-                                     momentum + rebound_list + short_term_list + comeback_list)
                 try:
                     n = backfill_outcomes(conn)
                     if n:

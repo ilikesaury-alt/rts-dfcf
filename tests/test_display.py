@@ -53,6 +53,33 @@ def test_trunc_preserves_ansi_escape_reset():
     assert t.endswith("\033[0m…")
 
 
+def test_trunc_does_not_duplicate_escape_body():
+    """回归（2026-08-21 审查）：旧实现命中转义序列后仅 continue 一个字符，序列体内的
+    [ 9 1 m 会在后续迭代被再次当可见文本追加（输出出现字面 "[91m"），宽度计算随之
+    失真。截断含 ANSI 文本时，剥离色码后的可见内容不得包含序列体片段。"""
+    import re as _re
+    s = "\033[91m半导体半导体\033[0m"
+    for width in (6, 10, 12, 14):
+        t = disp_mod._trunc(s, width)
+        plain = _re.sub(r"\x1b\[[0-9;]*m", "", t)
+        # 序列体片段（如 [91m、0m）不得作为可见文本残留
+        for frag in ("[91m", "[0m", "[1m"):
+            assert frag not in plain, (width, repr(t))
+        assert disp_mod._vis_len(t) <= width
+        assert t.startswith("\x1b[91m")
+
+
+def test_trunc_nested_ansi_no_leak():
+    """嵌套色码（加粗+红）截断后同样不得泄漏序列体，且保留完整 RESET。"""
+    import re as _re
+    s = "\x1b[1m\x1b[91m华为概念+机器人板块\x1b[0m"
+    t = disp_mod._trunc(s, 8)
+    plain = _re.sub(r"\x1b\[[0-9;]*m", "", t)
+    assert "[1m" not in plain and "[91m" not in plain
+    assert disp_mod._vis_len(t) <= 8
+    assert t.endswith("\x1b[0m…")
+
+
 def test_fund_flow_signal_boundaries():
     """阈值端点语义：≥8 强流入、[5,8) 流入、(-5,5) 中性、( -8,-5] 流出、≤-8 强流出。"""
     assert disp_mod.fund_flow_signal(None) == ""

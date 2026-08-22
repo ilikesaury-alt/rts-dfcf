@@ -133,19 +133,28 @@ def _trunc(s: str, width: int) -> str:
     """
     if _vis_len(s) <= width:
         return s
+    # 按索引推进（2026-08-21 审查修复）：旧实现对每个字符迭代、命中转义序列后仅
+    # continue 一个字符——序列体内的 [ 9 1 m 等会在后续迭代被再次当可见文本追加
+    # （输出出现字面 "[91m"），且 s[len(out):] 偏移随 len(out) 失真导致后续匹配
+    # 错位。现用索引 i 推进，整段序列一次性消费（i=m.end()），不再重扫序列体。
     out = ""
     vis = 0
-    for ch in s:
+    i = 0
+    n = len(s)
+    while i < n:
+        ch = s[i]
         if ch == "\x1b":
-            m = _ANSI_ESCAPE.match(s[len(out):])
+            m = _ANSI_ESCAPE.match(s, i)
             if m:
                 out += m.group(0)
+                i = m.end()
                 continue
         w = max(0, wcwidth.wcwidth(ch))
         if vis + w > width - 1:
             break
         vis += w
         out += ch
+        i += 1
     if "\x1b[" in out and "\x1b[0m" not in out:
         out += "\x1b[0m"
     return out + "…"
