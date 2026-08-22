@@ -79,7 +79,7 @@ def _refresh_session(session: requests.Session) -> None:
     """原地重建雪球 cookie：清空旧 cookie 后重新 GET /hq 握手。
 
     调用方持有的 session 引用不变（thread-local / adapter 单例均无感）。
-    并发重建用锁串行，避免 _parallel_fetch 多线程同时清 cookie 竞态。
+    并发重建用锁串行，避免 intraday_fetch.parallel_fetch 多线程同时清 cookie 竞态。
     """
     with _session_refresh_lock:
         session.cookies.clear()
@@ -591,7 +591,7 @@ def _normalize_minute_item(raw) -> dict:
         # 数值强转：分时接口与 kline 同源（雪球 chart/minute.json），同样偶发返回
         # 字符串/None/NaN。保持字符串会让下游 analyze_opening_strength / estimate_live_volume
         # 的算术（-、/、+）抛 TypeError 丢分时信号（与 fetch_kline 的 _num 同族修复，
-        # 此前仅在调用方 _parallel_fetch 兜底为 None，整相静默降级）。
+        # 此前仅在调用方 intraday_fetch.parallel_fetch 兜底为 None，整相静默降级）。
         volume = _num(raw[1])
         current = _num(raw[5])
         amount = _num(raw[9]) if len(raw) > 9 else 0.0

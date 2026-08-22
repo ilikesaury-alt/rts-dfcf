@@ -67,7 +67,7 @@ class XueqiuAdapter:
 
     def _get_session(self):
         if self._session is None:
-            # 2026-08-20 加固：懒初始化加锁——_parallel_fetch 6 工作线程首次并发调用
+            # 2026-08-20 加固：懒初始化加锁——intraday_fetch 6 工作线程首次并发调用
             # 时若未加锁会双建 session（各线程拿到不同实例，cookie/自愈状态分叉）。
             with self._session_lock:
                 if self._session is None:

@@ -3,6 +3,7 @@ from datetime import date, datetime, timedelta
 from scanner.candidate_pool import ScanSession
 from scanner.models import Candidate, KlineSummary, StockInfo
 import scanner.candidates as cd
+import scanner.intraday_fetch as idf
 import scanner.kline_fetch as kf
 from scanner.candidates import candidate_excluded_by_risk, enrich_candidate_market_cap
 
@@ -1083,17 +1084,16 @@ class TestParallelFetchDeadline:
             def fetch_minute(self, symbol):
                 return [{"volume": 1.0, "current": 10.0, "avg_price": 10.0}] * 60
 
-        monkeypatch.setattr(o, "_get_session", lambda: MagicMock())
-        monkeypatch.setattr(o, "analyze_intraday", _slow)
-        monkeypatch.setattr(o, "analyze_opening_strength", lambda s, x, items=None: 2.5)
-        monkeypatch.setattr(o, "estimate_live_volume", lambda s, x, items=None: 123.0)
+        monkeypatch.setattr(idf, "analyze_intraday", _slow)
+        monkeypatch.setattr(idf, "analyze_opening_strength", lambda s, x, items=None: 2.5)
+        monkeypatch.setattr(idf, "estimate_live_volume", lambda s, x, items=None: 123.0)
 
         cands = [_make_candidate("300001")]
         intra, opening, live = {}, {}, {}
         pool = ThreadPoolExecutor(max_workers=6)
         try:
             start = time.time()
-            o._parallel_fetch(pool, cands, intra, opening, live,
+            idf.parallel_fetch(pool, cands, intra, opening, live,
                               _FakeAdapter(), phase_deadline=0.4)
             elapsed = time.time() - start
         finally:
@@ -1115,16 +1115,15 @@ class TestParallelFetchDeadline:
             def fetch_minute(self, symbol):
                 return None
 
-        monkeypatch.setattr(o, "_get_session", lambda: MagicMock())
-        monkeypatch.setattr(o, "analyze_intraday", lambda *a, **k: (_ for _ in ()).throw(AssertionError("不应调用")))
-        monkeypatch.setattr(o, "analyze_opening_strength", lambda *a, **k: (_ for _ in ()).throw(AssertionError("不应调用")))
-        monkeypatch.setattr(o, "estimate_live_volume", lambda *a, **k: (_ for _ in ()).throw(AssertionError("不应调用")))
+        monkeypatch.setattr(idf, "analyze_intraday", lambda *a, **k: (_ for _ in ()).throw(AssertionError("不应调用")))
+        monkeypatch.setattr(idf, "analyze_opening_strength", lambda *a, **k: (_ for _ in ()).throw(AssertionError("不应调用")))
+        monkeypatch.setattr(idf, "estimate_live_volume", lambda *a, **k: (_ for _ in ()).throw(AssertionError("不应调用")))
 
         cands = [_make_candidate("300001")]
         intra, opening, live = {}, {}, {}
         pool = ThreadPoolExecutor(max_workers=6)
         try:
-            o._parallel_fetch(pool, cands, intra, opening, live, _NoMinuteAdapter())
+            idf.parallel_fetch(pool, cands, intra, opening, live, _NoMinuteAdapter())
         finally:
             pool.shutdown(wait=False)
 
@@ -1382,19 +1381,20 @@ class TestFetchAllKlinesShortCacheTtl:
 class TestParallelFetchNoSessionHandshake:
     """三相 compute 在 items 路径下不得触发 session 握手（2026-08-21 审查修复）。
 
-    executor 每轮新建 → thread-local session 必为空 → 旧实现 _get_session() 每轮
-    对每工作线程做一次阻塞 make_session() 握手（items 路径根本不用 session）。
+    executor 每轮新建 → 旧实现每轮对每工作线程做一次阻塞 make_session() 握手
+    （items 路径根本不用 session）。现 compute 相 session 传 None，绊线直接挂
+    api.make_session——任何握手尝试即测试失败。
     """
 
     def test_compute_phases_never_create_session(self, monkeypatch):
         from concurrent.futures import ThreadPoolExecutor
 
-        import scanner.orchestrator as orch
+        import scanner.api as api
 
-        def _boom():
+        def _boom(*a, **k):
             raise AssertionError("compute 相不应创建 session（items 路径不发网络请求）")
 
-        monkeypatch.setattr(orch, "_get_session", _boom)
+        monkeypatch.setattr(api, "make_session", _boom)
 
         items = [{"current": 10.0 + i * 0.01, "volume": 100} for i in range(10)]
 
@@ -1408,7 +1408,7 @@ class TestParallelFetchNoSessionHandshake:
             intraday: dict = {}
             opening: dict = {}
             vols: dict = {}
-            orch._parallel_fetch(pool, [cand], intraday, opening, vols, _Adp(),
+            idf.parallel_fetch(pool, [cand], intraday, opening, vols, _Adp(),
                                  phase_deadline=5.0)
         finally:
             pool.shutdown(wait=True)

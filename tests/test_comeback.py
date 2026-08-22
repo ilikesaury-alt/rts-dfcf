@@ -331,7 +331,9 @@ class TestWatchPoolDb:
     def test_prune_removes_old(self):
         conn = _in_mem_db()
         upsert_watch_symbol(conn, "SZ300986", "志特新材", last_list_date="2020-01-01")
-        upsert_watch_symbol(conn, "SZ300111", "乙股", last_list_date="2026-07-31")
+        # 近期日期动态取（曾硬编码 2026-07-31，真实时钟越过 15 交易日后双条目被剪成时间炸弹）
+        recent = now_beijing().date().isoformat()
+        upsert_watch_symbol(conn, "SZ300111", "乙股", last_list_date=recent)
         n = prune_watch_pool(conn, keep_trading_days=15)
         assert n == 1
         assert [r["symbol"] for r in get_watch_symbols(conn)] == ["SZ300111"]
