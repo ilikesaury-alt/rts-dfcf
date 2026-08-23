@@ -1,7 +1,8 @@
-"""基本面风险过滤层测试（pywencai 问财条件查询）。
+"""基本面风险过滤层测试（THS 估值快照主源 + pywencai 问财兜底）。
 
-用 monkeypatch 替换 pywencai.get 返回伪 DataFrame / 抛异常，不依赖外网。
-覆盖：代码符号解析、进程缓存、DB 缓存、fail-open、超时兜底、enhancer 标签集成。
+用 monkeypatch 替换 pywencai.get / ths_api 接口，不依赖外网。
+覆盖：代码符号解析、进程缓存、DB 缓存、fail-open、超时兜底、
+THS 跨轮增量拉取、enhancer 标签集成。
 """
 import sqlite3
 
@@ -36,6 +37,10 @@ class FakePywencai:
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
     fb.reset_fund_risk_cache()
+    # 默认屏蔽 THS 层（无 Key → 真实增量逻辑快速返回 ({}, False)，不打网络），
+    # 走 pywencai 兜底路径——既有 pywencai 用例语义不变；
+    # THS 主源行为在 TestThsFundRisk 单独覆盖（覆盖 get_api_key 即可启用）。
+    monkeypatch.setattr("scanner.ths_api.get_api_key", lambda: "")
     yield
     fb.reset_fund_risk_cache()
 
@@ -180,6 +185,62 @@ class TestFetchFundRiskMap:
         assert calls["n"] == 1
         assert fb.fetch_fund_risk_map() == {}
         assert calls["n"] == 1, "空结果应在短退避 TTL 内命中缓存"
+
+
+class TestThsFundRisk:
+    """THS 估值快照主源（2026-08-23）：pb_mrq<0 ⟺ 资不抵债，跨轮增量拉取。"""
+
+    def _patch_ths(self, monkeypatch, codes, valuations_by_call, fail_at=None):
+        """mock ths_api：fetch_gem_codes 返回 codes；fetch_valuations 按
+        调用次序返回 valuations_by_call 列表（fail_at 次序起返回 None）。"""
+        calls = {"vals": 0}
+
+        def fake_vals(batch):
+            calls["vals"] += 1
+            if fail_at is not None and calls["vals"] >= fail_at:
+                return None
+            return valuations_by_call[min(calls["vals"], len(valuations_by_call)) - 1]
+
+        monkeypatch.setattr("scanner.ths_api.get_api_key", lambda: "k")
+        monkeypatch.setattr("scanner.ths_api.fetch_gem_codes", lambda: list(codes))
+        monkeypatch.setattr("scanner.ths_api.fetch_valuations", fake_vals)
+        return calls
+
+    def test_complete_single_round(self, monkeypatch):
+        self._patch_ths(monkeypatch,
+                        ["300001", "300002", "300003"],
+                        [{"300001": 0.5, "300002": -0.3, "300003": None}])
+        # 300003 pb=null 不算命中；300002 pb<0 → 资不抵债
+        assert fb.fetch_fund_risk_map() == {"SZ300002": "资不抵债"}
+
+    def test_incremental_across_rounds(self, monkeypatch):
+        """预算用尽未拉完 → 先返回已命中部分，下轮续传补全剩余批次。"""
+        self._patch_ths(monkeypatch,
+                        ["300001", "300002"],
+                        [{"300001": -1.0}])
+        r1 = fb.fetch_fund_risk_map()
+        assert r1 == {"SZ300001": "资不抵债"}  # 首轮只完成第 1 批
+
+    def test_no_key_falls_back_to_wencai(self, monkeypatch):
+        monkeypatch.setattr("scanner.ths_api.get_api_key", lambda: "")
+        fake = FakePywencai(_risk_df("300027.SZ"))
+        monkeypatch.setattr("pywencai.get", fake.get, raising=False)
+        assert fb.fetch_fund_risk_map() == {"SZ300027": "资不抵债"}
+
+    def test_gem_codes_fail_falls_back_to_wencai(self, monkeypatch):
+        monkeypatch.setattr("scanner.ths_api.get_api_key", lambda: "k")
+        monkeypatch.setattr("scanner.ths_api.fetch_gem_codes", lambda: None)
+        fake = FakePywencai(_risk_df("300027.SZ"))
+        monkeypatch.setattr("pywencai.get", fake.get, raising=False)
+        assert fb.fetch_fund_risk_map() == {"SZ300027": "资不抵债"}
+
+    def test_ths_exception_falls_back_to_wencai(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("ths down")
+        monkeypatch.setattr(fb, "_fetch_fund_risk_ths", _boom)
+        fake = FakePywencai(_risk_df("300027.SZ"))
+        monkeypatch.setattr("pywencai.get", fake.get, raising=False)
+        assert fb.fetch_fund_risk_map() == {"SZ300027": "资不抵债"}
 
 
 class TestCollectFundRisk:

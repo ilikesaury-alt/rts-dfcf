@@ -3,7 +3,8 @@
 背景：daily_kline 盘中残留的「未定稿今日 bar」（盘中价 + 部分量能）一旦收盘后无
 覆盖，会静默污染 next_day_pct → 回测/归因/复盘全部口径。本地契约检查（make_kline_bar
 的 close>0/NaN 剔除等）抓不到自洽脏数据——脏 bar 的 percent/量价内部一致，唯一
-可靠的是**跨数据源交叉验证**（新浪 qfq 独立于雪球）。
+可靠的是**跨数据源交叉验证**（新浪 qfq 主参照 + 同花顺官方 API 回退参照，
+均独立于雪球）。
 
 用法（供回测/归因/复盘工具出报告前调用）：
     report = check_kline_health(conn, dates=dates)
@@ -28,6 +29,9 @@ MIN_CHECKED = 5
 BLOCK_RATIO = 0.3
 # 容差：1 分钱以上视为不符（qfq 舍入噪声）
 TOLERANCE = 0.011
+# THS 官方源相对容差：THS forward 与雪球 qfq 锚点偶有细微差异（2026-08-23 探测
+# 实测个别票分红后 ~0.36%），不能逐分对齐，用相对容差 0.5%
+THS_TOLERANCE_REL = 0.005
 # 大盘指数对账（2026-08-19）：扫描快照时点 vs 审计时点，同一天内允许的涨幅偏差(pp)。
 # 隔日错位（如 -6.26% 崩盘被读成昨日 -0.93%）偏差 5.3pp 远超容差，必被命中。
 INDEX_PCT_TOLERANCE = 0.5
@@ -51,7 +55,7 @@ class HealthReport:
 
 
 def _sina_close(symbol: str, date_str: str) -> float | None:
-    """独立数据源（新浪 qfq）取指定日期收盘价；失败返回 None（fail-open）。"""
+    """回退数据源（新浪 qfq，经 akshare）取指定日期收盘价；失败返回 None（fail-open）。"""
     try:
         import akshare as ak
 
@@ -62,6 +66,21 @@ def _sina_close(symbol: str, date_str: str) -> float | None:
     except Exception:  # noqa: BLE001  网络/解析失败 → None，由调用方按 source_ok 处理
         pass
     return None
+
+
+def _ths_close(symbol: str, date_str: str) -> float | None:
+    """主参照源（同花顺官方 API）指定日期收盘价；失败返回 None。
+
+    2026-08-23 升为主参照：官方 REST 免爬虫解析与 akshare 版本耦合；
+    新浪 qfq（akshare）降为回退。口径对账实测与本地雪球 qfq 一致
+    （相对容差 THS_TOLERANCE_REL）。
+    """
+    from scanner import ths_api  # 惰性导入：无 Key 时零开销跳过
+
+    closes = ths_api.fetch_kline_closes(symbol, date_str, date_str)
+    if not closes:
+        return None
+    return closes.get(date_str)
 
 
 def check_kline_health(conn: sqlite3.Connection,
@@ -97,11 +116,19 @@ def check_kline_health(conn: sqlite3.Connection,
         db_close_f = to_float(db_close, None)
         if db_close_f is None or db_close_f <= 0:
             continue
-        ref = _sina_close(sym, d)
+        # 主参照：同花顺官方 API（2026-08-23，免 akshare 爬虫依赖，相对容差——
+        # THS forward 与雪球 qfq 锚点偶有 ~0.36% 微差，不能逐分对齐）；
+        # 回退参照：新浪 qfq（akshare，绝对容差 1 分钱）。
+        ref = _ths_close(sym, d)
+        if ref is not None:
+            tol = max(TOLERANCE, ref * THS_TOLERANCE_REL)
+        else:
+            ref = _sina_close(sym, d)
+            tol = TOLERANCE
         if ref is None:
-            continue  # 源不可达/无该日数据 → 该样本不参与统计
+            continue  # 两源皆不可达/无该日数据 → 该样本不参与统计
         report.checked += 1
-        if abs(db_close_f - ref) > TOLERANCE:
+        if abs(db_close_f - ref) > tol:
             report.mismatched += 1
             report.samples.append((sym, d, db_close_f, ref))
     if report.checked == 0:
@@ -225,7 +252,7 @@ def index_health_banner(report: IndexHealthReport) -> str:
 def health_banner(report: HealthReport) -> str:
     """把 HealthReport 渲染成终端横幅；无异常返回空串。"""
     if not report.source_ok:
-        return ("  ⚠ 数据健康检查：独立数据源（新浪）不可达，跳过交叉验证\n"
+        return ("  ⚠ 数据健康检查：独立数据源（新浪/同花顺）均不可达，跳过交叉验证\n"
                 "    （不影响报告；建议稍后跑 python repair_kline.py --dry-run 自查）")
     if report.mismatched == 0:
         return ""

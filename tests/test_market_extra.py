@@ -74,6 +74,9 @@ class _NetCounter:
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
     me.reset_extra_cache()
+    # 默认屏蔽 THS 主源（返回 None = 未配置/失败），既有用例走 AKShare 兜底路径；
+    # THS 主源行为在 TestFetchZtPoolThsSource 中单独覆盖。
+    monkeypatch.setattr(me, "_fetch_zt_pool_ths", lambda date_key=None: None)
     yield
     me.reset_extra_cache()
 
@@ -108,6 +111,45 @@ class TestFetchZtPool:
     def test_ak_unavailable(self, monkeypatch):
         monkeypatch.setattr(me, "_get_ak", lambda: None)
         assert me.fetch_zt_pool("20260805") == {}
+
+
+class TestFetchZtPoolThsSource:
+    """THS 官方涨停池主源（2026-08-23 接入）：主源成功不触 AKShare，
+    主源失败/未配置 → AKShare 兜底。"""
+
+    def test_ths_primary(self, monkeypatch):
+        ths_payload = {
+            "300001": {"lianban": 1, "zt_stat": "首板", "fengban_amt": 1.3e8,
+                       "zhaban": 0, "industry": "充电桩"},
+            "300002": {"lianban": 3, "zt_stat": "3天3板", "fengban_amt": 2.4e8,
+                       "zhaban": 2, "industry": "CPO+光模块"},
+        }
+        calls = []
+        monkeypatch.setattr(me, "_fetch_zt_pool_ths",
+                            lambda date_key=None: calls.append(date_key) or ths_payload)
+        fake = FakeAk()
+        monkeypatch.setattr(me, "_get_ak", lambda: fake)
+        result = me.fetch_zt_pool("20260821")
+        assert result["300001"]["lianban"] == 1
+        assert result["300002"]["industry"] == "CPO+光模块"
+        assert calls == ["20260821"]
+        assert fake.zt_calls == 0  # 主源成功，AKShare 不被触发
+
+    def test_ths_fail_falls_back_to_ak(self, monkeypatch):
+        monkeypatch.setattr(me, "_fetch_zt_pool_ths", lambda date_key=None: None)
+        fake = FakeAk()
+        monkeypatch.setattr(me, "_get_ak", lambda: fake)
+        result = me.fetch_zt_pool("20260805")
+        assert result["300001"]["lianban"] == 1
+        assert fake.zt_calls == 1
+
+    def test_ths_exception_falls_back_to_ak(self, monkeypatch):
+        def _boom(date_key=None):
+            raise RuntimeError("ths down")
+        monkeypatch.setattr(me, "_fetch_zt_pool_ths", _boom)
+        fake = FakeAk()
+        monkeypatch.setattr(me, "_get_ak", lambda: fake)
+        assert me.fetch_zt_pool("20260805")["300002"]["zhaban"] == 2
 
 
 class TestFetchFundFlow:
@@ -194,7 +236,6 @@ class TestFetchFundFlow:
     def test_bounded_flags_partial_when_thread_done_but_incomplete(self, monkeypatch):
         # 回归：线程在 join 超时前恰好跑完内部 deadline，_collect_fund_flow 未标记
         # done → _fetch_fund_flow_bounded 必须仍判为超时（部分结果），不得当完整快照。
-        import time as _t
 
         def _collect_that_finishes_early(box_, deadline):
             box_["value"] = {"300001": {"main_net": 1.0, "main_pct": 2.0, "super_net": 0}}
@@ -206,7 +247,6 @@ class TestFetchFundFlow:
         assert value == {"300001": {"main_net": 1.0, "main_pct": 2.0, "super_net": 0}}
 
     def test_bounded_complete_not_timed_out(self, monkeypatch):
-        import time as _t
 
         def _collect_done(box_, deadline):
             box_["value"] = {"300001": {"main_net": 1.0, "main_pct": 2.0, "super_net": 0}}
@@ -257,7 +297,7 @@ class TestCollect:
                             lambda: {"300001": {"main_net": 1e7, "main_pct": 8.5, "super_net": 0},
                                      "300999": {"main_net": 1e7, "main_pct": 8.5, "super_net": 0}})
         monkeypatch.setattr(me, "_last_ff_partial", True)
-        result = me.collect_market_extra(None, ["SZ300001"], include_zt=False)
+        me.collect_market_extra(None, ["SZ300001"], include_zt=False)
         assert "SZ300999" not in saved.get("fund_flow", {}), "部分结果不应保存非候选快照"
         assert "SZ300001" in saved.get("fund_flow", {})
 
@@ -368,9 +408,10 @@ class TestDbCacheIntradayTtl:
         assert got2["SZ300001"]["lianban"] == 2
 
     def test_intraday_ttl_excludes_old_entry(self, memory_db):
-        from scanner.database import get_market_extra_cache
         from datetime import timedelta
+
         from scanner.config import now_beijing
+        from scanner.database import get_market_extra_cache
         old = (now_beijing() - timedelta(seconds=600)).isoformat()
         memory_db.execute(
             "INSERT INTO market_extra_cache (symbol, date, data_type, payload_json, updated) "

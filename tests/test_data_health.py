@@ -41,10 +41,12 @@ def _seed(conn, rows):
 
 
 class TestCheckKlineHealth:
+    """主参照 THS（相对容差 0.5%）→ 回退新浪（绝对容差 0.011）。"""
+
     def test_no_mismatch(self, conn, monkeypatch):
         _seed(conn, [("SZ300607", "2026-08-18", 37.90, 0.99, 1),
                      ("SZ300012", "2026-08-18", 15.22, 0.0, 1)])
-        monkeypatch.setattr(dh, "_sina_close", lambda sym, d: 37.90 if sym == "SZ300607" else 15.22)
+        monkeypatch.setattr(dh, "_ths_close", lambda sym, d: 37.90 if sym == "SZ300607" else 15.22)
         r = dh.check_kline_health(conn, dates=["2026-08-18"], sample_n=10)
         assert r.checked == 2 and r.mismatched == 0 and r.source_ok
         assert not r.blocked
@@ -55,23 +57,49 @@ class TestCheckKlineHealth:
         for i in range(10):
             rows.append((f"SZ3000{i:02d}", "2026-08-18", 10.0 + i, 0.0, 1))
         _seed(conn, rows)
-        # 6/10 不符（60% ≥ 30%）
-        monkeypatch.setattr(dh, "_sina_close",
+        # 6/10 不符（60% ≥ 30%）：ref=99 vs db≈10~15，远超相对容差
+        monkeypatch.setattr(dh, "_ths_close",
                             lambda sym, d: 99.0 if int(sym[-2:]) < 6 else float(sym[-2:]) + 10)
         r = dh.check_kline_health(conn, dates=["2026-08-18"], sample_n=10)
         assert r.checked == 10 and r.mismatched == 6 and r.blocked
         assert len(r.samples) == 6
 
     def test_low_mismatch_not_blocked(self, conn, monkeypatch):
-        _seed(conn, [("SZ300607", "2026-08-18", 37.90, 0.99, 1)] * 1)
-        monkeypatch.setattr(dh, "_sina_close", lambda sym, d: 37.80)  # 差 0.1 元 = 不符
+        _seed(conn, [("SZ300607", "2026-08-18", 100.00, 0.99, 1)])
+        monkeypatch.setattr(dh, "_ths_close", lambda sym, d: 99.40)  # 差 0.6% > 相对容差 0.5% = 不符
         r = dh.check_kline_health(conn, dates=["2026-08-18"], sample_n=10)
         assert r.checked == 1 and r.mismatched == 1
         assert not r.blocked  # 样本 < MIN_CHECKED，只警告不阻断
 
+    def test_sina_fallback_used_when_ths_down(self, conn, monkeypatch):
+        """THS 不可达 → 回退新浪 qfq（绝对容差 1 分钱），验证不中断。"""
+        _seed(conn, [("SZ300607", "2026-08-18", 37.90, 0.99, 1)])
+        monkeypatch.setattr(dh, "_ths_close", lambda sym, d: None)
+        monkeypatch.setattr(dh, "_sina_close", lambda sym, d: 37.90)  # 一致
+        r = dh.check_kline_health(conn, dates=["2026-08-18"])
+        assert r.checked == 1 and r.mismatched == 0 and r.source_ok
+
+    def test_ths_relative_tolerance(self, conn, monkeypatch):
+        """THS forward 与雪球 qfq 偶有 ~0.36% 锚点微差（300012 案例）：
+        相对容差 0.5% 内不算不符——若按新浪式逐分对齐会误报。"""
+        _seed(conn, [("SZ300012", "2026-08-18", 100.00, 0.99, 1)])
+        monkeypatch.setattr(dh, "_ths_close", lambda sym, d: 99.70)  # 差 0.30%
+        r = dh.check_kline_health(conn, dates=["2026-08-18"])
+        assert r.checked == 1 and r.mismatched == 0
+
+    def test_ths_beyond_tolerance_mismatch(self, conn, monkeypatch):
+        _seed(conn, [("SZ300607", "2026-08-18", 100.00, 0.99, 1),
+                     ("SZ300608", "2026-08-18", 50.00, 0.99, 1)])
+        monkeypatch.setattr(dh, "_ths_close",
+                            lambda sym, d: 101.0 if sym.endswith("300607") else 49.5)
+        # 100→101 差 1%、50→49.5 差 1%，均超相对容差 0.5%
+        r = dh.check_kline_health(conn, dates=["2026-08-18"], sample_n=10)
+        assert r.checked == 2 and r.mismatched == 2
+
     def test_source_unavailable_fail_open(self, conn, monkeypatch):
         _seed(conn, [("SZ300607", "2026-08-18", 37.90, 0.99, 1)])
-        monkeypatch.setattr(dh, "_sina_close", lambda sym, d: None)  # 源不可达
+        monkeypatch.setattr(dh, "_ths_close", lambda sym, d: None)   # 主参照不可达
+        monkeypatch.setattr(dh, "_sina_close", lambda sym, d: None)  # 回退亦不可达
         r = dh.check_kline_health(conn, dates=["2026-08-18"])
         assert r.checked == 0 and not r.source_ok and not r.blocked
 
@@ -82,7 +110,7 @@ class TestCheckKlineHealth:
         _seed(conn, [("SZ300001", "2026-08-18", "abc", 0.0, 1),  # 非数值字符串脏行
                      ("SZ300002", "2026-08-18", None, 0.0, 1),   # NULL 脏行
                      ("SZ300003", "2026-08-18", 37.90, 0.0, 1)])  # 干净行
-        monkeypatch.setattr(dh, "_sina_close", lambda sym, d: 37.90)
+        monkeypatch.setattr(dh, "_ths_close", lambda sym, d: 37.90)
         r = dh.check_kline_health(conn, dates=["2026-08-18"], sample_n=10)
         assert r.checked == 1 and r.mismatched == 0  # 仅干净行参与统计
         assert r.source_ok and not r.blocked

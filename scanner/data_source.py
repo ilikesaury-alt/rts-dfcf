@@ -1,24 +1,25 @@
 """数据源适配层。
 
-抽象统一接口，支持雪球（主）+ AKShare（兜底）双数据源。
-当雪球反爬封禁或 make_session 失败时，自动降级到 AKShare，避免单点依赖。
+抽象统一接口，支持雪球（主）+ 同花顺官方 API（兜底）双数据源。
+当雪球反爬封禁或 make_session 失败时，自动降级到 THS，避免单点依赖。
 
-设计要点：
-- AKShare 作为可选依赖（lazy import），未安装时自动降级为仅雪球模式
+设计要点（2026-08-23 重构：兜底源 AKShare → THS 官方 API）：
+- THS 兜底仅需配置 HITHINK_FINANCE_API_KEY（无 Key 时自动降级为仅雪球模式）
 - adapter 输出格式与 api.py 1:1 对齐，下游无感知
-- 飙升榜/热搜榜无 AKShare 对应接口，返回空列表让熔断+缓存兜底
-- 符号格式由 adapter 内部转换（雪球 SZ300001 ↔ AKShare 300001）
+- 飙升榜/热搜榜无语义对齐接口，返回空列表让熔断+缓存兜底
+- 市值批量查询 THS 无字段，保留东财 push2delay 直连实现
+- 大盘指数兜底保留 akshare 东财 spot 为可选路径（未安装返回 None 干净降级）
 """
 import logging
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 import requests
 
 from scanner import api
 from scanner.config import BEIJING_TZ, DATA_SOURCE
-from scanner.models import KlineBar, make_kline_bar
+from scanner.models import KlineBar
 from scanner.net import EASTMONEY_HEADERS, EASTMONEY_UT_TOKEN
 from scanner.utils import to_float
 
@@ -130,123 +131,49 @@ def _ak_to_xq(code: str) -> str:
     return code
 
 
-class AkshareAdapter:
-    """AKShare 数据源适配器（兜底）。
+class ThsAdapter:
+    """同花顺官方 API 兜底适配器（2026-08-23 接入，替代 AKShare 双兜底链）。
 
-    AKShare 走东财/新浪公开接口，无 cookie 依赖，反爬强度低于雪球。
-    飙升榜/热搜榜无语义对齐接口，返回空列表让熔断+缓存兜底。
-    分钟数据不做兜底（字段差异大，intraday/opening_strength 已有 None 降级）。
+    - K线兜底：官方 prices/historical（forward qfq），替代原 akshare
+      东财 stock_zh_a_hist → 新浪 stock_zh_a_daily 双兜底（两个爬虫接口
+      均曾间歇性不可达；官方 REST 更稳且免 pandas 解析）
+    - 市值兜底：THS 无市值字段，保留东财 push2delay ulist 直连实现
+    - 大盘指数兜底：akshare 东财 spot 降为可选路径（未安装返回 None）
+    - 飙升榜/热搜榜无语义对齐接口，返回空列表让熔断+缓存兜底；
+      分时不做兜底（字段差异大，intraday/opening_strength 已有 None 降级）
+
+    可用性：配置了 HITHINK_FINANCE_API_KEY 即可用（不打网络探测）。
+    THS 软限流（实测 ≈3.8 req/s）对兜底场景可接受：K线补拉本就逐票串行
+    且上层有 KLINE_FETCH_DEADLINE 兜底。
     """
 
-    name = "akshare"
+    name = "ths"
 
     def __init__(self):
-        self._ak = None
-
-    def _get_ak(self):
-        if self._ak is None:
-            import akshare as ak  # lazy import
-            self._ak = ak
-        return self._ak
+        self._last_index_meta = (None, None, self.name)
 
     def is_available(self) -> bool:
-        try:
-            self._get_ak()
-            return True
-        except ImportError:
-            return False
-        except Exception:
-            return False
+        from scanner import ths_api
+
+        return bool(ths_api.get_api_key())
 
     def fetch_kline(self, symbol: str, days: int = 15) -> list[KlineBar] | None:
-        """东财 stock_zh_a_hist 失败/空时降级到新浪 stock_zh_a_daily。
+        from scanner import ths_api
 
-        东财 push2his 在本机间歇性不可达（连接被重置，2026-08-11 实测），
-        单靠东财兜底等于没有兜底；新浪接口稳定（3/3），且返回完整 OHLCV。
-        两份输出都统一走 make_kline_bar 契约，下游无感知。
-        """
-        ak = self._get_ak()
-        code = _xq_to_ak(symbol)
         try:
-            result = self._fetch_kline_em(ak, code, days)
+            result = ths_api.fetch_kline_bars(symbol, days)
             if result:
                 return result
-        except Exception as e:
-            logger.warning("AKShare 东财K线获取失败 %s: %s，降级到新浪", symbol, e)
-        try:
-            return self._fetch_kline_sina(ak, code, days)
-        except Exception as e:
-            logger.warning("AKShare 新浪K线获取失败 %s: %s", symbol, e)
-            return None
-
-    def _fetch_kline_em(self, ak, code: str, days: int) -> list[KlineBar] | None:
-        end = datetime.now(BEIJING_TZ)
-        # 多拉一倍天数确保足够交易日（剔除周末/节假日）
-        start = end - timedelta(days=days * 2)
-        df = ak.stock_zh_a_hist(
-            symbol=code, period="daily", adjust="qfq",
-            start_date=start.strftime("%Y%m%d"),
-            end_date=end.strftime("%Y%m%d"),
-        )
-        if df is None or df.empty:
-            return None
-        result = []
-        for _, row in df.iterrows():
-            date_str = str(row["日期"])[:10]
-            dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=BEIJING_TZ)
-            # 统一走 make_kline_bar 契约（数值强转 + close<=0/date 非法剔除），
-            # 与雪球 fetch_kline 输出 1:1 对齐，下游无感知。
-            bar = make_kline_bar({
-                "date": date_str,
-                "open": row["开盘"],
-                "high": row["最高"],
-                "low": row["最低"],
-                "close": row["收盘"],
-                "volume": row["成交量"],
-                "percent": row["涨跌幅"],
-            })
-            if bar is not None:
-                bar["timestamp"] = int(dt.timestamp() * 1000)
-                result.append(bar)
-        return result if result else None
-
-    def _fetch_kline_sina(self, ak, code: str, days: int) -> list[KlineBar] | None:
-        """新浪日线兜底：stock_zh_a_daily 返回全量 qfq，无涨跌幅列 → 由收盘价推算。"""
-        market = "sh" if code.startswith("6") else ("bj" if code.startswith(("8", "4")) else "sz")
-        df = ak.stock_zh_a_daily(symbol=f"{market}{code}", adjust="qfq")
-        if df is None or df.empty:
-            return None
-        df = df.tail(days * 2)  # 多拉一倍，后续补拉/合并时窗口够用
-        result = []
-        prev_close: float | None = None
-        for _, row in df.iterrows():
-            date_str = str(row["date"])[:10]
-            dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=BEIJING_TZ)
-            close = _as_float(row["close"])
-            percent = 0.0
-            if close is not None and prev_close:
-                percent = (close / prev_close - 1.0) * 100.0
-            bar = make_kline_bar({
-                "date": date_str,
-                "open": row["open"],
-                "high": row["high"],
-                "low": row["low"],
-                "close": close if close is not None else row["close"],
-                "volume": row["volume"],
-                "percent": percent,
-            })
-            if bar is not None:
-                bar["timestamp"] = int(dt.timestamp() * 1000)
-                result.append(bar)
-                prev_close = close if close is not None else bar["close"]
-        return result if result else None
+        except Exception as e:  # noqa: BLE001
+            logger.warning("THS K线获取失败 %s: %s", symbol, e)
+        return None
 
     def fetch_biaosheng(self, size: int = 100) -> list[dict]:
-        logger.warning("AKShare 无飙升榜对应接口，返回空列表（依赖雪球熔断缓存兜底）")
+        logger.warning("THS 公开 API 无雪球飙升榜语义对齐接口，返回空列表（依赖雪球熔断缓存兜底）")
         return []
 
     def fetch_hot_list(self, size: int = 100) -> list[dict]:
-        logger.warning("AKShare 无热搜榜对应接口，返回空列表")
+        logger.warning("THS 热股榜与雪球热搜口径不同，不兜底（2026-08-21 上游不对冲决策），返回空列表")
         return []
 
     def fetch_market_caps_batch(self, symbols: list[str]) -> dict[str, dict]:
@@ -300,36 +227,46 @@ class AkshareAdapter:
                 }
             return result
         except Exception as e:
-            logger.warning("AKShare 市值批量查询失败: %s", e)
+            logger.warning("东财 push2delay 市值批量查询失败: %s", e)
             return {}
 
     def fetch_market_index(self) -> float | None:
+        """大盘指数兜底：akshare 东财 spot（可选路径，未安装返回 None 干净降级）。
+
+        THS 公开 API 暂无与雪球口径对齐的指数 spot 接口；akshare 未安装时
+        本兜底静默失效——主源雪球 + data_health 东财对账仍覆盖该维度。
+        """
         try:
-            ak = self._get_ak()
+            import akshare as ak  # lazy import，可选依赖
+        except Exception:  # noqa: BLE001  未安装 → 兜底失效，干净降级
+            logger.warning("akshare 未安装，THS 适配器的大盘指数兜底不可用")
+            self._last_index_meta = (None, None, "none")
+            return None
+        try:
             df = ak.stock_zh_index_spot_em()
             if df is None or df.empty:
-                self._last_index_meta = (None, None, self.name)
+                self._last_index_meta = (None, None, "akshare")
                 return None
             # 过滤创业板指 399006
             row = df[df["代码"] == "399006"]
             if row.empty:
-                self._last_index_meta = (None, None, self.name)
+                self._last_index_meta = (None, None, "akshare")
                 return None
             pct = _as_float(row.iloc[0].get("涨跌幅")) or 0
             # 东财 spot 恒为当日实况 → bar 日期即今日（same-day 语义，区别于雪球 kline 旧 bar）
             today = datetime.now(BEIJING_TZ).date().isoformat()
-            self._last_index_meta = (pct, today, self.name)
+            self._last_index_meta = (pct, today, "akshare")
             return pct
         except Exception as e:
             logger.warning("AKShare 大盘指数获取失败: %s", e)
-            self._last_index_meta = (None, None, self.name)
+            self._last_index_meta = (None, None, "akshare")
             return None
 
     def get_market_index_meta(self) -> tuple[float | None, str | None, str]:
         return getattr(self, "_last_index_meta", (None, None, self.name))
 
     def fetch_minute(self, symbol: str) -> list[dict] | None:
-        logger.warning("AKShare 暂无分时数据兜底（字段差异大），%s 分时信号整体降级", symbol)
+        logger.warning("THS 公开 API 无分钟K/tick，%s 分时信号整体降级", symbol)
         return None
 
 
@@ -432,9 +369,9 @@ def get_adapter() -> DataSourceAdapter:
     """获取数据源适配器单例。
 
     根据 config.DATA_SOURCE 决定模式：
-    - "auto"（默认）：雪球优先 + AKShare 兜底
+    - "auto"（默认）：雪球优先 + THS 兜底
     - "xueqiu"：仅雪球（向后兼容）
-    - "akshare"：仅 AKShare（调试/雪球全挂时强制）
+    - "akshare"/"ths"：仅 THS 兜底源（调试/雪球全挂时强制；旧值 "akshare" 保留兼容）
 
     双检锁：is_available() 走真实网络探测（秒级），多线程同时首次调用会重复
     探测甚至构造多个适配器——锁保证只初始化一次（审查卫生项，原判「良性竞态」）。
@@ -455,21 +392,21 @@ def _build_adapter() -> DataSourceAdapter:
     mode = DATA_SOURCE.lower()
     if mode == "xueqiu":
         return XueqiuAdapter()
-    if mode == "akshare":
-        return AkshareAdapter()
-    # auto：雪球优先 + AKShare 兜底
+    if mode in ("akshare", "ths"):
+        return ThsAdapter()
+    # auto：雪球优先 + THS 兜底
     xq = XueqiuAdapter()
     if xq.is_available():
-        ak = AkshareAdapter()
-        if ak.is_available():
-            return FallbackAdapter(xq, ak)
-        logger.info("AKShare 不可用，仅使用雪球")
+        ths = ThsAdapter()
+        if ths.is_available():
+            return FallbackAdapter(xq, ths)
+        logger.info("THS API Key 未配置，仅使用雪球")
         return xq
-    logger.warning("雪球不可用，尝试 AKShare")
-    ak = AkshareAdapter()
-    if ak.is_available():
-        return ak
-    raise RuntimeError("无可用数据源（雪球和 AKShare 均不可用）")
+    logger.warning("雪球不可用，尝试 THS 兜底")
+    ths = ThsAdapter()
+    if ths.is_available():
+        return ths
+    raise RuntimeError("无可用数据源（雪球不可用且 THS_API_KEY 未配置）")
 
 
 def reset_adapter():

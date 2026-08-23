@@ -1,14 +1,15 @@
 """行情增强数据源（涨停池 + 个股资金流）。
 
-数据源（均东财）：
-- 涨停池   akshare `stock_zt_pool_em(date)`            全市场 1 次请求/轮
+数据源：
+- 涨停池   主源同花顺官方 API（ths_api.py，2026-08-23 接入）；AKShare
+           `stock_zt_pool_em(date)` 降为兜底。全市场 1 次请求/轮
 - 资金流   自实现直连东财 clist API（push2delay.eastmoney.com）全市场分页拉取，
            主因 akshare `stock_individual_fund_flow_rank` 硬编码 host
            push2.eastmoney.com 在本机网络直连/代理均不可达；push2delay 提供相同
            API 且可达（数据可能延迟约15分钟）。host 可用 RTS_FUND_FLOW_HOST 覆盖。
 
 与 concept.py 相同的可靠性模式：
-- lazy import akshare（仅涨停池依赖；未安装时自动禁用，返回空）
+- lazy import akshare（仅涨停池兜底依赖；未安装时自动禁用，返回空）
 - 进程内 TTL 缓存（按交易日键、线程安全、带上限淘汰）→ DB 缓存（当日 +
   盘中新鲜度）→ 拉取落库
 - 拉取带限时/分页 deadline，失败缓存空结果短退避，绝不阻塞扫描循环
@@ -107,15 +108,35 @@ def _cache_put_all(cache: dict, data: dict, key: str, now: float | None = None,
 
 
 
-def fetch_zt_pool(today: str | None = None) -> dict[str, dict]:
-    """拉取今日涨停池（东财），返回 {6位代码: {lianban, zt_stat, fengban_amt, zhaban, industry}}。
+def _fetch_zt_pool_ths(date_key: str) -> dict[str, dict] | None:
+    """THS 官方涨停池（2026-08-23 主源）；未配置 Key / 接口失败返回 None → AKShare 兜底。"""
+    from scanner import ths_api  # 惰性导入避免无 Key 场景的模块级开销
 
+    if not ths_api.get_api_key():
+        return None
+    date_ms = ths_api._date_to_ms(date_key)
+    return ths_api.fetch_limit_up_pool(date_ms=date_ms, include_break=True)
+
+
+def fetch_zt_pool(today: str | None = None) -> dict[str, dict]:
+    """拉取今日涨停池，返回 {6位代码: {lianban, zt_stat, fengban_amt, zhaban, industry}}。
+
+    主源：同花顺官方 API（字段更富：封单额/涨停原因/开板次数；免 AKShare 的
+    _bounded_call 兜底）。THS 未配置 Key / 接口失败 → AKShare 兜底（原路径）。
     非交易日接口返回空表 → 空 dict。失败打印告警、缓存空结果短退避并返回 {}（软降级）。
     """
     key = today or _today_key()
     cached = _cache_hit(_zt_cache, ZT_POOL_TTL_SEC, key)
     if cached is not None:
         return cached
+    ths_result = None
+    try:
+        ths_result = _fetch_zt_pool_ths(key)
+    except Exception as e:  # noqa: BLE001  THS 层异常同样降级 AKShare
+        logger.warning("THS 涨停池异常，降级 AKShare: %s", e)
+    if ths_result is not None:
+        _cache_put_all(_zt_cache, ths_result, key)
+        return ths_result
     ak = _get_ak()
     if ak is None:
         return {}

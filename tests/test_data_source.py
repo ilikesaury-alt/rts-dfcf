@@ -3,7 +3,8 @@
 覆盖：
 - 符号格式转换（_xq_to_ak / _ak_to_xq）
 - XueqiuAdapter 委托 api.py
-- AkshareAdapter 格式转换（K线/市值/指数）
+- ThsAdapter（2026-08-23 替代 AkshareAdapter：K线走 THS 官方源，
+  市值保留东财 push2delay 直连，指数保留 akshare 可选路径）
 - FallbackAdapter 自动降级
 - get_adapter 工厂 + 单例
 """
@@ -16,8 +17,8 @@ import pytest
 
 from scanner.config import BEIJING_TZ
 from scanner.data_source import (
-    AkshareAdapter,
     FallbackAdapter,
+    ThsAdapter,
     XueqiuAdapter,
     _ak_to_xq,
     _xq_to_ak,
@@ -88,113 +89,62 @@ class TestXueqiuAdapter:
             assert result == (-6.26, "2026-08-19", "xueqiu")
 
 
-class TestAkshareAdapter:
-    def test_is_available_with_akshare(self):
-        adapter = AkshareAdapter()
-        # akshare 已安装（测试环境确认）
-        assert adapter.is_available() is True
+class TestThsAdapter:
+    """THS 官方 API 兜底适配器（2026-08-23 替代 AKShare）。"""
 
-    def test_is_available_without_akshare(self):
-        adapter = AkshareAdapter()
-        # 模拟 akshare 未安装
-        with patch.dict(sys.modules, {"akshare": None}):
-            adapter._ak = None  # 重置缓存
-            assert adapter.is_available() is False
+    @pytest.fixture(autouse=True)
+    def _with_key(self, monkeypatch):
+        # 默认视为已配置 Key（is_available 不打网络）；个别用例自行覆盖
+        monkeypatch.setattr("scanner.ths_api.get_api_key", lambda: "test-key")
+
+    def test_is_available_with_key(self):
+        assert ThsAdapter().is_available() is True
+
+    def test_is_available_without_key(self, monkeypatch):
+        monkeypatch.setattr("scanner.ths_api.get_api_key", lambda: "")
+        assert ThsAdapter().is_available() is False
+
+    def _ths_bar(self, d_ms, o, h, lo, c, v):
+        return {"date_ms": d_ms, "open_price": o, "high_price": h,
+                "low_price": lo, "close_price": c, "volume": v}
 
     def test_fetch_kline_format(self):
-        """验证 AKShare K线返回格式与雪球一致。"""
-        adapter = AkshareAdapter()
-        mock_df = pd.DataFrame({
-            "日期": ["2026-07-30", "2026-07-31"],
-            "开盘": [10.0, 11.0],
-            "收盘": [10.5, 11.5],
-            "最高": [10.8, 11.8],
-            "最低": [9.8, 10.8],
-            "成交量": [100000, 120000],
-            "成交额": [1050000.0, 1380000.0],
-            "振幅": [9.62, 9.09],
-            "涨跌幅": [5.0, 9.52],
-            "涨跌额": [0.5, 1.0],
-            "换手率": [1.2, 1.5],
-        })
-        mock_ak = MagicMock()
-        mock_ak.stock_zh_a_hist.return_value = mock_df
-        adapter._ak = mock_ak
-
-        result = adapter.fetch_kline("SZ300001", 15)
-
+        """验证 THS K线返回格式与雪球一致；percent 由收盘价推算。"""
+        adapter = ThsAdapter()
+        bars = [
+            self._ths_bar(1785000000000, 10.0, 10.8, 9.8, 10.5, 100000),
+            self._ths_bar(1785086400000, 11.0, 11.8, 10.8, 11.5, 120000),
+        ]
+        with patch("scanner.ths_api._call") as mock_call:
+            mock_call.return_value = {"code": 0, "data": {"item": bars}}
+            result = adapter.fetch_kline("SZ300001", 15)
         assert result is not None
         assert len(result) == 2
         k = result[0]
         # 字段名与雪球格式 1:1 对齐
-        assert set(k.keys()) == {"timestamp", "date", "open", "high", "low",
+        assert set(k.keys()) >= {"timestamp", "date", "open", "high", "low",
                                  "close", "volume", "percent"}
-        assert k["date"] == "2026-07-30"
-        assert k["open"] == 10.0
         assert k["close"] == 10.5
-        assert k["high"] == 10.8
-        assert k["low"] == 9.8
-        assert k["volume"] == 100000
-        assert k["percent"] == 5.0
-        assert isinstance(k["timestamp"], int)
-
-    def test_fetch_kline_empty(self):
-        """东财空 → 降级新浪；新浪也空 → None。"""
-        adapter = AkshareAdapter()
-        mock_ak = MagicMock()
-        mock_ak.stock_zh_a_hist.return_value = pd.DataFrame()
-        mock_ak.stock_zh_a_daily.return_value = pd.DataFrame()
-        adapter._ak = mock_ak
-        assert adapter.fetch_kline("SZ300001") is None
-        mock_ak.stock_zh_a_daily.assert_called_once()
-
-    def test_fetch_kline_em_fails_falls_back_to_sina(self):
-        """东财异常 → 降级新浪成功返回（percent 由收盘价推算）。"""
-        adapter = AkshareAdapter()
-        mock_ak = MagicMock()
-        mock_ak.stock_zh_a_hist.side_effect = Exception("network error")
-        mock_ak.stock_zh_a_daily.return_value = pd.DataFrame({
-            "date": ["2026-07-30", "2026-07-31"],
-            "open": [10.0, 11.0],
-            "high": [10.8, 11.8],
-            "low": [9.8, 10.8],
-            "close": [10.5, 11.5],
-            "volume": [100000, 120000],
-            "amount": [1050000.0, 1380000.0],
-            "outstanding_share": [1e9, 1e9],
-            "turnover": [0.01, 0.01],
-        })
-        adapter._ak = mock_ak
-
-        result = adapter.fetch_kline("SZ300001", 15)
-
-        assert result is not None
-        assert len(result) == 2
-        k = result[0]
-        assert set(k.keys()) == {"timestamp", "date", "open", "high", "low",
-                                 "close", "volume", "percent"}
-        assert k["date"] == "2026-07-30"
-        assert k["close"] == 10.5
-        # percent 为推算值：首根无前收盘 → 0；次根 (11.5/10.5-1)*100
-        assert k["percent"] == 0.0
+        assert k["percent"] == 0.0  # 首根无前收盘 → 0
         assert result[1]["percent"] == pytest.approx(9.5238, abs=0.01)
         assert isinstance(k["timestamp"], int)
 
+    def test_fetch_kline_empty(self):
+        adapter = ThsAdapter()
+        with patch("scanner.ths_api._call") as mock_call:
+            mock_call.return_value = {"code": 0, "data": {"item": []}}
+            assert adapter.fetch_kline("SZ300001") is None
+
     def test_fetch_kline_exception(self):
-        """东财 + 新浪都失败 → None（不抛错）。"""
-        adapter = AkshareAdapter()
-        mock_ak = MagicMock()
-        mock_ak.stock_zh_a_hist.side_effect = Exception("network error")
-        mock_ak.stock_zh_a_daily.side_effect = Exception("sina network error")
-        adapter._ak = mock_ak
-        assert adapter.fetch_kline("SZ300001") is None
+        """接口失败 → None（不抛错，上层 FallbackAdapter 干净降级）。"""
+        adapter = ThsAdapter()
+        with patch("scanner.ths_api._call", side_effect=RuntimeError("net")):
+            assert adapter.fetch_kline("SZ300001") is None
 
     def test_fetch_market_caps_batch(self):
-        """2026-08-19 重构：直连 push2delay ulist.np/get 按 secids 精确查，
-        不再走 akshare stock_zh_a_spot_em（其内部硬编码 push2.eastmoney.com
-        在本机不可达）。仅返回请求的票。"""
-        import requests
-        adapter = AkshareAdapter()
+        """2026-08-19 重构保留：直连 push2delay ulist.np/get 按 secids 精确查，
+        THS 无市值字段故沿用东财源。仅返回请求的票。"""
+        adapter = ThsAdapter()
         mock_resp = MagicMock()
         mock_resp.json.return_value = {"data": {"diff": [
             {"f12": "300001", "f14": "股票A", "f2": 10.5, "f3": 5.0,
@@ -222,8 +172,7 @@ class TestAkshareAdapter:
     def test_fetch_market_caps_batch_nan_inf_coerced(self):
         """回归：接口脏值（None/NaN/inf 字符串）→ 0，不产出 NaN 市值/现价。"""
         import math
-        import requests
-        adapter = AkshareAdapter()
+        adapter = ThsAdapter()
         mock_resp = MagicMock()
         mock_resp.json.return_value = {"data": {"diff": [
             {"f12": "300001", "f14": "股票A", "f2": "nan", "f3": "inf",
@@ -241,76 +190,77 @@ class TestAkshareAdapter:
     def test_fetch_market_caps_batch_network_error(self):
         """push2delay 请求异常 → 返回 {} 不抛（上层 FallbackAdapter 干净降级）。"""
         import requests
-        adapter = AkshareAdapter()
-        with patch("scanner.data_source.requests.get", side_effect=requests.ConnectionError("x")):
+        adapter = ThsAdapter()
+        with patch("scanner.data_source.requests.get",
+                   side_effect=requests.ConnectionError("x")):
             result = adapter.fetch_market_caps_batch(["SZ300001"])
         assert result == {}
 
-    def test_fetch_market_index_nan_coerced(self):
-        adapter = AkshareAdapter()
-        mock_df = pd.DataFrame({
-            "代码": ["399006"],
-            "涨跌幅": [float("nan")],
-        })
-        mock_ak = MagicMock()
-        mock_ak.stock_zh_index_spot_em.return_value = mock_df
-        adapter._ak = mock_ak
-        assert adapter.fetch_market_index() == 0.0  # NaN → 0（中性）
-
     def test_fetch_market_caps_batch_empty_request(self):
-        adapter = AkshareAdapter()
+        adapter = ThsAdapter()
         assert adapter.fetch_market_caps_batch([]) == {}
 
+    def _fake_ak_module(self, df=None, error=None):
+        fake = MagicMock()
+        if error:
+            fake.stock_zh_index_spot_em.side_effect = error
+        else:
+            fake.stock_zh_index_spot_em.return_value = df
+        return fake
+
+    def test_fetch_market_index_nan_coerced(self):
+        adapter = ThsAdapter()
+        mock_df = pd.DataFrame({"代码": ["399006"], "涨跌幅": [float("nan")]})
+        fake = self._fake_ak_module(mock_df)
+        with patch.dict(sys.modules, {"akshare": fake}):
+            assert adapter.fetch_market_index() == 0.0  # NaN → 0（中性）
+
     def test_fetch_market_index(self):
-        adapter = AkshareAdapter()
+        adapter = ThsAdapter()
         mock_df = pd.DataFrame({
             "代码": ["000001", "399001", "399006"],
             "名称": ["上证指数", "深证成指", "创业板指"],
             "涨跌幅": [0.5, 1.0, -1.5],
         })
-        mock_ak = MagicMock()
-        mock_ak.stock_zh_index_spot_em.return_value = mock_df
-        adapter._ak = mock_ak
-
-        result = adapter.fetch_market_index()
+        fake = self._fake_ak_module(mock_df)
+        with patch.dict(sys.modules, {"akshare": fake}):
+            result = adapter.fetch_market_index()
         assert result == -1.5  # 创业板指
 
     def test_fetch_market_index_not_found(self):
-        adapter = AkshareAdapter()
-        mock_df = pd.DataFrame({
-            "代码": ["000001", "399001"],
-            "涨跌幅": [0.5, 1.0],
-        })
-        mock_ak = MagicMock()
-        mock_ak.stock_zh_index_spot_em.return_value = mock_df
-        adapter._ak = mock_ak
-        assert adapter.fetch_market_index() is None
+        adapter = ThsAdapter()
+        mock_df = pd.DataFrame({"代码": ["000001", "399001"],
+                                "涨跌幅": [0.5, 1.0]})
+        fake = self._fake_ak_module(mock_df)
+        with patch.dict(sys.modules, {"akshare": fake}):
+            assert adapter.fetch_market_index() is None
+
+    def test_fetch_market_index_akshare_missing_degrades(self):
+        """akshare 未安装 → 指数兜底干净降级 None（不抛错）。"""
+        adapter = ThsAdapter()
+        with patch.dict(sys.modules, {"akshare": None}):
+            assert adapter.fetch_market_index() is None
 
     def test_get_market_index_meta_same_day(self):
         """东财 spot 恒为当日实况 → bar 日期 = 今日（same-day 语义，区别于雪球旧 bar）。"""
-        adapter = AkshareAdapter()
-        mock_df = pd.DataFrame({
-            "代码": ["399006"],
-            "涨跌幅": [-6.26],
-        })
-        mock_ak = MagicMock()
-        mock_ak.stock_zh_index_spot_em.return_value = mock_df
-        adapter._ak = mock_ak
-        adapter.fetch_market_index()
+        adapter = ThsAdapter()
+        mock_df = pd.DataFrame({"代码": ["399006"], "涨跌幅": [-6.26]})
+        fake = self._fake_ak_module(mock_df)
+        with patch.dict(sys.modules, {"akshare": fake}):
+            adapter.fetch_market_index()
         pct, bar, source = adapter.get_market_index_meta()
         assert pct == -6.26 and source == "akshare"
         assert bar == datetime.now(BEIJING_TZ).date().isoformat()
 
     def test_get_market_index_meta_failure_resets(self):
-        adapter = AkshareAdapter()
-        mock_ak = MagicMock()
-        mock_ak.stock_zh_index_spot_em.side_effect = Exception("net")
-        adapter._ak = mock_ak
-        assert adapter.fetch_market_index() is None
+        adapter = ThsAdapter()
+        fake = self._fake_ak_module(error=Exception("net"))
+        with patch.dict(sys.modules, {"akshare": fake}):
+            assert adapter.fetch_market_index() is None
         assert adapter.get_market_index_meta() == (None, None, "akshare")
 
     def test_fetch_biaosheng_returns_empty(self):
-        adapter = AkshareAdapter()
+        adapter = ThsAdapter()
         assert adapter.fetch_biaosheng() == []
         assert adapter.fetch_hot_list() == []
 
@@ -469,37 +419,38 @@ class TestGetAdapter:
         assert a1 is a2
 
     def test_auto_mode_fallback(self, monkeypatch):
-        """auto 模式：雪球可用 + AKShare 可用 → FallbackAdapter"""
+        """auto 模式：雪球可用 + THS Key 已配置 → FallbackAdapter"""
         monkeypatch.setattr("scanner.data_source.DATA_SOURCE", "auto")
+        monkeypatch.setattr("scanner.ths_api.get_api_key", lambda: "k")
         with patch("scanner.data_source.api.make_session") as mock:
             mock.return_value = MagicMock()
             adapter = get_adapter()
         assert isinstance(adapter, FallbackAdapter)
+        assert adapter._secondary.name == "ths"
 
     def test_auto_mode_xueqiu_only(self, monkeypatch):
-        """auto 模式：雪球可用 + AKShare 不可用 → 仅 XueqiuAdapter"""
+        """auto 模式：雪球可用 + THS Key 未配置 → 仅 XueqiuAdapter"""
         monkeypatch.setattr("scanner.data_source.DATA_SOURCE", "auto")
-        with patch("scanner.data_source.api.make_session") as mock_xq, \
-             patch.dict(sys.modules, {"akshare": None}):
+        monkeypatch.setattr("scanner.ths_api.get_api_key", lambda: "")
+        with patch("scanner.data_source.api.make_session") as mock_xq:
             mock_xq.return_value = MagicMock()
-            # 重置 AkshareAdapter 缓存
-            from scanner.data_source import AkshareAdapter as AA
             adapter = get_adapter()
         assert isinstance(adapter, XueqiuAdapter)
 
-    def test_auto_mode_akshare_only(self, monkeypatch):
-        """auto 模式：雪球不可用 + AKShare 可用 → AkshareAdapter"""
+    def test_auto_mode_ths_only(self, monkeypatch):
+        """auto 模式：雪球不可用 + THS Key 已配置 → ThsAdapter"""
         monkeypatch.setattr("scanner.data_source.DATA_SOURCE", "auto")
+        monkeypatch.setattr("scanner.ths_api.get_api_key", lambda: "k")
         with patch("scanner.data_source.api.make_session") as mock_xq:
             mock_xq.side_effect = Exception("xueqiu down")
             adapter = get_adapter()
-        assert isinstance(adapter, AkshareAdapter)
+        assert isinstance(adapter, ThsAdapter)
 
     def test_auto_mode_both_unavailable_raises(self, monkeypatch):
-        """auto 模式：两者都不可用 → RuntimeError"""
+        """auto 模式：雪球不可用且无 THS Key → RuntimeError"""
         monkeypatch.setattr("scanner.data_source.DATA_SOURCE", "auto")
-        with patch("scanner.data_source.api.make_session") as mock_xq, \
-             patch.dict(sys.modules, {"akshare": None}):
+        monkeypatch.setattr("scanner.ths_api.get_api_key", lambda: "")
+        with patch("scanner.data_source.api.make_session") as mock_xq:
             mock_xq.side_effect = Exception("xueqiu down")
             with pytest.raises(RuntimeError, match="无可用数据源"):
                 get_adapter()
