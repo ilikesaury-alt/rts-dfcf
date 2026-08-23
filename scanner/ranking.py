@@ -411,28 +411,21 @@ def build_breakout_kline_map(conn, entries: list[dict]) -> dict[str, list[tuple[
     return result
 
 
-def _is_breakout_setup(entry: dict, conn=None, accum: float | None = None,
-                       accum_map: dict | None = None,
-                       klines: list[tuple[str, float, float, float]] | None = None) -> bool:
-    """蓄势突破画像（⚡ 观察标记）：新面孔/首推 + 横盘缩量回调位 + MA 多头。
+def _breakout_structure_ok(entry: dict, conn=None, accum: float | None = None,
+                           accum_map: dict | None = None,
+                           klines: list[tuple[str, float, float, float]] | None = None) -> bool:
+    """蓄势结构共同条件（⚡ 与 ⚡R 变体共用，2026-08-22 自 _is_breakout_setup 抽出单源）：
 
-    条件（阈值见 config BREAKOUT_*，校准于涨停复盘 A 组中位数附近）：
-      1. 类别 new_face/known_new_face，或首推（dims.first_today_bonus>0）——
-         涨停组 65% 为新面孔、首推占 61%；
       2. 前5日累计（含推荐日，复用 🎯 的 accum 口径链）≤ BREAKOUT_ACCUM_MAX——
          涨停前是横盘蓄势而非连涨加速；缺失不标（观察标记 fail-closed）；
       3. T-1 缩量：T-1 量 / 前5日均量 ≤ BREAKOUT_T1_VOL_RATIO；
       4. T-1 收盘距20日高点回撤 ∈ [BREAKOUT_PULLBACK_MIN, BREAKOUT_PULLBACK_MAX]；
       5. MA5>MA10>MA20（截至 T-1 收盘）。
 
+    阈值见 config BREAKOUT_*（校准于涨停复盘 A 组中位数附近）。类别门由各画像自判。
     klines：build_breakout_kline_map 的单票切片（已滤 date<推荐日）；None 时退化为
     单票查询（conn 缺失则不标）。数据不足（<21 根）任一条件拿不到 → 不标。
     """
-    cat = entry["category"]
-    d = _entry_dims(entry)
-    first_push = bool(d.get("first_today_bonus"))
-    if cat not in ("new_face", "known_new_face") and not first_push:
-        return False
     if accum_map is not None:
         accum = accum_map.get(entry.get("symbol"))
     elif accum is None:
@@ -480,6 +473,42 @@ def _is_breakout_setup(entry: dict, conn=None, accum: float | None = None,
     ma10 = sum(closes[-10:]) / 10.0
     ma20 = sum(closes[-20:]) / 20.0
     return ma5 > ma10 > ma20
+
+
+def _is_breakout_setup(entry: dict, conn=None, accum: float | None = None,
+                       accum_map: dict | None = None,
+                       klines: list[tuple[str, float, float, float]] | None = None) -> bool:
+    """蓄势突破画像（⚡ 观察标记）：新面孔/首推 + 横盘缩量回调位 + MA 多头。
+
+    条件：1. 类别门 new_face/known_new_face，或首推（dims.first_today_bonus>0）——
+    涨停组 65% 为新面孔、首推占 61%；2~5 共用 _breakout_structure_ok。
+    """
+    d = _entry_dims(entry)
+    if entry["category"] not in ("new_face", "known_new_face") \
+            and not bool(d.get("first_today_bonus")):
+        return False
+    return _breakout_structure_ok(entry, conn, accum=accum,
+                                  accum_map=accum_map, klines=klines)
+
+
+def _is_relist_breakout_setup(entry: dict, conn=None, accum: float | None = None,
+                              accum_map: dict | None = None,
+                              klines: list[tuple[str, float, float, float]] | None = None) -> bool:
+    """重上榜蓄势突破观察画像（⚡R 观察标记）：非首推 short_term + 横盘缩量回调位 + MA 多头。
+
+    来源：2026-08-21 肯特股份案例（长期掉榜后重新上榜的 short_term，推荐日 +20% 涨停）
+    ——命中原 ⚡ 画像条件 2~5 全部，仅被类别门（只认 new_face/kNF/首推）排除，即 AGENTS.md
+    记录的已知局限正主。本变体把类别门换成「short_term 且**非**首推」：首推票已由 ⚡
+    覆盖，两个标记按构造不相交、不会重复打点。结构条件 2~5 复用同一
+    _breakout_structure_ok（同阈值同 fail-closed），保证两画像口径不漂移。
+    纯展示层观察标记：不改排序/评分/落库；按开放假设清单 SOP 先积累样本，达标后经
+    nextday_attribution 复盘再评估是否升级为排序因子或放宽更多类别（momentum 等）。
+    """
+    d = _entry_dims(entry)
+    if entry.get("category") != "short_term" or d.get("first_today_bonus"):
+        return False
+    return _breakout_structure_ok(entry, conn, accum=accum,
+                                  accum_map=accum_map, klines=klines)
 
 
 # ── 排序组合层（2026-08-20 收敛单源）──

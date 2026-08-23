@@ -22,6 +22,7 @@ RANKING_FUNCS = [
     "_in_nextday_sweet_band",
     "_is_breakout_setup",
     "_is_nextday_marked",
+    "_is_relist_breakout_setup",
     "_nextday_entry_accum",
     "_nextday_entry_percent",
     "build_breakout_kline_map",

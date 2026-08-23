@@ -5,7 +5,8 @@
 """
 import sqlite3
 
-from scanner.ranking import _is_breakout_setup, build_breakout_kline_map
+from scanner.ranking import (_is_breakout_setup, _is_relist_breakout_setup,
+                             build_breakout_kline_map)
 
 
 def _mk_db():
@@ -116,6 +117,72 @@ class TestIsBreakoutSetup:
             bars.append((f"2026-08-{i + 1:02d}", close * 1.01, close,
                          max(400_000.0, 2_000_000.0 * 0.93 ** i)))
         assert _is_breakout_setup(_entry(), accum=2.0, klines=bars) is False
+
+
+class TestIsRelistBreakoutSetup:
+    """⚡R 重上榜蓄势观察：非首推 short_term + 共用结构条件（肯特股份 2026-08-21 案例）。
+
+    与 ⚡ 的唯一差异是类别门；结构条件必须与 _is_breakout_setup 同源同结果，
+    防两画像口径漂移。
+    """
+
+    def test_positive_short_term_not_first_push(self):
+        # 肯特型：short_term 且非首推（首推门不触发）→ 结构条件全过 → 标
+        assert _is_relist_breakout_setup(
+            _entry(category="short_term"), accum=2.0, klines=_bars()) is True
+
+    def test_negative_first_push_short_term_belongs_to_bo(self):
+        # 首推 short_term 归 ⚡ 管辖（首推门已覆盖），⚡R 不重复打点（按构造不相交）
+        e = _entry(category="short_term", first_push=True)
+        assert _is_relist_breakout_setup(e, accum=2.0, klines=_bars()) is False
+        assert _is_breakout_setup(e, accum=2.0, klines=_bars()) is True
+
+    def test_negative_other_categories(self):
+        # momentum 掉榜重上暂不纳入（样本达标后经复盘再评估放宽）；
+        # new_face/kNF 由 ⚡ 覆盖
+        for cat in ("momentum", "new_face", "known_new_face", "rebound", "comeback"):
+            assert _is_relist_breakout_setup(
+                _entry(category=cat), accum=2.0, klines=_bars()) is False, cat
+
+    def test_structure_parity_with_breakout_setup(self):
+        """同一 K 线/累计下，除类别门外判定结果必须完全一致（单源结构共用）。"""
+        bars = _bars()
+        cases = [(2.0, True), (8.0, False), (None, False)]
+        for accum, expected in cases:
+            bo = _is_breakout_setup(_entry(category="new_face"),
+                                    accum=accum, klines=bars)
+            relist = _is_relist_breakout_setup(_entry(category="short_term"),
+                                               accum=accum, klines=bars)
+            assert bo is relist is expected, accum
+
+    def test_structure_shared_fail_closed(self):
+        # 缩量/MA/回撤任一破坏 → 与 ⚡ 同拒（共用 _breakout_structure_ok）
+        assert _is_relist_breakout_setup(
+            _entry(category="short_term"), accum=2.0,
+            klines=_bars(shrink_vol=False)) is False
+        assert _is_relist_breakout_setup(
+            _entry(category="short_term"), accum=2.0,
+            klines=_bars(ma_bull=False)) is False
+        assert _is_relist_breakout_setup(
+            _entry(category="short_term"), accum=2.0,
+            klines=_bars(n=15)) is False
+
+    def test_single_symbol_conn_fallback(self):
+        conn = _mk_db()
+        _insert(conn, "SZ300001", _bars())
+        assert _is_relist_breakout_setup(
+            _entry(category="short_term"), conn=conn, accum=2.0) is True
+
+    def test_not_in_sort_tier(self):
+        """⚡R 是观察标记：不得影响档位排序。"""
+        from scanner.ranking import _entry_tier
+        conn = _mk_db()
+        _insert(conn, "SZ300001", _bars())
+        e = _entry(category="short_term")
+        e["_candidate"] = None
+        assert _is_relist_breakout_setup(e, conn, accum=2.0) is True
+        # short_term 无警示无 🎯 → 档2，不被 ⚡R 提升
+        assert _entry_tier(e, conn, accum=2.0) == 2
 
 
 class TestBuildBreakoutKlineMap:

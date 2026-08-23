@@ -699,7 +699,8 @@ def test_display_priority_tier_front_within_category(monkeypatch, capsys):
 
 
 def test_prominence_no_longer_sorts(monkeypatch, capsys):
-    """2026-08-12: 辨识度不再参与排序——只有辨识度(↻)、无甜蜜带的票按正常分数排序（不置顶）。"""
+    """2026-08-12: 辨识度不再参与排序——只有辨识度(↻)、无甜蜜带的票按正常分数排序（不置顶）。
+    2026-08-22 标记精简：↻ 行内展示同步下线（独立增量≈0），排序结论不变。"""
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300001", "辨识票", "momentum", 60)
     _insert_rec_cat(conn, "SZ300002", "高分普通票", "momentum", 150)
@@ -710,7 +711,7 @@ def test_prominence_no_longer_sorts(monkeypatch, capsys):
     lines = _main_lines(out)
     assert "SZ300002" in lines[0], f"辨识度票(60)不再置顶，高分票(150)应在前: {lines}"
     assert "SZ300001" in lines[1]
-    assert "↻" in lines[1], "辨识度标记应保留行内展示"
+    assert "↻" not in out, "↻ 行内标记已下线，不应再渲染"
 
 
 def test_display_priority_fund_flow_no_longer_sorts(monkeypatch, capsys):
@@ -1219,3 +1220,50 @@ def test_nextday_mark_dropped_row_ignores_drifted_live_quote(monkeypatch, capsys
     out = capsys.readouterr().out
     line = next(ln for ln in out.splitlines() if "SZ300001" in ln)
     assert "🎯" in line, "掉榜行应按落库甜蜜带(1.0%)判 🎯，不被漂移 live(9% 陷阱带)否决"
+
+
+# ── ⚡ 蓄势突破观察标记（渲染合并：两变体统一单一 ⚡，2026-08-22 标记精简）──
+def test_priority_row_breakout_mark_single_symbol(capsys):
+    """行尾只渲染一个 ⚡ 符号（新面孔/重上榜两变体在判定层区分，渲染不区分）。"""
+    entry = {"symbol": "SZ300001", "name": "肯特股份", "category": "short_term",
+             "score": 44, "percent": 7.4, "time": "10:30", "_candidate": None}
+    disp_mod._print_priority_row(entry, 1, {}, breakout_mark=True)
+    out = capsys.readouterr().out
+    assert "⚡" in out and "⚡R" not in out
+
+
+def test_display_priority_relist_hit_renders_bolt(capsys):
+    """重上榜变体命中也走同一 ⚡ 标记（display_priority 接线锁定，样本积累路径）。
+
+    构造：short_term 非首推推荐 + 前 ≥21 根缩量回调 K 线（肯特股份形态）。"""
+    conn = _rec_db()
+    conn.execute("""CREATE TABLE daily_kline (
+        symbol TEXT NOT NULL, date TEXT NOT NULL, open REAL,
+        close REAL, high REAL, low REAL, volume REAL, percent REAL,
+        PRIMARY KEY(symbol, date))""")
+    today = now_beijing().date()
+    # 冲高 39 → 深回撤 -13%（距高点）→ 尾部缓慢修复（MA 多头），全程缩量；末根 = T-1。
+    # 尾部 6 根累计需 ≤5%（BREAKOUT_ACCUM_MAX，走真实回放链路而非显式 accum）。
+    closes = [28.0, 28.5, 29.0, 29.5,
+              39.0,
+              37.0, 35.0, 33.5, 32.5, 32.0, 31.8,
+              31.5, 31.9, 32.3, 32.6, 33.0, 33.4, 33.7, 34.0, 34.15, 34.3, 34.45]
+    n = len(closes)
+    vol = 2_000_000.0
+    for i, close in enumerate(closes):
+        d = (today - timedelta(days=n - i)).isoformat()
+        high = close * (1.02 if i == 4 else 1.01)
+        vol = max(400_000.0, vol * 0.93)
+        conn.execute(
+            "INSERT OR REPLACE INTO daily_kline VALUES (?,?,?,?,?,?,?,?)",
+            ("SZ300001", d, close, close, high, close, vol, 0.0))
+    conn.execute(
+        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (today.isoformat(), "10:30", "SZ300001", "肯特型", "short_term", 44, 7.4))
+    conn.commit()
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    line = next(ln for ln in out.splitlines() if "SZ300001" in ln)
+    assert "⚡" in line and "⚡R" not in line
+    assert "蓄势突破观察" in out, "命中时表尾应打印合并图例"

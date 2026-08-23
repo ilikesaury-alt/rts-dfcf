@@ -102,7 +102,6 @@ def _build_card(
             mark = {
                 "strong_in": "🟢🟢",
                 "in": "🟢",
-                "neutral": "⚪",
                 "out": "🔴",
                 "strong_out": "🔴🔴",
             }.get(fund_flow_signal(float(ff_pct)))

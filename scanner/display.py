@@ -19,7 +19,6 @@ from scanner.core_themes import _low_buy_quality as _core_dip_quality
 from scanner.core_themes import core_stock_symbols
 from scanner.database import (
     get_fund_flow_pct_map,
-    get_prominence_map,
     get_today_recommendations,
 )
 from scanner.models import Candidate
@@ -38,6 +37,7 @@ from scanner.ranking import (  # noqa: F401
     _in_nextday_sweet_band,
     _is_breakout_setup,
     _is_nextday_marked,
+    _is_relist_breakout_setup,
     _nextday_entry_accum,
     _nextday_entry_percent,
     build_accum_map,
@@ -203,34 +203,34 @@ def split_risk_flags(risk_flags: list[str]) -> tuple[list[str], int]:
     return hard, len(risk_flags) - len(hard)
 
 
-def _render_prominence(prominence_labels: list[str] | None) -> str:
-    """辨识度标签（↻ 等）渲染；空列表返回空串。返回段无前导空格，分隔由调用方处理。"""
-    if not prominence_labels:
-        return ""
-    return f"{ANSI['CYAN']}│{' '.join(prominence_labels)}│{ANSI['RESET']}"
-
-
 _FUND_FLOW_ICON = {
     "strong_in": f"{ANSI['GREEN']}▲▲{ANSI['RESET']}",
     "in": f"{ANSI['GREEN']}▲{ANSI['RESET']}",
-    "neutral": f"{ANSI['YELLOW']}◇{ANSI['RESET']}",
     "out": f"{ANSI['RED']}▼{ANSI['RESET']}",
     "strong_out": f"{ANSI['RED']}▼▼{ANSI['RESET']}",
 }
 
 
 def _fund_flow_icon_str(ff_pct) -> str:
-    """主力净占比 → 5 档图标（ANSI 着色）；无数据返回空串。"""
+    """主力净占比 → 流向图标（ANSI 着色）；无数据或中性返回空串。
+
+    2026-08-22 标记精简（用户反馈行尾杂乱）：中性档 ◇ 不再显示——(-5%,+5%)
+    覆盖大多数票且零信息，只在流向有意义（≥+5% 流入 / ≤-5% 流出）时显示。
+    fund_flow_signal 本身不动（feishu/bonus 逻辑仍用五档）。
+    """
     ff_pct = to_float(ff_pct, default=None)
     if ff_pct is None:
         return ""
-    return _FUND_FLOW_ICON.get(fund_flow_signal(ff_pct), "")
+    sig = fund_flow_signal(ff_pct)
+    if sig == "neutral":
+        return ""
+    return _FUND_FLOW_ICON.get(sig, "")
 
 
 def _market_extra_str(c: Candidate) -> str:
-    """行情增强标记：主力资金流强弱图标 + 连板/炸板（无数据返回空串）。
+    """行情增强标记：主力资金流流向图标 + 连板/炸板（无数据返回空串）。
 
-    资金流用 fund_flow_signal 5 档图标替代原「资+x.x% ±xxx万」文本；
+    资金流用 fund_flow_signal 映射图标（中性不显示，见 _fund_flow_icon_str）；
     展示型信息，追加在行尾可变区，不参与固定列对齐。
     """
     dims = c.kline.dimensions if c.kline else {}
@@ -330,8 +330,9 @@ def _print_priority_row(entry: dict, i: int, flow_pct_map: dict,
 
     flow_pct_map: {symbol: 主力净占比} DB 快照回退（候选缺失/扫描失败时仍显示资金流图标）。
     nextday_mark: 次日大涨画像（🎯）——推荐时刻涨幅甜蜜带 + 非超买（见 _is_nextday_marked）。
-    breakout_mark: 蓄势突破观察画像（⚡）——新面孔/首推+横盘缩量回调位（见
-    _is_breakout_setup）。纯观察标记，不参与排序/评分/落库。
+    breakout_mark: 蓄势突破观察画像（⚡）——新面孔/首推或重上榜 short_term + 横盘缩量回调位
+    （见 _is_breakout_setup / _is_relist_breakout_setup；2026-08-22 渲染合并为单一 ⚡，
+    变体区分保留在判定函数供样本统计）。纯观察标记，不参与排序/评分/落库。
     视觉标记 + 参与综合排序档位置顶（display_priority._sort_tier 档0），不改 score / 不落库。
     last_ranks: 上一轮扫描的榜单排名 {symbol: rank}，用于「排名」列展示雪球榜单排名变化
     （+N 升 / -N 降），与已下线策略桶的 _rank_delta_str 同口径；缺省 None 不显示变化。
@@ -399,9 +400,8 @@ def _print_priority_row(entry: dict, i: int, flow_pct_map: dict,
             variant = trend.split("·")[0] if "·" in trend else ""
         if variant:
             label_display += f"{ANSI['CYAN']}·{variant}{ANSI['RESET']}"
-    prom_labels = c.prominence_labels if c else (["↻"] if entry.get("_prominent") else [])
-    prom_raw = _render_prominence(prom_labels)
-    prom_str = f" {prom_raw}" if prom_raw else ""
+    # 辨识度（↻）行内标记已下线（2026-08-22 标记精简）：回测证独立增量≈0、已退出排序，
+    # 纯装饰性噪音；prominence 数据仍在 today_report 归因中使用，不受影响。
     # 风险标记：掉榜/重启行 DB 无 risk_flags；候选行用与 _print_row 相同的分级渲染
     risk_str = ""
     if c and c.risk_flags:
@@ -456,7 +456,7 @@ def _print_priority_row(entry: dict, i: int, flow_pct_map: dict,
     print(f"  {i:3d}  {entry['symbol']:<12} {_pad(name_str,10)} "
           f"{pct_colored(pct)} {accum_str:>8} {price_str:>7} {_pad(rank_str, 8, 'r')} "
           f"{_pad(_trunc(sector,14),14)} {_pad(label_display,5,'r')} {to_int(entry['score']):4d} "
-          f"{_pad(first_time,6)} {_pad(suggest_str,6)}{prom_str}{risk_str}{extra_suffix}{nd_mark_str}{bo_mark_str}")
+          f"{_pad(first_time,6)} {_pad(suggest_str,6)}{risk_str}{extra_suffix}{nd_mark_str}{bo_mark_str}")
 
 
 def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
@@ -512,15 +512,8 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
                 if r is not None:
                     entry["live_rank"] = r
 
-    prom_syms = [e["symbol"] for e in today_recs if not e["_candidate"]]
-    if prom_syms:
-        prom_map = get_prominence_map(conn, prom_syms)
-    else:
-        prom_map = {}
-    for entry in today_recs:
-        if entry["_candidate"]:
-            continue
-        entry["_prominent"] = prom_map.get(entry["symbol"], False)
+    # 辨识度（↻）行内标记已下线（2026-08-22 标记精简）：prom_map/_prominent 预计算链路
+    # 随之移除；get_prominence_map 仍被 today_report 归因使用，不受影响。
 
     # 资金流图标：从 market_extra_cache 直接读当日资金流，不依赖当前进程 today_pool。
     # 候选存在时优先用其扫描时的最新维度，否则（重启/掉榜/扫描时拉取失败）回退到 DB
@@ -571,13 +564,17 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
     # 与 today_report 同源，消除两处排序分化。
     scored = sort_main_entries(main_recs, tier_map)
 
-    # 蓄势突破观察标记（2026-08-21，⚡）：新面孔/首推 + 横盘缩量回调位 + MA 多头。
-    # 纯展示层观察——不改排序/评分/落库（用户决策：先观察积累样本，达标后再评估
+    # 蓄势突破观察标记（2026-08-21，⚡）：新面孔/首推或重上榜 short_term + 横盘缩量回调位
+    # + MA 多头。纯展示层观察——不改排序/评分/落库（用户决策：先观察积累样本，达标后再评估
     # 是否升级为排序因子）。仅主表五类参与判定；批量取 K 线防 N+1。
     breakout_kmap = build_breakout_kline_map(conn, main_recs)
+    # 2026-08-22 标记精简：两个变体判定保留（样本统计需区分），渲染合并为单一 ⚡。
     breakout_mark: dict[str, bool] = {
-        e["symbol"]: _is_breakout_setup(e, conn, accum_map=accum_map,
-                                        klines=breakout_kmap.get(e["symbol"]))
+        e["symbol"]:
+            _is_breakout_setup(e, conn, accum_map=accum_map,
+                               klines=breakout_kmap.get(e["symbol"]))
+            or _is_relist_breakout_setup(e, conn, accum_map=accum_map,
+                                         klines=breakout_kmap.get(e["symbol"]))
         for e in main_recs
     }
 
@@ -606,8 +603,8 @@ def display_priority(conn=None, live_quotes: dict[str, dict] | None = None,
                             last_ranks=last_ranks)
     print(f"  {'-'*92}")
     if any(breakout_mark.values()):
-        print(f"  {ANSI['CYAN']}⚡ 蓄势突破观察{ANSI['RESET']}（新面孔/首推+横盘缩量回调位，"
-              f"样本收集中·非排序因子）")
+        print(f"  {ANSI['CYAN']}⚡ 蓄势突破观察{ANSI['RESET']}（缩量回调蓄势位·含新面孔/重上榜两变体"
+              f"·样本收集中·非排序因子）")
 
     # 回马枪独立成区（2026-08-11 移到最末尾）：主表仅排榜上五类，comeback 抽到此处独立成区。
     # 2026-08-12 放宽兜底条件：主区推荐条数 ≤ COMEBACK_DISPLAY_MIN_MAIN（含为空）时也显示，
