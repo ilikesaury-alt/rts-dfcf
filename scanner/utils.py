@@ -153,7 +153,7 @@ def clear_screen() -> None:
       Terminal、pty 终端模拟器等均讲 ANSI/VT 协议；pty 下 cls 不生效（cmd 不
       共享 pty 的屏幕缓冲），正是此前「创业板飙升榜监控」表头逐轮叠加的根因。
     """
-    if not sys.stdout.isatty():
+    if not sys.stdout.isatty() and not os.environ.get("RTS_CLEAR"):
         return
     if os.name == "nt" and _clr_is_console and not _clr_supports_ansi:
         os.system("cls")
