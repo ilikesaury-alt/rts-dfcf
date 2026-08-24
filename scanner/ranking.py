@@ -7,6 +7,7 @@ prevday_perf / scripts 现统一从此处取数，消除层违规与对渲染层
 """
 
 import math
+from typing import Any
 
 from scanner.config import (
     BREAKOUT_ACCUM_MAX,
@@ -25,7 +26,7 @@ from scanner.config import (
 from scanner.utils import to_float
 
 
-def _nextday_entry_percent(entry: dict) -> float:
+def _nextday_entry_percent(entry: Any) -> float:
     """推荐时刻盘中涨幅（用于次日大涨候选区筛形）。
 
     回退链：候选池当前扫描快照（最新）→ DB 落库 percent（推荐时刻口径）→
@@ -55,8 +56,10 @@ def _in_nextday_sweet_band(percent: float) -> bool:
     数据（scanner.nextday_attribution，next_day≥7%）：<1% hit 11.7%、1-2% hit 13.2%、
     4-6% hit 11.8%、6-8% hit 11.8%；2-4% 死区（6.2%）、8-10% 陷阱（7.5%，平均 -1.42%）。
     """
-    return (NEXTDAY_SPIKE_SWEET_MIN <= percent < NEXTDAY_SPIKE_SWEET_LOW
-            or NEXTDAY_SPIKE_MID_MIN <= percent < NEXTDAY_SPIKE_MID_MAX)
+    return (
+        NEXTDAY_SPIKE_SWEET_MIN <= percent < NEXTDAY_SPIKE_SWEET_LOW
+        or NEXTDAY_SPIKE_MID_MIN <= percent < NEXTDAY_SPIKE_MID_MAX
+    )
 
 
 def _replay_accum_from_rows(rows: list, rec_date: str) -> float | None:
@@ -90,7 +93,7 @@ def _replay_accum_from_rows(rows: list, rec_date: str) -> float | None:
     return None
 
 
-def _nextday_entry_accum(entry: dict, conn=None) -> float | None:
+def _nextday_entry_accum(entry: Any, conn=None) -> float | None:
     """推荐前 5 日累计涨幅（%），用于 🎯 判定；拿不到返回 None（不阻断）。
 
     口径：NEXTDAY_ACCUM_MIN=6.0 校准于「含推荐日」口径（5 日复利，含推荐日 bar）。
@@ -115,9 +118,9 @@ def _nextday_entry_accum(entry: dict, conn=None) -> float | None:
     if c and c.kline:
         incl = (c.kline.dimensions or {}).get("accumulated_incl_today")
         if incl is not None:
-            return float(incl)
+            return to_float(incl) or 0.0
         if c.kline.accumulated_pct is not None:
-            return float(c.kline.accumulated_pct)
+            return to_float(c.kline.accumulated_pct) or 0.0
     if conn is None:
         return None
     sym = entry.get("symbol")
@@ -126,8 +129,7 @@ def _nextday_entry_accum(entry: dict, conn=None) -> float | None:
         return None
     try:
         rows = conn.execute(
-            "SELECT date, close, percent FROM daily_kline WHERE symbol = ? AND date <= ? "
-            "ORDER BY date DESC",
+            "SELECT date, close, percent FROM daily_kline WHERE symbol = ? AND date <= ? ORDER BY date DESC",
             (sym, rec_date[:10]),
         ).fetchall()
     except Exception:
@@ -137,10 +139,10 @@ def _nextday_entry_accum(entry: dict, conn=None) -> float | None:
         return accum
     # 回放无数据（daily_kline 缺表/该票无历史）：兜底 DB 落库值
     db_acc = entry.get("accumulated_pct")
-    return float(db_acc) if db_acc is not None else None
+    return to_float(db_acc, default=None)
 
 
-def build_accum_map(conn, entries: list[dict]) -> dict[str, float | None]:
+def build_accum_map(conn, entries: list[Any]) -> dict[str, float | None]:
     """预计算推荐前 5 日累计（含推荐日），单批次查询替代逐行 N+1 回放（P1-9）。
 
     返回 {symbol: accum_or_None}。候选行（有 _candidate 且维度含 accumulated_incl_today）
@@ -155,10 +157,10 @@ def build_accum_map(conn, entries: list[dict]) -> dict[str, float | None]:
         if c and c.kline:
             incl = (c.kline.dimensions or {}).get("accumulated_incl_today")
             if incl is not None:
-                result[e["symbol"]] = float(incl)
+                result[e["symbol"]] = to_float(incl) or 0.0
                 continue
             if c.kline.accumulated_pct is not None:
-                result[e["symbol"]] = float(c.kline.accumulated_pct)
+                result[e["symbol"]] = to_float(c.kline.accumulated_pct) or 0.0
                 continue
         if e.get("symbol") and e.get("date"):
             dropped.append(e)
@@ -166,9 +168,10 @@ def build_accum_map(conn, entries: list[dict]) -> dict[str, float | None]:
         return result
     syms = sorted({e["symbol"] for e in dropped})
     try:
+        # 占位符仅由 "?" 字符生成，参数经 tuple 单独传递（参数化查询）
+        ph = ", ".join(["?"] * len(syms))
         rows = conn.execute(
-            "SELECT symbol, date, close, percent FROM daily_kline "
-            "WHERE symbol IN ({})".format(",".join("?" * len(syms))),
+            f"SELECT symbol, date, close, percent FROM daily_kline WHERE symbol IN ({ph})",
             tuple(syms),
         ).fetchall()
     except Exception:
@@ -185,12 +188,12 @@ def build_accum_map(conn, entries: list[dict]) -> dict[str, float | None]:
             # 不含今日历史口径，兜底值口径不符但优于 fail-open 误放行），与
             # _nextday_entry_accum 回退链同源。
             db_acc = e.get("accumulated_pct")
-            accum = float(db_acc) if db_acc is not None else None
+            accum = to_float(db_acc, default=None)
         result[sym] = accum
     return result
 
 
-def _entry_dims(entry: dict) -> dict:
+def _entry_dims(entry: Any) -> dict:
     """统一维度访问：候选行读 kline.dimensions（最新扫描），掉榜/重启行读 DB score_breakdown。
 
     2026-08-17 新增（配合 get_today_recommendations 返回 score_breakdown）：
@@ -203,7 +206,7 @@ def _entry_dims(entry: dict) -> dict:
     return sb if isinstance(sb, dict) else {}
 
 
-def _entry_weak_to_strong(entry: dict) -> bool:
+def _entry_weak_to_strong(entry: Any) -> bool:
     """short_term 弱转强成立：st_weak_to_strong / v_st_weak 任一 >0。
 
     组合信号分析（2026-08-17，去重 1224 样本）：弱转强∩非超买 hit 15.8%（全类
@@ -213,18 +216,21 @@ def _entry_weak_to_strong(entry: dict) -> bool:
     return bool(d.get("st_weak_to_strong") or d.get("v_st_weak"))
 
 
-
-def _entry_overbought(entry: dict) -> bool:
+def _entry_overbought(entry: Any) -> bool:
     """超买死亡信号：候选 dims / 掉榜 score_breakdown 统一判定（_entry_dims）。
 
     数据（nextday_attribution）：short_term/动量超买 hit 5-8%（非超买 10.5%）。
     """
     d = _entry_dims(entry)
-    return bool(d.get("st_overbought_flag") or d.get("mo_overbought_flag")
-                or d.get("v_st_overbought") or d.get("v_mo_overbought"))
+    return bool(
+        d.get("st_overbought_flag")
+        or d.get("mo_overbought_flag")
+        or d.get("v_st_overbought")
+        or d.get("v_mo_overbought")
+    )
 
 
-def _entry_band(entry: dict) -> str:
+def _entry_band(entry: Any) -> str:
     """推荐时刻涨幅带分类（与 🎯 甜蜜带同源，nextday_attribution 口径）。
 
     sweet(0-2%/4-8% 甜蜜带) / down(<0) / dead(2-4% 死区，next_day hit 7.0%) /
@@ -241,13 +247,13 @@ def _entry_band(entry: dict) -> str:
     return "trap"
 
 
-def _entry_fund_flow_pct(entry: dict) -> float | None:
+def _entry_fund_flow_pct(entry: Any) -> float | None:
     """主力净占比（%），候选行读 dims、掉榜行读 score_breakdown；无数据返回 None。"""
     v = _entry_dims(entry).get("fund_flow_main_pct")
     return to_float(v, default=None) if v is not None else None
 
 
-def _entry_sector_resonance(entry: dict) -> bool:
+def _entry_sector_resonance(entry: Any) -> bool:
     """小板块共振：v_st_sector / v_pb_sector / v_nf_sector >0 且板块规模 count<SECTOR_RESONANCE_WARN_MAX。
 
     回测细分（2026-08-17）：板块共振整体 next_day hit 5.6% 全场最差（无共振 13.7%），
@@ -259,13 +265,13 @@ def _entry_sector_resonance(entry: dict) -> bool:
     d = _entry_dims(entry)
     if not (d.get("v_st_sector") or d.get("v_pb_sector") or d.get("v_nf_sector")):
         return False
-    cnt = (d.get("v_st_sector_count") or d.get("v_pb_sector_count")
-           or d.get("v_nf_sector_count") or 0)
+    cnt = d.get("v_st_sector_count") or d.get("v_pb_sector_count") or d.get("v_nf_sector_count") or 0
     return cnt < SECTOR_RESONANCE_WARN_MAX
 
 
-def _entry_tier(entry: dict, conn=None, accum: float | None = None,
-                marked: bool | None = None, accum_map: dict | None = None) -> int:
+def _entry_tier(
+    entry: Any, conn=None, accum: float | None = None, marked: bool | None = None, accum_map: dict | None = None
+) -> int:
     """综合排序档位（2026-08-17 二值 → 4 级；2026-08-18 统一口径为「次日大涨」）。
 
     档0 = 🎯 次日大涨画像（数据最强，见 _is_nextday_marked，short_term 弱转强分型）
@@ -318,8 +324,7 @@ def _entry_tier(entry: dict, conn=None, accum: float | None = None,
     return 2
 
 
-def _is_nextday_marked(entry: dict, conn=None, accum: float | None = None,
-                      accum_map: dict | None = None) -> bool:
+def _is_nextday_marked(entry: Any, conn=None, accum: float | None = None, accum_map: dict | None = None) -> bool:
     """次日大涨画像标记（🎯）：推荐时刻涨幅在甜蜜带 + 非超买死亡信号 + 5日累计门槛。
 
     2026-08-11：原「◆ 次日大涨候选」独立区与综合排序主表重合度 65%（实测当日
@@ -360,8 +365,12 @@ def _is_nextday_marked(entry: dict, conn=None, accum: float | None = None,
     # 2026-08-17 修复：此前只查候选行，掉榜行（无 _candidate）直接放行——兆日科技
     # 案例（超买+累计74.7%妖股被误标 🎯）。掉榜行 score_breakdown 含 v_st_overbought 等字段。
     d = _entry_dims(entry)
-    if (d.get("st_overbought_flag") or d.get("mo_overbought_flag")
-            or d.get("v_st_overbought") or d.get("v_mo_overbought")):
+    if (
+        d.get("st_overbought_flag")
+        or d.get("mo_overbought_flag")
+        or d.get("v_st_overbought")
+        or d.get("v_mo_overbought")
+    ):
         return False
     return True
 
@@ -371,7 +380,8 @@ def _is_nextday_marked(entry: dict, conn=None, accum: float | None = None,
 # 定位：观察标记——不改排序、不改评分、不落库；样本达标后经 nextday_attribution
 # 复盘再决定是否升级。判定全部基于 T-1 及更早的结构（推荐日盘中 bar 不完整不参与）。
 
-def build_breakout_kline_map(conn, entries: list[dict]) -> dict[str, list[tuple[str, float, float, float]]]:
+
+def build_breakout_kline_map(conn, entries: list[Any]) -> dict[str, list[tuple[str, float, float, float]]]:
     """批量取蓄势突破判定所需 K 线（单查询防 N+1），返回 {symbol: [(date, high, close, volume), ...]}。
 
     仅保留 date < 推荐日的行（结构基准 = T-1 及更早；推荐日盘中 bar 未定稿不参与，
@@ -382,9 +392,10 @@ def build_breakout_kline_map(conn, entries: list[dict]) -> dict[str, list[tuple[
     if not syms:
         return {}
     try:
+        # 占位符仅由 "?" 字符生成，参数经 tuple 单独传递（参数化查询）
+        ph = ", ".join(["?"] * len(syms))
         rows = conn.execute(
-            "SELECT symbol, date, high, close, volume FROM daily_kline "
-            "WHERE symbol IN ({})".format(",".join("?" * len(syms))),
+            f"SELECT symbol, date, high, close, volume FROM daily_kline WHERE symbol IN ({ph})",
             tuple(syms),
         ).fetchall()
     except Exception:
@@ -405,15 +416,21 @@ def build_breakout_kline_map(conn, entries: list[dict]) -> dict[str, list[tuple[
     result: dict[str, list[tuple[str, float, float, float]]] = {}
     for e in entries:
         sym = e.get("symbol")
+        if not sym:
+            continue
         rec_date = (e.get("date") or "")[:10]
         lst = sorted(by_sym.get(sym, []))
         result[sym] = [r for r in lst if r[0] < rec_date]
     return result
 
 
-def _breakout_structure_ok(entry: dict, conn=None, accum: float | None = None,
-                           accum_map: dict | None = None,
-                           klines: list[tuple[str, float, float, float]] | None = None) -> bool:
+def _breakout_structure_ok(
+    entry: Any,
+    conn=None,
+    accum: float | None = None,
+    accum_map: dict | None = None,
+    klines: list[tuple[str, float, float, float]] | None = None,
+) -> bool:
     """蓄势结构共同条件（⚡ 与 ⚡R 变体共用，2026-08-22 自 _is_breakout_setup 抽出单源）：
 
       2. 前5日累计（含推荐日，复用 🎯 的 accum 口径链）≤ BREAKOUT_ACCUM_MAX——
@@ -437,8 +454,7 @@ def _breakout_structure_ok(entry: dict, conn=None, accum: float | None = None,
             return False
         try:
             rows = conn.execute(
-                "SELECT date, high, close, volume FROM daily_kline "
-                "WHERE symbol = ? AND date < ? ORDER BY date",
+                "SELECT date, high, close, volume FROM daily_kline WHERE symbol = ? AND date < ? ORDER BY date",
                 (entry["symbol"], entry["date"][:10]),
             ).fetchall()
         except Exception:
@@ -475,25 +491,31 @@ def _breakout_structure_ok(entry: dict, conn=None, accum: float | None = None,
     return ma5 > ma10 > ma20
 
 
-def _is_breakout_setup(entry: dict, conn=None, accum: float | None = None,
-                       accum_map: dict | None = None,
-                       klines: list[tuple[str, float, float, float]] | None = None) -> bool:
+def _is_breakout_setup(
+    entry: Any,
+    conn=None,
+    accum: float | None = None,
+    accum_map: dict | None = None,
+    klines: list[tuple[str, float, float, float]] | None = None,
+) -> bool:
     """蓄势突破画像（⚡ 观察标记）：新面孔/首推 + 横盘缩量回调位 + MA 多头。
 
     条件：1. 类别门 new_face/known_new_face，或首推（dims.first_today_bonus>0）——
     涨停组 65% 为新面孔、首推占 61%；2~5 共用 _breakout_structure_ok。
     """
     d = _entry_dims(entry)
-    if entry["category"] not in ("new_face", "known_new_face") \
-            and not bool(d.get("first_today_bonus")):
+    if entry["category"] not in ("new_face", "known_new_face") and not bool(d.get("first_today_bonus")):
         return False
-    return _breakout_structure_ok(entry, conn, accum=accum,
-                                  accum_map=accum_map, klines=klines)
+    return _breakout_structure_ok(entry, conn, accum=accum, accum_map=accum_map, klines=klines)
 
 
-def _is_relist_breakout_setup(entry: dict, conn=None, accum: float | None = None,
-                              accum_map: dict | None = None,
-                              klines: list[tuple[str, float, float, float]] | None = None) -> bool:
+def _is_relist_breakout_setup(
+    entry: Any,
+    conn=None,
+    accum: float | None = None,
+    accum_map: dict | None = None,
+    klines: list[tuple[str, float, float, float]] | None = None,
+) -> bool:
     """重上榜蓄势突破观察画像（⚡R 观察标记）：非首推 short_term + 横盘缩量回调位 + MA 多头。
 
     来源：2026-08-21 肯特股份案例（长期掉榜后重新上榜的 short_term，推荐日 +20% 涨停）
@@ -507,8 +529,7 @@ def _is_relist_breakout_setup(entry: dict, conn=None, accum: float | None = None
     d = _entry_dims(entry)
     if entry.get("category") != "short_term" or d.get("first_today_bonus"):
         return False
-    return _breakout_structure_ok(entry, conn, accum=accum,
-                                  accum_map=accum_map, klines=klines)
+    return _breakout_structure_ok(entry, conn, accum=accum, accum_map=accum_map, klines=klines)
 
 
 # ── 排序组合层（2026-08-20 收敛单源）──
@@ -516,7 +537,8 @@ def _is_relist_breakout_setup(entry: dict, conn=None, accum: float | None = None
 # 分数键），且已实际分化：today_report 漏掉 known_new_face 分数反指升序特判（display
 # 有，2026-08-10 加）。现把「同一行该排第几」的唯一逻辑收归此处，两处消费同一结果。
 
-def score_sort_key(entry: dict) -> float:
+
+def score_sort_key(entry: Any) -> float:
     """分数键：known_new_face 分数反指（低分档 hit 更高）→ 升序在前；其余类别降序。
 
     回测分桶（2026-08-10）：kNF 低分档[18,37) cum_3d +5.58/64%胜率 vs 高分档[77,98)
@@ -527,7 +549,7 @@ def score_sort_key(entry: dict) -> float:
     return -entry["score"]
 
 
-def sort_main_entries(main_recs: list[dict], tier_map: dict[str, int]) -> list[dict]:
+def sort_main_entries(main_recs: list[Any], tier_map: dict[str, int]) -> list[Any]:
     """综合排序主表排序键 = (档位, 类别展示优先级, 分数键)。
 
     tier_map：{symbol: 档位(0..3)}，由调用方预计算（display 用 _entry_tier 统一预计算，
@@ -542,3 +564,18 @@ def sort_main_entries(main_recs: list[dict], tier_map: dict[str, int]) -> list[d
             score_sort_key(x),
         ),
     )
+
+
+def comeback_sort_key(entry: Any, flow_map: dict[str, float] | None = None) -> tuple:
+    """回马枪区内排序键（2026-08-24）：主力净占比降序优先，次键评分降序。
+
+    回测依据：comeback 统一 next_day 口径 hit 3.3%（全场最差，已移出档1），区内
+    score 不再是有效区分度；资金流是回马枪区已验证的分化信号（▲▲回流可取 vs
+    ▼▼背离回避，today_report 回马枪资金质量小节口径）。flow 缺失按中性 0 处理，
+    可选 flow_map（display 从 market_extra_cache 批量读的回退源）供掉榜行补值。
+    display 回马枪区与 today_report 回马枪小节共用本函数，防两处口径漂移。
+    """
+    flow = to_float(_entry_dims(entry).get("fund_flow_main_pct"))
+    if flow is None and flow_map:
+        flow = to_float(flow_map.get(entry["symbol"]))
+    return (-(flow if flow is not None else 0.0), -entry["score"])

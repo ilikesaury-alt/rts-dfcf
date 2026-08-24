@@ -68,6 +68,16 @@ class RecommendationRow(_RecRowRequired, total=False):
     accumulated_pct: float | None
     score_breakdown: Dimensions
     _candidate: Any  # scanner.models.Candidate | None（避免双向 import）
+    # 展示层注入键（display.display_priority 写入）：实时行情覆盖与可用性标记
+    live_quote_available: bool
+    live_percent: float
+    live_current: float
+    live_rank: int
+    # 展示层注入键（display/today_report 写入）：档位/标记预计算与核心股高亮
+    _accum: float | None
+    _marked: bool
+    _tier: int
+    _core_stock: bool
 
 
 def parse_score_breakdown(sb: str | dict | None) -> Dict[str, Any]:

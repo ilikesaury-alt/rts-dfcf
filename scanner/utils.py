@@ -1,8 +1,18 @@
 import math
 import os
+import subprocess
 import sys
+from typing import overload
 
 from scanner.config import CACHE_MAX_ENTRIES
+
+
+@overload
+def to_float(v, default: float = ...) -> float: ...
+
+
+@overload
+def to_float(v, default: None) -> float | None: ...
 
 
 def to_float(v, default: float | None = 0.0) -> float | None:
@@ -128,16 +138,14 @@ def is_hk_stock(symbol: str) -> bool:
 # 现收敛到此（utils 为叶子模块，display 与工具层均 import 它，无环）。
 if os.name == "nt":
     import ctypes
+
     _clr_kernel32 = ctypes.windll.kernel32
     _clr_handle = _clr_kernel32.GetStdHandle(-11)
     _clr_mode = ctypes.c_uint32()
     # 是否「真实 Windows conhost」：GetConsoleMode 仅对真实控制台成功；
     # pty/终端模拟器/重定向管道均失败（返回 0），但它们通常讲 ANSI/VT 协议。
     _clr_is_console = _clr_kernel32.GetConsoleMode(_clr_handle, ctypes.byref(_clr_mode)) != 0
-    _clr_supports_ansi = (
-        _clr_is_console
-        and _clr_kernel32.SetConsoleMode(_clr_handle, _clr_mode.value | 0x0004) != 0
-    )
+    _clr_supports_ansi = _clr_is_console and _clr_kernel32.SetConsoleMode(_clr_handle, _clr_mode.value | 0x0004) != 0
 else:
     _clr_is_console = False
     _clr_supports_ansi = True
@@ -156,6 +164,7 @@ def clear_screen() -> None:
     if not sys.stdout.isatty() and not os.environ.get("RTS_CLEAR"):
         return
     if os.name == "nt" and _clr_is_console and not _clr_supports_ansi:
-        os.system("cls")
+        # 参数化列表形式（无 shell 插值）；命令为硬编码字面量 "cls"
+        subprocess.run(["cmd", "/c", "cls"], check=False)
         return
     print("\033[2J\033[H", end="", flush=True)

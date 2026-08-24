@@ -866,8 +866,7 @@ def test_display_priority_tier_banner_separates_groups(monkeypatch, capsys):
 
 
 def test_display_priority_comeback_separate_region(monkeypatch, capsys):
-    """方案A：回马枪独立成区（主区无推荐时兜底），按分数降序；独立区净流出票正常展示。
-    2026-08-12：辨识度不再参与排序（comeback 不在次日大涨画像范围，恒档1）。"""
+    """方案A：回马枪独立成区（主区无推荐时兜底），区内按资金流优先排序（2026-08-24）：净流出不再劣后过滤但强流出沉底。"""
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300101", "马低分", "comeback", 55)
     _insert_rec_cat(conn, "SZ300102", "马高分", "comeback", 120)
@@ -879,10 +878,10 @@ def test_display_priority_comeback_separate_region(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "◆ 回马枪" in out
     cb_part = out.split("◆ 回马枪", 1)[1]
-    # 独立区：按分数降序（辨识度不再置顶），净流出票不再劣后过滤（2026-08-11）
+    # 独立区：资金流降序优先——无流水中性(0)在前，强流出(-6%)沉底；同流水分数降序
     cb_lines = [ln for ln in cb_part.splitlines() if "SZ300101" in ln or "SZ300102" in ln]
-    assert "SZ300102" in cb_lines[0], f"独立区按分数降序，高分(120)应在前: {cb_lines}"
-    assert "SZ300101" in cb_lines[1]
+    assert "SZ300101" in cb_lines[0], f"中性(0)应排在强流出(-6%)前: {cb_lines}"
+    assert "SZ300102" in cb_lines[1]
 
 
 def test_display_priority_comeback_capped(monkeypatch, capsys):
@@ -1244,8 +1243,8 @@ def test_display_priority_tier4_rules_applied(monkeypatch, capsys):
 
 
 def test_display_priority_tier4_comeback_fundflow(monkeypatch, capsys):
-    """档位 4 级（2026-08-18 统一 next_day 口径）：comeback 不再按资金流分档（其 6 维回踩
-    信号为 cum_3d 语义，next_day hit 仅 3.3%），统一档2，独立区按 score 降序。"""
+    """回马枪区内资金流优先（2026-08-24）：▲▲回流(+8.6%)排在中性无流水之前，
+    同流水分数降序。档位统一档2（2026-08-18）。"""
     conn = _rec_db()
     _insert_rec_sb(
         conn, "SZ300101", "回踩回流", "comeback", 102, 1.0, '{"fund_flow_main_pct": 8.6}'
@@ -1256,8 +1255,8 @@ def test_display_priority_tier4_comeback_fundflow(monkeypatch, capsys):
     assert "◆ 回马枪" in out
     cb_part = out.split("◆ 精选决策", 1)[0].split("◆ 回马枪", 1)[1]
     cb_lines = [ln for ln in cb_part.splitlines() if "SZ30010" in ln]
-    assert "SZ300102" in cb_lines[0], f"comeback 统一档2 按 score 降序: {cb_lines}"
-    assert "SZ300101" in cb_lines[1]
+    assert "SZ300101" in cb_lines[0], f"回流(+8.6%)应排在无流水(0)前: {cb_lines}"
+    assert "SZ300102" in cb_lines[1]
 
 
 def test_display_priority_tier4_sector_resonance_low(monkeypatch, capsys):

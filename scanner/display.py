@@ -44,6 +44,7 @@ from scanner.ranking import (  # noqa: F401
     _nextday_entry_percent,
     build_accum_map,
     build_breakout_kline_map,
+    comeback_sort_key,
     sort_main_entries,
 )
 from scanner.sector import classify_sector
@@ -167,13 +168,13 @@ def _trunc(s: str, width: int) -> str:
 
 
 def pct_colored(pct: float | None, width: int = 8) -> str:
-    pct = to_float(pct, default=0.0)
-    s = f"{pct:+.2f}%"
-    if pct >= 9:
+    f = to_float(pct) or 0.0
+    s = f"{f:+.2f}%"
+    if f >= 9:
         c = ANSI["RED"]
-    elif pct >= 5:
+    elif f >= 5:
         c = ANSI["GREEN"]
-    elif pct < 0:
+    elif f < 0:
         c = ANSI["YELLOW"]
     else:
         c = ""
@@ -257,10 +258,10 @@ def _market_extra_str(c: Candidate) -> str:
 
 def _market_env_tag(today_pool: dict[str, Candidate] | None) -> str:
     """大盘环境标签（中性/强势/弱势·谨慎），从候选池 dims 读 market_env_bonus。"""
-    env_bonus = 0
+    env_bonus = 0.0
     for c in (today_pool or {}).values():
         if c.kline and c.kline.dimensions:
-            env_bonus = c.kline.dimensions.get("market_env_bonus", 0) or 0
+            env_bonus = to_float(c.kline.dimensions.get("market_env_bonus")) or 0.0
             break
     if env_bonus > 0:
         return f"{ANSI['GREEN']}[大盘强势]{ANSI['RESET']}"
@@ -275,8 +276,8 @@ def _core_dip_extra_str(run, pullback, flow_pct) -> str:
     2026-08-20 加固：run/pullback/flow_pct 来自 DB score_breakdown JSON，脏库
     可能为字符串/NaN，to_float 统一防御（此前 float() 直接抛 ValueError 中断整屏渲染）。
     """
-    run_f = to_float(run, default=0.0)
-    pullback_f = to_float(pullback, default=0.0)
+    run_f = to_float(run) or 0.0
+    pullback_f = to_float(pullback) or 0.0
     parts = [f"20日{run_f * 100:+.1f}%", f"回撤{pullback_f * 100:+.1f}%"]
     flow_f = to_float(flow_pct, default=None)
     if flow_f is not None:
@@ -664,13 +665,16 @@ def display_priority(
     # 大跌市最有价值；OR 联合覆盖两个盲区：强市主表稀少 + 弱市主表充足。
     _show_lowbuy = len(main_recs) <= COMEBACK_DISPLAY_MIN_MAIN or _market_is_weak(conn, today_pool)
     if comeback_recs and _show_lowbuy:
-        cb_scored = sorted(comeback_recs, key=lambda x: (tier_map.get(x["symbol"], 2), -x["score"]))
+        # 2026-08-24：区内改按资金流优先（ranking.comeback_sort_key 单源，与 today_report
+        # 回马枪小节同源防漂移）——▲▲回流可取在前、▼▼背离回避劣后，次键评分。
+        cb_scored = sorted(comeback_recs, key=lambda x: comeback_sort_key(x, flow_pct_map))
         if len(cb_scored) > COMEBACK_DISPLAY_MAX:
             cb_scored = cb_scored[:COMEBACK_DISPLAY_MAX]
         print(f"\n{ANSI['CYAN']}◆ 回马枪 — 掉榜跟踪/回调买点（主区稀少或大盘弱势·补充参考）{ANSI['RESET']}")
         print(hdr)
         for ci, entry in enumerate(cb_scored, 1):
             _print_priority_row(entry, ci, flow_pct_map, last_ranks=last_ranks)
+        print("  排序=主力净占比（回流可取在前·背离回避劣后）→评分。")
         print(f"  {'-' * 92}")
 
     # 核心方向低吸独立区（2026-08-19，`scanner/core_themes.py`）：大跌市中找「当前主线

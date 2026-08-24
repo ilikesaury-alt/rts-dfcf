@@ -32,13 +32,15 @@
 最近一次扫描轮的当日快照，档位/🎯 判定与扫描器同源。SQLite 连接带 15s 忙等
 超时，与扫描器并发读写不撞锁。总览标注「数据新鲜度」与盘中语义。
 """
+
 import argparse
 import json
 import re
 import sqlite3
 import sys
+from typing import Any, cast
 
-sys.stdout.reconfigure(encoding="utf-8")
+cast(Any, sys.stdout).reconfigure(encoding="utf-8")  # Windows 中文输出（同 prevday_perf）
 
 from scanner.config import (  # noqa: E402  (stdout reconfigure 在导入前，防编码异常)
     CORE_DIP_CATEGORY,
@@ -64,13 +66,15 @@ from scanner.ranking import (  # noqa: E402  (纯排序逻辑单源，与 displa
     _is_nextday_marked,
     _nextday_entry_percent,
     build_accum_map,
+    comeback_sort_key,
     sort_main_entries,
 )
+from scanner.utils import to_float, to_int  # noqa: E402
 
 # 档0 评级阈值（纯展示，依据已回测结论）
-_VERDICT_STRONG = 2          # ≥2 → ★★★ 首选
-_VERDICT_OK = 1              # ==1 → ★★ 可参与；≤0 → ★ 谨慎
-_TAIL_PULLBACK_PP = 1.5      # 推荐后回落 ≥1.5pp 判「尾盘回吐」（追高兑现风险）
+_VERDICT_STRONG = 2  # ≥2 → ★★★ 首选
+_VERDICT_OK = 1  # ==1 → ★★ 可参与；≤0 → ★ 谨慎
+_TAIL_PULLBACK_PP = 1.5  # 推荐后回落 ≥1.5pp 判「尾盘回吐」（追高兑现风险）
 
 
 def _vol_desc(dims: dict) -> str:
@@ -92,7 +96,7 @@ def _vol_desc(dims: dict) -> str:
     return "—"
 
 
-def _tier0_verdict(entry: dict, flow_pct_map: dict) -> dict:
+def _tier0_verdict(entry: Any, flow_pct_map: dict) -> dict:
     """单只 🎯 票分析（纯函数，供报告渲染与测试）。
 
     返回 dict：symbol/name/category/score/rec_pct/accum/flow/flow_icon/band/
@@ -110,10 +114,10 @@ def _tier0_verdict(entry: dict, flow_pct_map: dict) -> dict:
     flow = dims.get("fund_flow_main_pct")
     if flow is None:
         flow = flow_pct_map.get(sym)
-    flow = float(flow) if flow is not None else None
+    flow = to_float(flow, default=None)
     has_live = bool(entry.get("live_quote_available") or entry.get("live_rank") is not None)
     live_pct = entry.get("live_percent")
-    live_pct = float(live_pct) if (has_live and live_pct is not None) else None
+    live_pct = to_float(live_pct) if (has_live and live_pct is not None) else None
     band = _entry_band(entry)
     w2s = _entry_weak_to_strong(entry)
 
@@ -173,8 +177,15 @@ def _tier0_verdict(entry: dict, flow_pct_map: dict) -> dict:
 
     # 评级：类别基线（rebound / short_term弱转强 = 2，其余 1）扣风险
     base = 2 if (cat == "rebound" or (cat == "short_term" and w2s)) else 1
-    verdict = (base - int(tail_pullback) - int(divergence) - int(outflow)
-               - 2 * int(ob) - int(fatigue) - int(trap))
+    verdict = (
+        base
+        - to_int(tail_pullback)
+        - to_int(divergence)
+        - to_int(outflow)
+        - 2 * to_int(ob)
+        - to_int(fatigue)
+        - to_int(trap)
+    )
     if verdict >= _VERDICT_STRONG:
         stars, label = "★★★", "首选"
     elif verdict == _VERDICT_OK:
@@ -190,16 +201,30 @@ def _tier0_verdict(entry: dict, flow_pct_map: dict) -> dict:
         "new_face": "new_face hit 9.6% 接近基准",
     }.get(cat, "")
 
-    ff_icon = {"strong_in": "▲▲", "in": "▲", "neutral": "◇",
-               "out": "▼", "strong_out": "▼▼"}.get(fund_flow_signal(flow), "")
+    ff_icon = {"strong_in": "▲▲", "in": "▲", "neutral": "◇", "out": "▼", "strong_out": "▼▼"}.get(
+        fund_flow_signal(flow), ""
+    )
 
     return {
-        "symbol": sym, "name": entry["name"], "category": cat,
-        "score": entry["score"], "rec_pct": rec_pct, "accum": accum,
-        "flow": flow, "flow_icon": ff_icon, "band": band,
-        "pos": pos, "pos_detail": pos_detail, "vol": _vol_desc(dims),
-        "risks": risks, "verdict": verdict, "stars": stars, "label": label,
-        "reason": reason, "concept": entry.get("concept", ""), "trend": entry.get("trend", ""),
+        "symbol": sym,
+        "name": entry["name"],
+        "category": cat,
+        "score": entry["score"],
+        "rec_pct": rec_pct,
+        "accum": accum,
+        "flow": flow,
+        "flow_icon": ff_icon,
+        "band": band,
+        "pos": pos,
+        "pos_detail": pos_detail,
+        "vol": _vol_desc(dims),
+        "risks": risks,
+        "verdict": verdict,
+        "stars": stars,
+        "label": label,
+        "reason": reason,
+        "concept": entry.get("concept", ""),
+        "trend": entry.get("trend", ""),
     }
 
 
@@ -224,13 +249,16 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
     core_dip = [e for e in recs if e["category"] == CORE_DIP_CATEGORY]
     # 2026-08-20 收敛：排序组合层（档位+类别优先级+分数键含 kNF 升序）统一走 ranking.sort_main_entries，
     # 与综合排序终端同源（此前 today_report 漏掉 kNF 升序特判，两处排序分化）。
-    tier_map = {e["symbol"]: e["_tier"] for e in main}
+    tier_map = {e["symbol"]: e["_tier"] if e.get("_tier") is not None else 2 for e in main}
     main = sort_main_entries(main, tier_map)
 
-    tier0 = [e for e in main if e["_tier"] == 0][:top_n] if top_n else [e for e in main if e["_tier"] == 0]
-    tier1 = [e for e in main if e["_tier"] == 1]
-    tier2 = [e for e in main if e["_tier"] == 2]
-    tier3 = [e for e in main if e["_tier"] == 3]
+    def _t(e):
+        return e["_tier"] if e.get("_tier") is not None else 2
+
+    tier0 = [e for e in main if _t(e) == 0][:top_n] if top_n else [e for e in main if _t(e) == 0]
+    tier1 = [e for e in main if _t(e) == 1]
+    tier2 = [e for e in main if _t(e) == 2]
+    tier3 = [e for e in main if _t(e) == 3]
 
     # 档0 分析 + 组内相对排序
     analyzed = [_tier0_verdict(e, flow_map) for e in tier0]
@@ -239,15 +267,14 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
     # 档3 避雷汇总（统计劣后原因）
     tier3_reasons: dict[str, int] = {}
     for e in tier3:
-        acc = e["_accum"]
+        acc = e.get("_accum")
         d = _entry_dims(e)
         band = _entry_band(e)
         flow = d.get("fund_flow_main_pct")
         if flow is None:
             flow = flow_map.get(e["symbol"])
-        flow = float(flow) if flow is not None else None
-        cnt = (d.get("v_st_sector_count") or d.get("v_pb_sector_count")
-               or d.get("v_nf_sector_count") or 0)
+        flow = to_float(flow, default=None)
+        cnt = d.get("v_st_sector_count") or d.get("v_pb_sector_count") or d.get("v_nf_sector_count") or 0
         if acc is not None and acc >= 50:
             tier3_reasons["累计过热≥50"] = tier3_reasons.get("累计过热≥50", 0) + 1
         if _entry_overbought(e):
@@ -262,18 +289,25 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
 
     # 回马枪资金质量
     cb_flow = []
-    for e in sorted(comeback, key=lambda x: -x["score"]):
+    # 2026-08-24：与 display 回马枪区同源排序（ranking.comeback_sort_key，资金流优先）
+    for e in sorted(comeback, key=lambda x: comeback_sort_key(x, flow_map)):
         d = _entry_dims(e)
         flow = d.get("fund_flow_main_pct")
         if flow is None:
             flow = flow_map.get(e["symbol"])
-        flow = float(flow) if flow is not None else None
+        flow = to_float(flow, default=None)
         variant = d.get("comeback_variant") or str(e.get("trend", "")).split("·")[0]
         signals = d.get("comeback_signals", "")
-        cb_flow.append({
-            "symbol": e["symbol"], "name": e["name"], "score": e["score"],
-            "variant": variant, "signals": signals, "flow": flow,
-        })
+        cb_flow.append(
+            {
+                "symbol": e["symbol"],
+                "name": e["name"],
+                "score": e["score"],
+                "variant": variant,
+                "signals": signals,
+                "flow": flow,
+            }
+        )
 
     # 数据质量（scan_quality_log）+ 数据新鲜度（盘中运行语义：截至最近一次扫描轮）
     quality = {}
@@ -285,9 +319,13 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
             (target_date,),
         ).fetchone()
         if row:
-            quality = {"gem_count": row[0], "fetch_failed": row[1],
-                       "today_bar_missing": row[2], "minute_fallback": row[3],
-                       "stale_recs": row[4]}
+            quality = {
+                "gem_count": row[0],
+                "fetch_failed": row[1],
+                "today_bar_missing": row[2],
+                "minute_fallback": row[3],
+                "stale_recs": row[4],
+            }
             quality_time = row[5]
     except Exception:
         quality = {}
@@ -297,7 +335,8 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
     unfinalized = 0
     try:
         row = conn.execute(
-            "SELECT COUNT(*) FROM daily_kline WHERE date=? AND finalized=0", (target_date,),
+            "SELECT COUNT(*) FROM daily_kline WHERE date=? AND finalized=0",
+            (target_date,),
         ).fetchone()
         unfinalized = row[0] if row else 0
     except Exception:
@@ -321,7 +360,8 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
     last_rec_time = None
     try:
         row = conn.execute(
-            "SELECT MAX(time) FROM recommendations WHERE date = ?", (target_date,),
+            "SELECT MAX(time) FROM recommendations WHERE date = ?",
+            (target_date,),
         ).fetchone()
         last_rec_time = row[0] if row and row[0] else None
     except Exception:
@@ -340,21 +380,48 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
         excluded = []
 
     return {
-        "date": target_date, "empty": False,
-        "total": len(recs), "main": len(main), "comeback": len(comeback),
-        "tier0": analyzed, "tier1": [
-            {"symbol": e["symbol"], "name": e["name"], "category": e["category"],
-             "score": e["score"], "trend": e.get("trend", "")} for e in tier1],
-        "tier2": [{"symbol": e["symbol"], "name": e["name"], "category": e["category"],
-                    "score": e["score"], "trend": e.get("trend", "")} for e in tier2],
-        "tier3": [{"symbol": e["symbol"], "name": e["name"], "category": e["category"],
-                   "score": e["score"], "rec_pct": e.get("percent", 0.0),
-                   "trend": e.get("trend", "")} for e in tier3],
+        "date": target_date,
+        "empty": False,
+        "total": len(recs),
+        "main": len(main),
+        "comeback": len(comeback),
+        "tier0": analyzed,
+        "tier1": [
+            {
+                "symbol": e["symbol"],
+                "name": e["name"],
+                "category": e["category"],
+                "score": e["score"],
+                "trend": e.get("trend", ""),
+            }
+            for e in tier1
+        ],
+        "tier2": [
+            {
+                "symbol": e["symbol"],
+                "name": e["name"],
+                "category": e["category"],
+                "score": e["score"],
+                "trend": e.get("trend", ""),
+            }
+            for e in tier2
+        ],
+        "tier3": [
+            {
+                "symbol": e["symbol"],
+                "name": e["name"],
+                "category": e["category"],
+                "score": e["score"],
+                "rec_pct": e.get("percent", 0.0),
+                "trend": e.get("trend", ""),
+            }
+            for e in tier3
+        ],
         "tier3_reasons": tier3_reasons,
         "comeback_flow": cb_flow,
-        "core_dip": [{"symbol": e["symbol"], "name": e["name"],
-                        "category": e["category"], "score": e["score"]}
-                       for e in core_dip],
+        "core_dip": [
+            {"symbol": e["symbol"], "name": e["name"], "category": e["category"], "score": e["score"]} for e in core_dip
+        ],
         "excluded": excluded,
         "quality": quality,
         "quality_time": quality_time,
@@ -368,8 +435,9 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
 def _fmt_flow(flow: float | None) -> str:
     if flow is None:
         return "资金—"
-    icon = {"strong_in": "▲▲", "in": "▲", "neutral": "◇",
-            "out": "▼", "strong_out": "▼▼"}.get(fund_flow_signal(flow), "")
+    icon = {"strong_in": "▲▲", "in": "▲", "neutral": "◇", "out": "▼", "strong_out": "▼▼"}.get(
+        fund_flow_signal(flow), ""
+    )
     return f"{icon}主力{flow:+.1f}%"
 
 
@@ -391,21 +459,29 @@ def _render(report: dict) -> str:
     # 一、总览
     out.append(f"\n{ANSI['BOLD']}一、总览{ANSI['RESET']}")
     q = report["quality"]
-    q_str = "无扫描质量日志" if not q else (
-        f"gem={q['gem_count']} 拉取失败={q['fetch_failed']} 缺今日bar={q['today_bar_missing']} "
-        f"分时兜底={q['minute_fallback']} 旧缓存评分={q['stale_recs']}")
-    out.append(f"  推荐 {report['total']} 只（主表 {report['main']} + 回马枪 {report['comeback']} + "
-               f"核心方向低吸 {len(report['core_dip'])}）| "
-               f"档0🎯 {len(report['tier0'])} 只 / 档1强信号 {len(report['tier1'])} / "
-               f"档3警示 {len(report['tier3'])} | 数据质量: {q_str}")
+    q_str = (
+        "无扫描质量日志"
+        if not q
+        else (
+            f"gem={q['gem_count']} 拉取失败={q['fetch_failed']} 缺今日bar={q['today_bar_missing']} "
+            f"分时兜底={q['minute_fallback']} 旧缓存评分={q['stale_recs']}"
+        )
+    )
+    out.append(
+        f"  推荐 {report['total']} 只（主表 {report['main']} + 回马枪 {report['comeback']} + "
+        f"核心方向低吸 {len(report['core_dip'])}）| "
+        f"档0🎯 {len(report['tier0'])} 只 / 档1强信号 {len(report['tier1'])} / "
+        f"档3警示 {len(report['tier3'])} | 数据质量: {q_str}"
+    )
     if report.get("unfinalized"):
         out.append(f"  ⚠ 今日K线未定稿 {report['unfinalized']} 只（盘中快照，收盘定稿后刷新本报告）")
     idx = report.get("index_log") or {}
     if idx:
         bar_ok = idx.get("bar") == report["date"]
         stale = "" if bar_ok else f" ⚠ bar={idx.get('bar')}≠今日，大盘标签可能失真"
-        out.append(f"  大盘指数: {idx.get('pct')}%（{idx.get('source')} {idx.get('time')}）"
-                   f" 当日bar={idx.get('bar')}{stale}")
+        out.append(
+            f"  大盘指数: {idx.get('pct')}%（{idx.get('source')} {idx.get('time')}） 当日bar={idx.get('bar')}{stale}"
+        )
     fresh = f"最近推荐 {report.get('last_rec_time') or '—'}"
     if report.get("quality_time"):
         fresh += f" · 质量快照 {str(report['quality_time'])[:8]}"
@@ -420,9 +496,15 @@ def _render(report: dict) -> str:
         out.append("  今日无 🎯 档0 票。")
     else:
         for i, a in enumerate(report["tier0"], 1):
-            cat_label = CAT_COLOR.get(a["category"], "") + CAT_LABEL.get(a["category"], a["category"]) + ANSI["RESET"]
-            out.append(f"  {i}. {ANSI['BOLD']}{a['name']}{ANSI['RESET']} {a['symbol']} "
-                       f"{cat_label} 评分{a['score']} ── {a['concept']}·{a['trend']}")
+            cat_label = (
+                CAT_COLOR.get(a["category"], "")
+                + str(CAT_LABEL.get(a["category"], a["category"]) or "")
+                + ANSI["RESET"]
+            )
+            out.append(
+                f"  {i}. {ANSI['BOLD']}{a['name']}{ANSI['RESET']} {a['symbol']} "
+                f"{cat_label} 评分{a['score']} ── {a['concept']}·{a['trend']}"
+            )
             pos_detail = "·".join(a["pos_detail"]) or "位置数据缺"
             out.append(f"     位置: {a['pos']}（{pos_detail}）| 资金: {_fmt_flow(a['flow'])} | 量能: {a['vol']}")
             risk_str = "、".join(a["risks"]) if a["risks"] else "无显著"
@@ -442,8 +524,7 @@ def _render(report: dict) -> str:
     if not report["tier3"]:
         out.append("  今日无警示劣后票。")
     else:
-        reasons = "、".join(f"{k}×{v}" for k, v in sorted(report["tier3_reasons"].items(),
-                                                          key=lambda x: -x[1]))
+        reasons = "、".join(f"{k}×{v}" for k, v in sorted(report["tier3_reasons"].items(), key=lambda x: -x[1]))
         out.append(f"  {len(report['tier3'])} 只，劣后原因: {reasons}")
         out.append("  全部均为板块普涨/超买/资金流出等避雷区，追高次日大概率兑现。")
 
@@ -462,10 +543,15 @@ def _render(report: dict) -> str:
     else:
         for c in report["comeback_flow"]:
             flow_str = _fmt_flow(c["flow"])
-            verdict = "资金回流可取" if (c["flow"] is not None and c["flow"] >= 5) else (
-                "资金背离回避" if (c["flow"] is not None and c["flow"] <= FUND_OUTFLOW_NET_PCT) else "中性观察")
-            out.append(f"  {c['name']} {c['symbol']} 评分{c['score']} [{c['variant']}] "
-                       f"{flow_str} → {verdict}（信号: {c['signals'] or '—'}）")
+            verdict = (
+                "资金回流可取"
+                if (c["flow"] is not None and c["flow"] >= 5)
+                else ("资金背离回避" if (c["flow"] is not None and c["flow"] <= FUND_OUTFLOW_NET_PCT) else "中性观察")
+            )
+            out.append(
+                f"  {c['name']} {c['symbol']} 评分{c['score']} [{c['variant']}] "
+                f"{flow_str} → {verdict}（信号: {c['signals'] or '—'}）"
+            )
 
     # 七、结论
     out.append(f"\n{ANSI['BOLD']}七、结论{ANSI['RESET']}")

@@ -4,6 +4,7 @@ import wcwidth
 from scanner.config import FEISHU_KEYWORD, FEISHU_MIN_INTERVAL, FEISHU_WEBHOOK, now_beijing
 from scanner.display import fund_flow_signal, split_risk_flags
 from scanner.models import Candidate
+from scanner.utils import to_float
 
 _last_push_time: float = 0.0
 _last_push_symbols: set[str] = set()
@@ -43,9 +44,9 @@ def _build_card(
     sec_line = " | ".join(f"{s}({n})" for s, n in hot_secs)
 
     # 大盘环境标签：与 display.py 对齐，从首个 candidate 的 dimensions 读取
-    env_bonus = 0
+    env_bonus = 0.0
     if all_c and all_c[0].kline:
-        env_bonus = all_c[0].kline.dimensions.get("market_env_bonus", 0) or 0
+        env_bonus = to_float(all_c[0].kline.dimensions.get("market_env_bonus")) or 0.0
     if env_bonus > 0:
         env_tag = " | 🟢大盘强势"
     elif env_bonus < 0:
@@ -53,9 +54,11 @@ def _build_card(
     else:
         env_tag = " | ⚪大盘中性"
 
-    header_text = (f"**{now}** | 🟢新{len(new_faces)} 📈动{len(momentum)} "
-                   f"🔄反{len(rebound_list)} 🌀马{len(comeback_list)} "
-                   f"🔴超{len(short_term_list)}{env_tag}")
+    header_text = (
+        f"**{now}** | 🟢新{len(new_faces)} 📈动{len(momentum)} "
+        f"🔄反{len(rebound_list)} 🌀马{len(comeback_list)} "
+        f"🔴超{len(short_term_list)}{env_tag}"
+    )
     if sec_line:
         header_text += f" | 🔥 {sec_line}"
 
@@ -99,14 +102,16 @@ def _build_card(
         extra_parts = []
         ff_pct = dims.get("fund_flow_main_pct")
         if ff_pct is not None:
-            mark = {
-                "strong_in": "🟢🟢",
-                "in": "🟢",
-                "out": "🔴",
-                "strong_out": "🔴🔴",
-            }.get(fund_flow_signal(float(ff_pct)))
-            if mark:
-                extra_parts.append(mark)
+            ff_val = to_float(ff_pct)
+            if ff_val is not None:
+                mark = {
+                    "strong_in": "🟢🟢",
+                    "in": "🟢",
+                    "out": "🔴",
+                    "strong_out": "🔴🔴",
+                }.get(fund_flow_signal(ff_val))
+                if mark:
+                    extra_parts.append(mark)
         if dims.get("zt_lianban"):
             extra_parts.append(f"📈{dims['zt_lianban']}板")
         extra_str = (" " + " ".join(extra_parts)) if extra_parts else ""
@@ -135,14 +140,18 @@ def _build_card(
 
     if not first:
         elements.append({"tag": "hr"})
-    elements.append({
-        "tag": "note",
-        "elements": [
-            {"tag": "plain_text",
-             "content": f"创业板共{gem_total}只"
-                        + (f" | 过滤{filtered_large_cap}只" if filtered_large_cap else "")}
-        ],
-    })
+    elements.append(
+        {
+            "tag": "note",
+            "elements": [
+                {
+                    "tag": "plain_text",
+                    "content": f"创业板共{gem_total}只"
+                    + (f" | 过滤{filtered_large_cap}只" if filtered_large_cap else ""),
+                }
+            ],
+        }
+    )
 
     return {
         "config": {"wide_screen_mode": True},
@@ -154,10 +163,13 @@ def _build_card(
     }
 
 
-def _extract_symbols(new_faces: list[Candidate], momentum: list[Candidate],
-                     short_term_list: list[Candidate],
-                     rebound_list: list[Candidate] | None = None,
-                     comeback_list: list[Candidate] | None = None) -> set[str]:
+def _extract_symbols(
+    new_faces: list[Candidate],
+    momentum: list[Candidate],
+    short_term_list: list[Candidate],
+    rebound_list: list[Candidate] | None = None,
+    comeback_list: list[Candidate] | None = None,
+) -> set[str]:
     rebound_list = rebound_list or []
     comeback_list = comeback_list or []
     return {c.stock.symbol for c in new_faces + momentum + rebound_list + comeback_list + short_term_list}
@@ -185,6 +197,7 @@ def push_feishu(
         comeback_list = []
 
     import time
+
     now = time.time()
     current_symbols = _extract_symbols(new_faces, momentum, short_term_list, rebound_list, comeback_list)
     has_change = current_symbols != _last_push_symbols
@@ -199,12 +212,10 @@ def push_feishu(
         return False
 
     try:
-        card = _build_card(new_faces, momentum,
-                           gem_total, filtered_large_cap,
-                           short_term_list, rebound_list, comeback_list)
-        resp = requests.post(FEISHU_WEBHOOK,
-                             json={"msg_type": "interactive", "card": card},
-                             timeout=10)
+        card = _build_card(
+            new_faces, momentum, gem_total, filtered_large_cap, short_term_list, rebound_list, comeback_list
+        )
+        resp = requests.post(FEISHU_WEBHOOK, json={"msg_type": "interactive", "card": card}, timeout=10)
         result = resp.json()
         if result.get("code") != 0:
             print(f"\n  [!] 飞书推送失败: {result.get('msg')}")
