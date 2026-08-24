@@ -9,15 +9,21 @@ get_conn() 是连接创建的唯一入口：timeout/busy_timeout/WAL 三件套�
 """
 import sqlite3
 
-from scanner.config import DB_PATH, now_beijing
+from scanner.config import now_beijing
 
 # schema 版本：每次结构性变更（新表/新列/新索引）+1，并在 init_db 里补对应的
 # 幂等迁移。schema_version 表记录演进历史，供工具判断库是否需要重建/回填。
 SCHEMA_VERSION = 1
 
 
-def get_conn(db_path: str = DB_PATH) -> sqlite3.Connection:
+def get_conn(db_path: str | None = None) -> sqlite3.Connection:
     """创建带标准 PRAGMA 的 scanner.db 连接（唯一入口）。
+
+    db_path 缺省时在**调用时**读取 scanner.config.DB_PATH（非默认参数导入期绑定）——
+    默认参数 `db_path: str = DB_PATH` 在 import 时固化路径，测试 patch
+    cfgmod.DB_PATH 完全无效，导致测试静默连上真实生产库读写（2026-08-24 审查发现：
+    TestMarketCapCache 偶发失败 + 测试市值数据污染真实 market_cap_cache）。改为
+    函数内查 config 模块属性后，patch 即生效。
 
     - timeout=10 / busy_timeout=10000：与其他工具并发访问时短暂锁竞争不抛异常，
       等待后重试。扫描器主线程独占写，但 stock_report/backtest 等独立进程可能
@@ -27,6 +33,10 @@ def get_conn(db_path: str = DB_PATH) -> sqlite3.Connection:
       scanner.db 的进程（backtest/prevday/nextday/ic_attribution 等）自动继承，
       无需逐个改连接点。
     """
+    if db_path is None:
+        from scanner import config as _config  # 调用时读模块属性，patch 可见
+
+        db_path = _config.DB_PATH
     conn = sqlite3.connect(db_path, timeout=10.0)
     conn.execute("PRAGMA busy_timeout=10000")
     conn.execute("PRAGMA journal_mode=WAL")

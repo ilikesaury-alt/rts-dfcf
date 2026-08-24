@@ -914,3 +914,43 @@ class TestMarketCapCache:
         cap_db.commit()
         assert get_cached_market_caps(cap_db, ["SZ300001"], max_age_days=0) == {}  # 仅当日 → 空
         assert "SZ300001" in get_cached_market_caps(cap_db, ["SZ300001"], max_age_days=7)  # 近7天 → 命中
+
+
+class TestGetConnDbPathPatchable:
+    """get_conn 默认路径必须调用时读取 config.DB_PATH（2026-08-24 审查修复回归）。
+
+    旧实现 `def get_conn(db_path: str = DB_PATH)` 在 import 时固化真实 scanner.db
+    路径，测试 patch cfgmod.DB_PATH 完全无效——cap_db 等 fixture 静默连上生产库，
+    测试偶发读到真实行情数据（假失败）+ 把测试市值写入真实 market_cap_cache
+    （污染小而美兜底数据源）。
+    """
+
+    def test_patched_db_path_takes_effect(self, tmp_path, monkeypatch):
+        import scanner.config as cfgmod
+        import scanner.db.schema as schema
+
+        p = tmp_path / "patched.db"
+        monkeypatch.setattr(cfgmod, "DB_PATH", str(p))
+        conn = schema.get_conn()
+        try:
+            attached = conn.execute("PRAGMA database_list").fetchall()
+            assert str(p).lower() in str(attached[0][2]).lower(), (
+                f"patch cfgmod.DB_PATH 后 get_conn 应连 {p}，实际 {attached}")
+        finally:
+            conn.close()
+
+    def test_init_db_uses_patched_path(self, tmp_path, monkeypatch):
+        import scanner.config as cfgmod
+        import scanner.database as dbmod
+
+        p = tmp_path / "init.db"
+        monkeypatch.setattr(cfgmod, "DB_PATH", str(p))
+        conn = dbmod.init_db()
+        try:
+            # init_db 建表成功落在 patched 路径上
+            tables = [r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+            assert "market_cap_cache" in tables
+            assert p.exists()
+        finally:
+            conn.close()
