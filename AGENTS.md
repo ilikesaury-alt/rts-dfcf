@@ -157,12 +157,13 @@ Tests use pytest with helper factories `_stock()` and `_kline()` in `tests/helpe
 
 ### 2. 系统性过风险区（每轮全过一遍）
 - **数据入口/强制转换**：搜 `or 0` / `or 0.0` / `get(...) or` / `or i` 模式，字符串/None/NaN 不得漏进数值比较与算术（`_filter_gem_stocks` / `compute_surge_sentiment` / `fetch_market_caps_batch` 曾同缺陷各爆一次）。
-- **K线/缓存/新鲜度**：`_fetch_all_klines`（TTL/今日bar缺失/KLINE_FETCH_DEADLINE）、`get_cached_kline`、`_last_kline_fetch`。
-- **并发/健壮性**：ThreadPoolExecutor 是否带 deadline（kline 有、涨停池/概念/资金流是否也有）、缓存上限淘汰、共享全局线程安全。
-- **评分/验证**：analysis/validator/enhancer — None 处理、除零、窗口越界（`[-21]`、`closes[-6]`）、维度键缺失、默认参数绑定模块常量。
+- **K线/缓存/新鲜度**：`kline_fetch.fetch_all_klines`（2026-08-21 自 orchestrator 抽出；TTL/今日bar缺失/KLINE_FETCH_DEADLINE）、`get_cached_kline`、`_last_kline_fetch`。
+- **并发/健壮性**：ThreadPoolExecutor 是否带 deadline（kline 有、涨停池/概念/资金流是否也有；分时三相走 `intraday_fetch.parallel_fetch`，2026-08-21 自 orchestrator 抽出）、缓存上限淘汰、共享全局线程安全。
+- **评分/验证**：analysis/validator/enhancer + `candidates.py`（2026-08-21 自 orchestrator 抽出的单票评分/分类层）— None 处理、除零、窗口越界（`[-21]`、`closes[-6]`）、维度键缺失、默认参数绑定模块常量。
+- **THS 官方 API 限流（2026-08-23 新增）**：ths_api 软限流 ~3.8 req/s——审查新代码时留意任何调用点是否被塞进盘中热路径（只允许低频场景：涨停池/财务过滤/健康验证/K线兜底）。
 - **掉榜/回马枪**：comeback + watch_pool — `rank=0` 被当榜上排名加分、`last_eval_date` 幂等、off_list 加分豁免、`over_limit` 粘性。
 - **展示/推送**：display/feishu — live_quotes 回退链、tier 排序、掉榜行 `_candidate` 为 None 的分支。
-- **数据源交叉验证（2026-08-18 拓斯达脏数据事故新增）**：任何落库数值（daily_kline/next_day_pct）先问一句「来自哪个源、是否被独立源验证过」。本地契约检查（close>0/NaN 剔除等）抓不到**自洽脏数据**——盘中残留未定稿 bar 的 percent/量价内部一致，唯一可靠的是跨源比对（新浪 qfq vs 雪球）。`scanner/data_health.py` 提供 `check_kline_health`（抽样交叉验证，不符比例≥30% 阻断）+ `count_unfinalized_today`（finalized=0 计数）+ `check_market_index_health`（大盘指数血缘对账，2026-08-19：bar 日期滞后/涨幅 vs 东财 push2delay 偏差超 0.5pp 即告警）；`nextday_attribution`/`prevday_perf` 出报告前自动跑（`--force` 逃生口），`today_report` 展示未定稿数 + 指数记录。
+- **数据源交叉验证（2026-08-18 拓斯达脏数据事故新增）**：任何落库数值（daily_kline/next_day_pct）先问一句「来自哪个源、是否被独立源验证过」。本地契约检查（close>0/NaN 剔除等）抓不到**自洽脏数据**——盘中残留未定稿 bar 的 percent/量价内部一致，唯一可靠的是跨源比对（THS 官方为主参照、新浪 qfq 为回退参照 vs 雪球）。`scanner/data_health.py` 提供 `check_kline_health`（抽样交叉验证，不符比例≥30% 阻断）+ `count_unfinalized_today`（finalized=0 计数）+ `check_market_index_health`（大盘指数血缘对账，2026-08-19：bar 日期滞后/涨幅 vs 东财 push2delay 偏差超 0.5pp 即告警）；`nextday_attribution`/`prevday_perf` 出报告前自动跑（`--force` 逃生口），`today_report` 展示未定稿数 + 指数记录。
 - **数值边界**：NaN/None/0 除/空列表，用最小复现脚本或 fuzz 验证。
 
 ### 3. 修复流程
@@ -178,10 +179,10 @@ Tests use pytest with helper factories `_stock()` and `_kline()` in `tests/helpe
 - comeback/off_list 候选 `rank=0` 被当榜上第 1 名计 TOP40 加分（`enhancer._apply_list_momentum_bonus`）
 - **comeback/off_list 候选市值富集（2026-08-13 已修 `_enrich_candidate_market_cap`）**：掉榜票 `stock.market_cap`（亿元，加分用）恒为 0 → 小市值加分缺失；`c.market_cap`（元，行情/门禁用）与 `c.stock.market_cap` 是两套单位字段，富集时都补
 - **`api.fetch_kline` 时间戳强转（2026-08-13 已修）**：`datetime.fromtimestamp(item[0]/1000)` 对 None/str/0/负值抛 TypeError 拖垮整只票 K 线解析（该票漏推荐），应逐根跳过
-- 短 K 线 <32 根每轮重拉绕过 TTL（`orchestrator._fetch_all_klines`，2026-08-09 已修）
+- 短 K 线 <32 根每轮重拉绕过 TTL（`kline_fetch.fetch_all_klines`，2026-08-09 已修；原 `orchestrator._fetch_all_klines`）
 - API 字符串/None 未强转（`_filter_gem_stocks` / `compute_surge_sentiment` / `fetch_market_caps_batch`，已修）
 - 同板块上限 `_cap_short_term_by_sector` 已整体移除（2026-08-12，无需 re-check）
-- 分时/开盘/量比拉取无 deadline（`_parallel_fetch`，已修；留意 `shutdown(wait=False)` 线程生命周期）
+- 分时/开盘/量比拉取无 deadline（`intraday_fetch.parallel_fetch`，已修；留意 `shutdown(wait=False)` 线程生命周期）
 - `scan_with_raw` 模块级全局（`_session_state`/`_last_kline_fetch`）跨扫描一致性
 
 ## Stock Report Tool
