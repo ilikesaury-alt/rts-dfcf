@@ -455,6 +455,24 @@ def test_display_priority_dropped_never_appeared_uses_db_percent(monkeypatch, ca
     assert "+0.00%" not in line
 
 
+def test_display_priority_stale_candidate_no_stale_rank(monkeypatch, capsys):
+    """掉榜 stale 候选不吃池内冻结快照的 rank/current（仙乐健康 08-24 案例：
+    掉榜后仍显示上榜时的旧排名，被误读为当前名次）。掉榜行排名应回 —。"""
+    conn = _rec_db()
+    _insert_rec(conn, "SZ300791", "仙乐健康", 3.0)
+    cand = _cand_in_pool("SZ300791", 3.69, 22.9, 15)
+    cand.is_stale = True
+    disp_mod.display_priority(
+        conn,
+        live_quotes={"SZ300791": {"percent": 3.5, "current": 23.0}},
+        today_pool={"SZ300791": cand},
+    )
+    out = capsys.readouterr().out
+    line = next(ln for ln in out.splitlines() if "SZ300791" in ln)
+    assert "+3.50%" in line and "23.00" in line
+    assert " 15" not in line.replace("SZ300791", "")  # 旧排名不得残留
+
+
 def test_display_priority_rank_map_for_dropped(monkeypatch, capsys):
     """掉榜/重启行（无候选）的排名由当前飙升榜 rank_map 补上（此前恒为 —）。"""
     conn = _rec_db()

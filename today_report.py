@@ -115,7 +115,9 @@ def _tier0_verdict(entry: Any, flow_pct_map: dict) -> dict:
     if flow is None:
         flow = flow_pct_map.get(sym)
     flow = to_float(flow, default=None)
-    has_live = bool(entry.get("live_quote_available") or entry.get("live_rank") is not None)
+    # 2026-08-24：live_rank 不再由 get_today_recommendations 填充（appearances 上榜快照
+    # 非实时，曾被展示层误当当前名次），新鲜度判定改用同源的 live_percent。
+    has_live = bool(entry.get("live_quote_available") or entry.get("live_percent") is not None)
     live_pct = entry.get("live_percent")
     live_pct = to_float(live_pct) if (has_live and live_pct is not None) else None
     band = _entry_band(entry)
@@ -249,11 +251,12 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
     core_dip = [e for e in recs if e["category"] == CORE_DIP_CATEGORY]
     # 2026-08-20 收敛：排序组合层（档位+类别优先级+分数键含 kNF 升序）统一走 ranking.sort_main_entries，
     # 与综合排序终端同源（此前 today_report 漏掉 kNF 升序特判，两处排序分化）。
-    tier_map = {e["symbol"]: e["_tier"] if e.get("_tier") is not None else 2 for e in main}
-    main = sort_main_entries(main, tier_map)
-
     def _t(e):
-        return e["_tier"] if e.get("_tier") is not None else 2
+        t = e.get("_tier")
+        return t if t is not None else 2
+
+    tier_map = {e["symbol"]: _t(e) for e in main}
+    main = sort_main_entries(main, tier_map)
 
     tier0 = [e for e in main if _t(e) == 0][:top_n] if top_n else [e for e in main if _t(e) == 0]
     tier1 = [e for e in main if _t(e) == 1]

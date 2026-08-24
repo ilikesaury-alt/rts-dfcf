@@ -20,6 +20,7 @@ class KlineBar(TypedDict):
     volume: float
     percent: float
     timestamp: NotRequired[int | float]  # API 源有（ms）；DB 读回无（SELECT 不含该列）
+    finalized: NotRequired[int]  # 0=盘中未定稿快照，1=最终收盘（DB 读回才有）
 
 
 class Dimensions(TypedDict, total=False):
@@ -78,6 +79,7 @@ class RecommendationRow(_RecRowRequired, total=False):
     _marked: bool
     _tier: int
     _core_stock: bool
+    _core_dip_extra: str  # 核心低吸区行尾后缀（display.display_priority 写入）
 
 
 def parse_score_breakdown(sb: str | dict | None) -> Dict[str, Any]:

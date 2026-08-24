@@ -23,7 +23,7 @@ from scanner.database import (
     get_market_index_log,
     get_today_recommendations,
 )
-from scanner.models import Candidate
+from scanner.models import Candidate, RecommendationRow
 
 # 纯排序逻辑已迁至 scanner.ranking（单源）；此处全量 re-export 供内部调用与
 # scripts/review_tier_replay.py 的 display._entry_* 属性访问保持兼容。
@@ -285,7 +285,7 @@ def _core_dip_extra_str(run, pullback, flow_pct) -> str:
     return f"{ANSI['GREEN']}{' '.join(parts)}{ANSI['RESET']}"
 
 
-def _core_dip_entry_quality(entry: dict) -> tuple:
+def _core_dip_entry_quality(entry: RecommendationRow | dict) -> tuple:
     """推荐记录条目 → 低吸质量排序键（复用 core_themes._low_buy_quality）。
 
     entry 是完整 recommendation 行（含 score_breakdown 的 run/pullback/today_pct/
@@ -354,7 +354,7 @@ def display(
 
 
 def _print_priority_row(
-    entry: dict,
+    entry: RecommendationRow | dict,
     i: int,
     flow_pct_map: dict,
     nextday_mark: bool = False,
@@ -372,7 +372,7 @@ def _print_priority_row(
     last_ranks: 上一轮扫描的榜单排名 {symbol: rank}，用于「排名」列展示雪球榜单排名变化
     （+N 升 / -N 降），与已下线策略桶的 _rank_delta_str 同口径；缺省 None 不显示变化。
     """
-    c = entry["_candidate"]
+    c = entry.get("_candidate")
     sector = classify_sector(entry["name"])
     # 标签/优先级/建议列统一用 entry["category"]（与排序口径一致），
     # 不用 c.category：双挂票的 today_pool 按 symbol 覆盖会拿到 short_term 候选，
@@ -408,10 +408,14 @@ def _print_priority_row(
         live_cur = 0.0
         live_rank = entry.get("live_rank")
     # 实时行情不含 rank/current（batch/quote 无 rank 字段）时，回退候选快照。
-    if not live_cur and c and c.stock.current:
-        live_cur = c.stock.current
-    if not live_rank and c and c.stock.rank:
-        live_rank = c.stock.rank
+    # is_stale 候选（已掉榜、池内快照冻结）不参与回退——否则掉榜前的旧排名会被
+    # 当作当前名次渲染（2026-08-24 仙乐健康案例：掉榜后仍显示上榜时的 rank 15），
+    # 与「掉榜行恒为 —」的既定语义一致；现价同理不吃陈旧快照。
+    _fresh_c = c if (c and not getattr(c, "is_stale", False)) else None
+    if not live_cur and _fresh_c and _fresh_c.stock.current:
+        live_cur = _fresh_c.stock.current
+    if not live_rank and _fresh_c and _fresh_c.stock.rank:
+        live_rank = _fresh_c.stock.rank
     price_str = f"{live_cur:.2f}" if live_cur else "—"
     # 排名列：当前名次 + 较上一轮扫描的变化（+N 升 / -N 降），无上轮或不变化仅显名次。
     # 名次在雪球榜单前 TOP40_THRESHOLD 内时高亮（加粗 + 红色），TOP40 视为热度强势信号。
@@ -450,13 +454,13 @@ def _print_priority_row(
             risk_str = f" {ANSI['YELLOW']}⚠+{soft_count}{ANSI['RESET']}"
     # 建议列：按类别独立映射（与展示优先级解耦），SUGGEST_BY_CAT 含 ANSI 需用 _pad 对齐
     suggest_str = SUGGEST_BY_CAT.get(cat, "")
-    first_time = entry.get("first_time", entry.get("time", ""))[:5]
+    first_time = str(entry.get("first_time") or entry.get("time") or "")[:5]
     # 5日累计涨幅：优先用候选池的 kline 数据，否则用 DB 落库值
     accum_val = None
     if c and c.kline:
         accum_val = c.kline.accumulated_pct
-    elif entry.get("accumulated_pct") is not None:
-        accum_val = entry["accumulated_pct"]
+    else:
+        accum_val = entry.get("accumulated_pct")
     if accum_val is None:
         accum_str = "—"
     else:
@@ -684,7 +688,7 @@ def display_priority(
     # 2026-08-20：展示改与回马枪同款——复用综合排序标准表头 hdr + _print_priority_row
     # （代码/名称/涨幅/5日累计/现价/排名/板块/策略/评分/时间/建议），低吸专属数据
     # （20日累计/回撤/主力）追加到行尾 extra 后缀（ANSI 绿色），不再用自定义表头。
-    core_dips: list[dict] = []
+    core_dips: list[RecommendationRow] = []
     for e in core_dip_recs:
         sb = _entry_dims(e)
         run = sb.get("run")

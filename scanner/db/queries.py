@@ -4,10 +4,12 @@
 私有 helper（_count_consecutive_days / _assign_rank_scores 等）仅包内消费，
 经 scanner/database.py 门面 re-export 供测试使用。
 """
+
 import json
 import logging
 import sqlite3
 from datetime import date, timedelta
+from typing import cast
 
 from scanner.config import (
     CORE_DIP_CATEGORY,
@@ -23,8 +25,7 @@ from scanner.trading_session import is_trading_day
 logger = logging.getLogger(__name__)
 
 
-def get_symbol_appearances(conn: sqlite3.Connection, symbol: str, days: int,
-                           as_of: str | None = None) -> list[dict]:
+def get_symbol_appearances(conn: sqlite3.Connection, symbol: str, days: int, as_of: str | None = None) -> list[dict]:
     """symbol 在 as_of 之前 days 个交易日内的上榜记录（不含 as_of 当天）。
 
     as_of 默认真实今日（实时扫描口径）。历史回放传入信号日，即可复现那一天
@@ -59,8 +60,9 @@ def get_cached_klines(conn: sqlite3.Connection, symbols: list[str]) -> dict[str,
             (*uniq, lookback),
         )
         for sym, d, o, c, h, low, vol, pct, fin in cur.fetchall():
-            bar = make_kline_bar({"date": d, "open": o, "close": c,
-                                  "high": h, "low": low, "volume": vol, "percent": pct})
+            bar = make_kline_bar(
+                {"date": d, "open": o, "close": c, "high": h, "low": low, "volume": vol, "percent": pct}
+            )
             if bar is not None:
                 bar["finalized"] = bool(fin)  # 0=盘中未定稿快照，1=最终收盘
                 by_sym.setdefault(sym, []).append(bar)
@@ -75,8 +77,7 @@ def get_cached_kline(conn: sqlite3.Connection, symbol: str) -> list[KlineBar] | 
     return get_cached_klines(conn, [symbol]).get(symbol)
 
 
-def get_cached_market_caps(conn: sqlite3.Connection, symbols: list[str],
-                           max_age_days: int = 0) -> dict[str, dict]:
+def get_cached_market_caps(conn: sqlite3.Connection, symbols: list[str], max_age_days: int = 0) -> dict[str, dict]:
     """读取市值陈旧缓存（市值批量全失败时的兜底）。
 
     max_age_days=0：仅返回当日写入的缓存（最严格，适合盘中）。非 0：放宽到近 N 天
@@ -106,9 +107,12 @@ def get_cached_market_caps(conn: sqlite3.Connection, symbols: list[str],
     try:
         for sym, mc, cmc, tr, cur_, pct, src in cur.fetchall():
             out[sym] = {
-                "market_cap": mc, "circ_market_cap": cmc,
-                "turnover_rate": tr, "current": cur_,
-                "percent": pct, "source": src,
+                "market_cap": mc,
+                "circ_market_cap": cmc,
+                "turnover_rate": tr,
+                "current": cur_,
+                "percent": pct,
+                "source": src,
             }
     except Exception as e:
         logger.warning(f"get_cached_market_caps failed: {e}")
@@ -140,9 +144,9 @@ def _count_consecutive_days(dates: list[str]) -> int:
     return streak
 
 
-def get_consecutive_appearance_days_batch(conn: sqlite3.Connection,
-                                          symbols: list[str],
-                                          max_days: int = 10) -> dict[str, int]:
+def get_consecutive_appearance_days_batch(
+    conn: sqlite3.Connection, symbols: list[str], max_days: int = 10
+) -> dict[str, int]:
     """批量计算多只股票连续上榜天数（不含今日），单次 SQL 消灭 enhancer 的 N+1。
 
     与 get_consecutive_appearance_days 同口径（最多 max_days 天）。
@@ -191,6 +195,7 @@ def _is_consecutive_trading_days(prev: date, curr: date) -> bool:
 def count_recent_appearances(conn: sqlite3.Connection, symbol: str, lookback_days: int = 10) -> int:
     """Count distinct appearance days for a symbol in the last N trading days (including today)."""
     from scanner.config import now_beijing as _now
+
     lookback = _n_trading_days_ago(lookback_days - 1)
     today = _now().date().isoformat()
     cur = conn.execute(
@@ -200,8 +205,7 @@ def count_recent_appearances(conn: sqlite3.Connection, symbol: str, lookback_day
     return cur.fetchone()[0]
 
 
-def get_prominence_map(conn: sqlite3.Connection, symbols: list[str],
-                       as_of_date: str | None = None) -> dict[str, bool]:
+def get_prominence_map(conn: sqlite3.Connection, symbols: list[str], as_of_date: str | None = None) -> dict[str, bool]:
     """批量查询哪些 symbol 满足辨识度条件（↻）。
 
     逻辑与 enhancer._compute_prominence_labels 完全一致：
@@ -220,8 +224,7 @@ def get_prominence_map(conn: sqlite3.Connection, symbols: list[str],
     placeholders = ",".join("?" * len(symbols))
     try:
         rows = conn.execute(
-            f"SELECT symbol, date, rank FROM appearances "
-            f"WHERE symbol IN ({placeholders}) AND date >= ? AND date <= ?",
+            f"SELECT symbol, date, rank FROM appearances WHERE symbol IN ({placeholders}) AND date >= ? AND date <= ?",
             (*symbols, lookback_rank, today),
         ).fetchall()
     except Exception as e:
@@ -262,8 +265,7 @@ def is_prominent(conn: sqlite3.Connection, symbol: str) -> bool:
     return get_prominence_map(conn, [symbol]).get(symbol, False)
 
 
-def get_market_index_log(conn: sqlite3.Connection,
-                         date_str: str | None = None) -> dict | None:
+def get_market_index_log(conn: sqlite3.Connection, date_str: str | None = None) -> dict | None:
     """读取某日最近一轮的大盘指数血缘记录；无记录/旧库无表返回 None。"""
     if date_str is None:
         date_str = now_beijing().date().isoformat()
@@ -275,15 +277,13 @@ def get_market_index_log(conn: sqlite3.Connection,
         if not row:
             return None
         # 不依赖 conn.row_factory（部分调用方传裸 sqlite3.Connection），按列名组装
-        cols = [c[0] for c in conn.execute(
-            "SELECT * FROM market_index_log WHERE 1=0").description]
+        cols = [c[0] for c in conn.execute("SELECT * FROM market_index_log WHERE 1=0").description]
         return dict(zip(cols, row))
     except sqlite3.OperationalError:
         return None  # 旧库无表（未迁移）→ 无法审计，fail-open
 
 
-def get_loss_rates_batch(conn: sqlite3.Connection, symbols: list[str],
-                         lookback_days: int = 90) -> dict[str, float]:
+def get_loss_rates_batch(conn: sqlite3.Connection, symbols: list[str], lookback_days: int = 90) -> dict[str, float]:
     """批量返回 {symbol: loss_rate}，loss_rate = 近 lookback_days 天推荐中次日跌幅<=-5% 的占比。
 
     样本<3 的 symbol 不包含在返回结果中（避免小样本噪音）。
@@ -309,9 +309,9 @@ def get_loss_rates_batch(conn: sqlite3.Connection, symbols: list[str],
         return {}
 
 
-def get_recent_recommendations(conn: sqlite3.Connection,
-                               lookback_days: int = 5,
-                               exclude_today: bool = True) -> list[dict]:
+def get_recent_recommendations(
+    conn: sqlite3.Connection, lookback_days: int = 5, exclude_today: bool = True
+) -> list[dict]:
     """查询近 N 个交易日的推荐记录（去重：同股取最新推荐日的最高分）。
 
     返回每只票在最近推荐日的记录（同日内取最高分，跨日取最新日）。
@@ -319,10 +319,7 @@ def get_recent_recommendations(conn: sqlite3.Connection,
     """
     today = now_beijing().date().isoformat()
     lookback = _n_trading_days_ago(lookback_days)
-    query = (
-        "SELECT symbol, name, category, score, percent, date "
-        "FROM recommendations WHERE date >= ? "
-    )
+    query = "SELECT symbol, name, category, score, percent, date FROM recommendations WHERE date >= ? "
     params: list = [lookback]
     if exclude_today:
         query += "AND date < ? "
@@ -342,10 +339,16 @@ def get_recent_recommendations(conn: sqlite3.Connection,
         if sym in seen:
             continue
         seen.add(sym)
-        result.append({
-            "symbol": sym, "name": r[1], "category": r[2],
-            "score": r[3], "percent": r[4] or 0.0, "date": r[5],
-        })
+        result.append(
+            {
+                "symbol": sym,
+                "name": r[1],
+                "category": r[2],
+                "score": r[3],
+                "percent": r[4] or 0.0,
+                "date": r[5],
+            }
+        )
     return result
 
 
@@ -353,16 +356,13 @@ def get_watch_symbols(conn: sqlite3.Connection) -> list[dict]:
     """返回掉榜跟踪池全部条目。"""
     try:
         rows = conn.execute(
-            "SELECT symbol, name, last_list_date, over_limit, last_eval_date "
-            "FROM watch_pool"
+            "SELECT symbol, name, last_list_date, over_limit, last_eval_date FROM watch_pool"
         ).fetchall()
     except Exception as e:
         logger.warning(f"get_watch_symbols failed: {e}")
         return []
     return [
-        {"symbol": r[0], "name": r[1], "last_list_date": r[2],
-         "over_limit": r[3], "last_eval_date": r[4]}
-        for r in rows
+        {"symbol": r[0], "name": r[1], "last_list_date": r[2], "over_limit": r[3], "last_eval_date": r[4]} for r in rows
     ]
 
 
@@ -385,7 +385,7 @@ def get_today_recommendations(conn: sqlite3.Connection, as_of=None) -> list[Reco
 
     返回列表未排序，每项包含：
       symbol, name, category, score, trend, first_time,
-      live_percent (from appearances), live_rank (from appearances),
+      live_percent (from appearances),
       rank_score（类内百分位，综合排序跨类别可比用）,
       score_breakdown（2026-08-17 新增：解析为 dict，供掉榜/重启行的 🎯 分型
       （short_term 弱转强）与板块普涨避雷标记判定，见 ranking._entry_dims）
@@ -461,14 +461,17 @@ def get_today_recommendations(conn: sqlite3.Connection, as_of=None) -> list[Reco
         # 同表两套口径：可「判档用 +5%、显示 +0.00%」）。今日上榜行 percent=0.0
         # 是合法 0.00% 涨幅，保持 0.0 不误伤（test_display_priority_dropped_live_percent_zero_not_fallback）。
         entry["live_percent"] = a["percent"] if a else None
-        entry["live_rank"] = a["rank"] if a else None
+        # live_rank 不再从 appearances 填充（2026-08-24 仙乐健康案例）：appearances.rank
+        # 是「今日上榜时的快照名次」，掉榜后冻结——塞进 live_rank 会被展示层当实时
+        # 名次直接渲染（掉榜票显示旧排名）。综合排序排名列的真实时链路在 display：
+        # 当前轮 rank_map（在榜）→ 未过期的候选快照 → 掉榜行恒为 —。
 
-    result = list(seen.values())
+    result = cast(list[RecommendationRow], list(seen.values()))
     _assign_rank_scores(result)
     return result
 
 
-def _assign_rank_scores(records: list[dict]) -> None:
+def _assign_rank_scores(records: list) -> None:
     """为 records 计算 within-(date,category) 百分位 rank_score（0-100），就地修改。
 
     用于综合排序跨类别可比：同类别同日的票按 score 分位排序，消除各类别自身标尺差异
@@ -499,8 +502,7 @@ def get_concepts_cache(conn: sqlite3.Connection, symbols: list[str], ttl_days: i
     cutoff = (now_beijing() - timedelta(days=ttl_days)).isoformat()
     try:
         rows = conn.execute(
-            f"SELECT symbol, concepts FROM concept_cache "
-            f"WHERE symbol IN ({placeholders}) AND updated >= ?",
+            f"SELECT symbol, concepts FROM concept_cache WHERE symbol IN ({placeholders}) AND updated >= ?",
             (*symbols, cutoff),
         ).fetchall()
     except Exception as e:
@@ -517,8 +519,9 @@ def get_concepts_cache(conn: sqlite3.Connection, symbols: list[str], ttl_days: i
     return result
 
 
-def get_market_extra_cache(conn: sqlite3.Connection, symbols: list[str],
-                           data_type: str, intraday_ttl_sec: int | None = None) -> dict[str, dict]:
+def get_market_extra_cache(
+    conn: sqlite3.Connection, symbols: list[str], data_type: str, intraday_ttl_sec: int | None = None
+) -> dict[str, dict]:
     """批量读取 market_extra_cache，返回 {symbol: payload_dict}。
 
     仅返回 date 为今天的条目。intraday_ttl_sec 提供时，仅返回 updated 距今
@@ -530,10 +533,11 @@ def get_market_extra_cache(conn: sqlite3.Connection, symbols: list[str],
         return {}
     placeholders = ",".join("?" * len(symbols))
     today = now_beijing().date().isoformat()
-    cutoff = (now_beijing() - timedelta(seconds=intraday_ttl_sec)).isoformat() \
-        if intraday_ttl_sec else None
-    sql = (f"SELECT symbol, payload_json FROM market_extra_cache "
-           f"WHERE symbol IN ({placeholders}) AND data_type = ? AND date = ?")
+    cutoff = (now_beijing() - timedelta(seconds=intraday_ttl_sec)).isoformat() if intraday_ttl_sec else None
+    sql = (
+        f"SELECT symbol, payload_json FROM market_extra_cache "
+        f"WHERE symbol IN ({placeholders}) AND data_type = ? AND date = ?"
+    )
     params: tuple = (*symbols, data_type, today)
     if cutoff:
         sql += " AND updated >= ?"
@@ -567,5 +571,8 @@ def get_fund_flow_pct_map(conn: sqlite3.Connection, symbols: list[str]) -> dict[
         ff_db = get_market_extra_cache(conn, list(dict.fromkeys(symbols)), "fund_flow")
     except Exception:
         return {}
-    return {sym: (payload.get("main_pct") if payload else None)
-            for sym, payload in ff_db.items()}
+    return {
+        sym: pct
+        for sym, payload in ff_db.items()
+        if (pct := (payload.get("main_pct") if payload else None)) is not None
+    }
