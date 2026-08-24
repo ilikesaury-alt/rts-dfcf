@@ -43,21 +43,28 @@ class Dimensions(TypedDict, total=False):
     """
 
 
-class RecommendationRow(TypedDict, total=False):
-    """get_today_recommendations 返回行（P1-7 契约化）。
+class _RecRowRequired(TypedDict):
+    """get_today_recommendations 每行必返回的键（SELECT 固定列 + 构造字典固定键）。"""
 
-    score_breakdown 统一经 parse_score_breakdown 解析为 Dimensions；_candidate 为
-    实时候选对象（掉榜/重启行无，为 None）。
-    """
     symbol: str
     name: str
     category: str
     score: float | int
     date: str
-    trend: str | None
     time: str
     percent: float
     concept: str
+
+
+class RecommendationRow(_RecRowRequired, total=False):
+    """get_today_recommendations 返回行（P1-7 契约化）。
+
+    score_breakdown 统一经 parse_score_breakdown 解析为 Dimensions；_candidate 为
+    实时候选对象（掉榜/重启行无，为 None）。trend/accumulated_pct 列可为 NULL，
+    live_percent/live_rank/_candidate 为展示层注入键，均可选。
+    """
+
+    trend: str | None
     accumulated_pct: float | None
     score_breakdown: Dimensions
     _candidate: Any  # scanner.models.Candidate | None（避免双向 import）
@@ -171,18 +178,18 @@ class Candidate:
     rps_bonus: int = 0
     market_cap_bonus: int = 0
     list_momentum_bonus: int = 0
-    fund_flow_bonus: int = 0      # 主力资金净流入加分（行情增强，enhancer）
-    zt_lianban_bonus: int = 0     # 涨停连板加分/追高降权（行情增强，enhancer）
+    fund_flow_bonus: int = 0  # 主力资金净流入加分（行情增强，enhancer）
+    zt_lianban_bonus: int = 0  # 涨停连板加分/追高降权（行情增强，enhancer）
     is_stale: bool = False
     stale_since: str = ""
     risk_flags: list[str] = field(default_factory=list)  # 复合风险标签（超买/出货/破位等）
     prominence_labels: list[str] = field(default_factory=list)  # 辨识度标签（反复上榜等）
     driving_concept: str = ""  # 当前推动概念（仅展示，不参与打分）
-    off_list: bool = False    # 掉榜跟踪候选（回马枪）：不在当次热榜上，无热榜背书
+    off_list: bool = False  # 掉榜跟踪候选（回马枪）：不在当次热榜上，无热榜背书
     comeback_variant: str = ""  # 回马枪变体："反转" / "回踩"（展示与持久化区分）
     stale_kline: bool = False  # 评分所用 K 线缺今日 bar（补拉失败旧缓存兜底）——审计用（2026-08-14）
     excluded_reason: str = ""  # 硬过滤命中标签串（审计用，2026-08-20）：excluded=1 时记录
-                               # 命中哪些 RISK_FLAGS_HARD_FILTER 标签，消除"无依据误杀"盲点
+    # 命中哪些 RISK_FLAGS_HARD_FILTER 标签，消除"无依据误杀"盲点
 
 
 @dataclass
@@ -193,6 +200,7 @@ class ScanResult:
     today_pool 为本轮候选池快照（symbol → Candidate，含掉榜 stale 条目），
     供展示层读取实时候选数据，避免 display 直接访问 orchestrator 内部全局。
     """
+
     new_faces: list[Candidate] = field(default_factory=list)
     momentum: list[Candidate] = field(default_factory=list)
     rebound: list[Candidate] = field(default_factory=list)
