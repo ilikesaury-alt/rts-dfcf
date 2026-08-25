@@ -437,14 +437,20 @@ class TestGetAdapter:
             adapter = get_adapter()
         assert isinstance(adapter, XueqiuAdapter)
 
-    def test_auto_mode_ths_only(self, monkeypatch):
-        """auto 模式：雪球不可用 + THS Key 已配置 → ThsAdapter"""
+    def test_auto_mode_xueqiu_down_still_fallback(self, monkeypatch):
+        """auto 模式：雪球启动探测失败 + THS Key 已配置 → 仍恒构造 FallbackAdapter。
+
+        2026-08-24 审查修复：旧实现此处返回裸 ThsAdapter 且单例永不复探——启动
+        瞬间网络抖动一次即把长跑进程整天锁死为 THS-only（飙升榜返空=全天零候选）。
+        现双源配置时恒构造 FallbackAdapter，由 _call 逐请求降级承担故障切换。
+        """
         monkeypatch.setattr("scanner.data_source.DATA_SOURCE", "auto")
         monkeypatch.setattr("scanner.ths_api.get_api_key", lambda: "k")
         with patch("scanner.data_source.api.make_session") as mock_xq:
             mock_xq.side_effect = Exception("xueqiu down")
             adapter = get_adapter()
-        assert isinstance(adapter, ThsAdapter)
+        assert isinstance(adapter, FallbackAdapter)
+        assert adapter._secondary.name == "ths"
 
     def test_auto_mode_both_unavailable_raises(self, monkeypatch):
         """auto 模式：雪球不可用且无 THS Key → RuntimeError"""

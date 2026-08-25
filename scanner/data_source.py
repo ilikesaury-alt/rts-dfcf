@@ -396,16 +396,19 @@ def _build_adapter() -> DataSourceAdapter:
         return ThsAdapter()
     # auto：雪球优先 + THS 兜底
     xq = XueqiuAdapter()
+    ths = ThsAdapter()
     if xq.is_available():
-        ths = ThsAdapter()
         if ths.is_available():
             return FallbackAdapter(xq, ths)
         logger.info("THS API Key 未配置，仅使用雪球")
         return xq
-    logger.warning("雪球不可用，尝试 THS 兜底")
-    ths = ThsAdapter()
+    # 2026-08-24 审查修复：启动瞬间雪球探测失败（网络抖动/反爬窗口期一次即可）不再
+    # 永久锁死为 THS-only——此前此处直接返回裸 ThsAdapter 且单例永不复探，长跑进程
+    # 整天飙升榜返空（全天零候选）。现双源配置时恒构造 FallbackAdapter，由 _call
+    # 逐请求降级承担故障切换，运行期雪球恢复即自动回主源。
     if ths.is_available():
-        return ths
+        logger.warning("雪球启动探测不可用，恒构造 FallbackAdapter 由逐请求降级接管")
+        return FallbackAdapter(xq, ths)
     raise RuntimeError("无可用数据源（雪球不可用且 THS_API_KEY 未配置）")
 
 

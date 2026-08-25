@@ -242,6 +242,52 @@ class TestThsFundRisk:
         monkeypatch.setattr("pywencai.get", fake.get, raising=False)
         assert fb.fetch_fund_risk_map() == {"SZ300027": "资不抵债"}
 
+    def test_network_calls_outside_progress_lock(self, monkeypatch):
+        """锁内不得做网络 I/O（2026-08-24 审查：原实现整段拉取循环持
+        _ths_progress_lock 最长 25s，并发进入者被整段阻塞）。"""
+        def fake_codes():
+            assert not fb._ths_progress_lock.locked(), "fetch_gem_codes 不得持锁调用"
+            return ["300001"]
+
+        def fake_vals(batch):
+            assert not fb._ths_progress_lock.locked(), "fetch_valuations 不得持锁调用"
+            return {"300001": -1.0}
+        monkeypatch.setattr("scanner.ths_api.get_api_key", lambda: "k")
+        monkeypatch.setattr("scanner.ths_api.fetch_gem_codes", fake_codes)
+        monkeypatch.setattr("scanner.ths_api.fetch_valuations", fake_vals)
+        assert fb.fetch_fund_risk_map() == {"SZ300001": fb.FUND_RISK_REASON}
+
+    def test_failed_batch_progress_preserved_across_calls(self, monkeypatch):
+        """单批失败不推进 done、下轮从该批续传，已完成批次不重复拉取。
+
+        直接调 _fetch_fund_risk_ths 绕过进程缓存层。150 只 → 2 批：第 1 轮批 1
+        成功 + 批 2 失败；第 2 轮只拉批 2 并合并第 1 轮命中。
+        """
+        codes = [f"300{i:03d}" for i in range(150)]
+        calls = {"vals": 0}
+
+        def fake_vals(batch):
+            calls["vals"] += 1
+            if calls["vals"] == 2:
+                return None  # 仅第 1 轮的批 2 失败一次
+            if len(batch) == 100:  # 批 1
+                return {batch[0]: -0.5}
+            return {batch[0]: -0.5}  # 批 2
+        monkeypatch.setattr("scanner.ths_api.get_api_key", lambda: "k")
+        monkeypatch.setattr("scanner.ths_api.fetch_gem_codes", lambda: list(codes))
+        monkeypatch.setattr("scanner.ths_api.fetch_valuations", fake_vals)
+
+        hits1, complete1 = fb._fetch_fund_risk_ths()
+        assert complete1 is False
+        assert hits1 == {"SZ300000": fb.FUND_RISK_REASON}
+
+        hits2, complete2 = fb._fetch_fund_risk_ths()
+        assert complete2 is True
+        # 第 1 轮命中跨轮保留 + 第 2 轮新增命中合并
+        assert hits2 == {"SZ300000": fb.FUND_RISK_REASON,
+                         "SZ300100": fb.FUND_RISK_REASON}
+        assert calls["vals"] == 3, "第 2 轮只应补拉失败的批 2（1 次），不得重拉批 1"
+
 
 class TestCollectFundRisk:
     def test_filters_to_candidates(self, monkeypatch):

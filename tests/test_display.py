@@ -473,6 +473,21 @@ def test_display_priority_stale_candidate_no_stale_rank(monkeypatch, capsys):
     assert " 15" not in line.replace("SZ300791", "")  # 旧排名不得残留
 
 
+def test_display_priority_stale_candidate_no_stale_percent(monkeypatch, capsys):
+    """stale 掉榜候选的冻结 percent 不进涨幅列/🎯 判定回退链（2026-08-24 审查：
+    与 rank/current 同根因同族漏网点——无 live_quotes 时涨幅列曾吃掉榜时刻冻结
+    快照，应落推荐时落库 DB percent）。"""
+    conn = _rec_db()
+    _insert_rec(conn, "SZ300792", "冻结票", 3.0)   # 推荐时刻口径 +3.0%
+    cand = _cand_in_pool("SZ300792", 9.5, 22.9, 15)  # 掉榜时刻冻结快照 +9.5%
+    cand.is_stale = True
+    disp_mod.display_priority(conn, today_pool={"SZ300792": cand})
+    out = capsys.readouterr().out
+    line = next(ln for ln in out.splitlines() if "SZ300792" in ln)
+    assert "+3.00%" in line
+    assert "+9.50%" not in line
+
+
 def test_display_priority_rank_map_for_dropped(monkeypatch, capsys):
     """掉榜/重启行（无候选）的排名由当前飙升榜 rank_map 补上（此前恒为 —）。"""
     conn = _rec_db()

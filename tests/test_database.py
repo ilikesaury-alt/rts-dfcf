@@ -376,6 +376,26 @@ class TestSaveRecommendations:
         assert len(rows) == 1, "同批重复 (symbol,category) 不应产生多行"
         assert rows[0][0] == 50, "应保留最高分"
 
+    def test_preload_failure_raises_no_duplicate_writes(self, memory_db):
+        """预载 SELECT 失败必须 fail-loud 上抛（2026-08-24 审查）。
+
+        recommendations 表无 (date,symbol,category) 唯一约束，旧实现静默降级
+        空 existing_map 继续写 → 本轮全部候选插成重复行，永久污染归因/回测
+        样本量。现上抛由主循环 P-robust 兜底，只损失一轮落库。
+        """
+        stock = StockInfo(symbol="300091", name="Dup", code="300091",
+                          percent=3.0, current=10.0, value=10000,
+                          rank_change=1000, rank=1)
+        kline = KlineSummary(trend="底部启动", accumulated_pct=2.0,
+                             volume_ratio=1.5, bottom_confirmed=True,
+                             score=20, dimensions={}, avg_volume=1_000_000)
+        cand = Candidate(stock=stock, category="new_face", score=20,
+                         reason="r", kline=kline, first_seen="09:30")
+        memory_db.execute("DROP TABLE recommendations")
+        memory_db.commit()
+        with pytest.raises(sqlite3.OperationalError):
+            save_recommendations(memory_db, [cand], [])
+
     def test_save_and_deduplicate(self, memory_db):
         stock = StockInfo(symbol="300001", name="Test", code="300001",
                           percent=5.0, current=10.0, value=10000,

@@ -378,11 +378,20 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, 
     全部 (symbol, category) → (id, score)，循环内维护内存 map——同批重复
     (symbol, category) 与跨轮重复同语义（仅更高分覆盖）。写入仍逐行 execute，
     保留单票失败不拖垮整批的错误隔离。
+
+    事务卫生（2026-08-24 审查，与 record_appearances / save_kline_to_db 同族）：
+    - 预载失败 fail-loud 上抛（表无 (date,symbol,category) 唯一约束，静默降级空 map
+      会把本轮全部候选插成重复行，永久污染归因/回测样本；上抛只损失一轮展示，
+      主循环 P-robust 兜底捕获后下轮重写）。
+    - 单行失败先 rollback 清理残留事务再继续（否则后续 execute 连锁报错；
+      已写入行未提交会随回滚丢弃，但下一扫描周期整体重写、高分覆盖语义兜底）。
+    - commit 纳入保护并失败回滚，异常不再穿透到主循环跳过该轮 display/飞书推送。
     """
     today = now_beijing().date().isoformat()
     now = now_beijing().strftime("%H:%M:%S")
+    existing_map: dict[tuple[str, str], list]
     try:
-        existing_map: dict[tuple[str, str], list] = {
+        existing_map = {
             (r[0], r[1]): [r[2], r[3]]
             for r in conn.execute(
                 "SELECT symbol, category, id, score FROM recommendations WHERE date = ?",
@@ -391,7 +400,7 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, 
         }
     except Exception as e:
         logger.warning(f"save_recommendations 预载已有记录失败: {e}")
-        existing_map = {}
+        raise
     for c in new_faces + rest:
         try:
             key = (c.stock.symbol, c.category)
@@ -427,8 +436,19 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, 
             # 记录真实 rowid：同批后续重复项走高分 UPDATE 时需要定位到本行
             existing_map[key] = [cur.lastrowid, c.score]
         except Exception as e:
+            try:
+                conn.rollback()  # 清理失败语句残留事务，否则后续 execute 连锁报错
+            except Exception:
+                pass
             print(f"  [!] 保存推荐记录失败 {c.stock.symbol}: {e}")
-    conn.commit()
+    try:
+        conn.commit()
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.warning(f"save_recommendations 提交失败（本轮推荐未落库，下轮重写）: {e}")
 
 
 def upsert_watch_symbol(conn: sqlite3.Connection, symbol: str, name: str,

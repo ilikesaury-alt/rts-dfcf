@@ -136,3 +136,78 @@ def test_dropped_row_live_fallback_without_db_percent():
     e = {"symbol": "SZ300011", "date": "2026-08-21", "category": "momentum",
          "live_quote_available": True, "live_percent": 7.5}
     assert R._nextday_entry_percent(e) == 7.5
+
+
+def test_stale_candidate_not_used_for_nextday_percent():
+    """stale 掉榜候选的冻结快照不参与 🎯/涨幅带判定（2026-08-24 审查修复）。
+
+    同根因同族扩散：6f92be0 只挡了 display 的 rank/current 回退，本处第一优先级
+    候选分支漏守卫——冻结在掉榜时刻的 percent 会让甜蜜带/陷阱带判定偏离推荐
+    时刻落库口径。stale 视同无候选，直接落 DB percent。
+    """
+    cand = type("C", (), {})()
+    stock = type("S", (), {})()
+    stock.percent = 9.5  # 冻结快照（掉榜时刻），若被消费会判 8-10% 陷阱带
+    cand.stock = stock
+    cand.is_stale = True
+    e = {"symbol": "SZ300012", "date": "2026-08-24", "category": "momentum",
+         "score": 50, "_candidate": cand, "percent": 4.5}
+    assert R._nextday_entry_percent(e) == 4.5
+
+    fresh = type("C", (), {})()
+    fresh_stock = type("S", (), {})()
+    fresh_stock.percent = 9.5
+    fresh.stock = fresh_stock
+    fresh.is_stale = False
+    e_fresh = {"symbol": "SZ300013", "date": "2026-08-24", "category": "momentum",
+               "score": 50, "_candidate": fresh, "percent": 4.5}
+    assert R._nextday_entry_percent(e_fresh) == 9.5  # 非 stale 仍走最新扫描快照
+
+
+class TestComebackSortKeyFlowFallback:
+    """comeback_sort_key 的 flow_map 回退必须真实生效（2026-08-24 审查修复）。
+
+    旧实现 `to_float(dims.get(...))` 默认 default=0.0 → dims 缺失时 flow 恒为
+    0.0 而非 None，`if flow is None` 恒假——flow_map 死参数，掉榜行全部按中性
+    0 排序，资金流优先排序对最需要它的对象失效。
+    """
+
+    @staticmethod
+    def _cb(sym, score, breakdown=None):
+        e = {"symbol": sym, "date": "2026-08-24", "category": "comeback",
+             "score": score}
+        if breakdown is not None:
+            e["score_breakdown"] = breakdown
+        return e
+
+    def test_dropped_row_uses_flow_map(self):
+        """掉榜行无 dims 但 flow_map 有值 → 资金流排序生效。"""
+        out_flow = self._cb("SZ300020", 40)
+        no_flow = self._cb("SZ300021", 99)
+        ranked = sorted([no_flow, out_flow],
+                        key=lambda x: R.comeback_sort_key(x, {"SZ300020": 6.0}))
+        assert ranked[0]["symbol"] == "SZ300020"  # ▲ 强流入在前， despite 低分
+
+    def test_negative_flow_ranks_behind_neutral(self):
+        """▼▼ 流出劣后于中性 0（flow_map 补值路径）。"""
+        outflow = self._cb("SZ300022", 90)
+        neutral = self._cb("SZ300023", 10)
+        ranked = sorted([outflow, neutral],
+                        key=lambda x: R.comeback_sort_key(x, {"SZ300022": -8.0}))
+        assert ranked[0]["symbol"] == "SZ300023"
+
+    def test_dims_value_still_wins_over_flow_map(self):
+        """有 dims 的行仍以自身维度优先（回退仅补缺失）。"""
+        has_dims = self._cb("SZ300024", 10, breakdown={"fund_flow_main_pct": -8.0})
+        via_map = self._cb("SZ300025", 10)
+        ranked = sorted([has_dims, via_map],
+                        key=lambda x: R.comeback_sort_key(x, {"SZ300025": 6.0,
+                                                              "SZ300024": -8.0}))
+        assert ranked[0]["symbol"] == "SZ300025"
+
+    def test_no_data_treated_as_neutral_zero(self):
+        """两源皆缺按中性 0 处理、次键评分降序（docstring 承诺）。"""
+        lo = self._cb("SZ300026", 30)
+        hi = self._cb("SZ300027", 80)
+        ranked = sorted([hi, lo], key=R.comeback_sort_key)
+        assert ranked[0]["symbol"] == "SZ300027"

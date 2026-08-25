@@ -151,40 +151,66 @@ def _fetch_fund_risk_ths() -> tuple[dict, bool]:
     - complete=True：全部批次完成 → hits 定稿（调用方按日级 TTL 缓存并清进度）；
     - complete=False：预算用尽/接口失败 → 返回当前已累积 hits（调用方按短退避
       缓存，下轮续传）；THS 未配置 Key / 代码表失败 → ({}, False)。
+
+    2026-08-24 审查修复：锁内只做进度快照读写，网络请求全部移到锁外——原实现
+    整段拉取循环持 _ths_progress_lock 最长 25s（fetch_gem_codes + ~14 批估值
+    请求），任何并发进入者被整段阻塞。现快照→锁外拉取→重加锁提交（CAS 式推进：
+    done 取 max、hits 合并；并发调用方重复拉同批结果幂等无害）。单线程主循环下
+    行为与原实现完全一致。
     """
     from scanner import ths_api
 
     if not ths_api.get_api_key():
         return {}, False
     key = _today_key()
+    # ── 快照阶段（锁内）：读当前进度 ──
+    codes: list | None = None
     with _ths_progress_lock:
         st = _ths_progress.get(key)
-        if st is None:
-            codes = ths_api.fetch_gem_codes()
-            if not codes:
-                return {}, False
-            st = {"codes": codes, "done": 0, "hits": {}}
-            _ths_progress[key] = st
-        deadline = time.time() + FUND_RISK_FETCH_TIMEOUT
-        batches = [st["codes"][i:i + _VALUATION_BATCH_SIZE]
-                   for i in range(0, len(st["codes"]), _VALUATION_BATCH_SIZE)]
-        while st["done"] < len(batches) and time.time() < deadline:
-            vals = ths_api.fetch_valuations(batches[st["done"]])
-            if vals is None:
-                break  # 本批失败：保留进度，下轮从该批重试
-            for code, pb in vals.items():
-                # 防御：pb 为 None/脏值跳过（真实 fetch_valuations 已过滤，双保险）
-                if pb is not None and pb < 0:
-                    sym = _code_to_xq(code)
-                    if sym:
-                        st["hits"][sym] = FUND_RISK_REASON
-            st["done"] += 1
+        if st is not None:
+            codes = list(st["codes"])
+            done = st["done"]
+    if codes is None:
+        got_codes = ths_api.fetch_gem_codes()
+        if not got_codes:
+            return {}, False
+        with _ths_progress_lock:
+            st = _ths_progress.get(key)
+            if st is None:
+                st = {"codes": got_codes, "done": 0, "hits": {}}
+                _ths_progress[key] = st
+            codes = list(st["codes"])
+            done = st["done"]
+    # ── 拉取阶段（锁外）：只处理本地快照之后的未完成批次 ──
+    deadline = time.time() + FUND_RISK_FETCH_TIMEOUT
+    batches = [codes[i:i + _VALUATION_BATCH_SIZE]
+               for i in range(0, len(codes), _VALUATION_BATCH_SIZE)]
+    new_hits: dict[str, str] = {}
+    while done < len(batches) and time.time() < deadline:
+        vals = ths_api.fetch_valuations(batches[done])
+        if vals is None:
+            break  # 本批失败：不推进 done，下轮从该批重试
+        for code, pb in vals.items():
+            # 防御：pb 为 None/脏值跳过（真实 fetch_valuations 已过滤，双保险）
+            if pb is not None and pb < 0:
+                sym = _code_to_xq(code)
+                if sym:
+                    new_hits[sym] = FUND_RISK_REASON
+        done += 1
+    # ── 提交阶段（锁内）：合并命中、推进 done ──
+    with _ths_progress_lock:
+        st = _ths_progress.setdefault(key, {"codes": codes, "done": 0, "hits": {}})
+        st["hits"].update(new_hits)
+        st["done"] = max(st["done"], done)
+        merged_hits = dict(st["hits"])
         complete = st["done"] >= len(batches)
         if complete:
             _ths_progress.pop(key, None)  # 定稿后清进度（防长跑内存累积）
-            logger.info("财务风险 THS 增量拉取完成：%d 只 GEM / %d 只资不抵债",
-                        len(st["codes"]), len(st["hits"]))
-        return dict(st["hits"]), complete
+    if complete:
+        logger.info("财务风险 THS 增量拉取完成：%d 只 GEM / %d 只资不抵债",
+                    len(codes), len(merged_hits))
+        return merged_hits, True
+    return merged_hits, False
 
 
 def fetch_fund_risk_map() -> dict[str, str]:

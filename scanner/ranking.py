@@ -38,9 +38,13 @@ def _nextday_entry_percent(entry: Any) -> float:
     校准口径（nextday_attribution 落库的是推荐时刻 percent）。现掉榜行优先 DB
     落库值，live 仅在落库缺失时兜底。展示列的实时涨幅由 display 独立回退链负责，
       不受本函数影响。
+
+    2026-08-24 审查补：is_stale 候选（掉榜后池内快照冻结在掉榜时刻）不作为第一
+    优先级——冻结 percent 会让 🎯 甜蜜带 / _entry_band 涨幅带判定偏离推荐时刻落库
+    口径，stale 视同无候选直接落 DB percent 回退链。
     """
     c = entry.get("_candidate")
-    if c and c.stock:
+    if c and c.stock and not getattr(c, "is_stale", False):
         return to_float(c.stock.percent, default=0.0)
     db_pct = entry.get("percent")
     if db_pct is not None:
@@ -575,7 +579,7 @@ def comeback_sort_key(entry: Any, flow_map: dict[str, float] | None = None) -> t
     可选 flow_map（display 从 market_extra_cache 批量读的回退源）供掉榜行补值。
     display 回马枪区与 today_report 回马枪小节共用本函数，防两处口径漂移。
     """
-    flow = to_float(_entry_dims(entry).get("fund_flow_main_pct"))
+    flow = to_float(_entry_dims(entry).get("fund_flow_main_pct"), default=None)
     if flow is None and flow_map:
-        flow = to_float(flow_map.get(entry["symbol"]))
+        flow = to_float(flow_map.get(entry["symbol"]), default=None)
     return (-(flow if flow is not None else 0.0), -entry["score"])

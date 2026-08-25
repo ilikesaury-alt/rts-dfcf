@@ -390,16 +390,21 @@ def _print_priority_row(
             sector = c.sector
     # 涨幅/现价/排名统一回退链：实时行情(live_quotes/rank_map) → 候选池当前扫描快照 →
     # appearances(DB) → 推荐时落库值。
+    # is_stale 候选（已掉榜、池内快照冻结）不参与回退——否则掉榜前的旧排名会被
+    # 当作当前名次渲染（2026-08-24 仙乐健康案例：掉榜后仍显示上榜时的 rank 15），
+    # 与「掉榜行恒为 —」的既定语义一致；现价同理不吃陈旧快照。2026-08-24 审查补：
+    # 涨幅分支同根因——冻结 percent 会污染 🎯/档位判定与展示列，stale 视同无候选。
+    _fresh_c = c if (c and not getattr(c, "is_stale", False)) else None
     if entry.get("live_quote_available"):
         pct = entry.get("live_percent")
         if pct is None:
             pct = 0.0
         live_cur = entry.get("live_current", 0.0)
         live_rank = entry.get("live_rank")
-    elif c:
-        pct = c.stock.percent
-        live_cur = c.stock.current
-        live_rank = c.stock.rank
+    elif _fresh_c:
+        pct = _fresh_c.stock.percent
+        live_cur = _fresh_c.stock.current
+        live_rank = _fresh_c.stock.rank
     else:
         # live_percent 可能为 0.0（合法 0.00% 涨幅），不能用 `or` 回退——
         # 否则 0.00% 的票会错误显示成推荐时落库的 percent（如 5.0%）。
@@ -407,11 +412,6 @@ def _print_priority_row(
         pct = _lp if _lp is not None else entry.get("percent", 0.0)
         live_cur = 0.0
         live_rank = entry.get("live_rank")
-    # 实时行情不含 rank/current（batch/quote 无 rank 字段）时，回退候选快照。
-    # is_stale 候选（已掉榜、池内快照冻结）不参与回退——否则掉榜前的旧排名会被
-    # 当作当前名次渲染（2026-08-24 仙乐健康案例：掉榜后仍显示上榜时的 rank 15），
-    # 与「掉榜行恒为 —」的既定语义一致；现价同理不吃陈旧快照。
-    _fresh_c = c if (c and not getattr(c, "is_stale", False)) else None
     if not live_cur and _fresh_c and _fresh_c.stock.current:
         live_cur = _fresh_c.stock.current
     if not live_rank and _fresh_c and _fresh_c.stock.rank:
