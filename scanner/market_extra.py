@@ -114,7 +114,7 @@ def _fetch_zt_pool_ths(date_key: str) -> dict[str, dict] | None:
 
     if not ths_api.get_api_key():
         return None
-    date_ms = ths_api._date_to_ms(date_key)
+    date_ms = ths_api.date_str_to_ms(date_key)
     return ths_api.fetch_limit_up_pool(date_ms=date_ms, include_break=True)
 
 
@@ -222,7 +222,11 @@ def _collect_fund_flow(box: dict, deadline: float) -> dict:
         return result
     remaining = list(range(2, total_pages + 1))
     completed_all = True
-    with ThreadPoolExecutor(max_workers=6) as pool:
+    # 显式 shutdown(wait=False, cancel_futures=True) 而非 with-exit 隐式 wait=True
+    # （2026-08-24 审查，与 concept.py 同款）：deadline 到点后不等在跑的 ≤6 页
+    # 排空（每页 timeout=10s），避免 daemon 线程多存活 ~10s、相邻两轮短暂重叠。
+    pool = ThreadPoolExecutor(max_workers=6)
+    try:
         futs = {pool.submit(_page, pn): pn for pn in remaining}
         for fut in as_completed(futs):
             if time.time() > deadline:
@@ -233,6 +237,8 @@ def _collect_fund_flow(box: dict, deadline: float) -> dict:
             diff, _ = fut.result()
             _absorb(diff or [])
             box["value"] = dict(result)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     if completed_all:
         box["done"] = True
     return result
@@ -306,7 +312,7 @@ def _num(row, key) -> float:
 
 
 def _merge_from_db(conn, symbols: list[str], data_type: str,
-                   intraday_ttl_sec: int, cache: dict) -> tuple[dict[str, dict], list[str]]:
+                   intraday_ttl_sec: int) -> tuple[dict[str, dict], list[str]]:
     """DB 缓存命中补齐，返回 (result, missing)。
 
     intraday_ttl_sec：DB 条目超过该秒数视为过期（盘中刷新），过期条目与缺失
@@ -345,7 +351,7 @@ def collect_market_extra(conn, symbols: list[str],
 
     if include_zt:
         db_map, missing_zt = _merge_from_db(conn, uniq, _ZT_POOL,
-                                            ZT_POOL_TTL_SEC, _zt_cache)
+                                            ZT_POOL_TTL_SEC)
         for sym, payload in db_map.items():
             result.setdefault(sym, {})["zt"] = payload
         if missing_zt:
@@ -362,7 +368,7 @@ def collect_market_extra(conn, symbols: list[str],
 
     if include_flow:
         db_flow, miss_flow = _merge_from_db(conn, uniq, _FUND_FLOW,
-                                            FUND_FLOW_TTL_SEC, _ff_cache)
+                                            FUND_FLOW_TTL_SEC)
         for sym, payload in db_flow.items():
             result.setdefault(sym, {})["fund_flow"] = payload
         if miss_flow:

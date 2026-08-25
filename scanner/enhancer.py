@@ -222,8 +222,12 @@ def _detect_main_force_distribution(c: Candidate, dims: dict) -> bool:
             and overbought):
         return True
     # 3. 冲高回落（opening_score 范围 -5~5，intraday_score 范围 -10~10）
+    #    intraday None 守卫与 Rule 5 对齐（2026-08-24 审查：当前默认 0.0 不可达，
+    #    但字段类型语义上可空，缺守卫会在 apply_all_bonuses 循环内抛 TypeError
+    #    中断整轮 bonus）。
     if (opening is not None
             and opening >= DISTRIBUTION_OPENING_STRONG
+            and intraday is not None
             and intraday < DISTRIBUTION_INTRADAY_WEAK
             and accum >= DISTRIBUTION_ACCUM_PULLBACK):
         return True

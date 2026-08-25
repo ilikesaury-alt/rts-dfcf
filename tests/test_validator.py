@@ -799,6 +799,26 @@ class TestOverboughtLengthAlignment:
                          percent=4.0, current=today_close, value=8000,
                          rank_change=1500, rank=10)
 
+    def test_anchored_today_str_used_over_real_clock(self):
+        """2026-08-24 审查：超买判定消费扫描锚定日的今日 bar，而非真实时钟。
+
+        历史回放场景：kline 今日 bar 日期为信号日（非真实今天）、StockInfo 无
+        实时价（current=0）——旧实现硬编码 now_beijing 找不到今日 bar 又回退
+        current=0 → 整个今日增量缺失，回放的超买判定系统性偏松，与实盘落库
+        v_st_overbought 口径不一致。today_str 透传后按锚定日取今日 bar。
+        """
+        pcts = [0.0] * 20 + [40.0]  # 信号日 +40% 急拉 → BOLL %B 远超阈值
+        k = _kline(pcts)
+        hist = k[:-1]
+        closes = [c["close"] for c in hist]
+        stock = StockInfo(symbol="300999", name="测试", code="300999",
+                          percent=40.0, current=0.0,
+                          value=8000, rank_change=1500, rank=10)
+        anchored = k[-1]["date"]
+        assert _st_is_overbought(closes, hist, stock, k, today_str=anchored) is True
+        # 锚定日无今日 bar 且无实时价（口径退化的极端对照）：不判超买
+        assert _st_is_overbought(closes, hist, stock, k, today_str="1999-01-01") is False
+
     def test_st_overbought_today_in_series(self):
         # 今日收盘已在历史序列末端（today_close == closes[-1]）：
         # series 不追加，highs/lows 也不应追加，三者等长。

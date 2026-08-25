@@ -45,6 +45,7 @@ from scanner.intraday_fetch import parallel_fetch
 from scanner.kline_fetch import fetch_all_klines
 from scanner.models import Candidate, ScanResult, StockInfo
 from scanner.rank_trend import update_rank_history
+from scanner.ranking import comeback_sort_key
 from scanner.sector import get_sector_clusters
 from scanner.trading_session import is_trading_time
 
@@ -326,7 +327,11 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     momentum.sort(key=lambda c: -c.score)
     rebound_list.sort(key=lambda c: -c.score)
     short_term_list.sort(key=lambda c: -c.score)
-    comeback_list.sort(key=lambda c: -c.score)
+    # 回马枪区内排序与 display/today_report 单源（ranking.comeback_sort_key，资金流
+    # 优先）——此前按 score 降序，飞书卡片与终端两种顺序（2026-08-24 审查）。
+    # 候选行经 _candidate 读 kline.dimensions，无需 flow_map 回退。
+    comeback_list.sort(key=lambda c: comeback_sort_key(
+        {"symbol": c.stock.symbol, "score": c.score, "_candidate": c}))
 
     # 综合排序「板块」列：计算当前推动概念（东财 F10 概念归属 + 今日飙升池聚合）。
     # 仅影响展示，不参与任何打分。首次拉取缺失缓存，之后 DB/进程缓存零网络开销。

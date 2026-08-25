@@ -506,18 +506,31 @@ def upsert_watch_symbols(conn: sqlite3.Connection,
             pass
 
 
-def mark_watch_evaluated(conn: sqlite3.Connection, symbols: list[str]) -> None:
-    """标记掉榜票今日已评估（避免同一交易日重复评估/重复补拉）。"""
+def mark_watch_evaluated(conn: sqlite3.Connection, symbols: list[str],
+                         today: str | None = None) -> None:
+    """标记掉榜票今日已评估（避免同一交易日重复评估/重复补拉）。
+
+    `today` 由调用方传入（2026-08-24 审查：原自行取真实时钟，而 evaluate_comeback
+    的幂等判断用的是扫描锚定日——跨午夜长跑会出现「按锚定日判未评估、按真实日期
+    标记」的错位；缺省保持旧行为）。
+    """
     if not symbols:
         return
-    today = now_beijing().date().isoformat()
+    today = today or now_beijing().date().isoformat()
     for sym in symbols:
         try:
             conn.execute(
                 "UPDATE watch_pool SET last_eval_date = ? WHERE symbol = ?", (today, sym))
         except Exception:
             pass
-    conn.commit()
+    try:
+        conn.commit()
+    except Exception as e:
+        print(f"  [!] mark_watch_evaluated 提交失败: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
 
 def prune_watch_pool(conn: sqlite3.Connection,

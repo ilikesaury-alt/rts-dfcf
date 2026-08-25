@@ -177,6 +177,10 @@ def _fetch_fund_risk_ths() -> tuple[dict, bool]:
         with _ths_progress_lock:
             st = _ths_progress.get(key)
             if st is None:
+                # 顺手清理旧日期残留 key（当日未完成即永久留存，每个含 ~1400
+                # code 列表，防长跑内存累积；2026-08-24 审查卫生项）
+                for k in [k for k in _ths_progress if k != key]:
+                    _ths_progress.pop(k, None)
                 st = {"codes": got_codes, "done": 0, "hits": {}}
                 _ths_progress[key] = st
             codes = list(st["codes"])

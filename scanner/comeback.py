@@ -192,7 +192,7 @@ def evaluate_comeback(conn, adapter, fetch_klines: _KlineFetcher,
 
     if evaluated:
         try:
-            mark_watch_evaluated(conn, evaluated)
+            mark_watch_evaluated(conn, evaluated, today=today)
         except Exception as e:
             print(f"  [!] 回马枪评估标记失败: {e}")
 

@@ -25,6 +25,7 @@ from datetime import datetime, timedelta
 
 import requests
 
+from scanner.config import BEIJING_TZ
 from scanner.models import KlineBar, make_kline_bar
 from scanner.utils import to_float
 
@@ -101,14 +102,30 @@ def _items(body: dict | None) -> list:
     return ((body.get("data") or {}).get("item")) or []
 
 
-def _date_to_ms(date_str: str) -> int | None:
-    """YYYYMMDD 或 YYYY-MM-DD → 上海时区当日零点毫秒戳；解析失败返回 None。"""
+def date_str_to_ms(date_str: str) -> int | None:
+    """YYYYMMDD 或 YYYY-MM-DD → 北京时区当日零点毫秒戳；解析失败返回 None。
+
+    公开给 market_extra 等模块使用（2026-08-24 审查：此前跨模块访问私有
+    _date_to_ms）。tz-aware 统一北京时区，不依赖主机 TZ（2026-08-24 审查：
+    naive timestamp/fromtimestamp 在非 CST 主机上 bar 日期标签会偏移一天，
+    交叉验证对账将系统性误报）。
+    """
     for fmt in ("%Y%m%d", "%Y-%m-%d"):
         try:
-            return int(datetime.strptime(date_str, fmt).timestamp() * 1000)
+            dt = datetime.strptime(date_str, fmt).replace(tzinfo=BEIJING_TZ)
+            return int(dt.timestamp() * 1000)
         except ValueError:
             continue
     return None
+
+
+def _ms_to_date_str(date_ms: float) -> str:
+    """毫秒戳 → 北京时区 YYYY-MM-DD（bar 日期标签统一口径）。"""
+    return datetime.fromtimestamp(date_ms / 1000, tz=BEIJING_TZ).strftime("%Y-%m-%d")
+
+
+# 私有名保留为别名（兼容既有内部调用）
+_date_to_ms = date_str_to_ms
 
 
 def _safe_int(v) -> int:
@@ -179,8 +196,10 @@ def fetch_kline_closes(symbol: str, start_date: str, end_date: str,
     start/end 为 YYYY-MM-DD（end 含当日）。
     """
     try:
-        start_ms = int(datetime.strptime(start_date, "%Y-%m-%d").timestamp() * 1000)
-        end_ms = (int(datetime.strptime(end_date, "%Y-%m-%d").timestamp() * 1000)
+        start_ms = int(datetime.strptime(start_date, "%Y-%m-%d")
+                       .replace(tzinfo=BEIJING_TZ).timestamp() * 1000)
+        end_ms = (int(datetime.strptime(end_date, "%Y-%m-%d")
+                      .replace(tzinfo=BEIJING_TZ).timestamp() * 1000)
                   + int(timedelta(days=1).total_seconds() * 1000) - 1)
     except ValueError:
         return None
@@ -195,7 +214,7 @@ def fetch_kline_closes(symbol: str, start_date: str, end_date: str,
         close = to_float(bar.get("close_price"), None)
         if raw is None or close is None or close <= 0:
             continue  # 与 KlineBar 契约同族：脏 bar 剔除
-        d = datetime.fromtimestamp(raw / 1000).strftime("%Y-%m-%d")
+        d = _ms_to_date_str(raw)
         out[d] = close
     return out
 
@@ -207,7 +226,7 @@ def fetch_kline_bars(symbol: str, days: int = 15,
     THS 无涨跌幅列 → percent 由收盘价推算（首根 0，与原新浪兜底同款处理）。
     多拉一倍天数确保剔除周末/节假日后窗口足够（与旧 AKShare 兜底同策略）。
     """
-    end = datetime.now()
+    end = datetime.now(tz=BEIJING_TZ)
     start = end - timedelta(days=days * 2)
     body = _call("/api/a-share/prices/historical", {
         "thscode": xq_to_ths(symbol), "interval": "1d",
@@ -222,7 +241,7 @@ def fetch_kline_bars(symbol: str, days: int = 15,
         date_ms = raw.get("date_ms")
         if date_ms is None:
             continue
-        date_str = datetime.fromtimestamp(date_ms / 1000).strftime("%Y-%m-%d")
+        date_str = _ms_to_date_str(date_ms)
         close = to_float(raw.get("close_price"), None)
         percent = 0.0
         if close is not None and prev_close:

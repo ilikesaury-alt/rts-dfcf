@@ -25,6 +25,8 @@ from scanner.utils import to_float
 
 logger = logging.getLogger(__name__)
 
+_ths_minute_warned = False  # THS 无分钟K 能力边界告警只打一次
+
 
 @runtime_checkable
 class DataSourceAdapter(Protocol):
@@ -266,7 +268,12 @@ class ThsAdapter:
         return getattr(self, "_last_index_meta", (None, None, self.name))
 
     def fetch_minute(self, symbol: str) -> list[dict] | None:
-        logger.warning("THS 公开 API 无分钟K/tick，%s 分时信号整体降级", symbol)
+        # THS 无分钟K/tick 是恒定能力边界（非故障）：告警只打一次，避免停牌票多时
+        # 每票每轮刷屏（2026-08-24 审查）。
+        global _ths_minute_warned
+        if not _ths_minute_warned:
+            _ths_minute_warned = True
+            logger.warning("THS 公开 API 无分钟K/tick，分时信号走主源/降级")
         return None
 
 
@@ -358,7 +365,16 @@ class FallbackAdapter:
         return (None, None, used.name if used is not None else "unknown")
 
     def fetch_minute(self, symbol: str) -> list[dict] | None:
-        return self._call("fetch_minute", symbol)
+        # 主源返回 None 是合法降级值（开盘 <2 根 bar/停牌票/临时失败，api 层有负缓存），
+        # 不走 _call——否则每只票每轮都转投 THS 再吃一次"无分钟K"告警（2026-08-24 审查）。
+        try:
+            return self._primary.fetch_minute(symbol)
+        except Exception as e:
+            if self._secondary:
+                logger.warning("%s.fetch_minute 异常: %s，降级到 %s",
+                               self._primary.name, e, self._secondary.name)
+                return self._secondary.fetch_minute(symbol)
+            raise
 
 
 _adapter_instance: DataSourceAdapter | None = None

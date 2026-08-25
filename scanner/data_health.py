@@ -105,8 +105,8 @@ def check_kline_health(conn: sqlite3.Connection,
     ).fetchall()
     if not rows:
         return HealthReport()
-    random.seed(20260818)  # 固定种子，结果可复现
-    sample = random.sample(rows, min(sample_n, len(rows)))
+    rng = random.Random(20260818)  # 独立实例固定种子：可复现且不污染进程全局随机流
+    sample = rng.sample(rows, min(sample_n, len(rows)))
 
     report = HealthReport()
     for sym, d, db_close in sample:
@@ -152,8 +152,12 @@ def count_unfinalized_today(conn: sqlite3.Connection, date_str: str | None = Non
             "SELECT COUNT(*) FROM daily_kline WHERE date=? AND finalized=0",
             (date_str,),
         ).fetchone()[0]
-    except sqlite3.OperationalError:
-        return 0  # 旧库无 finalized 列（未迁移）→ 无法判定，按 0 处理
+    except sqlite3.OperationalError as e:
+        if "no such column" in str(e):
+            return 0  # 旧库无 finalized 列（未迁移）→ 无法判定，按 0 处理
+        # database is locked 等其它 OperationalError 不应被吞成「无未定稿」
+        # （2026-08-24 审查：那会让健康检查在锁竞争期静默漏报）
+        raise
 
 
 def _eastmoney_index_pct() -> float | None:

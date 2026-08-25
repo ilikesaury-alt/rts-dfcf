@@ -61,7 +61,7 @@ def try_candidate(stock: StockInfo, kline_summary: KlineSummary | None, category
                    is_first_today: bool, first_date: str, kline: list[KlineBar] | None,
                    closes: list[float], historical: list[KlineBar],
                    clusters: dict[str, list[str]] | None,
-                   feats: dict | None = None) -> Candidate | None:
+                   feats: dict | None = None, today: str | None = None) -> Candidate | None:
     if kline_summary is None:
         return None
     if kline_summary.trend in HIGH_RISK_TRENDS:
@@ -76,7 +76,8 @@ def try_candidate(stock: StockInfo, kline_summary: KlineSummary | None, category
     }[category]
     if kline_summary.score < min_score:
         return None
-    passed, bonus, dims = validate(category, stock, kline_summary, closes, historical, clusters, feats, kline=kline)
+    passed, bonus, dims = validate(category, stock, kline_summary, closes, historical,
+                                   clusters, feats, kline=kline, today=today)
     if not passed:
         return None
     new_dims = dict(kline_summary.dimensions)
@@ -236,13 +237,17 @@ def score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, li
 
     # 四策略独立打分 + 各自交叉验证，再按价格结构选最贴合的标签
     c_nf = try_candidate(stock, nk, "new_face" if is_new else "known_new_face",
-                          is_first_today, first_date, kline, closes, historical, clusters, feats)
+                          is_first_today, first_date, kline, closes, historical, clusters, feats,
+                          today=today)
     c_mo = try_candidate(stock, mk, "momentum",
-                          is_first_today, first_date, kline, closes, historical, clusters, feats)
+                          is_first_today, first_date, kline, closes, historical, clusters, feats,
+                          today=today)
     c_rb = try_candidate(stock, rk, "rebound",
-                          is_first_today, first_date, kline, closes, historical, clusters, feats)
+                          is_first_today, first_date, kline, closes, historical, clusters, feats,
+                          today=today)
     c_st = try_candidate(stock, sk, "short_term",
-                          is_first_today, first_date, kline, closes, historical, clusters, feats)
+                          is_first_today, first_date, kline, closes, historical, clusters, feats,
+                          today=today)
 
     # 审计标记（2026-08-14）：评分所用 K 线缺今日 bar（补拉失败旧缓存兜底）时打 stale_kline。
     # 缺今日 bar → 量比基于昨日量（vol_ratio 失真）→ 可能被量比硬门误杀（网宿案例）或
