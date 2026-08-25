@@ -10,7 +10,6 @@ from scanner.config import (
     FUND_FLOW_MAIN_PCT_EXTREME,
     FUND_FLOW_MAIN_PCT_STRONG,
     FUND_FLOW_MAIN_PCT_WEAK,
-    MARKET_WEAK_THRESHOLD,
     RISK_FLAGS_DISPLAY_HARD,
     SUGGEST_BY_CAT,
     TOP40_THRESHOLD,
@@ -20,7 +19,6 @@ from scanner.core_themes import _low_buy_quality as _core_dip_quality
 from scanner.core_themes import core_stock_symbols
 from scanner.database import (
     get_fund_flow_pct_map,
-    get_market_index_log,
     get_today_recommendations,
 )
 from scanner.models import Candidate, RecommendationRow
@@ -36,6 +34,7 @@ from scanner.ranking import (  # noqa: F401
     _entry_sector_resonance,
     _entry_tier,
     _entry_weak_to_strong,
+    _fresh_candidate,
     _in_nextday_sweet_band,
     _is_breakout_setup,
     _is_nextday_marked,
@@ -302,27 +301,6 @@ def _core_dip_entry_quality(entry: RecommendationRow | dict) -> tuple:
     )
 
 
-def _market_is_weak(conn, today_pool: dict[str, Candidate] | None) -> bool:
-    """大盘弱势判定（2026-08-24 恢复，作为低吸区 OR 门之一）。
-
-    优先读 market_index_log 当日血缘记录（可审计、重启不丢、与今日大盘涨幅同源）；
-    无记录时回退 today_pool 候选 dims 的 market_env_bonus<0；
-    两者皆不可得 → fail-open 按"弱势"处理（弱市工具宁可多显示不误杀）。
-    阈值与 config.MARKET_WEAK_THRESHOLD（-1.0）对齐。
-    """
-    try:
-        rec = get_market_index_log(conn)
-        if rec and rec.get("index_pct") is not None:
-            return float(rec["index_pct"]) < MARKET_WEAK_THRESHOLD
-    except Exception:
-        pass
-    for c in (today_pool or {}).values():
-        if c.kline and c.kline.dimensions:
-            bonus = to_float(c.kline.dimensions.get("market_env_bonus")) or 0.0
-            return bonus < 0
-    return True
-
-
 def display(
     gem_total: int,
     interval: int,
@@ -390,11 +368,10 @@ def _print_priority_row(
             sector = c.sector
     # 涨幅/现价/排名统一回退链：实时行情(live_quotes/rank_map) → 候选池当前扫描快照 →
     # appearances(DB) → 推荐时落库值。
-    # is_stale 候选（已掉榜、池内快照冻结）不参与回退——否则掉榜前的旧排名会被
-    # 当作当前名次渲染（2026-08-24 仙乐健康案例：掉榜后仍显示上榜时的 rank 15），
-    # 与「掉榜行恒为 —」的既定语义一致；现价同理不吃陈旧快照。2026-08-24 审查补：
-    # 涨幅分支同根因——冻结 percent 会污染 🎯/档位判定与展示列，stale 视同无候选。
-    _fresh_c = c if (c and not getattr(c, "is_stale", False)) else None
+    # 候选可信性走 _fresh_candidate 单源助手（2026-08-24 第二轮审查收口）：stale
+    # 掉榜候选的冻结快照（仙乐健康案例：掉榜后仍显示上榜时的 rank 15）与双挂票
+    # 类别错位候选都视同无候选，落 DB 回退链。
+    _fresh_c = _fresh_candidate(entry)
     if entry.get("live_quote_available"):
         pct = entry.get("live_percent")
         if pct is None:
@@ -455,10 +432,10 @@ def _print_priority_row(
     # 建议列：按类别独立映射（与展示优先级解耦），SUGGEST_BY_CAT 含 ANSI 需用 _pad 对齐
     suggest_str = SUGGEST_BY_CAT.get(cat, "")
     first_time = str(entry.get("first_time") or entry.get("time") or "")[:5]
-    # 5日累计涨幅：优先用候选池的 kline 数据，否则用 DB 落库值
+    # 5日累计涨幅：优先用候选池可信快照（_fresh_candidate），否则用 DB 落库值
     accum_val = None
-    if c and c.kline:
-        accum_val = c.kline.accumulated_pct
+    if _fresh_c and _fresh_c.kline:
+        accum_val = _fresh_c.kline.accumulated_pct
     else:
         accum_val = entry.get("accumulated_pct")
     if accum_val is None:
@@ -466,9 +443,9 @@ def _print_priority_row(
     else:
         accum_str = f"{accum_val:+.2f}%"
     extra_str = ""
-    if c:
-        extra_str = _market_extra_str(c)
-        ff_pct = c.kline.dimensions.get("fund_flow_main_pct") if c.kline else None
+    if _fresh_c:
+        extra_str = _market_extra_str(_fresh_c)
+        ff_pct = _fresh_c.kline.dimensions.get("fund_flow_main_pct") if _fresh_c.kline else None
     else:
         ff_pct = None
     if ff_pct is None:
@@ -658,23 +635,19 @@ def display_priority(
         )
 
     # 回马枪独立成区（2026-08-11 移到最末尾）：主表仅排榜上五类，comeback 抽到此处独立成区。
-    # 2026-08-12 放宽兜底条件：主区推荐条数 ≤ COMEBACK_DISPLAY_MIN_MAIN（含为空）时也显示，
-    # 解决主区稀少（如盘中仅 1-2 条）时回马枪大量条目被整体隐藏的盲区；主区数量大于阈值
-    # 才隐藏（避免刷屏）。仅显示前 COMEBACK_DISPLAY_MAX 条。comeback 为空同样跳过。
-    # 2026-08-20：综合排序数量大于 3（COMEBACK_DISPLAY_MIN_MAIN）才隐藏回马枪，等于 3 仍显示。
-    # 2026-08-21：撤销弱市门控——唯一显示条件 = 主区（榜上五类）推荐条数 ≤ COMEBACK_DISPLAY_MIN_MAIN
-    # （含为空）。无论大盘强弱，只要主表推荐稀少即补充展示回马枪/核心低吸（避免主表稀缺时盲区）。
-    # 2026-08-24：恢复弱市门但改为主区稀少 **OR** 大盘弱势——08-21 版在崩盘日主区仍有 4+ 推荐
-    # 时把低吸区整体藏掉（神农案例：大盘 -3.46% 当日回马枪/核心低吸均不可见），而低吸语义恰在
-    # 大跌市最有价值；OR 联合覆盖两个盲区：强市主表稀少 + 弱市主表充足。
-    _show_lowbuy = len(main_recs) <= COMEBACK_DISPLAY_MIN_MAIN or _market_is_weak(conn, today_pool)
+    # 显示门（唯一）：主区（榜上五类）推荐条数 ≤ COMEBACK_DISPLAY_MIN_MAIN=5（含为空）时
+    # 补充展示回马枪/核心低吸；主表 >5 条一律隐藏。仅显示前 COMEBACK_DISPLAY_MAX 条。
+    # comeback/core_dip 为空同样跳过。
+    # 历史：阈值曾为 3（2026-08-20），2026-08-21 撤销弱市门控、2026-08-24 短暂恢复弱市 OR 门
+    # 后同日由用户决策移除——主表 >5 条即刷屏，无论大盘强弱都藏。
+    _show_lowbuy = len(main_recs) <= COMEBACK_DISPLAY_MIN_MAIN
     if comeback_recs and _show_lowbuy:
         # 2026-08-24：区内改按资金流优先（ranking.comeback_sort_key 单源，与 today_report
         # 回马枪小节同源防漂移）——▲▲回流可取在前、▼▼背离回避劣后，次键评分。
         cb_scored = sorted(comeback_recs, key=lambda x: comeback_sort_key(x, flow_pct_map))
         if len(cb_scored) > COMEBACK_DISPLAY_MAX:
             cb_scored = cb_scored[:COMEBACK_DISPLAY_MAX]
-        print(f"\n{ANSI['CYAN']}◆ 回马枪 — 掉榜跟踪/回调买点（主区稀少或大盘弱势·补充参考）{ANSI['RESET']}")
+        print(f"\n{ANSI['CYAN']}◆ 回马枪 — 掉榜跟踪/回调买点（主区稀少·补充参考）{ANSI['RESET']}")
         print(hdr)
         for ci, entry in enumerate(cb_scored, 1):
             _print_priority_row(entry, ci, flow_pct_map, last_ranks=last_ranks)
@@ -705,7 +678,7 @@ def display_priority(
     if core_dips and _show_lowbuy:
         if len(core_dips) > COMEBACK_DISPLAY_MAX:
             core_dips = core_dips[:COMEBACK_DISPLAY_MAX]
-        print(f"\n{ANSI['GREEN']}◆ 核心方向低吸 — 主线方向核心股回调参考（主区稀少或大盘弱势·补充参考）{ANSI['RESET']}")
+        print(f"\n{ANSI['GREEN']}◆ 核心方向低吸 — 主线方向核心股回调参考（主区稀少·补充参考）{ANSI['RESET']}")
         print(hdr)
         for di, entry in enumerate(core_dips, 1):
             _print_priority_row(entry, di, flow_pct_map, last_ranks=last_ranks)

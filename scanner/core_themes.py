@@ -288,10 +288,13 @@ def save_core_dips(conn: sqlite3.Connection | None, dips: list[dict],
             ).fetchone()
             if existing:
                 if score > existing[1]:
+                    # score 列随更优时刻一并更新（2026-08-24 第二轮审查：原 UPDATE
+                    # 漏写 score——breakdown/percent 已是更优低吸时刻，score 却留
+                    # 首次插入的旧值，两字段互相矛盾且 ORDER BY score DESC 失真）
                     conn.execute(
-                        "UPDATE recommendations SET time=?, percent=?, trend=?, "
+                        "UPDATE recommendations SET time=?, score=?, percent=?, trend=?, "
                         "score_breakdown=?, concept=?, source=? WHERE id=?",
-                        (now, percent, "主线回调", breakdown,
+                        (now, score, percent, "主线回调", breakdown,
                          c.get("concept"), "core_dip", existing[0]),
                     )
                 continue

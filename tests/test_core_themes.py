@@ -317,6 +317,32 @@ class TestSaveCoreDips:
         # 高分（深回撤+强流入）应胜过低分（浅回撤+流出）
         assert rows[1] > 50
 
+    def test_update_writes_score_column(self, db, monkeypatch):
+        """UPDATE 必须同步写 score 列（2026-08-24 第二轮审查）。
+
+        原实现只更新 time/percent/trend/breakdown——breakdown 已是更优低吸时刻，
+        score 却留首次插入旧值，两字段互相矛盾且 ORDER BY score DESC 失真。
+        """
+        import json
+
+        from scanner.core_themes import save_core_dips
+        monkeypatch.setattr('scanner.core_themes.now_beijing',
+                            lambda: __import__('datetime').datetime(2026, 8, 19, 10, 0, 0))
+        low = {"symbol": "SZ300001", "name": "龙头", "concept": "华为概念",
+               "run": 0.1, "pullback": -0.04, "today_pct": 0.0,
+               "below_ma20_ratio": 0.0, "flow_pct": -3.0}
+        high = {"symbol": "SZ300001", "name": "龙头", "concept": "华为概念",
+                "run": 0.4, "pullback": -0.15, "today_pct": -0.02,
+                "below_ma20_ratio": 0.0, "flow_pct": 6.0}
+        save_core_dips(db, [low], '2026-08-19')
+        first_score = db.execute(
+            "SELECT score FROM recommendations").fetchone()[0]
+        save_core_dips(db, [high], '2026-08-19')
+        score, sb = db.execute(
+            "SELECT score, score_breakdown FROM recommendations").fetchone()
+        assert score > first_score, "score 列必须随更优时刻更新"
+        assert json.loads(sb)["pullback"] == -0.15
+
     def test_empty_or_none_is_fail_open(self, db):
         from scanner.core_themes import save_core_dips
         save_core_dips(None, [{"symbol": "x"}], '2026-08-19')   # None conn → no-op

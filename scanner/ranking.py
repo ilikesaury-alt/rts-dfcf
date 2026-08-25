@@ -26,6 +26,26 @@ from scanner.config import (
 from scanner.utils import to_float
 
 
+def _fresh_candidate(entry: Any) -> Any:
+    """返回 entry 可信的候选对象；不可信时返回 None（视同无候选走 DB 回退链）。
+
+    两类快照不得参与展示与判定（2026-08-24 第二轮审查，同根因一次性收口）：
+    - **stale 掉榜候选**：池内快照冻结在掉榜时刻 ≠ 推荐时刻落库口径——6f92be0/
+      2f9179a 只堵了 rank/current/percent 三个消费点，🎯 累计门槛、_entry_dims
+      维度、五日累计列等同族泄漏由本助手统一拦截；
+    - **双挂票类别错位**：today_pool 按 symbol 只保留一个候选对象（新股 nf∩st
+      双挂恒存 short_term），以 new_face 行展示时吃 st 口径 dims 会错走弱转强
+      分型——category 不匹配视同无候选，降级读 DB score_breakdown。
+    """
+    c = entry.get("_candidate")
+    if c is None or getattr(c, "is_stale", False):
+        return None
+    cat = entry.get("category")
+    if cat is not None and getattr(c, "category", None) not in (None, cat):
+        return None
+    return c
+
+
 def _nextday_entry_percent(entry: Any) -> float:
     """推荐时刻盘中涨幅（用于次日大涨候选区筛形）。
 
@@ -41,10 +61,11 @@ def _nextday_entry_percent(entry: Any) -> float:
 
     2026-08-24 审查补：is_stale 候选（掉榜后池内快照冻结在掉榜时刻）不作为第一
     优先级——冻结 percent 会让 🎯 甜蜜带 / _entry_band 涨幅带判定偏离推荐时刻落库
-    口径，stale 视同无候选直接落 DB percent 回退链。
+    口径，stale 视同无候选直接落 DB percent 回退链。同批升级走 _fresh_candidate
+    单源助手（叠加双挂票类别错位拦截）。
     """
-    c = entry.get("_candidate")
-    if c and c.stock and not getattr(c, "is_stale", False):
+    c = _fresh_candidate(entry)
+    if c and c.stock:
         return to_float(c.stock.percent, default=0.0)
     db_pct = entry.get("percent")
     if db_pct is not None:
@@ -118,7 +139,7 @@ def _nextday_entry_accum(entry: Any, conn=None) -> float | None:
     现候选行优先用 accumulated_incl_today 维度；掉榜行优先回放（含推荐日），
     DB 落库的历史口径值不再优先于回放。
     """
-    c = entry.get("_candidate")
+    c = _fresh_candidate(entry)
     if c and c.kline:
         incl = (c.kline.dimensions or {}).get("accumulated_incl_today")
         if incl is not None:
@@ -202,8 +223,11 @@ def _entry_dims(entry: Any) -> dict:
 
     2026-08-17 新增（配合 get_today_recommendations 返回 score_breakdown）：
     拿不到（entry 无 _candidate），现在统一经此函数读取，候选行优先（最新数据）。
+    2026-08-24 第二轮审查：候选可信性走 _fresh_candidate——stale 掉榜候选的冻结
+    dims 与双挂票错位类别的 dims 都不得抢在 DB score_breakdown 之前（超买/弱转强
+    分型/🎯 判定口径与展示类别对齐）。
     """
-    c = entry.get("_candidate")
+    c = _fresh_candidate(entry)
     if c and c.kline and c.kline.dimensions:
         return c.kline.dimensions
     sb = entry.get("score_breakdown")

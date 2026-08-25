@@ -520,7 +520,8 @@ def get_concepts_cache(conn: sqlite3.Connection, symbols: list[str], ttl_days: i
 
 
 def get_market_extra_cache(
-    conn: sqlite3.Connection, symbols: list[str], data_type: str, intraday_ttl_sec: int | None = None
+    conn: sqlite3.Connection, symbols: list[str], data_type: str,
+    intraday_ttl_sec: int | None = None, as_of: str | None = None,
 ) -> dict[str, dict]:
     """批量读取 market_extra_cache，返回 {symbol: payload_dict}。
 
@@ -528,12 +529,19 @@ def get_market_extra_cache(
     不超过该秒数的条目（盘中刷新用，过期视为缺失交由上游重拉）；不提供则
     返回当天全部可用条目（stock_report 等读旧数据的场景）。
     data_type 区分 zt_pool / fund_flow。
+    `as_of` 提供时按目标日期查且忽略 intraday TTL（2026-08-24 第二轮审查：
+    today_report/prevday_perf 历史回放此前硬编码今日日期——回放日资金流展示/
+    归因/排序全部吃到错日或空数据）。
     """
     if not symbols:
         return {}
     placeholders = ",".join("?" * len(symbols))
-    today = now_beijing().date().isoformat()
-    cutoff = (now_beijing() - timedelta(seconds=intraday_ttl_sec)).isoformat() if intraday_ttl_sec else None
+    if as_of is not None:
+        today = as_of
+        cutoff = None
+    else:
+        today = now_beijing().date().isoformat()
+        cutoff = (now_beijing() - timedelta(seconds=intraday_ttl_sec)).isoformat() if intraday_ttl_sec else None
     sql = (
         f"SELECT symbol, payload_json FROM market_extra_cache "
         f"WHERE symbol IN ({placeholders}) AND data_type = ? AND date = ?"
@@ -558,17 +566,20 @@ def get_market_extra_cache(
     return result
 
 
-def get_fund_flow_pct_map(conn: sqlite3.Connection, symbols: list[str]) -> dict[str, float]:
+def get_fund_flow_pct_map(conn: sqlite3.Connection, symbols: list[str],
+                          as_of: str | None = None) -> dict[str, float]:
     """批量读取当日主力净占比，返回 {symbol: main_pct}。
 
     与资金流图标/综合排序档位同源口径（get_market_extra_cache data_type=fund_flow，
     仅当日数据）。无当日数据或查询失败时该 symbol 不包含在结果中（缺失=中性，
     由调用方 fail-open 处理，如回马枪回踩资金流硬过滤、display 图标回退）。
+    `as_of`：历史回放按目标日期查（today_report --date 等），缺省实时今日。
     """
     if not symbols:
         return {}
     try:
-        ff_db = get_market_extra_cache(conn, list(dict.fromkeys(symbols)), "fund_flow")
+        ff_db = get_market_extra_cache(conn, list(dict.fromkeys(symbols)),
+                                       "fund_flow", as_of=as_of)
     except Exception:
         return {}
     return {

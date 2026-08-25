@@ -279,12 +279,9 @@ def _set_market_index(conn, index_pct: float):
 
 
 def test_display_priority_comeback_shown_when_main_sparse(monkeypatch, capsys):
-    """回马枪/核心低吸显示门控（2026-08-24 改 OR）：
-    显示条件 = 主区稀少（≤3）**或** 大盘弱势（index_pct < MARKET_WEAK_THRESHOLD）。
-    - 主区稀少无论强弱都显示（强市主表稀少盲区，08-21 案例）
-    - 弱市即使主区充足也显示（崩盘日低吸最有价值，08-24 神农案例）
-    - 仅「主区充足 + 强势」才隐藏（避免刷屏）
-    无市场日志 fail-open 按弱势处理。"""
+    """回马枪/核心低吸显示门控（阈值 COMEBACK_DISPLAY_MIN_MAIN=5，2026-08-24 用户决策）：
+    唯一显示条件 = 主区（榜上五类）推荐条数 ≤ 5（含为空）；主表 >5 条一律隐藏，
+    无论大盘强弱（此前的弱市 OR 门已移除）。无市场日志无关。"""
 
     def _build_main2(pct):
         conn = _rec_db()
@@ -295,12 +292,25 @@ def test_display_priority_comeback_shown_when_main_sparse(monkeypatch, capsys):
         disp_mod.display_priority(conn, today_pool={})
         return capsys.readouterr().out
 
-    # 主区 2 条（≤ 阈值 3）：弱市 / 强市 / 中性 均显示
+    # 主区 2 条（≤ 阈值 5）：弱市 / 强市 / 中性 均显示
     assert "◆ 回马枪" in _build_main2(-3.0)
     assert "◆ 回马枪" in _build_main2(2.0)
     assert "◆ 回马枪" in _build_main2(0.0)
 
-    # 主区充足（6 条）> 阈值 3：弱市 → 显示（08-24 OR 门）/ 强市 → 隐藏
+    # 主区 5 条（= 阈值）：仍显示（弱市/强市一致）
+    def _build_five(pct):
+        conn = _rec_db()
+        for i in range(1, 6):
+            _insert_rec_cat(conn, f"SZ3000{i}", f"反弹{i}", "rebound", 50 + i)
+        _insert_rec_cat(conn, "SZ300007", "回马", "comeback", 90)
+        _set_market_index(conn, pct)
+        disp_mod.display_priority(conn, today_pool={})
+        return capsys.readouterr().out
+
+    assert "◆ 回马枪" in _build_five(-3.0)
+    assert "◆ 回马枪" in _build_five(2.0)
+
+    # 主区充足（6 条）> 阈值 5：无论弱市/强市都隐藏
     def _build_dense(pct):
         conn = _rec_db()
         for i in range(1, 7):
@@ -310,13 +320,13 @@ def test_display_priority_comeback_shown_when_main_sparse(monkeypatch, capsys):
         disp_mod.display_priority(conn, today_pool={})
         return capsys.readouterr().out
 
-    assert "◆ 回马枪" in _build_dense(-3.0)
+    assert "◆ 回马枪" not in _build_dense(-3.0)
     assert "◆ 回马枪" not in _build_dense(2.0)
 
 
 def test_display_priority_core_dip_shown_when_main_sparse(monkeypatch, capsys):
-    """核心方向低吸显示门控（2026-08-24 改 OR，与回马枪同款）：
-    显示条件 = 主区稀少（≤3）或 大盘弱势；仅主区充足+强势才隐藏。"""
+    """核心方向低吸显示门控（阈值 COMEBACK_DISPLAY_MIN_MAIN=5，与回马枪同款）：
+    显示条件 = 主区稀少（≤5）；主表 >5 条一律隐藏，无论大盘强弱。"""
     import json as _json
 
     def _run(main_n, idx):
@@ -342,17 +352,20 @@ def test_display_priority_core_dip_shown_when_main_sparse(monkeypatch, capsys):
         disp_mod.display_priority(conn, today_pool={})
         return capsys.readouterr().out
 
-    # 主区 1 条（≤ 阈值 3）+ 弱市 → 显示 + 标准行渲染
+    # 主区 1 条（≤ 阈值 5）→ 显示 + 标准行渲染
     out = _run(1, -2.5)
     assert "◆ 核心方向低吸" in out
     dip_line = next(ln for ln in out.split("◆ 核心方向低吸", 1)[1].splitlines() if "SZ300099" in ln)
     assert "DIP" in dip_line
     assert "20日" in dip_line and "回撤" in dip_line and "主力" in dip_line
-    # 主区 1 条 + 强市 → 显示（2026-08-21 撤销弱市门控：只看主表数量）
+    # 主区 1 条 + 强市 → 显示（只看主表数量）
     assert "◆ 核心方向低吸" in _run(1, 1.5)
-    # 主区充足（6 条）> 阈值 3：弱市 → 显示 / 强市 → 隐藏
+    # 主区 5 条（= 阈值）→ 显示（弱市/强市一致）
+    assert "◆ 核心方向低吸" in _run(5, 1.5)
+    assert "◆ 核心方向低吸" in _run(5, -2.5)
+    # 主区充足（6 条）> 阈值 5 → 隐藏（无论弱市/强市）
     assert "◆ 核心方向低吸" not in _run(6, 1.5)
-    assert "◆ 核心方向低吸" in _run(6, -2.5)
+    assert "◆ 核心方向低吸" not in _run(6, -2.5)
 
 
 # ── 综合排序实时行情覆盖：live_quotes 对所有行优先（候选/非候选一致）──
@@ -478,7 +491,7 @@ def test_display_priority_stale_candidate_no_stale_percent(monkeypatch, capsys):
     与 rank/current 同根因同族漏网点——无 live_quotes 时涨幅列曾吃掉榜时刻冻结
     快照，应落推荐时落库 DB percent）。"""
     conn = _rec_db()
-    _insert_rec(conn, "SZ300792", "冻结票", 3.0)   # 推荐时刻口径 +3.0%
+    _insert_rec(conn, "SZ300792", "冻结票", 3.0)  # 推荐时刻口径 +3.0%
     cand = _cand_in_pool("SZ300792", 9.5, 22.9, 15)  # 掉榜时刻冻结快照 +9.5%
     cand.is_stale = True
     disp_mod.display_priority(conn, today_pool={"SZ300792": cand})

@@ -176,11 +176,16 @@ _market_index_cache: tuple[float | None, str | None, float] = (None, None, 0)
 
 
 def _bar_date_of(item: list) -> str | None:
-    """kline item 首列时间戳 → 'YYYY-MM-DD'；脏值/缺列返回 None。"""
+    """kline item 首列时间戳 → 'YYYY-MM-DD'（北京时区）；脏值/缺列返回 None。
+
+    2026-08-24 第二轮审查：原裸 fromtimestamp 依赖主机 TZ=CST——非 CST 主机上
+    bar 日期偏移一天，market_index_log 血缘审计与旧 bar 告警系统性错位
+    （与 ths_api 时区统一同族收口）。
+    """
     try:
         ts = item[0]
         if isinstance(ts, (int, float)) and ts > 0:
-            return datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")
+            return datetime.fromtimestamp(ts / 1000, tz=BEIJING_TZ).strftime("%Y-%m-%d")
     except Exception:  # noqa: BLE001
         pass
     return None

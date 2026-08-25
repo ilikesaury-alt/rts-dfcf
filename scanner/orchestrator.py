@@ -53,6 +53,30 @@ _session_state = ScanSession()
 # minute_snapshot 每日剪枝守卫（2026-08-22）：每交易日首扫执行一次，避免每轮 60s 重复 DELETE
 _minute_prune_state = {"date": ""}
 
+def _update_excluded_marks(conn: sqlite3.Connection, today: str,
+                           excluded_by_risk: list, all_candidates: list) -> None:
+    """硬过滤落标 + 通过候选置回（P1-7，2026-08-24 第二轮审查抽函数补类别守卫）。
+
+    置回按候选自身类别精确匹配——旧实现按 (date,symbol) 全量置 0 会"复活"同
+    symbol 其它类别的旧行：票上午 short_term 推荐 → 回落≥10% 被 mark_reversed
+    置 excluded=1 → 尾盘掉榜进回马枪回踩候选 → 全量置回让已判定"不敢买"的
+    short_term 行重新进综合排序主表。mark_reversed 侧有
+    NOT IN ('comeback','core_dip') 守卫，置回侧同类防线。
+    """
+    if excluded_by_risk:
+        conn.executemany(
+            "UPDATE recommendations SET excluded=1, excluded_reason=? "
+            "WHERE date=? AND symbol=?",
+            [(c.excluded_reason, today, c.stock.symbol) for c in excluded_by_risk])
+    passed_syms = [(today, c.stock.symbol, c.category) for c in all_candidates]
+    if passed_syms:
+        conn.executemany(
+            "UPDATE recommendations SET excluded=0, excluded_reason='' "
+            "WHERE date=? AND symbol=? AND category=?",
+            passed_syms)
+    conn.commit()
+
+
 def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
                   adapter) -> ScanResult:
     global _session_state
@@ -301,17 +325,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     # P1-7 (2026-08-10): 硬过滤落标——被过滤的今日推荐标记 excluded=1（综合排序不再展示），
     # 通过硬过滤的候选置 0（同日风险标签可能随时间变化，以最新轮次为准）。
     try:
-        if excluded_by_risk:
-            conn.executemany(
-                "UPDATE recommendations SET excluded=1, excluded_reason=? "
-                "WHERE date=? AND symbol=?",
-                [(c.excluded_reason, today, c.stock.symbol) for c in excluded_by_risk])
-        passed_syms = [(today, c.stock.symbol) for c in all_candidates]
-        if passed_syms:
-            conn.executemany(
-                "UPDATE recommendations SET excluded=0, excluded_reason='' WHERE date=? AND symbol=?",
-                passed_syms)
-        conn.commit()
+        _update_excluded_marks(conn, today, excluded_by_risk, all_candidates)
     except Exception as e:
         print(f"  [!] 风险过滤落标失败: {e}")
 

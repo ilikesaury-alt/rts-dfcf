@@ -189,8 +189,9 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
 
     # 上一轮扫描的榜单排名快照：综合排序「排名」列据此显示雪球榜单排名变化（+N 升 / -N 降）。
     last_ranks: dict[str, int] = {}
-    # 榜单可观测性：上一轮飙升榜成员集合，用于算本轮重叠率（探测上游样本口径抖动）。
+    # 榜单可观测性：上一轮飙升榜/热搜榜成员集合，用于算本轮重叠率（探测上游样本口径抖动）。
     prev_board_syms: set[str] = set()
+    prev_hot_syms: set[str] = set()
 
     try:
         while True:
@@ -242,7 +243,9 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 try:
                     prev_board_syms = record_leaderboard_log(conn, "biaosheng", xq_raw, prev_board_syms)
                     if hot_list:
-                        record_leaderboard_log(conn, "hot", hot_list, set())
+                        # hot 源独立串联 prev（2026-08-24 第二轮审查：原恒传空集 →
+                        # overlap_prev 恒 0.0，leaderboard_obs 对 hot 每轮误报口径漂移）
+                        prev_hot_syms = record_leaderboard_log(conn, "hot", hot_list, prev_hot_syms)
                 except Exception as e:
                     print(f"  [!] 榜单可观测性落库失败: {e}")
 

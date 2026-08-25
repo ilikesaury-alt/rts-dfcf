@@ -292,6 +292,7 @@ class FallbackAdapter:
         self._primary = primary
         self._secondary = secondary
         self._use_primary = True
+        self._last_used_source: str | None = None  # 最近一次请求实际使用的源名
 
     def is_available(self) -> bool:
         if self._primary.is_available():
@@ -323,16 +324,20 @@ class FallbackAdapter:
                 if self._secondary:
                     logger.warning("%s.%s 异常: %s，降级到 %s",
                                    self._primary.name, method, e, self._secondary.name)
+                    self._last_used_source = self._secondary.name
                     return getattr(self._secondary, method)(*args, **kwargs)
                 raise
             if result is None or result == {}:
                 if self._secondary:
                     logger.warning("%s.%s 返回空，降级到 %s",
                                    self._primary.name, method, self._secondary.name)
+                    self._last_used_source = self._secondary.name
                     return getattr(self._secondary, method)(*args, **kwargs)
                 return result
+            self._last_used_source = self._primary.name
             return result
         elif self._secondary:
+            self._last_used_source = self._secondary.name
             return getattr(self._secondary, method)(*args, **kwargs)
         raise RuntimeError("无可用数据源")
 
@@ -355,8 +360,19 @@ class FallbackAdapter:
         return self._call("fetch_market_index")
 
     def get_market_index_meta(self) -> tuple[float | None, str | None, str]:
-        """委托实际生效的数据源返回指数血缘元数据。"""
+        """委托实际生效的数据源返回指数血缘元数据。
+
+        2026-08-24 第二轮审查：_use_primary 只在 is_available() 更新（启动后恒
+        True），兜底成功的轮次按它推断会把 akshare/THS 数据记成 "xueqiu"——
+        血缘日志 source 失真。以 _call 记录的最近一次实际使用源为准。
+        """
         used = self._primary if self._use_primary else self._secondary
+        last = self._last_used_source
+        if last is not None:
+            if last == self._primary.name:
+                used = self._primary
+            elif self._secondary is not None and last == self._secondary.name:
+                used = self._secondary
         if used is not None and hasattr(used, "get_market_index_meta"):
             try:
                 return used.get_market_index_meta()

@@ -89,7 +89,7 @@ def collect(conn, dates):
         try:
             from scanner.database import get_fund_flow_pct_map
 
-            flow_map = get_fund_flow_pct_map(conn, [e["symbol"] for e in recs])
+            flow_map = get_fund_flow_pct_map(conn, [e["symbol"] for e in recs], as_of=dt)
         except Exception:
             pass
         mkt = _gem_market_avg(conn, dt)

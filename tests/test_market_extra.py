@@ -426,3 +426,21 @@ class TestDbCacheIntradayTtl:
         # 无 intraday_ttl 仍返回（报表读旧数据）
         got = get_market_extra_cache(memory_db, ["SZ300001"], "fund_flow")
         assert got["SZ300001"]["main_pct"] == 9.0
+
+    def test_as_of_queries_target_date_ignoring_ttl(self, memory_db):
+        """as_of 历史回放（2026-08-24 第二轮审查）：按目标日期查且忽略 intraday TTL。
+
+        原实现硬编码今日日期——today_report --date 回放的资金流展示/归因/
+        回马枪排序吃到错日或空数据。
+        """
+        from scanner.database import get_market_extra_cache, save_market_extra_cache
+        save_market_extra_cache(memory_db, {"SZ300001": {"main_pct": 6.5}},
+                                "fund_flow")  # 写入为今日
+        today = memory_db.execute(
+            "SELECT date FROM market_extra_cache").fetchone()[0]
+        # as_of=今日 → 正常返回
+        got = get_market_extra_cache(memory_db, ["SZ300001"], "fund_flow", as_of=today)
+        assert got["SZ300001"]["main_pct"] == 6.5
+        # as_of=其它日 → 无该日条目返回空
+        assert get_market_extra_cache(memory_db, ["SZ300001"], "fund_flow",
+                                      as_of="2020-01-01") == {}

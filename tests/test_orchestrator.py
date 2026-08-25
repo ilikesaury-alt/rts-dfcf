@@ -1415,3 +1415,82 @@ class TestParallelFetchNoSessionHandshake:
         assert intraday.get("SZ300001") is not None
         assert opening.get("SZ300001") is not None
         assert vols.get("SZ300001") is not None
+
+class TestUpdateExcludedMarks:
+    """2026-08-24 第二轮审查：置回按 (date,symbol,category) 精确匹配。"""
+
+    @staticmethod
+    def _mk_conn():
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.execute("""CREATE TABLE recommendations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, time TEXT NOT NULL,
+            symbol TEXT NOT NULL, name TEXT NOT NULL, category TEXT NOT NULL,
+            score INTEGER NOT NULL, percent REAL, trend TEXT, next_day_pct REAL,
+            fwd_3d REAL, fwd_5d REAL, score_breakdown TEXT, source TEXT DEFAULT 'xueqiu',
+            concept TEXT, accumulated_pct REAL, excluded INTEGER DEFAULT 0,
+            stale_kline INTEGER DEFAULT 0, excluded_reason TEXT)""")
+        return conn
+
+    @staticmethod
+    def _cand(symbol="300001", category="comeback"):
+        c = type("C", (), {})()
+        st = type("S", (), {})()
+        st.symbol = symbol
+        c.stock = st
+        c.category = category
+        c.excluded_reason = ""
+        return c
+
+    def test_passed_update_is_category_scoped(self):
+        """回马枪候选通过不得复活同 symbol 已被反转移出的 short_term 行。
+
+        场景：票上午 short_term 推荐 → 回落≥10% 被 mark_reversed 置 excluded=1
+        → 尾盘掉榜进回马枪回踩候选 → 本轮置回若按 symbol 全量匹配，"不敢买"的
+        旧行重新进综合排序主表（违背反转移出交易语义）。
+        """
+        from scanner.orchestrator import _update_excluded_marks
+        conn = self._mk_conn()
+        today = "2026-08-25"
+        for cat, excluded in (("short_term", 1), ("comeback", 0)):
+            conn.execute(
+                "INSERT INTO recommendations (date,time,symbol,name,category,score,excluded) "
+                "VALUES (?, '09:40', '300001', '票', ?, 50, ?)", (today, cat, excluded))
+        conn.commit()
+        _update_excluded_marks(conn, today, [], [self._cand("300001", "comeback")])
+        rows = dict(conn.execute(
+            "SELECT category, excluded FROM recommendations WHERE date=?",
+            (today,)).fetchall())
+        assert rows["short_term"] == 1, "被反转移出的主类别行不得被本轮置回复活"
+        assert rows["comeback"] == 0
+
+    def test_same_category_still_reset(self):
+        """同类别行正常置回（回归保护：守卫不得误伤本类候选）。"""
+        from scanner.orchestrator import _update_excluded_marks
+        conn = self._mk_conn()
+        today = "2026-08-25"
+        conn.execute(
+            "INSERT INTO recommendations (date,time,symbol,name,category,score,excluded,excluded_reason) "
+            "VALUES (?, '09:40', '300002', '票', 'momentum', 50, 1, '旧标签')", (today,))
+        conn.commit()
+        _update_excluded_marks(conn, today, [], [self._cand("300002", "momentum")])
+        row = conn.execute(
+            "SELECT excluded, excluded_reason FROM recommendations").fetchone()
+        assert row == (0, "")
+
+    def test_risk_exclusion_marks_symbol_wide(self):
+        """硬过滤落标仍按 symbol 全类别标 1（防其它类别旧行继续展示，语义不变）。"""
+        from scanner.orchestrator import _update_excluded_marks
+        conn = self._mk_conn()
+        today = "2026-08-25"
+        for cat in ("short_term", "new_face"):
+            conn.execute(
+                "INSERT INTO recommendations (date,time,symbol,name,category,score,excluded) "
+                "VALUES (?, '09:40', '300003', '票', ?, 50, 0)", (today, cat))
+        conn.commit()
+        bad = self._cand("300003", "short_term")
+        bad.excluded_reason = "主力出货"
+        _update_excluded_marks(conn, today, [bad], [])
+        assert conn.execute(
+            "SELECT COUNT(*) FROM recommendations WHERE excluded=1 AND excluded_reason='主力出货'"
+        ).fetchone()[0] == 2

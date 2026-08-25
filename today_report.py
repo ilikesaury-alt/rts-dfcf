@@ -236,7 +236,9 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
     if not recs:
         return {"date": target_date, "empty": True}
 
-    flow_map = get_fund_flow_pct_map(conn, [e["symbol"] for e in recs])
+    # 资金流按目标日期查（2026-08-24 第二轮审查：原硬编码今日——历史回放的
+    # 资金展示/tier3 归因/回马枪排序吃到错日或空数据）
+    flow_map = get_fund_flow_pct_map(conn, [e["symbol"] for e in recs], as_of=target_date)
     # P1-9（2026-08-20）：全部推荐一次性批量回放累计（build_accum_map 单查询），
     # 替代逐行 _nextday_entry_accum 的 N+1 daily_kline 查询。
     accum_map = build_accum_map(conn, recs)

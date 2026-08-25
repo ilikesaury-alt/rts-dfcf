@@ -395,6 +395,34 @@ class TestFallbackAdapter:
         primary.get_market_index_meta.assert_called_once()
         secondary.get_market_index_meta.assert_not_called()
 
+    def test_meta_source_tracks_last_used_after_fallback(self):
+        """血缘 source 以最近一次请求实际使用的源为准（2026-08-24 第二轮审查）。
+
+        _use_primary 启动后恒 True——兜底成功的轮次按它推断会把 akshare 数据
+        记成 "xueqiu"，market_index_log 血缘审计失真。
+        """
+        primary = MagicMock()
+        primary.is_available.return_value = True
+        primary.name = "xueqiu"
+        primary.get_market_index_meta.return_value = (-0.93, "2026-08-18", "xueqiu")
+        primary.fetch_market_index.return_value = None  # 雪球指数失败（吞异常返 None）
+        secondary = MagicMock()
+        secondary.name = "akshare"
+        secondary.fetch_market_index.return_value = -6.26
+        secondary.get_market_index_meta.return_value = (-6.26, "2026-08-19", "akshare")
+
+        adapter = FallbackAdapter(primary, secondary)
+        adapter.is_available()
+        # 未发起任何请求前：默认主源
+        assert adapter.get_market_index_meta()[2] == "xueqiu"
+        # 主源返回 None → 降级 akshare 成功 → meta 应跟随实际使用源
+        assert adapter.fetch_market_index() == -6.26
+        assert adapter.get_market_index_meta() == (-6.26, "2026-08-19", "akshare")
+        # 主源恢复成功 → 回到 xueqiu
+        primary.fetch_market_index.return_value = -0.5
+        adapter.fetch_market_index()
+        assert adapter.get_market_index_meta()[2] == "xueqiu"
+
 
 class TestGetAdapter:
     def setup_method(self):
