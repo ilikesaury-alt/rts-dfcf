@@ -147,20 +147,27 @@ tests/                    # pytest test suite
 
 ## Testing
 
-Tests use pytest with helper factories `_stock()` and `_kline()` in `tests/helpers.py` and `tests/test_analysis.py`. No external services required. 真实 `scanner.db` / 外网的集成测试（共 11 个：`test_historical_rescan` 全部、`test_backtest` 3 个真实库用例、`test_nextday_attribution.test_real_db_smoke`、`test_portfolio_backtest` 2 个真实库用例）标 `@pytest.mark.smoke`，默认跳过，显式 `--run-smoke` 才跑。
+Tests use pytest with helper factories `_stock()` and `_kline()` in `tests/helpers.py` and `tests/test_analysis.py`. No external services required. 真实 `scanner.db` / 外网的集成测试（共 13 个：`test_historical_rescan` 全部、`test_backtest` 3 个真实库用例、`test_fundamentals` 2 个 TestLiveWencaiIntegration 用例、`test_nextday_attribution.test_real_db_smoke`、`test_portfolio_backtest` 2 个真实库用例）标 `@pytest.mark.smoke`，默认跳过，显式 `--run-smoke` 才跑。
 
 ## Bug 检查规则（用户要求"检查 bug / 审查 / 排查问题"时必读）
 
-触发词：「检查bug」「审查」「排查问题」「看看有没有问题」等。必须走完整流程，不许只查改过的文件。
+触发词：「检查bug」「审查」「排查问题」「看看有没有问题」等。按改动范围分级触发，任何级别都不许只查改过的文件。
+
+### 0. 分级触发
+
+- **A级（全流程）**：改 `scanner/` 核心评分/数据层（analysis/validator/enhancer/candidates/kline_fetch/api/database 等）→ 基线 + 全部风险区 + 全部已知重点项。
+- **B级**：改 display/feishu/ranking 纯展示层 → 基线 + 「展示/推送」风险区。
+- **C级**：改独立工具脚本（scripts/、today_report.py、prevday_perf.py 等）→ 仅基线。
+拿不准范围时按 A 级处理。
 
 ### 1. 基线必须先绿
 
-1. `python -m compileall -q scanner unified_scanner.py stock_report.py backfill_kline.py query_summary.py query_today.py xueqiu_hot.py`
+1. `python -m compileall -q scanner unified_scanner.py stock_report.py backfill_kline.py query_summary.py query_today.py xueqiu_hot.py today_report.py prevday_perf.py leaderboard_obs.py repair_kline.py`
 2. `python -m pytest tests/ -q`
-3. `python -m ruff check scanner/ unified_scanner.py stock_report.py backfill_kline.py query_summary.py query_today.py xueqiu_hot.py`（必须全绿）
-4. 有失败先修到全绿再查。`mypy` ~94 条类型债 backlog 非阻断，报告末尾注明即可。
+3. `python -m ruff check scanner/ unified_scanner.py stock_report.py backfill_kline.py query_summary.py query_today.py xueqiu_hot.py today_report.py prevday_perf.py leaderboard_obs.py repair_kline.py`（必须全绿）
+4. 有失败先修到全绿再查。`mypy` 约 100 条类型债 backlog 非阻断（数量随代码漂移，以当轮实测为准），报告末尾注明即可。
 
-### 2. 系统性过风险区（每轮全过一遍）
+### 2. 系统性过风险区（A 级全过；B/C 级只过对应条目）
 
 - **数据入口/强制转换**：搜 `or 0` / `or 0.0` / `get(...) or` / `or i` 模式，字符串/None/NaN 不得漏进数值比较与算术。
 - **K线/缓存/新鲜度**：`kline_fetch.fetch_all_klines`（TTL/今日bar缺失/KLINE_FETCH_DEADLINE）、`get_cached_kline`、`_last_kline_fetch`。
@@ -178,13 +185,13 @@ Tests use pytest with helper factories `_stock()` and `_kline()` in `tests/helpe
 
 ### 4. 每轮输出统一报告表
 
-```
+```text
 | # | Bug | 位置 file:line | 严重度(严重/中/低) | 根因 | 同族扩散点 | 回归测试 | 状态 |
 ```
 
 严重 = 崩溃/数据失真/漏推荐；中 = 性能/误截断；低 = 死代码/未用参数。复核过但确认"非 bug / 设计如此"的也列出（注明依据），不许隐藏。
 
-### 5. 已知重点项（历次发现，每轮 re-check 是否复发）
+### 5. 已知重点项（A 级每轮 re-check 是否复发；连续 3+ 轮复查无复发的移入 `docs/decisions.md` 归档，只留近半年复发过的）
 
 - comeback/off_list 候选 `rank=0` 被当榜上第 1 名计 TOP40 加分（`enhancer._apply_list_momentum_bonus`）
 - comeback/off_list 候选市值富集：`c.market_cap`（元）与 `c.stock.market_cap`（亿元）两套单位字段都要补
