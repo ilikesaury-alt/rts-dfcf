@@ -27,6 +27,8 @@ from scanner.models import Candidate, RecommendationRow
 # scripts/review_tier_replay.py 的 display._entry_* 属性访问保持兼容。
 # F401 为有意导出（test_ranking_single_source.py 断言 display.X is ranking.X）。
 from scanner.ranking import (  # noqa: F401
+    _breakout_profile_key,
+    _breakout_structure_ok,
     _entry_band,
     _entry_dims,
     _entry_fund_flow_pct,
@@ -549,18 +551,29 @@ def display_priority(
     # ↻ 仅保留行内展示。资金流不参与排序/劣后过滤（净流出票正常展示，仅保留「资金流出」标签与图标提醒）。
     # 2026-08-14：预计算 mark map（排序+渲染各调一次 _is_nextday_marked 会触发两次 daily_kline
     # 回放全表扫描；预计算后只查一次，_sort_tier 与渲染共用同一结果保证一致性）。
-    nextday_mark: dict[str, bool] = {}
-    tier_map: dict[str, int] = {}
+    # 2026-08-26：mark/tier map 键改 (symbol, category) 复合键——此前按 symbol 键控时
+    # nf∩st 双挂票两行的归属取决于遍历顺序（隐式依赖）。双挂票展示规则（用户确认）：
+    # 档位/🎯 以 short_term 行判定为准——预计算后按 symbol 归一，非 st 行覆盖为 st 值，
+    # 与「nf∩st 双挂恒存 short_term」的池内事实对齐。
+    nextday_mark: dict[tuple[str, str], bool] = {}
+    tier_map: dict[tuple[str, str], int] = {}
     # P1-9（2026-08-20）：全部推荐一次性批量回放累计（build_accum_map 单查询），
     # 替代逐行 _nextday_entry_accum 的 N+1 daily_kline 查询。
     accum_map = build_accum_map(conn, today_recs)
     for e in today_recs:
-        sym = e["symbol"]
+        key = (e["symbol"], e["category"])
         marked = _is_nextday_marked(e, conn, accum_map=accum_map)
-        nextday_mark[sym] = marked
+        nextday_mark[key] = marked
         # 2026-08-17 档位 4 级：tier_map 与 nextday_mark 同源预计算（_entry_tier 复用
         # 同一 accum/marked，避免二次回放），排序与任何行内展示共用同一结果。
-        tier_map[sym] = _entry_tier(e, conn, accum_map=accum_map, marked=marked)
+        tier_map[key] = _entry_tier(e, conn, accum_map=accum_map, marked=marked)
+    # 双挂票归一：同 symbol 存在 short_term 行时，其余类别行沿用 st 行的档位/🎯 判定。
+    st_tiers = {(s, c): v for (s, c), v in tier_map.items() if c == "short_term"}
+    for key in list(tier_map):
+        st_key = (key[0], "short_term")
+        if key[1] != "short_term" and st_key in st_tiers:
+            tier_map[key] = st_tiers[st_key]
+            nextday_mark[key] = nextday_mark.get(st_key, False)
 
     # 回马枪独立成区（2026-08-07 方案A）：comeback 是 off_list 掉榜跟踪票，语义与榜上票不同，
     # 从主排序表抽出放到末尾独立区块；主表只排榜上五类（rebound/known_new_face/new_face/
@@ -591,9 +604,17 @@ def display_priority(
     # 是否升级为排序因子）。仅主表五类参与判定；批量取 K 线防 N+1。
     breakout_kmap = build_breakout_kline_map(conn, main_recs)
     # 2026-08-22 标记精简：两个变体判定保留（样本统计需区分），渲染合并为单一 ⚡。
-    breakout_mark: dict[str, bool] = {
-        e["symbol"]: _is_breakout_setup(e, conn, accum_map=accum_map, klines=breakout_kmap.get(e["symbol"]))
-        or _is_relist_breakout_setup(e, conn, accum_map=accum_map, klines=breakout_kmap.get(e["symbol"]))
+    # 键 (symbol, category)：nf∩st 双挂票两行类别门不同（⚡ vs ⚡R 按构造不相交），
+    # 按 symbol 键控时后写覆盖会随机丢掉其中一行的判定。
+    # 2026-08-26：类别门走 _breakout_profile_key 单源（dispatcher 判变体归属一次，
+    # 结构条件 _breakout_structure_ok 跑一次——替代原两谓词各判一遍门）。
+    breakout_mark: dict[tuple[str, str], bool] = {
+        (e["symbol"], e["category"]): (
+            _breakout_profile_key(e) is not None
+            and _breakout_structure_ok(
+                e, conn, accum_map=accum_map, klines=breakout_kmap.get(e["symbol"])
+            )
+        )
         for e in main_recs
     }
 
@@ -611,20 +632,21 @@ def display_priority(
     last_tier = None
     rank_in_tier = 0
     for entry in scored:
-        tier = tier_map.get(entry["symbol"], 2)
+        key = (entry["symbol"], entry["category"])
+        tier = tier_map.get(key, 2)
         if tier != last_tier:
             rank_in_tier = 0
             last_tier = tier
             prefix = "🎯 " if tier == 0 else ""
             print(f"  {tier_color[tier]}── 档{tier} {prefix}{tier_names[tier]}{ANSI['RESET']}")
         rank_in_tier += 1
-        mark = nextday_mark.get(entry["symbol"], False)
+        mark = nextday_mark.get(key, False)
         _print_priority_row(
             entry,
             rank_in_tier,
             flow_pct_map,
             nextday_mark=mark,
-            breakout_mark=breakout_mark.get(entry["symbol"], False),
+            breakout_mark=breakout_mark.get(key, False),
             last_ranks=last_ranks,
         )
     print(f"  {'-' * 92}")

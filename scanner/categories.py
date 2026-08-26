@@ -28,11 +28,16 @@ class CategoryInfo:
     in_main_table: bool      # 是否进综合排序主表（False = 回马枪/核心低吸独立观察区）
     nextday_markable: bool   # 是否参与 🎯 次日大涨画像判定（= 主表五类）
     live_produced: bool      # 实时扫描是否仍产出该类别（pullback=False = 已下线）
+    # 综合排序组内分数键方向（ranking.score_sort_key 消费）：True = 评分降序在前
+    # （常规）；False = 评分升序在前——kNF 分数反指（低分档 hit 更高，2026-08-10 回测
+    # 分桶：低分档[18,37) cum_3d +5.58/64%胜率 vs 高分档[77,98) -3.76/33%）。
+    score_descending: bool = True
 
 
 CATEGORY_REGISTRY: dict[str, CategoryInfo] = {
     "rebound": CategoryInfo("RBD", "CYAN", 0, "\033[96m推荐\033[0m", True, True, True),
-    "known_new_face": CategoryInfo("kNF", "GREEN", 1, "\033[96m推荐\033[0m", True, True, True),
+    "known_new_face": CategoryInfo("kNF", "GREEN", 1, "\033[96m推荐\033[0m", True, True, True,
+                                   score_descending=False),
     "momentum": CategoryInfo("MOM", "YELLOW", 2, "参考", True, True, True),
     "new_face": CategoryInfo("NEW", "GREEN", 3, "参考", True, True, True),
     "short_term": CategoryInfo("ST", "RED", 4, "参考", True, True, True),
@@ -69,6 +74,11 @@ LIVE_CATEGORIES: set[str] = {name for name, info in CATEGORY_REGISTRY.items() if
 
 # 综合排序主表类别（榜上五类）。
 MAIN_TABLE_CATEGORIES: set[str] = {name for name, info in CATEGORY_REGISTRY.items() if info.in_main_table}
+
+# 组内分数键方向（ranking.score_sort_key 消费）：True = 评分降序在前。
+SCORE_DESCENDING_BY_CAT: dict[str, bool] = {
+    name: info.score_descending for name, info in CATEGORY_REGISTRY.items()
+}
 
 # 回测/归因：处理 DB 中全部已知类别（含已下线 pullback，用于历史校准）。
 ATTRIBUTION_CATEGORIES: set[str] = set(CATEGORY_REGISTRY.keys())

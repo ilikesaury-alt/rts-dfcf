@@ -44,6 +44,7 @@ from scanner.display import display
 from scanner.feishu import push_feishu
 from scanner.log_utils import log_results
 from scanner.orchestrator import scan_with_raw
+from scanner.ranking_snapshot import persist_ranking_snapshot
 from scanner.trading_session import (
     is_trading_day,
     is_trading_time,
@@ -177,6 +178,42 @@ def _finalize_today_klines(conn, adapter) -> None:
           f"（修正 {corrected} 只）  ", flush=True)
 
 
+# 档位快照落库标记：记录已完成当日 ranking_snapshot 写入的日期（每交易日一次）。
+_snapshot_done_date: str | None = None
+
+
+def _persist_ranking_snapshot_once(conn) -> None:
+    """收盘后写当日综合排序档位快照（每交易日一次，fail-open）。
+
+    在 _finalize_today_klines 之后调用（K 线定稿先落，快照回放用的 accum 口径
+    才是收盘定稿值）。任何异常只告警 + 记 finalize.log，不杀主循环——快照缺失
+    的日期由消费端回退现算兜底。
+    """
+    global _snapshot_done_date
+    now = now_beijing()
+    today = now.date().isoformat()
+    if _snapshot_done_date == today:
+        return
+    if not is_trading_day(now.date()) or is_trading_time(now):
+        return
+    if now.time() < AFTERNOON_END:
+        return  # 开盘前/午间不算收盘后，跳过
+    try:
+        n = persist_ranking_snapshot(conn, today)
+        _snapshot_done_date = today
+        line = f"{today} {now.strftime('%H:%M:%S')} ranking_snapshot rows={n}"
+        print(f"\r  [档位快照] 落库 {n} 行  ", flush=True)
+    except Exception as e:
+        line = f"{today} {now.strftime('%H:%M:%S')} ranking_snapshot FAILED: {e}"
+        print(f"\r  [!] 档位快照落库失败（消费端将回退现算）: {e}  ", flush=True)
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        with open(os.path.join(LOG_DIR, "finalize.log"), "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
 def run_scanner(interval: int, no_feishu: bool) -> None:
     """单进程扫描循环。"""
     conn = init_db()
@@ -205,6 +242,9 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     # 收盘后自动定稿今日K线（每个交易日一次）：盘中残留的部分 bar 用
                     # 最终收盘 bar 覆盖，防止次日复盘/回测读到脏数据（拓斯达案例）。
                     _finalize_today_klines(conn, adapter)
+                    # 定稿后写当日综合排序档位快照（每交易日一次，fail-open）：
+                    # 历史归因存证，ranking 代码演进不篡改历史（见 ranking_snapshot.py）。
+                    _persist_ranking_snapshot_once(conn)
                     wait = seconds_until_next_session(now)
                     label = next_session_label(now)
                     print(f"\r  🌙 非交易时段 | {label} ({wait // 60}分后)  ", end="", flush=True)

@@ -26,38 +26,20 @@ cast(Any, sys.stdout).reconfigure(encoding="utf-8")  # Windows 中文输出（�
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # 项目根（脚本目录运行）
 
 from prevday_perf import DIMS_COMPLETE_SINCE, _gem_market_avg, _next_day_map, _stats  # noqa: E402
-from scanner.config import DB_PATH, FUND_OUTFLOW_NET_PCT, SECTOR_RESONANCE_WARN_MAX  # noqa: E402
+from scanner.config import DB_PATH  # noqa: E402
 from scanner.data_health import check_kline_health, health_banner  # noqa: E402
 from scanner.database import get_today_recommendations  # noqa: E402
 from scanner.ranking import (  # noqa: E402
-    _entry_band,
+    TIER3_REASONS,
     _entry_dims,
-    _entry_overbought,
     _entry_tier,
     _is_nextday_marked,
     build_accum_map,
+    entry_tier_reasons,
 )
+from scanner.ranking_snapshot import load_ranking_snapshot  # noqa: E402
 
-REASONS = ("累计过热≥50", "超买", "主力净流出≤-8%", "小板块共振", "涨幅带死区/陷阱")
-
-
-def _entry_reasons(e, accum, flow):
-    """单票命中的档3 劣后原因集合（与 today_report._build_report 统计口径一致）。"""
-    d = _entry_dims(e)
-    cnt = d.get("v_st_sector_count") or d.get("v_pb_sector_count") or d.get("v_nf_sector_count") or 0
-    rs = []
-    if accum is not None and accum >= 50:
-        rs.append("累计过热≥50")
-    if _entry_overbought(e):
-        rs.append("超买")
-    if flow is not None and flow <= FUND_OUTFLOW_NET_PCT:
-        rs.append("主力净流出≤-8%")
-    if cnt and cnt < SECTOR_RESONANCE_WARN_MAX:
-        rs.append("小板块共振")
-    band = _entry_band(e)
-    if band in ("dead", "trap") and e["category"] != "short_term":
-        rs.append("涨幅带死区/陷阱")
-    return rs
+REASONS = TIER3_REASONS
 
 
 def _flow_of(e, d, flow_map):
@@ -85,6 +67,7 @@ def collect(conn, dates):
             continue
         n_days += 1
         accum_map = build_accum_map(conn, recs)
+        snap_rows = load_ranking_snapshot(conn, dt)
         flow_map = {}
         try:
             from scanner.database import get_fund_flow_pct_map
@@ -102,12 +85,23 @@ def collect(conn, dates):
             p = nd_map.get(e["symbol"])
             if p is None:
                 continue
-            marked = _is_nextday_marked(e, conn, accum_map=accum_map)
-            tier = _entry_tier(e, conn, accum_map=accum_map, marked=marked)
+            # 档位/原因优先读当日 ranking_snapshot 存证（2026-08-26 起收盘定稿落库）——
+            # ranking 判定代码日后演进时历史归因不被「最新代码重放」篡改；
+            # 无快照日期（功能上线前）回退现算（entry_tier_reasons 单源，与档位判定/
+            # today_report 避雷汇总同源；原本地副本小板块共振漏 v_*_sector 成员门已对齐）。
+            snap = snap_rows.get((e["symbol"], e["category"]))
+            if snap is not None:
+                tier = snap["tier"]
+                reasons = list(snap["reasons"])
+            else:
+                marked = _is_nextday_marked(e, conn, accum_map=accum_map)
+                tier = _entry_tier(e, conn, accum_map=accum_map, marked=marked)
+                d = _entry_dims(e)
+                flow = _flow_of(e, d, flow_map)
+                reasons = entry_tier_reasons(e, accum=accum_map.get(e["symbol"]),
+                                             marked=marked, flow=flow)
             if tier != 3:
                 continue
-            d = _entry_dims(e)
-            reasons = _entry_reasons(e, accum_map.get(e["symbol"]), _flow_of(e, d, flow_map))
             recent_ok = dt >= DIMS_COMPLETE_SINCE
             for r in reasons or ["(无原因·兜底)"]:
                 agg_all.setdefault(r, []).append(p)

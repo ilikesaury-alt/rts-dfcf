@@ -13,7 +13,7 @@ from scanner.config import now_beijing
 
 # schema 版本：每次结构性变更（新表/新列/新索引）+1，并在 init_db 里补对应的
 # 幂等迁移。schema_version 表记录演进历史，供工具判断库是否需要重建/回填。
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2 (2026-08-26): +ranking_snapshot（综合排序档位快照）
 
 
 def get_conn(db_path: str | None = None) -> sqlite3.Connection:
@@ -227,6 +227,25 @@ def init_db() -> sqlite3.Connection:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ms_date_sym ON minute_snapshot(date, symbol)")
+    # 综合排序档位快照（2026-08-26）：收盘定稿后把当日全部推荐的档位/🎯/劣后原因
+    # 一次性落库。目的：ranking 判定代码日后演进时，历史归因不被「用最新代码重放
+    # 历史」篡改——快照是当日规则下的权威存证，复盘消费端优先读它、无快照日期才
+    # 回退现算。主表行 rank_in_table = 当日综合排序最终展示序号；comeback/core_dip
+    # 独立区行该列为 NULL。
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ranking_snapshot (
+            date TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            category TEXT NOT NULL,
+            tier INTEGER NOT NULL,
+            marked INTEGER NOT NULL,
+            reasons_json TEXT,
+            rank_in_table INTEGER,
+            created TEXT NOT NULL,
+            PRIMARY KEY (date, symbol, category)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_rs_date ON ranking_snapshot(date)")
     # schema 版本记录（P1-6）：幂等——首次初始化写入当前版本，之后仅在版本前进时追加。
     conn.execute("""
         CREATE TABLE IF NOT EXISTS schema_version (

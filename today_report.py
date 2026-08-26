@@ -47,7 +47,6 @@ from scanner.config import (  # noqa: E402  (stdout reconfigure 在导入前，�
     DB_PATH,
     FUND_OUTFLOW_NET_PCT,
     NEXTDAY_SPIKE_SWEET_LOW,
-    SECTOR_RESONANCE_WARN_MAX,
     now_beijing,
 )
 from scanner.database import get_fund_flow_pct_map, get_today_recommendations  # noqa: E402
@@ -67,6 +66,7 @@ from scanner.ranking import (  # noqa: E402  (纯排序逻辑单源，与 displa
     _nextday_entry_percent,
     build_accum_map,
     comeback_sort_key,
+    entry_tier_reasons,
     sort_main_entries,
 )
 from scanner.utils import to_float, to_int  # noqa: E402
@@ -257,7 +257,7 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
         t = e.get("_tier")
         return t if t is not None else 2
 
-    tier_map = {e["symbol"]: _t(e) for e in main}
+    tier_map = {(e["symbol"], e["category"]): _t(e) for e in main}
     main = sort_main_entries(main, tier_map)
 
     tier0 = [e for e in main if _t(e) == 0][:top_n] if top_n else [e for e in main if _t(e) == 0]
@@ -269,28 +269,16 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
     analyzed = [_tier0_verdict(e, flow_map) for e in tier0]
     analyzed.sort(key=lambda a: (-a["verdict"], -a["score"]))
 
-    # 档3 避雷汇总（统计劣后原因）
+    # 档3 避雷汇总（统计劣后原因）——2026-08-26 收敛到 ranking.entry_tier_reasons 单源
+    #（与 _entry_tier 判定、scripts/tier3_reason_perf 归因同源；原内联副本的小板块共振
+    # 判定漏 v_*_sector 成员门，已随收口对齐档位判定口径）
     tier3_reasons: dict[str, int] = {}
     for e in tier3:
-        acc = e.get("_accum")
-        d = _entry_dims(e)
-        band = _entry_band(e)
-        flow = d.get("fund_flow_main_pct")
+        flow = _entry_dims(e).get("fund_flow_main_pct")
         if flow is None:
             flow = flow_map.get(e["symbol"])
-        flow = to_float(flow, default=None)
-        cnt = d.get("v_st_sector_count") or d.get("v_pb_sector_count") or d.get("v_nf_sector_count") or 0
-        if acc is not None and acc >= 50:
-            tier3_reasons["累计过热≥50"] = tier3_reasons.get("累计过热≥50", 0) + 1
-        if _entry_overbought(e):
-            tier3_reasons["超买"] = tier3_reasons.get("超买", 0) + 1
-        if flow is not None and flow <= FUND_OUTFLOW_NET_PCT:
-            tier3_reasons["主力净流出≤-8%"] = tier3_reasons.get("主力净流出≤-8%", 0) + 1
-        if cnt and cnt < SECTOR_RESONANCE_WARN_MAX:
-            key = f"小板块共振cnt<{SECTOR_RESONANCE_WARN_MAX}"
-            tier3_reasons[key] = tier3_reasons.get(key, 0) + 1
-        if band in ("dead", "trap") and e["category"] != "short_term":
-            tier3_reasons["涨幅带死区/陷阱"] = tier3_reasons.get("涨幅带死区/陷阱", 0) + 1
+        for r in entry_tier_reasons(e, accum=e.get("_accum"), marked=e["_marked"], flow=flow):
+            tier3_reasons[r] = tier3_reasons.get(r, 0) + 1
 
     # 回马枪资金质量
     cb_flow = []

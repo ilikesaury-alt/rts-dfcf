@@ -7,6 +7,8 @@
 - **Run scanner**: `python unified_scanner.py`（默认每 60s 一轮；`python unified_scanner.py 120` 自定义间隔；`--no-feishu` 禁用飞书推送）
 - **综合排序分析报告**: `python today_report.py`（今日档0🎯逐票分析+选股决策报告；`--date YYYY-MM-DD` 历史回放 / `--top N` / `--json`）。独立命令不刷屏扫描输出，配合 skill `priority-report`（`.opencode/skills/`，触发语「综合排序怎么选」「/today-report」）
 - **综合排序历史复盘**: `python prevday_perf.py`（历史 N 日「综合排序各组 → 次日表现」，检验档位排序有效性；`--days 0` 全期 / `--days N` 自定义 / `--json`）。08-04 前缺超买/弱转强维度自动标注口径退化
+- **档3 劣后归因**: `python scripts/tier3_reason_perf.py`（档3 按劣后原因拆桶的次日表现；优先读 ranking_snapshot 快照，无快照回退现算）
+- **扣分制对照测量**: `python scripts/tier_penalty_replay.py`（档位级联 vs 扣分制分离度对照，只测不切；`--days 0` 全期）
 - **K线数据修复**: `python repair_kline.py`（全表比对雪球 qfq 权威源覆盖盘中残留脏 bar；`--dry-run` 先看差异量 / `--since YYYY-MM-DD` 限窗口）
 - **榜单可观测性**: `python leaderboard_obs.py`（雪球飙升榜/热搜榜逐扫描成分+排名分布；`--date` 指定日 / `--days N` 回看 / `--source hot` 切热搜榜；口径漂移自动标 `⚠`）
 - **Run tests**: `python -m pytest tests/ -v`（默认跳过真实库/外网集成测试，~5s 快跑；加 `--run-smoke` 跑全部含集成，~27s）
@@ -59,6 +61,7 @@ scanner/
   market_extra.py         # 行情增强数据层（涨停池 THS 主源 + 资金流 push2delay 直连）
   fundamentals.py         # 基本面风险过滤层（THS 估值快照主源，pb_mrq<0 资不抵债）
   ranking.py              # 展示层排序单源助手（tier/🎯/⚡/_fresh_candidate 等）
+  ranking_snapshot.py     # 综合排序档位快照落库（收盘定稿批次写入 + 复盘读取）
   data_health.py          # 数据真实性检查（跨源对账/未定稿计数/指数血缘）
   backtest.py             # Backtest / IC attribution framework
   nextday_attribution.py  # 次日大涨归因（主决策口径）
@@ -109,10 +112,11 @@ tests/                    # pytest test suite
   | 8-10% 陷阱带近端反转 | 全期 7.5%陷阱 vs 近30天 14.6%最好 | 100 | 41 | 观察中 |
   | 低分反指近端减弱 | score<30 桶全期 16.7%最强，近30天仅 1 条 | 60 | 1 | 样本不足无法验证 |
   | short_term 弱转强子集衰减？ | 近30天 hit 11.9% vs 全期 15.8% | 100 | 59 | 观察中 |
+  | 档位扣分制优于级联 | 扣2桶 hit 12.8% 非单调（`tier_penalty_replay` 首跑 min桶 n=28） | 100 | 28 | 观察中·维持级联 |
 
   已落地结论（不回清单）：rebound 最强类别、弱转强∩非超买有效、超买死亡信号、档位排序有效（档0>档3）、被移出票负收益（排除有效）。**调参以 hit 口径为准，勿被 `backtest --ranking` 均收益建议带偏**（momentum/comeback 两案例）。
 - **次日大涨归因（`scanner/nextday_attribution.py`，唯一决策口径）**：用户偏好 next_day ≥7%。2026-08-18 起综合排序优先级/档位/建议列全部按本口径校准（`backtest` 默认 metric 同步），cum_3d 仅作对照不参与调参。用法：`python -m scanner.nextday_attribution [--days N] [--threshold 7] [--csv prefix]`。关键结论：甜蜜带 <2%/4-8%；8-10% 是陷阱带（非 short_term）；score<30 低分反指；rebound 最强（hit 32%）；弱转强∩非超买有效；辨识度曾是最强单因子（现 ↻ 已下线仅 today_report 归因用）。调参即跑本模块 + `scanner.backtest` 复核。
-- **🎯 次日大涨标记（`ranking._is_nextday_marked`，档0 唯一因子）**：不改 score/不落库。分型：**short_term 要求弱转强+非超买**；其余类别甜蜜带+非超买+5日累计≥`NEXTDAY_ACCUM_MIN=6.0`（**rebound/short_term 豁免累计门槛**）。累计数据源回退链：候选池 `accumulated_incl_today`（含今日口径）→ `daily_kline` 按推荐日回放现算 → DB 落库值兜底 → 三源皆缺失 fail-open 放行。排序预计算 mark map 防 kline 回放全表扫描。
+- **🎯 次日大涨标记（`ranking._is_nextday_marked`，档0 唯一因子）**：不改 score/不落库。类别差异走规格表 `NEXTDAY_CAT_SPECS`（2026-08-26 数据驱动收口，键集合 ≡ `categories.NEXTDAY_CAT_PRIORITY`，测试守护）。分型：**short_term 要求弱转强+非超买**；其余类别甜蜜带+非超买+5日累计≥`NEXTDAY_ACCUM_MIN=6.0`（**rebound/short_term 豁免累计门槛**）。累计数据源回退链：候选池 `accumulated_incl_today`（含今日口径）→ `daily_kline` 按推荐日回放现算 → DB 落库值兜底 → 三源皆缺失 fail-open 放行。排序预计算 mark map 防 kline 回放全表扫描。
 - **K线新鲜度与定稿**：交易时段候选缺今日 bar 打印 `今日K线缺失N只` 警告（旧缓存评分、TTL=120s 重试；早盘"上榜多推荐 0"先查此警告）。评分基于缺今日 bar 旧缓存 → `stale_kline=True` 标记 + 落库审计。**收盘定稿**：主循环非交易时段每日自动 `_finalize_today_klines`（等至 15:02、幂等、fail-open、写 `logs/finalize.log`）；盘中写入的今日 bar `finalized=0`、收盘后置 1；`backfill_kline.py` 回填筛选含今日。
 - **数据真实性检查（`scanner/data_health.py`）**：本地契约抓不到自洽脏数据，唯一可靠是跨源比对。`check_kline_health` 抽样交叉验证（THS 主参照容差 0.5%、新浪 qfq 回退），不符比例≥30% 阻断；`count_unfinalized_today`；`check_market_index_health`（bar 日期滞后 / 涨幅 vs 东财 push2delay 偏差超 0.5pp 告警）。`nextday_attribution`/`prevday_perf` 出报告前自动跑（`--force` 逃生口）。
 - **扫描数据血缘日志（`scan_quality_log` 表）**：每轮落库 `{gem_count, fetch_failed, today_bar_missing, minute_fallback, stale_recs}`，同日多轮按最新覆盖。排查"为什么没推荐/推荐异常"先查当日快照。测试 `TestSaveScanQuality`。
@@ -133,11 +137,12 @@ tests/                    # pytest test suite
 - **Display layers (`display.py`/`feishu.py`)**: risk_flags 自动 `⚠` 前缀拼接。策略桶区已下线，`display()` 压缩头部后直入 `display_priority` 综合排序总表；回马枪变体由独立区标签 CB·反转/CB·回踩 保留。**回马枪/核心低吸区显示条件 = 主区（榜上五类）推荐 ≤ `COMEBACK_DISPLAY_MIN_MAIN=3` OR 大盘弱势（`_market_is_weak`：market_index_log 优先/候选 dims 回退/fail-open 按弱势）**；回马枪区最多 `COMEBACK_DISPLAY_MAX=10` 条，区内排序 `ranking.comeback_sort_key`（主力净占比降序，flow 缺失 to_float default=None 后经 flow_map 补值，次键评分），display/orchestrator/today_report 三端同源。**掉榜快照守卫**：stale 候选与双挂票类别错位统一经 `ranking._fresh_candidate` 拦截（视同无候选降级读 DB），percent/涨幅/🎯/⚡/dims 判定全走该守卫。
 - **综合排序分组顺序（`config.py:CAT_DISPLAY_PRIORITY`，next_day 口径校准）**: **rebound > known_new_face > momentum > new_face > short_term > comeback > pullback**（hit 依据 28.6/12.7/10.2/9.6/8.4/3.3%）。**建议列解耦**（`config.py:SUGGEST_BY_CAT`）：rebound/kNF→推荐、momentum/new_face/short_term→参考、comeback→回马、pullback→回避。**kNF 类别内反向排序**（score 升序，低调二次上榜在前；`display._score_sort_key` 与 `orchestrator._new_face_sort_key` 同步）。校准工具：`python -m scanner.backtest --ranking [--metric next_day_pct]`（近期样本 <20 回退全期），人工复核后更新。
 - **综合排序档位（`ranking`/`display.py:_entry_tier`，纯排序层）**: 排序键 `(档位, CAT_DISPLAY_PRIORITY, 分数键)`，跨类别全局。档0 = 🎯 次日大涨画像；档1 = 强信号（rebound）；档2 = 普通；档3 = 警示劣后（累计≥50% 过热**优先于 🎯** / 超买 / 小板块共振 cnt<15 / 2-4%死区 / momentum·new_face 的 8-10%陷阱（short_term 豁免）/ 资金流出≤-8%；short_term 与 comeback 不看涨幅带）。回放验证单调有效：档0 15.4% > 档1 10.5% > 档2 9.2% > 档3 6.7%。↻ 辨识度行内展示已下线（prominence 数据仍供 today_report 归因）。
-- **蓄势突破观察画像（⚡ 纯展示层标记，不参与排序/评分/落库）**：`ranking._is_breakout_setup`（new_face/kNF/首推）+ `_is_relist_breakout_setup`（short_term 且非首推，两判定按构造不相交），结构条件共用 `_breakout_structure_ok`（前5日横盘+T-1缩量+回调至20日高点下方+MA多头），渲染合并单一青色 ⚡。fail-closed。**⚠️ 样本仅 20 只，按开放假设清单 SOP 先观察，达标后经 nextday_attribution 复盘再决定升级**。回放注意：收盘后回放需模拟推荐时刻价格（含推荐日累计会被自身涨幅推高）。
+- **蓄势突破观察画像（⚡ 纯展示层标记，不参与排序/评分/落库）**：类别门单源 `ranking._breakout_profile_key`（⚡=new_face/kNF/首推、⚡R=非首推 short_term，dispatcher 按构造互斥；2026-08-26 前两门分散在两谓词内靠注释约束），结构条件共用 `_breakout_structure_ok`（前5日横盘+T-1缩量+回调至20日高点下方+MA多头），渲染合并单一青色 ⚡。fail-closed。**⚠️ 样本仅 20 只，按开放假设清单 SOP 先观察，达标后经 nextday_attribution 复盘再决定升级**。回放注意：收盘后回放需模拟推荐时刻价格（含推荐日累计会被自身涨幅推高）。
 - **walk-forward 滚动检验（`scanner/walkforward.py`）**：核心校准结论滚动 train→test 验证方向稳定性 + 档位单调性复现。首跑：🎯 画像方向稳定、档位单调全窗口复现；甜蜜带+非超买方向不稳（继续观察）。定位：纯离线测量，不调参不落库不进扫描路径。
 - 今日选股建议（pick.py）已下线：历史上系统性跑输随机选池，违反"筛选系统不是交易系统"边界，勿恢复。
 - **综合排序分析报告（`today_report.py` + skill `priority-report`）**：档0 逐票分析独立命令，display 渲染路径零改动；评级纯展示层（正向：rebound/弱转强∩非超买/甜蜜带+累计≥6/kNF；风险：尾盘回吐/RSI顶背离/主力净流出≤-8%/超买/疲劳/8-10%陷阱带）。`get_market_extra_cache`/`get_fund_flow_pct_map` 支持 `as_of` 历史回放。
 - **综合排序历史复盘（`prevday_perf.py`）**：档位/🎯 逐日重建（today_report 同源），表现用落库 next_day_pct，hit/均值复用 `nextday_attribution._hit_stats` 防漂移。不得用于调权重/档位因子。
+- **综合排序档位基建（2026-08-26 重构一期）**：① 档3 劣后原因单源 `ranking.entry_tier_reasons`（`_entry_tier`/today_report 档3 汇总/`tier3_reason_perf` 三处同源；阈值 `OVERHEAT_ACCUM_MAX=50`/`FUND_OUTFLOW_NET_PCT` 入 config）；② tier_map/mark map 复合键 `(symbol, category)`，nf∩st 双挂票档位显式以 short_term 行判定为准；③ 分数方向入类别注册表 `SCORE_DESCENDING_BY_CAT`。**档位快照落库（`ranking_snapshot.py` + `ranking_snapshot` 表，schema v2）**：收盘定稿批次内 `_persist_ranking_snapshot_once` 全量回放写入（幂等 fail-open 记 finalize.log）——ranking 判定演进不篡改历史归因；`tier3_reason_perf` 优先读快照、无快照回退现算。扣分制对照测量 `scripts/tier_penalty_replay.py`（只测不切，见开放假设清单）。**重构二期（同日，画像注册表化，原 Phase 4）**：⚡ 类别门收口 `_breakout_profile_key` dispatcher（两变体按构造互斥由代码保证）；🎯 类别差异收口 `NEXTDAY_CAT_SPECS` 规格表——判定语义零变化（stash 零差异 + 行为矩阵测试 `tests/test_profile_registry.py` 守护）。
 - **推荐后快速反转移出（`database.py:mark_reversed_recommendations`）**：今日已推荐（不含回马枪）但当前不在候选池的票，回落 `drop = high_pct − live`（ref 优先当日最高涨幅，缺失回退推荐时刻涨幅）：① 转负且 drop≥5.0；② drop≥10.0 无论红绿 → `excluded=1` 移出展示（保留落库）+ `[反转移出]` 告警。阈值来自全量回落分布校准（p75≈4.5/p95≈10.5），不可为单票凑参。当前候选每轮 `passed_syms` 置回 0；行情缺失 fail-open；仅展示层生效（回测/归因不过滤 excluded）。
 
 ## Testing
