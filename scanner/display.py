@@ -650,6 +650,33 @@ def display_priority(
             last_ranks=last_ranks,
         )
     print(f"  {'-' * 92}")
+    # 自定义综合排序名称序列（用户偏好视图，与离线 _reorder.py 同源）：
+    # 有榜单排名 → 核心票(高亮) → 档位 → 陌生面孔 → 涨幅升序(低在前)。
+    # 纯展示行，不改排序/评分/落库；fail-closed 不阻塞主流程。
+    try:
+        _stg_letter = {"rebound": "RBD", "momentum": "MOM", "new_face": "NEW",
+                      "known_new_face": "NEW", "short_term": "ST"}
+        _seq = []
+        for e in main_recs:
+            sym = e["symbol"]
+            cat = e["category"]
+            rk = e.get("live_rank") or e.get("rank")
+            has_rank = isinstance(rk, (int, float)) and rk > 0
+            is_core = bool(e.get("_core_stock"))
+            tier = tier_map.get((sym, cat), 2)
+            is_new = _stg_letter.get(cat) == "NEW"
+            chg = to_float(e.get("live_percent") or e.get("percent"), default=0.0)
+            _seq.append((0 if has_rank else 1, 0 if is_core else 1, tier,
+                         0 if is_new else 1, rk if has_rank else 9999, chg,
+                         e["name"], is_core))
+        _seq.sort(key=lambda x: x[:6])
+        _names = " > ".join(
+            (f"{ANSI['BOLD']}{ANSI['MAGENTA']}{n}{ANSI['RESET']}" if c else n)
+            for (_, _, _, _, _, _, n, c) in _seq
+        )
+        print(f"  {ANSI['BOLD']}排序序列{ANSI['RESET']}: {_names}")
+    except Exception:
+        pass
     if any(breakout_mark.values()):
         print(
             f"  {ANSI['CYAN']}⚡ 蓄势突破观察{ANSI['RESET']}（缩量回调蓄势位·含新面孔/重上榜两变体"
