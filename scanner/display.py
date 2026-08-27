@@ -7,6 +7,8 @@ from scanner.config import (
     COMEBACK_DISPLAY_MAX,
     COMEBACK_DISPLAY_MIN_MAIN,
     CORE_DIP_CATEGORY,
+    CORE_PULLBACK_MAX,
+    CORE_PULLBACK_MIN,
     FUND_FLOW_MAIN_PCT_EXTREME,
     FUND_FLOW_MAIN_PCT_STRONG,
     FUND_FLOW_MAIN_PCT_WEAK,
@@ -611,9 +613,7 @@ def display_priority(
     breakout_mark: dict[tuple[str, str], bool] = {
         (e["symbol"], e["category"]): (
             _breakout_profile_key(e) is not None
-            and _breakout_structure_ok(
-                e, conn, accum_map=accum_map, klines=breakout_kmap.get(e["symbol"])
-            )
+            and _breakout_structure_ok(e, conn, accum_map=accum_map, klines=breakout_kmap.get(e["symbol"]))
         )
         for e in main_recs
     }
@@ -650,12 +650,37 @@ def display_priority(
             last_ranks=last_ranks,
         )
     print(f"  {'-' * 92}")
-    # 自定义综合排序名称序列（用户偏好视图，与离线 _reorder.py 同源）：
-    # 有榜单排名 → 核心票(高亮) → 档位 → 陌生面孔 → 涨幅升序(低在前)。
+    # 自定义综合排序名称序列（用户偏好视图）：
+    # 有榜单排名 → 档位 → 回调型核心票 → 榜单排名升序 → 新面孔 → 涨幅升序(低在前)。
+    # 2026-08-27 改版依据（近30日 526 去重样本离线测量，scripts 已删·结论记 docs/decisions.md）：
+    # ① 原第②位「核心票」整体近端反指（hit 2.1% vs 非核心 9.3%）——根因是创新高/
+    #   浅回撤核心股是追高位（shallow hit 1.2%/avg -2.54%），提前只认「回调型核心票」=
+    #   T-1 收盘距20日高点回撤 ∈ [CORE_PULLBACK_MIN, CORE_PULLBACK_MAX]（与核心低吸区
+    #   同窗口，复用 breakout_kmap 批量 K 线防 N+1）；创新高核心股保留品红高亮
+    #   （视觉信息不变）但不参与提前；缺 K 线 fail-closed 不提前。
+    # ② 档位提到核心前（档0/1 hit 12.8%/14.8% 远优于核心票边际）。
+    # ③ 榜单排名升序提前到新面孔之前（rank 1-15 hit 15.0%，全场最有区分度的良性因子）。
     # 纯展示行，不改排序/评分/落库；fail-closed 不阻塞主流程。
     try:
-        _stg_letter = {"rebound": "RBD", "momentum": "MOM", "new_face": "NEW",
-                      "known_new_face": "NEW", "short_term": "ST"}
+
+        def _cb_core_pullback_ok(sym: str) -> bool:
+            kl = breakout_kmap.get(sym)
+            if not kl or len(kl) < 20:
+                return False
+            h20 = max(b[1] for b in kl[-20:])
+            t1_close = kl[-1][2]
+            if h20 <= 0 or t1_close <= 0:
+                return False
+            pb = t1_close / h20 - 1.0
+            return CORE_PULLBACK_MIN <= pb <= CORE_PULLBACK_MAX
+
+        _stg_letter = {
+            "rebound": "RBD",
+            "momentum": "MOM",
+            "new_face": "NEW",
+            "known_new_face": "NEW",
+            "short_term": "ST",
+        }
         _seq = []
         for e in main_recs:
             sym = e["symbol"]
@@ -663,16 +688,25 @@ def display_priority(
             rk = e.get("live_rank") or e.get("rank")
             has_rank = isinstance(rk, (int, float)) and rk > 0
             is_core = bool(e.get("_core_stock"))
+            is_cb_core = is_core and _cb_core_pullback_ok(sym)
             tier = tier_map.get((sym, cat), 2)
             is_new = _stg_letter.get(cat) == "NEW"
             chg = to_float(e.get("live_percent") or e.get("percent"), default=0.0)
-            _seq.append((0 if has_rank else 1, 0 if is_core else 1, tier,
-                         0 if is_new else 1, rk if has_rank else 9999, chg,
-                         e["name"], is_core))
+            _seq.append(
+                (
+                    0 if has_rank else 1,
+                    tier,
+                    0 if is_cb_core else 1,
+                    rk if has_rank else 9999,
+                    0 if is_new else 1,
+                    chg,
+                    e["name"],
+                    is_core,
+                )
+            )
         _seq.sort(key=lambda x: x[:6])
         _names = " > ".join(
-            (f"{ANSI['BOLD']}{ANSI['MAGENTA']}{n}{ANSI['RESET']}" if c else n)
-            for (_, _, _, _, _, _, n, c) in _seq
+            (f"{ANSI['BOLD']}{ANSI['MAGENTA']}{n}{ANSI['RESET']}" if c else n) for (_, _, _, _, _, _, n, c) in _seq
         )
         print(f"  {ANSI['BOLD']}排序序列{ANSI['RESET']}: {_names}")
     except Exception:
