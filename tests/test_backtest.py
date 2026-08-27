@@ -4,16 +4,16 @@ from datetime import date
 import pytest
 
 from scanner.backtest import (
+    RankCategoryStat,
     _nth_trading_day_after,
     _rank,
-    RankCategoryStat,
     compute_outcome,
+    dimension_ic,
     print_ranking_report,
     rank_category_stats,
     spearman,
-    suggest_priority,
     strategy_performance,
-    dimension_ic,
+    suggest_priority,
 )
 
 
@@ -32,12 +32,10 @@ def test_rank_float_tie_averaging():
 
 
 def test_ic_single_source():
-    # P0-4 收敛单源：ic_attribution / nextday_attribution 必须复用同一 spearman 对象，
+    # 单源守护：nextday_attribution 必须复用 backtest.spearman 对象，
     # 杜绝再次分叉出 tie 处理规则不同的等价实现（浮点近邻算出不同 IC）。
-    import scanner.ic_attribution as ic_attribution
     import scanner.nextday_attribution as nextday_attribution
 
-    assert ic_attribution.spearman is spearman
     assert nextday_attribution.spearman is spearman
 
 
@@ -91,6 +89,7 @@ def test_compute_outcome_missing_returns_none():
 def test_strategy_performance_runs():
     # 真实库集成测试：依赖 scanner.db（默认跳过，--run-smoke 运行）
     import os
+
     from scanner.config import DB_PATH
 
     if not os.path.exists(DB_PATH):
@@ -106,6 +105,7 @@ def test_strategy_performance_runs():
 @pytest.mark.smoke
 def test_dimension_ic_runs():
     import os
+
     from scanner.config import DB_PATH
 
     if not os.path.exists(DB_PATH):
@@ -119,6 +119,7 @@ def test_dimension_ic_runs():
 @pytest.mark.smoke
 def test_dimension_ic_keeps_live_momentum_kdj():
     import os
+
     from scanner.config import DB_PATH
 
     if not os.path.exists(DB_PATH):

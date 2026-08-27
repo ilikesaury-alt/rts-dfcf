@@ -9,7 +9,6 @@ import math
 import sqlite3
 
 from scanner.config import (
-    MINUTE_SNAPSHOT_KEEP_DAYS,
     REVERSAL_OVERSHOOT_DROP,
     REVERSAL_TURNED_RED_DROP,
     WATCH_POOL_MAX,
@@ -216,54 +215,6 @@ def save_market_index_log(conn: sqlite3.Connection, index_pct: float | None,
         conn.commit()
     except Exception as e:
         logger.warning(f"save_market_index_log failed: {e}")
-
-
-def save_minute_snapshots(conn: sqlite3.Connection, samples: list[dict]) -> int:
-    """落库单轮候选分时快照（分时可观测性，2026-08-21）。
-
-    每轮扫描把最终候选的 {symbol, price, pct} 采样进 minute_snapshot 时间序列，
-    使历史分时形态可回放（涨停共性复盘曾因历史分时未落库只能看单例）。每轮一次
-    批量写入，同 (date,time,symbol) 覆盖。fail-open：落库失败不阻塞扫描主流程。
-
-    samples: [{"symbol", "price", "pct"}, ...]；price/pct 非有限正数/负数按脏值
-    剔除该行（与 KlineBar 契约同族），不阻断其余行。
-    返回写入行数。
-    """
-    if not samples:
-        return 0
-    today = now_beijing().date().isoformat()
-    now = now_beijing().strftime("%H:%M:%S")
-    hhmm = now[:5]
-    rows = []
-    for s in samples:
-        sym = s.get("symbol")
-        if not sym:
-            continue
-        try:
-            price = float(s.get("price"))
-            pct = float(s.get("pct"))
-        except (TypeError, ValueError):
-            continue
-        if not math.isfinite(price) or price <= 0 or not math.isfinite(pct):
-            continue
-        rows.append((today, hhmm, sym, price, pct, now))
-    if not rows:
-        return 0
-    try:
-        conn.executemany(
-            """INSERT INTO minute_snapshot (date, time, symbol, price, pct, updated)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(date, time, symbol) DO UPDATE SET
-                 price = excluded.price,
-                 pct = excluded.pct,
-                 updated = excluded.updated""",
-            rows,
-        )
-        conn.commit()
-        return len(rows)
-    except Exception as e:
-        logger.warning(f"save_minute_snapshots failed: {e}")
-        return 0
 
 
 def record_leaderboard_log(conn: sqlite3.Connection, source: str, items: list[dict],
@@ -548,25 +499,6 @@ def prune_watch_pool(conn: sqlite3.Connection,
         return cur.rowcount
     except Exception as e:
         logger.warning(f"prune_watch_pool failed: {e}")
-        return 0
-
-
-def prune_minute_snapshots(conn: sqlite3.Connection,
-                           keep_trading_days: int = MINUTE_SNAPSHOT_KEEP_DAYS) -> int:
-    """删除 keep_trading_days 个交易日之前的分时快照（2026-08-22 剪枝）。
-
-    minute_snapshot ~1 万行/日量级且此前无剪枝，长跑会无限膨胀；复盘价值集中在
-    近端形态，按 date < 交易日回溯 cutoff 整批删除（走 idx_ms_date_sym 索引）。
-    fail-open：失败只告警不阻塞扫描主流程。返回删除行数。
-    """
-    cutoff = _n_trading_days_ago(keep_trading_days)
-    try:
-        cur = conn.execute(
-            "DELETE FROM minute_snapshot WHERE date < ?", (cutoff,))
-        conn.commit()
-        return cur.rowcount
-    except Exception as e:
-        logger.warning(f"prune_minute_snapshots failed: {e}")
         return 0
 
 

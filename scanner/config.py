@@ -220,14 +220,12 @@ KLINE_REFRESH_TTL = 120  # orchestrator K 线补拉节流间隔（刷新时机�
 ZT_POOL_FETCH_TIMEOUT = 20  # 涨停池单次拉取上限（秒）
 FUND_FLOW_FETCH_TIMEOUT = 30  # 资金流全市场分页拉取上限（秒，超时返回已收集部分）
 # 资金流评分阈值（主力净流入净占比 %）
-FUND_FLOW_MAIN_PCT_STRONG = 5.0  # 主力净占比 ≥5% → 加分
+FUND_FLOW_MAIN_PCT_STRONG = 5.0  # 强流入分界（图标 ▲；正向加分 2026-08-10 归零下线：强流入组次日 -1.13% 反指）
 FUND_FLOW_MAIN_PCT_WEAK = -5.0  # 主力净占比 ≤-5% → 扣分
 # FUND_FLOW_MAIN_PCT_EXTREME 定义见下方「风险标签阈值」——与 FUND_OUTFLOW_NET_PCT 同源，避免档位漂移
-# 2026-08-10: FUND_FLOW_BONUS_STRONG 归零——回测分组显示强流入(≥5%)组 next_day 均 -1.13%
-# （n=22）差于无数据基线 -0.85%，momentum/short_term 内同为负：今日主力净流入与当日涨幅
-# 正相关，是追涨资金次日兑现，加分方向反指。仅保留 FUND_FLOW_BONUS_WEAK=-3 流出扣分、
-# 「资金流出」标签（规避语义，与预测语义无关）。字段仍写入 dims 供展示/归因。
-FUND_FLOW_BONUS_STRONG = 0
+# 2026-08-10: 正向加分（原 FUND_FLOW_BONUS_STRONG）回测证实反指已删除——强流入(≥5%)组 next_day 均
+# -1.13%（n=22）差于无数据基线 -0.85%：今日主力净流入与当日涨幅正相关，是追涨资金次日兑现。
+# 仅保留 FUND_FLOW_BONUS_WEAK=-3 流出扣分、「资金流出」标签（规避语义）。字段仍写入 dims 供展示/归因。
 FUND_FLOW_BONUS_WEAK = -3
 # 综合排序「档位置顶」历史说明（2026-08-06 引入，2026-08-11 起仅保留辨识度分档）：
 # 排序键 (档位, CAT_DISPLAY_PRIORITY, 分数键)。档位原含资金流——强流入 ≥ FUND_FLOW_MAIN_PCT_STRONG
@@ -549,11 +547,6 @@ REVERSAL_OVERSHOOT_DROP = 10.0
 # 每票每日最多评估一次（last_eval_date 落库，重启不丢）。
 WATCH_POOL_MAX = 600  # 掉榜跟踪池上限（超限时淘汰 last_list_date 最旧）
 WATCH_OFFLIST_KEEP_DAYS = 15  # 掉榜后保留交易日数（覆盖三周级掉榜，见志特新材案例）
-
-# 分时快照保留窗口（2026-08-22 剪枝，orchestrator 每交易日一次调 prune_minute_snapshots）：
-# minute_snapshot ~1 万行/日落库且无剪枝会无限膨胀（年级 300w+ 行）；复盘价值集中在近端
-# （涨停共性回放看近期形态），60 交易日 ≈ 3 个月足够。
-MINUTE_SNAPSHOT_KEEP_DAYS = 60  # 保留交易日数，更旧的分时快照每日首扫时删除
 # 反转变体：超跌企稳（复用 analyze_rebound 语义，off_list 收紧）
 COMEBACK_MIN_TODAY_PCT = 2.0  # off_list 今日涨幅下限（比 rebound 0.5 更严，反转确认）
 COMEBACK_MAX_TODAY_PCT = 12.0  # 与 short_term 上限同源：覆盖 8-12% 续涨（掉榜日无热榜背书）

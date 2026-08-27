@@ -77,7 +77,7 @@ tests/                    # pytest test suite
 ## Key Facts
 
 - **K 线数据契约（`models.py:KlineBar`）**：kline 统一为 TypedDict `KlineBar`（date/open/high/low/close/volume/percent + 可选 timestamp），**唯一生产入口 `make_kline_bar()`**（api/database/historical_rescan/ic_attribution/各 adapter 全部接入）。契约规则：date 必须非空字符串；close 必须能解析为正数（close<=0/None/NaN/`inf`/非法串 → 整 bar 剔除）；其余字段脏值（含 `inf`）→ 0。TypedDict 保持 dict 行为。测试：`tests/test_models.py`。
-- **Database**: SQLite at `scanner.db` (auto-created). Tables: appearances, daily_kline(含 finalized 列), recommendations(含 excluded/stale_kline 列), sector_cache, concept_cache, market_extra_cache, watch_pool, scan_quality_log, leaderboard_log, market_index_log, minute_snapshot
+- **Database**: SQLite at `scanner.db` (auto-created). Tables: appearances, daily_kline(含 finalized 列), recommendations(含 excluded/stale_kline 列), sector_cache, concept_cache, market_extra_cache, watch_pool, scan_quality_log, leaderboard_log, market_index_log
 - **Python version**: 3.12+ | **Dependencies**: `requests`, `wcwidth`（akshare/pywencai 为可选兜底，lazy import 未安装自动降级）
 - **Trading hours**: Auto-sleeps outside 09:30-11:30 / 13:00-15:00 on trading days
 - **Encoding**: Windows-specific `sys.stdout.reconfigure(encoding="utf-8")` for Chinese output
@@ -121,7 +121,6 @@ tests/                    # pytest test suite
 - **数据真实性检查（`scanner/data_health.py`）**：本地契约抓不到自洽脏数据，唯一可靠是跨源比对。`check_kline_health` 抽样交叉验证（THS 主参照容差 0.5%、新浪 qfq 回退），不符比例≥30% 阻断；`count_unfinalized_today`；`check_market_index_health`（bar 日期滞后 / 涨幅 vs 东财 push2delay 偏差超 0.5pp 告警）。`nextday_attribution`/`prevday_perf` 出报告前自动跑（`--force` 逃生口）。
 - **扫描数据血缘日志（`scan_quality_log` 表）**：每轮落库 `{gem_count, fetch_failed, today_bar_missing, minute_fallback, stale_recs}`，同日多轮按最新覆盖。排查"为什么没推荐/推荐异常"先查当日快照。测试 `TestSaveScanQuality`。
 - **榜单可观测性（`leaderboard_log` 表 + `leaderboard_obs.py`）**：雪球榜单逐扫描成分+排名分布时序，检测上游口径漂移（中位涨幅突变≥1pp/重叠率<0.3/条数变动≥30% 标 ⚠）。**上游枯竭=市场信号，不做对冲**（不接备用榜、不硬找票）；只需区分市场性枯竭 vs 口径性枯竭（由本表 + scan_quality_log 覆盖）。
-- **分时快照落库（`minute_snapshot` 表）**：每轮把最终候选 `{symbol, price, pct}` 采样进时间序列（PK(date,time,symbol) 同刻覆盖），脏值行剔除、fail-open；自动剪枝保留 60 交易日。
 - **数据源拓扑（2026-08-23 收敛，外部依赖 3 个）**：① 雪球 = 核心热路径；② THS 官方（`ths_api.py`，Key 存 `.env` 的 `HITHINK_FINANCE_API_KEY`）= 低频场景：涨停池主源 / data_health 第一交叉验证源 / 财务风险过滤主源 / K线兜底适配器，软限流 ~3.8 req/s **不进盘中热路径**，时区统一 BEIJING_TZ；③ 东财 push2delay = 资金流 clist / 市值 ulist / 指数 f170 对账（THS 无对应字段）。akshare/pywencai 降级可选兜底。auto 模式双源配置恒构造 `FallbackAdapter`（逐请求降级、运行期雪球恢复自动回主源，防启动抖动锁死 THS-only）。市值链路：雪球 400016 会话自愈 → 仍空则 push2delay ulist 兜底。大盘指数 `fetch_market_index` 用 count=5 取当日 bar + 血缘落库。
 - **行情增强数据（`market_extra.py`）**：涨停池（THS 主源，AKShare 兜底）+ 资金流（push2delay 直连，~15min 延迟）。进程+DB 缓存共用 TTL 300s；涨停池/资金流均有 daemon 线程限时（20s/30s），资金流部分结果短 TTL 60s 下轮补全，失败短退避；executor 显式 `shutdown(wait=False, cancel_futures=True)`。**评分**：主力净占比正向加分已归零（反指），仅 ≤-5% → -3；连板 2/3 板 momentum/short_term +5/+8、≥4 板 -5。「资金流出」（≤-8%）与「炸板」标签展示型不入硬过滤。**图标**（中性档不显示）：`fund_flow_signal` 映射 ▲▲/▲/▼/▼▼（阈值 ±5%/±8% 与 bonus 同源）。
 - **基本面风险过滤（`fundamentals.py`）**：排除式过滤器，不做加分。主源 = THS 估值快照 `pb_mrq<0`（资不抵债；pb=null 不误杀），跨轮增量拉取（进度 CAS 推进、锁不跨网络 I/O）；兜底 pywencai（lazy import）。命中打 `财务风险` 硬过滤标签。进程 TTL 86400s / 失败 60s 退避 / DB 复用 market_extra_cache；开关 `RTS_ENABLE_FUND_RISK` 默认开。

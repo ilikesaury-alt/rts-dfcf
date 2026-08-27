@@ -19,7 +19,6 @@ from scanner.config import (
     MAX_MARKET_CAP,
     MAX_STOCK_PRICE,
     MCAP_CACHE_MAX_AGE_DAYS,
-    MINUTE_SNAPSHOT_KEEP_DAYS,
     SHORT_TERM_MAX_TODAY_PCT,
     WATCH_OFFLIST_KEEP_DAYS,
     YI,
@@ -27,12 +26,10 @@ from scanner.config import (
 )
 from scanner.database import (
     get_cached_market_caps,
-    prune_minute_snapshots,
     prune_watch_pool,
     record_appearances,
     save_market_caps,
     save_market_index_log,
-    save_minute_snapshots,
     save_scan_quality,
     upsert_watch_symbols,
 )
@@ -50,8 +47,6 @@ from scanner.sector import get_sector_clusters
 from scanner.trading_session import is_trading_time
 
 _session_state = ScanSession()
-# minute_snapshot 每日剪枝守卫（2026-08-22）：每交易日首扫执行一次，避免每轮 60s 重复 DELETE
-_minute_prune_state = {"date": ""}
 
 def _update_excluded_marks(conn: sqlite3.Connection, today: str,
                            excluded_by_risk: list, all_candidates: list) -> None:
@@ -150,17 +145,6 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         prune_watch_pool(conn, WATCH_OFFLIST_KEEP_DAYS)
     except Exception as e:
         print(f"  [!] 掉榜跟踪池维护失败: {e}")
-
-    # 分时快照剪枝（2026-08-22）：每交易日首扫一次，删 MINUTE_SNAPSHOT_KEEP_DAYS 交易日
-    # 之前的 minute_snapshot 行，防 ~1 万行/日 无限膨胀。fail-open 不阻塞扫描。
-    if _minute_prune_state["date"] != today:
-        try:
-            removed = prune_minute_snapshots(conn, MINUTE_SNAPSHOT_KEEP_DAYS)
-            if removed:
-                print(f"  [~] 分时快照剪枝: 删除 {removed} 行（>{MINUTE_SNAPSHOT_KEEP_DAYS} 交易日前）")
-            _minute_prune_state["date"] = today
-        except Exception as e:
-            print(f"  [!] 分时快照剪枝失败: {e}")
 
     # 双批 K 线拉取共用同一个 deadline：榜上票 45s + 回马枪幸存者再 45s 会串行 ~90s，
     # 超 60s 扫描间隔。共用一个 deadline 保证两批总耗时仍被 KLINE_FETCH_DEADLINE 兜底。
@@ -375,17 +359,6 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         save_scan_quality(conn, quality_stats)
     except Exception as e:
         print(f"  [!] 数据血缘日志落库失败: {e}")
-
-    # 分时快照落库（2026-08-21）：每轮把最终候选的 {现价, 涨幅} 采样进时间序列，
-    # 历史分时形态可回放（涨停复盘曾因分时未落库只能看单例）。fail-open 不阻塞扫描。
-    try:
-        save_minute_snapshots(conn, [
-            {"symbol": c.stock.symbol, "price": c.stock.current,
-             "pct": c.stock.percent}
-            for c in all_candidates
-        ])
-    except Exception as e:
-        print(f"  [!] 分时快照落库失败: {e}")
 
     # 核心方向低吸落库（2026-08-19）：在榜主类别外单独 category=core_dip（与 comeback
     # 同族），供 display 独立低吸区读取 + nextday_attribution/prevday_perf 复盘验证。

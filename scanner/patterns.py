@@ -32,7 +32,7 @@ def _is_bullish_candle(o: float, c: float) -> bool:
 # 共享原语：算法只实现一次，下游按策略组合
 # ----------------------------------------------------------------------------
 
-def _bullish_engulfing(latest: dict, prev: dict, require_crash: bool = False,
+def _bullish_engulfing(latest: KlineBar, prev: KlineBar, require_crash: bool = False,
                       prev_prev_close: float | None = None) -> bool:
     """阳包阴：今日阳线实体完全覆盖昨日阴线实体。
 
@@ -60,7 +60,7 @@ def _bullish_engulfing(latest: dict, prev: dict, require_crash: bool = False,
     return True
 
 
-def _hammer(latest: dict) -> bool:
+def _hammer(latest: KlineBar) -> bool:
     """长下影锤子线：下影线>实体2倍，上影线<实体0.5倍。"""
     ho, hc, hh, hl = latest["open"], latest["close"], latest["high"], latest["low"]
     body = _candle_body_len(ho, hc)
@@ -82,7 +82,7 @@ def _three_bullish(bars: list[KlineBar]) -> bool:
     return c3[0] < c3[1] < c3[2]
 
 
-def _breakout_3d(latest: dict, bars: list[KlineBar]) -> bool:
+def _breakout_3d(latest: KlineBar, bars: list[KlineBar]) -> bool:
     """突破3日高点：今日收盘>近3日最高价（需 bars 长度>=4）。"""
     if len(bars) < 4:
         return False

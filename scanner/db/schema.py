@@ -209,24 +209,6 @@ def init_db() -> sqlite3.Connection:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_lb_date ON leaderboard_log(date, source)")
-    # 分时快照落库（2026-08-21）：每轮扫描把最终候选的 {价格, 涨幅} 采样进时间序列。
-    # 目的：历史分时形态可回放——涨停共性复盘曾因「历史分时没落库」只能看单例
-    # （肯特股份案例：平开→上午缩量洗盘→午后放量脉冲，无法确认是否普遍）。
-    # 每 60s 一轮 × 候选 ~40 只 ≈ 1 万行/日量级，SQLite 可承载；2026-08-22 起自动剪枝：
-    # orchestrator 每交易日首扫调 prune_minute_snapshots 删 MINUTE_SNAPSHOT_KEEP_DAYS=60
-    # 交易日前的行（复盘价值集中在近端形态）。
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS minute_snapshot (
-            date TEXT,
-            time TEXT,               -- HH:MM 采样时刻（每轮一次）
-            symbol TEXT,
-            price REAL,              -- 采样时现价（候选快照 current）
-            pct REAL,                -- 采样时涨幅（候选快照 percent）
-            updated TEXT DEFAULT '',
-            PRIMARY KEY (date, time, symbol)
-        )
-    """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_ms_date_sym ON minute_snapshot(date, symbol)")
     # 综合排序档位快照（2026-08-26）：收盘定稿后把当日全部推荐的档位/🎯/劣后原因
     # 一次性落库。目的：ranking 判定代码日后演进时，历史归因不被「用最新代码重放
     # 历史」篡改——快照是当日规则下的权威存证，复盘消费端优先读它、无快照日期才

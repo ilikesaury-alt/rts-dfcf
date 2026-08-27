@@ -19,9 +19,7 @@ from scanner.config import (
     FATIGUE_PRICE_WARN_ACCUM,
     FATIGUE_STREAK_MIN,
     FATIGUE_VOL_WARN_RATIO,
-    FUND_FLOW_BONUS_STRONG,
     FUND_FLOW_BONUS_WEAK,
-    FUND_FLOW_MAIN_PCT_STRONG,
     FUND_FLOW_MAIN_PCT_WEAK,
     FUND_OUTFLOW_NET_PCT,
     FUND_RISK_TAG,
@@ -384,9 +382,7 @@ def _apply_fund_flow_bonus(c: Candidate, market_extra: dict):
     c.kline.dimensions["fund_flow_main_pct"] = round(main_pct, 2)
     c.kline.dimensions["fund_flow_main_net"] = _safe_float(entry.get("main_net"))
     c.kline.dimensions["fund_flow_super_net"] = _safe_float(entry.get("super_net"))
-    if main_pct >= FUND_FLOW_MAIN_PCT_STRONG:
-        c.fund_flow_bonus = FUND_FLOW_BONUS_STRONG
-    elif main_pct <= FUND_FLOW_MAIN_PCT_WEAK:
+    if main_pct <= FUND_FLOW_MAIN_PCT_WEAK:
         c.fund_flow_bonus = FUND_FLOW_BONUS_WEAK
 
 

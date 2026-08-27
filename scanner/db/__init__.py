@@ -13,7 +13,6 @@ from scanner.db._common import _n_trading_days_ago
 from scanner.db.dal import (
     mark_reversed_recommendations,
     mark_watch_evaluated,
-    prune_minute_snapshots,
     prune_watch_pool,
     record_appearances,
     record_leaderboard_log,
@@ -22,7 +21,6 @@ from scanner.db.dal import (
     save_market_caps,
     save_market_extra_cache,
     save_market_index_log,
-    save_minute_snapshots,
     save_recommendations,
     save_scan_quality,
     upsert_watch_symbol,
@@ -58,7 +56,6 @@ __all__ = [
     # dal（写入）
     "mark_reversed_recommendations",
     "mark_watch_evaluated",
-    "prune_minute_snapshots",
     "prune_watch_pool",
     "record_appearances",
     "record_leaderboard_log",
@@ -67,7 +64,6 @@ __all__ = [
     "save_market_caps",
     "save_market_extra_cache",
     "save_market_index_log",
-    "save_minute_snapshots",
     "save_recommendations",
     "save_scan_quality",
     "upsert_watch_symbol",
