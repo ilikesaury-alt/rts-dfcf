@@ -6,10 +6,11 @@
 设计要点（2026-08-23 重构：兜底源 AKShare → THS 官方 API）：
 - THS 兜底仅需配置 HITHINK_FINANCE_API_KEY（无 Key 时自动降级为仅雪球模式）
 - adapter 输出格式与 api.py 1:1 对齐，下游无感知
-- 飙升榜/热搜榜无语义对齐接口，返回空列表让熔断+缓存兜底
+- 飙升榜无语义对齐接口，返回空列表让熔断+缓存兜底
 - 市值批量查询 THS 无字段，保留东财 push2delay 直连实现
 - 大盘指数兜底保留 akshare 东财 spot 为可选路径（未安装返回 None 干净降级）
 """
+
 import logging
 import threading
 from datetime import datetime
@@ -35,12 +36,12 @@ class DataSourceAdapter(Protocol):
     所有方法签名与 api.py 对应函数一致（去掉 session 参数），
     输出格式与 api.py 1:1 对齐，下游无感知。
     """
+
     name: str
 
     def is_available(self) -> bool: ...
     def fetch_kline(self, symbol: str, days: int = 15) -> list[KlineBar] | None: ...
     def fetch_biaosheng(self, size: int = 100) -> list[dict]: ...
-    def fetch_hot_list(self, size: int = 100) -> list[dict]: ...
     def fetch_market_caps_batch(self, symbols: list[str]) -> dict[str, dict]: ...
     def fetch_market_index(self) -> float | None: ...
     def get_market_index_meta(self) -> tuple[float | None, str | None, str]:
@@ -51,6 +52,7 @@ class DataSourceAdapter(Protocol):
         是瞬时值，不落库就无法事后审计"当时读到了什么"。
         """
         return (None, None, self.name)
+
     def fetch_minute(self, symbol: str) -> list[dict] | None:
         """当日分时数据（分钟 bar 列表），无数据/不支持的源返回 None（降级为无分时信号）。
 
@@ -90,9 +92,6 @@ class XueqiuAdapter:
 
     def fetch_biaosheng(self, size: int = 100) -> list[dict]:
         return api.fetch_biaosheng(self._get_session(), size)
-
-    def fetch_hot_list(self, size: int = 100) -> list[dict]:
-        return api.fetch_xueqiu_hot_list(self._get_session(), size)
 
     def fetch_market_caps_batch(self, symbols: list[str]) -> dict[str, dict]:
         return api.fetch_market_caps_batch(self._get_session(), symbols)
@@ -141,7 +140,7 @@ class ThsAdapter:
       均曾间歇性不可达；官方 REST 更稳且免 pandas 解析）
     - 市值兜底：THS 无市值字段，保留东财 push2delay ulist 直连实现
     - 大盘指数兜底：akshare 东财 spot 降为可选路径（未安装返回 None）
-    - 飙升榜/热搜榜无语义对齐接口，返回空列表让熔断+缓存兜底；
+    - 飙升榜无语义对齐接口，返回空列表让熔断+缓存兜底；
       分时不做兜底（字段差异大，intraday/opening_strength 已有 None 降级）
 
     可用性：配置了 HITHINK_FINANCE_API_KEY 即可用（不打网络探测）。
@@ -174,10 +173,6 @@ class ThsAdapter:
         logger.warning("THS 公开 API 无雪球飙升榜语义对齐接口，返回空列表（依赖雪球熔断缓存兜底）")
         return []
 
-    def fetch_hot_list(self, size: int = 100) -> list[dict]:
-        logger.warning("THS 热股榜与雪球热搜口径不同，不兜底（2026-08-21 上游不对冲决策），返回空列表")
-        return []
-
     def fetch_market_caps_batch(self, symbols: list[str]) -> dict[str, dict]:
         """市值批量查询：直连东财 push2delay（可达）ulist.np/get 按 secids 精确查。
 
@@ -193,20 +188,22 @@ class ThsAdapter:
             unique = sorted({_xq_to_ak(s) for s in symbols})
             # 东财 secids 前缀：0=SZ 深市(含300), 1=SH 沪市(含60), 2=BJ
             secids = ",".join(
-                ("1." if c.startswith("6") else
-                 "2." if c.startswith("8") or c.startswith("4") else "0.") + c
+                ("1." if c.startswith("6") else "2." if c.startswith("8") or c.startswith("4") else "0.") + c
                 for c in unique
             )
             params = {
                 "secids": secids,
                 "fields": "f12,f14,f2,f3,f8,f20,f21",
-                "fltt": "2", "invt": "2",
+                "fltt": "2",
+                "invt": "2",
                 "ut": EASTMONEY_UT_TOKEN,
             }
             headers = EASTMONEY_HEADERS
             resp = requests.get(
                 "https://push2delay.eastmoney.com/api/qt/ulist.np/get",
-                params=params, timeout=10, headers=headers,
+                params=params,
+                timeout=10,
+                headers=headers,
             )
             data = resp.json().get("data") or {}
             rows = data.get("diff") or []
@@ -299,8 +296,7 @@ class FallbackAdapter:
             self._use_primary = True
             return True
         if self._secondary and self._secondary.is_available():
-            logger.warning("主数据源 %s 不可用，降级到 %s",
-                           self._primary.name, self._secondary.name)
+            logger.warning("主数据源 %s 不可用，降级到 %s", self._primary.name, self._secondary.name)
             self._use_primary = False
             return True
         return False
@@ -322,15 +318,13 @@ class FallbackAdapter:
                 result = getattr(self._primary, method)(*args, **kwargs)
             except Exception as e:
                 if self._secondary:
-                    logger.warning("%s.%s 异常: %s，降级到 %s",
-                                   self._primary.name, method, e, self._secondary.name)
+                    logger.warning("%s.%s 异常: %s，降级到 %s", self._primary.name, method, e, self._secondary.name)
                     self._last_used_source = self._secondary.name
                     return getattr(self._secondary, method)(*args, **kwargs)
                 raise
             if result is None or result == {}:
                 if self._secondary:
-                    logger.warning("%s.%s 返回空，降级到 %s",
-                                   self._primary.name, method, self._secondary.name)
+                    logger.warning("%s.%s 返回空，降级到 %s", self._primary.name, method, self._secondary.name)
                     self._last_used_source = self._secondary.name
                     return getattr(self._secondary, method)(*args, **kwargs)
                 return result
@@ -347,9 +341,6 @@ class FallbackAdapter:
 
     def fetch_biaosheng(self, size: int = 100) -> list[dict]:
         return self._call("fetch_biaosheng", size)
-
-    def fetch_hot_list(self, size: int = 100) -> list[dict]:
-        return self._call("fetch_hot_list", size)
 
     def fetch_market_caps_batch(self, symbols: list[str]) -> dict[str, dict]:
         # api.fetch_market_caps_batch 失败返 {}（空 dict）→ _call 统一降级 secondary
@@ -387,8 +378,7 @@ class FallbackAdapter:
             return self._primary.fetch_minute(symbol)
         except Exception as e:
             if self._secondary:
-                logger.warning("%s.fetch_minute 异常: %s，降级到 %s",
-                               self._primary.name, e, self._secondary.name)
+                logger.warning("%s.fetch_minute 异常: %s，降级到 %s", self._primary.name, e, self._secondary.name)
                 return self._secondary.fetch_minute(symbol)
             raise
 

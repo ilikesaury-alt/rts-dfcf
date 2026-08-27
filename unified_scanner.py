@@ -1,10 +1,7 @@
 """
-雪球双源融合扫描器（飙升榜 + 热搜榜）
+雪球飙升榜扫描器
 
-雪球为主数据源，热搜榜做交叉校验：
-  - 同时出现在两个榜单 → 额外加分
-  - 仅飙升榜 → 正常参与分析
-  - 仅热搜榜 → 不纳入候选
+雪球为主数据源。
 
 长跑健壮性（P-robust）：
   - 主循环整个迭代体被 try/except 保护，任何意外异常（含非交易时段等待分支、
@@ -12,6 +9,7 @@
   - 每轮 DB 健康检查 + 连接自愈（失败重建）
   - 输出管道/终端异常时 stdout 降级到 devnull，不崩溃
 """
+
 import os
 import sys
 import time
@@ -22,7 +20,6 @@ import requests
 from scanner.backtest import backfill_outcomes
 from scanner.config import (
     AFTERNOON_END,
-    CROSS_SOURCE_BONUS,
     DB_PATH,
     KLINE_FETCH_DAYS,
     KLINE_FETCH_DEADLINE,
@@ -59,7 +56,6 @@ if sys.platform == "win32":
 
 _SOURCE_LABELS = {
     "xueqiu": "雪球",
-    "both": "双榜",
 }
 
 _STDOUT_SILENCED = False
@@ -82,6 +78,7 @@ def _log_exception(message: str, exc: BaseException | None = None):
     """异常详情追加到 logs/scanner_error.log，供长跑后排查（控制台可能被清屏）。"""
     try:
         import traceback
+
         os.makedirs(LOG_DIR, exist_ok=True)
         with open(os.path.join(LOG_DIR, "scanner_error.log"), "a", encoding="utf-8") as f:
             f.write(f"\n[{now_beijing().strftime('%Y-%m-%d %H:%M:%S')}] {message}")
@@ -134,17 +131,16 @@ def _finalize_today_klines(conn, adapter) -> None:
         time.sleep(min(remaining, 120))
     symbols = [
         r[0]
-        for r in conn.execute(
-            "SELECT DISTINCT symbol FROM daily_kline WHERE date=?", (today.isoformat(),)
-        ).fetchall()
+        for r in conn.execute("SELECT DISTINCT symbol FROM daily_kline WHERE date=?", (today.isoformat(),)).fetchall()
     ]
     if not symbols:
         return
     # 定稿前快照：记录今日 bar 现有收盘价，定稿后统计「修正」数（与盘中残留不同的票数），
     # 写入 logs/finalize.log 供审计——某日修正数异常大 = 盘中残留集中（数据源/机制异常信号）。
-    old_closes = {r[0]: r[1] for r in conn.execute(
-        "SELECT symbol, close FROM daily_kline WHERE date=?", (today.isoformat(),)
-    ).fetchall()}
+    old_closes = {
+        r[0]: r[1]
+        for r in conn.execute("SELECT symbol, close FROM daily_kline WHERE date=?", (today.isoformat(),)).fetchall()
+    }
     deadline = now_beijing().timestamp() + KLINE_FETCH_DEADLINE
     refreshed = 0
     corrected = 0
@@ -163,8 +159,10 @@ def _finalize_today_klines(conn, adapter) -> None:
                         corrected += 1
         except Exception:
             continue  # fail-open：单只失败跳过，backfill_kline 手动兜底
-    line = (f"{today.isoformat()} {now_beijing().strftime('%H:%M:%S')} "
-            f"refreshed={refreshed}/{len(symbols)} corrected={corrected}")
+    line = (
+        f"{today.isoformat()} {now_beijing().strftime('%H:%M:%S')} "
+        f"refreshed={refreshed}/{len(symbols)} corrected={corrected}"
+    )
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
         with open(os.path.join(LOG_DIR, "finalize.log"), "a", encoding="utf-8") as f:
@@ -174,8 +172,7 @@ def _finalize_today_klines(conn, adapter) -> None:
     # 全部工作完成后才标记当日已定稿：此前置位若中途抛异常（如 DB 锁/`conn.execute`
     # 未包 try），当日会被误标为已定稿而实际零写入，且进程不重启不再重试。
     _finalize_date = today.isoformat()
-    print(f"\r  [收盘定稿] 覆盖 {refreshed}/{len(symbols)} 只今日K线为最终收盘价"
-          f"（修正 {corrected} 只）  ", flush=True)
+    print(f"\r  [收盘定稿] 覆盖 {refreshed}/{len(symbols)} 只今日K线为最终收盘价（修正 {corrected} 只）  ", flush=True)
 
 
 # 档位快照落库标记：记录已完成当日 ranking_snapshot 写入的日期（每交易日一次）。
@@ -219,16 +216,14 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
     conn = init_db()
     adapter = get_adapter()
 
-    print(f"  雪球双源融合扫描器  |  每{interval}s刷新  |  DB: {DB_PATH}")
-    print(f"  主源: 飙升榜  |  校验: 热搜榜  |  双源一致额外 +{CROSS_SOURCE_BONUS} 分")
+    print(f"  雪球飙升榜扫描器  |  每{interval}s刷新  |  DB: {DB_PATH}")
     print(f"  新面孔: 过去{NEW_FACE_LOOKBACK_DAYS}天未出现 = 新  |  交易时段: 09:30-11:30 / 13:00-15:00")
-    print(f"  {'='*60}")
+    print(f"  {'=' * 60}")
 
     # 上一轮扫描的榜单排名快照：综合排序「排名」列据此显示雪球榜单排名变化（+N 升 / -N 降）。
     last_ranks: dict[str, int] = {}
-    # 榜单可观测性：上一轮飙升榜/热搜榜成员集合，用于算本轮重叠率（探测上游样本口径抖动）。
+    # 榜单可观测性：上一轮飙升榜成员集合，用于算本轮重叠率（探测上游样本口径抖动）。
     prev_board_syms: set[str] = set()
-    prev_hot_syms: set[str] = set()
 
     try:
         while True:
@@ -267,25 +262,15 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     time.sleep(interval)
                     continue
 
-                hot_list = adapter.fetch_hot_list()
-                hot_symbols = {i["symbol"] for i in (hot_list or []) if i.get("symbol")}
-
                 for item in xq_raw:
                     sym = item.get("symbol", "")
-                    item["source_tag"] = "both" if sym in hot_symbols else "xueqiu"
+                    item["source_tag"] = "xueqiu"
 
-                both_count = sum(1 for i in xq_raw if i.get("source_tag") == "both")
-                print(f"\r  📡 飙升榜{len(xq_raw)}只 (双榜{both_count}只)", end="", flush=True)
-
-                # 榜单可观测性（2026-08-19）：每轮把飙升榜/热搜榜成分+排名分布落库。
+                # 榜单可观测性（2026-08-19）：每轮把飙升榜成分+排名分布落库。
                 # 探测雪球上游口径漂移（排序键/分页/样本过滤变更 → 中位数/重叠率/涨跌结构突变）。
                 # fail-open：落库失败不阻塞扫描主流程。
                 try:
                     prev_board_syms = record_leaderboard_log(conn, "biaosheng", xq_raw, prev_board_syms)
-                    if hot_list:
-                        # hot 源独立串联 prev（2026-08-24 第二轮审查：原恒传空集 →
-                        # overlap_prev 恒 0.0，leaderboard_obs 对 hot 每轮误报口径漂移）
-                        prev_hot_syms = record_leaderboard_log(conn, "hot", hot_list, prev_hot_syms)
                 except Exception as e:
                     print(f"  [!] 榜单可观测性落库失败: {e}")
 
@@ -309,8 +294,7 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 # today_recs/mark_reversed/display 之前，终端与本轮扫描同源。
                 # 本轮候选随后由 mark_reversed 经 active_syms 跳过、不被反转评估，
                 # 行为等价；orchestrator 的 excluded 置 0/1 更新仍在其内部先行完成。
-                save_recommendations(conn, new_faces,
-                                     momentum + rebound_list + short_term_list + comeback_list)
+                save_recommendations(conn, new_faces, momentum + rebound_list + short_term_list + comeback_list)
 
                 # 为综合推荐补拉今日曾推荐但不在 current_quotes 中的票的实时行情
                 live_quotes: dict[str, dict] = {}
@@ -329,9 +313,11 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                             # display 误显为真实涨幅（2026-08-14 fail-open 修复）。
                             if not d.get("current"):
                                 continue
-                            live_quotes[sym] = {"percent": d.get("percent", 0.0),
-                                                "current": d.get("current", 0.0),
-                                                "high_pct": d.get("high_pct")}
+                            live_quotes[sym] = {
+                                "percent": d.get("percent", 0.0),
+                                "current": d.get("current", 0.0),
+                                "high_pct": d.get("high_pct"),
+                            }
                 except Exception as e:
                     print(f"  [!] 补拉推荐票行情失败: {e}")
 
@@ -342,8 +328,9 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 # 硬过滤只评估当前轮次候选，够不着掉出候选池的旧推荐。excluded 按最新轮次刷新：
                 # 重新成为候选的票由 orchestrator 的 passed_syms 置回 0。
                 try:
-                    active_syms = {c.stock.symbol for c in (
-                        new_faces + momentum + rebound_list + short_term_list + comeback_list)}
+                    active_syms = {
+                        c.stock.symbol for c in (new_faces + momentum + rebound_list + short_term_list + comeback_list)
+                    }
                     reversed_syms = mark_reversed_recommendations(conn, today_recs, active_syms, live_quotes)
                     if reversed_syms:
                         _names = "、".join(reversed_syms[:8])
@@ -353,49 +340,67 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     print(f"  [!] 推荐后回落移出失败: {e}")
 
                 # 历史推荐跟踪已并入回马枪（2026-08-07）：tracker 模块删除，不再单独查询
-                display(len(all_gem), interval,
-                        filtered_large_cap=filtered_large_cap,
-                        conn=conn, live_quotes=live_quotes,
-                        rank_map=current_rank_map,
-                        today_pool=res.today_pool,
-                        last_ranks=last_ranks)
+                display(
+                    len(all_gem),
+                    interval,
+                    filtered_large_cap=filtered_large_cap,
+                    conn=conn,
+                    live_quotes=live_quotes,
+                    rank_map=current_rank_map,
+                    today_pool=res.today_pool,
+                    last_ranks=last_ranks,
+                )
                 # 快照本轮榜单排名供下一轮展示排名变化（上一轮为 None 时显示纯名次）。
                 last_ranks = dict(current_rank_map)
                 log_results(new_faces, momentum + rebound_list + short_term_list + comeback_list)
                 if not no_feishu:
-                    pushed = push_feishu(new_faces, momentum,
-                                        len(all_gem), filtered_large_cap=filtered_large_cap,
-                                        short_term_list=short_term_list,
-                                        rebound_list=rebound_list,
-                                        comeback_list=comeback_list)
+                    pushed = push_feishu(
+                        new_faces,
+                        momentum,
+                        len(all_gem),
+                        filtered_large_cap=filtered_large_cap,
+                        short_term_list=short_term_list,
+                        rebound_list=rebound_list,
+                        comeback_list=comeback_list,
+                    )
                     if not pushed and (new_faces or momentum or rebound_list or short_term_list or comeback_list):
                         print("\r  📤 飞书推送跳过（冷却中/无变化）", end="", flush=True)
 
                 if new_faces:
                     top = new_faces[0]
                     src = _SOURCE_LABELS.get(top.stock.source_tag, top.stock.source_tag)
-                    print(f"  ▶ 新面孔首选: {top.stock.name}({top.stock.symbol}) [{src}] "
-                          f"{top.stock.percent:+.2f}% | {top.kline.trend if top.kline else ''}")
+                    print(
+                        f"  ▶ 新面孔首选: {top.stock.name}({top.stock.symbol}) [{src}] "
+                        f"{top.stock.percent:+.2f}% | {top.kline.trend if top.kline else ''}"
+                    )
                 if momentum:
                     top_m = momentum[0]
                     src = _SOURCE_LABELS.get(top_m.stock.source_tag, top_m.stock.source_tag)
-                    print(f"  ▶ 动量延续首选: {top_m.stock.name}({top_m.stock.symbol}) [{src}] "
-                          f"{top_m.stock.percent:+.2f}% | {top_m.kline.trend if top_m.kline else ''}")
+                    print(
+                        f"  ▶ 动量延续首选: {top_m.stock.name}({top_m.stock.symbol}) [{src}] "
+                        f"{top_m.stock.percent:+.2f}% | {top_m.kline.trend if top_m.kline else ''}"
+                    )
                 if rebound_list:
                     top_r = rebound_list[0]
                     src = _SOURCE_LABELS.get(top_r.stock.source_tag, top_r.stock.source_tag)
-                    print(f"  ▶ 超跌反弹首选: {top_r.stock.name}({top_r.stock.symbol}) [{src}] "
-                          f"{top_r.stock.percent:+.2f}% | {top_r.kline.trend if top_r.kline else ''}")
+                    print(
+                        f"  ▶ 超跌反弹首选: {top_r.stock.name}({top_r.stock.symbol}) [{src}] "
+                        f"{top_r.stock.percent:+.2f}% | {top_r.kline.trend if top_r.kline else ''}"
+                    )
                 if comeback_list:
                     top_c = comeback_list[0]
-                    print(f"  ▶ 回马枪首选: {top_c.stock.name}({top_c.stock.symbol}) "
-                          f"[{top_c.comeback_variant}] {top_c.stock.percent:+.2f}% "
-                          f"| {top_c.kline.trend if top_c.kline else ''}")
+                    print(
+                        f"  ▶ 回马枪首选: {top_c.stock.name}({top_c.stock.symbol}) "
+                        f"[{top_c.comeback_variant}] {top_c.stock.percent:+.2f}% "
+                        f"| {top_c.kline.trend if top_c.kline else ''}"
+                    )
                 if short_term_list:
                     top_s = short_term_list[0]
                     src = _SOURCE_LABELS.get(top_s.stock.source_tag, top_s.stock.source_tag)
-                    print(f"  ▶ 超短次日首选: {top_s.stock.name}({top_s.stock.symbol}) [{src}] "
-                          f"{top_s.stock.percent:+.2f}% | RPS:{top_s.rps_bonus}")
+                    print(
+                        f"  ▶ 超短次日首选: {top_s.stock.name}({top_s.stock.symbol}) [{src}] "
+                        f"{top_s.stock.percent:+.2f}% | RPS:{top_s.rps_bonus}"
+                    )
 
                 try:
                     n = backfill_outcomes(conn)
@@ -433,9 +438,9 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
 
 def main():
     import argparse
+
     parser = argparse.ArgumentParser(description="双源融合创业板飙升扫描器")
-    parser.add_argument("interval", nargs="?", type=int, default=REFRESH_INTERVAL,
-                        help="刷新间隔（秒）")
+    parser.add_argument("interval", nargs="?", type=int, default=REFRESH_INTERVAL, help="刷新间隔（秒）")
     parser.add_argument("--no-feishu", action="store_true", help="禁用飞书推送")
     args = parser.parse_args()
 

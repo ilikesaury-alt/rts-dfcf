@@ -86,9 +86,13 @@ def _refresh_session(session: requests.Session) -> None:
         session.get("https://xueqiu.com/hq", timeout=REQUEST_TIMEOUT)
 
 
-def _request_with_retry(session: requests.Session, url: str,
-                        max_retries: int = 3, base_delay: float = 1.0,
-                        timeout: int | tuple | None = None) -> requests.Response:
+def _request_with_retry(
+    session: requests.Session,
+    url: str,
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    timeout: int | tuple | None = None,
+) -> requests.Response:
     last_exc = None
     rebuilt = False
     # 2026-08-20 修复：session 重建后必须再给一次真正用上新 cookie 的尝试。
@@ -106,8 +110,7 @@ def _request_with_retry(session: requests.Session, url: str,
             # session 失效自愈：cookie 失效（401/403/登录页）时重建后重试一次
             if not rebuilt and _is_session_expired(resp):
                 rebuilt = True
-                logger.warning("  雪球 session 疑似失效(HTTP %s)，重建 cookie 后重试 %s",
-                               resp.status_code, url[:60])
+                logger.warning("  雪球 session 疑似失效(HTTP %s)，重建 cookie 后重试 %s", resp.status_code, url[:60])
                 try:
                     _refresh_session(session)
                 except Exception as e:
@@ -128,7 +131,7 @@ def _request_with_retry(session: requests.Session, url: str,
                 resp.raise_for_status()
 
             if resp.status_code >= 500 and attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
+                delay = base_delay * (2**attempt)
                 logger.warning("  服务端错误(%d) %s, %.0f秒后重试", resp.status_code, url[:60], delay)
                 time.sleep(delay)
                 continue
@@ -139,13 +142,13 @@ def _request_with_retry(session: requests.Session, url: str,
         except requests.Timeout as e:
             last_exc = e
             if attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
+                delay = base_delay * (2**attempt)
                 logger.warning("  超时 %s, %.0f秒后重试", url[:60], delay)
                 time.sleep(delay)
         except requests.RequestException as e:
             last_exc = e
             if attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
+                delay = base_delay * (2**attempt)
                 logger.warning("  请求失败 %s, %.0f秒后重试: %s", url[:60], delay, e)
                 time.sleep(delay)
     raise last_exc  # type: ignore
@@ -235,8 +238,10 @@ def fetch_market_index(session: requests.Session) -> float | None:
         # 雪球 kline 接口按 begin 返回**窗口内前 count 根**（非最近 count 根）：
         # begin=now-3d & count=2 只会拿到最旧两根 → items[-1] 错取昨日涨幅，
         # 当日崩盘/大涨全部失真（2026-08-19 实测创业板指 -6.26% 被读成昨日 -0.93%）。
-        url = (f"https://stock.xueqiu.com/v5/stock/chart/kline.json"
-               f"?symbol=SZ399006&begin={ts_ms - 86400*1000*3}&period=day&count=5&_={ts_ms}")
+        url = (
+            f"https://stock.xueqiu.com/v5/stock/chart/kline.json"
+            f"?symbol=SZ399006&begin={ts_ms - 86400 * 1000 * 3}&period=day&count=5&_={ts_ms}"
+        )
         resp = _request_with_retry(session, url)
         items = resp.json().get("data", {}).get("item", [])
         if items and len(items[-1]) > 7:
@@ -346,16 +351,18 @@ def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[
             continue
         # 统一走 make_kline_bar 契约：date 从北京时间戳解析、OHLCV/percent 数值强转、
         # close<=0 剔除。此前脏值按 0 处理由 analyze_* 兜底，现收敛到入口单点。
-        bar = make_kline_bar({
-            # 雪球时间戳按北京时间生成，必须用北京时区解析，否则非 UTC+8 部署日期错位
-            "date": bar_date,
-            "open": item[2],
-            "high": item[3],
-            "low": item[4],
-            "close": item[5],
-            "volume": item[1],
-            "percent": item[7],
-        })
+        bar = make_kline_bar(
+            {
+                # 雪球时间戳按北京时间生成，必须用北京时区解析，否则非 UTC+8 部署日期错位
+                "date": bar_date,
+                "open": item[2],
+                "high": item[3],
+                "low": item[4],
+                "close": item[5],
+                "volume": item[1],
+                "percent": item[7],
+            }
+        )
         if bar is not None:
             bar["timestamp"] = ts_f
             result.append(bar)
@@ -393,14 +400,12 @@ def _biaosheng_circuit_breaker(raw_items: list[dict], success: bool = True) -> l
             cooldown = min(60 * (2 ** (fails - 3)), 600)
             _biaosheng_cb["cooldown_until"] = now + cooldown
             if _biaosheng_cb["cached"]:
-                logger.warning("  [断路器] 飙升榜连续%d次失败, 进入%.0f秒熔断, 使用缓存数据",
-                               fails, cooldown)
+                logger.warning("  [断路器] 飙升榜连续%d次失败, 进入%.0f秒熔断, 使用缓存数据", fails, cooldown)
                 if not _biaosheng_cb["stale_warned"]:
                     _biaosheng_cb["stale_warned"] = True
                     _warn_stale_cached("飙升榜", now - _biaosheng_cb["last_ok"])
                 return _biaosheng_cb["cached"]
-            logger.warning("  [断路器] 飙升榜连续%d次失败, 进入%.0f秒熔断（无缓存可用）",
-                           fails, cooldown)
+            logger.warning("  [断路器] 飙升榜连续%d次失败, 进入%.0f秒熔断（无缓存可用）", fails, cooldown)
             return []
 
         if _biaosheng_cb["cached"]:
@@ -417,8 +422,7 @@ def fetch_biaosheng(session: requests.Session, size: int = 100) -> list[dict]:
     now = time.time()
     with _cache_lock:
         if now < _biaosheng_cb["cooldown_until"]:
-            logger.info("  [断路器] 熔断中(剩余%.0fs), 使用缓存数据",
-                        _biaosheng_cb["cooldown_until"] - now)
+            logger.info("  [断路器] 熔断中(剩余%.0fs), 使用缓存数据", _biaosheng_cb["cooldown_until"] - now)
             return _biaosheng_cb.get("cached") or []
 
     ts = int(now * 1000)
@@ -442,69 +446,6 @@ def fetch_biaosheng(session: requests.Session, size: int = 100) -> list[dict]:
         return _biaosheng_circuit_breaker([], success=False)
 
 
-_xueqiu_hot_cb = {"failures": 0, "last_ok": 0.0, "cached": [], "cooldown_until": 0.0}
-
-
-def _xueqiu_hot_circuit_breaker(raw_items: list[dict], success: bool = True) -> list[dict]:
-    now = time.time()
-    with _cache_lock:
-        if success:
-            _xueqiu_hot_cb["failures"] = 0
-            _xueqiu_hot_cb["cooldown_until"] = 0
-            _xueqiu_hot_cb["last_ok"] = now
-            if raw_items:
-                _xueqiu_hot_cb["cached"] = raw_items
-            return raw_items
-
-        _xueqiu_hot_cb["failures"] += 1
-        fails = _xueqiu_hot_cb["failures"]
-
-        if fails >= 3:
-            cooldown = min(60 * (2 ** (fails - 3)), 600)
-            _xueqiu_hot_cb["cooldown_until"] = now + cooldown
-            if _xueqiu_hot_cb["cached"]:
-                logger.warning("  [断路器] 热搜榜连续%d次失败, 进入%.0f秒熔断, 使用缓存数据",
-                               fails, cooldown)
-                return _xueqiu_hot_cb["cached"]
-            logger.warning("  [断路器] 热搜榜连续%d次失败, 进入%.0f秒熔断（无缓存可用）",
-                           fails, cooldown)
-            return []
-
-        if _xueqiu_hot_cb["cached"]:
-            logger.info("  热搜榜获取失败, 返回缓存数据(%.0fs前)", now - _xueqiu_hot_cb["last_ok"])
-            return _xueqiu_hot_cb["cached"]
-
-        return []
-
-
-def fetch_xueqiu_hot_list(session: requests.Session, size: int = 100) -> list[dict]:
-    """雪球热搜榜（按热度排序，用于与飙升榜交叉验证）"""
-    now = time.time()
-    with _cache_lock:
-        if now < _xueqiu_hot_cb["cooldown_until"]:
-            logger.info("  [断路器] 热搜榜熔断中(剩余%.0fs), 使用缓存数据",
-                        _xueqiu_hot_cb["cooldown_until"] - now)
-            return _xueqiu_hot_cb.get("cached") or []
-
-    ts = int(now * 1000)
-    url = (
-        f"https://stock.xueqiu.com/v5/stock/hot_stock/list.json"
-        f"?page=1&size={size}&order=desc&order_by=value&type=10&_={ts}&x=0.5"
-    )
-    try:
-        resp = _request_with_retry(session, url)
-        j = resp.json()
-        data = j.get("data") if isinstance(j, dict) else None
-        items = (data or {}).get("items", []) if isinstance(data, dict) else []
-        if not items:
-            logger.warning("热搜榜返回空 data（软错误），按失败处理")
-            return _xueqiu_hot_circuit_breaker([], success=False)
-        return _xueqiu_hot_circuit_breaker(items, success=True)
-    except Exception as e:
-        logger.error("热搜榜获取失败: %s", e)
-        return _xueqiu_hot_circuit_breaker([], success=False)
-
-
 def _quote_high_pct(q: dict) -> float | None:
     """当日最高涨幅（%）：由 quote 的 high 与昨收(last_close/prev_close)计算。
 
@@ -525,10 +466,9 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
     result: dict[str, dict] = {}
 
     for i in range(0, len(symbols), 50):
-        batch = symbols[i:i + 50]
+        batch = symbols[i : i + 50]
         sym_str = ",".join(batch)
-        url = (f"https://stock.xueqiu.com/v5/stock/batch/quote.json"
-               f"?symbol={sym_str}")
+        url = f"https://stock.xueqiu.com/v5/stock/batch/quote.json?symbol={sym_str}"
         try:
             resp = _request_with_retry(session, url)
             data = resp.json().get("data", {})
@@ -541,12 +481,14 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
                         q = entry if isinstance(entry, dict) else {}
                     qsym = q.get("symbol", sym)
                     if qsym:
-                        result[qsym] = {"market_cap": _num(q.get("market_capital")),
-                                        "circ_market_cap": _num(q.get("float_market_capital")),
-                                        "turnover_rate": _num(q.get("turnover_rate")),
-                                        "current": _num(q.get("current")),
-                                        "percent": _num(q.get("percent")),
-                                        "high_pct": _quote_high_pct(q)}
+                        result[qsym] = {
+                            "market_cap": _num(q.get("market_capital")),
+                            "circ_market_cap": _num(q.get("float_market_capital")),
+                            "turnover_rate": _num(q.get("turnover_rate")),
+                            "current": _num(q.get("current")),
+                            "percent": _num(q.get("percent")),
+                            "high_pct": _quote_high_pct(q),
+                        }
             else:
                 items = data.get("items", []) if isinstance(data, dict) else []
                 for item in items:
@@ -555,12 +497,14 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
                         q = item if isinstance(item, dict) else {}
                     sym = q.get("symbol", "")
                     if sym:
-                        result[sym] = {"market_cap": _num(q.get("market_capital")),
-                                       "circ_market_cap": _num(q.get("float_market_capital")),
-                                       "turnover_rate": _num(q.get("turnover_rate")),
-                                       "current": _num(q.get("current")),
-                                       "percent": _num(q.get("percent")),
-                                       "high_pct": _quote_high_pct(q)}
+                        result[sym] = {
+                            "market_cap": _num(q.get("market_capital")),
+                            "circ_market_cap": _num(q.get("float_market_capital")),
+                            "turnover_rate": _num(q.get("turnover_rate")),
+                            "current": _num(q.get("current")),
+                            "percent": _num(q.get("percent")),
+                            "high_pct": _quote_high_pct(q),
+                        }
         except Exception as e:
             print(f"  [!] 市值批量查询失败(批次{i // 50 + 1}): {e}")
             continue
@@ -609,8 +553,7 @@ def _normalize_minute_item(raw) -> dict:
         low = _num(raw[4]) if len(raw) > 4 else 0.0
         percent = _num(raw[7]) if len(raw) > 7 else 0.0
     except (IndexError, TypeError):
-        return {"timestamp": 0, "volume": 0, "avg_price": 0.0, "current": 0.0,
-                "high": 0.0, "low": 0.0, "percent": 0.0}
+        return {"timestamp": 0, "volume": 0, "avg_price": 0.0, "current": 0.0, "high": 0.0, "low": 0.0, "percent": 0.0}
     return {
         "timestamp": ts,
         "volume": volume,
@@ -662,8 +605,7 @@ def _fetch_minute_data(session: requests.Session, symbol: str) -> list[dict] | N
         return None
 
 
-def analyze_opening_strength(session: requests.Session, symbol: str,
-                             items: list[dict] | None = None) -> float | None:
+def analyze_opening_strength(session: requests.Session, symbol: str, items: list[dict] | None = None) -> float | None:
     """开盘强度因子: 分析前5分钟(9:30-9:35)的量价行为.
 
     items 由调用方（adapter.fetch_minute）传入时直接使用，不重复拉取；
@@ -707,8 +649,7 @@ def analyze_opening_strength(session: requests.Session, symbol: str,
     return max(-5.0, min(5.0, score))
 
 
-def estimate_live_volume(session: requests.Session, symbol: str,
-                         items: list[dict] | None = None) -> float | None:
+def estimate_live_volume(session: requests.Session, symbol: str, items: list[dict] | None = None) -> float | None:
     """实时量比投影：items 由调用方传入时直接使用，否则内部拉取。"""
     if items is None:
         items = _fetch_minute_data(session, symbol)
@@ -721,8 +662,7 @@ def estimate_live_volume(session: requests.Session, symbol: str,
     return estimated
 
 
-def analyze_intraday(session: requests.Session, symbol: str,
-                     items: list[dict] | None = None) -> float | None:
+def analyze_intraday(session: requests.Session, symbol: str, items: list[dict] | None = None) -> float | None:
     """分时强度评分（三段早/中/晚加权）。
 
     items 由调用方（adapter.fetch_minute）传入时直接使用且不读写 _INTRADAY_CACHE
@@ -748,6 +688,7 @@ def analyze_intraday(session: requests.Session, symbol: str,
         return None
 
     try:
+
         def _score_period(period_items: list[dict], period_weight: float) -> float:
             if len(period_items) < 2:
                 return 0.0
@@ -786,8 +727,7 @@ def analyze_intraday(session: requests.Session, symbol: str,
                         if base > 0:
                             # 分母守卫：current=0 的脏分时 bar（强转失败归 0）不得拖垮
                             # 整票分时评分（此前 ZeroDivisionError → 整段信号降级 None）
-                            seg_chgs.append(
-                                (period_items[nxt]["current"] - base) / base * 100)
+                            seg_chgs.append((period_items[nxt]["current"] - base) / base * 100)
                 attacks = sum(1 for c in seg_chgs if c > 0.15)
                 declines = sum(1 for c in seg_chgs if c < -0.15)
                 net = attacks - declines

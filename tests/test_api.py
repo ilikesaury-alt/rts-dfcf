@@ -1,5 +1,5 @@
-from unittest.mock import MagicMock, PropertyMock, patch
 from datetime import datetime as _real_dt
+from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
@@ -30,7 +30,6 @@ class _FakeDatetime:
 
 
 class TestComputeSurgeSentiment:
-
     def test_boiling(self):
         items = [{"percent": 8}] * 10 + [{"percent": 5}] * 5
         r = compute_surge_sentiment(items)
@@ -83,7 +82,6 @@ class TestComputeSurgeSentiment:
 
 
 class TestBiaoshengCircuitBreaker:
-
     def test_success_updates_cache(self):
         raw = [{"symbol": "300001"}]
         r = _biaosheng_circuit_breaker(raw, success=True)
@@ -100,12 +98,14 @@ class TestBiaoshengCircuitBreaker:
 
     def test_failure_no_cache_returns_empty(self):
         from scanner.api import _biaosheng_cb
+
         _biaosheng_cb["cached"] = []
         r = _biaosheng_circuit_breaker([], success=False)
         assert r == []
 
     def test_three_failures_enters_cooldown(self):
         from scanner.api import _biaosheng_cb
+
         _biaosheng_cb["cached"] = [{"symbol": "300001"}]
         _biaosheng_cb["failures"] = 0
         _biaosheng_cb["cooldown_until"] = 0
@@ -114,43 +114,6 @@ class TestBiaoshengCircuitBreaker:
             _biaosheng_circuit_breaker([], success=False)
 
         assert _biaosheng_cb["cooldown_until"] > 0
-
-
-class TestXueqiuHotCircuitBreaker:
-
-    def test_success_updates_cache(self):
-        from scanner.api import _xueqiu_hot_circuit_breaker
-        raw = [{"symbol": "300001"}]
-        r = _xueqiu_hot_circuit_breaker(raw, success=True)
-        assert r == raw
-
-    def test_success_with_empty(self):
-        from scanner.api import _xueqiu_hot_circuit_breaker
-        r = _xueqiu_hot_circuit_breaker([], success=True)
-        assert r == []
-
-    def test_failure_returns_cached(self):
-        from scanner.api import _xueqiu_hot_circuit_breaker, _xueqiu_hot_cb
-        _xueqiu_hot_circuit_breaker([{"symbol": "300001"}], success=True)
-        r = _xueqiu_hot_circuit_breaker([], success=False)
-        assert r == [{"symbol": "300001"}]
-
-    def test_failure_no_cache_returns_empty(self):
-        from scanner.api import _xueqiu_hot_circuit_breaker, _xueqiu_hot_cb
-        _xueqiu_hot_cb["cached"] = []
-        r = _xueqiu_hot_circuit_breaker([], success=False)
-        assert r == []
-
-    def test_three_failures_enters_cooldown(self):
-        from scanner.api import _xueqiu_hot_circuit_breaker, _xueqiu_hot_cb
-        _xueqiu_hot_cb["cached"] = [{"symbol": "300001"}]
-        _xueqiu_hot_cb["failures"] = 0
-        _xueqiu_hot_cb["cooldown_until"] = 0
-
-        for _ in range(3):
-            _xueqiu_hot_circuit_breaker([], success=False)
-
-        assert _xueqiu_hot_cb["cooldown_until"] > 0
 
 
 _minute_5_items = [
@@ -163,18 +126,20 @@ _minute_5_items = [
 
 
 class TestAnalyzeOpeningStrength:
-
     def test_strong_opening(self):
-        with patch("scanner.api._fetch_minute_data", return_value=_minute_5_items + [
-            {"current": 102.0, "volume": 200},
-        ]):
+        with patch(
+            "scanner.api._fetch_minute_data",
+            return_value=_minute_5_items
+            + [
+                {"current": 102.0, "volume": 200},
+            ],
+        ):
             score = analyze_opening_strength(MagicMock(), "300501")
         assert score is not None
         assert score > 0
 
     def test_weak_opening(self):
-        items = [{"current": 100.0, "volume": 500},
-                 {"current": 99.0, "volume": 600}]
+        items = [{"current": 100.0, "volume": 500}, {"current": 99.0, "volume": 600}]
         with patch("scanner.api._fetch_minute_data", return_value=items):
             score = analyze_opening_strength(MagicMock(), "300502")
         assert score is None or score < 0
@@ -187,7 +152,6 @@ class TestAnalyzeOpeningStrength:
 
 
 class TestAnalyzeIntraday:
-
     def test_returns_float_for_good_data(self):
         items = [{"current": 100.0 + i * 0.1, "volume": 100} for i in range(250)]
         with patch("scanner.api._fetch_minute_data", return_value=items):
@@ -207,7 +171,6 @@ class TestAnalyzeIntraday:
 
 
 class TestEstimateLiveVolume:
-
     def test_basic_estimate(self):
         items = [{"current": 100.0, "volume": 100}] * 120
         with patch("scanner.api._fetch_minute_data", return_value=items):
@@ -221,7 +184,6 @@ class TestEstimateLiveVolume:
 
 
 class TestNormalizeMinuteItem:
-
     def test_raw_array_normalized_to_dict(self):
         # 列序与 fetch_kline 一致: [ts, volume, open, high, low, close, chg, percent, turnoverrate, amount]
         raw = [1609459200000, 500, 99.0, 102.0, 98.0, 101.0, 1.0, 1.0, 0.5, 50500.0]
@@ -271,8 +233,7 @@ class TestNormalizeMinuteItem:
         """dict 直通形态的字符串字段由 _fetch_minute_data 统一兜底强转，
         三个消费者（opening_strength/live_volume/intraday）不抛 TypeError。"""
         raw_items = [
-            {"timestamp": 1609459200000 + i * 60000, "volume": "100",
-             "avg_price": "10.0", "current": "10.0"}
+            {"timestamp": 1609459200000 + i * 60000, "volume": "100", "avg_price": "10.0", "current": "10.0"}
             for i in range(20)
         ]
         fake_resp = MagicMock()
@@ -289,11 +250,9 @@ class TestNormalizeMinuteItem:
 
 
 class TestFetchMinuteDataRawArray:
-
     def test_raw_array_items_yield_dicts(self):
         raw_items = [
-            [1609459200000 + i * 60000, 100, 10.0 + i, 10.0 + i, 10.0 + i,
-             10.0 + i, 1.0, 1.0, 0.5, 1000.0 + i * 100]
+            [1609459200000 + i * 60000, 100, 10.0 + i, 10.0 + i, 10.0 + i, 10.0 + i, 1.0, 1.0, 0.5, 1000.0 + i * 100]
             for i in range(30)
         ]
         fake_resp = MagicMock()
@@ -321,16 +280,19 @@ class TestFetchMarketCapsCoercion:
 
     def test_market_caps_values_coerced(self):
         from scanner.api import fetch_market_caps_batch
+
         payload = {
             "data": {
-                "SZ300001": {"quote": {
-                    "symbol": "SZ300001",
-                    "market_capital": "5000000000",
-                    "float_market_capital": "3000000000",
-                    "turnover_rate": "5.5",
-                    "current": "12.5",
-                    "percent": "3.2",
-                }},
+                "SZ300001": {
+                    "quote": {
+                        "symbol": "SZ300001",
+                        "market_capital": "5000000000",
+                        "float_market_capital": "3000000000",
+                        "turnover_rate": "5.5",
+                        "current": "12.5",
+                        "percent": "3.2",
+                    }
+                },
                 "SZ300002": {"quote": {"symbol": "SZ300002"}},  # 缺数值字段 → 0.0
             }
         }
@@ -346,16 +308,21 @@ class TestFetchMarketCapsCoercion:
 
     def test_items_array_form_coerced(self):
         from scanner.api import fetch_market_caps_batch
+
         payload = {
             "data": {
-                "items": [{"quote": {
-                    "symbol": "SZ300003",
-                    "market_capital": "1000000000",
-                    "float_market_capital": "800000000",
-                    "turnover_rate": 2.0,
-                    "current": 20.0,
-                    "percent": "1.5",
-                }}]
+                "items": [
+                    {
+                        "quote": {
+                            "symbol": "SZ300003",
+                            "market_capital": "1000000000",
+                            "float_market_capital": "800000000",
+                            "turnover_rate": 2.0,
+                            "current": 20.0,
+                            "percent": "1.5",
+                        }
+                    }
+                ]
             }
         }
         with patch("scanner.api._request_with_retry", return_value=self._fake_resp(payload)):
@@ -374,7 +341,8 @@ class TestFetchListSoftErrorCircuitBreaker:
         return r
 
     def test_biaosheng_empty_data_not_success(self):
-        from scanner.api import fetch_biaosheng, _biaosheng_cb
+        from scanner.api import _biaosheng_cb, fetch_biaosheng
+
         _biaosheng_cb["failures"] = 0
         _biaosheng_cb["cooldown_until"] = 0
         _biaosheng_cb["cached"] = []
@@ -385,7 +353,8 @@ class TestFetchListSoftErrorCircuitBreaker:
         assert _biaosheng_cb["failures"] == 1, "软错误应按失败计，熔断计数递增"
 
     def test_biaosheng_real_data_is_success(self):
-        from scanner.api import fetch_biaosheng, _biaosheng_cb
+        from scanner.api import _biaosheng_cb, fetch_biaosheng
+
         _biaosheng_cb["failures"] = 0
         _biaosheng_cb["cooldown_until"] = 0
         _biaosheng_cb["cached"] = []
@@ -394,28 +363,6 @@ class TestFetchListSoftErrorCircuitBreaker:
             r = fetch_biaosheng(MagicMock(), 100)
         assert r == [{"symbol": "SZ300001"}]
         assert _biaosheng_cb["failures"] == 0, "正常数据重置失败计数"
-
-    def test_hot_list_empty_data_not_success(self):
-        from scanner.api import fetch_xueqiu_hot_list, _xueqiu_hot_cb
-        _xueqiu_hot_cb["failures"] = 0
-        _xueqiu_hot_cb["cooldown_until"] = 0
-        _xueqiu_hot_cb["cached"] = []
-        resp = self._fake_resp({"error_code": 40016})
-        with patch("scanner.api._request_with_retry", return_value=resp):
-            r = fetch_xueqiu_hot_list(MagicMock(), 100)
-        assert r == []
-        assert _xueqiu_hot_cb["failures"] == 1, "软错误应按失败计，熔断计数递增"
-
-    def test_hot_list_real_data_is_success(self):
-        from scanner.api import fetch_xueqiu_hot_list, _xueqiu_hot_cb
-        _xueqiu_hot_cb["failures"] = 0
-        _xueqiu_hot_cb["cooldown_until"] = 0
-        _xueqiu_hot_cb["cached"] = []
-        resp = self._fake_resp({"data": {"items": [{"symbol": "SZ300002"}]}})
-        with patch("scanner.api._request_with_retry", return_value=resp):
-            r = fetch_xueqiu_hot_list(MagicMock(), 100)
-        assert r == [{"symbol": "SZ300002"}]
-        assert _xueqiu_hot_cb["failures"] == 0, "正常数据重置失败计数"
 
 
 class TestFetchKlineCoercion:
@@ -429,10 +376,15 @@ class TestFetchKlineCoercion:
 
     def test_ohlcv_values_coerced(self):
         from scanner.api import fetch_kline
+
         # 列序: [ts, volume, open, high, low, close, chg, percent, ...]
-        payload = {"data": {"item": [
-            [1609459200000, "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
-        ]}}
+        payload = {
+            "data": {
+                "item": [
+                    [1609459200000, "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
+                ]
+            }
+        }
         with patch("scanner.api._request_with_retry", return_value=self._fake_resp(payload)):
             kline = fetch_kline(MagicMock(), "SZ300001", days=15)
         assert kline is not None and len(kline) == 1
@@ -444,10 +396,15 @@ class TestFetchKlineCoercion:
 
     def test_none_and_nan_ohlcv_do_not_crash(self):
         from scanner.api import fetch_kline
-        payload = {"data": {"item": [
-            [1609459200000, None, None, None, None, None, None, None],
-            [1609459200000, float("nan"), "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
-        ]}}
+
+        payload = {
+            "data": {
+                "item": [
+                    [1609459200000, None, None, None, None, None, None, None],
+                    [1609459200000, float("nan"), "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
+                ]
+            }
+        }
         with patch("scanner.api._request_with_retry", return_value=self._fake_resp(payload)):
             kline = fetch_kline(MagicMock(), "SZ300001", days=15)
         assert kline is not None
@@ -459,11 +416,16 @@ class TestFetchKlineCoercion:
 
     def test_short_item_skipped(self):
         from scanner.api import fetch_kline
+
         # 缺列 item（长度 <8）应跳过该根，不抛 IndexError
-        payload = {"data": {"item": [
-            [1609459200000, "500"],
-            [1609459200000, "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
-        ]}}
+        payload = {
+            "data": {
+                "item": [
+                    [1609459200000, "500"],
+                    [1609459200000, "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
+                ]
+            }
+        }
         with patch("scanner.api._request_with_retry", return_value=self._fake_resp(payload)):
             kline = fetch_kline(MagicMock(), "SZ300001", days=15)
         assert kline is not None and len(kline) == 1
@@ -473,12 +435,17 @@ class TestFetchKlineCoercion:
         """回归：时间戳为 None/字符串等脏值时应跳过该根 bar，而不是抛异常
         拖垮整只票的 K 线解析（datetime.fromtimestamp 对 None/str 抛 TypeError）。"""
         from scanner.api import fetch_kline
+
         good_ts = 1609459200000
-        payload = {"data": {"item": [
-            [None, "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
-            ["not-a-number", "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
-            [good_ts, "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
-        ]}}
+        payload = {
+            "data": {
+                "item": [
+                    [None, "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
+                    ["not-a-number", "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
+                    [good_ts, "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
+                ]
+            }
+        }
         with patch("scanner.api._request_with_retry", return_value=self._fake_resp(payload)):
             kline = fetch_kline(MagicMock(), "SZ300001", days=15)
         assert kline is not None and len(kline) == 1
@@ -489,12 +456,17 @@ class TestFetchKlineCoercion:
         """回归：时间戳为 0/负值（无法映射为有效交易日）的 bar 同样跳过，
         避免产出 1970 年脏日期。"""
         from scanner.api import fetch_kline
+
         good_ts = 1609459200000
-        payload = {"data": {"item": [
-            [0, "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
-            [-1, "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
-            [good_ts, "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
-        ]}}
+        payload = {
+            "data": {
+                "item": [
+                    [0, "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
+                    [-1, "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
+                    [good_ts, "500", "10.5", 11.0, "10.0", 10.8, 1.0, "2.3"],
+                ]
+            }
+        }
         with patch("scanner.api._request_with_retry", return_value=self._fake_resp(payload)):
             kline = fetch_kline(MagicMock(), "SZ300001", days=15)
         assert kline is not None and len(kline) == 1
@@ -510,16 +482,19 @@ class TestNumInf:
 
     def test_inf_coerced_to_default(self):
         from scanner.api import _num
+
         assert _num(float("inf")) == 0.0
         assert _num(float("-inf")) == 0.0
 
     def test_inf_string_coerced(self):
         from scanner.api import _num
+
         assert _num("Infinity") == 0.0
         assert _num("-Infinity") == 0.0
 
     def test_finite_unchanged(self):
         from scanner.api import _num
+
         assert _num("5.23") == 5.23
         assert _num(None) == 0.0
         assert _num(float("nan")) == 0.0
@@ -536,9 +511,12 @@ class TestFetchMarketIndexCoercion:
 
     def test_string_pct_coerced(self):
         import scanner.api as api
+
         # 列序: [ts, volume, open, high, low, close, chg, percent, ...]
-        with patch("scanner.api._request_with_retry",
-                   return_value=self._fake_resp([1700000000000, 1, 10, 11, 9, 10, 0.1, "-0.12", 1.2])):
+        with patch(
+            "scanner.api._request_with_retry",
+            return_value=self._fake_resp([1700000000000, 1, 10, 11, 9, 10, 0.1, "-0.12", 1.2]),
+        ):
             api._market_index_cache = (None, None, 0)  # 清缓存防跨测试污染
             pct = api.fetch_market_index(MagicMock())
         assert isinstance(pct, float) and pct == pytest.approx(-0.12)
@@ -547,16 +525,22 @@ class TestFetchMarketIndexCoercion:
 
     def test_nan_pct_coerced(self):
         import scanner.api as api
-        with patch("scanner.api._request_with_retry",
-                   return_value=self._fake_resp([1700000000000, 1, 10, 11, 9, 10, 0.1, float("nan"), 1.2])):
+
+        with patch(
+            "scanner.api._request_with_retry",
+            return_value=self._fake_resp([1700000000000, 1, 10, 11, 9, 10, 0.1, float("nan"), 1.2]),
+        ):
             api._market_index_cache = (None, None, 0)
             pct = api.fetch_market_index(MagicMock())
         assert pct == 0.0  # NaN → 0（中性，不触发大盘强弱标签）
 
     def test_none_pct_returns_none(self):
         import scanner.api as api
-        with patch("scanner.api._request_with_retry",
-                   return_value=self._fake_resp([1700000000000, 1, 10, 11, 9, 10, 0.1, None, 1.2])):
+
+        with patch(
+            "scanner.api._request_with_retry",
+            return_value=self._fake_resp([1700000000000, 1, 10, 11, 9, 10, 0.1, None, 1.2]),
+        ):
             api._market_index_cache = (None, None, 0)
             pct = api.fetch_market_index(MagicMock())
         assert pct is None
@@ -566,19 +550,22 @@ class TestFetchMarketIndexCoercion:
         items[-1] 错取昨日涨幅（创业板指当日 -6.26% 被读成昨日 -0.93% → 大盘中性）。
         窗口内 3 根 bar 时必须取最后一根（当日）且 URL 用 count=5。"""
         import scanner.api as api
+
         # 列序: [ts, volume, open, high, low, close, chg, percent, ...]
         # ts = 北京时区当日 00:00 的 epoch ms（雪球日K时间戳语义）
         bars = [
-            [1786896000000, 1, 10, 11, 9, 10, 0.1, 3.14, 1.2],    # 08-17
-            [1786982400000, 1, 10, 11, 9, 10, 0.1, -0.93, 1.2],   # 08-18
-            [1787068800000, 1, 10, 11, 9, 10, 0.1, -6.26, 1.2],   # 08-19（当日崩盘）
+            [1786896000000, 1, 10, 11, 9, 10, 0.1, 3.14, 1.2],  # 08-17
+            [1786982400000, 1, 10, 11, 9, 10, 0.1, -0.93, 1.2],  # 08-18
+            [1787068800000, 1, 10, 11, 9, 10, 0.1, -6.26, 1.2],  # 08-19（当日崩盘）
         ]
         resp = MagicMock()
         resp.json.return_value = {"data": {"item": bars}}
         url_seen = {}
+
         def fake_get(_session, url):
             url_seen["url"] = url
             return resp
+
         with patch("scanner.api._request_with_retry", side_effect=fake_get):
             api._market_index_cache = (None, None, 0)
             pct = api.fetch_market_index(MagicMock())
@@ -588,8 +575,9 @@ class TestFetchMarketIndexCoercion:
     def test_meta_exposes_bar_date(self):
         """bar 日期是「读到哪一天的数据」的权威证据（曾把 -6.26% 读成 -0.93% 而无痕）。"""
         import scanner.api as api
+
         bars = [
-            [1786896000000, 1, 10, 11, 9, 10, 0.1, 3.14, 1.2],   # 08-17
+            [1786896000000, 1, 10, 11, 9, 10, 0.1, 3.14, 1.2],  # 08-17
             [1786982400000, 1, 10, 11, 9, 10, 0.1, -0.93, 1.2],  # 08-18
             [1787068800000, 1, 10, 11, 9, 10, 0.1, -6.26, 1.2],  # 08-19（当日崩盘）
         ]
@@ -605,10 +593,11 @@ class TestFetchMarketIndexCoercion:
     def test_stale_bar_warns_and_meta_records(self, monkeypatch, capsys):
         """读到旧 bar（bar 日期 < 今日且交易日 09:30 后）→ fail-loud 告警 + meta 记录证据。"""
         import scanner.api as api
+
         now = _real_dt(2026, 8, 19, 14, 59, tzinfo=BEIJING_TZ)
         monkeypatch.setattr("scanner.api.datetime", _FakeDatetime(now))
         bars = [
-            [1786896000000, 1, 10, 11, 9, 10, 0.1, 3.14, 1.2],   # 08-17
+            [1786896000000, 1, 10, 11, 9, 10, 0.1, 3.14, 1.2],  # 08-17
             [1786982400000, 1, 10, 11, 9, 10, 0.1, -0.93, 1.2],  # 08-18（旧 bar）
         ]
         resp = MagicMock()
@@ -624,6 +613,7 @@ class TestFetchMarketIndexCoercion:
     def test_no_stale_warning_before_open(self, monkeypatch, capsys):
         """开盘前（<09:30）今日 bar 尚未生成，读到昨日 bar 属正常 → 不告警。"""
         import scanner.api as api
+
         now = _real_dt(2026, 8, 19, 9, 15, tzinfo=BEIJING_TZ)
         monkeypatch.setattr("scanner.api.datetime", _FakeDatetime(now))
         bars = [
@@ -652,9 +642,13 @@ class TestSessionExpirySelfHeal:
             self.cleared = True
 
     class _FakeResp:
-        def __init__(self, status_code, content_type="application/json",
-                     url="https://stock.xueqiu.com/v5/stock/chart/kline.json",
-                     body=None):
+        def __init__(
+            self,
+            status_code,
+            content_type="application/json",
+            url="https://stock.xueqiu.com/v5/stock/chart/kline.json",
+            body=None,
+        ):
             self.status_code = status_code
             self.headers = {"Content-Type": content_type}
             self.url = url
@@ -682,6 +676,7 @@ class TestSessionExpirySelfHeal:
 
     def test_401_triggers_rebuild_and_retries(self):
         from scanner.api import _request_with_retry
+
         sess = self._FakeSession([self._FakeResp(401), self._FakeResp(200)])
         resp = _request_with_retry(sess, "https://stock.xueqiu.com/v5/x", max_retries=2)
         assert resp.status_code == 200
@@ -691,17 +686,20 @@ class TestSessionExpirySelfHeal:
 
     def test_html_login_page_triggers_rebuild(self):
         from scanner.api import _request_with_retry
-        sess = self._FakeSession([
-            self._FakeResp(200, content_type="text/html; charset=utf-8",
-                           url="https://passport.xueqiu.com/"),
-            self._FakeResp(200),
-        ])
+
+        sess = self._FakeSession(
+            [
+                self._FakeResp(200, content_type="text/html; charset=utf-8", url="https://passport.xueqiu.com/"),
+                self._FakeResp(200),
+            ]
+        )
         resp = _request_with_retry(sess, "https://stock.xueqiu.com/v5/x", max_retries=2)
         assert resp.status_code == 200
         assert sess.cookies.cleared
 
     def test_normal_json_no_rebuild(self):
         from scanner.api import _request_with_retry
+
         sess = self._FakeSession([self._FakeResp(200)])
         resp = _request_with_retry(sess, "https://stock.xueqiu.com/v5/x", max_retries=2)
         assert resp.status_code == 200
@@ -710,6 +708,7 @@ class TestSessionExpirySelfHeal:
     def test_server_error_does_not_rebuild(self):
         # 5xx 是服务端问题，非 cookie 失效，走既有重试而非重建 session
         from scanner.api import _request_with_retry
+
         sess = self._FakeSession([self._FakeResp(500), self._FakeResp(200)])
         resp = _request_with_retry(sess, "https://stock.xueqiu.com/v5/x", max_retries=2)
         assert resp.status_code == 200
@@ -718,7 +717,9 @@ class TestSessionExpirySelfHeal:
     def test_rebuild_only_once(self):
         # 重建后仍 401 → 不再重复重建，按原逻辑抛错（防重建风暴）
         import pytest
+
         from scanner.api import _request_with_retry
+
         sess = self._FakeSession([self._FakeResp(401), self._FakeResp(401), self._FakeResp(401)])
         with pytest.raises(Exception):
             _request_with_retry(sess, "https://stock.xueqiu.com/v5/x", max_retries=3)
@@ -730,14 +731,17 @@ class TestSessionExpirySelfHeal:
         （而非 401/403）。此前漏检导致自愈不触发 → 市值批量查询全批失败。
         400016 签名应触发重建并重试成功。"""
         from scanner.api import _request_with_retry
-        expired = self._FakeResp(400, body={
-            "error_description": "遇到错误，请刷新页面或者重新登录帐号后再试",
-            "error_uri": "/v5/stock/batch/quote.json",
-            "error_code": "400016",
-        })
+
+        expired = self._FakeResp(
+            400,
+            body={
+                "error_description": "遇到错误，请刷新页面或者重新登录帐号后再试",
+                "error_uri": "/v5/stock/batch/quote.json",
+                "error_code": "400016",
+            },
+        )
         sess = self._FakeSession([expired, self._FakeResp(200)])
-        resp = _request_with_retry(sess, "https://stock.xueqiu.com/v5/stock/batch/quote.json?symbol=x",
-                                   max_retries=2)
+        resp = _request_with_retry(sess, "https://stock.xueqiu.com/v5/stock/batch/quote.json?symbol=x", max_retries=2)
         assert resp.status_code == 200
         assert sess.cookies.cleared
         assert any("xueqiu.com/hq" in u for u in sess.calls)
@@ -746,8 +750,8 @@ class TestSessionExpirySelfHeal:
         """普通 400 业务错误（非 400016）不应触发 cookie 重建——防止误判
         参数错误为会话失效而清 cookie 打断正常请求。"""
         from scanner.api import _request_with_retry
-        bad_request = self._FakeResp(400, body={"error_code": "405000",
-                                                "error_description": "参数错误"})
+
+        bad_request = self._FakeResp(400, body={"error_code": "405000", "error_description": "参数错误"})
         sess = self._FakeSession([bad_request, self._FakeResp(200)])
         with pytest.raises(Exception):
             _request_with_retry(sess, "https://stock.xueqiu.com/v5/x", max_retries=2)
@@ -756,6 +760,7 @@ class TestSessionExpirySelfHeal:
     def test_400_non_json_no_rebuild(self):
         """400 但响应不是 JSON（网关错误页）不触发重建。"""
         from scanner.api import _request_with_retry
+
         resp = requests.Response()
         resp.status_code = 400
         resp.headers = {"Content-Type": "text/plain"}

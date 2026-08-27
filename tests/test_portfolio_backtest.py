@@ -34,10 +34,11 @@ def _make_rising_db(path: str, prefix_days: int = 0) -> sqlite3.Connection:
         "score_breakdown TEXT, source TEXT)"
     )
     from scanner.trading_session import is_trading_day
+
     base = date(2026, 6, 1)
     dates = []
     d = base
-    while len(dates) < prefix_days + 12:   # 足够覆盖 prefix + 买入 + 持有 + 缓冲
+    while len(dates) < prefix_days + 12:  # 足够覆盖 prefix + 买入 + 持有 + 缓冲
         if is_trading_day(d):
             dates.append(d.isoformat())
         d += timedelta(days=1)
@@ -66,14 +67,17 @@ def _make_rising_db(path: str, prefix_days: int = 0) -> sqlite3.Connection:
 
 
 def test_synthetic_costs_reduce_return():
-    import tempfile, os
+    import os
+    import tempfile
+
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     try:
         conn = _make_rising_db(path)
         # 零成本
-        cfg_free = PBConfig(days=0, hold_days=3, buy_delay=1, max_positions=10,
-                            commission=0.0, stamp_duty=0.0, slippage=0.0)
+        cfg_free = PBConfig(
+            days=0, hold_days=3, buy_delay=1, max_positions=10, commission=0.0, stamp_duty=0.0, slippage=0.0
+        )
         res_free = run_backtest(conn, cfg_free)
         # 默认成本（万2.5 / 0.05% / 0.1%）
         cfg_cost = PBConfig(days=0, hold_days=3, buy_delay=1, max_positions=10)
@@ -84,8 +88,7 @@ def test_synthetic_costs_reduce_return():
         assert res_cost.metrics["n_trades"] == 1
         # 上涨 +1%/日，持有 3 日，零成本应为正收益；有成本应更低（仍可能为正）
         assert res_free.metrics["total_return"] > 0
-        assert res_cost.metrics["total_return"] < res_free.metrics["total_return"], \
-            "成本应使总收益下降"
+        assert res_cost.metrics["total_return"] < res_free.metrics["total_return"], "成本应使总收益下降"
         # 指标有限
         for key in ("total_return", "sharpe", "max_drawdown"):
             assert math.isfinite(res_cost.metrics[key])
@@ -112,7 +115,9 @@ def test_metrics_use_active_window():
     构造 10 个交易日空仓前缀：推荐放在第 10 个交易日(idx10)，买入日 = idx11，
     故 active_start 应等于 11，且 total_return 必须等于 nav[active_end]/nav[active_start]-1。
     """
-    import tempfile, os
+    import os
+    import tempfile
+
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     try:
@@ -141,7 +146,9 @@ def test_benchmark_no_skill_runs():
 
 def test_no_same_day_round_trip():
     """T+1 约束：任何一笔交易的卖出日必须晚于买入日（不可当日买入当日卖出）。"""
-    import tempfile, os
+    import os
+    import tempfile
+
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     try:
@@ -162,7 +169,9 @@ def test_last_calendar_day_buy_is_skipped():
     的信号 exit_index == buy_index，产生当日买入当日卖出（hold_days=0）的 T+0 交易，
     违反 A 股 T+1 约束。修复后该信号应被跳过（无信号/无交易）。
     """
-    import tempfile, os
+    import os
+    import tempfile
+
     from scanner.portfolio_backtest import PBConfig, _build_calendar, _load_signals, run_backtest
     from scanner.trading_session import is_trading_day
 
@@ -170,13 +179,17 @@ def test_last_calendar_day_buy_is_skipped():
     os.close(fd)
     try:
         conn = sqlite3.connect(path)
-        conn.execute("CREATE TABLE daily_kline "
-                     "(symbol TEXT, timestamp INTEGER, date TEXT, open REAL, close REAL, "
-                     "high REAL, low REAL, volume REAL, percent REAL, PRIMARY KEY(symbol, date))")
-        conn.execute("CREATE TABLE recommendations "
-                     "(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, time TEXT, symbol TEXT, "
-                     "name TEXT, category TEXT, score INTEGER, percent REAL, trend TEXT, "
-                     "score_breakdown TEXT, source TEXT)")
+        conn.execute(
+            "CREATE TABLE daily_kline "
+            "(symbol TEXT, timestamp INTEGER, date TEXT, open REAL, close REAL, "
+            "high REAL, low REAL, volume REAL, percent REAL, PRIMARY KEY(symbol, date))"
+        )
+        conn.execute(
+            "CREATE TABLE recommendations "
+            "(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, time TEXT, symbol TEXT, "
+            "name TEXT, category TEXT, score INTEGER, percent REAL, trend TEXT, "
+            "score_breakdown TEXT, source TEXT)"
+        )
         base = date(2026, 6, 1)
         dates = []
         d = base
@@ -185,8 +198,10 @@ def test_last_calendar_day_buy_is_skipped():
                 dates.append(d.isoformat())
             d += timedelta(days=1)
         for i, dt in enumerate(dates):
-            conn.execute("INSERT INTO daily_kline VALUES (?,?,?,?,?,?,?,?,?)",
-                         ("300001", i, dt, 10.0 + i, 10.0 + i, 10.0 + i, 10.0 + i, 1e6, 1.0))
+            conn.execute(
+                "INSERT INTO daily_kline VALUES (?,?,?,?,?,?,?,?,?)",
+                ("300001", i, dt, 10.0 + i, 10.0 + i, 10.0 + i, 10.0 + i, 1e6, 1.0),
+            )
         # 推荐日=倒数第2个交易日，buy_delay=1 → 买入日=最后一个交易日
         conn.execute(
             "INSERT INTO recommendations (date,time,symbol,name,category,score,percent,trend) "
@@ -213,21 +228,20 @@ def test_buy_at_close_uses_close_price():
     合成上涨库：每日 +1%，买入日 open=前收、close=open*1.01，故同笔交易
     收盘买比开盘买多付 ~1%，总收益应更低；且 Trade.buy_price 应等于当日收盘（> 开盘）。
     """
-    import tempfile, os
+    import os
+    import tempfile
+
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     try:
         conn = _make_rising_db(path, prefix_days=2)
-        res_open = run_backtest(conn, PBConfig(days=0, hold_days=3, buy_delay=1,
-                                               max_positions=10, buy_at="open"))
-        res_close = run_backtest(conn, PBConfig(days=0, hold_days=3, buy_delay=1,
-                                                max_positions=10, buy_at="close"))
+        res_open = run_backtest(conn, PBConfig(days=0, hold_days=3, buy_delay=1, max_positions=10, buy_at="open"))
+        res_close = run_backtest(conn, PBConfig(days=0, hold_days=3, buy_delay=1, max_positions=10, buy_at="close"))
         conn.close()
         assert res_open.metrics["n_trades"] == 1
         assert res_close.metrics["n_trades"] == 1
         # 收盘买更贵 → 总收益更低
-        assert res_close.metrics["total_return"] < res_open.metrics["total_return"], \
-            "买入日收盘买应比开盘买总收益更低"
+        assert res_close.metrics["total_return"] < res_open.metrics["total_return"], "买入日收盘买应比开盘买总收益更低"
         # Trade.buy_price 应等于买入日收盘价（> 开盘价）
         assert res_close.trades[0].buy_price > res_open.trades[0].buy_price
     finally:
@@ -240,16 +254,28 @@ def test_accumulate_final_score_excludes_heat_bonuses():
     这些项只应作展示徽章（已写入 dimensions），不能进入 c.score 排序键，
     否则综合排序沦为「买最热的票」的追涨陷阱（回测实证综合 -28% 劣于无筛选基准）。
     """
-    from scanner.enhancer import accumulate_final_score, HEAT_AMPLIFIER_BONUS_ATTRS
-    from scanner.models import Candidate, StockInfo, KlineSummary
+    from scanner.enhancer import HEAT_AMPLIFIER_BONUS_ATTRS, accumulate_final_score
+    from scanner.models import Candidate, KlineSummary, StockInfo
 
     # 全部热度 bonus 拉满，质量类 bonus 归零
     c = Candidate(
-        stock=StockInfo(symbol="300001", name="测试", code="300001", percent=1.0,
-                        current=10.0, value=1e8, rank_change=0, rank=1, source_tag="both"),
-        category="new_face", score=0, reason="",
-        kline=KlineSummary(trend="up", accumulated_pct=0.0, volume_ratio=1.0,
-                           bottom_confirmed=False, score=0, dimensions={}),
+        stock=StockInfo(
+            symbol="300001",
+            name="测试",
+            code="300001",
+            percent=1.0,
+            current=10.0,
+            value=1e8,
+            rank_change=0,
+            rank=1,
+            source_tag="xueqiu",
+        ),
+        category="new_face",
+        score=0,
+        reason="",
+        kline=KlineSummary(
+            trend="up", accumulated_pct=0.0, volume_ratio=1.0, bottom_confirmed=False, score=0, dimensions={}
+        ),
     )
     for attr in HEAT_AMPLIFIER_BONUS_ATTRS:
         setattr(c, attr, 50)  # 热度项全置 50
@@ -264,8 +290,7 @@ def test_accumulate_final_score_excludes_heat_bonuses():
     c.first_today_bonus = 3
     c.gap_up_bonus = 2
     c.fund_flow_bonus = 4
-    assert accumulate_final_score(c, opening_scores={}) == 9, \
-        "质量类 bonus 应计入排序键"
+    assert accumulate_final_score(c, opening_scores={}) == 9, "质量类 bonus 应计入排序键"
 
 
 def test_assign_rank_scores_signal_percentile():
@@ -305,8 +330,8 @@ def test_assign_rank_scores_dict_percentile():
     ]
     _assign_rank_scores(recs)
     by = {r["category"]: r for r in recs}
-    assert by["new_face"]["rank_score"] == 100.0   # 同类内最高
-    assert by["comeback"]["rank_score"] == 100.0    # 同类内唯一 -> 100
+    assert by["new_face"]["rank_score"] == 100.0  # 同类内最高
+    assert by["comeback"]["rank_score"] == 100.0  # 同类内唯一 -> 100
     # 两者类内均居首，故综合排序并列优先，不再被 comeback 的标尺(122)压过 new_face(45)
     assert by["new_face"]["rank_score"] == by["comeback"]["rank_score"]
 
@@ -314,18 +339,20 @@ def test_assign_rank_scores_dict_percentile():
 def test_deheat_score_unit():
     """_deheat_score 从含热度 final_score 重建去热度分（验证 Step 1 可历史回测）。"""
     import json
-    from scanner.config import CROSS_SOURCE_BONUS
+
     from scanner.portfolio_backtest import _deheat_score
 
     dims = {
-        "sector_bonus": 2, "live_vol_bonus": 3, "rps_bonus": 5,
-        "list_momentum_bonus": 4, "time_bonus": 1,
-        "market_sentiment_bonus": 2, "market_env_bonus": 3,
+        "sector_bonus": 2,
+        "live_vol_bonus": 3,
+        "rps_bonus": 5,
+        "list_momentum_bonus": 4,
+        "time_bonus": 1,
+        "market_sentiment_bonus": 2,
+        "market_env_bonus": 3,
     }  # 热度合计 = 20
     # 含热度 raw=200，减掉 20 -> 180
     assert _deheat_score(200, json.dumps(dims), "xueqiu") == 180
-    # source=='both' 额外减 CROSS_SOURCE_BONUS
-    assert _deheat_score(200, json.dumps(dims), "both") == 180 - CROSS_SOURCE_BONUS
     # 无 breakdown -> 回退原始分（不报错）
     assert _deheat_score(200, None, "xueqiu") == 200
     # breakdown 仅含部分热度键 -> 只减存在的
@@ -336,10 +363,14 @@ def test_deheat_score_unit():
 
 def test_load_signals_deheat_toggles_score():
     """_load_signals 的 deheat 开关应改变 Signal.score（去热度 vs 原始）。"""
-    import tempfile, os, json
-    from scanner.config import CROSS_SOURCE_BONUS
+    import json
+    import os
+    import tempfile
+
     from scanner.portfolio_backtest import (
-        PBConfig, _build_calendar, _load_signals,
+        PBConfig,
+        _build_calendar,
+        _load_signals,
     )
     from scanner.trading_session import is_trading_day
 
@@ -347,13 +378,17 @@ def test_load_signals_deheat_toggles_score():
     os.close(fd)
     try:
         conn = sqlite3.connect(path)
-        conn.execute("CREATE TABLE daily_kline "
-                     "(symbol TEXT, timestamp INTEGER, date TEXT, open REAL, close REAL, "
-                     "high REAL, low REAL, volume REAL, percent REAL, PRIMARY KEY(symbol, date))")
-        conn.execute("CREATE TABLE recommendations "
-                     "(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, time TEXT, symbol TEXT, "
-                     "name TEXT, category TEXT, score INTEGER, percent REAL, trend TEXT, "
-                     "score_breakdown TEXT, source TEXT)")
+        conn.execute(
+            "CREATE TABLE daily_kline "
+            "(symbol TEXT, timestamp INTEGER, date TEXT, open REAL, close REAL, "
+            "high REAL, low REAL, volume REAL, percent REAL, PRIMARY KEY(symbol, date))"
+        )
+        conn.execute(
+            "CREATE TABLE recommendations "
+            "(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, time TEXT, symbol TEXT, "
+            "name TEXT, category TEXT, score INTEGER, percent REAL, trend TEXT, "
+            "score_breakdown TEXT, source TEXT)"
+        )
         base = date(2026, 6, 1)
         dates = []
         d = base
@@ -367,38 +402,42 @@ def test_load_signals_deheat_toggles_score():
                 o = prev
                 c = 100.0 if i == 0 else round(prev * 1.005, 3)
                 prev = c
-                conn.execute("INSERT INTO daily_kline VALUES (?,?,?,?,?,?,?,?,?)",
-                             (sym, i, dt, o, c, c, o, 1e6, 0.5))
-        heat = {"sector_bonus": 10, "live_vol_bonus": 5, "rps_bonus": 8,
-                "list_momentum_bonus": 7, "time_bonus": 2,
-                "market_sentiment_bonus": 5, "market_env_bonus": 3}  # 合计 40
+                conn.execute("INSERT INTO daily_kline VALUES (?,?,?,?,?,?,?,?,?)", (sym, i, dt, o, c, c, o, 1e6, 0.5))
+        heat = {
+            "sector_bonus": 10,
+            "live_vol_bonus": 5,
+            "rps_bonus": 8,
+            "list_momentum_bonus": 7,
+            "time_bonus": 2,
+            "market_sentiment_bonus": 5,
+            "market_env_bonus": 3,
+        }  # 合计 40
         conn.execute(
             "INSERT INTO recommendations (date,time,symbol,name,category,score,percent,trend,score_breakdown,source) "
             "VALUES (?, '09:30:00','300001','A','new_face',100,0.5,'up',?, 'xueqiu')",
-            (dates[0], json.dumps(heat)))
+            (dates[0], json.dumps(heat)),
+        )
         conn.execute(
             "INSERT INTO recommendations (date,time,symbol,name,category,score,percent,trend,score_breakdown,source) "
             "VALUES (?, '09:30:00','300002','B','new_face',100,0.5,'up',?, 'both')",
-            (dates[0], json.dumps(heat)))
+            (dates[0], json.dumps(heat)),
+        )
         conn.commit()
 
         calendar = _build_calendar(conn, dates[0], dates[-1])
         cal_index = {d: i for i, d in enumerate(calendar)}
         cal_end = calendar[-1]
 
-        sig_raw = _load_signals(conn, PBConfig(category="new_face", deheat=False),
-                                calendar, cal_index, cal_end)
-        sig_de = _load_signals(conn, PBConfig(category="new_face", deheat=True),
-                               calendar, cal_index, cal_end)
+        sig_raw = _load_signals(conn, PBConfig(category="new_face", deheat=False), calendar, cal_index, cal_end)
+        sig_de = _load_signals(conn, PBConfig(category="new_face", deheat=True), calendar, cal_index, cal_end)
         conn.close()
 
         assert len(sig_raw) == 2 and len(sig_de) == 2
-        # deheat=False: 原始分
+        # deheat=False: 原始分；deheat=True: 去热度分
         assert all(s.score == 100 for s in sig_raw)
-        # deheat=True: 100 - 40 = 60（xueqiu）；both 再减 CROSS_SOURCE_BONUS
         by_de = {s.symbol: s for s in sig_de}
         assert by_de["300001"].score == 60
-        assert by_de["300002"].score == 60 - CROSS_SOURCE_BONUS
+        assert by_de["300002"].score == 60
     finally:
         os.remove(path)
 
@@ -406,22 +445,30 @@ def test_load_signals_deheat_toggles_score():
 def test_load_signals_empty_recommendations_returns_empty():
     """回归：recommendations 无记录时 _load_signals 应返回空列表，
     不得因 max([]) 抛 ValueError（此前在空库回测时崩溃）。"""
-    import tempfile, os
+    import os
+    import tempfile
+
     from scanner.portfolio_backtest import (
-        PBConfig, _build_calendar, _load_signals,
+        PBConfig,
+        _build_calendar,
+        _load_signals,
     )
 
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     try:
         conn = sqlite3.connect(path)
-        conn.execute("CREATE TABLE daily_kline "
-                     "(symbol TEXT, timestamp INTEGER, date TEXT, open REAL, close REAL, "
-                     "high REAL, low REAL, volume REAL, percent REAL, PRIMARY KEY(symbol, date))")
-        conn.execute("CREATE TABLE recommendations "
-                     "(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, time TEXT, symbol TEXT, "
-                     "name TEXT, category TEXT, score INTEGER, percent REAL, trend TEXT, "
-                     "score_breakdown TEXT, source TEXT)")
+        conn.execute(
+            "CREATE TABLE daily_kline "
+            "(symbol TEXT, timestamp INTEGER, date TEXT, open REAL, close REAL, "
+            "high REAL, low REAL, volume REAL, percent REAL, PRIMARY KEY(symbol, date))"
+        )
+        conn.execute(
+            "CREATE TABLE recommendations "
+            "(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, time TEXT, symbol TEXT, "
+            "name TEXT, category TEXT, score INTEGER, percent REAL, trend TEXT, "
+            "score_breakdown TEXT, source TEXT)"
+        )
         conn.execute("INSERT INTO daily_kline VALUES ('300001',0,'2026-06-02',100,100.5,100.5,99.5,1e6,0.5)")
         conn.commit()
 
@@ -434,5 +481,3 @@ def test_load_signals_empty_recommendations_returns_empty():
         assert signals == []
     finally:
         os.remove(path)
-
-

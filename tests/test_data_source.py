@@ -8,6 +8,7 @@
 - FallbackAdapter 自动降级
 - get_adapter 工厂 + 单例
 """
+
 import sys
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -105,8 +106,7 @@ class TestThsAdapter:
         assert ThsAdapter().is_available() is False
 
     def _ths_bar(self, d_ms, o, h, lo, c, v):
-        return {"date_ms": d_ms, "open_price": o, "high_price": h,
-                "low_price": lo, "close_price": c, "volume": v}
+        return {"date_ms": d_ms, "open_price": o, "high_price": h, "low_price": lo, "close_price": c, "volume": v}
 
     def test_fetch_kline_format(self):
         """验证 THS K线返回格式与雪球一致；percent 由收盘价推算。"""
@@ -122,8 +122,7 @@ class TestThsAdapter:
         assert len(result) == 2
         k = result[0]
         # 字段名与雪球格式 1:1 对齐
-        assert set(k.keys()) >= {"timestamp", "date", "open", "high", "low",
-                                 "close", "volume", "percent"}
+        assert set(k.keys()) >= {"timestamp", "date", "open", "high", "low", "close", "volume", "percent"}
         assert k["close"] == 10.5
         assert k["percent"] == 0.0  # 首根无前收盘 → 0
         assert result[1]["percent"] == pytest.approx(9.5238, abs=0.01)
@@ -146,14 +145,15 @@ class TestThsAdapter:
         THS 无市值字段故沿用东财源。仅返回请求的票。"""
         adapter = ThsAdapter()
         mock_resp = MagicMock()
-        mock_resp.json.return_value = {"data": {"diff": [
-            {"f12": "300001", "f14": "股票A", "f2": 10.5, "f3": 5.0,
-             "f8": 1.5, "f20": 1e9, "f21": 8e8},
-            {"f12": "300002", "f14": "股票B", "f2": 20.0, "f3": -2.0,
-             "f8": 2.0, "f20": 2e9, "f21": 1.5e9},
-            {"f12": "600000", "f14": "股票C", "f2": 5.0, "f3": 0.0,
-             "f8": 0.5, "f20": 3e9, "f21": 2.5e9},
-        ]}}
+        mock_resp.json.return_value = {
+            "data": {
+                "diff": [
+                    {"f12": "300001", "f14": "股票A", "f2": 10.5, "f3": 5.0, "f8": 1.5, "f20": 1e9, "f21": 8e8},
+                    {"f12": "300002", "f14": "股票B", "f2": 20.0, "f3": -2.0, "f8": 2.0, "f20": 2e9, "f21": 1.5e9},
+                    {"f12": "600000", "f14": "股票C", "f2": 5.0, "f3": 0.0, "f8": 0.5, "f20": 3e9, "f21": 2.5e9},
+                ]
+            }
+        }
         with patch("scanner.data_source.requests.get", return_value=mock_resp) as m:
             result = adapter.fetch_market_caps_batch(["SZ300001", "SZ300002"])
         assert "SZ300001" in result
@@ -172,12 +172,16 @@ class TestThsAdapter:
     def test_fetch_market_caps_batch_nan_inf_coerced(self):
         """回归：接口脏值（None/NaN/inf 字符串）→ 0，不产出 NaN 市值/现价。"""
         import math
+
         adapter = ThsAdapter()
         mock_resp = MagicMock()
-        mock_resp.json.return_value = {"data": {"diff": [
-            {"f12": "300001", "f14": "股票A", "f2": "nan", "f3": "inf",
-             "f20": None, "f21": "-inf", "f8": None},
-        ]}}
+        mock_resp.json.return_value = {
+            "data": {
+                "diff": [
+                    {"f12": "300001", "f14": "股票A", "f2": "nan", "f3": "inf", "f20": None, "f21": "-inf", "f8": None},
+                ]
+            }
+        }
         with patch("scanner.data_source.requests.get", return_value=mock_resp):
             result = adapter.fetch_market_caps_batch(["SZ300001"])
         e = result["SZ300001"]
@@ -190,9 +194,9 @@ class TestThsAdapter:
     def test_fetch_market_caps_batch_network_error(self):
         """push2delay 请求异常 → 返回 {} 不抛（上层 FallbackAdapter 干净降级）。"""
         import requests
+
         adapter = ThsAdapter()
-        with patch("scanner.data_source.requests.get",
-                   side_effect=requests.ConnectionError("x")):
+        with patch("scanner.data_source.requests.get", side_effect=requests.ConnectionError("x")):
             result = adapter.fetch_market_caps_batch(["SZ300001"])
         assert result == {}
 
@@ -217,11 +221,13 @@ class TestThsAdapter:
 
     def test_fetch_market_index(self):
         adapter = ThsAdapter()
-        mock_df = pd.DataFrame({
-            "代码": ["000001", "399001", "399006"],
-            "名称": ["上证指数", "深证成指", "创业板指"],
-            "涨跌幅": [0.5, 1.0, -1.5],
-        })
+        mock_df = pd.DataFrame(
+            {
+                "代码": ["000001", "399001", "399006"],
+                "名称": ["上证指数", "深证成指", "创业板指"],
+                "涨跌幅": [0.5, 1.0, -1.5],
+            }
+        )
         fake = self._fake_ak_module(mock_df)
         with patch.dict(sys.modules, {"akshare": fake}):
             result = adapter.fetch_market_index()
@@ -229,8 +235,7 @@ class TestThsAdapter:
 
     def test_fetch_market_index_not_found(self):
         adapter = ThsAdapter()
-        mock_df = pd.DataFrame({"代码": ["000001", "399001"],
-                                "涨跌幅": [0.5, 1.0]})
+        mock_df = pd.DataFrame({"代码": ["000001", "399001"], "涨跌幅": [0.5, 1.0]})
         fake = self._fake_ak_module(mock_df)
         with patch.dict(sys.modules, {"akshare": fake}):
             assert adapter.fetch_market_index() is None
@@ -262,7 +267,6 @@ class TestThsAdapter:
     def test_fetch_biaosheng_returns_empty(self):
         adapter = ThsAdapter()
         assert adapter.fetch_biaosheng() == []
-        assert adapter.fetch_hot_list() == []
 
 
 class TestFallbackAdapter:
@@ -323,7 +327,7 @@ class TestFallbackAdapter:
         primary = MagicMock()
         primary.is_available.return_value = True
         primary.name = "xueqiu"
-        primary.fetch_market_caps_batch.return_value = {}   # 雪球失败返回空
+        primary.fetch_market_caps_batch.return_value = {}  # 雪球失败返回空
         secondary = MagicMock()
         secondary.name = "akshare"
         secondary.fetch_market_caps_batch.return_value = {"SZ300001": {"market_cap": 1e9}}
@@ -368,7 +372,7 @@ class TestFallbackAdapter:
         primary = MagicMock()
         primary.is_available.return_value = True
         primary.name = "xueqiu"
-        primary.fetch_market_index.return_value = None   # 雪球失败返回 None
+        primary.fetch_market_index.return_value = None  # 雪球失败返回 None
         secondary = MagicMock()
         secondary.name = "akshare"
         secondary.fetch_market_index.return_value = -6.26

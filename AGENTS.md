@@ -10,7 +10,7 @@
 - **档3 劣后归因**: `python scripts/tier3_reason_perf.py`（档3 按劣后原因拆桶的次日表现；优先读 ranking_snapshot 快照，无快照回退现算）
 - **扣分制对照测量**: `python scripts/tier_penalty_replay.py`（档位级联 vs 扣分制分离度对照，只测不切；`--days 0` 全期）
 - **K线数据修复**: `python repair_kline.py`（全表比对雪球 qfq 权威源覆盖盘中残留脏 bar；`--dry-run` 先看差异量 / `--since YYYY-MM-DD` 限窗口）
-- **榜单可观测性**: `python leaderboard_obs.py`（雪球飙升榜/热搜榜逐扫描成分+排名分布；`--date` 指定日 / `--days N` 回看 / `--source hot` 切热搜榜；口径漂移自动标 `⚠`）
+- **榜单可观测性**: `python leaderboard_obs.py`（雪球飙升榜逐扫描成分+排名分布；`--date` 指定日 / `--days N` 回看；口径漂移自动标 `⚠`。热搜榜 2026-08-27 起停采，历史 hot 行仍可查）
 - **Run tests**: `python -m pytest tests/ -v`（默认跳过真实库/外网集成测试，~5s 快跑；加 `--run-smoke` 跑全部含集成，~27s）
 - **Single test**: `python -m pytest tests/test_analysis.py::TestAnalysis::test_new_face_bollinger_oversold -v`
 - **组合级回测**: `python -m scanner.portfolio_backtest --compare`（多策略对比：各现役类别+综合+基准）/ `--days 60`（窗口）/ `--category new_face`（单策略）/ `--export nav.csv`（导出净值序列）
@@ -28,7 +28,7 @@
 
 ## Project Structure
 
-A-share stock momentum scanner merging Xueqiu surge + hot stock ranking APIs. Scores ChiNext (300xxx) stocks using "new face" / "momentum" / "rebound" / "short_term" strategies, plus "comeback"（回马枪）and "core_dip"（核心方向低吸）off-list buckets.
+A-share stock momentum scanner based on the Xueqiu surge board (飙升榜). Scores ChiNext (300xxx) stocks using "new face" / "momentum" / "rebound" / "short_term" strategies, plus "comeback"（回马枪）and "core_dip"（核心方向低吸）off-list buckets.
 
 ```
 unified_scanner.py        # Single entry point (dual-source fusion)
@@ -46,7 +46,7 @@ scanner/
   config.py               # Thresholds + re-export weights/holidays（阈值权威来源）
   weights.py              # 各策略权重表
   holidays.py             # 交易日历（holidays.json + 内置兜底）
-  api.py                  # Xueqiu API calls (biaosheng, hot_list, kline, market cap)
+  api.py                  # Xueqiu API calls (biaosheng, kline, market cap)
   ths_api.py              # 同花顺官方 API（低频场景：涨停池/K线兜底/财务过滤/健康验证）
   data_source.py          # FallbackAdapter（雪球主源 → THS/push2delay 逐请求降级）
   database.py             # SQLite CRUD + db/dal.py
