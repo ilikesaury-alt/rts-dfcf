@@ -23,9 +23,11 @@ recommendations 表、不进综合排序/回测口径，作为独立显示区块
 统计口径防御：bar 走 make_kline_bar 契约（close 已保证为正数），额外用 isfinite/
 正值守卫，脏值票一律跳过；任一步骤异常 fail-open 返回空列表，不阻塞 display 主流程。
 """
+
 import json
 import logging
 import sqlite3
+from collections.abc import Sequence
 
 from scanner.config import (
     CORE_DIP_CATEGORY,
@@ -49,16 +51,17 @@ from scanner.database import (
     get_cached_klines,
     get_fund_flow_pct_map,
 )
+from scanner.utils import to_float
 
 logger = logging.getLogger(__name__)
 
-_THEME_STRENGTH_WINDOW = 10      # 主题强度：近 10 个交易日累计涨幅
-_DIP_HIGH_WINDOW = 20            # 近期高点窗口
-_RUN_WINDOW = 20                 # 龙头属性：20 日累计涨幅
-_MIN_BARS = 24                   # 需要至少 24 根 bar 才有可靠的均线/高点
+_THEME_STRENGTH_WINDOW = 10  # 主题强度：近 10 个交易日累计涨幅
+_DIP_HIGH_WINDOW = 20  # 近期高点窗口
+_RUN_WINDOW = 20  # 龙头属性：20 日累计涨幅
+_MIN_BARS = 24  # 需要至少 24 根 bar 才有可靠的均线/高点
 
 
-def _median(vals: list[float]) -> float | None:
+def _median(vals: Sequence[float | None]) -> float | None:
     nums = [v for v in vals if v is not None]
     if not nums:
         return None
@@ -90,13 +93,13 @@ def _dip_metrics(close: list[float], dates: list[str], today: str) -> dict | Non
     base20 = close[-_RUN_WINDOW - 1]
     if base20 <= 0:
         return None
-    run = latest / base20 - 1.0                      # 20 日累计涨幅
+    run = latest / base20 - 1.0  # 20 日累计涨幅
     hi20 = max(close[-_DIP_HIGH_WINDOW:])
     if hi20 <= 0:
         return None
-    pullback = latest / hi20 - 1.0                   # 距 20 日高点回撤（负值）
+    pullback = latest / hi20 - 1.0  # 距 20 日高点回撤（负值）
     ma20 = sum(close[-_DIP_HIGH_WINDOW:]) / _DIP_HIGH_WINDOW
-    top_gain = hi20 / base20 - 1.0                   # 高点相对 20 日前涨幅（超买判断）
+    top_gain = hi20 / base20 - 1.0  # 高点相对 20 日前涨幅（超买判断）
     # 跌破 MA20 的超跌比例（0 = 未跌破；正值 = 跌破幅度，判断是否破位）
     below_ma20_ratio = (ma20 - latest) / ma20 if ma20 > 0 and latest < ma20 else 0.0
     return {
@@ -109,8 +112,7 @@ def _dip_metrics(close: list[float], dates: list[str], today: str) -> dict | Non
     }
 
 
-def _today_percent(dates: list[str], close: list[float], today: str,
-                   latest: float) -> float | None:
+def _today_percent(dates: list[str], close: list[float], today: str, latest: float) -> float | None:
     """今日 bar 涨幅（盘中/收盘真实值），无今日 bar 返回 None（不误杀/不误判企稳）。"""
     if not dates or dates[-1] != today:
         return None
@@ -140,10 +142,13 @@ def _symbol_names(conn: sqlite3.Connection, symbols: list[str]) -> dict[str, str
         return {}
 
 
-def identify_core_themes(conn: sqlite3.Connection, today: str,
-                         lookback_days: int = CORE_THEME_LOOKBACK_DAYS,
-                         min_days: int = CORE_THEME_MIN_DAYS,
-                         top_n: int = CORE_THEME_TOP_N) -> list[dict]:
+def identify_core_themes(
+    conn: sqlite3.Connection,
+    today: str,
+    lookback_days: int = CORE_THEME_LOOKBACK_DAYS,
+    min_days: int = CORE_THEME_MIN_DAYS,
+    top_n: int = CORE_THEME_TOP_N,
+) -> list[dict]:
     """近 lookback_days 交易日识别「当前核心方向」概念。
 
     信号 = 概念近 N 日推荐「持续上榜天数」×「主题相对强度」（成员近 10 日累计涨幅
@@ -160,8 +165,7 @@ def identify_core_themes(conn: sqlite3.Connection, today: str,
             "ORDER BY date DESC, score DESC",
             (lookback, today),
         )
-        recs = [{"symbol": r[0], "name": r[1], "date": r[2], "concept": r[3]}
-                for r in cur.fetchall()]
+        recs = [{"symbol": r[0], "name": r[1], "date": r[2], "concept": r[3]} for r in cur.fetchall()]
     except Exception as e:
         logger.warning(f"近期推荐读取失败: {e}")
         return []
@@ -190,21 +194,23 @@ def identify_core_themes(conn: sqlite3.Connection, today: str,
             continue
         rets[sym] = _recent_10d_return([b["close"] for b in k])
 
-    market_med = _median(list(rets.values())) or 0.0
+    market_med = _median([v for v in rets.values() if v is not None]) or 0.0
 
     candidates: list[dict] = []
     for name, syms in theme_syms.items():
         if len(theme_dates.get(name, set())) < min_days:
             continue
-        theme_rets = [rets[s] for s in syms if rets.get(s) is not None]
+        theme_rets = [v for s in syms if (v := rets.get(s)) is not None]
         strength = (_median(theme_rets) or 0.0) - market_med
         if strength < 0:
             continue
-        candidates.append({
-            "name": name,
-            "days": len(theme_dates.get(name, set())),
-            "strength": strength,
-        })
+        candidates.append(
+            {
+                "name": name,
+                "days": len(theme_dates.get(name, set())),
+                "strength": strength,
+            }
+        )
 
     candidates.sort(key=lambda t: (-t["days"], -t["strength"]))
     return candidates[:top_n]
@@ -236,7 +242,8 @@ def _dip_score(c: dict) -> int:
     """核心方向低吸候选的展示/去重分数（0-100，与 _low_buy_quality 单调一致）。
 
     仅用于存储排序与「同票跨扫描取最高分」去重，展示区排序仍按 _low_buy_quality 解析
-    breakdown 重算，中间不带分数口径分歧。
+    breakdown 重算，中间不带分数口径分歧。dict 值经 to_float 统一强转（脏值按 0 兑底，
+    调用方为 DB 回读场景不可信）。
     """
     ff = c.get("flow_pct")
     if ff is None:
@@ -249,14 +256,17 @@ def _dip_score(c: dict) -> int:
         flow_tier = -1
     else:
         flow_tier = 0
-    today = c.get("today_pct") or 0.0
-    s = (50 + flow_tier * 8 - c["pullback"] * 250
-         + c["run"] * 80 - today * 120)
-    return int(max(0, min(100, round(s))))
+    today = to_float(c.get("today_pct")) or 0.0
+    pullback = to_float(c.get("pullback"), default=0.0) or 0.0
+    run = to_float(c.get("run"), default=0.0) or 0.0
+    s = 50 + flow_tier * 8 - pullback * 250 + run * 80 - today * 120
+    try:
+        return int(max(0, min(100, round(s))))
+    except (TypeError, ValueError):
+        return 50
 
 
-def save_core_dips(conn: sqlite3.Connection | None, dips: list[dict],
-                   today: str | None = None) -> None:
+def save_core_dips(conn: sqlite3.Connection | None, dips: list[dict], today: str | None = None) -> None:
     """把核心方向低吸候选落库到 recommendations（category=CORE_DIP_CATEGORY）。
 
     同日在榜主列表外单独成 category（与 comeback 同族）：供 display 的独立低吸区读取，
@@ -271,19 +281,20 @@ def save_core_dips(conn: sqlite3.Connection | None, dips: list[dict],
         now = now_beijing().strftime("%H:%M:%S")
         for c in dips:
             score = _dip_score(c)
-            percent = (round(c["today_pct"] * 100, 2)
-                       if c.get("today_pct") is not None else None)
-            breakdown = json.dumps({
-                "concept": c.get("concept"),
-                "run": round(c.get("run", 0), 4),
-                "pullback": round(c.get("pullback", 0), 4),
-                "below_ma20_ratio": round(c.get("below_ma20_ratio", 0), 4),
-                "flow_pct": c.get("flow_pct"),
-                "today_pct": c.get("today_pct"),
-            }, ensure_ascii=False)
+            percent = round(c["today_pct"] * 100, 2) if c.get("today_pct") is not None else None
+            breakdown = json.dumps(
+                {
+                    "concept": c.get("concept"),
+                    "run": round(c.get("run", 0), 4),
+                    "pullback": round(c.get("pullback", 0), 4),
+                    "below_ma20_ratio": round(c.get("below_ma20_ratio", 0), 4),
+                    "flow_pct": c.get("flow_pct"),
+                    "today_pct": c.get("today_pct"),
+                },
+                ensure_ascii=False,
+            )
             existing = conn.execute(
-                "SELECT id, score FROM recommendations "
-                "WHERE date=? AND symbol=? AND category=? LIMIT 1",
+                "SELECT id, score FROM recommendations WHERE date=? AND symbol=? AND category=? LIMIT 1",
                 (today, c["symbol"], CORE_DIP_CATEGORY),
             ).fetchone()
             if existing:
@@ -294,17 +305,26 @@ def save_core_dips(conn: sqlite3.Connection | None, dips: list[dict],
                     conn.execute(
                         "UPDATE recommendations SET time=?, score=?, percent=?, trend=?, "
                         "score_breakdown=?, concept=?, source=? WHERE id=?",
-                        (now, score, percent, "主线回调", breakdown,
-                         c.get("concept"), "core_dip", existing[0]),
+                        (now, score, percent, "主线回调", breakdown, c.get("concept"), "core_dip", existing[0]),
                     )
                 continue
             conn.execute(
                 "INSERT INTO recommendations (date, time, symbol, name, category, "
                 "score, percent, trend, score_breakdown, source, concept) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (today, now, c["symbol"], c.get("name", c["symbol"]),
-                 CORE_DIP_CATEGORY, score, percent, "主线回调", breakdown,
-                 "core_dip", c.get("concept")),
+                (
+                    today,
+                    now,
+                    c["symbol"],
+                    c.get("name", c["symbol"]),
+                    CORE_DIP_CATEGORY,
+                    score,
+                    percent,
+                    "主线回调",
+                    breakdown,
+                    "core_dip",
+                    c.get("concept"),
+                ),
             )
         conn.commit()
     except Exception as e:
@@ -334,8 +354,7 @@ def _low_buy_quality(c: dict) -> tuple:
     return (-flow_tier, c["pullback"], -c["run"], -today)
 
 
-def core_stock_symbols(conn: sqlite3.Connection | None,
-                       today: str | None = None) -> set[str]:
+def core_stock_symbols(conn: sqlite3.Connection | None, today: str | None = None) -> set[str]:
     """当前「核心股」集合（2026-08-19）：属于核心方向（主线概念）且已走强（龙头属性）。
 
     判定 = identify_core_themes 识别核心主题 → _theme_members 取主题成员
@@ -357,8 +376,7 @@ def core_stock_symbols(conn: sqlite3.Connection | None,
         if not themes:
             return set()
         members = _theme_members(conn, [t["name"] for t in themes])
-        all_syms = list(dict.fromkeys(
-            s for syms in members.values() for s in syms))
+        all_syms = list(dict.fromkeys(s for syms in members.values() for s in syms))
         if not all_syms:
             return set()
         klines = get_cached_klines(conn, all_syms)
@@ -367,8 +385,7 @@ def core_stock_symbols(conn: sqlite3.Connection | None,
             k = klines.get(sym)
             if not k:
                 continue
-            m = _dip_metrics([b["close"] for b in k],
-                             [b["date"] for b in k], today)
+            m = _dip_metrics([b["close"] for b in k], [b["date"] for b in k], today)
             if m is None or m["run"] < CORE_RUN_MIN:
                 continue
             out.add(sym)
@@ -378,8 +395,7 @@ def core_stock_symbols(conn: sqlite3.Connection | None,
         return set()
 
 
-def find_core_theme_dips(conn: sqlite3.Connection | None,
-                         today: str | None = None) -> list[dict]:
+def find_core_theme_dips(conn: sqlite3.Connection | None, today: str | None = None) -> list[dict]:
     """核心方向低吸主入口：识别核心方向 → 找核心股 → 筛低吸窗口。
 
     返回候选列表（display 专用），每项：
@@ -396,8 +412,7 @@ def find_core_theme_dips(conn: sqlite3.Connection | None,
         if not themes:
             return []
         members = _theme_members(conn, [t["name"] for t in themes])
-        all_syms = list(dict.fromkeys(
-            s for syms in members.values() for s in syms))
+        all_syms = list(dict.fromkeys(s for syms in members.values() for s in syms))
         if not all_syms:
             return []
         klines = get_cached_klines(conn, all_syms)
@@ -410,8 +425,7 @@ def find_core_theme_dips(conn: sqlite3.Connection | None,
                 k = klines.get(sym)
                 if not k:
                     continue
-                m = _dip_metrics([b["close"] for b in k],
-                                 [b["date"] for b in k], today)
+                m = _dip_metrics([b["close"] for b in k], [b["date"] for b in k], today)
                 if m is None:
                     continue
                 if m["overheated"]:
@@ -430,16 +444,18 @@ def find_core_theme_dips(conn: sqlite3.Connection | None,
                 flow_pct = flow.get(sym)
                 if flow_pct is not None and flow_pct < CORE_FLOW_FLOOR:
                     continue
-                cands.append({
-                    "symbol": sym,
-                    "name": names.get(sym, sym),
-                    "concept": theme_name,
-                    "run": m["run"],
-                    "pullback": m["pullback"],
-                    "today_pct": m["today_pct"],
-                    "below_ma20_ratio": m["below_ma20_ratio"],
-                    "flow_pct": flow_pct,
-                })
+                cands.append(
+                    {
+                        "symbol": sym,
+                        "name": names.get(sym, sym),
+                        "concept": theme_name,
+                        "run": m["run"],
+                        "pullback": m["pullback"],
+                        "today_pct": m["today_pct"],
+                        "below_ma20_ratio": m["below_ma20_ratio"],
+                        "flow_pct": flow_pct,
+                    }
+                )
 
         # 排序：低吸质量（主力回流→回撤深→龙头强→今日企稳），每主题限量 → 总限量。
         # 不按主题序：低吸区语义是「全场最优低吸位置顶」，主题列已标识归属，无需分组。

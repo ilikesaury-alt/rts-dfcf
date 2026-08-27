@@ -710,6 +710,7 @@ def display_priority(
         )
         print(f"  {ANSI['BOLD']}排序序列{ANSI['RESET']}: {_names}")
     except Exception:
+        # pi-lens-ignore: python-empty-except
         pass
     if any(breakout_mark.values()):
         print(
