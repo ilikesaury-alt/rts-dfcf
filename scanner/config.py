@@ -580,7 +580,6 @@ COMEBACK_REENTRY_STATUS_BUY = 4  # 信号数≥此值 → "到买点"
 # 观察中门槛由 2 提到 3：原 2 个信号极易由同源指标（MA20支撑/未破位/BOLL中轨
 # 三者本质都是"价格在均线附近"）一次凑齐，导致大量横盘票涌入观察列表、噪声过大。
 COMEBACK_REENTRY_STATUS_WATCH = 3  # 信号数≥此值 → "观察中"，否则 "未到买点"（过滤）
-COMEBACK_REENTRY_DISPLAY_BUY_MAX = 10  # "到买点"最多显示条数
 COMEBACK_REENTRY_DISPLAY_WATCH_MAX = 0  # "观察中"补充最多显示条数（0 = 不显示，只看到买点）
 # 回马枪独立区仅作兜底参考：主区（榜上五类）推荐条数 > COMEBACK_DISPLAY_MIN_MAIN 时
 # 隐藏回马枪/核心低吸两低吸区（避免刷屏）；主区推荐条数 ≤ 该值（含为空）时补充展示，

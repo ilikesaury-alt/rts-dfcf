@@ -162,9 +162,9 @@ Tests use pytest with helper factories `_stock()` and `_kline()` in `tests/helpe
 
 ### 1. 基线必须先绿
 
-1. `python -m compileall -q scanner unified_scanner.py stock_report.py backfill_kline.py query_summary.py query_today.py xueqiu_hot.py today_report.py prevday_perf.py leaderboard_obs.py repair_kline.py`
+1. `python -m compileall -q scanner unified_scanner.py stock_report.py backfill_kline.py query_summary.py query_today.py today_report.py prevday_perf.py leaderboard_obs.py repair_kline.py`
 2. `python -m pytest tests/ -q`
-3. `python -m ruff check scanner/ unified_scanner.py stock_report.py backfill_kline.py query_summary.py query_today.py xueqiu_hot.py today_report.py prevday_perf.py leaderboard_obs.py repair_kline.py`（必须全绿）
+3. `python -m ruff check scanner/ unified_scanner.py stock_report.py backfill_kline.py query_summary.py query_today.py today_report.py prevday_perf.py leaderboard_obs.py repair_kline.py`（必须全绿）
 4. 有失败先修到全绿再查。`mypy` 约 100 条类型债 backlog 非阻断（数量随代码漂移，以当轮实测为准），报告末尾注明即可。
 
 ### 2. 系统性过风险区（A 级全过；B/C 级只过对应条目）

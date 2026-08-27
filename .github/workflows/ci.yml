@@ -18,7 +18,7 @@ jobs:
       - name: Ruff lint (必须全绿)
         run: |
           ruff check scanner/ unified_scanner.py stock_report.py \
-            backfill_kline.py query_summary.py query_today.py xueqiu_hot.py
+            backfill_kline.py query_summary.py query_today.py
       - name: Mypy (类型债 backlog，暂不阻断，见 AGENTS.md)
         run: |
           mypy scanner/ --ignore-missing-imports || true

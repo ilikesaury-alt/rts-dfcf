@@ -19,6 +19,8 @@
 
 # 回测产物（组合级对比报告，临时，不入库）
 pb_*.txt
+backfill_log.txt
 
-# ��Կ��THS �������� API Key �ȣ�
+
+# ��Կ��THS �������� API Key �ȣ�
 .env
