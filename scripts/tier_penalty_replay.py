@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""档位「级联一票否决」vs「扣分制」对照回放（2026-08-26，开放假设清单 SOP）。
+"""档位「级联一票否决」vs「扣分制」对照回放（2026-08-26）。
 
 背景：现行 _entry_tier 是警示因子短路链——命中任意一个警示因子直接落档3，
 多个警示因子与单个警示因子结果相同。扣分制假设：多因子叠加的票应比单因子
@@ -17,8 +17,7 @@
   - 表现 = 落库 next_day_pct；统计复用 prevday_perf._stats（主决策口径）。
 
 判读标准（切换门槛）：扣分桶单调（0 > 1 > 2 > ≥3 的 hit 依次下降或持平）
-且 ≥3 桶显著差于现行档3 整体 → 才值得改 _entry_tier 实现；否则留本脚本进
-开放假设清单继续观察。定位：离线测量工具，不调参不落库不进扫描路径。
+且 ≥3 桶显著差于现行档3 整体 → 才值得改 _entry_tier 实现；否则维持现状。定位：离线测量工具，不调参不落库不进扫描路径。
 """
 
 import argparse
@@ -120,19 +119,20 @@ def collect(conn, dates):
             tier = _entry_tier(e, conn, accum_map=accum_map, marked=marked)
             d = _entry_dims(e)
             flow = _flow_of(e, d, flow_map)
-            reasons = entry_tier_reasons(e, accum=accum_map.get(e["symbol"]),
-                                         marked=marked, flow=flow)
-            rows.append({
-                "date": dt,
-                "pct": p,
-                "mbucket": mbucket,
-                "tier": tier,
-                "penalty": _penalty(reasons),
-                "reasons": reasons,
-                # 可评估警示因子的人群（🎯 档0/rebound 档1/comeback 豁免票不评估
-                # 警示因子、天然扣0——混入会稀释扣分桶对照）
-                "evaluable": (not marked) and e["category"] not in ("rebound", "comeback"),
-            })
+            reasons = entry_tier_reasons(e, accum=accum_map.get(e["symbol"]), marked=marked, flow=flow)
+            rows.append(
+                {
+                    "date": dt,
+                    "pct": p,
+                    "mbucket": mbucket,
+                    "tier": tier,
+                    "penalty": _penalty(reasons),
+                    "reasons": reasons,
+                    # 可评估警示因子的人群（🎯 档0/rebound 档1/comeback 豁免票不评估
+                    # 警示因子、天然扣0——混入会稀释扣分桶对照）
+                    "evaluable": (not marked) and e["category"] not in ("rebound", "comeback"),
+                }
+            )
     return rows, n_days
 
 
@@ -200,18 +200,20 @@ def render(rows, n_days):
         hits.append(s[2])
     known = [(b, h) for b, h in zip(PENALTY_BUCKETS, hits) if h is not None]
     mono = all(known[i][1] >= known[i + 1][1] for i in range(len(known) - 1)) if len(known) >= 3 else False
-    ns = {b: _stats([r["pct"] for r in ev_recent if _bucket(r['penalty']) == b])[0] for b in PENALTY_BUCKETS}
+    ns = {b: _stats([r["pct"] for r in ev_recent if _bucket(r["penalty"]) == b])[0] for b in PENALTY_BUCKETS}
     min_n = min(ns.values()) if ns else 0
     if len(known) < 3 or min_n < 30:
-        out.append(f"  样本不足（min桶 n={min_n}），暂无法判定——继续观察积累样本")
+        out.append(f"  样本不足（min桶 n={min_n}），暂无法判定——积累样本后重跑本脚本")
     elif mono:
-        out.append("  ✅ 单调成立：扣分越深次日越差——扣分制分离度优于现行二值级联，"
-                   "样本复核达标后可评估切换 _entry_tier 实现")
+        out.append(
+            "  ✅ 单调成立：扣分越深次日越差——扣分制分离度优于现行二值级联，样本复核达标后可评估切换 _entry_tier 实现"
+        )
     else:
-        out.append(f"  ❌ 单调不成立（{'/'.join(f'{b}:{h:.1f}%' if h is not None else '—' for b, h in known)}）"
-                   "——维持现行级联，把差异记入开放假设清单")
-    out.append("\n  说明：离线测量，不调参不落库；扣分为脚本本地权重（见 PENALTY_WEIGHTS），"
-               "非生产实现。")
+        out.append(
+            f"  ❌ 单调不成立（{'/'.join(f'{b}:{h:.1f}%' if h is not None else '—' for b, h in known)}）"
+            "——维持现行级联，差异留档本脚本输出供后续复查"
+        )
+    out.append("\n  说明：离线测量，不调参不落库；扣分为脚本本地权重（见 PENALTY_WEIGHTS），非生产实现。")
     return "\n".join(out)
 
 
@@ -222,11 +224,10 @@ def main():
     args = ap.parse_args()
 
     conn = sqlite3.connect(DB_PATH, timeout=15)
-    dates = [r[0] for r in conn.execute(
-        "SELECT DISTINCT date FROM recommendations ORDER BY date").fetchall()]
+    dates = [r[0] for r in conn.execute("SELECT DISTINCT date FROM recommendations ORDER BY date").fetchall()]
     dates = [d for d in dates if _next_day_map(conn, d)]
     if args.days > 0:
-        dates = dates[-args.days:]
+        dates = dates[-args.days :]
     if not args.force:
         rep = check_kline_health(conn, dates=dates or None)
         b = health_banner(rep)

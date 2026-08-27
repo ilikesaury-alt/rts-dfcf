@@ -427,7 +427,7 @@ def _entry_tier(
 # 每类别一行：(入场分型, 累计门槛是否生效)。此前分支散在 _is_nextday_marked 的
 # if/elif 里（short_term 特判两处、豁免类别硬编码元组），新增/调整类别画像需改
 # 函数体；现数据驱动，键集合必须与 categories.NEXTDAY_CAT_PRIORITY 一致
-#（一致性由 tests/test_profile_registry.py 守护）。
+# （一致性由 tests/test_profile_registry.py 守护）。
 #   - shape="sweet_band"：推荐时刻涨幅在甜蜜带（_in_nextday_sweet_band）；
 #   - shape="weak_to_strong"：弱转强分型（_entry_weak_to_strong；2026-08-17 起
 #     short_term 专用——甜蜜带对 short_term 负效，规律在弱转强∩非超买）；
@@ -660,8 +660,8 @@ def _is_relist_breakout_setup(
     ——命中原 ⚡ 画像条件全部，仅被类别门（只认 new_face/kNF/首推）排除。类别门走
     _breakout_profile_key 单源（与 ⚡ 按构造不相交）；结构条件复用同一
     _breakout_structure_ok（同阈值同 fail-closed），保证两画像口径不漂移。
-    纯展示层观察标记：不改排序/评分/落库；按开放假设清单 SOP 先积累样本，达标后经
-    nextday_attribution 复盘再评估是否升级为排序因子或放宽更多类别（momentum 等）。
+    纯展示层观察标记：不改排序/评分/落库；先积累样本，经 nextday_attribution 复盘
+    再评估是否升级为排序因子或放宽更多类别（momentum 等）。
     """
     if _breakout_profile_key(entry) != "relist":
         return False

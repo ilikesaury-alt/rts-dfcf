@@ -3,7 +3,7 @@
 """档3 警示劣后 → 按「劣后原因」拆开的次日表现归因。
 
 背景（2026-08-24 用户反馈）：用户凭感觉常倾向在档3 里选票。prevday_perf 显示档3
-整体最差，但市场分层里震荡日档3 反超档0、开放假设清单里 8-10% 陷阱带近端反转——
+整体最差，但市场分层里震荡日档3 反超档0、历史测量里 8-10% 陷阱带近端曾反转——
 说明「档3 差」可能由个别原因子集拖累，其余子集未必差。本脚本把档3 单票逐日重建
 （today_report 同源管线），按命中原因拆桶统计次日表现，验证用户直觉对应哪个子集。
 
@@ -98,8 +98,7 @@ def collect(conn, dates):
                 tier = _entry_tier(e, conn, accum_map=accum_map, marked=marked)
                 d = _entry_dims(e)
                 flow = _flow_of(e, d, flow_map)
-                reasons = entry_tier_reasons(e, accum=accum_map.get(e["symbol"]),
-                                             marked=marked, flow=flow)
+                reasons = entry_tier_reasons(e, accum=accum_map.get(e["symbol"]), marked=marked, flow=flow)
             if tier != 3:
                 continue
             recent_ok = dt >= DIMS_COMPLETE_SINCE

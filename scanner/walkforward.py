@@ -7,7 +7,7 @@
 ⚠。回答的问题是：**这些结论跨周期稳定吗？**
 
 定位：纯离线分析工具，不进入实时扫描路径；不调参不落库——它只测量「结论是否
-还在成立」，行动仍走开放假设清单 SOP。
+还在成立」。
 
 用法：
     python -m scanner.walkforward                    # 默认 train=30 test=10
@@ -17,6 +17,7 @@
 口径：与主决策口径一致——hit = next_day_pct >= NEXTDAY_HIT_THRESHOLD(7%)，
 行去重（同票同日取最后一轮），excluded=0。
 """
+
 import argparse
 import json
 import sys
@@ -25,7 +26,7 @@ from scanner.config import NEXTDAY_HIT_THRESHOLD
 from scanner.ranking import _entry_dims, _entry_tier, _is_nextday_marked
 
 # 方向翻转判定的最小样本：因子行数与基线行数各自达标才比较 delta，
-# 否则视为噪声（与开放假设清单同一哲学）。
+# 否则视为噪声（跨窗口对比同哲学）。
 MIN_FACTOR_SAMPLE = 15
 MIN_BASE_SAMPLE = 30
 # delta 显著性门槛（pp）：两侧都超过才算真翻转，避免 0.5pp 级噪声报翻转。
@@ -47,8 +48,7 @@ def load_rows(conn) -> list[dict]:
     return sorted(dedup.values(), key=lambda x: (x["date"], x["time"]))
 
 
-def walkforward_windows(dates: list[str], train_days: int,
-                        test_days: int) -> list[tuple[list[str], list[str]]]:
+def walkforward_windows(dates: list[str], train_days: int, test_days: int) -> list[tuple[list[str], list[str]]]:
     """按交易日列表切滚动窗口：[(train_dates, test_dates), ...]。
 
     步长 = test_days（相邻 test 窗口无缝衔接）；要求 train 与 test 不重叠且
@@ -58,7 +58,7 @@ def walkforward_windows(dates: list[str], train_days: int,
     out = []
     i = train_days
     while i + test_days <= len(unique):
-        out.append((unique[i - train_days:i], unique[i:i + test_days]))
+        out.append((unique[i - train_days : i], unique[i : i + test_days]))
         i += test_days
     return out
 
@@ -71,9 +71,9 @@ def _hit_rate(rows: list[dict], pred, threshold: float) -> tuple[int, float | No
     return len(sub), hits / len(sub) * 100.0
 
 
-def evaluate_factor(name: str, rows_all: list[dict], pred,
-                    train_dates: set[str], test_dates: set[str],
-                    threshold: float) -> dict:
+def evaluate_factor(
+    name: str, rows_all: list[dict], pred, train_dates: set[str], test_dates: set[str], threshold: float
+) -> dict:
     """单因子在 train/test 两窗的方向一致性。
 
     delta = 因子 hit − 同窗基线 hit（因子相对全推荐的增益）。train/test 的 delta
@@ -88,17 +88,26 @@ def evaluate_factor(name: str, rows_all: list[dict], pred,
 
     result = {
         "factor": name,
-        "train_n": f_tr_n, "train_hit": f_tr, "train_base": base_tr,
-        "test_n": f_te_n, "test_hit": f_te, "test_base": base_te,
-        "flip": False, "note": "",
+        "train_n": f_tr_n,
+        "train_hit": f_tr,
+        "train_base": base_tr,
+        "test_n": f_te_n,
+        "test_hit": f_te,
+        "test_base": base_te,
+        "flip": False,
+        "note": "",
     }
     if None in (f_tr, f_te, base_tr, base_te):
         result["note"] = "样本不足"
         return result
     d_tr = f_tr - base_tr
     d_te = f_te - base_te
-    if (f_tr_n < MIN_FACTOR_SAMPLE or f_te_n < MIN_FACTOR_SAMPLE
-            or base_tr_n < MIN_BASE_SAMPLE or base_te_n < MIN_BASE_SAMPLE):
+    if (
+        f_tr_n < MIN_FACTOR_SAMPLE
+        or f_te_n < MIN_FACTOR_SAMPLE
+        or base_tr_n < MIN_BASE_SAMPLE
+        or base_te_n < MIN_BASE_SAMPLE
+    ):
         result["note"] = f"样本不足(f={f_tr_n}/{f_te_n} b={base_tr_n}/{base_te_n})"
         return result
     result["train_delta"] = round(d_tr, 2)
@@ -120,6 +129,7 @@ def _entry(row: dict) -> dict:
 
 def build_factors() -> list[tuple[str, object]]:
     """系统核心校准结论 → 判定谓词（与 ranking/档位因子同源）。"""
+
     def _dim(e, key):
         return (_entry_dims(e).get(key) or 0) > 0
 
@@ -129,16 +139,19 @@ def build_factors() -> list[tuple[str, object]]:
             return False
         sweet = p < 2.0 or 4.0 <= p < 8.0
         d = _entry_dims(e)
-        overbought = bool(d.get("st_overbought_flag") or d.get("mo_overbought_flag")
-                          or d.get("v_st_overbought") or d.get("v_mo_overbought"))
+        overbought = bool(
+            d.get("st_overbought_flag")
+            or d.get("mo_overbought_flag")
+            or d.get("v_st_overbought")
+            or d.get("v_mo_overbought")
+        )
         return sweet and not overbought
 
     def small_sector(e):
         d = _entry_dims(e)
         if not (d.get("v_st_sector") or d.get("v_pb_sector") or d.get("v_nf_sector")):
             return False
-        cnt = (d.get("v_st_sector_count") or d.get("v_pb_sector_count")
-               or d.get("v_nf_sector_count") or 0)
+        cnt = d.get("v_st_sector_count") or d.get("v_pb_sector_count") or d.get("v_nf_sector_count") or 0
         return cnt < 15
 
     def overheated(e):
@@ -154,16 +167,14 @@ def build_factors() -> list[tuple[str, object]]:
         ("甜蜜带+非超买", sweet_non_overbought),
         ("🎯 完整画像", lambda e: _is_nextday_marked(_entry(e))),
         ("弱转强", lambda e: _dim(e, "st_weak_to_strong") or _dim(e, "v_st_weak")),
-        ("超买", lambda e: bool(_entry_dims(e).get("v_st_overbought")
-                                or _entry_dims(e).get("v_mo_overbought"))),
+        ("超买", lambda e: bool(_entry_dims(e).get("v_st_overbought") or _entry_dims(e).get("v_mo_overbought"))),
         ("累计≥50 过热", overheated),
         ("小板块共振 cnt<15", small_sector),
         ("资金流出≤-8%", fund_outflow),
     ]
 
 
-def run(conn, train_days: int = 30, test_days: int = 10,
-        threshold: float | None = None) -> dict:
+def run(conn, train_days: int = 30, test_days: int = 10, threshold: float | None = None) -> dict:
     """执行滚动检验，返回结构化结果（report 渲染与 --json 共用）。"""
     threshold = threshold if threshold is not None else NEXTDAY_HIT_THRESHOLD
     rows = load_rows(conn)
@@ -177,36 +188,39 @@ def run(conn, train_days: int = 30, test_days: int = 10,
     for train_set, test_set in windows:
         tr_set, te_set = set(train_set), set(test_set)
         for name, pred in factors:
-            factor_results.append(
-                evaluate_factor(name, rows, pred, tr_set, te_set, threshold))
+            factor_results.append(evaluate_factor(name, rows, pred, tr_set, te_set, threshold))
         # 档位单调性：各档 hit（test 窗），校验 档0 > 档3 是否复现
         te_rows = [r for r in rows if r["date"] in te_set]
         tier_hits = {}
         for t in range(4):
-            sub = [r for r in te_rows
-                   if _entry_tier(_entry(r), accum=r.get("accumulated_pct")) == t]
+            sub = [r for r in te_rows if _entry_tier(_entry(r), accum=r.get("accumulated_pct")) == t]
             n = len(sub)
-            tier_hits[t] = (n, round(
-                sum(1 for r in sub if (r["next_day_pct"] or 0) >= threshold) / n * 100, 2
-            ) if n else None)
-        tier_windows.append({"test_range": f"{test_set[0]}~{test_set[-1]}",
-                             "tiers": tier_hits})
-    return {"threshold": threshold, "train_days": train_days,
-            "test_days": test_days, "total": len(rows),
-            "windows": [f"{t[0][0]}~{t[0][-1]} → {t[1][0]}~{t[1][-1]}"
-                        for t in windows],
-            "factors": factor_results, "tier_windows": tier_windows}
+            tier_hits[t] = (
+                n,
+                round(sum(1 for r in sub if (r["next_day_pct"] or 0) >= threshold) / n * 100, 2) if n else None,
+            )
+        tier_windows.append({"test_range": f"{test_set[0]}~{test_set[-1]}", "tiers": tier_hits})
+    return {
+        "threshold": threshold,
+        "train_days": train_days,
+        "test_days": test_days,
+        "total": len(rows),
+        "windows": [f"{t[0][0]}~{t[0][-1]} → {t[1][0]}~{t[1][-1]}" for t in windows],
+        "factors": factor_results,
+        "tier_windows": tier_windows,
+    }
 
 
 def render(result: dict) -> str:
     lines = []
-    lines.append(f"◆ Walk-forward 滚动检验（hit≥{result['threshold']}% 口径，"
-                 f"共 {result['total']} 条去重推荐）")
+    lines.append(f"◆ Walk-forward 滚动检验（hit≥{result['threshold']}% 口径，共 {result['total']} 条去重推荐）")
     if not result.get("windows"):
         lines.append(f"  {result.get('note', '数据不足')}")
         return "\n".join(lines)
-    lines.append(f"  窗口：{result['windows'][0]} … 共 {len(result['windows'])} 个"
-                 f"（train {result['train_days']} 日 → test {result['test_days']} 日）")
+    lines.append(
+        f"  窗口：{result['windows'][0]} … 共 {len(result['windows'])} 个"
+        f"（train {result['train_days']} 日 → test {result['test_days']} 日）"
+    )
     lines.append("")
     lines.append(f"  {'因子':<14} {'train':>16} {'test':>16} {'结论'}")
     by_factor: dict[str, list[dict]] = {}
@@ -236,15 +250,16 @@ def render(result: dict) -> str:
     for tw in result["tier_windows"]:
         tiers = tw["tiers"]
         seg = " ".join(
-            f"档{t}:{tiers[t][1]:.1f}%(n={tiers[t][0]})" if tiers[t][1] is not None
-            else f"档{t}:—" for t in range(4))
+            f"档{t}:{tiers[t][1]:.1f}%(n={tiers[t][0]})" if tiers[t][1] is not None else f"档{t}:—" for t in range(4)
+        )
         mono = ""
         if tiers[0][1] is not None and tiers[3][1] is not None:
             mono = "✓ 档0>档3" if tiers[0][1] > tiers[3][1] else "⚠ 档0≤档3"
         lines.append(f"    {tw['test_range']}: {seg} {mono}")
     lines.append("")
-    lines.append("  说明：delta = 因子 hit − 同窗基线 hit；⚠翻转 = train/test 方向相反"
-                 "且两侧≥1pp。样本不足的窗口不计入均值。")
+    lines.append(
+        "  说明：delta = 因子 hit − 同窗基线 hit；⚠翻转 = train/test 方向相反且两侧≥1pp。样本不足的窗口不计入均值。"
+    )
     return "\n".join(lines)
 
 
@@ -256,8 +271,7 @@ def main():
     ap = argparse.ArgumentParser(description="walk-forward 滚动检验")
     ap.add_argument("--train", type=int, default=30, help="训练窗口交易日数")
     ap.add_argument("--test", type=int, default=10, help="验证窗口交易日数")
-    ap.add_argument("--threshold", type=float, default=None,
-                    help=f"次日大涨阈值%%（默认 {NEXTDAY_HIT_THRESHOLD}）")
+    ap.add_argument("--threshold", type=float, default=None, help=f"次日大涨阈值%%（默认 {NEXTDAY_HIT_THRESHOLD}）")
     ap.add_argument("--json", action="store_true", help="机器可读输出")
     args = ap.parse_args()
 
@@ -265,8 +279,7 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8")
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    result = run(conn, train_days=args.train, test_days=args.test,
-                 threshold=args.threshold)
+    result = run(conn, train_days=args.train, test_days=args.test, threshold=args.threshold)
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
