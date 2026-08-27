@@ -7,6 +7,7 @@ get_conn() 是连接创建的唯一入口：timeout/busy_timeout/WAL 三件套�
 散在各脚本的裸 sqlite3.connect(scanner.db) 后续逐步迁移过来（本次不动调用方，
 避免扩大改动面）。
 """
+
 import sqlite3
 
 from scanner.config import now_beijing
@@ -237,11 +238,13 @@ def init_db() -> sqlite3.Connection:
     """)
     row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
     if row is None or row[0] is None:
-        conn.execute("INSERT INTO schema_version (version, updated) VALUES (?, ?)",
-                     (SCHEMA_VERSION, now_beijing().isoformat()))
+        conn.execute(
+            "INSERT INTO schema_version (version, updated) VALUES (?, ?)", (SCHEMA_VERSION, now_beijing().isoformat())
+        )
     elif row[0] < SCHEMA_VERSION:
-        conn.execute("INSERT INTO schema_version (version, updated) VALUES (?, ?)",
-                     (SCHEMA_VERSION, now_beijing().isoformat()))
+        conn.execute(
+            "INSERT INTO schema_version (version, updated) VALUES (?, ?)", (SCHEMA_VERSION, now_beijing().isoformat())
+        )
     # 收盘定稿标记（2026-08-18 拓斯达脏数据事故后新增）：盘中扫描把未收盘的今日 bar
     # （盘中价+部分量能）写入 daily_kline 属预期（today_report 盘中读），但收盘后无
     # 定稿覆盖会残留污染 next_day_pct → 回测/归因/复盘全口径。finalized=0 表示

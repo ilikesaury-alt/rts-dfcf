@@ -101,8 +101,7 @@ def apply_all_bonuses(
         _apply_sentiment_bonus(c, sentiment_info)
         _apply_rps_bonus(c, rps_scores)
         _apply_market_cap_bonus(c)
-        _apply_list_momentum_bonus(c, list_streaks,
-                                   cross_days=cross_days_map.get(c.stock.symbol, 0))
+        _apply_list_momentum_bonus(c, list_streaks, cross_days=cross_days_map.get(c.stock.symbol, 0))
         c.time_bonus = time_bonus
         _apply_gap_up_bonus(c)
         _apply_fund_flow_bonus(c, market_extra)
@@ -160,9 +159,11 @@ def _set_risk_flags(c: Candidate, fund_risk: dict[str, str] = None):
     # 分时明确走弱（intraday<=-1.0，与 Rule 3 冲高回落同阈值）即转强失败。
     # 全期 12 样本：大跌(≤-7%) 25% vs 大涨 8.3%，平均次日 -2.61%，含 -16.34/-18.44
     # 两个极端日（均弱转强+盘中弱）→ 硬过滤（RISK_FLAGS_HARD_FILTER 移出推荐列表）。
-    if ((dims.get("v_st_weak") or 0) > 0
-            and c.intraday_score is not None
-            and c.intraday_score <= DISTRIBUTION_INTRADAY_WEAK):
+    if (
+        (dims.get("v_st_weak") or 0) > 0
+        and c.intraday_score is not None
+        and c.intraday_score <= DISTRIBUTION_INTRADAY_WEAK
+    ):
         c.risk_flags.append(WTS_FAIL_TAG)
         hard_hits.append(WTS_FAIL_TAG)
     # 趋势破位：MA 破位合并标签（止损信号）
@@ -208,39 +209,38 @@ def _detect_main_force_distribution(c: Candidate, dims: dict) -> bool:
     overbought = bool(dims.get("st_overbought_flag") or dims.get("mo_overbought_flag"))
 
     # 1. 高位放量滞涨：累计高位 + 明显放量（量比≥2.5）+ 今日几乎不涨（量价背离派发）
-    if (accum >= DISTRIBUTION_ACCUM_HIGH
-            and vol_ratio >= DISTRIBUTION_VOL_RATIO
-            and today_pct <= DISTRIBUTION_TODAY_PCT_LOW):
+    if (
+        accum >= DISTRIBUTION_ACCUM_HIGH
+        and vol_ratio >= DISTRIBUTION_VOL_RATIO
+        and today_pct <= DISTRIBUTION_TODAY_PCT_LOW
+    ):
         return True
     # 2. 高位高换手+超买：累计≥15% + 真正过热换手（turnover>20% → turnover_bonus<0）
     #    + 已收紧的"极端超买"。原逻辑仅要求换手>5%（活跃常态）+ 宽松超买，
     #    把任何活跃强势股都误判为出货，2026-07-28 收紧为 genuine 派发级条件。
-    if (accum >= DISTRIBUTION_ACCUM_MID
-            and c.turnover_bonus < 0
-            and overbought):
+    if accum >= DISTRIBUTION_ACCUM_MID and c.turnover_bonus < 0 and overbought:
         return True
     # 3. 冲高回落（opening_score 范围 -5~5，intraday_score 范围 -10~10）
     #    intraday None 守卫与 Rule 5 对齐（2026-08-24 审查：当前默认 0.0 不可达，
     #    但字段类型语义上可空，缺守卫会在 apply_all_bonuses 循环内抛 TypeError
     #    中断整轮 bonus）。
-    if (opening is not None
-            and opening >= DISTRIBUTION_OPENING_STRONG
-            and intraday is not None
-            and intraday < DISTRIBUTION_INTRADAY_WEAK
-            and accum >= DISTRIBUTION_ACCUM_PULLBACK):
+    if (
+        opening is not None
+        and opening >= DISTRIBUTION_OPENING_STRONG
+        and intraday is not None
+        and intraday < DISTRIBUTION_INTRADAY_WEAK
+        and accum >= DISTRIBUTION_ACCUM_PULLBACK
+    ):
         return True
     # 4. 爆量+顶背离（validator 判定的经典出货信号）
-    if (dims.get("v_mo_volume") == V_MO_VOL_SPIKE
-            and dims.get("v_mo_divergence") == V_MO_DIVERGENCE_BEAR):
+    if dims.get("v_mo_volume") == V_MO_VOL_SPIKE and dims.get("v_mo_divergence") == V_MO_DIVERGENCE_BEAR:
         return True
     # 5. 后排+盘中走弱（short_term 专属，2026-08-14 新增）
     #    dims["v_st_rank"]==V_ST_RANK_LOW 自带 short_term 语义（仅 validate_short_term
     #    写该字段）且 rank>30；叠加分时持续走弱 → 冲高派发。
     #    历史校准：12 样本 next_day -1.90%/胜率25%、cum_3d -4.24%/胜率12%（n=8），
     #    11 股/7 交易日分布（07-20~08-13），非单票集中；弱转强直通亦不可豁免。
-    if (dims.get("v_st_rank") == V_ST_RANK_LOW
-            and intraday is not None
-            and intraday <= DISTRIBUTION_RANK_WEAK_INTRADAY):
+    if dims.get("v_st_rank") == V_ST_RANK_LOW and intraday is not None and intraday <= DISTRIBUTION_RANK_WEAK_INTRADAY:
         return True
     return False
 
@@ -407,8 +407,7 @@ def _apply_zt_bonus(c: Candidate, market_extra: dict):
             c.zt_lianban_bonus = ZT_LIANBAN_BONUS_2
 
 
-def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None,
-                               cross_days: int = 0):
+def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None, cross_days: int = 0):
     if c.off_list:
         # 掉榜跟踪票（回马枪）整体豁免榜单动能：cross_days/盘中 streak 是掉榜前残留
         # （跟踪池最长保留 WATCH_OFFLIST_KEEP_DAYS=15 交易日，连榜早已结束）；traj 来自
@@ -447,9 +446,8 @@ def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None
 
         today_pct = c.stock.percent
         accelerating = (
-            today_pct >= FATIGUE_ACCELERATE_PCT
-            and c.kline and c.kline.volume_ratio > 1.0
-        ) if c.kline else False
+            (today_pct >= FATIGUE_ACCELERATE_PCT and c.kline and c.kline.volume_ratio > 1.0) if c.kline else False
+        )
 
         if fatigue_signals >= 2:
             penalty = max(streak * FATIGUE_PENALTY_PER_DAY, FATIGUE_PENALTY_CAP)
@@ -461,8 +459,7 @@ def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None
             # 封顶：intraday_streak 是扫描次数（60s/次），cross_days 是交易日数，
             # max 取大值后 streak 可能被 intraday_streak 主导（盘中累计可达 240）。
             # 与 FATIGUE_PENALTY_CAP=-15 对称，加速奖励也设上限，避免分数膨胀。
-            streak_bonus = min(streak * FATIGUE_ACCELERATE_BONUS_PER_DAY,
-                               FATIGUE_ACCELERATE_BONUS_CAP)
+            streak_bonus = min(streak * FATIGUE_ACCELERATE_BONUS_PER_DAY, FATIGUE_ACCELERATE_BONUS_CAP)
             if c.kline:
                 # 2026-08-17 审查修复：加速分支此前把正值写进 dims["fatigue"]——
                 # 该键语义是「疲劳惩罚」（_set_risk_flags 判 <0、backtest dimension_ic
@@ -576,11 +573,11 @@ def compute_market_env_bonus(market_idx_pct: float | None) -> int:
 #       这些项仍通过 _record_dimensions 写入 c.kline.dimensions（即 recommendations.score_breakdown JSON），
 #       展示层继续可见，只是不再参与 c.score 排序键。
 HEAT_AMPLIFIER_BONUS_ATTRS = (
-    "sector_bonus",        # 板块集群
-    "live_vol_bonus",      # 实时量比
-    "rps_bonus",           # RPS（近期涨幅百分位）
-    "list_momentum_bonus", # 榜单动量（连板+轨迹+top40）
-    "time_bonus",          # 盘中时段
+    "sector_bonus",  # 板块集群
+    "live_vol_bonus",  # 实时量比
+    "rps_bonus",  # RPS（近期涨幅百分位）
+    "list_momentum_bonus",  # 榜单动量（连板+轨迹+top40）
+    "time_bonus",  # 盘中时段
     "market_sentiment_bonus",  # 市场情绪（全市场，非个股）
     # cross_source / market_env_bonus 在下方累加时显式排除（非 c 属性）
 )
@@ -597,8 +594,14 @@ def accumulate_final_score(c: Candidate, opening_scores: dict[str, float | None]
     """
     opening = opening_scores.get(c.stock.symbol)
     opening_bonus = int(round(opening)) if opening is not None else 0
-    total = (c.first_today_bonus + c.first_breakout_bonus
-             + c.turnover_bonus + c.market_cap_bonus
-             + c.gap_up_bonus + c.fund_flow_bonus
-             + c.zt_lianban_bonus + opening_bonus)
+    total = (
+        c.first_today_bonus
+        + c.first_breakout_bonus
+        + c.turnover_bonus
+        + c.market_cap_bonus
+        + c.gap_up_bonus
+        + c.fund_flow_bonus
+        + c.zt_lianban_bonus
+        + opening_bonus
+    )
     return total

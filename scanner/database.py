@@ -7,6 +7,7 @@
 注意：monkeypatch 打点应指向实现所在模块（scanner.db.dal / scanner.db.queries），
 patch scanner.database 命名空间不再影响实现行为。
 """
+
 from scanner.db import (  # noqa: F401
     SCHEMA_VERSION,
     _assign_rank_scores,

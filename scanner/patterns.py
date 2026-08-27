@@ -7,6 +7,7 @@
 各复制实现一遍（阈值/打分/维度键不同，但算法完全相同）。现抽出 4 个共享原语，
 每个 detect_* 仅声明"用哪些原语 + 各自打分/维度键"，消除算法级重复。
 """
+
 from __future__ import annotations
 
 from scanner.models import KlineBar
@@ -32,8 +33,10 @@ def _is_bullish_candle(o: float, c: float) -> bool:
 # 共享原语：算法只实现一次，下游按策略组合
 # ----------------------------------------------------------------------------
 
-def _bullish_engulfing(latest: KlineBar, prev: KlineBar, require_crash: bool = False,
-                      prev_prev_close: float | None = None) -> bool:
+
+def _bullish_engulfing(
+    latest: KlineBar, prev: KlineBar, require_crash: bool = False, prev_prev_close: float | None = None
+) -> bool:
     """阳包阴：今日阳线实体完全覆盖昨日阴线实体。
 
     require_crash=True 时额外要求昨日为暴跌(收盘跌幅<= -5%)，用于超跌反弹的
@@ -94,6 +97,7 @@ def _breakout_3d(latest: KlineBar, bars: list[KlineBar]) -> bool:
 # ----------------------------------------------------------------------------
 # 各策略组合：仅声明原语 + 打分/维度键
 # ----------------------------------------------------------------------------
+
 
 def detect_new_face_patterns(historical_kline: list[KlineBar]) -> tuple[int, dict]:
     """new_face 适用的底部形态：阳包阴、锤子线、3连阳。"""
@@ -159,13 +163,12 @@ def detect_rebound_patterns(kline: list[KlineBar]) -> tuple[int, dict]:
         return 0, {}
     score = 0
     dims: dict[str, int] = {}
-    latest = kline[-1]   # 今日
-    prev = kline[-2]     # 昨日
+    latest = kline[-1]  # 今日
+    prev = kline[-2]  # 昨日
     # 传入前日收盘用于计算昨日日内跌幅，避免实体涨跌幅在跳空时失真
     prev_prev_close = kline[-3]["close"] if len(kline) >= 3 else None
 
-    if _bullish_engulfing(latest, prev, require_crash=True,
-                          prev_prev_close=prev_prev_close):
+    if _bullish_engulfing(latest, prev, require_crash=True, prev_prev_close=prev_prev_close):
         score += 6
         dims["rb_pattern_engulfing_crash"] = 6
     elif _hammer(latest):

@@ -3,6 +3,7 @@
 所有 INSERT/UPDATE/DELETE + commit/rollback。只读查询在 queries.py。
 失败语义保持原样：批量失败逐行回退 / fail-open 返回空，不向上抛。
 """
+
 import json
 import logging
 import math
@@ -31,10 +32,16 @@ def record_appearances(conn: sqlite3.Connection, symbols: list[dict]):
         if rank is None:
             rank = i
         # symbol/name 用 .get() 容错：API 偶发返回缺字段时不应整批写入失败
-        rows.append((
-            item.get("symbol", ""), item.get("name", ""), today, rank,
-            item.get("percent", 0), item.get("value", 0),
-        ))
+        rows.append(
+            (
+                item.get("symbol", ""),
+                item.get("name", ""),
+                today,
+                rank,
+                item.get("percent", 0),
+                item.get("value", 0),
+            )
+        )
     try:
         conn.executemany(
             "INSERT INTO appearances (symbol, name, date, rank, percent, value) VALUES (?, ?, ?, ?, ?, ?) "
@@ -73,10 +80,20 @@ def save_kline_to_db(conn: sqlite3.Connection, symbol: str, kline: list[KlineBar
         # 定稿标记：盘中写入的今日 bar 是未收盘快照（可能非最终收盘价），置 0；
         # 收盘后写入（定稿/backfill/repair）或历史 bar 置 1。
         finalized = 0 if (k["date"] == today_str and trading) else 1
-        rows.append((
-            symbol, k.get("timestamp"), k["date"], k["open"], k["close"],
-            k["high"], k["low"], k["volume"], k["percent"], finalized,
-        ))
+        rows.append(
+            (
+                symbol,
+                k.get("timestamp"),
+                k["date"],
+                k["open"],
+                k["close"],
+                k["high"],
+                k["low"],
+                k["volume"],
+                k["percent"],
+                finalized,
+            )
+        )
     try:
         conn.executemany(
             "INSERT OR REPLACE INTO daily_kline "
@@ -119,13 +136,18 @@ def save_market_caps(conn: sqlite3.Connection, caps: dict[str, dict], source: st
         cmc = d.get("circ_market_cap") or 0
         if mc <= 0 and cmc <= 0:
             continue
-        rows.append((
-            sym, mc, cmc,
-            d.get("turnover_rate") or 0.0,
-            d.get("current") or 0.0,
-            d.get("percent") or 0.0,
-            source, now_beijing().date().isoformat(),
-        ))
+        rows.append(
+            (
+                sym,
+                mc,
+                cmc,
+                d.get("turnover_rate") or 0.0,
+                d.get("current") or 0.0,
+                d.get("percent") or 0.0,
+                source,
+                now_beijing().date().isoformat(),
+            )
+        )
     if not rows:
         return 0
     try:
@@ -142,8 +164,7 @@ def save_market_caps(conn: sqlite3.Connection, caps: dict[str, dict], source: st
         return 0
 
 
-def save_scan_quality(conn: sqlite3.Connection,
-                      stats: dict) -> None:
+def save_scan_quality(conn: sqlite3.Connection, stats: dict) -> None:
     """落库单轮扫描的数据质量快照（数据血缘日志，2026-08-14）。
 
     跨函数静默降级是本项目最难发现的 bug 类别：上游函数在故障路径返回"看似正常"
@@ -171,21 +192,25 @@ def save_scan_quality(conn: sqlite3.Connection,
                  minute_fallback = excluded.minute_fallback,
                  stale_recs = excluded.stale_recs,
                  updated = excluded.updated""",
-            (today, now,
-             int(stats.get("gem_count", 0) or 0),
-             int(stats.get("fetch_failed", 0) or 0),
-             int(stats.get("today_bar_missing", 0) or 0),
-             int(stats.get("minute_fallback", 0) or 0),
-             int(stats.get("stale_recs", 0) or 0),
-             now),
+            (
+                today,
+                now,
+                int(stats.get("gem_count", 0) or 0),
+                int(stats.get("fetch_failed", 0) or 0),
+                int(stats.get("today_bar_missing", 0) or 0),
+                int(stats.get("minute_fallback", 0) or 0),
+                int(stats.get("stale_recs", 0) or 0),
+                now,
+            ),
         )
         conn.commit()
     except Exception as e:
         logger.warning(f"save_scan_quality failed: {e}")
 
 
-def save_market_index_log(conn: sqlite3.Connection, index_pct: float | None,
-                          bar_date: str | None = None, source: str = "xueqiu") -> None:
+def save_market_index_log(
+    conn: sqlite3.Connection, index_pct: float | None, bar_date: str | None = None, source: str = "xueqiu"
+) -> None:
     """落库单轮扫描使用的大盘指数（大盘指数血缘日志，2026-08-19）。
 
     大盘标签曾因 kline 接口 begin/count 语义错位把当日 -6.26% 崩盘读成昨日 -0.93%
@@ -208,17 +233,16 @@ def save_market_index_log(conn: sqlite3.Connection, index_pct: float | None,
                  bar_date = excluded.bar_date,
                  source = excluded.source,
                  updated = excluded.updated""",
-            (today, now,
-             index_pct if index_pct is not None else None,
-             bar_date, source, now),
+            (today, now, index_pct if index_pct is not None else None, bar_date, source, now),
         )
         conn.commit()
     except Exception as e:
         logger.warning(f"save_market_index_log failed: {e}")
 
 
-def record_leaderboard_log(conn: sqlite3.Connection, source: str, items: list[dict],
-                            prev_symbols: set[str]) -> set[str]:
+def record_leaderboard_log(
+    conn: sqlite3.Connection, source: str, items: list[dict], prev_symbols: set[str]
+) -> set[str]:
     """落库单轮榜单快照（榜单可观测性，2026-08-19）。
 
     把雪球飙升榜/热搜榜每轮成分 + 排名分布写进 leaderboard_log 时间序列，maintainer 与
@@ -283,11 +307,13 @@ def record_leaderboard_log(conn: sqlite3.Connection, source: str, items: list[di
             return f if f is not None and math.isfinite(f) else None
 
         snapshot = [
-            {"symbol": str(i.get("symbol") or ""),
-             "name": str(i.get("name") or ""),
-             "percent": _valid_pct(i.get("percent")),
-             "rank": int(to_float(i.get("rank"), idx + 1) or idx + 1),
-             "rank_change": to_float(i.get("rank_change"), None)}
+            {
+                "symbol": str(i.get("symbol") or ""),
+                "name": str(i.get("name") or ""),
+                "percent": _valid_pct(i.get("percent")),
+                "rank": int(to_float(i.get("rank"), idx + 1) or idx + 1),
+                "rank_change": to_float(i.get("rank_change"), None),
+            }
             for idx, i in enumerate(items[:40])
         ]
         conn.execute(
@@ -296,9 +322,24 @@ def record_leaderboard_log(conn: sqlite3.Connection, source: str, items: list[di
                 median_pct, mean_pct, top10_mean_pct, max_pct, overlap_prev,
                 median_rank_change, symbol_snapshot, updated)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (today, now, source, total, gem_listed, up, down, flat,
-             median_pct, mean_pct, top10_mean, max_pct, overlap,
-             median_rc, json.dumps(snapshot, ensure_ascii=False), now),
+            (
+                today,
+                now,
+                source,
+                total,
+                gem_listed,
+                up,
+                down,
+                flat,
+                median_pct,
+                mean_pct,
+                top10_mean,
+                max_pct,
+                overlap,
+                median_rc,
+                json.dumps(snapshot, ensure_ascii=False),
+                now,
+            ),
         )
         conn.commit()
         return cur_syms
@@ -370,9 +411,19 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, 
                         "score_breakdown = ?, source = ?, concept = ?, accumulated_pct = ?, "
                         "stale_kline = ?, excluded_reason = ? "
                         "WHERE id = ?",
-                        (now, c.score, c.stock.percent, c.kline.trend if c.kline else None,
-                         breakdown, rec_source, concept, accumulated, stale_kline,
-                         excluded_reason, existing[0]),
+                        (
+                            now,
+                            c.score,
+                            c.stock.percent,
+                            c.kline.trend if c.kline else None,
+                            breakdown,
+                            rec_source,
+                            concept,
+                            accumulated,
+                            stale_kline,
+                            excluded_reason,
+                            existing[0],
+                        ),
                     )
                     existing[1] = c.score  # 同批后续重复项按最新最高分比较
                 continue
@@ -380,9 +431,22 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, 
                 "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, "
                 "trend, score_breakdown, source, concept, accumulated_pct, stale_kline, excluded_reason) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (today, now, c.stock.symbol, c.stock.name, c.category,
-                 c.score, c.stock.percent, c.kline.trend if c.kline else None,
-                 breakdown, rec_source, concept, accumulated, stale_kline, excluded_reason),
+                (
+                    today,
+                    now,
+                    c.stock.symbol,
+                    c.stock.name,
+                    c.category,
+                    c.score,
+                    c.stock.percent,
+                    c.kline.trend if c.kline else None,
+                    breakdown,
+                    rec_source,
+                    concept,
+                    accumulated,
+                    stale_kline,
+                    excluded_reason,
+                ),
             )
             # 记录真实 rowid：同批后续重复项走高分 UPDATE 时需要定位到本行
             existing_map[key] = [cur.lastrowid, c.score]
@@ -402,23 +466,24 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, 
         logger.warning(f"save_recommendations 提交失败（本轮推荐未落库，下轮重写）: {e}")
 
 
-def upsert_watch_symbol(conn: sqlite3.Connection, symbol: str, name: str,
-                        last_list_date: str | None = None,
-                        over_limit: bool = False) -> None:
+def upsert_watch_symbol(
+    conn: sqlite3.Connection, symbol: str, name: str, last_list_date: str | None = None, over_limit: bool = False
+) -> None:
     """写入/刷新掉榜跟踪池（单条，委托批量实现）。
 
     - 在榜票每次扫描刷新 last_list_date（保活）；
     - 超限启动票（当日涨幅超过 short_term 上限）置 over_limit=1，持续盯防；
     - added_date 保持首次入池日期不变。
     """
-    upsert_watch_symbols(conn, [
-        {"symbol": symbol, "name": name,
-         "last_list_date": last_list_date, "over_limit": over_limit},
-    ])
+    upsert_watch_symbols(
+        conn,
+        [
+            {"symbol": symbol, "name": name, "last_list_date": last_list_date, "over_limit": over_limit},
+        ],
+    )
 
 
-def upsert_watch_symbols(conn: sqlite3.Connection,
-                         entries: list[dict]) -> None:
+def upsert_watch_symbols(conn: sqlite3.Connection, entries: list[dict]) -> None:
     """批量写入/刷新掉榜跟踪池（单次事务，避免逐条 commit 拖慢扫描循环）。
 
     entries: [{symbol, name, last_list_date?, over_limit?}]
@@ -427,8 +492,7 @@ def upsert_watch_symbols(conn: sqlite3.Connection,
         return
     today = now_beijing().date().isoformat()
     rows = [
-        (e.get("symbol", ""), e.get("name", ""),
-         e.get("last_list_date") or today, 1 if e.get("over_limit") else 0)
+        (e.get("symbol", ""), e.get("name", ""), e.get("last_list_date") or today, 1 if e.get("over_limit") else 0)
         for e in entries
         if e.get("symbol")
     ]
@@ -447,7 +511,9 @@ def upsert_watch_symbols(conn: sqlite3.Connection,
         conn.execute(
             "DELETE FROM watch_pool WHERE symbol NOT IN ("
             "  SELECT symbol FROM watch_pool ORDER BY last_list_date DESC LIMIT ?"
-            ")", (WATCH_POOL_MAX,))
+            ")",
+            (WATCH_POOL_MAX,),
+        )
         conn.commit()
     except Exception as e:
         print(f"  [!] 批量写入watch_pool失败: {e}")
@@ -457,8 +523,7 @@ def upsert_watch_symbols(conn: sqlite3.Connection,
             pass
 
 
-def mark_watch_evaluated(conn: sqlite3.Connection, symbols: list[str],
-                         today: str | None = None) -> None:
+def mark_watch_evaluated(conn: sqlite3.Connection, symbols: list[str], today: str | None = None) -> None:
     """标记掉榜票今日已评估（避免同一交易日重复评估/重复补拉）。
 
     `today` 由调用方传入（2026-08-24 审查：原自行取真实时钟，而 evaluate_comeback
@@ -470,8 +535,7 @@ def mark_watch_evaluated(conn: sqlite3.Connection, symbols: list[str],
     today = today or now_beijing().date().isoformat()
     for sym in symbols:
         try:
-            conn.execute(
-                "UPDATE watch_pool SET last_eval_date = ? WHERE symbol = ?", (today, sym))
+            conn.execute("UPDATE watch_pool SET last_eval_date = ? WHERE symbol = ?", (today, sym))
         except Exception:
             pass
     try:
@@ -484,8 +548,7 @@ def mark_watch_evaluated(conn: sqlite3.Connection, symbols: list[str],
             pass
 
 
-def prune_watch_pool(conn: sqlite3.Connection,
-                     keep_trading_days: int = 15) -> int:
+def prune_watch_pool(conn: sqlite3.Connection, keep_trading_days: int = 15) -> int:
     """删除掉榜超过 keep_trading_days 个交易日的条目（last_list_date 过旧）。
 
     over_limit 票的 last_list_date 在其超限上榜日写入，同样按此剪枝，
@@ -493,8 +556,7 @@ def prune_watch_pool(conn: sqlite3.Connection,
     """
     cutoff = _n_trading_days_ago(keep_trading_days)
     try:
-        cur = conn.execute(
-            "DELETE FROM watch_pool WHERE last_list_date < ?", (cutoff,))
+        cur = conn.execute("DELETE FROM watch_pool WHERE last_list_date < ?", (cutoff,))
         conn.commit()
         return cur.rowcount
     except Exception as e:
@@ -502,12 +564,14 @@ def prune_watch_pool(conn: sqlite3.Connection,
         return 0
 
 
-def mark_reversed_recommendations(conn: sqlite3.Connection,
-                                  today_recs: list[dict],
-                                  active_syms: set[str],
-                                  live_quotes: dict[str, dict],
-                                  turned_red_drop: float = REVERSAL_TURNED_RED_DROP,
-                                  overshoot_drop: float = REVERSAL_OVERSHOOT_DROP) -> list[str]:
+def mark_reversed_recommendations(
+    conn: sqlite3.Connection,
+    today_recs: list[dict],
+    active_syms: set[str],
+    live_quotes: dict[str, dict],
+    turned_red_drop: float = REVERSAL_TURNED_RED_DROP,
+    overshoot_drop: float = REVERSAL_OVERSHOOT_DROP,
+) -> list[str]:
     """推荐后快速反转移出（2026-08-13）：今日已推荐、当前不在候选池、且回落幅度超标的榜上
     主类别票，标 excluded=1 移出综合排序展示（保留落库记录），返回本次标记的 symbol 列表。
 
@@ -564,7 +628,8 @@ def mark_reversed_recommendations(conn: sqlite3.Connection,
         conn.executemany(
             "UPDATE recommendations SET excluded=1 WHERE date=? AND symbol=? "
             "AND COALESCE(category, '') NOT IN ('comeback', 'core_dip')",
-            [(today, sym) for sym in reversed_syms])
+            [(today, sym) for sym in reversed_syms],
+        )
         conn.commit()
     except Exception as e:
         logger.warning(f"mark_reversed_recommendations failed: {e}")
@@ -580,8 +645,7 @@ def save_concepts_cache(conn: sqlite3.Connection, concepts_map: dict[str, list[s
     try:
         conn.executemany(
             "INSERT OR REPLACE INTO concept_cache (symbol, concepts, updated) VALUES (?, ?, ?)",
-            [(sym, json.dumps(concepts, ensure_ascii=False), now)
-             for sym, concepts in concepts_map.items()],
+            [(sym, json.dumps(concepts, ensure_ascii=False), now) for sym, concepts in concepts_map.items()],
         )
         conn.commit()
     except Exception as e:
@@ -592,8 +656,7 @@ def save_concepts_cache(conn: sqlite3.Connection, concepts_map: dict[str, list[s
             pass
 
 
-def save_market_extra_cache(conn: sqlite3.Connection, data_map: dict[str, dict],
-                            data_type: str):
+def save_market_extra_cache(conn: sqlite3.Connection, data_map: dict[str, dict], data_type: str):
     """批量写入 market_extra_cache（INSERT OR REPLACE，按 symbol+data_type 覆盖）。"""
     if not data_map:
         return
@@ -603,8 +666,10 @@ def save_market_extra_cache(conn: sqlite3.Connection, data_map: dict[str, dict],
         conn.executemany(
             "INSERT OR REPLACE INTO market_extra_cache (symbol, date, data_type, payload_json, updated) "
             "VALUES (?, ?, ?, ?, ?)",
-            [(sym, today, data_type, json.dumps(payload, ensure_ascii=False), now)
-             for sym, payload in data_map.items()],
+            [
+                (sym, today, data_type, json.dumps(payload, ensure_ascii=False), now)
+                for sym, payload in data_map.items()
+            ],
         )
         conn.commit()
     except Exception as e:

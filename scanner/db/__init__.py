@@ -9,6 +9,7 @@
 （orchestrator/display/comeback/各脚本/tests）一律 `from scanner.database import X`
 不变。新代码建议直接从 scanner.db 取。
 """
+
 from scanner.db._common import _n_trading_days_ago
 from scanner.db.dal import (
     mark_reversed_recommendations,

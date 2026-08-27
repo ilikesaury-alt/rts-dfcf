@@ -48,8 +48,8 @@ from scanner.trading_session import is_trading_time
 
 _session_state = ScanSession()
 
-def _update_excluded_marks(conn: sqlite3.Connection, today: str,
-                           excluded_by_risk: list, all_candidates: list) -> None:
+
+def _update_excluded_marks(conn: sqlite3.Connection, today: str, excluded_by_risk: list, all_candidates: list) -> None:
     """硬过滤落标 + 通过候选置回（P1-7，2026-08-24 第二轮审查抽函数补类别守卫）。
 
     置回按候选自身类别精确匹配——旧实现按 (date,symbol) 全量置 0 会"复活"同
@@ -60,20 +60,19 @@ def _update_excluded_marks(conn: sqlite3.Connection, today: str,
     """
     if excluded_by_risk:
         conn.executemany(
-            "UPDATE recommendations SET excluded=1, excluded_reason=? "
-            "WHERE date=? AND symbol=?",
-            [(c.excluded_reason, today, c.stock.symbol) for c in excluded_by_risk])
+            "UPDATE recommendations SET excluded=1, excluded_reason=? WHERE date=? AND symbol=?",
+            [(c.excluded_reason, today, c.stock.symbol) for c in excluded_by_risk],
+        )
     passed_syms = [(today, c.stock.symbol, c.category) for c in all_candidates]
     if passed_syms:
         conn.executemany(
-            "UPDATE recommendations SET excluded=0, excluded_reason='' "
-            "WHERE date=? AND symbol=? AND category=?",
-            passed_syms)
+            "UPDATE recommendations SET excluded=0, excluded_reason='' WHERE date=? AND symbol=? AND category=?",
+            passed_syms,
+        )
     conn.commit()
 
 
-def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
-                  adapter) -> ScanResult:
+def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanResult:
     global _session_state
     session_state = _session_state
     today = now_beijing().date().isoformat()
@@ -82,11 +81,13 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     sentiment_info = compute_surge_sentiment(raw)
     gem_stocks = filter_gem_stocks(raw)
 
-    record_appearances(conn, [
-        {"symbol": s.symbol, "name": s.name, "percent": s.percent,
-         "value": s.value, "rank": s.rank}
-        for s in gem_stocks
-    ])
+    record_appearances(
+        conn,
+        [
+            {"symbol": s.symbol, "name": s.name, "percent": s.percent, "value": s.value, "rank": s.rank}
+            for s in gem_stocks
+        ],
+    )
     session_state.update_list_presence({s.symbol for s in gem_stocks})
 
     stale_syms = list(sym for sym, c in session_state.today_pool.items() if c.is_stale)
@@ -135,13 +136,15 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     # 2) 超限启动票（今日涨幅 > short_term 上限，强得没法买）置 over_limit=1 持续盯防
     # 3) 剪枝过旧条目
     try:
-        upsert_watch_symbols(conn, [
-            {"symbol": s.symbol, "name": s.name, "last_list_date": today}
-            for s in gem_stocks_filtered
-        ] + [
-            {"symbol": s.symbol, "name": s.name, "last_list_date": today, "over_limit": True}
-            for s in gem_stocks_filtered if s.percent > SHORT_TERM_MAX_TODAY_PCT
-        ])
+        upsert_watch_symbols(
+            conn,
+            [{"symbol": s.symbol, "name": s.name, "last_list_date": today} for s in gem_stocks_filtered]
+            + [
+                {"symbol": s.symbol, "name": s.name, "last_list_date": today, "over_limit": True}
+                for s in gem_stocks_filtered
+                if s.percent > SHORT_TERM_MAX_TODAY_PCT
+            ],
+        )
         prune_watch_pool(conn, WATCH_OFFLIST_KEEP_DAYS)
     except Exception as e:
         print(f"  [!] 掉榜跟踪池维护失败: {e}")
@@ -150,8 +153,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     # 超 60s 扫描间隔。共用一个 deadline 保证两批总耗时仍被 KLINE_FETCH_DEADLINE 兜底。
     kline_deadline = now_beijing().timestamp() + KLINE_FETCH_DEADLINE
     quality_stats: dict = {}
-    klines = fetch_all_klines(conn, adapter, gem_stocks_filtered,
-                               deadline=kline_deadline, stats=quality_stats)
+    klines = fetch_all_klines(conn, adapter, gem_stocks_filtered, deadline=kline_deadline, stats=quality_stats)
 
     clusters = get_sector_clusters(gem_stocks_filtered)
 
@@ -179,16 +181,18 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     try:
         on_list_symbols = {s.symbol for s in gem_stocks_filtered}
         comeback_rebound, comeback_reentry, cb_quotes = evaluate_comeback(
-            conn, adapter,
-            lambda stocks: fetch_all_klines(conn, adapter, stocks,
-                                             deadline=kline_deadline, stats=quality_stats),
-            today, on_list_symbols, clusters)
+            conn,
+            adapter,
+            lambda stocks: fetch_all_klines(conn, adapter, stocks, deadline=kline_deadline, stats=quality_stats),
+            today,
+            on_list_symbols,
+            clusters,
+        )
         market_caps.update(cb_quotes)  # 并入市值/行情，供后续市值富集与实时行情
     except Exception as e:
         print(f"  [!] 回马枪评估失败: {type(e).__name__}: {e}")
 
-    all_candidates = (new_faces + momentum + rebound_list
-                      + short_term_list + comeback_rebound + comeback_reentry)
+    all_candidates = new_faces + momentum + rebound_list + short_term_list + comeback_rebound + comeback_reentry
     for c in all_candidates:
         enrich_candidate_market_cap(c, market_caps.get(c.stock.symbol, {}))
 
@@ -197,8 +201,8 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     market_extra: dict = {}
     try:
         from scanner.market_extra import collect_market_extra
-        market_extra = collect_market_extra(
-            conn, [c.stock.symbol for c in all_candidates])
+
+        market_extra = collect_market_extra(conn, [c.stock.symbol for c in all_candidates])
     except Exception as e:
         print(f"  [!] 行情增强数据收集失败（忽略，不影响扫描）: {e}")
 
@@ -208,10 +212,12 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     fund_risk: dict[str, str] = {}
     try:
         from scanner.fundamentals import collect_fund_risk
+
         fund_risk = collect_fund_risk(conn, [c.stock.symbol for c in all_candidates])
         if fund_risk:
-            names = "、".join(f"{c.stock.name}({c.stock.symbol})"
-                              for c in all_candidates if c.stock.symbol in fund_risk)
+            names = "、".join(
+                f"{c.stock.name}({c.stock.symbol})" for c in all_candidates if c.stock.symbol in fund_risk
+            )
             print(f"  [财务风险] {len(fund_risk)} 只资不抵债（退市风险级），将移出推荐：{names}")
     except Exception as e:
         print(f"  [!] 基本面风险收集失败（忽略，不影响扫描）: {e}")
@@ -242,8 +248,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         closes = [k["close"] for k in hist]
         if len(closes) >= 6:
             accum_map[c.stock.symbol] = (closes[-1] - closes[-6]) / closes[-6] * 100
-    rps_scores.update(compute_rps(all_candidates, baseline=rps_baseline,
-                                  accum_map=accum_map))
+    rps_scores.update(compute_rps(all_candidates, baseline=rps_baseline, accum_map=accum_map))
 
     intraday_scores: dict[str, float | None] = {}
     opening_scores: dict[str, float | None] = {}
@@ -255,8 +260,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         # 不能让 with-exit 的 shutdown(wait=True) 阻塞主扫描循环等待它们。
         pool = ThreadPoolExecutor(max_workers=6)
         try:
-            parallel_fetch(pool, all_candidates,
-                            intraday_scores, opening_scores, live_volumes, adapter)
+            parallel_fetch(pool, all_candidates, intraday_scores, opening_scores, live_volumes, adapter)
         finally:
             pool.shutdown(wait=False)
 
@@ -274,14 +278,23 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     except Exception as e:
         print(f"  [!] 大盘指数血缘日志落库失败: {e}")
 
-    apply_all_bonuses(all_candidates, gem_stocks_filtered, intraday_scores,
-                      opening_scores, live_volumes, market_caps,
-                      clusters, market_idx_pct, time_bonus,
-                      sentiment_info=sentiment_info, rps_scores=rps_scores,
-                      list_streaks=session_state.list_presence,
-                      market_extra=market_extra,
-                      fund_risk=fund_risk,
-                      conn=conn)
+    apply_all_bonuses(
+        all_candidates,
+        gem_stocks_filtered,
+        intraday_scores,
+        opening_scores,
+        live_volumes,
+        market_caps,
+        clusters,
+        market_idx_pct,
+        time_bonus,
+        sentiment_info=sentiment_info,
+        rps_scores=rps_scores,
+        list_streaks=session_state.list_presence,
+        market_extra=market_extra,
+        fund_risk=fund_risk,
+        conn=conn,
+    )
 
     # 双挂候选（首板票同时挂 new_face + short_term）需各自独立计算 extra：
     # accumulate_final_score 依赖 c.gap_up_bonus / c.list_momentum_bonus 等，
@@ -328,8 +341,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     # 回马枪区内排序与 display/today_report 单源（ranking.comeback_sort_key，资金流
     # 优先）——此前按 score 降序，飞书卡片与终端两种顺序（2026-08-24 审查）。
     # 候选行经 _candidate 读 kline.dimensions，无需 flow_map 回退。
-    comeback_list.sort(key=lambda c: comeback_sort_key(
-        {"symbol": c.stock.symbol, "score": c.score, "_candidate": c}))
+    comeback_list.sort(key=lambda c: comeback_sort_key({"symbol": c.stock.symbol, "score": c.score, "_candidate": c}))
 
     # 综合排序「板块」列：计算当前推动概念（东财 F10 概念归属 + 今日飙升池聚合）。
     # 仅影响展示，不参与任何打分。首次拉取缺失缓存，之后 DB/进程缓存零网络开销。
@@ -345,8 +357,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
         print(f"  [!] 驱动概念计算失败: {type(e).__name__}: {e}")
 
     current_quotes = {
-        sym: {"percent": d.get("percent", 0.0), "current": d.get("current", 0.0),
-              "high_pct": d.get("high_pct")}
+        sym: {"percent": d.get("percent", 0.0), "current": d.get("current", 0.0), "high_pct": d.get("high_pct")}
         for sym, d in market_caps.items()
     }
 
@@ -365,6 +376,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection,
     # DB-only 推导、成本 ~0.1s（无需 TTL）；fail-open 不阻塞扫描。
     try:
         from scanner.core_themes import find_core_theme_dips, save_core_dips
+
         save_core_dips(conn, find_core_theme_dips(conn, today), today)
     except Exception as e:
         print(f"  [!] 核心方向低吸落库失败: {e}")

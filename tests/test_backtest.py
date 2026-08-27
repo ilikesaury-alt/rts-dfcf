@@ -239,6 +239,7 @@ def test_print_report_default_metric_is_nextday_and_all_baseline(capsys):
     # 2026-08-18 统一口径：默认口径为 next_day_pct（次日大涨），报告仍含
     # "ALL(全推荐基准)" 汇总行（不挑选买入全部推荐的无选择基准）。
     import scanner.backtest as bt
+
     assert bt.build_parser().get_default("metric") == "next_day_pct"
     conn = _ranking_db()
     rows = [
