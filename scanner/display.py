@@ -1,5 +1,6 @@
 import os
 import re
+import statistics
 
 import wcwidth
 
@@ -482,6 +483,87 @@ def _print_priority_row(
     )
 
 
+def _regime_weak(conn, lookback=10):
+    """近端主表档(非 comeback/core_dip)次日表现均值 < 0 → 弱市(regime 退潮)。
+    纯展示层用：驱动「动态推荐」区域是否在弱市下剔除动量/kNF 类🎯。
+    fail-open：无数据/查询异常时返回 False(按强市处理，不误删推荐)。
+
+    注意：OFFSET 必须作用于 DISTINCT date，否则多个推荐行共享同一 date 会使
+    OFFSET 始终落在最近一日块内、date>cutoff 恒为空而 fail-open 误判为强市。
+    采用逐交易日均值(每个交易日等权)，避免单日高推荐量主导符号。
+    """
+    try:
+        row = conn.execute(
+            "SELECT DISTINCT date FROM recommendations ORDER BY date DESC LIMIT 1 OFFSET ?",
+            (lookback - 1,),
+        ).fetchone()
+        if not row:
+            return False
+        rows = conn.execute(
+            "SELECT date, next_day_pct FROM recommendations WHERE date >= ? "
+            "AND category NOT IN ('comeback','core_dip') AND next_day_pct IS NOT NULL",
+            (row[0],),
+        ).fetchall()
+        by_date: dict = {}
+        for d, p in rows:
+            by_date.setdefault(d, []).append(p)
+        daily_means = [statistics.mean(v) for v in by_date.values()]
+        if not daily_means:
+            return False
+        return statistics.mean(daily_means) < 0.0
+    except Exception:
+        return False
+
+
+def _adjusted_picks(today_recs, nextday_mark, conn, flow_pct_map, top_n=10):
+    """regime 自适应推荐序列（纯展示，不改落库/评分/排序）。
+
+    弱市：剔除 momentum/known_new_face/new_face 全类（🎯 与否均剔），按系统自有质量信号精选
+    核心低吸(_core_dip_entry_quality) / 回马枪(comeback_sort_key) / 🎯(rebound·弱转强) 各桶
+    最前少数几只——而非整个桶堆叠；强市：🎯 前置、其余按评分。返回 (名称, 类别, 是否🎯) 列表。
+    """
+    weak = _regime_weak(conn)
+    core_dip, comeback, yt, other = [], [], [], []
+    for e in today_recs:
+        sym, cat = e["symbol"], e["category"]
+        marked = nextday_mark.get((sym, cat), False)
+        if cat == "core_dip":
+            sb = _entry_dims(e)
+            if sb.get("run") is None or sb.get("pullback") is None:
+                continue
+            core_dip.append(e)
+        elif cat == "comeback":
+            comeback.append(e)
+        elif marked and cat in ("rebound", "short_term"):
+            yt.append(e)
+        elif weak and cat in ("momentum", "known_new_face", "new_face"):
+            continue
+        else:
+            other.append(e)
+    core_dip.sort(key=_core_dip_entry_quality)
+    comeback.sort(key=lambda x: comeback_sort_key(x, flow_pct_map))
+    yt.sort(key=lambda x: -to_float(x.get("score"), default=0.0))
+    other.sort(key=lambda x: -to_float(x.get("score"), default=0.0))
+    if weak:
+        ordered = core_dip[:4] + comeback[:3] + yt[:2] + other[:1]
+    else:
+        ordered = yt[:3] + other[:3] + core_dip[:2] + comeback[:2]
+    return [(e["name"], e["category"], nextday_mark.get((e["symbol"], e["category"]), False)) for e in ordered[:top_n]]
+
+
+def _pick_tag(cat: str, marked: bool) -> str:
+    """动态推荐行内用的极简分类标签（2 字以内），配色辅助快速区分。"""
+    if cat == "core_dip":
+        return "低吸"
+    if cat == "comeback":
+        return "回马"
+    if cat in ("rebound", "short_term"):
+        if marked:
+            return "🎯弹" if cat == "rebound" else "🎯转"
+        return "反弹" if cat == "rebound" else "弱转"
+    return {"momentum": "动量", "known_new_face": "kNF", "new_face": "新面"}.get(cat, cat)
+
+
 def display_priority(
     conn=None,
     live_quotes: dict[str, dict] | None = None,
@@ -709,6 +791,28 @@ def display_priority(
             (f"{ANSI['BOLD']}{ANSI['MAGENTA']}{n}{ANSI['RESET']}" if c else n) for (_, _, _, _, _, _, n, c) in _seq
         )
         print(f"  {ANSI['BOLD']}排序序列{ANSI['RESET']}: {_names}")
+    except Exception:
+        # pi-lens-ignore: python-empty-except
+        pass
+    # 动态推荐（2026-08-27）：根据近端主表档次日表现自动判断 regime，弱市下把
+    # momentum/known_new_face/new_face 类🎯 从推荐序列剔除、优先 核心低吸/回马枪/
+    # rebound🎯/弱转强；强市则正常优先级。纯展示行，不改排序/评分/落库；
+    # regime 判定失败时 fail-open 按强市处理。
+    try:
+        _adj = _adjusted_picks(today_recs, nextday_mark, conn, flow_pct_map)
+        if _adj:
+            _parts = []
+            for _n, _c, _m in _adj:
+                _tag = _pick_tag(_c, _m)
+                if _c == "core_dip":
+                    _parts.append(f"{ANSI['GREEN']}{_tag}·{_n}{ANSI['RESET']}")
+                elif _c == "comeback":
+                    _parts.append(f"{ANSI['CYAN']}{_tag}·{_n}{ANSI['RESET']}")
+                elif _m:
+                    _parts.append(f"{ANSI['BOLD']}{ANSI['MAGENTA']}{_tag}·{_n}{ANSI['RESET']}")
+                else:
+                    _parts.append(f"{_tag}·{_n}")
+            print(f"  {ANSI['BOLD']}动态推荐{ANSI['RESET']}: {' > '.join(_parts)}")
     except Exception:
         # pi-lens-ignore: python-empty-except
         pass
