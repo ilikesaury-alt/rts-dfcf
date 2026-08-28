@@ -114,14 +114,10 @@ REBOUND_WEIGHTS: dict[str, int] = {
     # 量能配合
     "vol_healthy": 8,           # 量比1.0~2.0：正常企稳量能
     "vol_surge": 12,            # 量比≥2.0：放量企稳（主力介入）
-    "vol_low": -3,              # 量比<0.8：缩量企稳不可信
+    "vol_low": -3,              # 量比<1.0：缩量企稳不可信
     # 技术面确认
     "rsi_oversold": 8,          # RSI<30：超卖反弹
     "rsi_mid": 3,               # RSI 30~50：低位企稳
     "bollinger_lower": 5,       # 触及BOLL下轨
     "v_shape": 8,               # V型反转特征（缩量低点+放量阳线）
-    # 板块/市值
-    "sector_active": 5,         # 同板块≥3只（板块共振）
-    "value_small_cap": 4,       # 小盘弹性大
-    "value_mid_cap": 2,
 }

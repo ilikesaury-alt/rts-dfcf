@@ -479,7 +479,7 @@ def _regime_weak(conn, lookback=10):
         if not row:
             return False
         rows = conn.execute(
-            "SELECT date, next_day_pct FROM recommendations WHERE date >= ? "
+            "SELECT date, next_day_pct FROM recommendations WHERE date > ? "
             "AND category NOT IN ('comeback','core_dip') AND next_day_pct IS NOT NULL",
             (row[0],),
         ).fetchall()

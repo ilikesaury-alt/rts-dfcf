@@ -139,7 +139,7 @@ def _collect_concepts(conn, symbols: list[str]) -> dict[str, list[str]]:
     still_missing: list[str] = []
     for sym in missing:
         if sym in db and db[sym]:
-            result[sym] = db[sym]
+            result[sym] = list(db[sym])  # 复制避免污染 DB 缓存
             with _concept_lock:
                 _cache_put(_concept_ttl_cache, sym, (db[sym], now))
         else:

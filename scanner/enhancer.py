@@ -513,7 +513,8 @@ def _record_dimensions(
         return
     c.kline.dimensions["sector_bonus"] = c.sector_bonus
     c.kline.dimensions["live_vol_bonus"] = c.live_vol_bonus
-    c.kline.dimensions["intraday_score"] = round(c.intraday_score, 1)
+    if c.intraday_score is not None:
+        c.kline.dimensions["intraday_score"] = round(c.intraday_score, 1)
     if c.market_cap_bonus != 0:
         c.kline.dimensions["market_cap_bonus"] = c.market_cap_bonus
     if c.market_sentiment_bonus != 0:

@@ -69,6 +69,7 @@ def _silence_stdout():
     _STDOUT_SILENCED = True
     try:
         # open(..., encoding=...) 已返回 TextIOWrapper，不可再包一层（write 会收到 bytes）
+        # 注意：不关闭旧 stdout——pytest 等工具可能持有其引用
         sys.stdout = open(os.devnull, "w", encoding="utf-8")
     except Exception:
         pass
@@ -80,7 +81,19 @@ def _log_exception(message: str, exc: BaseException | None = None):
         import traceback
 
         os.makedirs(LOG_DIR, exist_ok=True)
-        with open(os.path.join(LOG_DIR, "scanner_error.log"), "a", encoding="utf-8") as f:
+        log_path = os.path.join(LOG_DIR, "scanner_error.log")
+        # 防止日志无限增长：超过 5MB 时截断保留最后 1MB
+        try:
+            if os.path.exists(log_path) and os.path.getsize(log_path) > 5 * 1024 * 1024:
+                with open(log_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                # 保留最后 1MB
+                keep = content[-1024 * 1024:]
+                with open(log_path, "w", encoding="utf-8") as f:
+                    f.write(keep)
+        except Exception:
+            pass
+        with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"\n[{now_beijing().strftime('%Y-%m-%d %H:%M:%S')}] {message}")
             if exc is not None:
                 f.write("\n" + "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))

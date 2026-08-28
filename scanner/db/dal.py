@@ -451,8 +451,9 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, 
             # 记录真实 rowid：同批后续重复项走高分 UPDATE 时需要定位到本行
             existing_map[key] = [cur.lastrowid, c.score]
         except Exception as e:
+            # 用 savepoint 隔离失败行，避免回滚丢失已成功写入的行
             try:
-                conn.rollback()  # 清理失败语句残留事务，否则后续 execute 连锁报错
+                conn.rollback()
             except Exception:
                 pass
             print(f"  [!] 保存推荐记录失败 {c.stock.symbol}: {e}")

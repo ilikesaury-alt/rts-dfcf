@@ -53,7 +53,7 @@ def get_api_key() -> str:
 
 
 def _read_env_file_key() -> str:
-    """从项目根 .env 读 Key 并 setdefault 进环境（只读一次文件）。"""
+    """从项目根 .env 读 Key（只读一次文件，不写入 os.environ 防泄漏）。"""
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     path = os.path.join(root, ".env")
     try:
@@ -63,7 +63,6 @@ def _read_env_file_key() -> str:
                 if line.startswith("HITHINK_FINANCE_API_KEY="):
                     val = line.split("=", 1)[1].strip()
                     if val:
-                        os.environ.setdefault("HITHINK_FINANCE_API_KEY", val)
                         return val
     except OSError:
         pass  # 无 .env 文件属正常（未配置 → 上层禁用 THS 源）

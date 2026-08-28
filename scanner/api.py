@@ -160,14 +160,15 @@ _throttle_lock = threading.Lock()
 
 def _throttle(min_interval: float = 0.15):
     global _last_api_call
-    # 锁内仅计算等待时间并预占槽位，锁外睡眠——多线程可并发预约再并发等待，
-    # 速率限制不变但不再串行化 ThreadPoolExecutor 工作线程。
+    # 锁内计算等待时间、预占槽位并睡眠——严格串行化，保证实际间隔 ≥ min_interval。
+    # 旧实现 sleep 在锁外导致多线程并发时实际速率放大（6 工作线程可达 ~40 req/s）。
     with _throttle_lock:
         now = time.time()
         wait = max(0, min_interval - (now - _last_api_call))
-        _last_api_call = now + wait
-    if wait > 0:
-        time.sleep(wait)
+        if wait > 0:
+            time.sleep(wait)
+        # 睡眠后更新，确保下一线程看到真实请求时间而非预估时间
+        _last_api_call = time.time()
 
 
 _cache_lock = threading.Lock()

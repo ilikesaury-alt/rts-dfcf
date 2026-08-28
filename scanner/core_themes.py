@@ -6,10 +6,12 @@
 - 核心方向低吸：仍在走强的市场主线性概念（近 N 日持续上榜/强势）里的核心股，
   在上涨途中健康回调（非超跌、非破位）的低吸窗口。
 
-纯展示层推导（display-only）：全部基于本地 DB（recommendations / concept_cache /
-daily_kline / market_extra_cache / appearances），零新增网络请求；不写
-recommendations 表、不进综合排序/回测口径，作为独立显示区块提供「大跌时该盯哪些
-主线回流票」的参考（用户 2026-08-19 需求，实验性，待样本积累后评估）。
+纯展示层推导 + 落库归因：全部基于本地 DB（recommendations / concept_cache /
+daily_kline / market_extra_cache / appearances），零新增网络请求。写入
+recommendations 表（category=core_dip）供 prevday_perf / nextday_attribution
+复盘验证，但不进综合排序主表 / 回测口径（in_main_table=False, nextday_markable=False），
+作为独立显示区块提供「大跌时该盯哪些主线回流票」的参考（用户 2026-08-19 需求，
+实验性，待样本积累后评估）。
 
 方法论（数据驱动）：
 1. 识别当前核心方向：近 N 交易日推荐按概念聚合「持续上榜天数」，再叠加「主题相对

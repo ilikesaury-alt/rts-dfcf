@@ -155,10 +155,8 @@ TOP40_BONUS = 3
 TOP40_ADVANCE_PER_10 = 2
 TOP20_EXTRA = 2
 
-# 安全：webhook URL 含 token，已泄露于 git 历史（应轮换飞书机器人并改用环境变量注入）
-FEISHU_WEBHOOK = os.environ.get(
-    "RTS_FEISHU_WEBHOOK", "https://open.feishu.cn/open-apis/bot/v2/hook/d0caf1dd-54b6-4b86-b83d-861e4c79afda"
-)
+# 安全：webhook URL 含 token，必须通过环境变量注入（已泄露于 git 历史，旧 token 已轮换）
+FEISHU_WEBHOOK = os.environ.get("RTS_FEISHU_WEBHOOK", "")
 FEISHU_KEYWORD = "lichun"
 FEISHU_MIN_INTERVAL = 300  # 飞书最小推送间隔（秒），防止触发 Lark 限流
 

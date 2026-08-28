@@ -47,24 +47,25 @@ SECTOR_SINGLE_KEYWORDS: dict[str, list[str]] = {
     "传媒": ["影", "游"],
 }
 
+# 向后兼容：保留旧 dict 供参考（不再用于匹配）
+SECTOR_KEYWORDS = SECTOR_MULTI_KEYWORDS
+
+# 预计算匹配对（模块加载时一次性构建，避免每次 classify_sector 重建）
+_SECTOR_PAIRS: list[tuple[str, str]] = []
+for _sector, _keywords in SECTOR_MULTI_KEYWORDS.items():
+    _SECTOR_PAIRS.extend((_sector, kw) for kw in _keywords)
+for _sector, _keywords in SECTOR_SINGLE_KEYWORDS.items():
+    _SECTOR_PAIRS.extend((_sector, kw) for kw in _keywords)
+_SECTOR_PAIRS.sort(key=lambda x: -len(x[1]))
+
 
 def classify_sector(name: str) -> str:
-    # 统一最长匹配：把多字与单字关键词合并，按关键词长度降序扫描，
+    # 统一最长匹配：按关键词长度降序扫描，
     # 保证"电子"优先于"电"、"新能源车"优先于"新能源"，消除子串碰撞。
-    pairs: list[tuple[str, str]] = []
-    for sector, keywords in SECTOR_MULTI_KEYWORDS.items():
-        pairs.extend((sector, kw) for kw in keywords)
-    for sector, keywords in SECTOR_SINGLE_KEYWORDS.items():
-        pairs.extend((sector, kw) for kw in keywords)
-    pairs.sort(key=lambda x: -len(x[1]))
-    for sector, kw in pairs:
+    for sector, kw in _SECTOR_PAIRS:
         if kw in name:
             return sector
     return "其他"
-
-
-# 向后兼容：保留旧 dict 供参考（不再用于匹配）
-SECTOR_KEYWORDS = SECTOR_MULTI_KEYWORDS
 
 
 def get_sector_clusters(stocks: list) -> dict[str, list[str]]:
