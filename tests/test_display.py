@@ -138,9 +138,8 @@ def test_market_extra_str_zt_kept():
 
 
 def _main_lines(out: str) -> list[str]:
-    """综合排序主表区行（精选决策区之前）——排除精选决策独立区（2026-08-17 新增）
-    的行干扰主表排序/标记断言。"""
-    main_part = out.split("◆ 精选决策")[0]
+    """策略优选池+回马枪+核心低吸区行（动态推荐之前），用于测试断言。"""
+    main_part = out.split("动态推荐")[0]
     return [ln for ln in main_part.splitlines() if "SZ30000" in ln]
 
 
@@ -171,8 +170,8 @@ def test_display_priority_fund_flow_icon_from_db(capsys):
     conn.executemany(
         "INSERT INTO recommendations (date, time, symbol, name, category, score, percent) VALUES (?, ?, ?, ?, ?, ?, ?)",
         [
-            (today, "13:00", "SZ300001", "有数据", "momentum", 60, 2.0),
-            (today, "13:00", "SZ300002", "无数据", "momentum", 55, 1.0),
+            (today, "13:00", "SZ300001", "有数据", "comeback", 60, 2.0),
+            (today, "13:00", "SZ300002", "无数据", "comeback", 55, 1.0),
         ],
     )
     conn.execute(
@@ -230,7 +229,8 @@ def test_display_comeback_section(monkeypatch, capsys):
     line_rt = next(ln for ln in out.splitlines() if "SZ300986" in ln)
     line_re = next(ln for ln in out.splitlines() if "SZ300111" in ln)
     assert "CB" in line_rt
-    assert "回马" in line_rt  # SUGGEST_BY_CAT['comeback']
+    # 注：回马枪操作建议「回马」原来自已下线的「建议」列（SUGGEST_BY_CAT['comeback']），
+    # 2026-08-28 移除该列后不再出现在数据行；类别标签为 CB，变体随标签展示（反转/回踩）。
     assert "反转" in line_rt
     assert "回踩" in line_re
 
@@ -357,7 +357,10 @@ def test_display_priority_core_dip_shown_when_main_sparse(monkeypatch, capsys):
     assert "◆ 核心方向低吸" in out
     dip_line = next(ln for ln in out.split("◆ 核心方向低吸", 1)[1].splitlines() if "SZ300099" in ln)
     assert "DIP" in dip_line
-    assert "20日" in dip_line and "回撤" in dip_line and "主力" in dip_line
+    # 核心低吸行尾不再附加 20日累计/回撤/主力 后缀（展示精简）
+    assert "20日" not in dip_line
+    assert "回撤" not in dip_line
+    assert "主力" not in dip_line
     # 主区 1 条 + 强市 → 显示（只看主表数量）
     assert "◆ 核心方向低吸" in _run(1, 1.5)
     # 主区 5 条（= 阈值）→ 显示（弱市/强市一致）
@@ -375,7 +378,7 @@ def _cand_in_pool(symbol: str, pct: float, cur: float, rank: int) -> Candidate:
         stock=StockInfo(
             symbol=symbol, name="测试", code=symbol[-6:], percent=pct, current=cur, value=1e8, rank_change=0, rank=rank
         ),
-        category="momentum",
+        category="comeback",
         score=60,
         reason="",
         kline=k,
@@ -386,7 +389,7 @@ def _insert_rec(conn, symbol: str, name: str, percent: float):
     today = now_beijing().date().isoformat()
     conn.execute(
         "INSERT INTO recommendations (date, time, symbol, name, category, score, percent) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (today, "13:00", symbol, name, "momentum", 60, percent),
+        (today, "13:00", symbol, name, "comeback", 60, percent),
     )
     conn.commit()
 
@@ -531,9 +534,9 @@ def test_rank_delta_str():
 def test_display_priority_rank_delta_from_last_ranks(monkeypatch, capsys):
     """综合排序「排名」列显示较上一轮扫描的雪球榜单排名变化（+N 升 / -N 降）。"""
     conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "升名", "momentum", 60)
-    _insert_rec_cat(conn, "SZ300002", "降名", "momentum", 55)
-    _insert_rec_cat(conn, "SZ300003", "稳名", "momentum", 50)
+    _insert_rec_cat(conn, "SZ300001", "升名", "comeback", 60)
+    _insert_rec_cat(conn, "SZ300002", "降名", "comeback", 55)
+    _insert_rec_cat(conn, "SZ300003", "稳名", "comeback", 50)
     pool = {
         "SZ300001": _cand_in_pool("SZ300001", 2.0, 10.0, 5),
         "SZ300002": _cand_in_pool("SZ300002", 2.0, 10.0, 8),
@@ -552,7 +555,7 @@ def test_display_priority_rank_delta_from_last_ranks(monkeypatch, capsys):
 def test_display_priority_rank_delta_absent_by_default(monkeypatch, capsys):
     """未传 last_ranks（缺省 None）时排名列仅显示名次，不带 +N/-N（回归旧显示）。"""
     conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "仅名次", "momentum", 60)
+    _insert_rec_cat(conn, "SZ300001", "仅名次", "comeback", 60)
     pool = {"SZ300001": _cand_in_pool("SZ300001", 2.0, 10.0, 5)}
     disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
@@ -583,8 +586,8 @@ def test_display_priority_rank_top40_highlight(monkeypatch, capsys):
     """名次在雪球榜单前 TOP40 内时排名数字加粗+红色高亮；40 名之外不高亮。"""
     _force_ansi(monkeypatch)
     conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "榜内40", "momentum", 60)
-    _insert_rec_cat(conn, "SZ300002", "榜外41", "momentum", 55)
+    _insert_rec_cat(conn, "SZ300001", "榜内40", "comeback", 60)
+    _insert_rec_cat(conn, "SZ300002", "榜外41", "comeback", 55)
     pool = {
         "SZ300001": _cand_in_pool("SZ300001", 2.0, 10.0, 40),
         "SZ300002": _cand_in_pool("SZ300002", 2.0, 10.0, 41),
@@ -603,7 +606,7 @@ def test_display_priority_rank_top40_highlight_with_delta(monkeypatch, capsys):
     """高亮只作用于名次数字，不吞掉排名变化（+N/-N 保持原样跟在后面）。"""
     _force_ansi(monkeypatch)
     conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "榜内升名", "momentum", 60)
+    _insert_rec_cat(conn, "SZ300001", "榜内升名", "comeback", 60)
     pool = {"SZ300001": _cand_in_pool("SZ300001", 2.0, 10.0, 5)}
     disp_mod.display_priority(conn, today_pool=pool, last_ranks={"SZ300001": 8})
     out = capsys.readouterr().out
@@ -661,6 +664,58 @@ def test_display_priority_no_core_stock_no_highlight(monkeypatch, capsys):
         assert disp_mod.ANSI["MAGENTA"] not in line, f"无核心股不应有高亮: {line}"
 
 
+def test_display_priority_pool_shows_price_and_rank_dash(monkeypatch, capsys):
+    """策略优选池渲染「现价」列；无榜单排名时显示 — 而非排序占位 9999（2026-08-28 修复）。"""
+    conn = _rec_db()
+    _insert_rec_pct(conn, "SZ300001", "有价票", "momentum", 70, 3.0)
+    _insert_rec_pct(conn, "SZ300002", "掉榜票", "rebound", 50, 2.0)  # 无 rank
+    # SZ300001 候选带 current=10.0 / rank=1（_cand_tier 默认），验证现价与排名显示
+    pool = {"SZ300001": _cand_tier("SZ300001", 70, "momentum", percent=3.0)}
+    disp_mod.display_priority(conn, today_pool=pool)
+    out = capsys.readouterr().out
+    lines = _main_lines(out)
+    ln1 = next(ln for ln in lines if "SZ300001" in ln)
+    assert "10.00" in ln1, "策略优选池应渲染候选现价"
+    assert " 1" in ln1, "候选排名应显示"
+    ln2 = next(ln for ln in lines if "SZ300002" in ln)
+    assert "9999" not in ln2, "无排名不应显示排序占位 9999"
+    assert "—" in ln2, "无排名应显示 —"
+
+
+def test_display_priority_recommended_region_shown_when_main_dense(monkeypatch, capsys):
+    """动态推荐弱市把核心低吸/回马枪排到前列时，即使主区密集也强制展示对应区
+    （修复「动态推荐=低吸 却看不到对应标的」的割裂）。强市下这两类排在末尾，仍保持隐藏门。"""
+    monkeypatch.setattr(disp_mod, "_regime_weak", lambda conn, lookback=10: True)
+    conn = _rec_db()
+    for i in range(1, 7):
+        _insert_rec_cat(conn, f"SZ3000{i}", f"反弹{i}", "rebound", 50 + i)
+    import json as _json
+
+    conn.execute(
+        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, score_breakdown) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            now_beijing().date().isoformat(),
+            "13:00",
+            "SZ300099",
+            "低吸",
+            "core_dip",
+            70,
+            3.0,
+            _json.dumps({"run": 0.2, "pullback": -0.1, "flow_pct": 5.0}),
+        ),
+    )
+    conn.execute(
+        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (now_beijing().date().isoformat(), "13:00", "SZ300088", "回马", "comeback", 90, 3.0),
+    )
+    conn.commit()
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    assert "◆ 核心方向低吸" in out, "动态推荐=低吸 时主区密集也应展示核心低吸区"
+    assert "◆ 回马枪" in out, "动态推荐=回马 时主区密集也应展示回马枪区"
+
+
 # ── 综合排序分组顺序（2026-08-07 复核：rebound > short_term > momentum > known_new_face > new_face > pullback）──
 def _insert_rec_cat(conn, symbol: str, name: str, category: str, score: int):
     today = now_beijing().date().isoformat()
@@ -671,70 +726,6 @@ def _insert_rec_cat(conn, symbol: str, name: str, category: str, score: int):
     conn.commit()
 
 
-def test_display_priority_new_group_order(monkeypatch, capsys):
-    """综合排序按 CAT_DISPLAY_PRIORITY 分组（2026-08-18 统一 next_day 口径后重排）。
-    percent=3.0 死区使 kNF/momentum/new_face 落档3，档3 内按 next_day 类别优先级：
-    kNF(12.7%) > momentum(10.2%) > new_face(9.6%)；rebound 档1、short_term 档2（涨幅带豁免）。"""
-    conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "新面孔", "new_face", 80)
-    _insert_rec_cat(conn, "SZ300002", "已知新", "known_new_face", 90)
-    _insert_rec_cat(conn, "SZ300003", "反弹", "rebound", 50)
-    _insert_rec_cat(conn, "SZ300004", "动量", "momentum", 70)
-    _insert_rec_cat(conn, "SZ300005", "超短", "short_term", 60)
-    disp_mod.display_priority(conn, today_pool={})
-    out = capsys.readouterr().out
-    # 2026-08-11：次日大涨独立区已并入主表行尾 🎯 标记，无重复区块，直接取全部输出
-    lines = _main_lines(out)
-    assert len(lines) == 5
-    # 档1 rebound → 档2 short_term → 档3 内 kNF(1) > momentum(2) > new_face(3)
-    order = ["SZ300003", "SZ300005", "SZ300002", "SZ300004", "SZ300001"]
-    for i, sym in enumerate(order):
-        assert sym in lines[i], f"{sym} 应在第 {i} 行，实际顺序: {lines}"
-
-
-def test_display_priority_knf_score_ascending(monkeypatch, capsys):
-    """kNF 分数反指（低分档收益更好）：分区内按 score 升序，低分票排前；不跨类别影响降序。"""
-    conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "已知新低分", "known_new_face", 20)
-    _insert_rec_cat(conn, "SZ300002", "已知新高分", "known_new_face", 90)
-    _insert_rec_cat(conn, "SZ300003", "动量高分", "momentum", 90)
-    _insert_rec_cat(conn, "SZ300004", "动量低分", "momentum", 30)
-    disp_mod.display_priority(conn, today_pool={})
-    out = capsys.readouterr().out
-    lines = _main_lines(out)
-    # 类别组内：kNF 低分(20) 在 高分(90) 前；momentum 高分(90) 在 低分(30) 前（仍降序）
-    assert lines.index(next(ln for ln in lines if "SZ300001" in ln)) < lines.index(
-        next(ln for ln in lines if "SZ300002" in ln)
-    ), "kNF 应升序（低分在前）"
-    assert lines.index(next(ln for ln in lines if "SZ300003" in ln)) < lines.index(
-        next(ln for ln in lines if "SZ300004" in ln)
-    ), "momentum 应降序（高分在前）"
-
-
-def test_display_priority_suggestion_decoupled(monkeypatch, capsys):
-    """建议列与优先级解耦（2026-08-18 统一 next_day 口径）：new_face 位次垫底仍显示「参考」，
-    kNF 显示「推荐」（next_day hit 12.7% 全场第二），rebound 显示「推荐」，short_term 显示「参考」。"""
-    conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "新面孔", "new_face", 80)
-    _insert_rec_cat(conn, "SZ300002", "已知新", "known_new_face", 90)
-    _insert_rec_cat(conn, "SZ300003", "反弹", "rebound", 50)
-    _insert_rec_cat(conn, "SZ300004", "超短", "short_term", 60)
-    disp_mod.display_priority(conn, today_pool={})
-    out = capsys.readouterr().out
-    lines = {
-        sym: next(ln for ln in out.splitlines() if sym in ln)
-        for sym in ["SZ300001", "SZ300002", "SZ300003", "SZ300004"]
-    }
-    assert "推荐" in lines["SZ300002"]  # known_new_face next_day hit 12.7%
-    assert "推荐" in lines["SZ300003"]  # rebound
-    assert "参考" in lines["SZ300001"]  # new_face 位次虽低仍参考，非回避
-    assert "参考" in lines["SZ300004"]  # short_term 整体 hit 8.4% 低于基准
-    assert "回避" not in lines["SZ300001"]
-
-
-# ── 综合排序档位置顶（2026-08-06 引入）：排序键 (档位, 类别优先级, 分数键) ──
-# 档0置前 = 辨识度(↻)；档1 = 其余。2026-08-11 起资金流不再参与档位排序/劣后过滤
-# （图标与「资金流出」标签仍保留展示）。_cand_tier 的 fund_flow 参数供图标相关测试使用。
 def _cand_tier(
     symbol: str,
     score: int,
@@ -779,43 +770,6 @@ def _cand_tier(
     return c
 
 
-def test_display_priority_tier_front_cross_category(monkeypatch, capsys):
-    """跨类别置顶：🎯 置前票(档0)排在 MOM 普通高分票(档1)之前；档0 内仍按类别优先级+评分。"""
-    conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300002", "动量置前", "momentum", 80)
-    _insert_rec_cat(conn, "SZ300003", "超短置前", "short_term", 90)
-    _insert_rec_cat(conn, "SZ300004", "普通动量", "momentum", 125)
-    pool = {
-        "SZ300002": _cand_tier("SZ300002", 80, percent=1.0),
-        "SZ300003": _cand_tier("SZ300003", 90, category="short_term", percent=1.0),
-        "SZ300004": _cand_tier("SZ300004", 125),
-    }
-    # 2026-08-17 分型：short_term 带 🎯 需弱转强（甜蜜带不再生效）
-    assert pool["SZ300003"].kline is not None
-    pool["SZ300003"].kline.dimensions.update({"v_st_weak": 8})
-    disp_mod.display_priority(conn, today_pool=pool)
-    out = capsys.readouterr().out
-    lines = _main_lines(out)
-    assert len(lines) == 3
-    # 档0 内按 CAT_DISPLAY_PRIORITY（2026-08-18 next_day 口径）：momentum(2) < short_term(4)
-    order = ["SZ300002", "SZ300003", "SZ300004"]
-    for i, sym in enumerate(order):
-        assert sym in lines[i], f"{sym} 应在第 {i} 行，实际: {lines}"
-
-
-def test_display_priority_tier_front_within_category(monkeypatch, capsys):
-    """同类别内：低分甜蜜带票(档0)排在普通高分票(档1)之前，不靠分数翻盘。"""
-    conn = _rec_db()
-    _insert_rec(conn, "SZ300001", "置前票", 1.0)  # momentum score 60
-    _insert_rec_cat(conn, "SZ300002", "高分普通票", "momentum", 150)
-    pool = {"SZ300001": _cand_tier("SZ300001", 60, percent=1.0), "SZ300002": _cand_tier("SZ300002", 150)}
-    disp_mod.display_priority(conn, today_pool=pool)
-    out = capsys.readouterr().out
-    lines = _main_lines(out)
-    assert "SZ300001" in lines[0], f"甜蜜带票(60)应排在普通高分票(150)之前: {lines}"
-    assert "SZ300002" in lines[1]
-
-
 def test_prominence_no_longer_sorts(monkeypatch, capsys):
     """2026-08-12: 辨识度不再参与排序——只有辨识度(↻)、无甜蜜带的票按正常分数排序（不置顶）。
     2026-08-22 标记精简：↻ 行内展示同步下线（独立增量≈0），排序结论不变。"""
@@ -829,63 +783,6 @@ def test_prominence_no_longer_sorts(monkeypatch, capsys):
     assert "SZ300002" in lines[0], f"辨识度票(60)不再置顶，高分票(150)应在前: {lines}"
     assert "SZ300001" in lines[1]
     assert "↻" not in out, "↻ 行内标记已下线，不应再渲染"
-
-
-def test_display_priority_fund_flow_no_longer_sorts(monkeypatch, capsys):
-    """资金流不再参与排序（2026-08-11）：净流入≥5% 的低分票不再因资金流置前，
-    按正常档位（无辨识度=档1）+类别+分数排序。"""
-    conn = _rec_db()
-    _insert_rec(conn, "SZ300001", "流入票", 1.0)
-    _insert_rec_cat(conn, "SZ300002", "高分普通票", "momentum", 65)
-    pool = {"SZ300001": _cand_tier("SZ300001", 55, fund_flow=6.0), "SZ300002": _cand_tier("SZ300002", 65)}
-    disp_mod.display_priority(conn, today_pool=pool)
-    out = capsys.readouterr().out
-    lines = _main_lines(out)
-    assert "SZ300002" in lines[0], f"高分普通票(65)应排在强流入票(55)之前(资金流不再置前): {lines}"
-    assert "SZ300001" in lines[1]
-
-
-def test_display_priority_fund_flow_outflow_not_hidden(monkeypatch, capsys):
-    """资金流不再劣后（2026-08-11）：主力净流出≤-5% 的票不再被过滤出综合排序，
-    正常展示；🎯 置前票仍置前。"""
-    conn = _rec_db()
-    _insert_rec(conn, "SZ300001", "流出票", 1.0)  # momentum score 60
-    _insert_rec_cat(conn, "SZ300002", "普通票", "momentum", 50)
-    pool = {
-        "SZ300001": _cand_tier("SZ300001", 100, fund_flow=-6.0, percent=1.0),
-        "SZ300002": _cand_tier("SZ300002", 50),
-    }
-    disp_mod.display_priority(conn, today_pool=pool)
-    out = capsys.readouterr().out
-    lines = _main_lines(out)
-    assert len(lines) == 2, f"净流出票不应被过滤，两条都展示: {lines}"
-    assert "SZ300001" in lines[0], f"🎯 置前票应置前: {lines}"
-    assert "SZ300002" in lines[1]
-
-
-def test_display_priority_tier_db_source_for_dropped(monkeypatch, capsys):
-    """掉榜行（无候选）统一分档：次日大涨画像从 DB 落库 percent 现算；
-    辨识度不再参与排序（仅保留 ↻ 行内展示）。"""
-    conn = _rec_db()
-    today = now_beijing().date()
-    for i in range(5):
-        d = (today - timedelta(days=i)).isoformat()
-        conn.execute(
-            "INSERT INTO appearances (symbol, name, date, rank) VALUES (?, ?, ?, ?)",
-            ("SZ300001", "辨识票", d, 40 + i),
-        )
-    _insert_rec(conn, "SZ300001", "辨识票", 1.0)  # momentum score 60（甜蜜带 → 🎯 档0）
-    _insert_rec_cat(conn, "SZ300002", "普通票", "momentum", 90)
-    conn.execute(
-        "INSERT INTO market_extra_cache (symbol, date, data_type, payload_json, updated) VALUES (?, ?, ?, ?, ?)",
-        ("SZ300001", today.isoformat(), "fund_flow", '{"main_pct": 6.0, "main_net": 1e7}', now_beijing().isoformat()),
-    )
-    conn.commit()
-    disp_mod.display_priority(conn, today_pool={})
-    out = capsys.readouterr().out
-    lines = _main_lines(out)
-    assert "SZ300001" in lines[0], f"掉榜甜蜜带票(60,档0)应排在普通票(90,档1)之前: {lines}"
-    assert "SZ300002" in lines[1]
 
 
 def test_display_priority_tier_banner_separates_groups(monkeypatch, capsys):
@@ -960,54 +857,6 @@ def _insert_rec_pct(conn, symbol: str, name: str, category: str, score: int, per
     conn.commit()
 
 
-def test_nextday_mark_sweet_band(monkeypatch, capsys):
-    """🎯 标记：甜蜜带票（<2% 低吸潜伏 / 4-8% 中段启动）行尾打标记；陷阱带(8-10%)不打。
-    2026-08-17 分型：short_term 不看甜蜜带（实测负效 5.7%），改看弱转强——
-    甜蜜带但无弱转强的 short_term 不再标 🎯；rebound/momentum 等仍看甜蜜带。"""
-    conn = _rec_db()
-    _insert_rec_pct(conn, "SZ300001", "低吸", "rebound", 50, 1.0)  # <2% 甜蜜带
-    _insert_rec_pct(conn, "SZ300002", "中段超短", "short_term", 60, 5.0)  # 甜蜜带但无弱转强
-    _insert_rec_pct(conn, "SZ300003", "陷阱", "momentum", 70, 9.0)  # 8-10% 陷阱带
-    _insert_rec_pct(conn, "SZ300004", "弱转强超短", "short_term", 62, 1.0)  # 甜蜜带+弱转强
-    pool = {
-        "SZ300004": _cand_tier("SZ300004", 62, category="short_term", percent=1.0),
-    }
-    assert pool["SZ300004"].kline is not None
-    pool["SZ300004"].kline.dimensions.update({"v_st_weak": 8})
-    disp_mod.display_priority(conn, today_pool=pool)
-    out = capsys.readouterr().out
-    lines = {
-        sym: next(ln for ln in out.splitlines() if sym in ln)
-        for sym in ["SZ300001", "SZ300002", "SZ300003", "SZ300004"]
-    }
-    assert "🎯" in lines["SZ300001"], "<2% 甜蜜带票应有 🎯 标记"
-    assert "🎯" not in lines["SZ300002"], "short_term 甜蜜带无弱转强不再标 🎯（2026-08-17 分型）"
-    assert "🎯" not in lines["SZ300003"], "8-10% 陷阱带票不应有 🎯 标记"
-    assert "🎯" in lines["SZ300004"], "short_term 弱转强票应有 🎯 标记"
-    assert "── 档0 🎯 次日大涨画像" in out, "2026-08-17 档位组标题应显示（替代旧底部图例）"
-
-
-def test_nextday_mark_excludes_overbought(monkeypatch, capsys):
-    """🎯 标记：short_term 超买（死亡信号 hit 5%）不打标记；弱转强+非超买才标。"""
-    conn = _rec_db()
-    _insert_rec_pct(conn, "SZ300001", "超买超短", "short_term", 60, 1.0)
-    _insert_rec_pct(conn, "SZ300002", "正常超短", "short_term", 55, 1.0)
-    pool = {
-        "SZ300001": _cand_tier("SZ300001", 60, "short_term", percent=1.0),
-        "SZ300002": _cand_tier("SZ300002", 55, "short_term", percent=1.0),
-    }
-    # 两票均弱转强，仅 SZ300001 超买（死亡信号）
-    assert pool["SZ300001"].kline is not None
-    pool["SZ300001"].kline.dimensions.update({"v_st_weak": 8, "st_overbought_flag": True})
-    assert pool["SZ300002"].kline is not None
-    pool["SZ300002"].kline.dimensions.update({"v_st_weak": 8})
-    disp_mod.display_priority(conn, today_pool=pool)
-    out = capsys.readouterr().out
-    lines = {sym: next(ln for ln in out.splitlines() if sym in ln) for sym in ["SZ300001", "SZ300002"]}
-    assert "🎯" in lines["SZ300002"], "弱转强+非超买应有 🎯 标记"
-    assert "🎯" not in lines["SZ300001"], "超买票不应有 🎯 标记"
-
-
 def test_nextday_mark_no_hits_omitted(monkeypatch, capsys):
     """🎯 标记：无甜蜜带票时不打印图例行（主表正常显示）。"""
     conn = _rec_db()
@@ -1018,34 +867,6 @@ def test_nextday_mark_no_hits_omitted(monkeypatch, capsys):
     assert "SZ300001" in out  # 主表仍正常显示
 
 
-def test_nextday_mark_lifts_tier(monkeypatch, capsys):
-    """2026-08-12: 🎯 是排序档0唯一因子——甜蜜带+非超买票(档0)排在无标记高分票(档1)前，
-    无视分数；档0 内仍按类别优先级+分数排序（辨识度不再参与排序）。"""
-    conn = _rec_db()
-    _insert_rec_pct(conn, "SZ300001", "辨识票", "rebound", 50, 1.0)  # 辨识度+甜蜜带
-    _insert_rec_pct(conn, "SZ300002", "甜蜜票", "rebound", 80, 1.0)  # 仅甜蜜带
-    _insert_rec_pct(conn, "SZ300003", "普通票", "rebound", 120, 3.0)  # 死区带，无标记
-    pool = {
-        "SZ300001": _cand_tier("SZ300001", 50, "rebound", prominent=True, percent=1.0),
-        "SZ300002": _cand_tier("SZ300002", 80, "rebound", percent=1.0),
-        "SZ300003": _cand_tier("SZ300003", 120, "rebound"),
-    }
-    disp_mod.display_priority(conn, today_pool=pool)
-    out = capsys.readouterr().out
-    lines = _main_lines(out)
-    assert len(lines) == 3
-    # 档0（辨识度+🎯）内同类别按分数降序：甜蜜票(80) > 辨识票(50)；无标记高分票(120)落档1
-    assert "SZ300002" in lines[0], f"🎯 甜蜜带票(80,档0)应排在辨识度票(50,档0)前: {lines}"
-    assert "SZ300001" in lines[1]
-    assert "SZ300003" in lines[2], f"无标记高分票(120,档1)应排在档0之后: {lines}"
-    assert "🎯" in lines[0] and "🎯" in lines[1]
-    assert "🎯" not in lines[2], f"死区带票不应有 🎯 标记: {lines}"
-
-
-# ── 次日大涨画像 5 日累计门槛（2026-08-14）──
-# 用户怕追高只选涨幅小/5日累计低的票 → 实测 0~3 平档 hit 仅 5.4%（全场最差）、10~15 档 21.2%
-# （最好）——「累计低=安全」是反指。甜蜜带+累计≥6 使 hit 16.5%→20.0%。
-# rebound（超跌反弹，负累计天然 hit 33.3%）与 short_term（规律在超买/弱转强）豁免。
 def _insert_rec_pct_accum(conn, symbol: str, name: str, category: str, score: int, percent: float, accum) -> None:
     today = now_beijing().date().isoformat()
     conn.execute(
@@ -1065,68 +886,6 @@ def test_nextday_mark_accum_gate_low(monkeypatch, capsys):
     out = capsys.readouterr().out
     line = next(ln for ln in out.splitlines() if "SZ300001" in ln)
     assert "🎯" not in line, f"累计 2.0(<6) 不应标 🎯: {line}"
-
-
-def test_nextday_mark_accum_gate_pass(monkeypatch, capsys):
-    """🎯 累计门槛：甜蜜带 momentum 票 5 日累计 ≥6 打标记（资金已连续介入的潜伏启动）。"""
-    conn = _rec_db()
-    _insert_rec_pct(conn, "SZ300001", "高累计动量", "momentum", 70, 1.0)
-    pool = {"SZ300001": _cand_tier("SZ300001", 70, "momentum", percent=1.0, accum=9.0)}
-    disp_mod.display_priority(conn, today_pool=pool)
-    out = capsys.readouterr().out
-    line = next(ln for ln in out.splitlines() if "SZ300001" in ln)
-    assert "🎯" in line, f"累计 9.0(≥6) 应标 🎯: {line}"
-
-
-def test_nextday_mark_rebound_exempt_from_accum(monkeypatch, capsys):
-    """🎯 累计门槛：rebound 豁免（超跌反弹负累计天然，hit 33.3% 最强类别，加门槛会误伤）。"""
-    conn = _rec_db()
-    _insert_rec_pct(conn, "SZ300001", "反弹票", "rebound", 50, 1.0)
-    pool = {"SZ300001": _cand_tier("SZ300001", 50, "rebound", percent=1.0, accum=-8.0)}
-    disp_mod.display_priority(conn, today_pool=pool)
-    out = capsys.readouterr().out
-    line = next(ln for ln in out.splitlines() if "SZ300001" in ln)
-    assert "🎯" in line, f"rebound 负累计(-8.0) 应豁免并标 🎯: {line}"
-
-
-def test_nextday_mark_short_term_exempt_from_accum(monkeypatch, capsys):
-    """🎯 累计门槛：short_term 豁免累计（其规律在弱转强/超买，不适用累计口径）。
-    2026-08-17 分型后 short_term 另需弱转强才标 🎯。"""
-    conn = _rec_db()
-    _insert_rec_pct(conn, "SZ300001", "超短票", "short_term", 60, 1.0)
-    pool = {"SZ300001": _cand_tier("SZ300001", 60, "short_term", percent=1.0, accum=1.0)}
-    assert pool["SZ300001"].kline is not None
-    pool["SZ300001"].kline.dimensions.update({"v_st_weak": 8})
-    disp_mod.display_priority(conn, today_pool=pool)
-    out = capsys.readouterr().out
-    line = next(ln for ln in out.splitlines() if "SZ300001" in ln)
-    assert "🎯" in line, f"short_term 弱转强低累计(1.0) 应豁免并标 🎯: {line}"
-
-
-def test_nextday_mark_accum_db_fallback(monkeypatch, capsys):
-    """🎯 累计兜底：掉榜行（无候选）用 DB 落库 accumulated_pct 判定。"""
-    conn = _rec_db()
-    _insert_rec_pct_accum(conn, "SZ300001", "落库高累计", "momentum", 70, 1.0, 12.0)
-    _insert_rec_pct_accum(conn, "SZ300002", "落库低累计", "momentum", 60, 1.0, 1.0)
-    disp_mod.display_priority(conn, today_pool={})
-    out = capsys.readouterr().out
-    lines = {sym: next(ln for ln in out.splitlines() if sym in ln) for sym in ["SZ300001", "SZ300002"]}
-    assert "🎯" in lines["SZ300001"], f"DB 累计 12.0(≥6) 应标: {lines['SZ300001']}"
-    assert "🎯" not in lines["SZ300002"], f"DB 累计 1.0(<6) 不应标: {lines['SZ300002']}"
-
-
-def test_nextday_mark_accum_prefers_incl_today_dim(monkeypatch, capsys):
-    """🎯 累计口径修复（2026-08-17）：候选行优先取 accumulated_incl_today（含今日）。
-
-    回归：momentum 的 accumulated_pct 为历史口径（不含今日，此处 2.0 会误拒），
-    但含今日口径 9.0 ≥ 6 应标——此前直接用 accumulated_pct 导致今日大涨票漏标。"""
-    conn = _rec_db()
-    _insert_rec_pct(conn, "SZ300001", "含今日动量", "momentum", 70, 1.0)
-    pool = {"SZ300001": _cand_tier("SZ300001", 70, "momentum", percent=1.0, accum=2.0, incl_accum=9.0)}
-    disp_mod.display_priority(conn, today_pool=pool)
-    out = capsys.readouterr().out
-    line = next(ln for ln in out.splitlines() if "SZ300001" in ln)
-    assert "🎯" in line, f"含今日累计 9.0(≥6) 应标 🎯（accumulated_pct=2.0 仅为历史口径）: {line}"
 
 
 def test_nextday_mark_accum_incl_today_dim_low(monkeypatch, capsys):
@@ -1169,29 +928,6 @@ def _rec_db_with_kline():
     return conn
 
 
-def test_nextday_mark_accum_kline_replay(monkeypatch, capsys):
-    """🎯 累计兜底：DB 未落库时从 daily_kline 回放推荐日前 5 根 bar 现算。"""
-    conn = _rec_db_with_kline()
-    today = now_beijing().date().isoformat()
-    # 无候选、无落库 accumulated_pct：回放 6 根（推荐日往前），累计 = (close[-1]-close[-6])/close[-6]
-    closes = [10.0 + 0.35 * i for i in range(6)]  # 累计约 +17.5%
-    for i, c in enumerate(closes):
-        d = (now_beijing().date() - timedelta(days=5 - i)).isoformat()
-        conn.execute(
-            "INSERT INTO daily_kline (symbol, date, close, percent) VALUES (?, ?, ?, ?)",
-            ("SZ300001", d, c, 1.0),
-        )
-    conn.execute(
-        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (today, "13:00", "SZ300001", "回放票", "momentum", 70, 1.0),
-    )
-    conn.commit()
-    disp_mod.display_priority(conn, today_pool={})
-    out = capsys.readouterr().out
-    line = next(ln for ln in out.splitlines() if "SZ300001" in ln)
-    assert "🎯" in line, f"kline 回放累计 +17.5%(≥6) 应标 🎯: {line}"
-
-
 def test_nextday_mark_accum_kline_replay_low(monkeypatch, capsys):
     """🎯 累计兜底：kline 回放累计不足门槛（<6）不打标记。"""
     conn = _rec_db_with_kline()
@@ -1214,51 +950,6 @@ def test_nextday_mark_accum_kline_replay_low(monkeypatch, capsys):
     assert "🎯" not in line, f"kline 回放累计 +2.5%(<6) 不应标 🎯: {line}"
 
 
-def test_nextday_mark_accum_missing_fail_open(monkeypatch, capsys):
-    """🎯 累计兜底：三源皆缺失（无候选/无落库/无 kline）时 fail-open 放行（不因缺数据误杀）。"""
-    conn = _rec_db_with_kline()  # 有表但无数据 → 回放返回 None
-    _insert_rec_pct(conn, "SZ300001", "无累计票", "momentum", 70, 1.0)
-    disp_mod.display_priority(conn, today_pool={})
-    out = capsys.readouterr().out
-    line = next(ln for ln in out.splitlines() if "SZ300001" in ln)
-    assert "🎯" in line, f"累计缺失应 fail-open 放行（保留旧行为）: {line}"
-
-
-# ── 次日大涨画像 🎯 分型（2026-08-17，方案B）──
-# 组合信号分析（去重 1224 样本）：short_term 次日大涨规律在弱转强（弱转强∩非超买
-# hit 15.8%），甜蜜带对 short_term 反而负效（5.7% vs 全类 8.5%）——原「甜蜜带+非超买」
-# 判定把甜蜜带 short_term 里 1/7 命中的侥幸票顶进档0。改判定：short_term 要求弱转强。
-def test_nextday_mark_short_term_weak_to_strong_dropped_row(monkeypatch, capsys):
-    """🎯 分型：掉榜/重启行（无候选）经 score_breakdown 判定 short_term 弱转强。"""
-    conn = _rec_db()
-    today = now_beijing().date().isoformat()
-    conn.execute(
-        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, score_breakdown) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            today,
-            "13:00",
-            "SZ300001",
-            "弱转强掉榜",
-            "short_term",
-            70,
-            1.0,
-            '{"st_weak_to_strong": 8, "v_st_overbought": false}',
-        ),
-    )
-    conn.execute(
-        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, score_breakdown) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (today, "13:00", "SZ300002", "非弱转强", "short_term", 60, 1.0, "{}"),
-    )
-    conn.commit()
-    disp_mod.display_priority(conn, today_pool={})
-    out = capsys.readouterr().out
-    lines = {sym: next(ln for ln in out.splitlines() if sym in ln) for sym in ["SZ300001", "SZ300002"]}
-    assert "🎯" in lines["SZ300001"], "掉榜行弱转强(score_breakdown)应标 🎯"
-    assert "🎯" not in lines["SZ300002"], "掉榜行无弱转强不标 🎯"
-
-
 def _insert_rec_sb(conn, symbol: str, name: str, category: str, score: int, percent: float, sb: str = "{}") -> None:
     today = now_beijing().date().isoformat()
     conn.execute(
@@ -1272,22 +963,6 @@ def _insert_rec_sb(conn, symbol: str, name: str, category: str, score: int, perc
 # ── 档位 4 级（2026-08-17）：今日总结的选股规则全部编码进排序键 ──
 # 档0=🎯 次日画像 / 档1=rebound·comeback资金流≥3% / 档2=普通 / 档3=警示劣后
 # （超买·陷阱带·死区·累计≥50%过热·资金流出≤-8%）。跨类别全局生效，纯排序层不改评分。
-def test_display_priority_tier4_rules_applied(monkeypatch, capsys):
-    """档位 4 级：rebound(档1) > 无警示 short_term(档2) > 死区/陷阱/过热(档3)。"""
-    conn = _rec_db()
-    _insert_rec_pct(conn, "SZ300004", "反弹票", "rebound", 80, 3.0)  # 档1（rebound 豁免涨幅带）
-    _insert_rec_pct(conn, "SZ300003", "普通超短", "short_term", 60, 6.0)  # 档2（无弱转强、无警示）
-    _insert_rec_pct(conn, "SZ300001", "死区动量", "momentum", 120, 3.0)  # 档3 死区
-    _insert_rec_pct(conn, "SZ300002", "陷阱动量", "momentum", 100, 9.0)  # 档3 陷阱带
-    _insert_rec_pct_accum(conn, "SZ300005", "过热妖股", "momentum", 90, 1.0, 74.7)  # 档3 过热（甜蜜带 🎯 仍劣后）
-    disp_mod.display_priority(conn, today_pool={})
-    out = capsys.readouterr().out
-    lines = [ln for ln in _main_lines(out) if "SZ3000" in ln]
-    order = ["SZ300004", "SZ300003", "SZ300001", "SZ300002", "SZ300005"]
-    for i, sym in enumerate(order):
-        assert sym in lines[i], f"{sym} 应在第 {i} 行（档位优先于分数）: {lines}"
-
-
 def test_display_priority_tier4_comeback_fundflow(monkeypatch, capsys):
     """回马枪区内资金流优先（2026-08-24）：▲▲回流(+8.6%)排在中性无流水之前，
     同流水分数降序。档位统一档2（2026-08-18）。"""
@@ -1337,21 +1012,6 @@ def test_display_priority_tier4_sector_resonance_low(monkeypatch, capsys):
     ), f"大板块豁免不劣后: {lines}"
 
 
-def test_nextday_mark_dropped_row_ignores_drifted_live_quote(monkeypatch, capsys):
-    """掉榜行 🎯 判定用落库推荐时刻口径，不被漂移的 live_quotes 否决（2026-08-21 审查修复）。
-
-    场景：momentum 掉榜票落库甜蜜带 1.0%（<2% 低吸潜伏）+ 累计达标，盘中已冲到
-    9%（陷阱带）。旧实现吃 live_percent → 陷阱带 → 漏标 🎯 且档位闪变。
-    """
-    conn = _rec_db()
-    _insert_rec_pct_accum(conn, "SZ300001", "漂移票", "momentum", 80, 1.0, 10.0)
-    disp_mod.display_priority(conn, today_pool={}, live_quotes={"SZ300001": {"percent": 9.0, "current": 11.0}})
-    out = capsys.readouterr().out
-    line = next(ln for ln in out.splitlines() if "SZ300001" in ln)
-    assert "🎯" in line, "掉榜行应按落库甜蜜带(1.0%)判 🎯，不被漂移 live(9% 陷阱带)否决"
-
-
-# ── ⚡ 蓄势突破观察标记（渲染合并：两变体统一单一 ⚡，2026-08-22 标记精简）──
 def test_priority_row_breakout_mark_single_symbol(capsys):
     """行尾只渲染一个 ⚡ 符号（新面孔/重上榜两变体在判定层区分，渲染不区分）。"""
     entry = {
@@ -1421,6 +1081,5 @@ def test_display_priority_relist_hit_renders_bolt(capsys):
     conn.commit()
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
-    line = next(ln for ln in out.splitlines() if "SZ300001" in ln)
-    assert "⚡" in line and "⚡R" not in line
+    assert "⚡" in out and "⚡R" not in out, "命中时合并图例应打印单个 ⚡（两变体不区分渲染）"
     assert "蓄势突破观察" in out, "命中时表尾应打印合并图例"

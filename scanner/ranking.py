@@ -236,6 +236,26 @@ def _entry_dims(entry: Any) -> dict:
     return sb if isinstance(sb, dict) else {}
 
 
+def _entry_today_pct(entry: Any) -> float:
+    """今日涨幅（%）解析：与展示 涨幅列同口径——实时行情(live_percent)优先，缺则落库 percent。
+
+    用于回马枪/核心低吸区排序：把今日波动剧烈的（涨多/跌狠）排前。
+    live_quote_available 时 live_percent 为实时报价（含合法 0.00%）；否则回退候选快照
+    /落库 percent（掉榜/重启行无候选，走 percent）。
+    """
+    if entry.get("live_quote_available"):
+        p = entry.get("live_percent")
+        if p is not None:
+            return to_float(p, default=0.0)
+    c = _fresh_candidate(entry)
+    if c:
+        return to_float(getattr(c.stock, "percent", None), default=0.0)
+    p = entry.get("live_percent")
+    if p is not None:
+        return to_float(p, default=0.0)
+    return to_float(entry.get("percent"), default=0.0)
+
+
 def _entry_weak_to_strong(entry: Any) -> bool:
     """short_term 弱转强成立：st_weak_to_strong / v_st_weak 任一 >0。
 
@@ -707,15 +727,18 @@ def sort_main_entries(main_recs: list[Any], tier_map: dict[tuple[str, str], int]
 
 
 def comeback_sort_key(entry: Any, flow_map: dict[str, float] | None = None) -> tuple:
-    """回马枪区内排序键（2026-08-24）：主力净占比降序优先，次键评分降序。
+    """回马枪区内排序键（2026-08-24 初版：主力净占比优先→评分）：
 
+    2026-08-29 调整：今日波动剧烈（涨多/跌狠）优先排前，资金流与评分为次级区分。
     回测依据：comeback 统一 next_day 口径 hit 3.3%（全场最差，已移出档1），区内
     score 不再是有效区分度；资金流是回马枪区已验证的分化信号（▲▲回流可取 vs
     ▼▼背离回避，today_report 回马枪资金质量小节口径）。flow 缺失按中性 0 处理，
     可选 flow_map（display 从 market_extra_cache 批量读的回退源）供掉榜行补值。
     display 回马枪区与 today_report 回马枪小节共用本函数，防两处口径漂移。
     """
+    today = _entry_today_pct(entry)
     flow = to_float(_entry_dims(entry).get("fund_flow_main_pct"), default=None)
     if flow is None and flow_map:
         flow = to_float(flow_map.get(entry["symbol"]), default=None)
-    return (-(flow if flow is not None else 0.0), -entry["score"])
+    # 今日波动幅度 |today| 越大越靠前（取负升序=降序）；同幅度下主力净占比、评分降序。
+    return (-abs(today), -(flow if flow is not None else 0.0), -entry["score"])

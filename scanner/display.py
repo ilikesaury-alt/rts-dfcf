@@ -14,7 +14,6 @@ from scanner.config import (
     FUND_FLOW_MAIN_PCT_STRONG,
     FUND_FLOW_MAIN_PCT_WEAK,
     RISK_FLAGS_DISPLAY_HARD,
-    SUGGEST_BY_CAT,
     TOP40_THRESHOLD,
     now_beijing,
 )
@@ -274,21 +273,6 @@ def _market_env_tag(today_pool: dict[str, Candidate] | None) -> str:
     return "[大盘中性]"
 
 
-def _core_dip_extra_str(run, pullback, flow_pct) -> str:
-    """核心低吸行尾绿色后缀：20日累计 / 回撤 / 主力净占比（2026-08-20）。
-
-    2026-08-20 加固：run/pullback/flow_pct 来自 DB score_breakdown JSON，脏库
-    可能为字符串/NaN，to_float 统一防御（此前 float() 直接抛 ValueError 中断整屏渲染）。
-    """
-    run_f = to_float(run) or 0.0
-    pullback_f = to_float(pullback) or 0.0
-    parts = [f"20日{run_f * 100:+.1f}%", f"回撤{pullback_f * 100:+.1f}%"]
-    flow_f = to_float(flow_pct, default=None)
-    if flow_f is not None:
-        parts.append(f"主力{flow_f:+.1f}%")
-    return f"{ANSI['GREEN']}{' '.join(parts)}{ANSI['RESET']}"
-
-
 def _core_dip_entry_quality(entry: RecommendationRow | dict) -> tuple:
     """推荐记录条目 → 低吸质量排序键（复用 core_themes._low_buy_quality）。
 
@@ -357,7 +341,7 @@ def _print_priority_row(
     """
     c = entry.get("_candidate")
     sector = classify_sector(entry["name"])
-    # 标签/优先级/建议列统一用 entry["category"]（与排序口径一致），
+    # 标签/优先级列统一用 entry["category"]（与排序口径一致），
     # 不用 c.category：双挂票的 today_pool 按 symbol 覆盖会拿到 short_term 候选，
     # 而 DB 保留的是最高分行的 category（可能是 new_face），两者不一致会导致
     # 排到 new_face 档却显示 ST 标签 + 回避建议的矛盾。
@@ -434,8 +418,8 @@ def _print_priority_row(
                 risk_str += f"{ANSI['YELLOW']}+{soft_count}{ANSI['RESET']}"
         elif soft_count:
             risk_str = f" {ANSI['YELLOW']}⚠+{soft_count}{ANSI['RESET']}"
-    # 建议列：按类别独立映射（与展示优先级解耦），SUGGEST_BY_CAT 含 ANSI 需用 _pad 对齐
-    suggest_str = SUGGEST_BY_CAT.get(cat, "")
+    # 建议列已下线（2026-08-28）：操作建议与展示优先级/档位解耦后纯装饰噪音，
+    # 移除不影响排序/评分/落库；SUGGEST_BY_CAT 仍保留于 categories 注册表供 today_report 归因。
     first_time = str(entry.get("first_time") or entry.get("time") or "")[:5]
     # 5日累计涨幅：优先用候选池可信快照（_fresh_candidate），否则用 DB 落库值
     accum_val = None
@@ -461,11 +445,6 @@ def _print_priority_row(
     extra_suffix = f" {extra_str}" if extra_str else ""
     nd_mark_str = f" {ANSI['GREEN']}🎯{ANSI['RESET']}" if nextday_mark else ""
     bo_mark_str = f" {ANSI['CYAN']}⚡{ANSI['RESET']}" if breakout_mark else ""
-    # 核心低吸行尾绿色后缀（2026-08-20）：20日累计/回撤/主力净占比。仅核心低吸区
-    # 条目带 _core_dip_extra，主表/回马枪行不受影响（复用标准 _print_priority_row）。
-    core_dip_extra = entry.get("_core_dip_extra")
-    if core_dip_extra:
-        extra_suffix = f"{extra_suffix} {core_dip_extra}".strip() if extra_suffix else f" {core_dip_extra}"
     # 板块普涨避雷行尾标记已下线（2026-08-17 用户反馈「太扎眼」）：小板块共振避雷
     # 结论保留于回测（cnt<15 票 hit 5.9-6.7%/cum_3d -2.2~-2.6 最差），但黄色长文本
     # 移除，避免干扰 🎯 档0 等主信号。
@@ -479,7 +458,7 @@ def _print_priority_row(
         f"  {i:3d}  {entry['symbol']:<12} {_pad(name_str, 10)} "
         f"{pct_colored(pct)} {accum_str:>8} {price_str:>7} {_pad(rank_str, 8, 'r')} "
         f"{_pad(_trunc(sector, 14), 14)} {_pad(label_display, 5, 'r')} {to_int(entry['score']):4d} "
-        f"{_pad(first_time, 6)} {_pad(suggest_str, 6)}{risk_str}{extra_suffix}{nd_mark_str}{bo_mark_str}"
+        f"{_pad(first_time, 6)}{risk_str}{extra_suffix}{nd_mark_str}{bo_mark_str}"
     )
 
 
@@ -680,8 +659,9 @@ def display_priority(
     # 高分档[77,98) -3.76/33%）——分区内 score 升序，把"低调二次上榜"的低分票排前，
     # 避免把最差的追高票顶在最前。其余类别仍降序。
     # 2026-08-20 收敛：排序组合层（档位+类别优先级+分数键含 kNF 升序）统一走 ranking.sort_main_entries，
-    # 与 today_report 同源，消除两处排序分化。
-    scored = sort_main_entries(main_recs, tier_map)
+    # 与 today_report 同源，消除两处排序分化。该函数经本模块 re-export 供 today_report 复用
+    # （test_ranking_single_source 守护 display.sort_main_entries is ranking.sort_main_entries）；
+    # 主表隐藏后 display 不再调用它，策略优选池使用下方独立排序键。
 
     # 蓄势突破观察标记（2026-08-21，⚡）：新面孔/首推或重上榜 short_term + 横盘缩量回调位
     # + MA 多头。纯展示层观察——不改排序/评分/落库（用户决策：先观察积累样本，达标后再评估
@@ -700,81 +680,77 @@ def display_priority(
         for e in main_recs
     }
 
-    print(f"\n{ANSI['BOLD']}◆ 综合排序 — 今日上榜推荐{ANSI['RESET']}")
-    hdr = (
-        f"  {_pad('#', 3, 'r')} {_pad('代码', 12)} {_pad('名称', 10)} "
-        f"{_pad('涨幅', 8, 'r')} {_pad('5日累计', 8, 'r')} {_pad('现价', 7, 'r')} {_pad('排名', 8, 'r')} "
-        f"{_pad('板块', 14)} {_pad('策略', 5)} {_pad('评分', 4, 'r')} {_pad('时间', 6)} {_pad('建议', 6)}"
-    )
-    print(hdr)
-    # 档位组标题（2026-08-17）：4 级档位切换时打印分隔行，直观看到「该买/别碰」边界。
-    # 纯展示层；组内序号重新编号，与组标题配合更清晰。
-    tier_names = {0: "次日大涨画像", 1: "强信号", 2: "普通", 3: "警示劣后"}
-    tier_color = {0: ANSI["GREEN"], 1: ANSI["CYAN"], 2: "", 3: ANSI["RED"]}
-    last_tier = None
-    rank_in_tier = 0
-    for entry in scored:
-        key = (entry["symbol"], entry["category"])
-        tier = tier_map.get(key, 2)
-        if tier != last_tier:
-            rank_in_tier = 0
-            last_tier = tier
-            prefix = "🎯 " if tier == 0 else ""
-            print(f"  {tier_color[tier]}── 档{tier} {prefix}{tier_names[tier]}{ANSI['RESET']}")
-        rank_in_tier += 1
-        mark = nextday_mark.get(key, False)
-        _print_priority_row(
-            entry,
-            rank_in_tier,
-            flow_pct_map,
-            nextday_mark=mark,
-            breakout_mark=breakout_mark.get(key, False),
-            last_ranks=last_ranks,
-        )
-    print(f"  {'-' * 92}")
-    # 自定义综合排序名称序列（用户偏好视图）：
-    # 有榜单排名 → 档位 → 回调型核心票 → 榜单排名升序 → 新面孔 → 涨幅升序(低在前)。
-    # 2026-08-27 改版依据（近30日 526 去重样本离线测量，scripts 已删·结论记 docs/decisions.md）：
-    # ① 原第②位「核心票」整体近端反指（hit 2.1% vs 非核心 9.3%）——根因是创新高/
-    #   浅回撤核心股是追高位（shallow hit 1.2%/avg -2.54%），提前只认「回调型核心票」=
-    #   T-1 收盘距20日高点回撤 ∈ [CORE_PULLBACK_MIN, CORE_PULLBACK_MAX]（与核心低吸区
-    #   同窗口，复用 breakout_kmap 批量 K 线防 N+1）；创新高核心股保留品红高亮
-    #   （视觉信息不变）但不参与提前；缺 K 线 fail-closed 不提前。
-    # ② 档位提到核心前（档0/1 hit 12.8%/14.8% 远优于核心票边际）。
-    # ③ 榜单排名升序提前到新面孔之前（rank 1-15 hit 15.0%，全场最有区分度的良性因子）。
-    # 纯展示行，不改排序/评分/落库；fail-closed 不阻塞主流程。
+    # 综合排序主表已隐藏（2026-08-28）：策略优选池已替代其展示功能。
+    # hdr = (
+    #     f"  {_pad('#', 3, 'r')} {_pad('代码', 12)} {_pad('名称', 10)} "
+    #     f"{_pad('涨幅', 8, 'r')} {_pad('5日累计', 8, 'r')} {_pad('现价', 7, 'r')} {_pad('排名', 8, 'r')} "
+    #     f"{_pad('板块', 14)} {_pad('策略', 5)} {_pad('评分', 4, 'r')} {_pad('时间', 6)} {_pad('建议', 6)}"
+    # )
+    # print(hdr)
+    # # 档位组标题
+    # tier_names = {0: "次日大涨画像", 1: "强信号", 2: "普通", 3: "警示劣后"}
+    # tier_color = {0: ANSI["GREEN"], 1: ANSI["CYAN"], 2: "", 3: ANSI["RED"]}
+    # last_tier = None
+    # rank_in_tier = 0
+    # for entry in scored:
+    #     key = (entry["symbol"], entry["category"])
+    #     tier = tier_map.get(key, 2)
+    #     if tier != last_tier:
+    #         rank_in_tier = 0
+    #         last_tier = tier
+    #         prefix = "🎯 " if tier == 0 else ""
+    #         print(f"  {tier_color[tier]}── 档{tier} {prefix}{tier_names[tier]}{ANSI['RESET']}")
+    #     rank_in_tier += 1
+    #     mark = nextday_mark.get(key, False)
+    #     _print_priority_row(
+    #         entry,
+    #         rank_in_tier,
+    #         flow_pct_map,
+    #         nextday_mark=mark,
+    #         breakout_mark=breakout_mark.get(key, False),
+    #         last_ranks=last_ranks,
+    #     )
+    # print(f"  {'-' * 92}")
+    # 策略优选池（2026-08-28）：按优先级规则排序的详细列表，关键列展示。
+    # 排序规则：榜上优先 → 档位 → 回调核心 → 排名升序 → 新面孔 → 涨幅升序 → 名称。
+    def _cb_core_pullback_ok(sym: str) -> bool:
+        kl = breakout_kmap.get(sym)
+        if not kl or len(kl) < 20:
+            return False
+        h20 = max(b[1] for b in kl[-20:])
+        t1_close = kl[-1][2]
+        if h20 <= 0 or t1_close <= 0:
+            return False
+        pb = t1_close / h20 - 1.0
+        return CORE_PULLBACK_MIN <= pb <= CORE_PULLBACK_MAX
+
     try:
-
-        def _cb_core_pullback_ok(sym: str) -> bool:
-            kl = breakout_kmap.get(sym)
-            if not kl or len(kl) < 20:
-                return False
-            h20 = max(b[1] for b in kl[-20:])
-            t1_close = kl[-1][2]
-            if h20 <= 0 or t1_close <= 0:
-                return False
-            pb = t1_close / h20 - 1.0
-            return CORE_PULLBACK_MIN <= pb <= CORE_PULLBACK_MAX
-
-        _stg_letter = {
+        _stg_map = {
             "rebound": "RBD",
             "momentum": "MOM",
             "new_face": "NEW",
-            "known_new_face": "NEW",
+            "known_new_face": "kNF",
             "short_term": "ST",
         }
-        _seq = []
+        _seq_rows = []
         for e in main_recs:
             sym = e["symbol"]
             cat = e["category"]
             rk = e.get("live_rank") or e.get("rank")
             has_rank = isinstance(rk, (int, float)) and rk > 0
+            tier = tier_map.get((sym, cat), 2)
             is_core = bool(e.get("_core_stock"))
             is_cb_core = is_core and _cb_core_pullback_ok(sym)
-            tier = tier_map.get((sym, cat), 2)
-            is_new = _stg_letter.get(cat) == "NEW"
+            is_new = _stg_map.get(cat) in ("NEW", "kNF")
             chg = to_float(e.get("live_percent") or e.get("percent"), default=0.0)
-            _seq.append(
+            _fresh_c = _fresh_candidate(e)
+            accum_val = None
+            if _fresh_c and _fresh_c.kline:
+                accum_val = _fresh_c.kline.accumulated_pct
+            if accum_val is None:
+                accum_val = accum_map.get(sym)
+            score = e.get("score", 0)
+            _seq_rows.append(
                 (
                     0 if has_rank else 1,
                     tier,
@@ -782,40 +758,88 @@ def display_priority(
                     rk if has_rank else 9999,
                     0 if is_new else 1,
                     chg,
-                    e["name"],
+                    e,
                     is_core,
+                    accum_val,
+                    score,
                 )
             )
-        _seq.sort(key=lambda x: x[:6])
-        _names = " > ".join(
-            (f"{ANSI['BOLD']}{ANSI['MAGENTA']}{n}{ANSI['RESET']}" if c else n) for (_, _, _, _, _, _, n, c) in _seq
+        _seq_rows.sort(key=lambda x: x[:6])
+        print(f"  {ANSI['BOLD']}◆ 策略优选池 — 按优先级排序{ANSI['RESET']}")
+        print(
+            f"  {_pad('#', 3, 'r')} {_pad('代码', 12)} {_pad('名称', 10)} "
+            f"{_pad('涨幅', 8, 'r')} {_pad('5日累计', 8, 'r')} {_pad('现价', 7, 'r')} "
+            f"{_pad('排名', 8, 'r')} {_pad('评分', 4, 'r')} {_pad('策略', 5)}"
         )
-        print(f"  {ANSI['BOLD']}排序序列{ANSI['RESET']}: {_names}")
+        for _si, (_hr, _t, _cpc, _rk, _nw, _ch, _e, _ic, _av, _sc) in enumerate(_seq_rows, 1):
+            _sym = _e["symbol"]
+            _nm = _e["name"]
+            _lp = _e.get("live_percent")
+            _pct = _lp if _lp is not None else (_e.get("percent") or 0.0)
+            _nm_disp = f"{ANSI['BOLD']}{ANSI['MAGENTA']}{_nm}{ANSI['RESET']}" if _ic else _nm
+            _av_str = f"{_av:+.2f}%" if _av is not None else "—"
+            # 策略优选池逐行重算候选（构建循环里的 _fresh_c 只保留末行，不可跨行复用）
+            _fresh_c = _fresh_candidate(_e)
+            # 排名：实时(live_rank/rank_map) > 候选快照(rank) > 无数据「—」
+            # （此前误用排序占位 9999 参与显示，现改回原始 rank 判定）
+            _rk_disp = _e.get("live_rank") or _e.get("rank")
+            if _rk_disp is None and _fresh_c:
+                _rk_disp = _fresh_c.stock.rank
+            _rk_val = _rk_disp if isinstance(_rk_disp, (int, float)) and _rk_disp > 0 else "—"
+            _sc_str = f"{_sc:.0f}" if _sc else "—"
+            _cat_label = _stg_map.get(_e["category"], "?")
+            # 现价：实时行情(live_current) > 候选快照(current) > 无数据「—」（与 _print_priority_row 同回退链）
+            if _e.get("live_quote_available"):
+                _cur = to_float(_e.get("live_current"), default=0.0)
+            elif _fresh_c:
+                _cur = to_float(_fresh_c.stock.current, default=0.0)
+            else:
+                _cur = 0.0
+            _cur_str = f"{_cur:.2f}" if _cur else "—"
+            print(
+                f"  {_pad(str(_si), 3, 'r')} {_pad(_sym, 12)} {_pad(_nm_disp, 10)} "
+                f"{pct_colored(_pct):>8} {_av_str:>8} {_cur_str:>7} "
+                f"{_pad(str(_rk_val), 8, 'r')} {_sc_str:>4} {_pad(_cat_label, 5)}"
+            )
     except Exception:
         # pi-lens-ignore: python-empty-except
         pass
     # 动态推荐（2026-08-27）：根据近端主表档次日表现自动判断 regime，弱市下把
     # momentum/known_new_face/new_face 类🎯 从推荐序列剔除、优先 核心低吸/回马枪/
     # rebound🎯/弱转强；强市则正常优先级。纯展示行，不改排序/评分/落库；
-    # regime 判定失败时 fail-open 按强市处理。
+    # regime 判定失败时 fail-open 按强市处理。2026-08-28：改为仅显示分类排序。
+    # 预计算一次：既用于下方「动态推荐」行，也用于门控回马枪/核心低吸区——
+    # 动态推荐把某类排到前列时，即使主区密集也强制展示该类区（修复「推荐了却看不到标的」割裂）。
     try:
         _adj = _adjusted_picks(today_recs, nextday_mark, conn, flow_pct_map)
-        if _adj:
-            _parts = []
-            for _n, _c, _m in _adj:
-                _tag = _pick_tag(_c, _m)
-                if _c == "core_dip":
-                    _parts.append(f"{ANSI['GREEN']}{_tag}·{_n}{ANSI['RESET']}")
-                elif _c == "comeback":
-                    _parts.append(f"{ANSI['CYAN']}{_tag}·{_n}{ANSI['RESET']}")
-                elif _m:
-                    _parts.append(f"{ANSI['BOLD']}{ANSI['MAGENTA']}{_tag}·{_n}{ANSI['RESET']}")
-                else:
-                    _parts.append(f"{_tag}·{_n}")
-            print(f"  {ANSI['BOLD']}动态推荐{ANSI['RESET']}: {' > '.join(_parts)}")
     except Exception:
         # pi-lens-ignore: python-empty-except
-        pass
+        _adj = None
+    # regime 弱市时动态推荐把核心低吸/回马枪排到前列，需强制展示对应区（覆盖主区密集隐藏门）；
+    # 强市下核心低吸/回马枪本就排在末尾，保持原隐藏门（主区密集即藏）。
+    try:
+        _weak = _regime_weak(conn)
+    except Exception:
+        # pi-lens-ignore: python-empty-except
+        _weak = False
+    if _adj:
+        _seen = set()
+        _parts = []
+        for _n, _c, _m in _adj:
+            _tag = _pick_tag(_c, _m)
+            _key = (_tag, _c)
+            if _key in _seen:
+                continue
+            _seen.add(_key)
+            if _c == "core_dip":
+                _parts.append(f"{ANSI['GREEN']}{_tag}{ANSI['RESET']}")
+            elif _c == "comeback":
+                _parts.append(f"{ANSI['CYAN']}{_tag}{ANSI['RESET']}")
+            elif _m:
+                _parts.append(f"{ANSI['BOLD']}{ANSI['MAGENTA']}{_tag}{ANSI['RESET']}")
+            else:
+                _parts.append(_tag)
+        print(f"  {ANSI['BOLD']}动态推荐{ANSI['RESET']}: {' > '.join(_parts)}")
     if any(breakout_mark.values()):
         print(
             f"  {ANSI['CYAN']}⚡ 蓄势突破观察{ANSI['RESET']}（缩量回调蓄势位·含新面孔/重上榜两变体"
@@ -829,17 +853,25 @@ def display_priority(
     # 历史：阈值曾为 3（2026-08-20），2026-08-21 撤销弱市门控、2026-08-24 短暂恢复弱市 OR 门
     # 后同日由用户决策移除——主表 >5 条即刷屏，无论大盘强弱都藏。
     _show_lowbuy = len(main_recs) <= COMEBACK_DISPLAY_MIN_MAIN
-    if comeback_recs and _show_lowbuy:
+    # 动态推荐弱市把核心低吸/回马枪排到前列时强制展示对应区（覆盖主区密集隐藏门），修复「推荐了却看不到标的」割裂；
+    # 强市下这两类排在末尾，保持原隐藏门。
+    _show_comeback = bool(comeback_recs) and (_show_lowbuy or _weak)
+    _hdr = (
+        f"  {_pad('#', 3, 'r')} {_pad('代码', 12)} {_pad('名称', 10)} "
+        f"{_pad('涨幅', 8, 'r')} {_pad('5日累计', 8, 'r')} {_pad('现价', 7, 'r')} {_pad('排名', 8, 'r')} "
+        f"{_pad('板块', 14)} {_pad('策略', 5)} {_pad('评分', 4, 'r')} {_pad('时间', 6)}"
+    )
+    if _show_comeback:
         # 2026-08-24：区内改按资金流优先（ranking.comeback_sort_key 单源，与 today_report
         # 回马枪小节同源防漂移）——▲▲回流可取在前、▼▼背离回避劣后，次键评分。
         cb_scored = sorted(comeback_recs, key=lambda x: comeback_sort_key(x, flow_pct_map))
         if len(cb_scored) > COMEBACK_DISPLAY_MAX:
             cb_scored = cb_scored[:COMEBACK_DISPLAY_MAX]
         print(f"\n{ANSI['CYAN']}◆ 回马枪 — 掉榜跟踪/回调买点（主区稀少·补充参考）{ANSI['RESET']}")
-        print(hdr)
+        print(_hdr)
         for ci, entry in enumerate(cb_scored, 1):
             _print_priority_row(entry, ci, flow_pct_map, last_ranks=last_ranks)
-        print("  排序=主力净占比（回流可取在前·背离回避劣后）→评分。")
+        print("  排序=今日波动（涨多/跌狠优先）→主力净占比→评分。")
         print(f"  {'-' * 92}")
 
     # 核心方向低吸独立区（2026-08-19，`scanner/core_themes.py`）：大跌市中找「当前主线
@@ -847,29 +879,19 @@ def display_priority(
     # 本区改从今日 recommendations 读取（与回马枪区同源），不再 display 内自行计算——
     # 落库后同样进 nextday_attribution/prevday_perf 复盘验证「主线回调低吸」假设。
     # 2026-08-20：展示改与回马枪同款——复用综合排序标准表头 hdr + _print_priority_row
-    # （代码/名称/涨幅/5日累计/现价/排名/板块/策略/评分/时间/建议），低吸专属数据
-    # （20日累计/回撤/主力）追加到行尾 extra 后缀（ANSI 绿色），不再用自定义表头。
-    core_dips: list[RecommendationRow] = []
-    for e in core_dip_recs:
-        sb = _entry_dims(e)
-        run = sb.get("run")
-        pullback = sb.get("pullback")
-        if run is None or pullback is None:
-            continue
-        e["_core_dip_extra"] = _core_dip_extra_str(to_float(run), to_float(pullback), sb.get("flow_pct"))
-        core_dips.append(e)
+    # （代码/名称/涨幅/5日累计/现价/排名/板块/策略/评分/时间），低吸质量由
+    # _core_dip_entry_quality 同口径排序，行尾不再附加 20日累计/回撤/主力 文本。
+    core_dips: list[RecommendationRow] = list(core_dip_recs)
     core_dips.sort(key=_core_dip_entry_quality)
-    # 2026-08-19: 核心方向低吸区显示逻辑与回马枪同规则——主区（榜上五类）推荐条数 ≥
-    # COMEBACK_DISPLAY_MIN_MAIN 时默认不渲染（避免与主区重复刷屏）；主区推荐条数 < 阈值
-    # （含为空）时补充展示，最多前 COMEBACK_DISPLAY_MAX 条。core_dip 为空同样跳过。
-    # 2026-08-24：与回马枪同款 OR 门（复用 _show_lowbuy）。
-    if core_dips and _show_lowbuy:
+    # 核心方向低吸区显示门：主区稀少（≤阈值）或弱市 regime（动态推荐把低吸排到前列）时展示；
+    # 后者覆盖主区密集的隐藏门，确保「动态推荐=低吸」时能看到对应标的。
+    _show_core_dip = bool(core_dips) and (_show_lowbuy or _weak)
+    if _show_core_dip:
         if len(core_dips) > COMEBACK_DISPLAY_MAX:
             core_dips = core_dips[:COMEBACK_DISPLAY_MAX]
         print(f"\n{ANSI['GREEN']}◆ 核心方向低吸 — 主线方向核心股回调参考（主区稀少·补充参考）{ANSI['RESET']}")
-        print(hdr)
+        print(_hdr)
         for di, entry in enumerate(core_dips, 1):
             _print_priority_row(entry, di, flow_pct_map, last_ranks=last_ranks)
-        print("  行尾绿色：20日累计/回撤（距20日高点，负值越深越低吸位）/主力净占比；")
-        print("  排序=低吸质量（主力回流→回撤深→龙头强→今日企稳）。")
+        print("  排序=今日波动（涨多/跌狠优先）→主力回流→回撤深→龙头强。")
         print(f"  {'-' * 92}")

@@ -79,7 +79,6 @@ class RecommendationRow(_RecRowRequired, total=False):
     _marked: bool
     _tier: int
     _core_stock: bool
-    _core_dip_extra: str  # 核心低吸区行尾后缀（display.display_priority 写入）
 
 
 def parse_score_breakdown(sb: str | dict | None) -> Dict[str, Any]:
