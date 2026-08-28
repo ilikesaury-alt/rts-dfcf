@@ -609,17 +609,20 @@ class TestValidateShortTerm:
         assert dims["v_st_ma"] == V_ST_MA_SUPPORT
 
     def test_ma_support_yesterday_below_today_breakout(self):
-        """2026-08-14 修复回归：昨日在 MA5 下方 + 今日放量突破 = 超短标准买点，
+        """2026-08-14 修复回测：昨日在 MA5 下方 + 今日放量突破 = 标准买点，
 
-        不应被误判 V_ST_MA_BROKEN（否则 enhancer「趋势破位」硬过滤移出推荐，
+        不应被判为 V_ST_MA_BROKEN（enhancer 趋势破位硬过滤移出推荐）。
         行云科技 +6.68% 案例：昨收 34.67 < MA5 36.33，今日收 37.33 已站上）。
         """
         # 前段深跌、近5天回升（ma5>ma10）、昨日回踩跌破 MA5，今日大涨站回
-        pcts = [-1.5] * 12 + [-0.5] * 3 + [0.8] * 4 + [-1.5, 10.0]
+        # 使用 EMA 口径设计数据：ma5_ema > ma10_ema 且昨日收盘 < MA5
+        pcts = [-1.5] * 8 + [-0.5] * 4 + [0.5] * 4 + [1.0] * 4 + [-2.0, 10.0]
         k = _kline(pcts, volumes=[1.0] * len(pcts))
         closes = [c["close"] for c in k[:-1]]
-        # 昨日收盘应低于历史 MA5（构造目标场景）
-        ma5 = sum(closes[-5:]) / 5
+        # 使用 EMA 计算 MA5（与代码实现一致，2026-08-28 统一口径）
+        from scanner.indicators import compute_ma
+        ma5 = compute_ma(closes, 5, ema=True)
+        assert ma5 is not None, "EMA MA5 计算应成功"
         assert closes[-1] < ma5, "前置条件：昨日收盘应在 MA5 下方"
         today_close = k[-1]["close"]
         assert today_close > ma5, "前置条件：今日收盘应站上 MA5"
@@ -643,7 +646,10 @@ class TestValidateShortTerm:
         k = _kline(pcts, volumes=[1.0] * len(pcts))
         closes = [c["close"] for c in k[:-1]]
         today_close = k[-1]["close"]
-        ma5 = sum(closes[-5:]) / 5
+        # 使用 EMA 计算 MA5（与代码实现一致，2026-08-28 统一口径）
+        from scanner.indicators import compute_ma
+        ma5 = compute_ma(closes, 5, ema=True)
+        assert ma5 is not None, "EMA MA5 计算应成功"
         assert today_close < ma5, "前置条件：今日收盘应在 MA5 下方"
         ks = KlineSummary(
             trend="放量启动", accumulated_pct=5.0, volume_ratio=1.5,

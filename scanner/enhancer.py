@@ -240,7 +240,12 @@ def _detect_main_force_distribution(c: Candidate, dims: dict) -> bool:
     #    写该字段）且 rank>30；叠加分时持续走弱 → 冲高派发。
     #    历史校准：12 样本 next_day -1.90%/胜率25%、cum_3d -4.24%/胜率12%（n=8），
     #    11 股/7 交易日分布（07-20~08-13），非单票集中；弱转强直通亦不可豁免。
-    if dims.get("v_st_rank") == V_ST_RANK_LOW and intraday is not None and intraday <= DISTRIBUTION_RANK_WEAK_INTRADAY:
+    #    显式守卫：仅 short_term 类别触发（v_st_rank 由 validate_short_term 写入，
+    #    但添加 category 检查防止其他策略误触发）。
+    if (c.category == "short_term"
+            and dims.get("v_st_rank") == V_ST_RANK_LOW
+            and intraday is not None
+            and intraday <= DISTRIBUTION_RANK_WEAK_INTRADAY):
         return True
     return False
 

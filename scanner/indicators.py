@@ -1,4 +1,8 @@
 def compute_rsi(closes: list[float], period: int = 14) -> float | None:
+    """计算 RSI（Wilder 平滑），返回最终 RSI 值。
+
+    需要完整 RSI 序列时（如背离检测），使用 compute_rsi_sequence。
+    """
     if len(closes) < period + 1:
         return None
     gains, losses = 0.0, 0.0
@@ -20,6 +24,43 @@ def compute_rsi(closes: list[float], period: int = 14) -> float | None:
         return 100.0
     rs = avg_gain / avg_loss
     return 100.0 - (100.0 / (1.0 + rs))
+
+
+def compute_rsi_sequence(closes: list[float], period: int = 6) -> list[float]:
+    """计算 RSI 完整序列（Wilder 平滑），rsi_list[i] 对应 closes[period+i]。
+
+    用于背离检测（validator._mo_divergence）等需要比较不同时间点 RSI 值的场景。
+    与 compute_rsi 使用相同算法，区别在于返回完整序列而非仅最终值。
+    """
+    if len(closes) < period + 1:
+        return []
+    gains, losses = 0.0, 0.0
+    for i in range(1, period + 1):
+        diff = closes[i] - closes[i - 1]
+        if diff > 0:
+            gains += diff
+        else:
+            losses -= diff
+    avg_gain = gains / period
+    avg_loss = losses / period
+    rsi_list: list[float] = []
+    if avg_loss == 0:
+        rsi_list.append(100.0)
+    else:
+        rs = avg_gain / avg_loss
+        rsi_list.append(100.0 - 100.0 / (1.0 + rs))
+    for i in range(period + 1, len(closes)):
+        diff = closes[i] - closes[i - 1]
+        gain = diff if diff > 0 else 0
+        loss = -diff if diff < 0 else 0
+        avg_gain = (avg_gain * (period - 1) + gain) / period
+        avg_loss = (avg_loss * (period - 1) + loss) / period
+        if avg_loss == 0:
+            rsi_list.append(100.0)
+        else:
+            rs = avg_gain / avg_loss
+            rsi_list.append(100.0 - 100.0 / (1.0 + rs))
+    return rsi_list
 
 
 def compute_ma(closes: list[float], period: int, ema: bool = False) -> float | None:

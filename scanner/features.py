@@ -24,6 +24,11 @@ from scanner.indicators import (
     compute_rsi,
 )
 
+# MA 多头结构评分常量（与 config.py 同源，此处避免循环导入）
+_MA_BULL_3_TIER_SCORE = 6   # MA5 > MA10 > MA20（完全多头排列）
+_MA_BULL_2_TIER_SCORE = 3   # MA5 > MA10（部分多头）
+_MA_BEAR_SCORE = -3         # MA5 <= MA10（空头排列）
+
 
 def build_features(closes: list[float],
                    highs: list[float] | None = None,
@@ -65,3 +70,36 @@ def build_features(closes: list[float],
         feats["ma20_sma_prev"] = sum(closes[-25:-5]) / 20
 
     return feats
+
+
+def ma_alignment_score(closes: list[float], feats: dict | None = None) -> tuple[int, str]:
+    """MA 多头结构判定（EMA 口径，analysis/validator 共用）。
+
+    返回 (分数, 细节描述)：
+      - MA5 > MA10 > MA20（完全多头）→ +6, "ma_full_5gt10gt20"
+      - MA5 > MA10（部分多头）       → +3, "ma_partial_5gt10"
+      - MA5 <= MA10（空头排列）      → -3, "ma_none"
+      - 数据不足                     →  0, "data_short"
+
+    与 compute_macd 内部 EMA 口径一致，避免 analysis/validator/short_term
+    三处各自实现 MA 判定导致的口径漂移。
+    """
+    if feats is not None:
+        ma5 = feats.get("ma5_ema")
+        ma10 = feats.get("ma10_ema")
+        ma20 = feats.get("ma20_ema")
+    else:
+        if len(closes) < 10:
+            return 0, "data_short"
+        ma5 = compute_ma(closes, 5, ema=True)
+        ma10 = compute_ma(closes, 10, ema=True)
+        ma20 = compute_ma(closes, 20, ema=True) if len(closes) >= 20 else None
+
+    if ma5 is None or ma10 is None:
+        return 0, "data_short"
+
+    if ma20 is not None and ma5 > ma10 > ma20:
+        return _MA_BULL_3_TIER_SCORE, "ma_full_5gt10gt20"
+    if ma5 > ma10:
+        return _MA_BULL_2_TIER_SCORE, "ma_partial_5gt10"
+    return _MA_BEAR_SCORE, "ma_none"

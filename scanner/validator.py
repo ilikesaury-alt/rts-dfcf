@@ -41,11 +41,12 @@ from scanner.config import (
     V_ST_VOL_SURGE,
     now_beijing,
 )
-from scanner.features import build_features
+from scanner.features import build_features, ma_alignment_score
 from scanner.indicators import (
     compute_bollinger_bands,
     compute_kdj,
     compute_ma,
+    compute_rsi_sequence,
 )
 from scanner.models import KlineBar
 from scanner.sector import classify_sector
@@ -239,62 +240,35 @@ def validate_nf(stock, kline_summary, closes: list[float],
 
 
 def _mo_ma_alignment(closes: list[float], feats: dict | None = None) -> tuple[int, str]:
-    # 与 analysis._ma_bull_score 统一使用 EMA 约定，消除「分析加分 / 验证剔除」脱节。
-    # 数据不足（data_short）返回 0 而非 V_MO_MA_NONE：
-    #   - 避免对无 20 日历史的新股误判「趋势破位」硬过滤（enhancer._detect_trend_breakage）
-    #   - 避免无谓 -5 惩罚（无足够样本时无法判定空头，应中性处理而非当作空头证据）
-    # 真正的空头排列是数据充足时 ma5<=ma10 的 "ma_none"，两者必须区分。
-    if feats is None:
-        if len(closes) < 10:
-            return 0, "data_short"
-        ma5 = compute_ma(closes, 5, ema=True)
-        ma10 = compute_ma(closes, 10, ema=True)
-        ma20 = compute_ma(closes, 20, ema=True) if len(closes) >= 20 else None
-    else:
-        ma5 = feats.get("ma5_ema")
-        ma10 = feats.get("ma10_ema")
-        ma20 = feats.get("ma20_ema")
-    if ma5 is None or ma10 is None:
-        return 0, "data_short"
+    """MA 多头结构验证（EMA 口径，委托 features.ma_alignment_score 统一实现）。
 
-    if ma20 is not None and ma5 > ma10 > ma20:
-        return V_MO_MA_FULL, "ma_full_5gt10gt20"
-    if ma5 > ma10:
-        return V_MO_MA_PARTIAL, "ma_partial_5gt10"
-    return V_MO_MA_NONE, "ma_none"
+    与 analysis._ma_bull_score 共用同一 EMA 计算，消除「分析加分 / 验证剔除」脱节。
+    数据不足（data_short）返回 0 而非 V_MO_MA_NONE：
+      - 避免对无 20 日历史的新股误判「趋势破位」硬过滤（enhancer._detect_trend_breakage）
+      - 避免无谓 -5 惩罚（无足够样本时无法判定空头，应中性处理而非当作空头证据）
+    真正的空头排列是数据充足时 ma5<=ma10 的 "ma_none"，两者必须区分。
+
+    注意：validator 侧空头惩罚 (-5) 比 analysis 侧 (-3) 更重，因 validator 用于
+    趋势破位硬过滤（enhancer._detect_trend_breakage），需要更强的否决力度。
+    此处将 ma_alignment_score 的 -3 映射为 V_MO_MA_NONE=-5，保持验证语义不变。
+    """
+    score, detail = ma_alignment_score(closes, feats)
+    # 映射到 validator 常量：analysis 侧 -3 → validator 侧 -5（趋势破位硬过滤需更重惩罚）
+    if score == -3:
+        return V_MO_MA_NONE, detail
+    if score == 3:
+        return V_MO_MA_PARTIAL, detail
+    if score == 6:
+        return V_MO_MA_FULL, detail
+    return score, detail
 
 
 def _rsi_seq(closes: list[float], period: int = 6) -> list[float]:
-    """计算 RSI 完整序列（Wilder 平滑），rsi_list[i] 对应 closes[period+i]。"""
-    if len(closes) < period + 1:
-        return []
-    gains, losses = 0.0, 0.0
-    for i in range(1, period + 1):
-        diff = closes[i] - closes[i - 1]
-        if diff > 0:
-            gains += diff
-        else:
-            losses -= diff
-    avg_gain = gains / period
-    avg_loss = losses / period
-    rsi_list: list[float] = []
-    if avg_loss == 0:
-        rsi_list.append(100.0)
-    else:
-        rs = avg_gain / avg_loss
-        rsi_list.append(100.0 - 100.0 / (1.0 + rs))
-    for i in range(period + 1, len(closes)):
-        diff = closes[i] - closes[i - 1]
-        gain = diff if diff > 0 else 0
-        loss = -diff if diff < 0 else 0
-        avg_gain = (avg_gain * (period - 1) + gain) / period
-        avg_loss = (avg_loss * (period - 1) + loss) / period
-        if avg_loss == 0:
-            rsi_list.append(100.0)
-        else:
-            rs = avg_gain / avg_loss
-            rsi_list.append(100.0 - 100.0 / (1.0 + rs))
-    return rsi_list
+    """计算 RSI 完整序列（委托 indicators.compute_rsi_sequence 统一实现）。
+
+    rsi_list[i] 对应 closes[period+i]，用于 _mo_divergence 背离检测。
+    """
+    return compute_rsi_sequence(closes, period)
 
 
 def _mo_divergence(closes: list[float], historical_kline: list[KlineBar],
@@ -471,11 +445,17 @@ def _rb_sector(name: str, clusters: dict[str, list[str]] | None) -> tuple[int, i
     return 0, count
 
 
-def _rb_pattern(kline_summary) -> tuple[int, str]:
-    """形态确认：从 analyze_rebound 预计算的 dims 读取，避免重复检测。
+def _rb_pattern_dim(kline_summary) -> tuple[int, str]:
+    """形态维度判定（仅用于 pos_dims 通过门禁，不计入 validation total）。
 
     形态分已在 analyze_rebound 的 score 中计入（detect_rebound_patterns），
-    此处仅作为 pos_dims 维度判定，不并入 validate total。
+    此处仅作为 pos_dims 维度判定（验证"有形态确认"），避免重复计分。
+
+    返回 (维度分, 形态描述)：
+      - 阳包阴+暴跌 → V_RB_PATTERN_STRONG, "engulfing_crash"
+      - 锤子线       → V_RB_PATTERN_HAMMER, "hammer"
+      - 3连阳企稳    → V_RB_PATTERN_3BULL, "3bull_stabilize"
+      - 无形态       → 0, "no_pattern"
     """
     dims = kline_summary.dimensions if kline_summary else {}
     if dims.get("rb_pattern_engulfing_crash"):
@@ -500,7 +480,7 @@ def validate_rebound(stock, kline_summary, closes: list[float],
     os_bonus, os_detail = _rb_oversold(closes, historical_kline, feats)
     vol_bonus, vol_detail = _rb_volume(kline_summary)
     sec_bonus, sec_count = _rb_sector(stock.name, clusters)
-    pat_bonus, pat_detail = _rb_pattern(kline_summary)
+    pat_bonus, pat_detail = _rb_pattern_dim(kline_summary)  # 仅用于 pos_dims，不计入 total
 
     details: dict[str, int | float | str] = {
         "v_rb_oversold": os_bonus,
@@ -565,21 +545,24 @@ def validate_short_term(stock, kline_summary, closes: list[float],
 
     ma_bonus = 0
     if len(closes) >= 20:
-        ma5 = sum(closes[-5:]) / 5
-        ma10 = sum(closes[-10:]) / 10
-        # 用今日价（stock.current 实时价/信号日收盘价）而非昨日收盘（closes[-1]）判定
-        # MA 支撑/破位：short_term 是"今日放量启动"策略，昨日在 MA5 下方 + 今日放量
-        # 突破正是标准买点（弱转强/放量启动），用昨日收盘会把已站上均线的启动票误判
-        # V_ST_MA_BROKEN → enhancer「趋势破位」硬过滤移出推荐（2026-08-14 行云科技
-        # 案例：昨收 34.67 < MA5 36.33，今日 +6.68% 收 37.33 已站上，却被移出）。
-        # current 缺失/无效时回退昨日收盘（保持旧行为）。
-        today_close = getattr(stock, "current", 0) or 0
-        if today_close <= 0:
-            today_close = closes[-1]
-        if today_close > ma5 > ma10:
-            ma_bonus = V_ST_MA_SUPPORT
-        elif today_close < ma5:
-            ma_bonus = V_ST_MA_BROKEN
+        # 统一使用 EMA（与 analysis._ma_bull_score / features.ma_alignment_score 同口径），
+        # 消除 SMA vs EMA 口径漂移。EMA 对创业板高波动更平滑，减少假信号。
+        ma5 = compute_ma(closes, 5, ema=True)
+        ma10 = compute_ma(closes, 10, ema=True)
+        if ma5 is not None and ma10 is not None:
+            # 用今日价（stock.current 实时价/信号日收盘价）而非昨日收盘（closes[-1]）判定
+            # MA 支撑/破位：short_term 是"今日放量启动"策略，昨日在 MA5 下方 + 今日放量
+            # 突破正是标准买点（弱转强/放量启动），用昨日收盘会把已站上均线的启动票误判
+            # V_ST_MA_BROKEN → enhancer「趋势破位」硬过滤移出推荐（2026-08-14 行云科技
+            # 案例：昨收 34.67 < MA5 36.33，今日 +6.68% 收 37.33 已站上，却被移出）。
+            # current 缺失/无效时回退昨日收盘（保持旧行为）。
+            today_close = getattr(stock, "current", 0) or 0
+            if today_close <= 0:
+                today_close = closes[-1]
+            if today_close > ma5 > ma10:
+                ma_bonus = V_ST_MA_SUPPORT
+            elif today_close < ma5:
+                ma_bonus = V_ST_MA_BROKEN
 
     # 弱转强作为第 4 个软维度：真弱转强即便板块/排名/MA 全不达标也应放行。
     # 注意：st_weak_to_strong 已在 analyze_short_term 的 score 中计入（+8），

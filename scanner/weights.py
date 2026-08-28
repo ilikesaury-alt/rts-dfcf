@@ -66,6 +66,10 @@ MOMENTUM_WEIGHTS: dict[str, int] = {
     "atr_healthy": 0,
     "atr_overheated": -3,
     "obv_uptrend": 3,
+    # 首次启动子模式专用权重（accumulated ∈ [0,7), today_pct ∈ [3.5,8]）
+    # 与常规 momentum 的 today_pct_6_8/accum_10_15 语义不同，单独定义避免键名与值域错位
+    "launch_today_pct": 5,  # 首次启动今日涨幅档（3.5-8%，中性偏正）
+    "launch_accum": 8,      # 首次启动累计涨幅档（0-7%，刚启动低位）
 }
 
 SHORT_TERM_WEIGHTS: dict[str, int] = {

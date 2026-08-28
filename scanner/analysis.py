@@ -1,3 +1,19 @@
+"""策略分析引擎（评分核心）。
+
+各 analyze_* 函数实现四大策略的评分逻辑，输出 KlineSummary。
+评分结果经 validator 交叉验证后，由 enhancer 加分/风险标签，最终由 candidates 分类。
+
+accumulated_pct 口径说明（重要）：
+  - new_face / momentum / rebound: 历史5日累计（不含今日 bar），
+    计算方式: (closes[-1] - closes[-6]) / closes[-6] * 100
+    语义: "推荐前5日的累计涨幅"
+  - short_term: 含今日 bar 的5日累计，
+    计算方式: (all_closes[-1] - all_closes[-6]) / all_closes[-6] * 100
+    语义: "今日异动"（含今日涨幅）
+  - accumulated_incl_today: 全策略共用的含今日口径（供 🎯 次日大涨画像判定），
+    由 _accum_incl_today() 计算，语义与 short_term.accumulated_pct 一致。
+"""
+
 from scanner.config import (
     BOTTOM_MAX_LOSS,
     BOTTOM_NEAR_LOW_PCT,
@@ -63,8 +79,7 @@ from scanner.config import (
     WEAK_FORM_MIN_DOWN_DAYS,
     now_beijing,
 )
-from scanner.features import build_features
-from scanner.indicators import compute_ma
+from scanner.features import build_features, ma_alignment_score
 from scanner.models import KlineBar, KlineSummary, StockInfo
 from scanner.patterns import (
     detect_momentum_patterns,
@@ -165,26 +180,14 @@ def _get_features(closes: list[float], historical_kline: list[KlineBar],
 
 
 def _ma_bull_score(closes: list[float], feats: dict | None = None) -> int:
-    # 使用 EMA（从最近 N 根收盘价播种），创业板高波动下比 SMA 噪声更小。
-    # 注意：与 compute_macd 内部 EMA（从 closes[0] 播种）并非同一序列，
-    # 此处仅用于 MA 多头结构判定，与 MACD 指标分属不同用途。
-    if feats is not None:
-        ma5 = feats.get("ma5_ema")
-        ma10 = feats.get("ma10_ema")
-        ma20 = feats.get("ma20_ema")
-    else:
-        if len(closes) < 10:
-            return 0
-        ma5 = compute_ma(closes, 5, ema=True)
-        ma10 = compute_ma(closes, 10, ema=True)
-        ma20 = compute_ma(closes, 20, ema=True) if len(closes) >= 20 else None
-    if ma5 is None or ma10 is None:
-        return 0
-    if ma20 is not None and ma5 > ma10 > ma20:
-        return MA_BULL_3_TIER_SCORE
-    if ma5 > ma10:
-        return MA_BULL_2_TIER_SCORE
-    return MA_BEAR_SCORE
+    """MA 多头结构评分（委托 features.ma_alignment_score 统一实现）。
+
+    保留旧函数名供 analysis 内部调用点（new_face/momentum 的 ma_bull 维度）使用，
+    避免大面积修改。与 validator._mo_ma_alignment、validate_short_term 内联 MA
+    共用同一实现，消除三处口径漂移风险。
+    """
+    score, _detail = ma_alignment_score(closes, feats)
+    return score
 
 
 def _detect_gap_up(today_current: float, kline: list[KlineBar], today_str: str | None = None) -> tuple[float, int]:
@@ -591,10 +594,11 @@ def analyze_momentum(stock: StockInfo, kline: list[KlineBar] | None,
             div_bonus, div_detail = _mo_divergence(closes, historical_kline, feats)
             if div_bonus < 0:  # 有顶背离：放弃首日启动（动能衰竭）
                 return None
-            score = MOMENTUM_WEIGHTS["today_pct_6_8"] + MOMENTUM_WEIGHTS["accum_10_15"]
+            # 使用首次启动专用权重（launch_today_pct/launch_accum），语义与值域对齐
+            score = MOMENTUM_WEIGHTS["launch_today_pct"] + MOMENTUM_WEIGHTS["launch_accum"]
             dims: dict[str, int | float] = {
-                "momentum_today_pct": MOMENTUM_WEIGHTS["today_pct_6_8"],
-                "momentum_accumulated": MOMENTUM_WEIGHTS["accum_10_15"],
+                "momentum_today_pct": MOMENTUM_WEIGHTS["launch_today_pct"],
+                "momentum_accumulated": MOMENTUM_WEIGHTS["launch_accum"],
                 "momentum_volume": MOMENTUM_WEIGHTS["vol_healthy"],
                 "momentum_first_launch": 1,
                 "momentum_vol_ratio": round(vol_ratio, 2),
