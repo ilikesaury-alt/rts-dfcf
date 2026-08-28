@@ -27,9 +27,6 @@ from scanner.config import (
     GAP_UP_STRONG_PTS,
     GAP_UP_WEAK,
     GAP_UP_WEAK_PTS,
-    MA_BEAR_SCORE,
-    MA_BULL_2_TIER_SCORE,
-    MA_BULL_3_TIER_SCORE,
     MAX_MOMENTUM_TODAY_PCT,
     MAX_NEW_FACE_TODAY_PCT,
     MOMENTUM_LAUNCH_ACCUM_MAX,
@@ -476,7 +473,7 @@ def analyze_new_face(stock: StockInfo, kline: list[KlineBar] | None,
     dims: dict[str, int | float] = {}
     dims["accumulated_incl_today"] = round(accum_incl_today, 2)
 
-    # 今日涨幅 >= 6% 由显式分支处理（对齐 STRATEGY.md：6~8%→+5、>8%→-15），
+    # 今日涨幅 >= 6% 由显式分支处理（对齐 STRATEGY.md：6~8%→+5、>8%→-10），
     # 不进入 _score_today_pct，避免其 today_pct_6_7 / today_pct_7_12 分支被覆盖却仍被读取。
     if today_pct >= 6:
         if today_pct > 8:
@@ -505,9 +502,9 @@ def analyze_new_face(stock: StockInfo, kline: list[KlineBar] | None,
         dims["new_face_accumulated"] = W["accum_15_20"]
     score += acc_score
 
-    # Volume surge (additive: bottom confirmation or v-shape still get this)
+    # Volume surge — 权重=0（volume_surge 对 new_face 超卖反转无预测力，已由 IC 归零），
+    # 仅记录 dims 供展示/归因使用，不再做无意义的 score += 0。
     if volume_surge:
-        score += W["volume_surge"]
         dims["new_face_volume"] = W["volume_surge"]
 
     if bottom_confirmed:
@@ -585,10 +582,13 @@ def analyze_momentum(stock: StockInfo, kline: list[KlineBar] | None,
     # 提前 1-2 天进 momentum 池（目标区间 4-6% 为数据最佳带：cum3d +9.46%）。
     # 缩量(vol<1.5)/MA空头/有顶背离 一律不放行，交给 validator pos_dims≥2 再过滤一次。
     if MOMENTUM_LAUNCH_ACCUM_MIN <= accumulated < MOMENTUM_LAUNCH_ACCUM_MAX:
+        # 首次启动 MA 要求放宽至"非空头"（score>=0）：原 >= MA_BULL_2_TIER_SCORE（部分多头）
+        # 在低位启动阶段过于严格（MA 多头排列通常滞后于价格启动），导致信号量过少。
+        # 放宽后只要求 MA5 不低于 MA10（非空头），保留趋势支撑语义。
         is_launch = (
             MOMENTUM_LAUNCH_TODAY_MIN <= today_pct <= MOMENTUM_LAUNCH_TODAY_MAX
             and vol_ratio >= MOMENTUM_LAUNCH_VOL
-            and _ma_bull_score(closes, feats) >= MA_BULL_2_TIER_SCORE
+            and _ma_bull_score(closes, feats) >= 0
         )
         if is_launch:
             div_bonus, div_detail = _mo_divergence(closes, historical_kline, feats)

@@ -569,10 +569,10 @@ COMEBACK_REENTRY_RSI_LOW = 30  # RSI 合理区下限
 COMEBACK_REENTRY_RSI_HIGH = 50  # RSI 合理区上限（回落但不超卖）
 COMEBACK_REENTRY_BOLL_MID_PCT = 3.0  # 距 BOLL 中轨±此值内 → 位置合理
 COMEBACK_REENTRY_MA20_SLOPE_MIN = 0.5  # MA20 日涨幅>此值 → 上行（百分比）
-COMEBACK_REENTRY_STATUS_BUY = 4  # 信号数≥此值 → "到买点"
-# 观察中门槛由 2 提到 3：原 2 个信号极易由同源指标（MA20支撑/未破位/BOLL中轨
-# 三者本质都是"价格在均线附近"）一次凑齐，导致大量横盘票涌入观察列表、噪声过大。
-COMEBACK_REENTRY_STATUS_WATCH = 3  # 信号数≥此值 → "观察中"，否则 "未到买点"（过滤）
+COMEBACK_REENTRY_STATUS_BUY = 3  # 信号数≥此值 → "到买点"（5维信号：均线支撑/缩量/RSI/BOLL/MACD）
+# 观察中门槛调整：原 6 维信号时为 3（防同源指标凑数），合并 MA20支撑+未破位→均线支撑后
+# 降为 5 维，阈值相应下调到 2（仍需至少 2 个独立维度确认）。
+COMEBACK_REENTRY_STATUS_WATCH = 2  # 信号数≥此值 → "观察中"，否则 "未到买点"（过滤）
 COMEBACK_REENTRY_DISPLAY_WATCH_MAX = 0  # "观察中"补充最多显示条数（0 = 不显示，只看到买点）
 # 回马枪独立区仅作兜底参考：主区（榜上五类）推荐条数 > COMEBACK_DISPLAY_MIN_MAIN 时
 # 隐藏回马枪/核心低吸两低吸区（避免刷屏）；主区推荐条数 ≤ 该值（含为空）时补充展示，

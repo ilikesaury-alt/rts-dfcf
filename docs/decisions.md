@@ -87,3 +87,12 @@
 - **热搜榜整体下线（2026-08-27，用户决策「热搜榜意义不大」+ 数据验证）**：雪球热搜榜原作双源交叉校验（双榜 source_tag=both 加 CROSS_SOURCE_BONUS=5），实测无正向边际——recommendations 全量回放（excluded=0，次日 daily_kline）：both 222 条 次日均 -1.81%/hit(>=7%) 10.4% vs 仅飙升榜 2725 条 -0.83%/9.6%，均值反而更差、hit 差异在噪声带；分类别（momentum/new_face/rebound/short_term）方向不一致。热搜榜独有票本就不入候选，唯一增量只剩 +5 分加分与「双榜」展示标签，均为无数据支撑的冗余。**删除范围**：api.fetch_xueqiu_hot_list +_xueqiu_hot_cb 断路器、config.CROSS_SOURCE_BONUS、data_source 四 adapter 的 fetch_hot_list 接口、unified_scanner 拉取/标记/prev_hot_syms 落库、portfolio_backtest 的 both 扣分推导、相关测试 9 例；source_tag 字段保留（comeback/core_dip 在用）。leaderboard_obs 的 --source hot 保留（历史 leaderboard_log hot 行仍可查，仅停采）。STRATEGY.md 双源描述未同步（历史文档，未改）。
 
 - **功能瘦身一批（2026-08-27，用户「执行」性价比审计结论）**：① **minute_snapshot 分时快照落库整体下线**——建表初衷「历史分时形态可回放复盘」（肯特股份案例），但回放查询消费端从未建成，全库 grep 仅有 save/prune 写删两端 + 测试，零读取方，DB 实存 1566 行纯死数据；删除 orchestrator 落库+剪枝接线、dal 两函数、schema 建表、MINUTE_SNAPSHOT_KEEP_DAYS、re-export 门面及 tests/test_minute_snapshot.py；同批顺手把 patterns.py 三个形态检测签名 dict→KlineBar（存量 mypy arg-type 债的根因点，调用侧零改动）。② ic_attribution 385 行与口径锁测试删除。③ enhancer 资金流正向加分死分支删除（见前条）。分钟快照若日后确需分时回放，从 git 历史（本条之前的 commit）取回并在 stock_report 建 reader 让它产生价值后再恢复。
+
+- **策略体系代码审查修复（2026-08-28，用户要求审查不合理之处并修复）**：基于对 analysis.py/validator.py/weights.py/config.py/comeback.py 的系统性审查，修复 5 项问题：
+  1. **momentum 首次启动条件过严**（`analysis.py:588`）：MA 多头要求从 `>= MA_BULL_2_TIER_SCORE`（部分多头）放宽至 `>= 0`（非空头即可）。原条件在低位启动阶段过于严格（MA 多头排列通常滞后于价格启动），导致信号量过少。
+  2. **new_face >8% 涨幅惩罚过重**（`weights.py:21`）：从 `-15` 调整为 `-10`。8% 是创业板正常强势区间（非涨停），过重惩罚会误杀强势反转股。
+  3. **回踩买点 6 维信号同源性高**（`comeback.py:336`, `config.py:572`）：合并 MA20支撑+未破位→均线支撑（6维→5维），阈值从 `>=4` 调整为 `>=3`。原 MA20支撑/未破位/BOLL中轨三者本质都是"价格在均线附近"，一次回调可能同时命中 3 个信号导致门槛实际偏低。
+  4. **new_face volume_surge=0 无意义加分**（`analysis.py:508`）：删除 `score += W["volume_surge"]`（加 0 分无意义），保留 dims 记录供展示/归因。
+  5. **short_term 超买时 pos_dims 重复计算**（`validator.py:599`）：复用已计算的 pos_dims，减去 wts_bonus，避免重复遍历。
+  
+  **同步更新**：AGENTS.md 回踩买点描述（6维→5维，≥4→≥3）、momentum 首次启动 MA 要求；tests/test_analysis.py 和 tests/test_comeback.py 测试期望值；清理 analysis.py 3 个未使用的导入（MA_BEAR_SCORE/MA_BULL_2_TIER_SCORE/MA_BULL_3_TIER_SCORE）。

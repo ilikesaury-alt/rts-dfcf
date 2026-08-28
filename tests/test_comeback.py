@@ -97,7 +97,7 @@ class TestFundFlowFilter:
 class TestBuySignals:
 
     def _consolidation(self):
-        # 上行至 13.8 后温和回调，在上升 MA20 附近企稳 + 缩量：应到买点（≥4 信号）
+        # 上行至 13.8 后温和回调，在上升 MA20 附近企稳 + 缩量：应到买点（≥3 信号，5维）
         base = [10.0 + 0.2 * i for i in range(20)]  # 10 -> 13.8
         tail = [13.6, 13.5, 13.4, 13.45, 13.5, 13.45, 13.55, 13.5, 13.45, 13.5, 13.6]
         closes = base + tail
@@ -109,7 +109,7 @@ class TestBuySignals:
         closes, vols = self._consolidation()
         status, count, signals = cb._evaluate_buy_signals(_hist(closes, vols))
         assert status == "到买点", f"expected 到买点, got {status}({signals})"
-        assert count >= 4
+        assert count >= 3  # P2: 合并MA20支撑+未破位→均线支撑后，阈值从4降为3
 
     def test_broken_trend_no_buy_point(self):
         # 持续阴跌 + 放量：破位，不应到买点

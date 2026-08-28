@@ -333,13 +333,15 @@ def _evaluate_buy_signals(historical: list[KlineBar]) -> tuple[str, int, list[st
     last_close = closes[-1]
     signals: list[str] = []
 
+    # 均线支撑：合并原 MA20支撑+未破位（两者本质同源：价格在 MA20 附近）
+    # 条件：收盘站上 MA20 + 偏离<3% + MA20 上行（趋势支撑）
     ma20 = compute_ma(closes, 20)
     ma20_prev = compute_ma(closes[:-1], 20) if len(closes) >= 21 else None
-    if ma20 and ma20 > 0:
+    if ma20 and ma20 > 0 and last_close > ma20:
         dev_pct = abs(last_close - ma20) / ma20 * 100
         ma20_up = (ma20_prev and ma20 > ma20_prev * (1 + COMEBACK_REENTRY_MA20_SLOPE_MIN / 100))
         if dev_pct < COMEBACK_REENTRY_MA20_SUPPORT_PCT and ma20_up:
-            signals.append("MA20支撑")
+            signals.append("均线支撑")
 
     if len(volumes) >= 6:
         avg_vol = sum(volumes[-6:-1]) / 5
@@ -348,9 +350,6 @@ def _evaluate_buy_signals(historical: list[KlineBar]) -> tuple[str, int, list[st
         vol_ratio = today_vol / avg_vol if avg_vol > 0 else 0.0
         if vol_ratio < COMEBACK_REENTRY_VOL_SHRINK_RATIO:
             signals.append("缩量")
-
-    if ma20 and last_close > ma20:
-        signals.append("未破位")
 
     rsi = compute_rsi(closes, period=14)
     if rsi is not None and COMEBACK_REENTRY_RSI_LOW < rsi < COMEBACK_REENTRY_RSI_HIGH:

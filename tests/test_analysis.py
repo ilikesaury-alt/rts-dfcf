@@ -107,11 +107,11 @@ class TestAnalyzeNewFace:
         assert result.dimensions["new_face_today_pct"] == 5
 
     def test_today_pct_gt_8_penalized_not_rejected(self):
-        # STRATEGY.md: 新面孔 >8% → -15（空间不足），但 >12% 才直接跳过
+        # STRATEGY.md: 新面孔 >8% → -10（P2调整：原-15过重，8%是创业板正常强势区间）
         kline = _kline([1, 2, 1, 2, 3])
         result = analyze_new_face(_stock(percent=10, rank_change=2000, value=12000), kline)
         assert result is not None
-        assert result.dimensions["new_face_today_pct"] == -15
+        assert result.dimensions["new_face_today_pct"] == -10
 
     def test_today_pct_lt_0_5_scores_three(self):
         # Step 2 重平衡：today_pct_lt_0_5 5→3（超卖反转弱化今日涨幅奖励）。

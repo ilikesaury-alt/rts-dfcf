@@ -595,10 +595,10 @@ def validate_short_term(stock, kline_summary, closes: list[float],
     # 避免高位破轨股仅凭弱转强 + 共振拿下 inflated 验证分（如 300534 案例 +24）。
     if overbought:
         # 末周期超买：共振验证加分归零，弱转强不再直通，按标准门禁判定。
-        # 注意：pos_dims 仍含 wts_bonus，与"弱转强失效"注释矛盾——超买时
-        # wts_bonus 不应再作为通过维度，故从 pos_dims / non_sector_pos 中剔除。
-        pos_dims_no_wts = sum(1 for b in (sec_bonus, rank_bonus, ma_bonus) if b > 0)
-        non_sector_pos_no_wts = sum(1 for b in (rank_bonus, ma_bonus) if b > 0)
+        # 复用已计算的 pos_dims/non_sector_pos，减去 wts_bonus 维度（超买时失效）。
+        wts_dim = 1 if wts_bonus > 0 else 0
+        pos_dims_no_wts = pos_dims - wts_dim
+        non_sector_pos_no_wts = non_sector_pos - wts_dim
         details["_pos_dims"] = pos_dims_no_wts
         details["_max_dims"] = 3
         return pos_dims_no_wts >= 2 and non_sector_pos_no_wts >= 1, 0, details

@@ -18,7 +18,7 @@ NEW_FACE_WEIGHTS: dict[str, int] = {
     "today_pct_0_5_1": 4,
     "today_pct_lt_0_5": 3,
     "today_pct_6_8": 5,
-    "today_pct_gt_8": -15,
+    "today_pct_gt_8": -10,  # P2: -15→-10，8%是创业板正常强势区间，过重惩罚会误杀强势反转
     "accum_neg5_10": 6,
     "accum_lt_neg5": 0,
     "accum_10_15": 3,
