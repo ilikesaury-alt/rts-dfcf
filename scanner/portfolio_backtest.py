@@ -471,10 +471,7 @@ def run_backtest(conn: sqlite3.Connection, cfg: PBConfig) -> BacktestResult:
         for pos in positions:
             if i >= pos.exit_index:
                 pd = prices.get(pos.symbol, {})
-                if today in pd:
-                    close_p = pd[today][1]
-                else:
-                    close_p = last_close.get(pos.symbol)
+                close_p = pd[today][1] if today in pd else last_close.get(pos.symbol)
                 if close_p is None or close_p <= 0:
                     # 卖出日无收盘数据：继续持有（下一日再尝试），不强行平仓
                     still_open.append(pos)
@@ -574,7 +571,7 @@ def _compute_metrics(
     # 暴露度：每日收盘后「持仓市值 / 总权益」的均值（满仓旋转模型下接近 1，
     # 建仓期/空仓期会低于 1；反映策略实际资金占用水平）
     exposure_sum = 0.0
-    for (_, eq), c in zip(nav, cash_series):
+    for (_, eq), c in zip(nav, cash_series, strict=True):
         if eq > 0:
             exposure_sum += (eq - c) / eq
     exposure = exposure_sum / len(nav) if nav else 0.0

@@ -6,7 +6,6 @@
 2. sort_main_entries 复合键 (symbol, category)：nf∩st 双挂票不再按 symbol 键控；
 3. score_sort_key 分数方向由类别注册表驱动（kNF 升序、其余降序）。
 """
-import pytest
 
 from scanner import ranking as R
 

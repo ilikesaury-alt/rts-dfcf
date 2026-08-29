@@ -142,9 +142,12 @@ MOMENTUM_VOL_HEALTHY_MIN = 0.7
 MOMENTUM_VOL_HEALTHY_MAX = 2.0
 
 # MA alignment scoring
-MA_BULL_3_TIER_SCORE = 6
-MA_BULL_2_TIER_SCORE = 3
-MA_BEAR_SCORE = -3
+# 2026-08-29：这三个常量此前在 features.py 里被复制成一份私有副本（注释写"避免循环
+# 导入"，实测不成立——holidays/weights/indicators 均无任何 scanner 内部导入，
+# features → config 无环）。现改回单一来源：features.py 从此处 import。
+MA_BULL_3_TIER_SCORE = 6  # MA5 > MA10 > MA20（完全多头排列）
+MA_BULL_2_TIER_SCORE = 3  # MA5 > MA10（部分多头）
+MA_BEAR_SCORE = -3  # MA5 <= MA10（空头排列）
 
 # List momentum scoring (consecutive surge list appearances + rank trajectory)
 LIST_STREAK_BONUS_2 = 3

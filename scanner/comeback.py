@@ -56,6 +56,7 @@ from scanner.indicators import (
     compute_rsi,
 )
 from scanner.models import Candidate, KlineBar, KlineSummary, StockInfo
+from scanner.utils import EXTERNAL_FAILURES
 from scanner.validator import validate
 
 _KlineFetcher = Callable[[list[StockInfo]], dict[str, list[KlineBar] | None]]
@@ -95,7 +96,7 @@ def collect_comeback_symbols(conn, today: str, on_list_symbols: set[str]) -> lis
                  "last_list_date": w.get("last_list_date"), "over_limit": w.get("over_limit", 0)}
                 for w in result
             ])
-        except Exception as e:
+        except EXTERNAL_FAILURES as e:
             print(f"  [!] 回马枪入池写入失败: {e}")
     return result
 
@@ -158,7 +159,7 @@ def evaluate_comeback(conn, adapter, fetch_klines: _KlineFetcher,
     if fetch_stocks:
         try:
             klines = fetch_klines(fetch_stocks)
-        except Exception as e:
+        except EXTERNAL_FAILURES as e:
             print(f"  [!] 回马枪K线拉取失败: {type(e).__name__}: {e}")
             klines = {}
 
@@ -193,7 +194,7 @@ def evaluate_comeback(conn, adapter, fetch_klines: _KlineFetcher,
     if evaluated:
         try:
             mark_watch_evaluated(conn, evaluated, today=today)
-        except Exception as e:
+        except EXTERNAL_FAILURES as e:
             print(f"  [!] 回马枪评估标记失败: {e}")
 
     return rebound_candidates, reentry_candidates, quotes

@@ -103,7 +103,7 @@ def collect(conn, dates):
             from scanner.database import get_fund_flow_pct_map
 
             flow_map = get_fund_flow_pct_map(conn, [e["symbol"] for e in recs], as_of=dt)
-        except Exception:
+        except Exception:  # noqa: S110 - 离线分析脚本：单行数据缺失跳过即可，不落库不调参
             pass
         mkt = _gem_market_avg(conn, dt)
         mbucket = (
@@ -198,7 +198,7 @@ def render(rows, n_days):
     for b in PENALTY_BUCKETS:
         s = _stats([r["pct"] for r in ev_recent if _bucket(r["penalty"]) == b])
         hits.append(s[2])
-    known = [(b, h) for b, h in zip(PENALTY_BUCKETS, hits) if h is not None]
+    known = [(b, h) for b, h in zip(PENALTY_BUCKETS, hits, strict=True) if h is not None]
     mono = all(known[i][1] >= known[i + 1][1] for i in range(len(known) - 1)) if len(known) >= 3 else False
     ns = {b: _stats([r["pct"] for r in ev_recent if _bucket(r["penalty"]) == b])[0] for b in PENALTY_BUCKETS}
     min_n = min(ns.values()) if ns else 0

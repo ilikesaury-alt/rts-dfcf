@@ -375,13 +375,12 @@ def collect_market_extra(conn, symbols: list[str],
             fetched = fetch_fund_flow_rank()
             if fetched:
                 mapped = {_ak_to_xq(code): payload for code, payload in fetched.items()}
-                if _last_ff_partial:
-                    # 超时部分结果：只存当前缺失候选，避免把不完整数据当快照冻结
-                    save_map = {sym: mapped[sym] for sym in miss_flow if sym in mapped}
-                else:
-                    # 完整全市场快照：全部落库。这样当日任一 symbol（含已掉榜/重启前
-                    # 推荐过的票）都能在展示层读到资金流数据，而非只有当前候选有。
-                    save_map = mapped
+                # _last_ff_partial（超时部分结果）时只存当前缺失候选，避免把不完整数据
+                # 当快照冻结；否则是完整全市场快照，全部落库——这样当日任一 symbol
+                # （含已掉榜/重启前推荐过的票）都能在展示层读到资金流数据，
+                # 而非只有当前候选有。
+                save_map = ({sym: mapped[sym] for sym in miss_flow if sym in mapped}
+                            if _last_ff_partial else mapped)
                 if save_map:
                     save_market_extra_cache(conn, save_map, _FUND_FLOW)
                 for sym in miss_flow:

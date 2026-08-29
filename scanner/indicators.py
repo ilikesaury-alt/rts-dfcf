@@ -128,9 +128,9 @@ def compute_macd(closes: list[float], fast: int = 12,
 
     ema_fast = ema(closes, fast)
     ema_slow = ema(closes, slow)
-    macd_line = [f - s for f, s in zip(ema_fast, ema_slow)]
+    macd_line = [f - s for f, s in zip(ema_fast, ema_slow, strict=True)]
     signal_line = ema(macd_line, signal)
-    histogram = [m - s for m, s in zip(macd_line, signal_line)]
+    histogram = [m - s for m, s in zip(macd_line, signal_line, strict=True)]
 
     return {
         "macd": round(macd_line[-1], 4),
@@ -170,7 +170,7 @@ def compute_adx(highs: list[float], lows: list[float],
 
     adx_list = _smooth([
         abs(p - m) / max(p + m, 0.001) * 100
-        for p, m in zip(plus_di, minus_di)
+        for p, m in zip(plus_di, minus_di, strict=True)
     ], period)
 
     return {
@@ -192,10 +192,7 @@ def compute_bollinger_bands(closes: list[float], period: int = 20,
     lower = ma - std_mult * std
     current = closes[-1]
     bandwidth = (upper - lower) / max(ma, 0.001)
-    if upper == lower:
-        b_pct = 0.5
-    else:
-        b_pct = (current - lower) / (upper - lower)
+    b_pct = 0.5 if upper == lower else (current - lower) / (upper - lower)
     return {
         "upper": round(upper, 4),
         "middle": round(ma, 4),

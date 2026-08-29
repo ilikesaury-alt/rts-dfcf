@@ -69,7 +69,7 @@ from scanner.database import get_consecutive_appearance_days_batch, get_prominen
 from scanner.models import Candidate
 from scanner.rank_trend import rank_trajectory_score
 from scanner.sector import classify_sector
-from scanner.utils import to_float, to_int
+from scanner.utils import EXTERNAL_FAILURES, to_float, to_int
 
 
 def apply_all_bonuses(
@@ -118,8 +118,8 @@ def _compute_prominence_labels(c: Candidate, prominence_map: dict):
     try:
         if prominence_map.get(c.stock.symbol):
             c.prominence_labels.append("\u21bb")
-    except Exception:
-        pass
+    except EXTERNAL_FAILURES:
+        pass  # 外部依赖降级，非代码错误
 
 
 def _set_risk_flags(c: Candidate, fund_risk: dict[str, str] = None):
@@ -242,12 +242,7 @@ def _detect_main_force_distribution(c: Candidate, dims: dict) -> bool:
     #    11 股/7 交易日分布（07-20~08-13），非单票集中；弱转强直通亦不可豁免。
     #    显式守卫：仅 short_term 类别触发（v_st_rank 由 validate_short_term 写入，
     #    但添加 category 检查防止其他策略误触发）。
-    if (c.category == "short_term"
-            and dims.get("v_st_rank") == V_ST_RANK_LOW
-            and intraday is not None
-            and intraday <= DISTRIBUTION_RANK_WEAK_INTRADAY):
-        return True
-    return False
+    return bool(c.category == "short_term" and dims.get("v_st_rank") == V_ST_RANK_LOW and intraday is not None and intraday <= DISTRIBUTION_RANK_WEAK_INTRADAY)
 
 
 def _detect_trend_breakage(dims: dict) -> bool:
@@ -259,9 +254,7 @@ def _detect_trend_breakage(dims: dict) -> bool:
     """
     if dims.get("v_mo_ma") == V_MO_MA_NONE:
         return True
-    if dims.get("v_st_ma") == V_ST_MA_BROKEN:
-        return True
-    return False
+    return dims.get("v_st_ma") == V_ST_MA_BROKEN
 
 
 def _detect_overvalued(c: Candidate) -> bool:
@@ -275,9 +268,7 @@ def _detect_overvalued(c: Candidate) -> bool:
     if accum >= OVERVALUED_ACCUM_THRESHOLD:
         return True
     dims = c.kline.dimensions if c.kline else {}
-    if (dims.get("momentum_accumulated") or 0) <= -15:
-        return True
-    return False
+    return (dims.get("momentum_accumulated") or 0) <= -15
 
 
 def _detect_volume_price_divergence(c: Candidate, dims: dict) -> bool:
@@ -289,9 +280,7 @@ def _detect_volume_price_divergence(c: Candidate, dims: dict) -> bool:
     """
     if dims.get("v_mo_divergence") == V_MO_DIVERGENCE_BEAR:
         return True
-    if (dims.get("momentum_volume") or 0) < 0:
-        return True
-    return False
+    return (dims.get("momentum_volume") or 0) < 0
 
 
 def _apply_sector_bonus(c: Candidate, clusters: dict[str, list[str]]):
@@ -600,7 +589,7 @@ def accumulate_final_score(c: Candidate, opening_scores: dict[str, float | None]
     """
     opening = opening_scores.get(c.stock.symbol)
     opening_bonus = int(round(opening)) if opening is not None else 0
-    total = (
+    return (
         c.first_today_bonus
         + c.first_breakout_bonus
         + c.turnover_bonus
@@ -610,4 +599,3 @@ def accumulate_final_score(c: Candidate, opening_scores: dict[str, float | None]
         + c.zt_lianban_bonus
         + opening_bonus
     )
-    return total

@@ -53,7 +53,7 @@ def _ins_kline(conn, sym):
     closes = [10.0, 10.5, 11.0, 11.5, 12.0, 12.6]
     dates = [f"2026-08-{d}" for d in ("19", "20", "21", "22", "23", "24")]
     # 推荐日 2026-08-25，K 线到 08-24（T-1 及更早），accum 回放取 <= 推荐日窗口
-    for dt, cl in zip(dates + ["2026-08-25"], closes + [13.2]):
+    for dt, cl in zip(dates + ["2026-08-25"], closes + [13.2], strict=True):
         conn.execute(
             "INSERT INTO daily_kline (symbol, date, close, percent) VALUES (?,?,?,?)",
             (sym, dt, cl, 5.0),

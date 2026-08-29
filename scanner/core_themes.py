@@ -53,7 +53,7 @@ from scanner.database import (
     get_cached_klines,
     get_fund_flow_pct_map,
 )
-from scanner.utils import to_float
+from scanner.utils import EXTERNAL_FAILURES, to_float
 
 logger = logging.getLogger(__name__)
 
@@ -135,11 +135,11 @@ def _symbol_names(conn: sqlite3.Connection, symbols: list[str]) -> dict[str, str
                 FROM appearances a
                 JOIN (SELECT symbol, MAX(date) md FROM appearances
                       WHERE symbol IN ({ph}) GROUP BY symbol) t
-                  ON a.symbol = t.symbol AND a.date = t.md""",
+                  ON a.symbol = t.symbol AND a.date = t.md""",  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
             symbols,
         )
-        return {sym: name for sym, name in cur.fetchall()}
-    except Exception as e:
+        return dict(cur.fetchall())
+    except EXTERNAL_FAILURES as e:
         logger.warning(f"_symbol_names failed: {e}")
         return {}
 
@@ -168,7 +168,7 @@ def identify_core_themes(
             (lookback, today),
         )
         recs = [{"symbol": r[0], "name": r[1], "date": r[2], "concept": r[3]} for r in cur.fetchall()]
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         logger.warning(f"近期推荐读取失败: {e}")
         return []
 
@@ -234,7 +234,7 @@ def _theme_members(conn: sqlite3.Connection, theme_names: list[str]) -> dict[str
             for name in concepts:
                 if name in theme_set:
                     members.setdefault(name, []).append(sym)
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         logger.warning(f"_theme_members failed: {e}")
         return members
     return members
@@ -329,7 +329,7 @@ def save_core_dips(conn: sqlite3.Connection | None, dips: list[dict], today: str
                 ),
             )
         conn.commit()
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         logger.warning(f"save_core_dips failed: {e}")
 
 
@@ -395,7 +395,7 @@ def core_stock_symbols(conn: sqlite3.Connection | None, today: str | None = None
                 continue
             out.add(sym)
         return out
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         logger.warning(f"core_stock_symbols failed: {e}")
         return set()
 
@@ -482,6 +482,6 @@ def find_core_theme_dips(conn: sqlite3.Connection | None, today: str | None = No
             seen_syms.add(c["symbol"])
             out.append(c)
         return out
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         logger.warning(f"find_core_theme_dips failed: {e}")
         return []

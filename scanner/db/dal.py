@@ -56,8 +56,8 @@ def record_appearances(conn: sqlite3.Connection, symbols: list[dict]):
         try:
             conn.rollback()  # 事务失败后必须回滚，否则后续 execute 会报
             # "cannot start a transaction within a transaction"
-        except Exception:
-            pass
+        except sqlite3.Error:
+            pass  # 回滚/清理失败无补救手段，外层已记录原始错误；仅捕获 sqlite3.Error，避免吞掉代码 bug
         for row in rows:
             try:
                 conn.execute(
@@ -106,8 +106,8 @@ def save_kline_to_db(conn: sqlite3.Connection, symbol: str, kline: list[KlineBar
         # 回滚残留在打开事务里的部分行，再逐行重写（与 record_appearances 同模式）
         try:
             conn.rollback()
-        except Exception:
-            pass
+        except sqlite3.Error:
+            pass  # 回滚/清理失败无补救手段，外层已记录原始错误；仅捕获 sqlite3.Error，避免吞掉代码 bug
         print(f"  [!] 批量写入kline失败: {e}, 逐行回退写入")
         for row in rows:
             try:
@@ -454,16 +454,16 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, 
             # 用 savepoint 隔离失败行，避免回滚丢失已成功写入的行
             try:
                 conn.rollback()
-            except Exception:
-                pass
+            except sqlite3.Error:
+                pass  # 回滚/清理失败无补救手段，外层已记录原始错误；仅捕获 sqlite3.Error，避免吞掉代码 bug
             print(f"  [!] 保存推荐记录失败 {c.stock.symbol}: {e}")
     try:
         conn.commit()
     except Exception as e:
         try:
             conn.rollback()
-        except Exception:
-            pass
+        except sqlite3.Error:
+            pass  # 回滚/清理失败无补救手段，外层已记录原始错误；仅捕获 sqlite3.Error，避免吞掉代码 bug
         logger.warning(f"save_recommendations 提交失败（本轮推荐未落库，下轮重写）: {e}")
 
 
@@ -520,8 +520,8 @@ def upsert_watch_symbols(conn: sqlite3.Connection, entries: list[dict]) -> None:
         print(f"  [!] 批量写入watch_pool失败: {e}")
         try:
             conn.rollback()
-        except Exception:
-            pass
+        except sqlite3.Error:
+            pass  # 回滚/清理失败无补救手段，外层已记录原始错误；仅捕获 sqlite3.Error，避免吞掉代码 bug
 
 
 def mark_watch_evaluated(conn: sqlite3.Connection, symbols: list[str], today: str | None = None) -> None:
@@ -534,19 +534,26 @@ def mark_watch_evaluated(conn: sqlite3.Connection, symbols: list[str], today: st
     if not symbols:
         return
     today = today or now_beijing().date().isoformat()
+    failed: list[str] = []
     for sym in symbols:
         try:
             conn.execute("UPDATE watch_pool SET last_eval_date = ? WHERE symbol = ?", (today, sym))
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            # 2026-08-29：原为静默 pass。若整批失败（表缺失/库锁），标记不落地会让
+            # evaluate_comeback 每个扫描周期重复评估、重复补拉同一批票却无人察觉。
+            # 汇总告警，让"回马枪重复劳动"这类降级可见。
+            failed.append(sym)
+            logger.warning("mark_watch_evaluated 标记失败 %s: %s", sym, e)
+    if failed:
+        print(f"  [!] 回马枪已评估标记失败 {len(failed)}/{len(symbols)} 只（下轮可能重复评估）")
     try:
         conn.commit()
     except Exception as e:
         print(f"  [!] mark_watch_evaluated 提交失败: {e}")
         try:
             conn.rollback()
-        except Exception:
-            pass
+        except sqlite3.Error:
+            pass  # 回滚/清理失败无补救手段，外层已记录原始错误；仅捕获 sqlite3.Error，避免吞掉代码 bug
 
 
 def prune_watch_pool(conn: sqlite3.Connection, keep_trading_days: int = 15) -> int:
@@ -653,8 +660,8 @@ def save_concepts_cache(conn: sqlite3.Connection, concepts_map: dict[str, list[s
         logger.warning(f"save_concepts_cache failed: {e}")
         try:
             conn.rollback()
-        except Exception:
-            pass
+        except sqlite3.Error:
+            pass  # 回滚/清理失败无补救手段，外层已记录原始错误；仅捕获 sqlite3.Error，避免吞掉代码 bug
 
 
 def save_market_extra_cache(conn: sqlite3.Connection, data_map: dict[str, dict], data_type: str):
@@ -677,5 +684,5 @@ def save_market_extra_cache(conn: sqlite3.Connection, data_map: dict[str, dict],
         logger.warning(f"save_market_extra_cache failed: {e}")
         try:
             conn.rollback()
-        except Exception:
-            pass
+        except sqlite3.Error:
+            pass  # 回滚/清理失败无补救手段，外层已记录原始错误；仅捕获 sqlite3.Error，避免吞掉代码 bug

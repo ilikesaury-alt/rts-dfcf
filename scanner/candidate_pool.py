@@ -40,9 +40,6 @@ class ScanSession:
             if sym not in self.list_presence:
                 self.list_presence[sym] = 1
 
-    def get_list_streak(self, symbol: str) -> int:
-        return self.list_presence.get(symbol, 0)
-
     def update_pool(self, candidates: list[Candidate], now: datetime | None = None):
         now = now or now_beijing()
         current_syms = {c.stock.symbol for c in candidates}

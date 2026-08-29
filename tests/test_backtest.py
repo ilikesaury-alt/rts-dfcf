@@ -4,7 +4,9 @@ from datetime import date
 import pytest
 
 from scanner.backtest import (
+    ALLOWED_METRICS,
     RankCategoryStat,
+    _check_metric,
     _nth_trading_day_after,
     _rank,
     compute_outcome,
@@ -256,3 +258,47 @@ def test_print_report_default_metric_is_nextday_and_all_baseline(capsys):
     out = capsys.readouterr().out
     assert "ALL(全推荐基准)" in out
     assert "next_day_pct" in out  # 报告头标注当前口径
+
+
+@pytest.mark.parametrize("metric", sorted(ALLOWED_METRICS))
+def test_check_metric_allows_known_columns(metric):
+    """白名单内的收益列名原样放行。"""
+    assert _check_metric(metric) == metric
+
+
+@pytest.mark.parametrize(
+    "metric",
+    ["", "next_day_pct; DROP TABLE recommendations--", "score", "1", "next_day_pct "],
+)
+def test_check_metric_rejects_injection(metric):
+    """回归（2026-08-29）：metric 是列名无法参数化，只能拼进 SQL。
+
+    此前三个聚合函数直接 f-string 内插，仅靠 argparse choices 在函数外部挡；
+    函数自身边界毫无防护——新增绕过 argparse 的调用方即成注入点。
+    """
+    with pytest.raises(ValueError, match="非法 metric"):
+        _check_metric(metric)
+
+
+@pytest.mark.parametrize("func", [strategy_performance, dimension_ic, rank_category_stats])
+def test_aggregate_functions_reject_bad_metric(func):
+    """三个拼接 metric 的聚合入口都必须先过白名单（防漏改其中某一个）。
+
+    拒绝必须发生在执行 SQL 之前，故用干净的内存库验证表结构完好无损。
+    """
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute(
+            "CREATE TABLE recommendations (date TEXT, category TEXT, score REAL,"
+            " next_day_pct REAL, cum_3d REAL, score_breakdown TEXT)"
+        )
+        with pytest.raises(ValueError, match="非法 metric"):
+            func(conn, metric="cum_3d; DROP TABLE recommendations--", days=0)
+        assert (
+            conn.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='recommendations'").fetchone()[
+                0
+            ]
+            == 1
+        )
+    finally:
+        conn.close()

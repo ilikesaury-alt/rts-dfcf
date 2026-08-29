@@ -1,11 +1,12 @@
+import dataclasses
 from datetime import date, datetime, timedelta
 
-from scanner.candidate_pool import ScanSession
-from scanner.models import Candidate, KlineSummary, StockInfo
 import scanner.candidates as cd
 import scanner.intraday_fetch as idf
 import scanner.kline_fetch as kf
+from scanner.candidate_pool import ScanSession
 from scanner.candidates import candidate_excluded_by_risk, enrich_candidate_market_cap
+from scanner.models import Candidate, KlineSummary, StockInfo
 
 
 def _make_candidate(symbol: str, score: int = 20, kline_dims: dict | None = None,
@@ -152,7 +153,6 @@ class TestScoreStockKnownNewFace:
     """端到端锁定 P0：老股仅命中 new_face 时不应被丢弃。"""
 
     def test_known_stock_only_new_face_not_dropped(self, monkeypatch):
-        import scanner.orchestrator as o
         from scanner.candidate_pool import ScanSession
         from scanner.models import KlineSummary, StockInfo
 
@@ -344,7 +344,6 @@ class TestCrossFunctionSilentDegradation:
 
     def _score_candidate(self, monkeypatch, conn, klines, today="2026-06-18"):
         """复用 score_stock 真实链路产出候选（仅注入 analyze/validate 结果）。"""
-        import scanner.orchestrator as o
         from scanner.candidate_pool import ScanSession
         from scanner.models import KlineSummary
         ks = KlineSummary(trend="放量启动", accumulated_pct=3.0, volume_ratio=1.2,
@@ -416,8 +415,8 @@ class TestCrossFunctionSilentDegradation:
         """
         import sqlite3
 
-        import scanner.orchestrator as o
         import scanner.minute_bar as mb
+        import scanner.orchestrator as o
         stale = self._stale_kline()
 
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
@@ -426,7 +425,7 @@ class TestCrossFunctionSilentDegradation:
                             lambda: datetime(2026, 6, 18, 10, 0))
         monkeypatch.setattr(kf, "now_beijing",
                             lambda: datetime(2026, 6, 18, 10, 0))
-        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: stale for s in syms})
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: dict.fromkeys(syms, stale))
         monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
         monkeypatch.setattr(mb, "is_trading_time", lambda: True)
         monkeypatch.setattr(mb, "now_beijing",
@@ -484,8 +483,8 @@ class TestCrossFunctionSilentDegradation:
         """
         import sqlite3
 
-        import scanner.orchestrator as o
         import scanner.minute_bar as mb
+        import scanner.orchestrator as o
         stale = self._stale_kline()
 
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
@@ -494,7 +493,7 @@ class TestCrossFunctionSilentDegradation:
                             lambda: datetime(2026, 6, 18, 10, 0))
         monkeypatch.setattr(kf, "now_beijing",
                             lambda: datetime(2026, 6, 18, 10, 0))
-        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: stale for s in syms})
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: dict.fromkeys(syms, stale))
         monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
         monkeypatch.setattr(mb, "is_trading_time", lambda: True)
         monkeypatch.setattr(mb, "now_beijing",
@@ -523,9 +522,10 @@ class TestCrossFunctionSilentDegradation:
         deadline，已耗尽时直接返回 None 不再发分时请求——此前单只 join(8s) 限时存在但
         串行叠加无总量上限（API 故障时补拉 N 只 × 8s 可拖垮单轮扫描，数据质量
         "看似正常"的假死形态）。"""
+        from datetime import date as _date
+
         import scanner.minute_bar as mb
         import scanner.orchestrator as o
-        from datetime import date as _date
 
         called: list[str] = []
 
@@ -559,13 +559,14 @@ class TestFetchAllKlinesIntradayRefresh:
                [{"date": today, "close": 10.5}] * 40
 
     def test_trading_time_reuses_cache_within_ttl(self, monkeypatch):
+        from datetime import date
+
         import scanner.orchestrator as o
         from scanner.models import StockInfo
-        from datetime import date
 
         today = date.today().isoformat()
         cached = self._cached(today)
-        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: dict.fromkeys(syms, cached))
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
         monkeypatch.setattr(kf, "is_trading_time", lambda: True)
         # last fetch 10s ago (within TTL)
@@ -584,13 +585,14 @@ class TestFetchAllKlinesIntradayRefresh:
         assert "called" not in fetched  # no refetch
 
     def test_trading_time_refetches_after_ttl(self, monkeypatch):
+        from datetime import date
+
         import scanner.orchestrator as o
         from scanner.models import StockInfo
-        from datetime import date
 
         today = date.today().isoformat()
         cached = self._cached(today)
-        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: dict.fromkeys(syms, cached))
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
         monkeypatch.setattr(kf, "is_trading_time", lambda: True)
         # last fetch 600s ago (past TTL)
@@ -614,13 +616,14 @@ class TestFetchAllKlinesIntradayRefresh:
     def test_trading_time_missing_today_bar_always_fetches(self, monkeypatch):
         # 回归：盘中且缓存尚未含今日 Bar（max_date < today）必须补拉，
         # 否则全天无今日行情（A3 条件反转 bug）。
+        from datetime import date, timedelta
+
         import scanner.orchestrator as o
         from scanner.models import StockInfo
-        from datetime import date, timedelta
 
         yesterday = (date.today() - timedelta(days=1)).isoformat()
         cached = [{"date": yesterday, "close": 10.0}] * 40
-        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: dict.fromkeys(syms, cached))
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
         monkeypatch.setattr(kf, "is_trading_time", lambda: True)
         # 即便上次拉取在 TTL 内，缺少今日 Bar 也应强制补拉
@@ -646,8 +649,7 @@ class TestFetchAllKlinesIntradayRefresh:
 
 class TestTryCandidateHighRiskTrend:
     def test_high_risk_trend_rejected(self):
-        import scanner.orchestrator as o
-        from scanner.models import StockInfo, KlineSummary
+        from scanner.models import KlineSummary, StockInfo
 
         stock = StockInfo(symbol="SZ300001", name="Test", code="300001",
                           percent=5.0, current=10.0, value=10000,
@@ -659,9 +661,17 @@ class TestTryCandidateHighRiskTrend:
                                    True, "2026-07-21", [], [], [], None)
         assert result is None
 
-    def test_safe_trend_passes(self):
-        import scanner.orchestrator as o
-        from scanner.models import StockInfo, KlineSummary
+    def test_safe_trend_passes(self, monkeypatch):
+        """安全 trend 必须穿过趋势门禁、真正进入 validate()。
+
+        2026-08-29 修复：原实现断言 `kline_s.trend not in {"回踩整理"}`——而 trend
+        是上一行自己写死的字面量 "破位回调"，恒真。整段从未调用到任何被测逻辑，
+        是一条空转测试（ruff F841 暴露了 `result` 未被使用）。
+
+        改为直接观测门禁：把 validate 换成探针，安全 trend 必须走到 validate，
+        高风险 trend 必须在 validate 之前就被拦下。两者形成对照。
+        """
+        from scanner.models import KlineSummary, StockInfo
 
         stock = StockInfo(symbol="SZ300001", name="Test", code="300001",
                           percent=5.0, current=10.0, value=10000,
@@ -669,13 +679,29 @@ class TestTryCandidateHighRiskTrend:
         kline_s = KlineSummary(trend="破位回调", accumulated_pct=2.0,
                                 volume_ratio=1.5, bottom_confirmed=True,
                                 score=50, dimensions={}, avg_volume=1_000_000)
-        result = cd.try_candidate(stock, kline_s, "momentum",
-                                   True, "2026-07-21", [], [], [], None)
-        # Should not be rejected by trend filter (may fail later validation, but not here)
-        # We only care that the trend filter didn't block it
-        # The result might still be None due to other filters, so check "缩量回调"
-        # is no longer blocked (it was removed from HIGH_RISK_TRENDS)
-        assert kline_s.trend not in {"回踩整理"}
+
+        calls: list[str] = []
+        monkeypatch.setattr(cd, "validate",
+                            lambda *a, **k: (calls.append("validate"), False, 0, {})[1:])
+
+        # 1) 安全 trend：趋势门禁放行 → 必须进入 validate
+        cd.try_candidate(stock, kline_s, "momentum",
+                         True, "2026-07-21", [], [], [], None)
+        assert calls == ["validate"], (
+            f"安全 trend 应通过趋势门禁并进入 validate，实际调用: {calls}")
+
+        # 2) 对照：HIGH_RISK_TRENDS 内的 trend 必须在 validate 之前被短路
+        risky_trend = "回踩整理"
+        assert risky_trend in cd.HIGH_RISK_TRENDS, (
+            f"配置已变更：{risky_trend} 不再属于 HIGH_RISK_TRENDS（当前 {sorted(cd.HIGH_RISK_TRENDS)}），"
+            "请同步更新本测试的对照组")
+        assert risky_trend != kline_s.trend, "对照组的 trend 必须与安全组不同"
+        calls.clear()
+        result = cd.try_candidate(
+            stock, dataclasses.replace(kline_s, trend=risky_trend), "momentum",
+            True, "2026-07-21", [], [], [], None)
+        assert result is None and calls == [], (
+            f"高风险 trend({risky_trend}) 应在 validate 之前被拦截，实际: {calls}")
 
 
 class TestRiskFlagHardFilter:
@@ -741,7 +767,7 @@ class TestFetchAllKlinesTodayBarWarning:
                             lambda: datetime(2026, 7, 31, 10, 0))
         monkeypatch.setattr("scanner.kline_fetch.now_beijing",
                             lambda: datetime(2026, 7, 31, 10, 0))
-        monkeypatch.setattr("scanner.kline_fetch.get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr("scanner.kline_fetch.get_cached_klines", lambda conn, syms: dict.fromkeys(syms, cached))
         monkeypatch.setattr("scanner.minute_bar.is_trading_time", lambda *a, **k: True)
         monkeypatch.setattr("scanner.minute_bar.now_beijing",
                             lambda: datetime(2026, 7, 31, 10, 0))
@@ -768,7 +794,7 @@ class TestFetchAllKlinesTodayBarWarning:
                             lambda: datetime(2026, 7, 31, 10, 0))
         monkeypatch.setattr("scanner.kline_fetch.now_beijing",
                             lambda: datetime(2026, 7, 31, 10, 0))
-        monkeypatch.setattr("scanner.kline_fetch.get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr("scanner.kline_fetch.get_cached_klines", lambda conn, syms: dict.fromkeys(syms, cached))
         monkeypatch.setattr("scanner.minute_bar.is_trading_time", lambda *a, **k: True)
         monkeypatch.setattr("scanner.minute_bar.now_beijing",
                             lambda: datetime(2026, 7, 31, 10, 0))
@@ -807,12 +833,13 @@ class TestFetchAllKlinesSharedDeadline:
 
     def test_shared_deadline_caps_total_fetch_time(self, monkeypatch):
         import time as _t
+
         import scanner.orchestrator as o
 
         monkeypatch.setattr(o, "is_trading_time", lambda *a, **k: True)
         monkeypatch.setattr(kf, "is_trading_time", lambda *a, **k: True)
         monkeypatch.setattr(o, "is_trading_time", lambda *a, **k: True)
-        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: None for s in syms})
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: dict.fromkeys(syms))
         monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
 
         fetch_calls = {"n": 0}
@@ -828,11 +855,11 @@ class TestFetchAllKlinesSharedDeadline:
         deadline = o.now_beijing().timestamp() + 0.03
         stocks = [self._stock(f"30000{i}") for i in range(1, 6)]
         # 第一批：短暂 deadline 内只能拉少量几只（首只检查后再拉，能拉 1~2 只）
-        r1 = kf.fetch_all_klines(None, _SlowAdapter(), stocks, deadline=deadline)
+        kf.fetch_all_klines(None, _SlowAdapter(), stocks, deadline=deadline)
         n_after_first = fetch_calls["n"]
         assert 1 <= n_after_first < 5, f"首批只应拉 1~2 只（30ms 窗口），got {n_after_first}"
         # 第二批：同一（已过期）deadline → 一只都不拉
-        r2 = kf.fetch_all_klines(None, _SlowAdapter(), stocks[:1], deadline=deadline)
+        kf.fetch_all_klines(None, _SlowAdapter(), stocks[:1], deadline=deadline)
         n_after_second = fetch_calls["n"]
         assert n_after_second == n_after_first, (
             f"共享 deadline 下第二批不得重新计时补拉，{n_after_first}→{n_after_second}")
@@ -847,7 +874,7 @@ class TestFetchAllKlinesSharedDeadline:
                             lambda: datetime(2026, 7, 31, 10, 0))
         monkeypatch.setattr(kf, "now_beijing",
                             lambda: datetime(2026, 7, 31, 10, 0))
-        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: None for s in syms})
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: dict.fromkeys(syms))
         monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
         fresh = self._kline_fresh(40)
 
@@ -882,8 +909,8 @@ class TestFetchAllKlinesMinuteTodayBarFallback:
         ]
 
     def test_fallback_merges_today_bar_when_fetch_fails(self, monkeypatch, capsys):
-        import scanner.orchestrator as o
         import scanner.minute_bar as mb
+        import scanner.orchestrator as o
         cached = self._kline_stale()
         monkeypatch.setattr(o, "is_trading_time", lambda *a, **k: True)
         monkeypatch.setattr(kf, "is_trading_time", lambda *a, **k: True)
@@ -892,7 +919,7 @@ class TestFetchAllKlinesMinuteTodayBarFallback:
                             lambda: datetime(2026, 7, 31, 10, 0))
         monkeypatch.setattr(kf, "now_beijing",
                             lambda: datetime(2026, 7, 31, 10, 0))
-        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: dict.fromkeys(syms, cached))
         monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
         monkeypatch.setattr(mb, "is_trading_time", lambda *a, **k: True)
         monkeypatch.setattr(mb, "now_beijing",
@@ -923,8 +950,8 @@ class TestFetchAllKlinesMinuteTodayBarFallback:
         capsys.readouterr()
 
     def test_fallback_skipped_outside_trading_hours(self, monkeypatch):
-        import scanner.orchestrator as o
         import scanner.minute_bar as mb
+        import scanner.orchestrator as o
         cached = self._kline_stale()
         monkeypatch.setattr(o, "is_trading_time", lambda *a, **k: False)
         monkeypatch.setattr(kf, "is_trading_time", lambda *a, **k: False)
@@ -936,7 +963,7 @@ class TestFetchAllKlinesMinuteTodayBarFallback:
                             lambda: datetime(2026, 7, 31, 16, 0))
         monkeypatch.setattr(mb, "now_beijing",
                             lambda: datetime(2026, 7, 31, 16, 0))
-        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: dict.fromkeys(syms, cached))
 
         class _FakeAdapter:
             def fetch_kline(self, symbol, days=15):
@@ -950,8 +977,8 @@ class TestFetchAllKlinesMinuteTodayBarFallback:
         assert res["300999"] is cached
 
     def test_fallback_when_minute_unavailable(self, monkeypatch):
-        import scanner.orchestrator as o
         import scanner.minute_bar as mb
+        import scanner.orchestrator as o
         cached = self._kline_stale()
         monkeypatch.setattr(o, "is_trading_time", lambda *a, **k: True)
         monkeypatch.setattr(kf, "is_trading_time", lambda *a, **k: True)
@@ -960,7 +987,7 @@ class TestFetchAllKlinesMinuteTodayBarFallback:
                             lambda: datetime(2026, 7, 31, 10, 0))
         monkeypatch.setattr(kf, "now_beijing",
                             lambda: datetime(2026, 7, 31, 10, 0))
-        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: dict.fromkeys(syms, cached))
         monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
         monkeypatch.setattr(mb, "is_trading_time", lambda *a, **k: True)
         monkeypatch.setattr(mb, "now_beijing",
@@ -996,9 +1023,8 @@ class TestComputeRps:
                          reason="t", kline=kline_s, first_seen="09:30")
 
     def test_baseline_branch_percentile_in_baseline(self):
-        from scanner.config import (RPS_BONUS_HIGH, RPS_BONUS_LOW,
-                                    RPS_BONUS_MEDIUM)
         from scanner.candidates import compute_rps
+        from scanner.config import RPS_BONUS_HIGH, RPS_BONUS_LOW, RPS_BONUS_MEDIUM
         baseline = [0.0, 5.0, 8.0, 10.0, 12.0, 15.0, 20.0, 30.0]
         cands = [
             self._cand("300001", 12.0),  # lo=5 -> 62 -> MEDIUM
@@ -1012,9 +1038,8 @@ class TestComputeRps:
 
     def test_empty_baseline_fallback_orders_by_accum(self):
         # 回归：最强票必须拿 HIGH，最弱票拿 LOW（此前按列表顺序反了）
-        from scanner.config import (RPS_BONUS_HIGH, RPS_BONUS_LOW,
-                                    RPS_BONUS_MEDIUM)
         from scanner.candidates import compute_rps
+        from scanner.config import RPS_BONUS_HIGH, RPS_BONUS_LOW, RPS_BONUS_MEDIUM
         cands = [
             self._cand("300001", 10.0),
             self._cand("300002", 5.0),
@@ -1039,8 +1064,8 @@ class TestComputeRps:
 
     def test_accum_map_overrides_kline(self):
         # short_term 的 kline.accumulated_pct 含今日 bar，accum_map 用历史口径覆盖
-        from scanner.config import RPS_BONUS_LOW, RPS_BONUS_MEDIUM
         from scanner.candidates import compute_rps
+        from scanner.config import RPS_BONUS_LOW, RPS_BONUS_MEDIUM
         baseline = [0.0, 5.0, 8.0, 10.0, 12.0, 15.0, 20.0, 30.0]
         cands = [
             self._cand("300001", 50.0, category="short_term"),  # kline 50 但被覆盖为 5.0
@@ -1071,10 +1096,8 @@ class TestParallelFetchDeadline:
 
     def test_phase_deadline_bounds_and_degrades(self, monkeypatch):
         import time
-
-        import scanner.orchestrator as o
         from concurrent.futures import ThreadPoolExecutor
-        from unittest.mock import MagicMock
+
 
         def _slow(session, sym, items=None):
             time.sleep(5.0)
@@ -1107,9 +1130,7 @@ class TestParallelFetchDeadline:
 
     def test_parallel_fetch_no_minute_degrades(self, monkeypatch):
         """adapter.fetch_minute 返回 None（AKShare 源）→ 三相整体降级为 None，不回退雪球。"""
-        import scanner.orchestrator as o
         from concurrent.futures import ThreadPoolExecutor
-        from unittest.mock import MagicMock
 
         class _NoMinuteAdapter:
             def fetch_minute(self, symbol):
@@ -1273,13 +1294,14 @@ class TestFetchAllKlinesShortCacheTtl:
                [{"date": today, "close": 10.5}] * 25   # 26 根 < KLINE_MIN_LENGTH=32
 
     def test_short_cache_with_today_bar_within_ttl_not_refetched(self, monkeypatch):
+        from datetime import date
+
         import scanner.orchestrator as o
         from scanner.models import StockInfo
-        from datetime import date
 
         today = date.today().isoformat()
         cached = self._cached(today)
-        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: dict.fromkeys(syms, cached))
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
         monkeypatch.setattr(kf, "is_trading_time", lambda: True)
         kf._last_kline_fetch["300123"] = o.now_beijing().timestamp() - 10
@@ -1298,13 +1320,14 @@ class TestFetchAllKlinesShortCacheTtl:
         assert res["300123"] is cached
 
     def test_short_cache_past_ttl_refetches(self, monkeypatch):
+        from datetime import date
+
         import scanner.orchestrator as o
         from scanner.models import StockInfo
-        from datetime import date
 
         today = date.today().isoformat()
         cached = self._cached(today)
-        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: dict.fromkeys(syms, cached))
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
         monkeypatch.setattr(kf, "is_trading_time", lambda: True)
         kf._last_kline_fetch["300124"] = o.now_beijing().timestamp() - 600
@@ -1324,13 +1347,14 @@ class TestFetchAllKlinesShortCacheTtl:
         assert res["300124"] is not None
 
     def test_short_cache_reused_outside_trading_time(self, monkeypatch):
+        from datetime import date
+
         import scanner.orchestrator as o
         from scanner.models import StockInfo
-        from datetime import date
 
         today = date.today().isoformat()
         cached = self._cached(today)
-        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: cached for s in syms})
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: dict.fromkeys(syms, cached))
         monkeypatch.setattr(o, "is_trading_time", lambda: False)
         monkeypatch.setattr(kf, "is_trading_time", lambda: False)
         monkeypatch.setattr(o, "is_trading_time", lambda: False)
@@ -1356,7 +1380,7 @@ class TestFetchAllKlinesShortCacheTtl:
 
         bad_cached = [{"date": "2026-6-7", "close": 10.0},
                       {"date": "2026-06-08", "close": 10.5}]
-        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {s: bad_cached for s in syms})
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: dict.fromkeys(syms, bad_cached))
         monkeypatch.setattr(o, "is_trading_time", lambda: True)
         monkeypatch.setattr(kf, "is_trading_time", lambda: True)
         kf._last_kline_fetch.pop("300126", None)

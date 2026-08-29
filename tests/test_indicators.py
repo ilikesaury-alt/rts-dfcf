@@ -1,6 +1,11 @@
 from scanner.indicators import (
-    compute_adx, compute_atr, compute_bollinger_bands,
-    compute_kdj, compute_macd, compute_obv, compute_rsi,
+    compute_adx,
+    compute_atr,
+    compute_bollinger_bands,
+    compute_kdj,
+    compute_macd,
+    compute_obv,
+    compute_rsi,
 )
 
 

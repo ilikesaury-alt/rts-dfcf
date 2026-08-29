@@ -237,11 +237,7 @@ def init_db() -> sqlite3.Connection:
         )
     """)
     row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
-    if row is None or row[0] is None:
-        conn.execute(
-            "INSERT INTO schema_version (version, updated) VALUES (?, ?)", (SCHEMA_VERSION, now_beijing().isoformat())
-        )
-    elif row[0] < SCHEMA_VERSION:
+    if row is None or row[0] is None or row[0] < SCHEMA_VERSION:
         conn.execute(
             "INSERT INTO schema_version (version, updated) VALUES (?, ?)", (SCHEMA_VERSION, now_beijing().isoformat())
         )
@@ -291,7 +287,7 @@ def init_db() -> sqlite3.Connection:
         conn.execute("ALTER TABLE recommendations ADD COLUMN excluded_reason TEXT")
     try:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_source ON recommendations(source)")
-    except Exception:
-        pass
+    except sqlite3.Error:
+        pass  # 回滚/清理失败无补救手段，外层已记录原始错误；仅捕获 sqlite3.Error，避免吞掉代码 bug
     conn.commit()
     return conn

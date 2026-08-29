@@ -326,7 +326,7 @@ def compute_rps(candidates: list[Candidate],
         pctiles = [0] * total
         for rank, i in enumerate(order):
             pctiles[i] = (rank + 1) * 100 // total
-    for c, pctile in zip(candidates, pctiles):
+    for c, pctile in zip(candidates, pctiles, strict=True):
         # 超跌反弹/回马枪 accumulated 为负必落底部分位，RPS_LOW 惩罚违背策略初衷，豁免
         if c.category in ("rebound", "comeback"):
             scores[c.stock.symbol] = 0

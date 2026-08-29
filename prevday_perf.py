@@ -109,6 +109,18 @@ def _market_bucket(avg):
     return "震荡日"
 
 
+def _case(items, d):
+    """把一组条目收敛成案例样本。
+
+    2026-08-29：原实现定义在 `_build_history` 的 `for d in dates` 循环体内并闭包
+    捕获 `d`（ruff B023）。当前之所以正确，只是因为三次调用都在同一次迭代内立即
+    发生——一旦有人把 _case 存起来延后调用，所有案例都会拿到循环最后一日的日期。
+    改为显式传参 + 提到模块级，消除这个陷阱。
+    """
+    return [{"date": d, "name": x["name"], "symbol": x["symbol"],
+             "score": x["score"], "next": x["next"]} for x in items]
+
+
 def _build_history(conn, dates):
     """逐日重建综合排序并收集各组次日表现（一次遍历，全部数据就绪）。"""
     history = []
@@ -142,19 +154,16 @@ def _build_history(conn, dates):
             day[g] = [nd_map[s] for s in syms if s in nd_map]
 
         # 案例样本（档0 命中 / 档3 大坑 / 回马枪最佳）
-        def _case(items):
-            return [{"date": d, "name": x["name"], "symbol": x["symbol"],
-                     "score": x["score"], "next": x["next"]} for x in items]
         day["cases"] = {
             "tier0": _case([{"name": a["name"], "symbol": a["symbol"], "score": a["score"],
                               "next": nd_map.get(a["symbol"])} for a in rep["tier0"]
-                             if a["symbol"] in nd_map]),
+                             if a["symbol"] in nd_map], d),
             "tier3": _case([{"name": e["name"], "symbol": e["symbol"], "score": e["score"],
                               "next": nd_map.get(e["symbol"])} for e in rep["tier3"]
-                             if e["symbol"] in nd_map]),
+                             if e["symbol"] in nd_map], d),
             "comeback": _case([{"name": c["name"], "symbol": c["symbol"], "score": c["score"],
                                  "next": nd_map.get(c["symbol"])} for c in rep["comeback_flow"]
-                                if c["symbol"] in nd_map]),
+                                if c["symbol"] in nd_map], d),
         }
         history.append(day)
     return history

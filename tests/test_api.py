@@ -658,8 +658,12 @@ class TestSessionExpirySelfHeal:
             return self._body
 
         def raise_for_status(self):
+            # 2026-08-29：原实现抛裸 `Exception(f"HTTP {n}")`。真实
+            # requests.Response 抛的是 `requests.HTTPError`（RequestException 子类），
+            # 而生产代码 `_request_with_retry` 只捕获 RequestException 族——假件抛裸
+            # Exception 会让异常绕过重试逻辑直接冒泡，测试并未真正走通重试路径。
             if self.status_code >= 400:
-                raise Exception(f"HTTP {self.status_code}")
+                raise requests.HTTPError(f"HTTP {self.status_code}")
 
     class _FakeSession:
         def __init__(self, responses):
@@ -672,6 +676,12 @@ class TestSessionExpirySelfHeal:
             if "xueqiu.com/hq" in url:
                 # 重建握手请求单独返回（不消耗 API 响应队列）
                 return TestSessionExpirySelfHeal._FakeResp(200)
+            if not self.responses:
+                # 2026-08-29：队列耗尽时原实现抛 IndexError，会被误当成"重试逻辑异常"。
+                # 真实 HTTP 客户端不会因"调用次数超出脚本预期"而崩，而是继续返回最后一次
+                # 的响应。用 503（可重试的 5xx）表达"服务持续不可用"，让重试逻辑按真实
+                # 语义跑完而不是意外炸掉。
+                return TestSessionExpirySelfHeal._FakeResp(503)
             return self.responses.pop(0)
 
     def test_401_triggers_rebuild_and_retries(self):
@@ -721,7 +731,7 @@ class TestSessionExpirySelfHeal:
         from scanner.api import _request_with_retry
 
         sess = self._FakeSession([self._FakeResp(401), self._FakeResp(401), self._FakeResp(401)])
-        with pytest.raises(Exception):
+        with pytest.raises(requests.RequestException):
             _request_with_retry(sess, "https://stock.xueqiu.com/v5/x", max_retries=3)
         # 只重建过一次（重建握手 + 3 次 API 请求 = 4 次 get）
         assert sess.calls.count("https://xueqiu.com/hq") == 1
@@ -746,15 +756,39 @@ class TestSessionExpirySelfHeal:
         assert sess.cookies.cleared
         assert any("xueqiu.com/hq" in u for u in sess.calls)
 
+    def test_4xx_caught_and_retried(self, monkeypatch):
+        """回归（2026-08-29）：4xx 经 raise_for_status() 抛出的 HTTPError 必须被
+        _request_with_retry 的 `except requests.RequestException` 分支捕获并重试。
+
+        覆盖缺口：本分支此前没有任何测试真正验证"捕获后重试"——其余 4xx 用例要么
+        走 session 重建、要么断言抛错，把捕获分支改成不匹配的异常类型也照样全绿。
+        本用例断言"重试后成功返回"，是该分支唯一的守护。
+        """
+        from scanner.api import _request_with_retry
+
+        slept: list[float] = []
+        monkeypatch.setattr("scanner.api.time.sleep", lambda s: slept.append(s))
+        sess = self._FakeSession([self._FakeResp(404), self._FakeResp(200)])
+        resp = _request_with_retry(sess, "https://stock.xueqiu.com/v5/x", max_retries=2)
+        assert resp.status_code == 200  # 捕获后重试并成功
+        assert slept, "捕获 RequestException 后应退避重试，而非直接抛出"
+        assert not sess.cookies.cleared  # 404 不是会话失效，不得重建
+
     def test_400_other_error_no_rebuild(self):
         """普通 400 业务错误（非 400016）不应触发 cookie 重建——防止误判
-        参数错误为会话失效而清 cookie 打断正常请求。"""
+        参数错误为会话失效而清 cookie 打断正常请求。
+
+        2026-08-29：max_retries 设为 1（单次尝试后即耗尽），使调用确实抛错。
+        原为 max_retries=2 + 末尾补一个 200 —— 在假件改成抛真实 HTTPError 后，
+        第二次尝试会拿到那个 200 并成功返回，根本不会抛错（原断言靠假件抛裸
+        Exception 绕过重试逻辑才成立）。
+        """
         from scanner.api import _request_with_retry
 
         bad_request = self._FakeResp(400, body={"error_code": "405000", "error_description": "参数错误"})
-        sess = self._FakeSession([bad_request, self._FakeResp(200)])
-        with pytest.raises(Exception):
-            _request_with_retry(sess, "https://stock.xueqiu.com/v5/x", max_retries=2)
+        sess = self._FakeSession([bad_request])
+        with pytest.raises(requests.RequestException):
+            _request_with_retry(sess, "https://stock.xueqiu.com/v5/x", max_retries=1)
         assert not sess.cookies.cleared
 
     def test_400_non_json_no_rebuild(self):
@@ -767,6 +801,6 @@ class TestSessionExpirySelfHeal:
         resp._content = b"Bad Gateway"
         resp.url = "https://stock.xueqiu.com/v5/x"
         sess = self._FakeSession([resp, self._FakeResp(200)])
-        with pytest.raises(Exception):
+        with pytest.raises(requests.RequestException):
             _request_with_retry(sess, "https://stock.xueqiu.com/v5/x", max_retries=1)
         assert not sess.cookies.cleared

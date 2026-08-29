@@ -426,7 +426,7 @@ class TestAnalyzeShortTerm:
 
     def _wts_kline(self, yesterday_high, yesterday_close, prev_close, yesterday_pct):
         # 6 根 K 线：末根为昨日、倒数第二根为前日收盘基准
-        bars = [
+        return [
             {"date": "2026-01-01", "open": 9.8, "high": 10.1, "low": 9.7, "close": 10.0, "volume": 1.0, "percent": 2.0},
             {"date": "2026-01-02", "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1.0, "percent": 0.0},
             {"date": "2026-01-03", "open": 10.0, "high": 10.3, "low": 9.8, "close": 10.0, "volume": 1.0, "percent": 0.0},
@@ -435,7 +435,6 @@ class TestAnalyzeShortTerm:
             {"date": "2026-01-06", "open": 10.0, "high": yesterday_high, "low": 9.8,
              "close": yesterday_close, "volume": 2.0, "percent": yesterday_pct},
         ]
-        return bars
 
     def test_weak_to_strong_bomb_detected(self):
         # 昨日曾触板(高/前收-1=20%)但收盘仅+5% → 炸板/烂板；今日高开转强

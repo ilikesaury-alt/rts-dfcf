@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
 """忠实回放：用生产 display.py 的 _entry_tier/_is_nextday_marked 对历史推荐分档，
 验证综合排序档位规则的区分度（next_day hit ≥7% / 平均次日 / cum_3d）。"""
-import sys, sqlite3, json
+import json
+import sys
+
 sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, ".")
-from scanner import display
-from scanner.config import NEXTDAY_CAT_PRIORITY, NEXTDAY_HIT_THRESHOLD
-from scanner.database import init_db
+# E402 为刻意设计：必须先 sys.path.insert(0, ".") 才能 import scanner.*，
+# 否则脚本从其他工作目录直接执行时找不到包。
+from scanner import display  # noqa: E402
+from scanner.config import NEXTDAY_CAT_PRIORITY, NEXTDAY_HIT_THRESHOLD  # noqa: E402
+from scanner.database import init_db  # noqa: E402
 
 THRESH = NEXTDAY_HIT_THRESHOLD   # 单源见 config
 
@@ -93,11 +97,11 @@ def main():
     subset(lambda r: not small_sec(r) and r["category"] != "comeback", "非小板块共振(主区)")
     # 涨幅带
     def band(p):
-        if p < 0: return "down"
-        if p < 2.0: return "sweet_low"
-        if p < 4.0: return "dead"
-        if p < 8.0: return "sweet_mid"
-        if p < 10.0: return "trap"
+        if p < 0: return "down"  # noqa: E701  （以下同：紧凑分档表，一行一档便于对照阈值）
+        if p < 2.0: return "sweet_low"  # noqa: E701
+        if p < 4.0: return "dead"  # noqa: E701
+        if p < 8.0: return "sweet_mid"  # noqa: E701
+        if p < 10.0: return "trap"  # noqa: E701
         return "hot"
     subset(lambda r: band(r["percent"]) == "dead", "2-4% 死区")
     subset(lambda r: band(r["percent"]) == "trap", "8-10% 陷阱")

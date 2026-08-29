@@ -246,10 +246,3 @@ def rescan_all_signals(conn: sqlite3.Connection, cfg, calendar: list[str],
     signals = _dedup_signals(signals)
     _assign_rank_scores(signals)
     return signals
-
-
-def rescan_new_face_signals(conn: sqlite3.Connection, cfg, calendar: list[str],
-                            cal_index: dict[str, int], cal_end: str) -> list[Signal]:
-    """兼容旧接口：仅保留 new_face / known_new_face 标签（Step 2 验证用）。"""
-    return rescan_all_signals(conn, cfg, calendar, cal_index, cal_end,
-                              categories=("new_face", "known_new_face"))

@@ -1,6 +1,6 @@
 from scanner.patterns import (
-    detect_new_face_patterns,
     detect_momentum_patterns,
+    detect_new_face_patterns,
     detect_short_term_patterns,
 )
 

@@ -21,6 +21,9 @@
 pb_*.txt
 backfill_log.txt
 
+# 孤儿表导出备份（scripts/dump_orphan_tables.sql 的产物，数据量大且可从库重建）
+orphan_tables_backup.sql
+
 
 # ��Կ��THS �������� API Key �ȣ�
 .env

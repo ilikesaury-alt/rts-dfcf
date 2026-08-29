@@ -9,21 +9,21 @@
 - 真实库冒烟
 """
 
+import os
 import sqlite3
 import tempfile
-import os
 
 import pytest
 
 from scanner.nextday_attribution import (
-    _load_dedup,
-    _hit_stats,
-    _attach_prominence,
     MIN_SAMPLE,
+    _attach_prominence,
+    _hit_stats,
+    _load_dedup,
     conditional_hit_table,
+    dim_compare,
     gain_band_matrix,
     score_bucket_table,
-    dim_compare,
     strategy_table,
 )
 
@@ -43,7 +43,7 @@ def _make_db(path, rows):
         "time TEXT, symbol TEXT, name TEXT, category TEXT, score INTEGER, percent REAL, "
         "trend TEXT, score_breakdown TEXT, source TEXT, next_day_pct REAL)"
     )
-    for i, r in enumerate(rows):
+    for _i, r in enumerate(rows):
         conn.execute(
             "INSERT INTO recommendations (date,time,symbol,name,category,score,percent,"
             "trend,score_breakdown,source,next_day_pct) VALUES (?,?,?,?,?,?,?,?,?,?,?)",

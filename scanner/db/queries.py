@@ -54,7 +54,7 @@ def get_cached_klines(conn: sqlite3.Connection, symbols: list[str]) -> dict[str,
     by_sym: dict[str, list[KlineBar]] = {}
     try:
         cur = conn.execute(
-            f"SELECT symbol, date, open, close, high, low, volume, percent, finalized "
+            f"SELECT symbol, date, open, close, high, low, volume, percent, finalized "  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
             f"FROM daily_kline "
             f"WHERE symbol IN ({placeholders}) AND date >= ? ORDER BY symbol, date",
             (*uniq, lookback),
@@ -92,14 +92,14 @@ def get_cached_market_caps(conn: sqlite3.Connection, symbols: list[str], max_age
         # 放宽到近 N 天（非交易时段批量接口滞后仍可兜底）
         min_date = (now_beijing().date() - timedelta(days=max_age_days)).isoformat()
         cur = conn.execute(
-            f"SELECT symbol, market_cap, circ_market_cap, turnover_rate, current, percent, source "
+            f"SELECT symbol, market_cap, circ_market_cap, turnover_rate, current, percent, source "  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
             f"FROM market_cap_cache WHERE symbol IN ({placeholders}) AND updated >= ?",
             (*uniq, min_date),
         )
     else:
         # max_age_days=0：仅当日写入的缓存（最严格，盘中口径）
         cur = conn.execute(
-            f"SELECT symbol, market_cap, circ_market_cap, turnover_rate, current, percent, source "
+            f"SELECT symbol, market_cap, circ_market_cap, turnover_rate, current, percent, source "  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
             f"FROM market_cap_cache WHERE symbol IN ({placeholders}) AND updated = ?",
             (*uniq, today),
         )
@@ -162,7 +162,7 @@ def get_consecutive_appearance_days_batch(
     by_sym: dict[str, list[str]] = {}
     try:
         rows = conn.execute(
-            f"SELECT symbol, date FROM appearances WHERE symbol IN ({placeholders}) "
+            f"SELECT symbol, date FROM appearances WHERE symbol IN ({placeholders}) "  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
             f"AND date >= ? AND date < ? ORDER BY symbol, date",
             (*uniq, cutoff, today),
         ).fetchall()
@@ -224,7 +224,7 @@ def get_prominence_map(conn: sqlite3.Connection, symbols: list[str], as_of_date:
     placeholders = ",".join("?" * len(symbols))
     try:
         rows = conn.execute(
-            f"SELECT symbol, date, rank FROM appearances WHERE symbol IN ({placeholders}) AND date >= ? AND date <= ?",
+            f"SELECT symbol, date, rank FROM appearances WHERE symbol IN ({placeholders}) AND date >= ? AND date <= ?",  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
             (*symbols, lookback_rank, today),
         ).fetchall()
     except Exception as e:
@@ -278,7 +278,7 @@ def get_market_index_log(conn: sqlite3.Connection, date_str: str | None = None) 
             return None
         # 不依赖 conn.row_factory（部分调用方传裸 sqlite3.Connection），按列名组装
         cols = [c[0] for c in conn.execute("SELECT * FROM market_index_log WHERE 1=0").description]
-        return dict(zip(cols, row))
+        return dict(zip(cols, row, strict=True))
     except sqlite3.OperationalError:
         return None  # 旧库无表（未迁移）→ 无法审计，fail-open
 
@@ -297,7 +297,7 @@ def get_loss_rates_batch(conn: sqlite3.Connection, symbols: list[str], lookback_
     cutoff = (now_beijing() - timedelta(days=lookback_days)).date().isoformat()
     try:
         cur = conn.execute(
-            f"SELECT symbol, COUNT(*), SUM(CASE WHEN next_day_pct <= -5 THEN 1 ELSE 0 END) "
+            f"SELECT symbol, COUNT(*), SUM(CASE WHEN next_day_pct <= -5 THEN 1 ELSE 0 END) "  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
             f"FROM recommendations WHERE symbol IN ({placeholders}) "
             f"AND next_day_pct IS NOT NULL AND date >= ? "
             f"GROUP BY symbol",
@@ -502,7 +502,7 @@ def get_concepts_cache(conn: sqlite3.Connection, symbols: list[str], ttl_days: i
     cutoff = (now_beijing() - timedelta(days=ttl_days)).isoformat()
     try:
         rows = conn.execute(
-            f"SELECT symbol, concepts FROM concept_cache WHERE symbol IN ({placeholders}) AND updated >= ?",
+            f"SELECT symbol, concepts FROM concept_cache WHERE symbol IN ({placeholders}) AND updated >= ?",  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
             (*symbols, cutoff),
         ).fetchall()
     except Exception as e:
@@ -543,7 +543,7 @@ def get_market_extra_cache(
         today = now_beijing().date().isoformat()
         cutoff = (now_beijing() - timedelta(seconds=intraday_ttl_sec)).isoformat() if intraday_ttl_sec else None
     sql = (
-        f"SELECT symbol, payload_json FROM market_extra_cache "
+        f"SELECT symbol, payload_json FROM market_extra_cache "  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
         f"WHERE symbol IN ({placeholders}) AND data_type = ? AND date = ?"
     )
     params: tuple = (*symbols, data_type, today)

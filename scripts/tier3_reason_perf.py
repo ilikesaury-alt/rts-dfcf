@@ -73,7 +73,7 @@ def collect(conn, dates):
             from scanner.database import get_fund_flow_pct_map
 
             flow_map = get_fund_flow_pct_map(conn, [e["symbol"] for e in recs], as_of=dt)
-        except Exception:
+        except Exception:  # noqa: S110 - 离线分析脚本：单行数据缺失跳过即可，不落库不调参
             pass
         mkt = _gem_market_avg(conn, dt)
         mbucket = (

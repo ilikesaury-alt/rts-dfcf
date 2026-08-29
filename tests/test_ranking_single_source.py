@@ -7,10 +7,13 @@
   ranking._entry_tier` 即变 False，本测试报警，挡住口径漂移。
 """
 
+import sqlite3
+
 import pytest
 
 import scanner.display as D
 import scanner.ranking as R
+from scanner.ranking import _nextday_entry_accum, build_accum_map
 
 RANKING_FUNCS = [
     "_entry_band",
@@ -53,11 +56,6 @@ def test_sweet_band_pure_logic():
     assert R._in_nextday_sweet_band(9.0) is False
 
 
-import sqlite3
-
-from scanner.ranking import _nextday_entry_accum, build_accum_map
-
-
 def _mk_db():
     conn = sqlite3.connect(":memory:")
     conn.execute(
@@ -95,7 +93,7 @@ class TestBuildAccumMap:
         closes = [10.0, 10.5, 11.0, 11.5, 12.0, 12.6]
         pcts = [0.0, 5.0, 5.0, 5.0, 5.0, 5.0]
         dates = [f"2026-08-1{i}" for i in range(1, 7)]
-        _insert_kline(conn, "SZ300001", list(zip(dates, closes, pcts)))
+        _insert_kline(conn, "SZ300001", list(zip(dates, closes, pcts, strict=True)))
         entries = [_entry("SZ300001", "2026-08-16")]
         batch = build_accum_map(conn, entries)
         per_row = _nextday_entry_accum(entries[0], conn)

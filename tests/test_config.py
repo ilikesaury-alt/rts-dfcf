@@ -1,16 +1,16 @@
 from datetime import datetime
 
 from scanner.config import (
-    now_beijing,
-    REFRESH_INTERVAL,
-    NEW_FACE_MIN_SCORE,
-    MOMENTUM_MIN_SCORE,
-    MAX_MARKET_CAP,
-    MAX_STOCK_PRICE,
     EARLY_BONUS,
     LATE_BONUS,
     MARKET_ENV_STRONG,
     MARKET_ENV_WEAK,
+    MAX_MARKET_CAP,
+    MAX_STOCK_PRICE,
+    MOMENTUM_MIN_SCORE,
+    NEW_FACE_MIN_SCORE,
+    REFRESH_INTERVAL,
+    now_beijing,
 )
 
 

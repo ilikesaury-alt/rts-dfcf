@@ -127,9 +127,9 @@ def _has_macd_bull_divergence(closes: list[float], macd: dict | None) -> bool:
 
     ema_f = _ema_seq(closes, 12)
     ema_s = _ema_seq(closes, 26)
-    macd_line = [f - s for f, s in zip(ema_f, ema_s)]
+    macd_line = [f - s for f, s in zip(ema_f, ema_s, strict=True)]
     signal_line = _ema_seq(macd_line, 9)
-    histogram = [m - s for m, s in zip(macd_line, signal_line)]
+    histogram = [m - s for m, s in zip(macd_line, signal_line, strict=True)]
 
     # 寻找两个价格低点：现低（最近5日）和前低（5-20日前窗口）
     n = len(closes)
@@ -157,9 +157,7 @@ def _has_macd_bull_divergence(closes: list[float], macd: dict | None) -> bool:
     if histogram[recent_low_idx] <= histogram[prev_low_idx]:
         return False
     # 条件3：当前 histogram 在零轴下方
-    if histogram[recent_low_idx] >= 0:
-        return False
-    return True
+    return not histogram[recent_low_idx] >= 0
 
 
 def _nf_higher_low(closes: list[float]) -> tuple[int, str]:

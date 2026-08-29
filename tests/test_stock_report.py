@@ -1,6 +1,6 @@
+import os
 import sqlite3
 import tempfile
-import os
 
 from stock_report import find_stock
 

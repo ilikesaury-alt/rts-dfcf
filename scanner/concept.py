@@ -28,6 +28,7 @@ from scanner.config import (
 from scanner.database import get_concepts_cache, save_concepts_cache
 from scanner.net import EASTMONEY_HEADERS
 from scanner.sector import classify_sector
+from scanner.utils import EXTERNAL_FAILURES
 from scanner.utils import cache_put as _cache_put
 
 logger = logging.getLogger(__name__)
@@ -47,18 +48,15 @@ def _is_noise_board(name: str) -> bool:
     # 指数成分/风格类板块常以数字结尾（深成500/中证800/央视50），真实概念板块不会
     if name[-1].isdigit():
         return True
-    for suffix in CONCEPT_NOISE_BOARD_SUFFIXES:
-        if name.endswith(suffix):
-            return True
-    return False
+    return any(name.endswith(suffix) for suffix in CONCEPT_NOISE_BOARD_SUFFIXES)
 
 
 def fetch_stock_boards(symbol: str) -> list[str]:
     """拉取个股概念归属（东财 F10）。失败或全部为噪音时返回 []。"""
     try:
         api._throttle()
-    except Exception:
-        pass
+    except EXTERNAL_FAILURES:
+        pass  # 外部依赖降级，非代码错误
     url = f"https://emweb.securities.eastmoney.com/PC_HSF10/CoreConception/PageAjax?code={symbol}"
     try:
         resp = requests.get(url, headers=EASTMONEY_HEADERS, timeout=CONCEPT_API_TIMEOUT)

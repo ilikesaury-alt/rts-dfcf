@@ -8,21 +8,21 @@
 - new_face_kdj 已降权（小样本，仅弱化）
 - sector_bonus 暂缓未动（阶段2新分类未累积）
 """
+from scanner.analysis import _detect_gap_up, analyze_new_face
 from scanner.config import (
-    NEW_FACE_MIN_SCORE,
-    NEW_FACE_FIRST_MIN_SCORE,
-    MOMENTUM_MIN_SCORE,
-    SHORT_TERM_WEIGHTS,
-    NEW_FACE_WEIGHTS,
-    MOMENTUM_WEIGHTS,
+    FIRST_TODAY_BONUS,
+    LIVE_VOL_BONUS,
     MARKET_ENV_STRONG,
     MARKET_ENV_WEAK,
-    LIVE_VOL_BONUS,
-    FIRST_TODAY_BONUS,
-    SECTOR_CLUSTER_BONUS_5,
+    MOMENTUM_MIN_SCORE,
+    MOMENTUM_WEIGHTS,
+    NEW_FACE_FIRST_MIN_SCORE,
+    NEW_FACE_MIN_SCORE,
+    NEW_FACE_WEIGHTS,
     SECTOR_CLUSTER_BONUS_2,
+    SECTOR_CLUSTER_BONUS_5,
+    SHORT_TERM_WEIGHTS,
 )
-from scanner.analysis import analyze_new_face, _detect_gap_up
 
 
 def test_new_face_bottom_cleared():
@@ -59,8 +59,8 @@ def test_short_term_today_pct_weight_rebalanced():
 
 def test_new_face_gap_up_no_longer_scored():
     # analyze_new_face 不再给高开加分：制造一个明显高开的票，确认无 new_face_gap_up 维度。
-    from tests.helpers import _kline
     from scanner.models import StockInfo
+    from tests.helpers import _kline
 
     def _stock(percent=7.0, rank_change=2000, value=12000, current=20.0):
         return StockInfo(

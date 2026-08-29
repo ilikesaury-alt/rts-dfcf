@@ -198,7 +198,7 @@ def build_accum_map(conn, entries: list[Any]) -> dict[str, float | None]:
         # 占位符仅由 "?" 字符生成，参数经 tuple 单独传递（参数化查询）
         ph = ", ".join(["?"] * len(syms))
         rows = conn.execute(
-            f"SELECT symbol, date, close, percent FROM daily_kline WHERE symbol IN ({ph})",
+            f"SELECT symbol, date, close, percent FROM daily_kline WHERE symbol IN ({ph})",  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
             tuple(syms),
         ).fetchall()
     except Exception:
@@ -349,10 +349,7 @@ def _warning_tier3_reasons(entry: Any, flow: float | None = None) -> list[str]:
     rs: list[str] = []
     if _entry_overbought(entry):
         rs.append(TIER_REASON_OVERBOUGHT)
-    if flow is None:
-        flow = _entry_fund_flow_pct(entry)
-    else:
-        flow = to_float(flow, default=None)
+    flow = _entry_fund_flow_pct(entry) if flow is None else to_float(flow, default=None)
     if flow is not None and flow <= FUND_OUTFLOW_NET_PCT:
         rs.append(TIER_REASON_FUND_OUTFLOW)
     # 小板块共振（cnt<15）档3 劣后：板块普涨日冲进去即接盘位（next_day hit 5.6% vs 无共振 13.7%）。
@@ -406,7 +403,10 @@ def _entry_tier(
     """综合排序档位（2026-08-17 二值 → 4 级；2026-08-18 统一口径为「次日大涨」）。
 
     档0 = 🎯 次日大涨画像（数据最强，见 _is_nextday_marked，short_term 弱转强分型）
-    档1 = 强信号：rebound（next_day 口径 hit 28.6%/+2.78%，全场最强类别）
+    档1 = 强信号：rebound（next_day 口径全场最强类别）
+          ⚠️ 注释里的具体数字会随样本变化而失效——2026-08-29 实测为 hit 17.9%/+1.30%
+          （旧注释写的 28.6%/+2.78% 是更小样本期的读数）。以
+          `python -m scanner.nextday_attribution` 当期输出为准，不要直接引用本注释的数字。
     档2 = 普通：无警示（参考）
     档3 = 警示劣后：累计≥OVERHEAT_ACCUM_MAX 过热 / 超买（hit 6.8%）/ 小板块共振 cnt<15
           （hit 5.6%）/ 2-4% 死区（hit 7.0%）/ momentum、new_face 的 8-10% 陷阱（hit 0%）/
@@ -504,14 +504,12 @@ def _is_nextday_marked(entry: Any, conn=None, accum: float | None = None, accum_
     # 2026-08-17 修复：此前只查候选行，掉榜行（无 _candidate）直接放行——兆日科技
     # 案例（超买+累计74.7%妖股被误标 🎯）。掉榜行 score_breakdown 含 v_st_overbought 等字段。
     d = _entry_dims(entry)
-    if (
+    return not (
         d.get("st_overbought_flag")
         or d.get("mo_overbought_flag")
         or d.get("v_st_overbought")
         or d.get("v_mo_overbought")
-    ):
-        return False
-    return True
+    )
 
 
 # ── 蓄势突破观察画像（2026-08-21，纯展示层 ⚡ 标记）──
@@ -534,7 +532,7 @@ def build_breakout_kline_map(conn, entries: list[Any]) -> dict[str, list[tuple[s
         # 占位符仅由 "?" 字符生成，参数经 tuple 单独传递（参数化查询）
         ph = ", ".join(["?"] * len(syms))
         rows = conn.execute(
-            f"SELECT symbol, date, high, close, volume FROM daily_kline WHERE symbol IN ({ph})",
+            f"SELECT symbol, date, high, close, volume FROM daily_kline WHERE symbol IN ({ph})",  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
             tuple(syms),
         ).fetchall()
     except Exception:

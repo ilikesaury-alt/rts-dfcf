@@ -26,6 +26,7 @@ from scanner.config import (
     SENTIMENT_WARM,
 )
 from scanner.models import KlineBar, make_kline_bar
+from scanner.utils import EXTERNAL_FAILURES
 from scanner.utils import cache_put as _cache_put
 from scanner.utils import to_float as _num
 
@@ -62,17 +63,13 @@ def _is_session_expired(resp: requests.Response) -> bool:
             body = resp.json()
         except (ValueError, AttributeError):
             return False
-        if isinstance(body, dict) and str(body.get("error_code")) == "400016":
-            return True
-        return False
+        return bool(isinstance(body, dict) and str(body.get("error_code")) == "400016")
     resp_url = getattr(resp, "url", "") or ""
     if "passport" in resp_url:
         return True
     ct = (resp.headers.get("Content-Type") or "") if hasattr(resp, "headers") else ""
-    if resp.status_code == 200 and "text/html" in ct.lower():
-        # 正常雪球 API 返回 JSON；HTML = 被重定向到登录页
-        return True
-    return False
+    # 正常雪球 API 返回 JSON；HTML = 被重定向到登录页
+    return resp.status_code == 200 and "text/html" in ct.lower()
 
 
 def _refresh_session(session: requests.Session) -> None:
@@ -190,8 +187,8 @@ def _bar_date_of(item: list) -> str | None:
         ts = item[0]
         if isinstance(ts, (int, float)) and ts > 0:
             return datetime.fromtimestamp(ts / 1000, tz=BEIJING_TZ).strftime("%Y-%m-%d")
-    except Exception:  # noqa: BLE001
-        pass
+    except EXTERNAL_FAILURES:  # noqa: BLE001
+        pass  # 外部依赖降级，非代码错误
     return None
 
 
@@ -213,8 +210,8 @@ def _warn_stale_index_bar(bar_date: str | None) -> None:
         today = now.date().isoformat()
         if bar_date < today and is_trading_day(now.date()):
             print(f"  [!] 大盘指数读到旧 bar (date={bar_date}, 今日={today})——大盘标签可能失真")
-    except Exception:  # noqa: BLE001  交易日历异常不阻塞指数取数
-        pass
+    except EXTERNAL_FAILURES:  # noqa: BLE001  交易日历异常不阻塞指数取数
+        pass  # 外部依赖降级，非代码错误
 
 
 def get_market_index_meta() -> tuple[float | None, str | None]:
@@ -659,8 +656,7 @@ def estimate_live_volume(session: requests.Session, symbol: str, items: list[dic
     total_vol = sum(item.get("volume", 0) for item in items)
     minutes_elapsed = len(items)
     trading_minutes_total = 240
-    estimated = total_vol * trading_minutes_total / max(minutes_elapsed, 1)
-    return estimated
+    return total_vol * trading_minutes_total / max(minutes_elapsed, 1)
 
 
 def analyze_intraday(session: requests.Session, symbol: str, items: list[dict] | None = None) -> float | None:

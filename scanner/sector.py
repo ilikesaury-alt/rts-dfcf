@@ -1,15 +1,3 @@
-def _load_sector_cache(conn) -> dict[str, str]:
-    cache: dict[str, str] = {}
-    try:
-        for sym, sec in conn.execute(
-            "SELECT symbol, sector FROM sector_cache"
-        ).fetchall():
-            cache[sym] = sec
-    except Exception:
-        pass
-    return cache
-
-
 # 多字/全词优先匹配（顺序即优先级），避免单字误命中
 SECTOR_MULTI_KEYWORDS: dict[str, list[str]] = {
     "半导体": ["半导体", "芯片", "集成电路", "封测"],

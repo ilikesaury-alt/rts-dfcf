@@ -11,6 +11,7 @@ from scanner.config import (
 )
 from scanner.models import KlineSummary, StockInfo
 from scanner.validator import (
+    _has_macd_bull_divergence,
     _is_overbought,
     _mo_divergence,
     _mo_is_overbought,
@@ -19,7 +20,6 @@ from scanner.validator import (
     _nf_convergence,
     _nf_higher_low,
     _nf_sector,
-    _has_macd_bull_divergence,
     _st_is_overbought,
     validate,
     validate_momentum,

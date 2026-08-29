@@ -25,7 +25,7 @@ pytestmark = pytest.mark.smoke
 
 
 def _cfg(**kw):
-    base = dict(buy_delay=0, buy_at="open", hold_days=3, category=None)
+    base = {"buy_delay": 0, "buy_at": "open", "hold_days": 3, "category": None}
     base.update(kw)
     return PBConfig(**base)
 

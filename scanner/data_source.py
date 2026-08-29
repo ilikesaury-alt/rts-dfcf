@@ -22,7 +22,7 @@ from scanner import api
 from scanner.config import BEIJING_TZ, DATA_SOURCE
 from scanner.models import KlineBar
 from scanner.net import EASTMONEY_HEADERS, EASTMONEY_UT_TOKEN
-from scanner.utils import to_float
+from scanner.utils import EXTERNAL_FAILURES, to_float
 
 logger = logging.getLogger(__name__)
 
@@ -330,7 +330,7 @@ class FallbackAdapter:
                 return result
             self._last_used_source = self._primary.name
             return result
-        elif self._secondary:
+        if self._secondary:
             self._last_used_source = self._secondary.name
             return getattr(self._secondary, method)(*args, **kwargs)
         raise RuntimeError("无可用数据源")
@@ -367,8 +367,8 @@ class FallbackAdapter:
         if used is not None and hasattr(used, "get_market_index_meta"):
             try:
                 return used.get_market_index_meta()
-            except Exception:  # noqa: BLE001
-                pass
+            except EXTERNAL_FAILURES:  # noqa: BLE001
+                pass  # 外部依赖降级，非代码错误
         return (None, None, used.name if used is not None else "unknown")
 
     def fetch_minute(self, symbol: str) -> list[dict] | None:

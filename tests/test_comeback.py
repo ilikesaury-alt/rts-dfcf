@@ -296,7 +296,6 @@ class TestWatchPoolDb:
 
     def test_upsert_refreshes_last_list_date(self):
         conn = _in_mem_db()
-        today = now_beijing().date().isoformat()
         upsert_watch_symbol(conn, "SZ300986", "志特新材", last_list_date="2026-07-09")
         # 再次保活：last_list_date 取较新
         upsert_watch_symbol(conn, "SZ300986", "志特新材", last_list_date="2026-07-31")
@@ -344,7 +343,6 @@ class TestEvaluateComeback:
 
     def _conn(self):
         conn = _in_mem_db()
-        today = now_beijing().date().isoformat()
         conn.execute(
             "INSERT INTO watch_pool (symbol, name, added_date, last_list_date, last_eval_date, over_limit) "
             "VALUES (?, ?, ?, ?, ?, ?)",
@@ -389,15 +387,27 @@ class TestEvaluateComeback:
         conn = self._conn()
         today = now_beijing().date().isoformat()
 
+        calls: list[list] = []
+
         def _stale_fetcher(stocks):
             # 无今日 bar 的旧 K 线（模拟补拉失败回退旧缓存）
-            return {s.symbol: [
-                {"date": "2026-08-18", "open": 10, "close": 10.5, "high": 10.6,
-                 "low": 9.9, "volume": 100, "percent": 0.5}
-                for s in stocks]}
+            # 注意：不能用 {st.symbol: [...] for st in stocks}——comprehension 的
+            # key 表达式在外层作用域求值，取不到 for 子句绑定的 st（NameError）。
+            # 该笔误曾让本测试全程空转（NameError 被上游 except 吞掉后断言照样通过），
+            # 故下方显式断言 fetcher 被真实调用，防止回归保护再次失效。
+            calls.append(list(stocks))
+            out = {}
+            for st in stocks:
+                out[st.symbol] = [
+                    {"date": "2026-08-18", "open": 10, "close": 10.5, "high": 10.6,
+                     "low": 9.9, "volume": 100, "percent": 0.5}
+                ]
+            return out
 
         rb, re_, _ = cb.evaluate_comeback(conn, self._Adapter(), _stale_fetcher,
                                           today, set(), None)
+        # 防空转：fetcher 必须被真实调用且带票进来，否则下方断言毫无意义
+        assert calls and any(calls), "补拉 fetcher 未被调用——本测试已失去保护意义"
         assert rb == [] and re_ == []
         # 不得标记已评估 → 下轮 KLINE_REFRESH_TTL 后可重试
         rows = {r["symbol"]: r for r in get_watch_symbols(conn)}

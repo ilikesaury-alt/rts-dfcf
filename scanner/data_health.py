@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 import requests
 
 from scanner.config import now_beijing
-from scanner.utils import to_float
+from scanner.utils import EXTERNAL_FAILURES, to_float
 
 # 抽验最少对数：不足时只能警告不能阻断（避免小样本误判）
 MIN_CHECKED = 5
@@ -63,8 +63,9 @@ def _sina_close(symbol: str, date_str: str) -> float | None:
         row = df[df["date"].astype(str) == date_str]
         if len(row):
             return float(row.iloc[0]["close"])
-    except Exception:  # noqa: BLE001  网络/解析失败 → None，由调用方按 source_ok 处理
-        pass
+    except EXTERNAL_FAILURES:  # noqa: BLE001  网络/解析失败 → None，由调用方按 source_ok 处理
+
+        pass  # 外部依赖降级，非代码错误
     return None
 
 
@@ -99,13 +100,13 @@ def check_kline_health(conn: sqlite3.Connection,
         return HealthReport()
     placeholders = ",".join("?" * len(dates))
     rows = conn.execute(
-        f"SELECT symbol, date, close FROM daily_kline "
+        f"SELECT symbol, date, close FROM daily_kline "  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
         f"WHERE date IN ({placeholders}) ORDER BY date DESC, symbol",
         tuple(dates),
     ).fetchall()
     if not rows:
         return HealthReport()
-    rng = random.Random(20260818)  # 独立实例固定种子：可复现且不污染进程全局随机流
+    rng = random.Random(20260818)  # noqa: S311 - 仅用于确定性抽样（固定种子保证可复现），无安全用途
     sample = rng.sample(rows, min(sample_n, len(rows)))
 
     report = HealthReport()
@@ -231,7 +232,10 @@ def check_market_index_health(conn: sqlite3.Connection,
         report.source_ok = False
         return report
     report.ref_pct = ref
-    if report.recorded_bar == date_str and abs(report.recorded_pct - ref) > INDEX_PCT_TOLERANCE:
+    # 2026-08-29：recorded_pct 为 None（血缘表缺 pct 列值）时直接相减会抛 TypeError，
+    # 让整个审计函数崩掉、横幅退化为"无法对账"。显式判空后再比对。
+    if (report.recorded_bar == date_str and report.recorded_pct is not None
+            and abs(report.recorded_pct - ref) > INDEX_PCT_TOLERANCE):
         report.mismatch = True
     return report
 
@@ -244,7 +248,7 @@ def index_health_banner(report: IndexHealthReport) -> str:
     if report.stale_bar:
         lines.append(f"  ❌ 大盘指数审计：扫描读到旧 bar（{report.recorded_bar}，"
                      f"时间 {report.recorded_time}）——涨幅非当日，大盘标签失真！")
-    if report.mismatch:
+    if report.mismatch and report.recorded_pct is not None and report.ref_pct is not None:
         lines.append(f"  ❌ 大盘指数审计：扫描涨幅 {report.recorded_pct}% vs 独立源(东财) "
                      f"{report.ref_pct}%（偏差 {abs(report.recorded_pct - report.ref_pct):.2f}pp，"
                      f"容差 {INDEX_PCT_TOLERANCE}pp）——数据源口径异常！")

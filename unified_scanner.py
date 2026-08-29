@@ -11,6 +11,7 @@
 """
 
 import os
+import sqlite3
 import sys
 import time
 from datetime import datetime, timedelta
@@ -48,7 +49,7 @@ from scanner.trading_session import (
     next_session_label,
     seconds_until_next_session,
 )
-from scanner.utils import clear_screen
+from scanner.utils import EXTERNAL_FAILURES, clear_screen
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -70,9 +71,10 @@ def _silence_stdout():
     try:
         # open(..., encoding=...) 已返回 TextIOWrapper，不可再包一层（write 会收到 bytes）
         # 注意：不关闭旧 stdout——pytest 等工具可能持有其引用
-        sys.stdout = open(os.devnull, "w", encoding="utf-8")
-    except Exception:
-        pass
+        # （句柄需长期存活并赋给 sys.stdout，故不能用 with 上下文管理器）
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+    except OSError:
+        pass  # 静音失败无补救手段；仅捕获 I/O 异常，不吞代码 bug
 
 
 def _log_exception(message: str, exc: BaseException | None = None):
@@ -91,14 +93,14 @@ def _log_exception(message: str, exc: BaseException | None = None):
                 keep = content[-1024 * 1024:]
                 with open(log_path, "w", encoding="utf-8") as f:
                     f.write(keep)
-        except Exception:
-            pass
+        except OSError:
+            pass  # 日志轮转失败不应阻断异常记录本身
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"\n[{now_beijing().strftime('%Y-%m-%d %H:%M:%S')}] {message}")
             if exc is not None:
                 f.write("\n" + "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
-    except Exception:
-        pass
+    except OSError:
+        pass  # 本函数即异常兜底路径，落盘失败不能再抛
 
 
 def _ensure_conn(conn):
@@ -106,11 +108,11 @@ def _ensure_conn(conn):
     try:
         conn.execute("SELECT 1")
         return conn
-    except Exception:
+    except sqlite3.Error:
         try:
             conn.close()
-        except Exception:
-            pass
+        except sqlite3.Error:
+            pass  # 关闭失败无害，下一步即重建连接
         print("  [!] 数据库连接异常，已重建")
         return init_db()
 
@@ -170,8 +172,14 @@ def _finalize_today_klines(conn, adapter) -> None:
                     new_close = today_bars[-1]["close"]
                     if old_closes.get(sym) is not None and abs(old_closes[sym] - new_close) > 0.011:
                         corrected += 1
-        except Exception:
+        except EXTERNAL_FAILURES:
             continue  # fail-open：单只失败跳过，backfill_kline 手动兜底
+        except Exception as e:
+            # 兜底：第三方行情库（akshare/pywencai）可能抛任意类型的异常，不能因为
+            # 未纳入 EXTERNAL_FAILURES 就中断整个定稿流程。但也不静默吞掉——
+            # 打印类型+信息，便于区分「外部依赖抖动」与「我们的代码 bug」。
+            print(f"  [!] 刷新K线异常 {sym}: {type(e).__name__}: {e}")
+            continue
     line = (
         f"{today.isoformat()} {now_beijing().strftime('%H:%M:%S')} "
         f"refreshed={refreshed}/{len(symbols)} corrected={corrected}"
@@ -180,7 +188,7 @@ def _finalize_today_klines(conn, adapter) -> None:
         os.makedirs(LOG_DIR, exist_ok=True)
         with open(os.path.join(LOG_DIR, "finalize.log"), "a", encoding="utf-8") as f:
             f.write(line + "\n")
-    except Exception:
+    except OSError:
         pass
     # 全部工作完成后才标记当日已定稿：此前置位若中途抛异常（如 DB 锁/`conn.execute`
     # 未包 try），当日会被误标为已定稿而实际零写入，且进程不重启不再重试。
@@ -220,7 +228,7 @@ def _persist_ranking_snapshot_once(conn) -> None:
         os.makedirs(LOG_DIR, exist_ok=True)
         with open(os.path.join(LOG_DIR, "finalize.log"), "a", encoding="utf-8") as f:
             f.write(line + "\n")
-    except Exception:
+    except OSError:
         pass
 
 
@@ -445,7 +453,7 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
     finally:
         try:
             conn.close()
-        except Exception:
+        except sqlite3.Error:
             pass
 
 

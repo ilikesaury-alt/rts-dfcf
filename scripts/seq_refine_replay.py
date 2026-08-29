@@ -61,7 +61,7 @@ def _rank_scans(conn: sqlite3.Connection, dt: str) -> list[tuple[str, dict[str, 
     for t, snap_raw in rows:
         try:
             snap = json.loads(snap_raw)
-        except Exception:
+        except Exception:  # noqa: S110, S112 - 离线分析脚本：单行数据缺失跳过即可，不落库不调参
             continue
         rk: dict[str, int] = {}
         for item in snap:

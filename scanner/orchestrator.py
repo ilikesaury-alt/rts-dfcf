@@ -45,7 +45,14 @@ from scanner.rank_trend import update_rank_history
 from scanner.ranking import comeback_sort_key
 from scanner.sector import get_sector_clusters
 from scanner.trading_session import is_trading_time
+from scanner.utils import EXTERNAL_FAILURES
 
+# fail-open 异常策略（2026-08-29）：本模块所有降级分支只捕获 EXTERNAL_FAILURES
+# （OSError/超时/requests/DB 运行期错误/脏值 ValueError/响应结构 KeyError），
+# 不再用 `except Exception`。此前宽泛捕获会把 NameError/AttributeError/TypeError
+# 这类「我们自己的 bug」和外部依赖故障一视同仁地吞成一行 print——本轮扫描静默
+# 丢掉整个策略分支都无从察觉。收窄后编程错误直接冒泡到 unified_scanner 主循环的
+# 兜底（记录完整 traceback 后下一轮重试），数据故障仍按设计软降级。
 _session_state = ScanSession()
 
 
@@ -90,8 +97,8 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
     )
     session_state.update_list_presence({s.symbol for s in gem_stocks})
 
-    stale_syms = list(sym for sym, c in session_state.today_pool.items() if c.is_stale)
-    mc_syms = list(set(s.symbol for s in gem_stocks) | set(stale_syms))
+    stale_syms = [sym for sym, c in session_state.today_pool.items() if c.is_stale]
+    mc_syms = list({s.symbol for s in gem_stocks} | set(stale_syms))
     market_caps = adapter.fetch_market_caps_batch(mc_syms) if mc_syms else {}
     # 市值缓存兜底（2026-08-20）：批量查询全失败时回退陈旧缓存，避免 小而美 规则
     # 整轮静默失效。fetch 成功即落库；全失败按"盘中限当日、非交易放宽到 N 天"取陈旧值。
@@ -146,7 +153,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
             ],
         )
         prune_watch_pool(conn, WATCH_OFFLIST_KEEP_DAYS)
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         print(f"  [!] 掉榜跟踪池维护失败: {e}")
 
     # 双批 K 线拉取共用同一个 deadline：榜上票 45s + 回马枪幸存者再 45s 会串行 ~90s，
@@ -189,7 +196,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
             clusters,
         )
         market_caps.update(cb_quotes)  # 并入市值/行情，供后续市值富集与实时行情
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         print(f"  [!] 回马枪评估失败: {type(e).__name__}: {e}")
 
     all_candidates = new_faces + momentum + rebound_list + short_term_list + comeback_rebound + comeback_reentry
@@ -203,7 +210,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         from scanner.market_extra import collect_market_extra
 
         market_extra = collect_market_extra(conn, [c.stock.symbol for c in all_candidates])
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         print(f"  [!] 行情增强数据收集失败（忽略，不影响扫描）: {e}")
 
     # 基本面风险（pywencai 问财反向查询资不抵债股）：排除式过滤器，命中候选打
@@ -219,7 +226,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
                 f"{c.stock.name}({c.stock.symbol})" for c in all_candidates if c.stock.symbol in fund_risk
             )
             print(f"  [财务风险] {len(fund_risk)} 只资不抵债（退市风险级），将移出推荐：{names}")
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         print(f"  [!] 基本面风险收集失败（忽略，不影响扫描）: {e}")
 
     rps_scores: dict[str, int] = {}
@@ -275,7 +282,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         if market_idx_pct is not None:
             _idx_pct = market_idx_pct  # 以实际使用值为准（兜底路径 meta 可能滞后）
         save_market_index_log(conn, _idx_pct, _idx_bar, _idx_src or "xueqiu")
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         print(f"  [!] 大盘指数血缘日志落库失败: {e}")
 
     apply_all_bonuses(
@@ -323,7 +330,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
     # 通过硬过滤的候选置 0（同日风险标签可能随时间变化，以最新轮次为准）。
     try:
         _update_excluded_marks(conn, today, excluded_by_risk, all_candidates)
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         print(f"  [!] 风险过滤落标失败: {e}")
 
     # 分类列表必须从 all_candidates 重建，而非沿用旧对象引用——
@@ -353,7 +360,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         )
         for c in all_candidates:
             c.driving_concept = driving_map.get(c.stock.symbol, "")
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         print(f"  [!] 驱动概念计算失败: {type(e).__name__}: {e}")
 
     current_quotes = {
@@ -368,7 +375,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         quality_stats["gem_count"] = len(gem_stocks_filtered)
         quality_stats["stale_recs"] = sum(1 for c in all_candidates if c.stale_kline)
         save_scan_quality(conn, quality_stats)
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         print(f"  [!] 数据血缘日志落库失败: {e}")
 
     # 核心方向低吸落库（2026-08-19）：在榜主类别外单独 category=core_dip（与 comeback
@@ -378,7 +385,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         from scanner.core_themes import find_core_theme_dips, save_core_dips
 
         save_core_dips(conn, find_core_theme_dips(conn, today), today)
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         print(f"  [!] 核心方向低吸落库失败: {e}")
 
     return ScanResult(

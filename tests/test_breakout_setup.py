@@ -5,8 +5,7 @@
 """
 import sqlite3
 
-from scanner.ranking import (_is_breakout_setup, _is_relist_breakout_setup,
-                             build_breakout_kline_map)
+from scanner.ranking import _is_breakout_setup, _is_relist_breakout_setup, build_breakout_kline_map
 
 
 def _mk_db():
@@ -41,10 +40,8 @@ def _bars(n=22, shrink_vol=True, ma_bull=True):
     vol = 2_000_000.0
     for i, close in enumerate(closes):
         high = close * 1.02 if i == 10 else close * 1.01
-        if shrink_vol:
-            vol = max(400_000.0, vol * 0.93)  # 全程缩量
-        else:
-            vol = 2_000_000.0  # 恒量（不缩量）
+        # shrink_vol：全程缩量；否则恒量（不缩量）
+        vol = max(400_000.0, vol * 0.93) if shrink_vol else 2_000_000.0
         bars.append((f"2026-08-{i + 1:02d}", high, close, vol))
     return bars
 

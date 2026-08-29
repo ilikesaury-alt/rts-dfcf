@@ -1,10 +1,33 @@
 import math
 import os
+import socket
+import sqlite3
 import subprocess
 import sys
 from typing import overload
 
 from scanner.config import CACHE_MAX_ENTRIES
+
+# ── fail-open 的合法异常族（2026-08-29）────────────────────────────────────
+# 外部依赖（行情/K线/概念/问财/涨停池）降级是设计意图，允许捕获后软降级。
+# 但 `except Exception` 会把 NameError/AttributeError/TypeError/KeyError 这类
+# 「代码 bug」一起吞掉：测试里一个未定义变量让整段逻辑静默返回空值，断言反而
+# 通过（tests/test_comeback.py 的 _stale_fetcher 即如此，回归保护形同虚设）。
+# 统一用本元组圈定「外部依赖失败」的边界，编程错误一律向上冒。
+EXTERNAL_FAILURES: tuple[type[BaseException], ...] = (
+    OSError,  # 含 socket.error / TimeoutError / URLError
+    socket.timeout,
+    sqlite3.Error,  # 库锁/磁盘等运行期故障，非 SQL 语法错误
+    ValueError,  # JSON 解析失败 / 脏值强转
+    KeyError,  # 上游响应结构缺字段（外部契约变化）
+)
+
+try:  # requests 为可选依赖（THS 兜底路径），缺失时退化
+    from requests import RequestException
+
+    EXTERNAL_FAILURES = EXTERNAL_FAILURES + (RequestException,)
+except ImportError:  # pragma: no cover - 环境相关
+    pass
 
 
 @overload
@@ -128,9 +151,7 @@ def is_hk_stock(symbol: str) -> bool:
     if not symbol.isdigit():
         return False
     # 6 位且以 A 股前缀开头 → 视为无前缀的 A 股代码，不当港股
-    if len(symbol) == 6 and symbol[:2] in _A_SHARE_PREFIXES:
-        return False
-    return True
+    return not (len(symbol) == 6 and symbol[:2] in _A_SHARE_PREFIXES)
 
 
 # ── 终端清屏（P1-8：从 scanner.display 迁出不依赖渲染层）──────────────────────
@@ -164,7 +185,8 @@ def clear_screen() -> None:
     if not sys.stdout.isatty() and not os.environ.get("RTS_CLEAR"):
         return
     if os.name == "nt" and _clr_is_console and not _clr_supports_ansi:
-        # 参数化列表形式（无 shell 插值）；命令为硬编码字面量 "cls"
-        subprocess.run(["cmd", "/c", "cls"], check=False)
+        # 参数化列表形式（无 shell 插值）；命令为硬编码字面量 "cls"；
+        # "cmd" 走 PATH 解析是刻意的（Windows 下 cmd.exe 位置随系统盘变化）
+        subprocess.run(["cmd", "/c", "cls"], check=False)  # noqa: S607
         return
     print("\033[2J\033[H", end="", flush=True)

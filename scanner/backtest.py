@@ -223,6 +223,25 @@ class StrategyStat:
     avg_score: float = 0.0
 
 
+# 允许直接拼接进 SQL 的收益列名白名单（2026-08-29）。
+# metric 是列名而非值，无法用 ? 占位符参数化，只能拼接；此前三个函数直接
+# f-string 内插，唯一调用方靠 argparse choices 挡住（当前不可利用），
+# 但函数边界自身毫无防护——任何绕过 argparse 的新调用方即成注入点。
+# 列名集合固定，统一在此校验：不认识的 metric 立即抛错而非拼进 SQL。
+ALLOWED_METRICS: frozenset[str] = frozenset(
+    {"next_day_pct", "fwd_3d", "fwd_5d", "cum_2d", "cum_3d"}
+)
+
+
+def _check_metric(metric: str) -> str:
+    """校验收益列名，非白名单直接拒绝（防 SQL 标识符注入）。"""
+    if metric not in ALLOWED_METRICS:
+        raise ValueError(
+            f"非法 metric={metric!r}；允许值：{sorted(ALLOWED_METRICS)}"
+        )
+    return metric
+
+
 def strategy_performance(
     conn: sqlite3.Connection, metric: str = "next_day_pct", days: int = 0,
 ) -> list[StrategyStat]:
@@ -233,6 +252,7 @@ def strategy_performance(
 
     days > 0 时仅分析最近 N 天的推荐（基于 date 列过滤）。
     """
+    metric = _check_metric(metric)
     # 用 Beijing UTC+8 计算截止日，避免服务器本地时区导致日期偏移
     # （'localtime' 修饰符依赖服务器时区，违反项目硬约束）
     params = list(ACTIVE_CATEGORIES)
@@ -243,7 +263,7 @@ def strategy_performance(
     else:
         date_filter = ""
     rows = conn.execute(
-        f"SELECT category, score, {metric} FROM recommendations "
+        f"SELECT category, score, {metric} FROM recommendations "  # noqa: S608 - metric 已白名单校验
         f"WHERE category IN ({','.join('?' * len(ACTIVE_CATEGORIES))}) "
         f"AND {metric} IS NOT NULL {date_filter}",
         tuple(params),
@@ -301,6 +321,7 @@ def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct", days: i
     dead_dim_keys = {
         "new_face_candle", "momentum_candle", "high_pos",
     }
+    metric = _check_metric(metric)
     # 用 Beijing UTC+8 计算截止日，避免服务器本地时区导致日期偏移
     params = list(ACTIVE_CATEGORIES)
     if days > 0:
@@ -310,7 +331,7 @@ def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct", days: i
     else:
         date_filter = ""
     rows = conn.execute(
-        f"SELECT score_breakdown, {metric} FROM recommendations "
+        f"SELECT score_breakdown, {metric} FROM recommendations "  # noqa: S608 - metric 已白名单校验
         f"WHERE category IN ({','.join('?' * len(ACTIVE_CATEGORIES))}) "
         f"AND {metric} IS NOT NULL AND score_breakdown IS NOT NULL {date_filter}",
         tuple(params),
@@ -374,6 +395,7 @@ def rank_category_stats(conn: sqlite3.Connection, metric: str = "next_day_pct",
     类别内 IC 为 IC(score → return)，用于识别「分数反指」的类别（IC 为负）。
     2026-08-18 默认口径改为 next_day_pct（统一「次日大涨」）。
     """
+    metric = _check_metric(metric)
     params = list(ACTIVE_CATEGORIES)
     if days > 0:
         cutoff = (now_beijing() - timedelta(days=days)).date().isoformat()
@@ -382,7 +404,7 @@ def rank_category_stats(conn: sqlite3.Connection, metric: str = "next_day_pct",
     else:
         date_filter = ""
     rows = conn.execute(
-        f"SELECT category, score, {metric} FROM recommendations "
+        f"SELECT category, score, {metric} FROM recommendations "  # noqa: S608 - metric 已白名单校验
         f"WHERE category IN ({','.join('?' * len(ACTIVE_CATEGORIES))}) "
         f"AND {metric} IS NOT NULL {date_filter}",
         tuple(params),
@@ -471,10 +493,7 @@ def print_ranking_report(conn: sqlite3.Connection, metric: str = "next_day_pct",
               f"{s.ic:>10.3f}  {note}")
 
     diff = [c for c in current_order if c in suggested and current_order.index(c) != suggested.index(c)]
-    if not diff:
-        diff_str = "无，顺序一致"
-    else:
-        diff_str = " ".join(f"{c}(当前{c}→建议{suggested.index(c)})" for c in diff)
+    diff_str = "无，顺序一致" if not diff else " ".join(f"{c}(当前{c}→建议{suggested.index(c)})" for c in diff)
     print(f"\n[与当前差异] {diff_str}")
     print("确认后人工更新 config.CAT_DISPLAY_PRIORITY")
 

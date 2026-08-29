@@ -12,7 +12,6 @@ from prevday_perf import (
     _next_day_map,
     _stats,
 )
-from scanner.config import now_beijing
 
 
 # ── 纯函数 ──
@@ -138,8 +137,9 @@ def test_next_day_map_filters_null():
 
 def test_render_smoke():
     """渲染冒烟：全流程（含案例/结论）不报错，输出含核心区块。"""
-    import io
     import contextlib
+    import io
+
     from prevday_perf import _render
     conn = _build()
     hist = _build_history(conn, ["2026-08-01", "2026-08-04"])

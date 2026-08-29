@@ -51,7 +51,7 @@ from scanner.ranking import (  # noqa: F401
     sort_main_entries,
 )
 from scanner.sector import classify_sector
-from scanner.utils import clear_screen, to_float, to_int
+from scanner.utils import EXTERNAL_FAILURES, clear_screen, to_float, to_int
 
 # ANSI SGR 转义序列（\x1b[...m：颜色/加粗/复位）。_vis_len 必须先剥离它们再量宽度，
 # 否则 `[`、数字、`;`、`m` 等可打印字符各被 wcwidth 计 1 列，彩色文本被高估宽度，
@@ -423,14 +423,8 @@ def _print_priority_row(
     first_time = str(entry.get("first_time") or entry.get("time") or "")[:5]
     # 5日累计涨幅：优先用候选池可信快照（_fresh_candidate），否则用 DB 落库值
     accum_val = None
-    if _fresh_c and _fresh_c.kline:
-        accum_val = _fresh_c.kline.accumulated_pct
-    else:
-        accum_val = entry.get("accumulated_pct")
-    if accum_val is None:
-        accum_str = "—"
-    else:
-        accum_str = f"{accum_val:+.2f}%"
+    accum_val = _fresh_c.kline.accumulated_pct if _fresh_c and _fresh_c.kline else entry.get("accumulated_pct")
+    accum_str = "—" if accum_val is None else f"{accum_val:+.2f}%"
     extra_str = ""
     if _fresh_c:
         extra_str = _market_extra_str(_fresh_c)
@@ -801,9 +795,11 @@ def display_priority(
                 f"{pct_colored(_pct):>8} {_av_str:>8} {_cur_str:>7} "
                 f"{_pad(str(_rk_val), 8, 'r')} {_sc_str:>4} {_pad(_cat_label, 5)}"
             )
-    except Exception:
-        # pi-lens-ignore: python-empty-except
-        pass
+    except EXTERNAL_FAILURES as _e:
+        # 2026-08-29：原为 `except Exception: pass`——渲染循环里任何 KeyError/TypeError
+        # 都会让整张榜单静默截断，用户只看到"票变少了"而无从察觉。收窄到数据类异常
+        # 并显式告警，让降级可见（代码 bug 则冒泡到主循环记录完整 traceback）。
+        print(f"  [!] 动态推荐序列渲染中断（数据缺失）: {type(_e).__name__}: {_e}")
     # 动态推荐（2026-08-27）：根据近端主表档次日表现自动判断 regime，弱市下把
     # momentum/known_new_face/new_face 类🎯 从推荐序列剔除、优先 核心低吸/回马枪/
     # rebound🎯/弱转强；强市则正常优先级。纯展示行，不改排序/评分/落库；

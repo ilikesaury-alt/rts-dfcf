@@ -5,7 +5,6 @@ historical_rescan._load_all_klines / ic_attribution.load_kline_by_symbol /
 data_source AKShare adapter）的**唯一入口**，其校验行为必须稳定——
 任何生产端输出改变都会先在这里暴露，防止「同一缺陷多处爆」复发。
 """
-import math
 
 from scanner.models import make_kline_bar, parse_score_breakdown
 

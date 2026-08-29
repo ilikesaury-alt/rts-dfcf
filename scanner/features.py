@@ -13,6 +13,11 @@ compute_macd / compute_kdj 等,同一只股票的同一段序列被计算数十�
 
 from __future__ import annotations
 
+from scanner.config import (
+    MA_BEAR_SCORE,
+    MA_BULL_2_TIER_SCORE,
+    MA_BULL_3_TIER_SCORE,
+)
 from scanner.indicators import (
     compute_adx,
     compute_atr,
@@ -23,11 +28,6 @@ from scanner.indicators import (
     compute_obv,
     compute_rsi,
 )
-
-# MA 多头结构评分常量（与 config.py 同源，此处避免循环导入）
-_MA_BULL_3_TIER_SCORE = 6   # MA5 > MA10 > MA20（完全多头排列）
-_MA_BULL_2_TIER_SCORE = 3   # MA5 > MA10（部分多头）
-_MA_BEAR_SCORE = -3         # MA5 <= MA10（空头排列）
 
 
 def build_features(closes: list[float],
@@ -99,7 +99,7 @@ def ma_alignment_score(closes: list[float], feats: dict | None = None) -> tuple[
         return 0, "data_short"
 
     if ma20 is not None and ma5 > ma10 > ma20:
-        return _MA_BULL_3_TIER_SCORE, "ma_full_5gt10gt20"
+        return MA_BULL_3_TIER_SCORE, "ma_full_5gt10gt20"
     if ma5 > ma10:
-        return _MA_BULL_2_TIER_SCORE, "ma_partial_5gt10"
-    return _MA_BEAR_SCORE, "ma_none"
+        return MA_BULL_2_TIER_SCORE, "ma_partial_5gt10"
+    return MA_BEAR_SCORE, "ma_none"

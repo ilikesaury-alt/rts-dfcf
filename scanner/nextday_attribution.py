@@ -30,6 +30,7 @@ import csv
 import sqlite3
 from collections import Counter, defaultdict
 from datetime import timedelta
+from typing import Any, Callable
 
 from scanner.backtest import ACTIVE_CATEGORIES, spearman
 from scanner.config import DB_PATH, NEXTDAY_HIT_THRESHOLD, now_beijing
@@ -54,7 +55,9 @@ _BIN_DIMS = ("v_st_overbought", "v_st_weak", "v_mo_divergence", "v_nf_volume",
 #   辨识度 = 近 5 交易日上榜 ≥3 天 + 历史日平均排名 ≤ 70（复用 database.get_prominence_map，
 #   与 enhancer/display 同一实现，防口径漂移）。数据：辨识度 hit 16~24% vs 非辨识度 6~10%，
 #   当前最强单因子；「前N日曾推」与其 67% 重合、独立增量≈0，故用辨识度而非推荐历史。
-FACTOR_CONDITIONS: list[tuple[str, object]] = [
+# 2026-08-29：第二元素原标注为 object，导致 `fn(r)` 被 mypy 判为 "object not callable"，
+# 且掩盖了 lambda 签名错误。实为「记录 → 是否命中」的谓词。
+FACTOR_CONDITIONS: list[tuple[str, Callable[[dict], bool]]] = [
     ("辨识度(↻反复上榜)", lambda r: r.get("_prominent") is True),
     ("非辨识度", lambda r: r.get("_prominent") is False),
     ("short_term 超买", lambda r: bool(_parse(r).get("v_st_overbought"))),
@@ -76,7 +79,7 @@ def _load_dedup(conn: sqlite3.Connection, days: int = 0) -> list[dict]:
     else:
         date_filter = ""
     rows = conn.execute(
-        f"SELECT date, symbol, name, category, score, percent, next_day_pct, score_breakdown "
+        f"SELECT date, symbol, name, category, score, percent, next_day_pct, score_breakdown "  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
         f"FROM recommendations "
         f"WHERE category IN ({','.join('?' * len(ACTIVE_CATEGORIES))}) "
         f"AND next_day_pct IS NOT NULL {date_filter}",
@@ -132,12 +135,12 @@ def _hit_stats(recs: list[dict], threshold: float) -> tuple[int, float, float]:
     return len(hits), len(hits) / n, avg
 
 
-def strategy_table(recs: list[dict], threshold: float) -> list[dict]:
+def strategy_table(recs: list[dict], threshold: float) -> list[dict[str, Any]]:
     """分策略：样本/hit率/平均/rank-IC。"""
     by_cat: dict[str, list[dict]] = defaultdict(list)
     for r in recs:
         by_cat[r["category"]].append(r)
-    out = []
+    out: list[dict[str, Any]] = []
     for cat in sorted(by_cat):
         g = by_cat[cat]
         hits, hr, avg = _hit_stats(g, threshold)
@@ -151,13 +154,16 @@ def strategy_table(recs: list[dict], threshold: float) -> list[dict]:
 
 def gain_band_matrix(recs: list[dict], threshold: float) -> list[dict]:
     """推荐时刻盘中涨幅分桶 × hit 率。"""
+    # edges(6) 与 labels(7) 长度本就不等：最后一个 label ">=10%" 是无对应 edge 的
+    # 兜底桶（下方 `if not placed` 分支兜住）。故 zip 必须 strict=False——
+    # 不要"顺手"改成 strict=True，那会让每次分档都抛 ValueError。
     edges = [1, 2, 4, 6, 8, 10]
     labels = ["<1%", "1-2%", "2-4%", "4-6%", "6-8%", "8-10%", ">=10%"]
     groups: dict[str, list[dict]] = defaultdict(list)
     for r in recs:
         p = float(r["percent"])
         placed = False
-        for ed, lab in zip(edges, labels):
+        for ed, lab in zip(edges, labels, strict=False):
             if p < ed:
                 groups[lab].append(r)
                 placed = True
@@ -183,7 +189,7 @@ def score_bucket_table(recs: list[dict], threshold: float) -> list[dict]:
     for r in recs:
         s = r["score"]
         placed = False
-        for ed, lab in zip(edges, labels):
+        for ed, lab in zip(edges, labels, strict=False):
             if s < ed:
                 groups[lab].append(r)
                 placed = True
@@ -201,7 +207,7 @@ def score_bucket_table(recs: list[dict], threshold: float) -> list[dict]:
     return out
 
 
-def dim_compare(recs: list[dict], threshold: float) -> list[dict]:
+def dim_compare(recs: list[dict], threshold: float) -> list[dict[str, Any]]:
     """落库维度：hit 组 vs 非 hit 组 正值率差。"""
     def pos_pct(group: list[dict]) -> dict[str, float]:
         cnt: Counter = Counter()
@@ -218,7 +224,7 @@ def dim_compare(recs: list[dict], threshold: float) -> list[dict]:
     non = [r for r in recs if r["next_day"] < threshold]
     hp = pos_pct(hits)
     np_ = pos_pct(non)
-    out = []
+    out: list[dict[str, Any]] = []
     for k in hp:
         non_val = np_.get(k, 0.0)
         diff = hp[k] - non_val
@@ -228,9 +234,9 @@ def dim_compare(recs: list[dict], threshold: float) -> list[dict]:
     return out
 
 
-def conditional_hit_table(recs: list[dict], threshold: float) -> list[dict]:
+def conditional_hit_table(recs: list[dict], threshold: float) -> list[dict[str, Any]]:
     """二元因子条件 hit 率（样本/hit/hit率/平均次日），供 [5] 节与单测复用。"""
-    out = []
+    out: list[dict[str, Any]] = []
     for label, fn in FACTOR_CONDITIONS:
         g = [r for r in recs if fn(r)]
         if not g:
@@ -245,11 +251,11 @@ def _print_table(header: list[str], rows: list[list], widths: list[int] | None =
     if widths is None:
         widths = [max(len(str(h)), *(len(str(r[i])) for r in rows)) if rows else len(str(h))
                   for i, h in enumerate(header)]
-    hdr = "  " + "  ".join(str(h).ljust(w) for h, w in zip(header, widths))
+    hdr = "  " + "  ".join(str(h).ljust(w) for h, w in zip(header, widths, strict=False))
     print(hdr)
     print("  " + "-" * len(hdr))
     for r in rows:
-        print("  " + "  ".join(str(v).ljust(w) for v, w in zip(r, widths)))
+        print("  " + "  ".join(str(v).ljust(w) for v, w in zip(r, widths, strict=False)))
 
 
 def print_report(recs: list[dict], threshold: float) -> None:

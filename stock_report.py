@@ -19,7 +19,7 @@ from scanner.indicators import (  # noqa: E402
     compute_macd,
     compute_rsi,
 )
-from scanner.utils import clear_screen  # noqa: E402
+from scanner.utils import EXTERNAL_FAILURES, clear_screen  # noqa: E402
 
 SEP = "━" * 55
 SUB_SEP = "─" * 55
@@ -269,8 +269,8 @@ def main():
                 reason = collect_fund_risk(conn, [symbol]).get(symbol)
             if reason:
                 print(f"  {red(f'⚠ 财务风险: {reason}（每股净资产<0，退市风险级，扫描器已排除）')}")
-        except Exception:
-            pass
+        except EXTERNAL_FAILURES:
+            pass  # 问财未安装/超时 → 该展示项缺省，不影响报告主体
         if first_app:
             print(f"  首次上榜: {first_app['date']} (排名{first_app['rank']}, 涨幅{(first_app['percent'] or 0):.2f}%)")
         print(f"  累计上榜: {len(appearances)}天")
@@ -514,8 +514,8 @@ def main():
                 print("\n  行情增强:")
                 for line in extra_lines:
                     print(f"    {line}")
-        except Exception:
-            pass
+        except EXTERNAL_FAILURES:
+            pass  # 行情增强（涨停池/资金流）拉取失败 → 跳过该展示段
 
         # ── Section 6: 疲劳与风险 ──
         print_section("6. 疲劳与风险")

@@ -76,7 +76,7 @@ def _mk_series(base, run_pct, pullback_pct, n=26, today=None):
 
 
 def _write_klines(conn, sym, dates, closes):
-    for d, c in zip(dates, closes):
+    for d, c in zip(dates, closes, strict=True):
         conn.execute(
             "INSERT INTO daily_kline (symbol, date, open, close, high, low, volume, percent) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",

@@ -339,7 +339,7 @@ class TestLiveWencaiIntegration:
     @pytest.mark.smoke
     def test_live_query_returns_fund_risk_map(self):
         # 前置：pywencai 必须已安装，否则本测试应因 import 失败被 skip 而非误过
-        pywencai = pytest.importorskip("pywencai")
+        pytest.importorskip("pywencai")
         # 直接走 fetch_fund_risk_map 真实路径（不 monkeypatch pywencai）
         result = fb.fetch_fund_risk_map()
         # 问财"每股净资产小于0"全市场恒有命中（实测 9 只，时点不同数量不同），

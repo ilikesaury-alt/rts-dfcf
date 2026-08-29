@@ -39,13 +39,18 @@ from scanner.config import (
 )
 from scanner.database import get_market_extra_cache, save_market_extra_cache
 from scanner.net import _bounded_call
+from scanner.utils import EXTERNAL_FAILURES
 
 logger = logging.getLogger(__name__)
 
 _DATA_TYPE = "fund_risk"
 _VALUATION_BATCH_SIZE = 100  # THS 估值快照服务端单批上限
 
-_fund_risk_cache: dict[str, tuple[dict, float]] = {}
+# 2026-08-29 修正：原注解为 tuple[dict, float]（2 元组），但 _cache_put 实际写入
+# 3 元组 (data, ts, ttl)、_cache_get 读 entry[2]。注解与实现不符的后果是
+# _cache_get 只能靠 `len(entry) > 2` 运行时防御，类型检查完全失效。
+_CacheEntry = tuple[dict, float, float | None]  # (data, 写入时刻, TTL秒；None=走默认TTL)
+_fund_risk_cache: dict[str, _CacheEntry] = {}
 _fund_risk_lock = threading.Lock()
 
 # THS 跨轮增量进度：{date_key: {"codes": [...], "done": int, "hits": {sym: reason}}}
@@ -78,7 +83,7 @@ def _warn_missing_pywencai():
               "资不抵债票将照常进推荐。请 `pip install pywencai` 启用（optional 重依赖）。")
 
 
-def _cache_put(data: dict, now: float | None = None, ttl: float | None = None):
+def _cache_put(data: dict, now: float | None = None, ttl: float | None = None) -> None:
     with _fund_risk_lock:
         _fund_risk_cache[_today_key()] = (data, now if now is not None else time.time(), ttl)
 
@@ -88,7 +93,7 @@ def _cache_get() -> dict | None:
         entry = _fund_risk_cache.get(_today_key())
         if entry:
             # 失败/空结果走短退避 TTL（一扫描周期）；成功结果走日级 TTL
-            eff_ttl = entry[2] if len(entry) > 2 and entry[2] is not None else FUND_RISK_TTL_SEC
+            eff_ttl = entry[2] if entry[2] is not None else FUND_RISK_TTL_SEC
             if time.time() - entry[1] < eff_ttl:
                 return entry[0]
     return None
@@ -121,8 +126,8 @@ def _extract_xq_symbols(df) -> set[str]:
                 if hasattr(v, "columns"):
                     symbols |= _extract_xq_symbols(v)
                     break
-    except Exception:
-        pass
+    except EXTERNAL_FAILURES:
+        pass  # 外部依赖降级，非代码错误
     return symbols
 
 
@@ -242,24 +247,26 @@ def fetch_fund_risk_map() -> dict[str, str]:
     except Exception as e:  # noqa: BLE001  THS 层任何异常 → 问财兜底
         logger.warning("财务风险 THS 主源异常，降级 pywencai: %s", e)
     # ── 兜底：pywencai 问财（原实现）──
-    result: dict[str, str] = {}
+    # 2026-08-29：原变量也叫 result（与上方 THS 分支的 result 同名），mypy 报
+    # no-redef 且带注解的二次绑定掩盖了上方分支的类型。改名以隔离两条路径。
+    wc_result: dict[str, str] = {}
     try:
         import pywencai  # noqa: PLC0415
     except Exception:
         _warn_missing_pywencai()
-        return result
+        return wc_result
     try:
         df = _bounded_call(lambda: pywencai.get(query=FUND_RISK_QUERY, loop=True),
                            FUND_RISK_FETCH_TIMEOUT)
         for sym in _extract_xq_symbols(df):
-            result[sym] = FUND_RISK_REASON
+            wc_result[sym] = FUND_RISK_REASON
     except Exception:
         # fail-open + 短退避：查询异常/超时缓存空结果 FUND_RISK_FAIL_TTL_SEC，下轮扫描重试
         _cache_put({}, ttl=FUND_RISK_FAIL_TTL_SEC)
         return {}
     # 成功但空结果（异常，正常应恒有资不抵债股）：同样短退避，避免每轮重复查询
-    _cache_put(result, ttl=FUND_RISK_TTL_SEC if result else FUND_RISK_FAIL_TTL_SEC)
-    return result
+    _cache_put(wc_result, ttl=FUND_RISK_TTL_SEC if wc_result else FUND_RISK_FAIL_TTL_SEC)
+    return wc_result
 
 
 def collect_fund_risk(conn, symbols: list[str]) -> dict[str, str]:
@@ -289,8 +296,8 @@ def collect_fund_risk(conn, symbols: list[str]) -> dict[str, str]:
                 {sym: {"reason": reason} for sym, reason in result.items()},
                 _DATA_TYPE,
             )
-        except Exception:
-            pass
+        except EXTERNAL_FAILURES:
+            pass  # 外部依赖降级，非代码错误
     return result
 
 
@@ -301,6 +308,6 @@ def get_fund_risk_from_db(conn, symbol: str) -> str | None:
         payload = db.get(symbol)
         if payload:
             return str(payload.get("reason") or "")
-    except Exception:
-        pass
+    except EXTERNAL_FAILURES:
+        pass  # 外部依赖降级，非代码错误
     return None

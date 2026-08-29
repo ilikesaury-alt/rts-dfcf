@@ -433,10 +433,7 @@ def analyze_new_face(stock: StockInfo, kline: list[KlineBar] | None,
             and today_pct < WEAK_FORM_MAX_TODAY_PCT):
         return None
 
-    if len(closes) >= 6:
-        accumulated = (closes[-1] - closes[-6]) / closes[-6] * 100
-    else:
-        accumulated = sum(pcts[-5:])
+    accumulated = (closes[-1] - closes[-6]) / closes[-6] * 100 if len(closes) >= 6 else sum(pcts[-5:])
     if accumulated < -10:
         return None
     if accumulated > 20:
@@ -476,10 +473,7 @@ def analyze_new_face(stock: StockInfo, kline: list[KlineBar] | None,
     # 今日涨幅 >= 6% 由显式分支处理（对齐 STRATEGY.md：6~8%→+5、>8%→-10），
     # 不进入 _score_today_pct，避免其 today_pct_6_7 / today_pct_7_12 分支被覆盖却仍被读取。
     if today_pct >= 6:
-        if today_pct > 8:
-            today_score = W["today_pct_gt_8"]
-        else:
-            today_score = W["today_pct_6_8"]
+        today_score = W["today_pct_gt_8"] if today_pct > 8 else W["today_pct_6_8"]
         today_dim_key = "new_face_today_pct"
         today_dim_val = today_score
     else:
@@ -566,10 +560,7 @@ def analyze_momentum(stock: StockInfo, kline: list[KlineBar] | None,
         return None
 
     historical_kline, pcts, closes = _split_today(kline, today_str)
-    if len(closes) >= 6:
-        accumulated = (closes[-1] - closes[-6]) / closes[-6] * 100
-    else:
-        accumulated = sum(pcts[-5:])
+    accumulated = (closes[-1] - closes[-6]) / closes[-6] * 100 if len(closes) >= 6 else sum(pcts[-5:])
     accum_incl_today = _accum_incl_today(kline, today_str, today_pct)
 
     feats = _get_features(closes, historical_kline, features)
@@ -585,10 +576,13 @@ def analyze_momentum(stock: StockInfo, kline: list[KlineBar] | None,
         # 首次启动 MA 要求放宽至"非空头"（score>=0）：原 >= MA_BULL_2_TIER_SCORE（部分多头）
         # 在低位启动阶段过于严格（MA 多头排列通常滞后于价格启动），导致信号量过少。
         # 放宽后只要求 MA5 不低于 MA10（非空头），保留趋势支撑语义。
+        # 2026-08-29：原实现在下面 is_launch 判定与后续加分处各调用一次 _ma_bull_score
+        # （同参同结果），白白多算一遍 MA5/10/20。提取为局部变量复用。
+        ma_boost = _ma_bull_score(closes, feats)
         is_launch = (
             MOMENTUM_LAUNCH_TODAY_MIN <= today_pct <= MOMENTUM_LAUNCH_TODAY_MAX
             and vol_ratio >= MOMENTUM_LAUNCH_VOL
-            and _ma_bull_score(closes, feats) >= 0
+            and ma_boost >= 0
         )
         if is_launch:
             div_bonus, div_detail = _mo_divergence(closes, historical_kline, feats)
@@ -605,8 +599,7 @@ def analyze_momentum(stock: StockInfo, kline: list[KlineBar] | None,
                 "accumulated_incl_today": round(accum_incl_today, 2),
             }
             score += MOMENTUM_WEIGHTS["vol_healthy"]
-            ma_boost = _ma_bull_score(closes, feats)
-            score += ma_boost
+            score += ma_boost  # 复用上方已计算结果（原此处重复调用同参函数）
             dims["momentum_ma_bull"] = ma_boost
             ind_bonus, ind_dims = _compute_momentum_indicators(closes, historical_kline, W, feats)
             score += ind_bonus
@@ -844,16 +837,14 @@ def analyze_short_term(stock: StockInfo, kline: list[KlineBar] | None,
             dims["st_rsi"] = round(rsi_val, 1)
 
     kdj_val = feats.get("kdj")
-    if kdj_val is not None:
-        if kdj_val["K"] > kdj_val["D"] and 50 <= kdj_val["K"] <= 80 and kdj_val["J"] < 100:
-            score += W["kdj_bonus"]
-            dims["st_kdj"] = round(kdj_val["J"], 1)
+    if kdj_val is not None and kdj_val["K"] > kdj_val["D"] and 50 <= kdj_val["K"] <= 80 and kdj_val["J"] < 100:
+        score += W["kdj_bonus"]
+        dims["st_kdj"] = round(kdj_val["J"], 1)
 
     macd_val = feats["macd"]
-    if macd_val is not None:
-        if macd_val["histogram"] > 0:
-            score += W["macd_bonus"]
-            dims["st_macd"] = round(macd_val["histogram"], 4)
+    if macd_val is not None and macd_val["histogram"] > 0:
+        score += W["macd_bonus"]
+        dims["st_macd"] = round(macd_val["histogram"], 4)
 
     # 末周期超买判定已统一至 validator._st_is_overbought 单点判断 + enhancer 标记，
     # 分析侧不再做软惩罚（避免与 validator 口径不一致及双重计分）。
@@ -936,10 +927,7 @@ def analyze_rebound(stock: StockInfo, kline: list[KlineBar] | None,
     has_crash_day = any(p <= REBOUND_CRASH_THRESHOLD for p in recent_5_pcts)
 
     # 累计涨幅（供下游 enhancer 使用，rebound 的 accumulated 反映前期跌幅）
-    if len(closes) >= 6:
-        accumulated = (closes[-1] - closes[-6]) / closes[-6] * 100
-    else:
-        accumulated = sum(pcts[-5:])
+    accumulated = (closes[-1] - closes[-6]) / closes[-6] * 100 if len(closes) >= 6 else sum(pcts[-5:])
     accum_incl_today = _accum_incl_today(kline, today_str, today_pct)
 
     # 量比
