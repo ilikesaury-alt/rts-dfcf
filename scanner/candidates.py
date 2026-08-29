@@ -43,13 +43,23 @@ from scanner.utils import is_gem, is_hk_stock, is_st
 from scanner.validator import validate
 
 
-def build_candidate(stock: StockInfo, kline_summary: KlineSummary | None, category: str,
-                     is_first_today: bool, first_date: str, kline: list[KlineBar] | None) -> Candidate:
-    first_breakout = (stock.rank_change >= FIRST_BREAKOUT_RANK_CHANGE
-                      and kline_summary.volume_ratio > FIRST_BREAKOUT_VOL_RATIO)
+def build_candidate(
+    stock: StockInfo,
+    kline_summary: KlineSummary | None,
+    category: str,
+    is_first_today: bool,
+    first_date: str,
+    kline: list[KlineBar] | None,
+) -> Candidate:
+    first_breakout = (
+        stock.rank_change >= FIRST_BREAKOUT_RANK_CHANGE and kline_summary.volume_ratio > FIRST_BREAKOUT_VOL_RATIO
+    )
     return Candidate(
-        stock=stock, category=category, score=kline_summary.score,
-        reason=kline_summary.trend, kline=kline_summary,
+        stock=stock,
+        category=category,
+        score=kline_summary.score,
+        reason=kline_summary.trend,
+        kline=kline_summary,
         first_seen=first_date,
         first_today_bonus=FIRST_TODAY_BONUS if is_first_today else 0,
         first_breakout_bonus=FIRST_BREAKOUT_BONUS if first_breakout else 0,
@@ -57,11 +67,19 @@ def build_candidate(stock: StockInfo, kline_summary: KlineSummary | None, catego
     )
 
 
-def try_candidate(stock: StockInfo, kline_summary: KlineSummary | None, category: str,
-                   is_first_today: bool, first_date: str, kline: list[KlineBar] | None,
-                   closes: list[float], historical: list[KlineBar],
-                   clusters: dict[str, list[str]] | None,
-                   feats: dict | None = None, today: str | None = None) -> Candidate | None:
+def try_candidate(
+    stock: StockInfo,
+    kline_summary: KlineSummary | None,
+    category: str,
+    is_first_today: bool,
+    first_date: str,
+    kline: list[KlineBar] | None,
+    closes: list[float],
+    historical: list[KlineBar],
+    clusters: dict[str, list[str]] | None,
+    feats: dict | None = None,
+    today: str | None = None,
+) -> Candidate | None:
     if kline_summary is None:
         return None
     if kline_summary.trend in HIGH_RISK_TRENDS:
@@ -76,8 +94,9 @@ def try_candidate(stock: StockInfo, kline_summary: KlineSummary | None, category
     }[category]
     if kline_summary.score < min_score:
         return None
-    passed, bonus, dims = validate(category, stock, kline_summary, closes, historical,
-                                   clusters, feats, kline=kline, today=today)
+    passed, bonus, dims = validate(
+        category, stock, kline_summary, closes, historical, clusters, feats, kline=kline, today=today
+    )
     if not passed:
         return None
     new_dims = dict(kline_summary.dimensions)
@@ -89,10 +108,14 @@ def try_candidate(stock: StockInfo, kline_summary: KlineSummary | None, category
     return build_candidate(stock, kline_summary, category, is_first_today, first_date, kline)
 
 
-def classify_category(stock: StockInfo, is_new: bool,
-                       c_mo: Candidate | None,
-                       c_nf: Candidate | None, c_st: Candidate | None = None,
-                       c_rb: Candidate | None = None) -> str | None:
+def classify_category(
+    stock: StockInfo,
+    is_new: bool,
+    c_mo: Candidate | None,
+    c_nf: Candidate | None,
+    c_st: Candidate | None = None,
+    c_rb: Candidate | None = None,
+) -> str | None:
     """按价格结构（而非尝试顺序）选最贴合的策略标签。
 
     pullback 已于 2026-07-30 下线（回测 cum_2d 均亏 -8.33%，胜率 15.8%），
@@ -114,8 +137,7 @@ def classify_category(stock: StockInfo, is_new: bool,
     # 超跌反弹：前期暴跌+今日企稳阳线，优先于动量/超短（场景互斥，避免反弹票被误归动量）
     if c_rb is not None:
         return "rebound"
-    st_is_wts = bool(c_st is not None and c_st.kline is not None
-                     and c_st.kline.dimensions.get("st_weak_to_strong"))
+    st_is_wts = bool(c_st is not None and c_st.kline is not None and c_st.kline.dimensions.get("st_weak_to_strong"))
     if c_st is not None and st_is_wts:
         return "short_term"
     if c_mo is not None:
@@ -189,22 +211,32 @@ def filter_gem_stocks(raw: list[dict]) -> list[StockInfo]:
             turnover_rate = tr if math.isfinite(tr) else 0.0
         except (TypeError, ValueError):
             turnover_rate = 0.0
-        gem_stocks.append(StockInfo(
-            symbol=symbol, name=name, code=code,
-            percent=percent, current=current, value=value,
-            rank_change=rank_change, rank=rank,
-            source_tag=item.get("source_tag", "xueqiu"),
-            turnover_rate=turnover_rate,
-        ))
+        gem_stocks.append(
+            StockInfo(
+                symbol=symbol,
+                name=name,
+                code=code,
+                percent=percent,
+                current=current,
+                value=value,
+                rank_change=rank_change,
+                rank=rank,
+                source_tag=item.get("source_tag", "xueqiu"),
+                turnover_rate=turnover_rate,
+            )
+        )
     return gem_stocks
 
 
-def score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, list[KlineBar] | None],
-                 today: str, session_state: ScanSession,
-                 clusters: dict[str, list[str]] | None = None,
-                 now=None
-                 ) -> tuple[Candidate | None, Candidate | None, Candidate | None,
-                            Candidate | None]:
+def score_stock(
+    stock: StockInfo,
+    conn: sqlite3.Connection,
+    klines: dict[str, list[KlineBar] | None],
+    today: str,
+    session_state: ScanSession,
+    clusters: dict[str, list[str]] | None = None,
+    now=None,
+) -> tuple[Candidate | None, Candidate | None, Candidate | None, Candidate | None]:
     """对单只票跑完 4 路引擎 + 交叉验证 + 分类，返回各桶候选 (new_face, momentum, rebound, short_term)。
 
     `today` 是本次扫描锚定的交易日；实时扫描传真实今日，历史回放
@@ -236,18 +268,28 @@ def score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, li
     sk = analyze_short_term(stock, kline, today_str=today, features=feats, now=now)
 
     # 四策略独立打分 + 各自交叉验证，再按价格结构选最贴合的标签
-    c_nf = try_candidate(stock, nk, "new_face" if is_new else "known_new_face",
-                          is_first_today, first_date, kline, closes, historical, clusters, feats,
-                          today=today)
-    c_mo = try_candidate(stock, mk, "momentum",
-                          is_first_today, first_date, kline, closes, historical, clusters, feats,
-                          today=today)
-    c_rb = try_candidate(stock, rk, "rebound",
-                          is_first_today, first_date, kline, closes, historical, clusters, feats,
-                          today=today)
-    c_st = try_candidate(stock, sk, "short_term",
-                          is_first_today, first_date, kline, closes, historical, clusters, feats,
-                          today=today)
+    c_nf = try_candidate(
+        stock,
+        nk,
+        "new_face" if is_new else "known_new_face",
+        is_first_today,
+        first_date,
+        kline,
+        closes,
+        historical,
+        clusters,
+        feats,
+        today=today,
+    )
+    c_mo = try_candidate(
+        stock, mk, "momentum", is_first_today, first_date, kline, closes, historical, clusters, feats, today=today
+    )
+    c_rb = try_candidate(
+        stock, rk, "rebound", is_first_today, first_date, kline, closes, historical, clusters, feats, today=today
+    )
+    c_st = try_candidate(
+        stock, sk, "short_term", is_first_today, first_date, kline, closes, historical, clusters, feats, today=today
+    )
 
     # 审计标记（2026-08-14）：评分所用 K 线缺今日 bar（补拉失败旧缓存兜底）时打 stale_kline。
     # 缺今日 bar → 量比基于昨日量（vol_ratio 失真）→ 可能被量比硬门误杀（网宿案例）或
@@ -268,8 +310,10 @@ def score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, li
         if stock.turnover_rate == 0.0:
             print(f"  [~] {stock.name}({stock.symbol}) 停牌/僵尸股，今日无交易（旧缓存评分，非故障）")
         else:
-            print(f"  [!] {stock.name}({stock.symbol}) 评分基于缺今日bar旧缓存（补拉与分时兜底均失败），"
-                  f"量比/涨幅按昨日数据，可能误判")
+            print(
+                f"  [!] {stock.name}({stock.symbol}) 评分基于缺今日bar旧缓存（补拉与分时兜底均失败），"
+                f"量比/涨幅按昨日数据，可能误判"
+            )
 
     category = classify_category(stock, is_new, c_mo, c_nf, c_st, c_rb)
     if category == "short_term":
@@ -286,9 +330,9 @@ def score_stock(stock: StockInfo, conn: sqlite3.Connection, klines: dict[str, li
     return None, None, None, None
 
 
-def compute_rps(candidates: list[Candidate],
-                 baseline: list[float] | None = None,
-                 accum_map: dict[str, float] | None = None) -> dict[str, int]:
+def compute_rps(
+    candidates: list[Candidate], baseline: list[float] | None = None, accum_map: dict[str, float] | None = None
+) -> dict[str, int]:
     """计算 RPS 相对强弱加分。
 
     baseline: 全 GEM 监控集的累计涨幅列表（排名基准）。若提供，候选在其中排名，
@@ -307,18 +351,27 @@ def compute_rps(candidates: list[Candidate],
         return {c.stock.symbol: 0 for c in candidates}
     # 优先使用 accum_map 中的统一口径；回退到 c.kline.accumulated_pct
     cand_accum = []
+    caliber_ok = []
     for c in candidates:
         if accum_map is not None and c.stock.symbol in accum_map:
             cand_accum.append(accum_map[c.stock.symbol])
+            caliber_ok.append(True)
         else:
             cand_accum.append(c.kline.accumulated_pct if c.kline else 0)
+            # short_term 的 accumulated_pct 含今日（策略语义），而 baseline 是「排除
+            # 今日」口径——两者不可比，用它会系统性抬高百分位（2026-08-30）。
+            # accum_map 提供时缺该 symbol（历史不足 6 根）→ 口径无法统一，宁可不
+            # 计分（0 = 中性，不加分也不惩罚），也不用错位值抬高它。
+            caliber_ok.append(accum_map is None or c.category != "short_term")
     if baseline:
         base_sorted = sorted(baseline)
         base_total = len(base_sorted)
+
         def _pctile(v: float) -> int:
             # 在基准分布中的百分位（0~100）
             lo = sum(1 for b in base_sorted if b <= v)
             return lo * 100 // base_total
+
         pctiles = [_pctile(v) for v in cand_accum]
     else:
         total = len(cand_accum)
@@ -326,9 +379,13 @@ def compute_rps(candidates: list[Candidate],
         pctiles = [0] * total
         for rank, i in enumerate(order):
             pctiles[i] = (rank + 1) * 100 // total
-    for c, pctile in zip(candidates, pctiles, strict=True):
+    for c, pctile, ok in zip(candidates, pctiles, caliber_ok, strict=True):
         # 超跌反弹/回马枪 accumulated 为负必落底部分位，RPS_LOW 惩罚违背策略初衷，豁免
         if c.category in ("rebound", "comeback"):
+            scores[c.stock.symbol] = 0
+            continue
+        if not ok:
+            # 口径不可比 → fail-open 不计分（0 = 中性），不按含今日值给奖励/惩罚
             scores[c.stock.symbol] = 0
             continue
         if pctile >= RPS_PCTILE_HIGH:

@@ -30,6 +30,7 @@ from scanner.database import (
     record_appearances,
     save_market_caps,
     save_market_index_log,
+    save_rejections,
     save_scan_quality,
     upsert_watch_symbols,
 )
@@ -330,6 +331,10 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
     # 通过硬过滤的候选置 0（同日风险标签可能随时间变化，以最新轮次为准）。
     try:
         _update_excluded_marks(conn, today, excluded_by_risk, all_candidates)
+        # 硬过滤审计（2026-08-30）：被杀候选此前完全不落库，当日首次成为候选即被
+        # 过滤的票连一行都没有 → 无法统计「被杀票次日收益」，硬过滤有效性不可验证。
+        # 独立表 scan_rejections 与 recommendations 隔离，不污染回测样本。
+        save_rejections(conn, excluded_by_risk, today)
     except EXTERNAL_FAILURES as e:
         print(f"  [!] 风险过滤落标失败: {e}")
 

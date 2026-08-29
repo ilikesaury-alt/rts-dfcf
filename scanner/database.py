@@ -42,6 +42,7 @@ from scanner.db import (  # noqa: F401
     save_market_extra_cache,
     save_market_index_log,
     save_recommendations,
+    save_rejections,
     save_scan_quality,
     upsert_watch_symbol,
     upsert_watch_symbols,

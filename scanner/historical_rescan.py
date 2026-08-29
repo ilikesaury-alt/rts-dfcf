@@ -35,10 +35,27 @@ retrospective 生效。所以 `portfolio_backtest` replay 的永远是旧权重�
 2. `market_cap`：无历史市值表 → 恒为 0。影响 short_term 的 value_small_cap /
    value_mid_cap 维度不触发，以及 MAX_MARKET_CAP 大市值过滤缺失。
    （MAX_STOCK_PRICE 价格过滤可用当日收盘价重建，已实现。）
-3. 实时增强项：资金流、涨停池、盘中/开盘分、RPS、板块情绪、time_bonus、
-   list_streak 等 `apply_all_bonuses` / `accumulate_final_score` 的加分，
-   以及依赖风险标签的 `candidate_excluded_by_risk` 硬过滤 —— 均需实时 API，
-   重扫不复现。这些是**跨候选普遍加分**，对同日排序的扰动小于上面两项。
+3. 实时增强项：资金流、涨停池、开盘分、turnover、market_cap 加分，以及依赖
+   实时行情的硬过滤规则（主力出货 Rule 2/3/5、弱转强失效、财务风险）——
+   均需实时 API，重扫不复现（2026-08-30 修正：此前连「可离线复现」的部分也
+   一起不复现，见下方 3b）。
+   ⚠️ 结论适用范围：重扫 score **不等于**线上落库 score 的绝对值，差的正是
+   gap_up / turnover / market_cap / fund_flow / zt_lianban / opening 六项
+   （量级约 -5~+20，且 turnover/zt_lianban 可正可负，是个股区分项而非普遍偏移）。
+   用重扫做「分类/门禁/相对排序」结论有效；做「分数分桶 / MIN_SCORE 阈值」
+   结论时必须记住标尺不同，不可直接搬到线上。
+
+3b. **已复现的可离线子集（2026-08-30 补）**：
+   - `gap_up_bonus`：分析侧已把结果写进 `kline.dimensions`（momentum_gap_up 等），
+     重扫直接复用线上同一个 `_apply_gap_up_bonus`，零重复实现；
+   - `first_today_bonus` / `first_breakout_bonus`：重扫每天每票只评一次，
+     对应线上「当日首轮」语义，直接取 Candidate 字段（后者因缺口 1 恒为 0）；
+   - 硬过滤的可离线子集：调用线上同一个 `_set_risk_flags(cand)`——重扫的
+     `intraday_score` 恒为 None、`turnover_bonus` 恒为 0，依赖它们的规则
+     （主力出货 Rule 2/3/5、弱转强失效）自动短路，剩下的恰好是纯 K 线可
+     判定的主力出货 Rule 1/4 与趋势破位，与线上同函数同阈值。
+   - 仍缺失（无法从历史表重建）：MAX_MARKET_CAP 大市值过滤、财务风险、
+     主力出货 Rule 2/3/5、弱转强失效 → 重扫宇宙仍**大于**线上可买集。
 4. `comeback`（回马枪）：掉榜 off-list 变体，需实时 watch_pool / adapter，
    不在重扫宇宙内（由调用方合并 `recommendations` 的冻结分补上）。
 
@@ -54,12 +71,13 @@ from datetime import date, datetime, timedelta
 from typing import Iterable
 
 from scanner.candidate_pool import ScanSession
-from scanner.candidates import filter_gem_stocks, score_stock
+from scanner.candidates import candidate_excluded_by_risk, filter_gem_stocks, score_stock
 
 # 可忠实重扫的类别（comeback 为 off-list 变体，无法从 appearances 重建，保持冻结分）。
 # 2026-08-20 收敛：单一事实来源见 scanner/categories.RESCANABLE_CATEGORIES。
 from scanner.categories import RESCANABLE_CATEGORIES  # noqa: E402
 from scanner.config import MAX_STOCK_PRICE
+from scanner.enhancer import _apply_gap_up_bonus, _set_risk_flags
 from scanner.models import Candidate, KlineBar, make_kline_bar
 from scanner.portfolio_backtest import Signal, _assign_rank_scores, _dedup_signals
 from scanner.sector import get_sector_clusters
@@ -67,7 +85,6 @@ from scanner.trading_session import _nth_trading_day_after
 
 # K 线最少根数：低于此值所有 analyze_* 直接返回 None，提前跳过省掉切片开销
 _MIN_KLINE_BARS = 5
-
 
 
 def _post_close(d: str) -> datetime:
@@ -90,8 +107,7 @@ def _load_all_klines(conn: sqlite3.Connection) -> dict[str, tuple[list[str], lis
     保证重扫与实时评分口径一致，不因数据源不同产生漂移。
     """
     rows = conn.execute(
-        "SELECT symbol, date, open, close, high, low, volume, percent "
-        "FROM daily_kline ORDER BY symbol, date"
+        "SELECT symbol, date, open, close, high, low, volume, percent FROM daily_kline ORDER BY symbol, date"
     ).fetchall()
     out: dict[str, tuple[list[str], list[KlineBar]]] = {}
     cur_sym: str | None = None
@@ -102,8 +118,7 @@ def _load_all_klines(conn: sqlite3.Connection) -> dict[str, tuple[list[str], lis
             if cur_sym is not None:
                 out[cur_sym] = (dates, bars)
             cur_sym, dates, bars = sym, [], []
-        bar = make_kline_bar({"date": d, "open": o, "close": c, "high": h,
-                              "low": low, "volume": vol, "percent": pct})
+        bar = make_kline_bar({"date": d, "open": o, "close": c, "high": h, "low": low, "volume": vol, "percent": pct})
         if bar is None:
             continue  # 脏 bar（close<=0/date 非法）剔除，与实时链路一致
         dates.append(d)
@@ -113,8 +128,9 @@ def _load_all_klines(conn: sqlite3.Connection) -> dict[str, tuple[list[str], lis
     return out
 
 
-def _primary_candidate(nf: Candidate | None, mo: Candidate | None,
-                       rb: Candidate | None, st: Candidate | None) -> Candidate | None:
+def _primary_candidate(
+    nf: Candidate | None, mo: Candidate | None, rb: Candidate | None, st: Candidate | None
+) -> Candidate | None:
     """从 `score_stock` 的返回桶中还原 `classify_category` 选中的那一个标签。
 
     `score_stock` 对「首板票同时满足超短」会双挂（同时返回 nf 与 st），线上两个桶
@@ -133,9 +149,25 @@ def _primary_candidate(nf: Candidate | None, mo: Candidate | None,
     return None
 
 
-def rescan_all_signals(conn: sqlite3.Connection, cfg, calendar: list[str],
-                       cal_index: dict[str, int], cal_end: str,
-                       categories: Iterable[str] | None = None) -> list[Signal]:
+def _rescore_score(cand: Candidate) -> int:
+    """重扫可复现的线上总分（= base + 不依赖实时 API 的排序键加分）。
+
+    线上落库 score = base + accumulate_final_score(...)；重扫只能复现其中三项：
+    首见 / 首破（因缺口 1 恒 0）/ gap_up。缺失项与影响见模块 docstring 缺口 3。
+    热度放大器（板块 / RPS / 榜单动量 / 时间 / 情绪）线上同样不进排序键，
+    无需复现，两边一致。
+    """
+    return cand.score + cand.first_today_bonus + cand.first_breakout_bonus + cand.gap_up_bonus
+
+
+def rescan_all_signals(
+    conn: sqlite3.Connection,
+    cfg,
+    calendar: list[str],
+    cal_index: dict[str, int],
+    cal_end: str,
+    categories: Iterable[str] | None = None,
+) -> list[Signal]:
     """用当前 config 权重重扫历史，返回与 `_load_signals` 同构的 Signal 列表。
 
     cfg 提供：buy_delay / hold_days（执行锚定）、start / end / days（信号日窗口）。
@@ -165,10 +197,16 @@ def rescan_all_signals(conn: sqlite3.Connection, cfg, calendar: list[str],
 
         # 1) 复用线上的创业板/港股/ST 过滤与去重
         raw = [
-            {"symbol": sym, "code": sym, "name": name,
-             "percent": pct or 0.0, "value": val or 0.0,
-             # rank_change 无法从 appearances 重建，见模块 docstring 缺口 1
-             "rank_change": 0, "rank": rank}
+            {
+                "symbol": sym,
+                "code": sym,
+                "name": name,
+                "percent": pct or 0.0,
+                "value": val or 0.0,
+                # rank_change 无法从 appearances 重建，见模块 docstring 缺口 1
+                "rank_change": 0,
+                "rank": rank,
+            }
             for sym, name, rank, pct, val in by_date[d]
         ]
         stocks = filter_gem_stocks(raw)
@@ -201,8 +239,7 @@ def rescan_all_signals(conn: sqlite3.Connection, cfg, calendar: list[str],
 
         scored: list[tuple] = []
         for s in usable:
-            nf, mo, rb, st = score_stock(
-                s, conn, klines, d, session, clusters, now=now_ref)
+            nf, mo, rb, st = score_stock(s, conn, klines, d, session, clusters, now=now_ref)
             if nf is None and mo is None and rb is None and st is None:
                 continue
             scored.append((nf, mo, rb, st))
@@ -211,8 +248,21 @@ def rescan_all_signals(conn: sqlite3.Connection, cfg, calendar: list[str],
             cand = _primary_candidate(nf, mo, rb, st)
             if cand is None or cand.category not in categories:
                 continue
-            sig = Signal(rec_date=d, symbol=cand.stock.symbol, name=cand.stock.name,
-                         category=cand.category, score=cand.score)
+            # 3) 可离线复现的线上加分 + 硬过滤（见模块 docstring 缺口 3b）：
+            #    - gap_up：分析侧已写入 kline.dimensions，复用线上同一函数；
+            #    - _set_risk_flags：重扫 intraday_score=None / turnover_bonus=0，
+            #      依赖实时行情的规则自动短路，剩下纯 K 线可判定的子集。
+            _apply_gap_up_bonus(cand)
+            _set_risk_flags(cand)
+            if candidate_excluded_by_risk(cand):
+                continue  # 与线上同阈值：命中硬过滤的票不进重扫宇宙
+            sig = Signal(
+                rec_date=d,
+                symbol=cand.stock.symbol,
+                name=cand.stock.name,
+                category=cand.category,
+                score=_rescore_score(cand),
+            )
             buy_d = _nth_trading_day_after(date.fromisoformat(d), cfg.buy_delay)
             if buy_d is None or buy_d.isoformat() > cal_end:
                 continue

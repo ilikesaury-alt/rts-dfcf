@@ -35,6 +35,13 @@ NEW_FACE_LOOKBACK_DAYS = 3
 # 防止 API 故障时串行重试让单轮扫描假死数十分钟。
 KLINE_FETCH_DEADLINE = 45
 
+# 收益回填窗口（自然日，2026-08-30）：backfill_outcomes 的默认扫描范围。
+# 实时扫描每个刷新周期都调用它，此前是全表重算（SELECT 全部 recommendations
+# + 逐 symbol 全量 K 线）—— 库里 3904 条推荐 / 942 只票，随数据增长线性拖长
+# 扫描周期。超过窗口的历史行 K 线早已定稿、不会再变，重算纯属浪费。
+# 需要全量重算（修数 / 迁移）时显式传 since_days=0。
+BACKFILL_OUTCOMES_WINDOW_DAYS = 45
+
 # 分时数据（分时强度/开盘强度/实时量比）单相拉取 deadline（秒）。
 # minute API 挂死时单只请求最坏 ~48s（15s×3 重试），40 只候选 6 线程并发
 # 会让 as_completed 无限等待最长 ~5 分钟；加 deadline 后超时部分降级为

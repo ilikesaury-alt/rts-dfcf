@@ -38,7 +38,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from scanner.config import DB_PATH, now_beijing
+from scanner.config import BACKFILL_OUTCOMES_WINDOW_DAYS, DB_PATH, now_beijing
 from scanner.models import parse_score_breakdown
 from scanner.trading_session import _nth_trading_day_after
 from scanner.utils import clear_screen
@@ -136,16 +136,33 @@ def compute_outcome(
     return out
 
 
-def backfill_outcomes(conn: sqlite3.Connection, dry_run: bool = False) -> int:
+def backfill_outcomes(
+    conn: sqlite3.Connection,
+    dry_run: bool = False,
+    since_days: int = BACKFILL_OUTCOMES_WINDOW_DAYS,
+) -> int:
     """回填 recommendations 的 N 日收益字段，返回更新行数。
 
-    重新计算所有行的收益字段并覆盖（daily_kline 是最新数据，重算可纠正旧错误值），
+    重新计算收益字段并覆盖（daily_kline 是最新数据，重算可纠正旧错误值），
     但新值为 None 时不覆盖已有有效 float，避免 K 线临时缺失导致数据丢失。
+
+    since_days > 0 时只处理最近 N 天（自然日）的推荐行（默认
+    BACKFILL_OUTCOMES_WINDOW_DAYS）。实时扫描每个刷新周期都调用本函数，全表
+    重算（SELECT 全部 recommendations + 逐 symbol 全量 K 线）会随库增长线性
+    拖长扫描周期；而超过窗口的历史行其 K 线早已定稿、不会再变，重算纯属浪费。
+    需要全量重算（修数/迁移）时显式传 since_days=0。
     """
-    rows = conn.execute(
-        "SELECT id, symbol, date, percent, next_day_pct, fwd_3d, fwd_5d, cum_2d, cum_3d "
-        "FROM recommendations"
-    ).fetchall()
+    if since_days > 0:
+        cutoff = (now_beijing() - timedelta(days=since_days)).date().isoformat()
+        rows = conn.execute(
+            "SELECT id, symbol, date, percent, next_day_pct, fwd_3d, fwd_5d, cum_2d, cum_3d "
+            "FROM recommendations WHERE date >= ?",
+            (cutoff,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, symbol, date, percent, next_day_pct, fwd_3d, fwd_5d, cum_2d, cum_3d FROM recommendations"
+        ).fetchall()
     if not rows:
         return 0
     needed_syms = {r[1] for r in rows}
@@ -163,8 +180,7 @@ def backfill_outcomes(conn: sqlite3.Connection, dry_run: bool = False) -> int:
             updated += 1
             if not dry_run:
                 conn.execute(
-                    "UPDATE recommendations SET next_day_pct=?, fwd_3d=?, fwd_5d=?, "
-                    "cum_2d=?, cum_3d=? WHERE id=?",
+                    "UPDATE recommendations SET next_day_pct=?, fwd_3d=?, fwd_5d=?, cum_2d=?, cum_3d=? WHERE id=?",
                     (new_ndp, new_f3, new_f5, new_c2, new_c3, rid),
                 )
     if not dry_run and updated:
@@ -228,22 +244,20 @@ class StrategyStat:
 # f-string 内插，唯一调用方靠 argparse choices 挡住（当前不可利用），
 # 但函数边界自身毫无防护——任何绕过 argparse 的新调用方即成注入点。
 # 列名集合固定，统一在此校验：不认识的 metric 立即抛错而非拼进 SQL。
-ALLOWED_METRICS: frozenset[str] = frozenset(
-    {"next_day_pct", "fwd_3d", "fwd_5d", "cum_2d", "cum_3d"}
-)
+ALLOWED_METRICS: frozenset[str] = frozenset({"next_day_pct", "fwd_3d", "fwd_5d", "cum_2d", "cum_3d"})
 
 
 def _check_metric(metric: str) -> str:
     """校验收益列名，非白名单直接拒绝（防 SQL 标识符注入）。"""
     if metric not in ALLOWED_METRICS:
-        raise ValueError(
-            f"非法 metric={metric!r}；允许值：{sorted(ALLOWED_METRICS)}"
-        )
+        raise ValueError(f"非法 metric={metric!r}；允许值：{sorted(ALLOWED_METRICS)}")
     return metric
 
 
 def strategy_performance(
-    conn: sqlite3.Connection, metric: str = "next_day_pct", days: int = 0,
+    conn: sqlite3.Connection,
+    metric: str = "next_day_pct",
+    days: int = 0,
 ) -> list[StrategyStat]:
     """按策略类别聚合表现。metric ∈ {next_day_pct, fwd_3d, fwd_5d, cum_2d, cum_3d}。
 
@@ -319,7 +333,9 @@ def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct", days: i
     """
     # 已删除功能残留于历史 score_breakdown JSON，无对应评分代码，仅干扰阅读。
     dead_dim_keys = {
-        "new_face_candle", "momentum_candle", "high_pos",
+        "new_face_candle",
+        "momentum_candle",
+        "high_pos",
     }
     metric = _check_metric(metric)
     # 用 Beijing UTC+8 计算截止日，避免服务器本地时区导致日期偏移
@@ -376,6 +392,7 @@ def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct", days: i
 @dataclass
 class RankCategoryStat:
     """综合排序类别优先级校准用的单类别表现统计。"""
+
     category: str
     count: int
     avg_return: float
@@ -387,8 +404,9 @@ class RankCategoryStat:
 RANK_MIN_SAMPLE = 20
 
 
-def rank_category_stats(conn: sqlite3.Connection, metric: str = "next_day_pct",
-                        days: int = 0) -> list[RankCategoryStat]:
+def rank_category_stats(
+    conn: sqlite3.Connection, metric: str = "next_day_pct", days: int = 0
+) -> list[RankCategoryStat]:
     """各现役类别在给定口径下的表现（按均收益降序）。
 
     metric ∈ {next_day_pct, cum_2d, cum_3d, ...}。days > 0 时仅用最近 N 天推荐。
@@ -488,9 +506,8 @@ def print_ranking_report(conn: sqlite3.Connection, metric: str = "next_day_pct",
         elif s.ic > 0.05:
             note = "<== 分数正效"
         if s.count < RANK_MIN_SAMPLE:
-            note = (note + " [样本不足]" if note else "[样本不足]")
-        print(f"{s.category:<16}{src:>6}{s.count:>6}{s.avg_return:>9.2f}{s.win_rate*100:>7.1f}%"
-              f"{s.ic:>10.3f}  {note}")
+            note = note + " [样本不足]" if note else "[样本不足]"
+        print(f"{s.category:<16}{src:>6}{s.count:>6}{s.avg_return:>9.2f}{s.win_rate * 100:>7.1f}%{s.ic:>10.3f}  {note}")
 
     diff = [c for c in current_order if c in suggested and current_order.index(c) != suggested.index(c)]
     diff_str = "无，顺序一致" if not diff else " ".join(f"{c}(当前{c}→建议{suggested.index(c)})" for c in diff)
@@ -507,7 +524,7 @@ def print_report(conn: sqlite3.Connection, metric: str = "next_day_pct", days: i
     # 但推荐发生在盘中——推荐后到收盘的涨幅已计入策略收益，早盘推荐高估最明显。
     # 全库无推荐时刻买入价（无分钟快照），暂无法精确还原，先标注方向供解读。
     if metric in ("cum_2d", "cum_3d"):
-        print("  注: cum_*d 用推荐日收盘价为起点，盘中推荐的票把\"推荐后到收盘涨幅\"计入了收益，")
+        print('  注: cum_*d 用推荐日收盘价为起点，盘中推荐的票把"推荐后到收盘涨幅"计入了收益，')
         print("      结果系统性高估（早盘推荐尤甚）。解读时需保留这一余量。")
     print()
 
@@ -516,7 +533,7 @@ def print_report(conn: sqlite3.Connection, metric: str = "next_day_pct", days: i
     stats = strategy_performance(conn, metric, days=days)
     for s in stats:
         print(
-            f"{s.category:<16}{s.count:>6}{s.win_rate*100:>7.1f}%"
+            f"{s.category:<16}{s.count:>6}{s.win_rate * 100:>7.1f}%"
             f"{s.avg_return:>9.2f}{s.profit_loss_ratio:>8.2f}"
             f"{s.ic_score:>8.3f}{s.avg_score:>8.1f}"
         )
@@ -527,8 +544,7 @@ def print_report(conn: sqlite3.Connection, metric: str = "next_day_pct", days: i
     if tot_n:
         tot_ret = sum(s.avg_return * s.count for s in stats) / tot_n
         tot_win = sum(s.win_rate * s.count for s in stats) / tot_n
-        print(f"{'ALL(全推荐基准)':<16}{tot_n:>6}{tot_win*100:>7.1f}%"
-              f"{tot_ret:>9.2f}")
+        print(f"{'ALL(全推荐基准)':<16}{tot_n:>6}{tot_win * 100:>7.1f}%{tot_ret:>9.2f}")
 
     print("\n[2] 分维度 IC（降序，正=加分越多收益越好）")
     print(f"{'维度':<28}{'样本':>6}{'IC':>8}{'加正分均收益':>14}{'零分均收益':>12}")
@@ -542,10 +558,12 @@ def print_report(conn: sqlite3.Connection, metric: str = "next_day_pct", days: i
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="创业板扫描策略回测归因")
     parser.add_argument("--days", type=int, default=0, help="仅分析最近 N 天的推荐（0=全部）")
-    parser.add_argument("--metric", default="next_day_pct",
-                        choices=["next_day_pct", "fwd_3d", "fwd_5d", "cum_2d", "cum_3d"])
-    parser.add_argument("--ranking", action="store_true",
-                        help="综合排序类别优先级校准报告（默认 next_day_pct，近期30天窗口）")
+    parser.add_argument(
+        "--metric", default="next_day_pct", choices=["next_day_pct", "fwd_3d", "fwd_5d", "cum_2d", "cum_3d"]
+    )
+    parser.add_argument(
+        "--ranking", action="store_true", help="综合排序类别优先级校准报告（默认 next_day_pct，近期30天窗口）"
+    )
     parser.add_argument("--backfill", action="store_true", help="回填 N 日收益字段")
     parser.add_argument("--dry-run", action="store_true", help="回填预览不写库")
     return parser

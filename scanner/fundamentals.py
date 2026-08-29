@@ -79,8 +79,10 @@ def _warn_missing_pywencai():
     global _logged_missing
     if not _logged_missing:
         _logged_missing = True
-        print("[财务风险] 警告：pywencai 未安装 → FUND_RISK 硬过滤静默失效，"
-              "资不抵债票将照常进推荐。请 `pip install pywencai` 启用（optional 重依赖）。")
+        print(
+            "[财务风险] 警告：pywencai 未安装 → FUND_RISK 硬过滤静默失效，"
+            "资不抵债票将照常进推荐。请 `pip install pywencai` 启用（optional 重依赖）。"
+        )
 
 
 def _cache_put(data: dict, now: float | None = None, ttl: float | None = None) -> None:
@@ -192,8 +194,7 @@ def _fetch_fund_risk_ths() -> tuple[dict, bool]:
             done = st["done"]
     # ── 拉取阶段（锁外）：只处理本地快照之后的未完成批次 ──
     deadline = time.time() + FUND_RISK_FETCH_TIMEOUT
-    batches = [codes[i:i + _VALUATION_BATCH_SIZE]
-               for i in range(0, len(codes), _VALUATION_BATCH_SIZE)]
+    batches = [codes[i : i + _VALUATION_BATCH_SIZE] for i in range(0, len(codes), _VALUATION_BATCH_SIZE)]
     new_hits: dict[str, str] = {}
     while done < len(batches) and time.time() < deadline:
         vals = ths_api.fetch_valuations(batches[done])
@@ -216,8 +217,7 @@ def _fetch_fund_risk_ths() -> tuple[dict, bool]:
         if complete:
             _ths_progress.pop(key, None)  # 定稿后清进度（防长跑内存累积）
     if complete:
-        logger.info("财务风险 THS 增量拉取完成：%d 只 GEM / %d 只资不抵债",
-                    len(codes), len(merged_hits))
+        logger.info("财务风险 THS 增量拉取完成：%d 只 GEM / %d 只资不抵债", len(codes), len(merged_hits))
         return merged_hits, True
     return merged_hits, False
 
@@ -239,29 +239,37 @@ def fetch_fund_risk_map() -> dict[str, str]:
         if result or complete:
             # 部分完成也先返回已命中子集（硬过滤多覆盖好过漏），按短退避缓存
             # 以便下轮续传；完全完成则按结果是否为空选 TTL。
-            ttl = (FUND_RISK_TTL_SEC if complete else FUND_RISK_FAIL_TTL_SEC)
+            ttl = FUND_RISK_TTL_SEC if complete else FUND_RISK_FAIL_TTL_SEC
             if not result and not complete:
                 ttl = FUND_RISK_FAIL_TTL_SEC
             _cache_put(result, ttl=ttl)
             return result
-    except Exception as e:  # noqa: BLE001  THS 层任何异常 → 问财兜底
-        logger.warning("财务风险 THS 主源异常，降级 pywencai: %s", e)
+    except Exception as e:  # noqa: BLE001  第三方库边界（THS SDK），异常类型不可枚举
+        # 保留宽捕获的理由（与 _finalize_today_klines 同族）：ths_api 是第三方 SDK，
+        # 可能抛任意类型异常，不能因为未纳入 EXTERNAL_FAILURES 就中断主源→兜底降级。
+        # 2026-08-30 补：把异常类型打进日志——AGENTS.md 反对的是「静默吞掉且无法区分
+        # 外部抖动 vs 我们的 bug」，宽捕获本身在本边界是合理的，无痕才是问题。
+        logger.warning("财务风险 THS 主源异常，降级 pywencai: %s: %s", type(e).__name__, e)
     # ── 兜底：pywencai 问财（原实现）──
     # 2026-08-29：原变量也叫 result（与上方 THS 分支的 result 同名），mypy 报
     # no-redef 且带注解的二次绑定掩盖了上方分支的类型。改名以隔离两条路径。
     wc_result: dict[str, str] = {}
     try:
         import pywencai  # noqa: PLC0415
-    except Exception:
+    except ImportError:
+        # 2026-08-30：原为 `except Exception`。可选依赖缺失是 ImportError，
+        # 除此之外的一切（语法/属性错误等）都是真 bug，不该被静默成「未安装」。
         _warn_missing_pywencai()
         return wc_result
     try:
-        df = _bounded_call(lambda: pywencai.get(query=FUND_RISK_QUERY, loop=True),
-                           FUND_RISK_FETCH_TIMEOUT)
+        df = _bounded_call(lambda: pywencai.get(query=FUND_RISK_QUERY, loop=True), FUND_RISK_FETCH_TIMEOUT)
         for sym in _extract_xq_symbols(df):
             wc_result[sym] = FUND_RISK_REASON
-    except Exception:
+    except Exception as e:  # noqa: BLE001  第三方库边界（pywencai/pandas），异常类型不可枚举
         # fail-open + 短退避：查询异常/超时缓存空结果 FUND_RISK_FAIL_TTL_SEC，下轮扫描重试
+        # 同上方 THS 分支：宽捕获是第三方边界的正确选择，但必须留下痕迹——
+        # 2026-08-30 补 type(e).__name__，让「外部抖动」与「我们的 bug」可区分。
+        logger.warning("问财查询失败，短退避后重试: %s: %s", type(e).__name__, e)
         _cache_put({}, ttl=FUND_RISK_FAIL_TTL_SEC)
         return {}
     # 成功但空结果（异常，正常应恒有资不抵债股）：同样短退避，避免每轮重复查询

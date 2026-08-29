@@ -398,7 +398,12 @@ def entry_tier_reasons(
 
 
 def _entry_tier(
-    entry: Any, conn=None, accum: float | None = None, marked: bool | None = None, accum_map: dict | None = None
+    entry: Any,
+    conn=None,
+    accum: float | None = None,
+    marked: bool | None = None,
+    accum_map: dict | None = None,
+    flow: float | None = None,
 ) -> int:
     """综合排序档位（2026-08-17 二值 → 4 级；2026-08-18 统一口径为「次日大涨」）。
 
@@ -440,7 +445,11 @@ def _entry_tier(
         return 1
     if cat == "comeback":
         return 2
-    return 3 if _warning_tier3_reasons(entry) else 2
+    # flow 透传（2026-08-30）：与 entry_tier_reasons 同参数，供调用方用
+    # market_extra_cache 回退链补资金流值（掉榜行 dims 缺失场景）。此前本函数
+    # 恒不传 flow，导致「档位判定」与「档位原因归因」两条路径对同一行可能给出
+    # 不同结论（一个拿不到兜底值）。
+    return 3 if _warning_tier3_reasons(entry, flow=flow) else 2
 
 
 # ── 🎯 次日大涨画像：类别规格表（2026-08-26 收口）──

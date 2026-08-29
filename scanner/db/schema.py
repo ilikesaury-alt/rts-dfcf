@@ -14,7 +14,7 @@ from scanner.config import now_beijing
 
 # schema 版本：每次结构性变更（新表/新列/新索引）+1，并在 init_db 里补对应的
 # 幂等迁移。schema_version 表记录演进历史，供工具判断库是否需要重建/回填。
-SCHEMA_VERSION = 2  # v2 (2026-08-26): +ranking_snapshot（综合排序档位快照）
+SCHEMA_VERSION = 3  # v3 (2026-08-30): +scan_rejections（硬过滤审计）
 
 
 def get_conn(db_path: str | None = None) -> sqlite3.Connection:
@@ -229,6 +229,29 @@ def init_db() -> sqlite3.Connection:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rs_date ON ranking_snapshot(date)")
+    # 硬过滤审计（2026-08-30）：命中 RISK_FLAGS_HARD_FILTER 被移出推荐的候选此前
+    # **完全不落库**——orchestrator 先把它们从 all_candidates 剔除再交给
+    # save_recommendations，于是「当日首次成为候选即被过滤」的票在 recommendations
+    # 里连一行都没有，_update_excluded_marks 的 UPDATE 也无行可更新。后果：
+    # 无法统计被杀票的次日收益，硬过滤到底有没有用永远不可验证（只能看到活下来的
+    # 票，看不到被杀掉的票 = 典型幸存者偏差）。
+    # 独立成表而非写进 recommendations：_load_signals（组合回测）读 recommendations
+    # 不过滤 excluded，混进去会让回测宇宙无端变大。本表只服务归因/审计。
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scan_rejections (
+            date TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            category TEXT NOT NULL,
+            reason TEXT NOT NULL,          -- 命中的硬过滤标签串（最新一轮）
+            score INTEGER,                 -- 被杀时的评分（当日最大值，供分桶对照）
+            percent REAL,                  -- 被杀时的涨幅
+            hits INTEGER DEFAULT 1,        -- 当日累计命中轮次（同一票可能多轮被杀）
+            first_time TEXT NOT NULL,
+            updated TEXT NOT NULL,
+            PRIMARY KEY (date, symbol, category)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_rej_date ON scan_rejections(date)")
     # schema 版本记录（P1-6）：幂等——首次初始化写入当前版本，之后仅在版本前进时追加。
     conn.execute("""
         CREATE TABLE IF NOT EXISTS schema_version (

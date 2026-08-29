@@ -394,6 +394,7 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, 
         logger.warning(f"save_recommendations 预载已有记录失败: {e}")
         raise
     for c in new_faces + rest:
+        conn.execute("SAVEPOINT sp_rec")
         try:
             key = (c.stock.symbol, c.category)
             existing = existing_map.get(key)
@@ -426,6 +427,7 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, 
                         ),
                     )
                     existing[1] = c.score  # 同批后续重复项按最新最高分比较
+                conn.execute("RELEASE sp_rec")
                 continue
             cur = conn.execute(
                 "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, "
@@ -450,10 +452,14 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, 
             )
             # 记录真实 rowid：同批后续重复项走高分 UPDATE 时需要定位到本行
             existing_map[key] = [cur.lastrowid, c.score]
+            conn.execute("RELEASE sp_rec")
         except Exception as e:
-            # 用 savepoint 隔离失败行，避免回滚丢失已成功写入的行
+            # 2026-08-30：注释原写「用 savepoint 隔离失败行」，实际执行的是
+            # conn.rollback() —— 整批已写入行一并丢弃（注释自己也承认这点）。
+            # 改用真 savepoint：单行失败只回滚该行，已成功的行保留，与注释语义一致。
             try:
-                conn.rollback()
+                conn.execute("ROLLBACK TO sp_rec")
+                conn.execute("RELEASE sp_rec")
             except sqlite3.Error:
                 pass  # 回滚/清理失败无补救手段，外层已记录原始错误；仅捕获 sqlite3.Error，避免吞掉代码 bug
             print(f"  [!] 保存推荐记录失败 {c.stock.symbol}: {e}")
@@ -465,6 +471,60 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, 
         except sqlite3.Error:
             pass  # 回滚/清理失败无补救手段，外层已记录原始错误；仅捕获 sqlite3.Error，避免吞掉代码 bug
         logger.warning(f"save_recommendations 提交失败（本轮推荐未落库，下轮重写）: {e}")
+
+
+def save_rejections(conn: sqlite3.Connection, rejected: list, today: str | None = None) -> int:
+    """记录被硬过滤移出推荐的候选（审计表 scan_rejections，不进 recommendations）。
+
+    为什么要独立表：orchestrator 先剔除 all_candidates 再落库，「当日首次成为候选
+    即被过滤」的票在 recommendations 里连一行都没有，_update_excluded_marks 的
+    UPDATE 也无行可更新 —— 于是「被杀掉的票次日涨得怎样」永远查不到，硬过滤有没有
+    用不可验证（只看得到活下来的票 = 幸存者偏差）。
+
+    不写进 recommendations 的原因：_load_signals（组合回测）读该表不过滤 excluded，
+    混进去会让回测宇宙无端变大、与线上可买集进一步脱节。
+
+    同一 (date, symbol, category) 重复命中只累加 hits 并刷新 reason/score。
+    fail-open：落库失败仅告警，不影响扫描主流程。
+    """
+    if not rejected:
+        return 0
+    rec_date = today or now_beijing().date().isoformat()
+    now_t = now_beijing().strftime("%H:%M:%S")
+    rows = [
+        (
+            rec_date,
+            c.stock.symbol,
+            c.category,
+            getattr(c, "excluded_reason", "") or "",
+            getattr(c, "score", 0) or 0,
+            to_float(getattr(c.stock, "percent", 0.0), default=0.0),
+            now_t,
+            now_t,
+        )
+        for c in rejected
+    ]
+    try:
+        conn.executemany(
+            "INSERT INTO scan_rejections "
+            "(date, symbol, category, reason, score, percent, first_time, updated) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(date, symbol, category) DO UPDATE SET "
+            "reason = excluded.reason, "
+            "score = MAX(scan_rejections.score, excluded.score), "
+            "hits = scan_rejections.hits + 1, "
+            "updated = excluded.updated",
+            rows,
+        )
+        conn.commit()
+        return len(rows)
+    except Exception as e:
+        logger.warning(f"save_rejections 落库失败（硬过滤审计缺失，不影响扫描）: {e}")
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass  # 回滚/清理失败无补救手段，外层已记录原始错误；仅捕获 sqlite3.Error，避免吞掉代码 bug
+        return 0
 
 
 def upsert_watch_symbol(

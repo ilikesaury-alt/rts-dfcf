@@ -190,6 +190,23 @@ def _set_risk_flags(c: Candidate, fund_risk: dict[str, str] = None):
         c.excluded_reason = ",".join(hard_hits)
 
 
+def _calibrated_accum(c: Candidate, dims: dict) -> float:
+    """5 日累计涨幅（含推荐日口径）—— 与 ranking 的 🎯 / 档位判定同源。
+
+    `c.kline.accumulated_pct` 的口径随类别变化：short_term **含今日**，其余为历史
+    口径（_split_today 剔除今日）。硬过滤阈值（DISTRIBUTION_ACCUM_*）若直接吃该
+    字段，同一阈值在 short_term 与非 short_term 上语义不同 —— 与 ranking 侧已修的
+    🎯 累计口径错位是同一类问题（见 ranking._nextday_entry_accum）。
+
+    分析侧已为全部策略写入 dimensions["accumulated_incl_today"]（含今日复利口径，
+    与 OVERHEAT_ACCUM_MAX 等档位阈值的校准口径一致），优先取它；缺失时回退旧行为。
+    """
+    v = (dims or {}).get("accumulated_incl_today")
+    if v is not None:
+        return to_float(v, default=0.0)
+    return c.kline.accumulated_pct if c.kline else 0.0
+
+
 def _detect_main_force_distribution(c: Candidate, dims: dict) -> bool:
     """识别主力高位派发迹象。
 
@@ -201,7 +218,7 @@ def _detect_main_force_distribution(c: Candidate, dims: dict) -> bool:
     5. 后排+盘中走弱：short_term 后排上榜（rank>30）且分时持续走弱——
        边际放量票开盘强盘中弱 = 冲高派发，累计涨幅不足 15% 也判定（2026-08-14 新增）。
     """
-    accum = c.kline.accumulated_pct if c.kline else 0.0
+    accum = _calibrated_accum(c, dims)
     vol_ratio = c.kline.volume_ratio if c.kline else 1.0
     today_pct = c.stock.percent
     opening = dims.get("opening_score")
@@ -242,7 +259,12 @@ def _detect_main_force_distribution(c: Candidate, dims: dict) -> bool:
     #    11 股/7 交易日分布（07-20~08-13），非单票集中；弱转强直通亦不可豁免。
     #    显式守卫：仅 short_term 类别触发（v_st_rank 由 validate_short_term 写入，
     #    但添加 category 检查防止其他策略误触发）。
-    return bool(c.category == "short_term" and dims.get("v_st_rank") == V_ST_RANK_LOW and intraday is not None and intraday <= DISTRIBUTION_RANK_WEAK_INTRADAY)
+    return bool(
+        c.category == "short_term"
+        and dims.get("v_st_rank") == V_ST_RANK_LOW
+        and intraday is not None
+        and intraday <= DISTRIBUTION_RANK_WEAK_INTRADAY
+    )
 
 
 def _detect_trend_breakage(dims: dict) -> bool:

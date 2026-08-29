@@ -90,7 +90,7 @@ def _log_exception(message: str, exc: BaseException | None = None):
                 with open(log_path, "r", encoding="utf-8") as f:
                     content = f.read()
                 # 保留最后 1MB
-                keep = content[-1024 * 1024:]
+                keep = content[-1024 * 1024 :]
                 with open(log_path, "w", encoding="utf-8") as f:
                     f.write(keep)
         except OSError:
@@ -144,9 +144,15 @@ def _finalize_today_klines(conn, adapter) -> None:
     if remaining > 0:
         print(f"\r  🌙 非交易时段 | 等待收盘定稿 ({int(remaining)}s)  ", end="", flush=True)
         time.sleep(min(remaining, 120))
+    # 只取「盘中未定稿」的今日 bar（finalized=0）：定稿成功的票写回后 finalized=1，
+    # 下一轮循环天然只补剩余票 —— deadline 截断导致的半成品因此可续传，不需要
+    # 额外的进程内状态。（迁移前写入的历史行 finalized 默认 1，不会被重复定稿。）
     symbols = [
         r[0]
-        for r in conn.execute("SELECT DISTINCT symbol FROM daily_kline WHERE date=?", (today.isoformat(),)).fetchall()
+        for r in conn.execute(
+            "SELECT DISTINCT symbol FROM daily_kline WHERE date=? AND COALESCE(finalized, 0) = 0",
+            (today.isoformat(),),
+        ).fetchall()
     ]
     if not symbols:
         return
@@ -159,9 +165,11 @@ def _finalize_today_klines(conn, adapter) -> None:
     deadline = now_beijing().timestamp() + KLINE_FETCH_DEADLINE
     refreshed = 0
     corrected = 0
+    attempted = 0
     for sym in symbols:
         if now_beijing().timestamp() >= deadline:
             break
+        attempted += 1
         try:
             kline = adapter.fetch_kline(sym, KLINE_FETCH_DAYS)
             if kline:
@@ -180,9 +188,11 @@ def _finalize_today_klines(conn, adapter) -> None:
             # 打印类型+信息，便于区分「外部依赖抖动」与「我们的代码 bug」。
             print(f"  [!] 刷新K线异常 {sym}: {type(e).__name__}: {e}")
             continue
+    # pending = 被 deadline 截断、本轮根本没尝试的票数（非拉取失败数）。
+    pending = len(symbols) - attempted
     line = (
         f"{today.isoformat()} {now_beijing().strftime('%H:%M:%S')} "
-        f"refreshed={refreshed}/{len(symbols)} corrected={corrected}"
+        f"refreshed={refreshed}/{len(symbols)} corrected={corrected} pending={pending}"
     )
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
@@ -192,8 +202,15 @@ def _finalize_today_klines(conn, adapter) -> None:
         pass
     # 全部工作完成后才标记当日已定稿：此前置位若中途抛异常（如 DB 锁/`conn.execute`
     # 未包 try），当日会被误标为已定稿而实际零写入，且进程不重启不再重试。
-    _finalize_date = today.isoformat()
-    print(f"\r  [收盘定稿] 覆盖 {refreshed}/{len(symbols)} 只今日K线为最终收盘价（修正 {corrected} 只）  ", flush=True)
+    # 2026-08-30 追加：pending>0（deadline 截断）时同样不置位——实测单日待定稿
+    # 140 只，串行拉取撞上 KLINE_FETCH_DEADLINE=45s 是常态，无条件置位会让剩余
+    # 票的盘中残留 bar 当天永不再试（拓斯达同族污染）。截断票保持 finalized=0，
+    # 下轮循环自动续传。单只拉取失败（已计入 attempted）不阻置位：失败票由
+    # backfill_kline 手动兜底，且 finalized 仍为 0，data_health 计数可见。
+    if pending == 0:
+        _finalize_date = today.isoformat()
+    tail = f"（修正 {corrected} 只）" + (f"，剩余 {pending} 只下轮续传" if pending else "")
+    print(f"\r  [收盘定稿] 覆盖 {refreshed}/{len(symbols)} 只今日K线为最终收盘价{tail}  ", flush=True)
 
 
 # 档位快照落库标记：记录已完成当日 ranking_snapshot 写入的日期（每交易日一次）。
