@@ -3,6 +3,8 @@
 import sqlite3
 from datetime import timedelta
 
+import wcwidth
+
 import scanner.display as disp_mod
 from scanner.config import now_beijing
 from scanner.models import Candidate, KlineSummary, StockInfo
@@ -1083,3 +1085,67 @@ def test_display_priority_relist_hit_renders_bolt(capsys):
     out = capsys.readouterr().out
     assert "⚡" in out and "⚡R" not in out, "命中时合并图例应打印单个 ⚡（两变体不区分渲染）"
     assert "蓄势突破观察" in out, "命中时表尾应打印合并图例"
+
+
+# ── 表头 / 数据行列边界一致（2026-08-29）──
+# 2026-08-13 / 08-20 / 08-21 三次修的都是列宽问题，但既有测试只覆盖 _vis_len / _pad /
+# _trunc 原语，无人断言「表头列边界 == 数据行列边界」——而 detail 表此前正是由两处
+# 独立 f-string 拼成：表头序号列后 1 空格、数据行 2 空格，导致「代码」列起右偏 1 列。
+def _col_starts(spec):
+    """各列左边界的可见宽度偏移（行首缩进 2 + 每列后 1 空格分隔）。"""
+    starts = []
+    pos = 2
+    for _title, width, _align in spec:
+        starts.append(pos)
+        pos += width + 1
+    return starts
+
+
+def _char_at_width(s, target):
+    """可见宽度 target 处的字符（中文按 2 列计）；越界返回 None。"""
+    w = 0
+    for ch in s:
+        if w == target:
+            return ch
+        w += max(0, wcwidth.wcwidth(ch))
+    return None
+
+
+def test_table_header_and_row_share_column_starts():
+    """_table_row 与 _table_header 必须落在同一组列起点上（同一 spec 推导）。"""
+    for spec in (disp_mod.COLS_POOL, disp_mod.COLS_DETAIL):
+        header = disp_mod._table_header(spec)
+        row = disp_mod._table_row([str(i) for i in range(len(spec))], spec)
+        for col, start in enumerate(_col_starts(spec)):
+            assert _char_at_width(header, start) is not None, f"表头第 {col} 列起点 {start} 越界"
+            assert _char_at_width(row, start) is not None, f"数据行第 {col} 列起点 {start} 越界"
+
+
+def test_priority_row_code_column_aligns_with_header(capsys):
+    """回归：_print_priority_row 的「代码」列左边界必须与表头一致。
+
+    破坏方式（历史 bug）：把表头/行改回两处独立 f-string，或让数据行序号列后多打
+    一个空格（`{i:3d}  `）——则 starts[1] 处会落到空格而非代码首字符。
+    """
+    entry = {
+        "symbol": "SZ300319",
+        "name": "麦捷科技",
+        "category": "comeback",
+        "score": 72,
+        "time": "10:30:00",
+        "first_time": "10:30:00",
+        "percent": 3.21,
+        "accumulated_pct": 5.0,
+        "_candidate": None,
+        "_core_stock": False,
+    }
+    disp_mod._print_priority_row(entry, 1, {})
+    row = capsys.readouterr().out.rstrip("\n")
+    header = disp_mod._table_header(disp_mod.COLS_DETAIL)
+
+    code_start = _col_starts(disp_mod.COLS_DETAIL)[1]
+    # 表头该偏移处必须是「代码」首字；数据行同偏移处必须是代码首字符（左对齐、无前导空格）
+    assert _char_at_width(header, code_start) == "代"
+    assert _char_at_width(row, code_start) == "S", (
+        f"数据行代码列未对齐表头：期望偏移 {code_start} 处为 'S'，实际 {_char_at_width(row, code_start)!r}"
+    )
