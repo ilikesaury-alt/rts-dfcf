@@ -1,4 +1,5 @@
 """飞书推送测试。"""
+
 from scanner.feishu import push_feishu
 
 
