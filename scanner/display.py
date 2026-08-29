@@ -300,8 +300,14 @@ def display(
     rank_map: dict[str, int] | None = None,
     today_pool: dict[str, Candidate] | None = None,
     last_ranks: dict[str, int] | None = None,
-):
+) -> "ScanView | None":
     """扫描主屏：头部摘要 + 综合排序总表（含回马枪/次日大涨子区）。
+
+    ScanView 定义在本文件更下方（视图模型区），此处为前向引用故写成字符串注解；
+    render_terminal / build_scan_view 均在类定义之后，无需引号。
+
+    返回本轮 ScanView 供飞书复用（同一份选择，避免两端分叉与重复计算）；
+    conn 为空或今日无推荐时返回 None。
 
     策略桶（新面孔/动量/反弹/回马枪/超短）2026-08-10 下线：与综合排序重复列同一批票、
     每桶重复列头；综合排序表已带类别标签，桶区信息不再单列。
@@ -318,7 +324,18 @@ def display(
     filter_info = f" | 过滤{filtered_large_cap}只" if filtered_large_cap else ""
     print(f"  创业板共 {gem_total} 只{filter_info} | 每{interval}s刷新 | {_market_env_tag(today_pool)}")
     print(f"{'=' * 96}")
-    display_priority(conn, live_quotes=live_quotes, rank_map=rank_map, today_pool=today_pool, last_ranks=last_ranks)
+    # 构建一次视图、渲染并回传：飞书卡片复用同一份 ScanView。
+    # 不能走 display_priority——它内部会再跑一遍 build_scan_view，等于每轮双倍 DB 查询。
+    view = build_scan_view(
+        conn,
+        live_quotes=live_quotes,
+        rank_map=rank_map,
+        today_pool=today_pool,
+        last_ranks=last_ranks,
+    )
+    if view is not None:
+        render_terminal(view)
+    return view
 
 
 def _print_priority_row(

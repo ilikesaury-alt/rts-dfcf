@@ -1149,3 +1149,37 @@ def test_priority_row_code_column_aligns_with_header(capsys):
     assert _char_at_width(row, code_start) == "S", (
         f"数据行代码列未对齐表头：期望偏移 {code_start} 处为 'S'，实际 {_char_at_width(row, code_start)!r}"
     )
+
+
+# ── 终端 / 飞书同源（2026-08-29，P0 #1 收口）──
+def test_feishu_card_matches_terminal_selection(capsys):
+    """回归：飞书卡片与终端必须渲染同一批票。
+
+    此前飞书 _build_card 读「本轮候选桶」（new_faces/momentum/...），终端读
+    「DB 当日累计推荐」——同一只票可能一边排第 1、另一边不出现。现两端共用
+    build_scan_view 产出的同一份 ScanView。
+    """
+    from scanner.feishu import build_feishu_card
+
+    all_syms = {"SZ300001", "SZ300002", "SZ300003"}
+    conn = _rec_db()
+    for sym in sorted(all_syms):
+        _insert_rec_cat(conn, sym, f"股{sym[-1]}", "momentum", 70)
+
+    view = disp_mod.build_scan_view(conn, today_pool={})
+    assert view is not None, "有推荐时应返回 ScanView"
+
+    disp_mod.render_terminal(view)
+    terminal_out = capsys.readouterr().out
+
+    card_text = str(build_feishu_card(view, gem_total=100))
+
+    # 终端渲染出的票（行格式：序号 代码 名称 ...）
+    terminal_syms = {ln.split()[1] for ln in terminal_out.splitlines() if "SZ30000" in ln}
+    assert terminal_syms, "终端应渲染出推荐行"
+
+    card_syms = {s for s in all_syms if s in card_text}
+    assert card_syms == terminal_syms, (
+        f"飞书卡片与终端选择不一致：终端有而卡片缺 {terminal_syms - card_syms}；"
+        f"卡片有而终端无 {card_syms - terminal_syms}"
+    )

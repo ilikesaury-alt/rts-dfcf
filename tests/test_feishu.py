@@ -9,4 +9,4 @@ def test_empty_recommendations_no_push(monkeypatch):
     monkeypatch.setattr("scanner.feishu.FEISHU_WEBHOOK", "https://example.com/hook")
     monkeypatch.setattr("scanner.feishu._last_push_time", 0.0)
     monkeypatch.setattr("scanner.feishu._last_push_symbols", set())
-    assert push_feishu([], [], gem_total=10) is False
+    assert push_feishu(None, gem_total=10) is False

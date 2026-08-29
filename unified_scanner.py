@@ -41,6 +41,7 @@ from scanner.database import (
 from scanner.display import display
 from scanner.feishu import push_feishu
 from scanner.log_utils import log_results
+from scanner.models import RecommendationRow
 from scanner.orchestrator import scan_with_raw
 from scanner.ranking_snapshot import persist_ranking_snapshot
 from scanner.trading_session import (
@@ -52,7 +53,12 @@ from scanner.trading_session import (
 from scanner.utils import EXTERNAL_FAILURES, clear_screen
 
 if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8")
+    # sys.stdout 的静态类型是 TextIO（无 reconfigure 属性）；运行时的 TextIOWrapper
+    # 才有（CPython 3.7+）。用 getattr 取值，同时满足类型检查与非控制台场景
+    # （重定向/pty 下可能没有该属性，静默跳过即可）。
+    _reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(_reconfigure):
+        _reconfigure(encoding="utf-8")
 
 
 _SOURCE_LABELS = {
@@ -337,7 +343,7 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 # 为综合推荐补拉今日曾推荐但不在 current_quotes 中的票的实时行情
                 live_quotes: dict[str, dict] = {}
                 live_quotes.update(current_quotes)
-                today_recs: list[dict] = []
+                today_recs: list[RecommendationRow] = []
                 today_syms: set[str] = set()
                 try:
                     today_recs = get_today_recommendations(conn)
@@ -378,7 +384,8 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     print(f"  [!] 推荐后回落移出失败: {e}")
 
                 # 历史推荐跟踪已并入回马枪（2026-08-07）：tracker 模块删除，不再单独查询
-                display(
+                # display() 返回本轮 ScanView，飞书复用同一份（避免两端选择分叉）。
+                view = display(
                     len(all_gem),
                     interval,
                     filtered_large_cap=filtered_large_cap,
@@ -392,16 +399,9 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 last_ranks = dict(current_rank_map)
                 log_results(new_faces, momentum + rebound_list + short_term_list + comeback_list)
                 if not no_feishu:
-                    pushed = push_feishu(
-                        new_faces,
-                        momentum,
-                        len(all_gem),
-                        filtered_large_cap=filtered_large_cap,
-                        short_term_list=short_term_list,
-                        rebound_list=rebound_list,
-                        comeback_list=comeback_list,
-                    )
-                    if not pushed and (new_faces or momentum or rebound_list or short_term_list or comeback_list):
+                    pushed = push_feishu(view, len(all_gem), filtered_large_cap=filtered_large_cap)
+                    has_rows = view is not None and bool(view.main_rows or view.comeback_rows or view.core_dip_rows)
+                    if not pushed and has_rows:
                         print("\r  📤 飞书推送跳过（冷却中/无变化）", end="", flush=True)
 
                 if new_faces:

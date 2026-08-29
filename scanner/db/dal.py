@@ -16,7 +16,7 @@ from scanner.config import (
     now_beijing,
 )
 from scanner.db._common import _n_trading_days_ago
-from scanner.models import KlineBar
+from scanner.models import KlineBar, RecommendationRow
 from scanner.trading_session import is_trading_time
 from scanner.utils import is_gem, to_float
 
@@ -634,7 +634,7 @@ def prune_watch_pool(conn: sqlite3.Connection, keep_trading_days: int = 15) -> i
 
 def mark_reversed_recommendations(
     conn: sqlite3.Connection,
-    today_recs: list[dict],
+    today_recs: list[RecommendationRow],
     active_syms: set[str],
     live_quotes: dict[str, dict],
     turned_red_drop: float = REVERSAL_TURNED_RED_DROP,
