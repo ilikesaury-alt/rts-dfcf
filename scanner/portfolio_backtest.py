@@ -13,7 +13,7 @@
              锚点完全对齐（T 日收盘买、T+hold_days 日收盘卖），用于还原用户「当日
              推荐当日买入、次日或 3 日内卖出」的真实节奏。注意：buy_delay=0 时买入日
              = 信号日，买入价用当日收盘价，属「收盘买入」标准建模口径。
-- 持有：hold_days 个交易日（默认 3），在到期日**收盘**卖出。
+- 持有：hold_days 个交易日（默认 1），在到期日**收盘**卖出。
   2026-08-18 统一口径：综合排序/调参以 next_day_pct（次日大涨）为准，本模块默认 3 日
   持有保留为组合对照（与 cum_3d 对齐）；「次日大涨」口径的收益验证用 --hold-days 1。
 - 成本（A 股真实费率）：
@@ -96,7 +96,7 @@ class PBConfig:
     start: str | None = None  # 回测起始日（推荐日口径，含）；None=数据最早
     end: str | None = None  # 回测结束日（推荐日口径，含）；None=数据最晚
     days: int = 0  # 仅用最近 N 天推荐（相对最晚推荐日）；0=全部
-    hold_days: int = 3  # 持有交易日数
+    hold_days: int = 1  # 持有交易日数（评分体系校准于次日大涨，默认1天匹配）
     buy_delay: int = 1  # 信号日到买入日的交易日的偏移（默认 1）
     buy_at: str = "open"  # 买入价锚定："open"=买入日开盘，"close"=买入日收盘
     max_positions: int = 10  # 最大同时持仓数（= 等权槽位数）
@@ -737,7 +737,7 @@ def main() -> None:
     parser.add_argument(
         "--category", default=None, choices=sorted(PORTFOLIO_CATEGORIES), help="仅跑该策略类别；省略=综合(all)"
     )
-    parser.add_argument("--hold-days", type=int, default=3, help="持有交易日数（默认3）")
+    parser.add_argument("--hold-days", type=int, default=1, help="持有交易日数（默认1，匹配次日大涨口径）")
     parser.add_argument("--buy-delay", type=int, default=1, help="信号日到买入日偏移（默认1）")
     parser.add_argument(
         "--buy-at",
