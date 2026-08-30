@@ -746,3 +746,13 @@ BREAKOUT_PULLBACK_MIN = -18.0  # T-1 收盘距20日高点回撤下限（%）
 BREAKOUT_PULLBACK_MAX = -8.0  # 回撤上限：太浅=还在高位，太深=趋势可能已破
 # NEXTDAY_CAT_PRIORITY（🎯 次日大涨画像可标记类别集合）已迁至 scanner/categories
 # 单一事实来源，config 仅 re-export，见上方 from scanner.categories import。
+
+# ── 次日大涨高概率规则（display-only，2026-08-30）──
+# 实证：ma5r ≥ 5% & atrpct ≥ 8% & ret20 ≤ 40% → H2 盲测 LIFT 1.53x，
+# 均值 +1.59%（扣 0.30% 成本净 +1.29%），跌超7% 仅 7.5%（基准 11.6%）。
+# 全部只用 T-1 及之前已完成 bar，盘中任意时刻可算，全天不漂移。
+# 阈值在 H1（2026-05-28..07-14）拟合、H2（2026-07-15..08-28）盲测确认。
+NEXTDAY_RULE_MA5R_MIN = 5.0    # 收盘距5日均线最小距离（%）
+NEXTDAY_RULE_ATRPCT_MIN = 8.0  # 21日平均真实波幅下限（%）
+NEXTDAY_RULE_RET20_MAX = 40.0  # 21日涨幅上限（排除长期过热）
+NEXTDAY_RULE_BARS = 21         # 回看 bar 数（ATP / ret20 计算窗口）

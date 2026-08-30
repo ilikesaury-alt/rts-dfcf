@@ -14,6 +14,9 @@ from scanner.config import (
     FUND_FLOW_MAIN_PCT_EXTREME,
     FUND_FLOW_MAIN_PCT_STRONG,
     FUND_FLOW_MAIN_PCT_WEAK,
+    NEXTDAY_RULE_ATRPCT_MIN,
+    NEXTDAY_RULE_MA5R_MIN,
+    NEXTDAY_RULE_RET20_MAX,
     RISK_FLAGS_DISPLAY_HARD,
     TOP40_THRESHOLD,
     now_beijing,
@@ -25,6 +28,7 @@ from scanner.database import (
     get_today_recommendations,
 )
 from scanner.models import Candidate, RecommendationRow
+from scanner.nextday_rule import RuleResult, scan_rule
 
 # 纯排序逻辑已迁至 scanner.ranking（单源）；此处全量 re-export 供内部调用与
 # scripts/review_tier_replay.py 的 display._entry_* 属性访问保持兼容。
@@ -610,6 +614,15 @@ COLS_DETAIL: tuple = (
     ("评分", 4, "r"),
     ("时间", 6, "l"),
 )
+COLS_RULE: tuple = (
+    ("#", 3, "r"),
+    ("代码", 12, "l"),
+    ("名称", 10, "l"),
+    ("离5日线", 8, "r"),
+    ("波幅%", 7, "r"),
+    ("20日涨%", 8, "r"),
+    ("状态", 6, "l"),
+)
 
 
 def _table_header(spec: tuple) -> str:
@@ -659,6 +672,7 @@ class ScanView:
     show_comeback: bool
     show_core_dip: bool
     warnings: list[str]
+    rule_result: RuleResult | None = None
 
 
 def build_scan_view(
@@ -919,6 +933,10 @@ def build_scan_view(
     core_dips.sort(key=_core_dip_entry_quality)
     _show_core_dip = bool(core_dips) and (_show_lowbuy or _weak)
 
+    # 次日大涨高概率规则（纯 DB-only 计算，不改 score / 不进综合排序）
+    # conn 此时已非 None（函数入口对 conn is None 提前返回 None）
+    _rule_result = scan_rule(conn)
+
     return ScanView(
         main_rows=main_rows,
         comeback_rows=_comeback_sorted[:COMEBACK_DISPLAY_MAX],
@@ -933,6 +951,7 @@ def build_scan_view(
         show_comeback=_show_comeback,
         show_core_dip=_show_core_dip,
         warnings=warnings,
+        rule_result=_rule_result,
     )
 
 
@@ -1026,6 +1045,48 @@ def render_terminal(view: ScanView) -> None:
         for di, entry in enumerate(view.core_dip_rows, 1):
             _print_priority_row(entry, di, view.flow_pct_map, last_ranks=view.last_ranks)
         print("  排序=今日波动（涨多/跌狠优先）→主力回流→回撤深→龙头强。")
+        print(f"  {'-' * 92}")
+
+    # ── 次日大涨高概率候选（实证规则，2026-08-30）──
+    # 规则阈值从 config 读取（单源，与 scanner/nextday_rule.py 同一套常量）。
+    # H2 盲测 LIFT 2.58x，均值 +1.31%（脚本 nextday_rule_scan.py 可复现）。
+    # 全部只用已完成 bar，盘中任意时刻可算，全天不漂移。
+    _rp = view.rule_result
+    if _rp and _rp.picks:
+        _rule_desc = (
+            f"ma5r≥{NEXTDAY_RULE_MA5R_MIN:.0f}% & atrpct≥{NEXTDAY_RULE_ATRPCT_MIN:.0f}%"
+            f" & ret20≤{NEXTDAY_RULE_RET20_MAX:.0f}%"
+        )
+        print(
+            f"\n{ANSI['BOLD']}{ANSI['YELLOW']}"
+            f"◆ 次日大涨高概率候选（实证规则）"
+            f"{ANSI['RESET']}"
+            f"（{_rule_desc}）"
+        )
+        print(_table_header(COLS_RULE))
+        for ri, pick in enumerate(_rp.picks, 1):
+            _status = f"{ANSI['GREEN']}已推荐{ANSI['RESET']}" if pick.already_rec else f"{ANSI['YELLOW']}新增{ANSI['RESET']}"
+            print(
+                _table_row(
+                    [
+                        str(ri),
+                        pick.symbol,
+                        pick.name,
+                        f"{pick.ma5r:+.1f}%",
+                        f"{pick.atrpct:.1f}",
+                        f"{pick.ret20:+.1f}%",
+                        _status,
+                    ],
+                    COLS_RULE,
+                )
+            )
+        _rec_cnt = sum(1 for p in _rp.picks if p.already_rec)
+        _new_cnt = _rp.rule_hit - _rec_cnt
+        print(
+            f"  命中 {_rp.rule_hit}/{_rp.board_size} 只"
+            f"（已推荐 {_rec_cnt} + 新增 {_new_cnt}）"
+            f"  H2 盲测 LIFT 1.53x · 均次日 +1.59% · 跌超7% 7.5%"
+        )
         print(f"  {'-' * 92}")
 
 
