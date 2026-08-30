@@ -41,16 +41,11 @@ mypy scanner/                              # type check (lenient, ignore_missing
 ```
 python -m scanner.portfolio_backtest --compare --rescore --buy-delay 0 --buy-at close --hold-days 3
 ```
-**`--buy-at open` is rejected on purpose**（2026-08-29 修正：AGENTS 旧文档写的
-`--buy-at open` 现已被前视偏差守卫挡下——信号收盘后才产生，无法以当日开盘价买入。
-必须用 `--buy-at close` 对齐 cum 口径）。
+**`--buy-at open` is rejected** — 信号收盘后才产生，无法以当日开盘价买入。必须用 `--buy-at close`。
 
 This rebuilds scores via `scanner/historical_rescan.py --rescore` (faithful to the live orchestrator pipeline). Read-only changes to config.py thresholds do NOT retroactively affect `recommendations` — you must use `--rescore`.
 
-> ⚠️ **口径提醒（2026-08-29 实测）**：排序/档位/🎯 画像全部校准于 `next_day`（次日≥7% hit），
-> 但组合回测默认 `--hold-days 3`。二者不是同一目标——例：rebound 次日 +1.30%/hit 17.9%
-> （全场最优）却 3 日持有 −12.80%（全场最差）。改权重/阈值前先确认你在优化哪个口径，
-> 需要时加 `--hold-days 1` 单独验证次日逻辑能否覆盖交易成本。
+> ⚠️ 排序/档位/🎯 画像校准于 `next_day`（次日≥7% hit），但回测默认 `--hold-days 3`。改权重/阈值前先确认优化哪个口径。
 
 ## Verification order
 
@@ -105,39 +100,27 @@ scanner/
   patterns.py               # Candlestick patterns
   fundamentals.py           # Fundamentals filtering (pywencai)
 scripts/                    # Analysis/verification scripts (not production)
- tests/                      # pytest suite (~1024 tests, 2026-08-29 实测；非 smoke 1010 通过)
+tests/                      # pytest suite
 ```
 
 ## Key facts an agent would miss
 
-- **Category registry** (`scanner/categories.py`) is the single source of truth for all strategy categories. When adding/modifying a category, edit ONLY `CATEGORY_REGISTRY` there — all other modules (`config.py`, `display.py`, `backtest.py`, etc.) derive from it.
+- **Category registry** (`scanner/categories.py`) is the single source of truth for all strategy categories. When adding/modifying a category, edit ONLY `CATEGORY_REGISTRY` there — all other modules derive from it.
 - **Config is the single source for all thresholds** (`scanner/config.py`). Do not hardcode magic numbers elsewhere. If you need a new threshold, add it to config.py and import it.
 - **`scanner/config.py` re-exports** from `scanner/weights.py`, `scanner/holidays.py`, and `scanner/categories.py`. The public import path `from scanner.config import X` is used throughout the codebase — maintain backward compatibility.
 - **DB file** is `scanner.db` at repo root (gitignored). Created automatically by `init_db()`.
 - **Data source env vars**: `RTS_DATA_SOURCE` (auto/xueqiu/ths), `HITHINK_FINANCE_API_KEY` (for THS fallback), `RTS_FEISHU_WEBHOOK`.
 - **Beijing timezone** (`BEIJING_TZ`, UTC+8) is used everywhere for time logic. Never use naive local time.
-- **Fail-open design — 但只捕外部故障**: Most external data fetches (K-line, fund flow, concept, ZT pool) wrap in try/except and degrade gracefully. Tests should not assume external APIs are available.
-  **捕获范围必须是 `scanner.utils.EXTERNAL_FAILURES`**（OSError / 超时 / requests / `sqlite3.Error` / ValueError / KeyError），
-  不要写裸 `except Exception`。2026-08-29 教训：宽泛捕获曾把一个回归测试里的
-  `NameError` 吞成"通过"，该测试守护的 bug 实际从未被验证过。编程错误必须冒泡到
-  `unified_scanner` 主循环兜底（记录完整 traceback 后下一轮重试）。
-  仅在资源清理（`conn.close()` / 文件句柄）场景可 `except sqlite3.Error: pass`。
+- **Fail-open design**: External data fetches degrade gracefully. Catch only `scanner.utils.EXTERNAL_FAILURES` (OSError / timeout / requests / sqlite3.Error / ValueError / KeyError). Never bare `except Exception`. Programming errors must bubble to main loop.
 - **Smoke tests** are marked with `@pytest.mark.smoke` — they need real `scanner.db` + network. Default `pytest` skips them.
-- **`--rescore` is required for P&L validation**: `recommendations` table stores frozen scores from old weights. Changing thresholds in config.py does NOT retroactively change past scores. Use `--rescore` to rebuild from historical data.
+- **`--rescore` is required for P&L validation**: `recommendations` table stores frozen scores from old weights. Changing thresholds in config.py does NOT retroactively change past scores.
 - **Windows encoding**: `unified_scanner.py` sets `sys.stdout.reconfigure(encoding="utf-8")` on win32. Console output uses Chinese text + emoji.
-- **Feishu webhook** (`FEISHU_WEBHOOK` in config.py): source is clean since 2026-08-29 (`os.environ.get("RTS_FEISHU_WEBHOOK", "")`)，
-  但 `bb7d421` 曾提交过明文 token（可在 `git log -p -S "open.feishu.cn" -- scanner/config.py` 中还原）。
-  **该 bot 需轮换**；历史清理由 `git filter-repo --replace-text` 单独排期（会改写历史，需协调后 force-push）。
+- **Feishu webhook** (`FEISHU_WEBHOOK` in config.py): check for leaked tokens in git history (`git log -p -S "open.feishu.cn" -- scanner/config.py`). **Bot needs rotation.**
 - **`pullback` category** is retired (live_produced=False) but kept in `CATEGORY_REGISTRY` for historical backtest/attribution. Do NOT remove it.
 - **`.env`** file contains secrets (THS API key, Feishu webhook override). Never commit it.
 
 ## Testing notes
 
-- 2026-08-29 实测：非 smoke 全绿（1023 passed / 14 skipped）。此前记录的
-  `test_data_source.py` / `test_market_extra.py` / `test_robustness.TestSuperviseLoop`
-  失败**已不再复现**（pandas 已安装）。若再次出现，先确认是环境问题还是真回归。
-- `test_data_source.py` / `test_market_extra.py` 仍依赖可选的 `pandas`/akshare，换环境时可能失败。
-- Integration tests (`--run-smoke`, 16 条) require `scanner.db` with real data + network access.
-- **写测试时避免"空转断言"**：若测试依赖 mock 回调被真实调用，请显式断言调用发生
-  （2026-08-29 教训：`tests/test_comeback.py` 的 stale-kline 回归测试因
-  comprehension 里的 `NameError` 被上游吞掉，断言全部 vacuously pass 长达一年）。
+- `test_data_source.py` / `test_market_extra.py` depend on optional `pandas`/akshare — may fail on different environments.
+- Integration tests (`--run-smoke`, ~16 cases) require `scanner.db` with real data + network access.
+- **Avoid vacuous assertions**: If a test depends on a mock callback being called, explicitly assert the call happened.
