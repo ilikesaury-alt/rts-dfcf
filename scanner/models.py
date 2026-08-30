@@ -127,11 +127,20 @@ def make_kline_bar(raw: dict) -> KlineBar | None:
     close = _bar_float(raw.get("close"))
     if close <= 0:
         return None
+    raw_high = raw.get("high")
+    raw_low = raw.get("low")
+    high = _bar_float(raw_high)
+    low = _bar_float(raw_low)
+    # 拒绝 high/low 中至少一个是显式 0 的 bar——A 股日内 high/low 不可能为 0，
+    # 显式 0 意味着数据源返回了脏值（停牌/缺失字段被填充 0）。缺失（None）不拒绝，
+    # 由 _bar_float 归一化为 0.0，与 inf/NaN 同处理。
+    if raw_high == 0 or raw_low == 0:
+        return None
     return {
         "date": date,
         "open": _bar_float(raw.get("open")),
-        "high": _bar_float(raw.get("high")),
-        "low": _bar_float(raw.get("low")),
+        "high": high,
+        "low": low,
         "close": close,
         "volume": _bar_float(raw.get("volume")),
         "percent": _bar_float(raw.get("percent")),

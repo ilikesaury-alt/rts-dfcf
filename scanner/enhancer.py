@@ -38,6 +38,7 @@ from scanner.config import (
     MCAP_BONUS_SMALL,
     MCAP_MID_THRESHOLD,
     MCAP_SMALL_THRESHOLD,
+    OVERVALUED_ACCUM_MOMENTUM_THRESHOLD,
     OVERVALUED_ACCUM_THRESHOLD,
     SECTOR_CLUSTER_BONUS_2,
     SECTOR_CLUSTER_BONUS_3,
@@ -283,14 +284,13 @@ def _detect_overvalued(c: Candidate) -> bool:
     """识别涨幅过大（追高风险）。
 
     满足任一即判定：
-    - 累计涨幅 >= OVERVALUED_ACCUM_THRESHOLD
-    - momentum 累计>=30% 惩罚已触发（momentum_accumulated <= -15）
+    - 累计涨幅 >= OVERVALUED_ACCUM_THRESHOLD（所有策略）
+    - 累计涨幅 >= OVERVALUED_ACCUM_MOMENTUM_THRESHOLD（momentum 策略，容忍度更高）
     """
     accum = c.kline.accumulated_pct if c.kline else 0.0
-    if accum >= OVERVALUED_ACCUM_THRESHOLD:
-        return True
-    dims = c.kline.dimensions if c.kline else {}
-    return (dims.get("momentum_accumulated") or 0) <= -15
+    return accum >= OVERVALUED_ACCUM_THRESHOLD or (
+        c.category == "momentum" and accum >= OVERVALUED_ACCUM_MOMENTUM_THRESHOLD
+    )
 
 
 def _detect_volume_price_divergence(c: Candidate, dims: dict) -> bool:

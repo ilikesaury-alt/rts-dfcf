@@ -152,15 +152,16 @@ def _accum_incl_today(kline: list[KlineBar], today_str: str, today_pct: float) -
     用途：次日大涨 🎯 门槛 NEXTDAY_ACCUM_MIN 校准于「含推荐日」口径（含今日 bar），
     但 new_face/momentum/rebound 的 accumulated_pct 为历史口径（_split_today 剔除今日）。
     此处另算含今日值供展示层判定，消除门槛口径错位（short_term 的 accumulated_pct
-    本身即此口径，维度值与之相等，统一存放）。今日 bar 缺失（旧缓存/补拉失败）时
-    all_closes 末根为昨日，值回退为历史口径——与 short_term 同行为，不额外处理。
+    本身即此口径，维度值与之相等，统一存放）。
+
+    统一使用复利公式（6 根收盘价 → 5 日累计），数据不足 6 根时返回 0.0（不使用
+    单利近似，避免两种算法产出不同数值导致阈值判定口径错位）。0.0 被下游视为
+    「无有效累计」，不命中 NEXTDAY_ACCUM_MIN 门槛，等价于数据不足时的保守策略。
     """
     all_closes = [k["close"] for k in kline]
     if len(all_closes) >= 6:
         return (all_closes[-1] - all_closes[-6]) / all_closes[-6] * 100
-    hist = [k for k in kline if k["date"] != today_str]
-    pcts = [k["percent"] for k in hist]
-    return sum(pcts[-5:]) + today_pct
+    return 0.0
 
 
 def _get_features(closes: list[float], historical_kline: list[KlineBar],
@@ -188,15 +189,28 @@ def _ma_bull_score(closes: list[float], feats: dict | None = None) -> int:
 
 
 def _detect_gap_up(today_current: float, kline: list[KlineBar], today_str: str | None = None) -> tuple[float, int]:
-    yesterday_close = None
+    """检测今日高开幅度。
+
+    优先使用今日 bar 的 open（开盘价）计算高开缺口——这是「高开」的正确定义。
+    回退到 today_current（实时现价）仅在今日 bar 缺失时（旧缓存/补拉失败），
+    此时缺口计算语义退化为「当前价 vs 昨收」，与实盘行为一致但非严格高开。
+    """
     today_str = today_str or now_beijing().date().isoformat()
+    today_bar = None
+    yesterday_close = None
     for k in reversed(kline):
-        if k["date"] != today_str:
+        if today_bar is None and k["date"] == today_str:
+            today_bar = k
+        elif yesterday_close is None and k["date"] != today_str:
             yesterday_close = k["close"]
+        if today_bar and yesterday_close:
             break
     if yesterday_close is None or yesterday_close <= 0:
         return 0.0, 0
-    gap_pct = (today_current - yesterday_close) / yesterday_close * 100
+    ref_price = today_bar["open"] if today_bar and today_bar.get("open", 0) > 0 else today_current
+    if ref_price <= 0:
+        return 0.0, 0
+    gap_pct = (ref_price - yesterday_close) / yesterday_close * 100
     if gap_pct > GAP_UP_STRONG:
         return round(gap_pct, 2), GAP_UP_STRONG_PTS
     if gap_pct > GAP_UP_MEDIUM:

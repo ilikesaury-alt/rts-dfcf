@@ -15,6 +15,10 @@ from scanner.candidates import (
 from scanner.comeback import evaluate_comeback
 from scanner.concept import compute_driving_concepts
 from scanner.config import (
+    ENABLE_COMEBACK,
+    ENABLE_CORE_DIP,
+    ENABLE_MOMENTUM,
+    ENABLE_SHORT_TERM,
     KLINE_FETCH_DEADLINE,
     MAX_MARKET_CAP,
     MAX_STOCK_PRICE,
@@ -174,31 +178,31 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         nf, mo, rb, st = score_stock(stock, conn, klines, today, session_state, clusters)
         if nf:
             new_faces.append(nf)
-        if mo:
+        if mo and ENABLE_MOMENTUM:
             momentum.append(mo)
         if rb:
             rebound_list.append(rb)
-        if st:
+        if st and ENABLE_SHORT_TERM:
             short_term_list.append(st)
 
     # 回马枪：评估掉榜跟踪池 + 近 N 日推荐（两变体均 category="comeback"）。
-    # 在榜票走正常策略，此处只处理掉榜票（on_list_symbols 排除）。K 线补拉
-    # 已过 5 日跌幅预过滤 + KLINE_FETCH_DEADLINE 限时，成本有界。
+    # 开关关闭时不评估（hit 3.3% 远低于基准，不再作为活跃推荐桶产出）。
     comeback_rebound: list[Candidate] = []
     comeback_reentry: list[Candidate] = []
-    try:
-        on_list_symbols = {s.symbol for s in gem_stocks_filtered}
-        comeback_rebound, comeback_reentry, cb_quotes = evaluate_comeback(
-            conn,
-            adapter,
-            lambda stocks: fetch_all_klines(conn, adapter, stocks, deadline=kline_deadline, stats=quality_stats),
-            today,
-            on_list_symbols,
-            clusters,
-        )
-        market_caps.update(cb_quotes)  # 并入市值/行情，供后续市值富集与实时行情
-    except EXTERNAL_FAILURES as e:
-        print(f"  [!] 回马枪评估失败: {type(e).__name__}: {e}")
+    if ENABLE_COMEBACK:
+        try:
+            on_list_symbols = {s.symbol for s in gem_stocks_filtered}
+            comeback_rebound, comeback_reentry, cb_quotes = evaluate_comeback(
+                conn,
+                adapter,
+                lambda stocks: fetch_all_klines(conn, adapter, stocks, deadline=kline_deadline, stats=quality_stats),
+                today,
+                on_list_symbols,
+                clusters,
+            )
+            market_caps.update(cb_quotes)  # 并入市值/行情，供后续市值富集与实时行情
+        except EXTERNAL_FAILURES as e:
+            print(f"  [!] 回马枪评估失败: {type(e).__name__}: {e}")
 
     all_candidates = new_faces + momentum + rebound_list + short_term_list + comeback_rebound + comeback_reentry
     for c in all_candidates:
@@ -383,15 +387,14 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
     except EXTERNAL_FAILURES as e:
         print(f"  [!] 数据血缘日志落库失败: {e}")
 
-    # 核心方向低吸落库（2026-08-19）：在榜主类别外单独 category=core_dip（与 comeback
-    # 同族），供 display 独立低吸区读取 + nextday_attribution/prevday_perf 复盘验证。
-    # DB-only 推导、成本 ~0.1s（无需 TTL）；fail-open 不阻塞扫描。
-    try:
-        from scanner.core_themes import find_core_theme_dips, save_core_dips
+    # 核心方向低吸落库：开关关闭时不产出（hit 数据不足，不再作为活跃推荐桶）。
+    if ENABLE_CORE_DIP:
+        try:
+            from scanner.core_themes import find_core_theme_dips, save_core_dips
 
-        save_core_dips(conn, find_core_theme_dips(conn, today), today)
-    except EXTERNAL_FAILURES as e:
-        print(f"  [!] 核心方向低吸落库失败: {e}")
+            save_core_dips(conn, find_core_theme_dips(conn, today), today)
+        except EXTERNAL_FAILURES as e:
+            print(f"  [!] 核心方向低吸落库失败: {e}")
 
     return ScanResult(
         new_faces=new_faces,

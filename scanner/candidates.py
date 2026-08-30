@@ -15,6 +15,7 @@ from dataclasses import replace as dataclass_replace
 from scanner.analysis import analyze_momentum, analyze_new_face, analyze_rebound, analyze_short_term
 from scanner.candidate_pool import ScanSession
 from scanner.config import (
+    DISABLE_MIN_SCORE,
     FIRST_BREAKOUT_BONUS,
     FIRST_BREAKOUT_RANK_CHANGE,
     FIRST_BREAKOUT_VOL_RATIO,
@@ -92,7 +93,7 @@ def try_candidate(
         "rebound": REBOUND_MIN_SCORE,
         "short_term": SHORT_TERM_MIN_SCORE,
     }[category]
-    if kline_summary.score < min_score:
+    if not DISABLE_MIN_SCORE and kline_summary.score < min_score:
         return None
     passed, bonus, dims = validate(
         category, stock, kline_summary, closes, historical, clusters, feats, kline=kline, today=today

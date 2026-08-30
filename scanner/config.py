@@ -483,6 +483,7 @@ WTS_FAIL_TAG = "弱转强失效"
 # ── 涨幅过大风险标签阈值 ──
 # 累计涨幅超过此值时标记"涨幅过大"，提示追高风险
 OVERVALUED_ACCUM_THRESHOLD = 25.0
+OVERVALUED_ACCUM_MOMENTUM_THRESHOLD = 30.0  # momentum 策略累计涨幅超此值 → 涨幅过大标签
 
 # Trend-label hard filter: exclude trends with avg next-day return < -2%
 # Based on 2729 historical recommendations analysis
@@ -547,6 +548,22 @@ RISK_FLAGS_HARD_FILTER: set[str] = {
 # 仅作用于展示层，backtest/nextday_attribution 读 recommendations 不过滤。
 REVERSAL_TURNED_RED_DROP = 5.0
 REVERSAL_OVERSHOOT_DROP = 10.0
+
+# ── 策略桶开关（2026-08-30 简化聚焦）──
+# 归因结论（nextday_attribution 去重 1559 样本，P0 修复后）：
+#   rebound 17.9% / known_new_face 13.1% → 核心，保留
+#   comeback 3.8% → 已禁用（全场最差）
+#   short_term 6.8%（低于基准 8.7%）→ 冻结（不产出新推荐，历史数据保留）
+#   momentum 10.3%（≈基准但回测 P&L -7.6%）→ 冻结
+#   core_dip 9.4%（高于基准但仅 53 样本）→ 不进主推荐，保留数据采集
+ENABLE_COMEBACK = False
+ENABLE_CORE_DIP = False
+ENABLE_SHORT_TERM = False
+ENABLE_MOMENTUM = False
+# 实验开关：放开 MIN_SCORE 门槛，让所有评分的候选都进入推荐。
+# 归因数据显示 score 0-20 hit 21.8%（全场最高），MIN_SCORE=18 把它们全砍了。
+# 开启后观察：① 信号量暴增是否稀释质量 ② 组合 P&L 是否改善 ③ hit rate 是否变化。
+DISABLE_MIN_SCORE = False  # 实验结论：关闭后 P&L 变差，保留作为过滤器
 
 # ── 回马枪（掉榜跟踪）— 独立策略桶（2026-08-07 新增）──
 # 背景：候选池由"当次热榜"驱动，掉榜超跌股（如志特新材 07-09→07-31 三周掉榜）完全不可见，

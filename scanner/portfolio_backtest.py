@@ -46,26 +46,27 @@ from __future__ import annotations
 
 import argparse
 import csv
+import logging
 import sqlite3
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 
-from scanner.config import DB_PATH
-from scanner.models import parse_score_breakdown
+from scanner.categories import PORTFOLIO_CATEGORIES
+from scanner.config import DB_PATH, NEXTDAY_RULE_ATRPCT_MIN, NEXTDAY_RULE_MA5R_MIN, NEXTDAY_RULE_RET20_MAX
+from scanner.models import KlineBar, parse_score_breakdown
+from scanner.nextday_rule import _compute_features
 from scanner.trading_session import _nth_trading_day_after, is_trading_day
 from scanner.utils import clear_screen
+
+logger = logging.getLogger(__name__)
 
 # Windows GBK 控制台无法编码 ‱/🎯 等字符，统一走 UTF-8（项目其它入口同款处理）
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")  # parser.error 走 stderr，防中文提示乱码
 
-
-# ── 组合回测使用的现役策略类别（排除仅展示用、不入组合评分的 core_dip；含 comeback 观察区）──
-# 2026-08-20 收敛：单一事实来源见 scanner/categories.PORTFOLIO_CATEGORIES。
-from scanner.categories import PORTFOLIO_CATEGORIES  # noqa: E402
 
 # 热度放大器组件键（与 enhancer.HEAT_AMPLIFIER_BONUS_ATTRS 对应）：在 score_breakdown(JSON)
 # 中记录，用于从历史 recommendations.score（旧 orchestrator 含热度写出的）重建「去热度分」，
@@ -112,6 +113,7 @@ class PBConfig:
     # short_term/rebound）用当前 config 权重历史重扫
     # （recommendations 存的是旧权重冻结分，改 config 不 retrospective
     # 生效，必须用 appearances+daily_kline 重跑引擎；comeback 除外）
+    use_nextday_rule: bool = False  # True=仅买入通过次日大涨规则（ma5r≥5% & atrpct≥8% & ret20≤40%）的信号
 
 
 @dataclass
@@ -314,6 +316,10 @@ def _load_signals(
     # 盘中重复快照去重：每天每票只留最早一条（详见 _dedup_signals）
     signals = _dedup_signals(signals)
 
+    # 次日大涨规则过滤：仅保留通过 ma5r≥5% & atrpct≥8% & ret20≤40% 的信号
+    if cfg.use_nextday_rule:
+        signals = _filter_nextday_rule(conn, signals)
+
     # 综合排序跨类别可比：在 (推荐日, 类别) 组内对 score 做百分位归一化。
     # 单类别时组内排序与 raw score 一致；综合(all) 时消除各类别自身标尺差异
     # （new_face 均值~45 与 comeback~122 不可直接比），避免综合排序沦为「按标尺大小而非好坏」排。
@@ -333,6 +339,53 @@ def _assign_rank_scores(signals: list[Signal]) -> None:
         ordered = sorted(recs, key=lambda s: s.score)
         for pos, s in enumerate(ordered):
             s.rank_score = 100.0 if n == 1 else pos / (n - 1) * 100.0
+
+
+def _filter_nextday_rule(conn: sqlite3.Connection, signals: list[Signal]) -> list[Signal]:
+    """过滤信号：仅保留通过次日大涨规则（ma5r≥5% & atrpct≥8% & ret20≤40%）的信号。"""
+    # 按 (rec_date, symbol) 分组，取每个 (rec_date, symbol) 最早信号
+    by_key: dict[tuple[str, str], Signal] = {}
+    for s in signals:
+        key = (s.rec_date, s.symbol)
+        if key not in by_key:
+            by_key[key] = s
+    # 为每个 rec_date 加载所有 klines（批量查询，避免 N+1）
+    rec_dates = sorted({s.rec_date for s in signals})
+    kline_cache: dict[str, list[KlineBar]] = {}
+    if rec_dates:
+        placeholders = ",".join("?" for _ in rec_dates)
+        rows = conn.execute(
+            f"SELECT symbol, date, open, high, low, close, volume FROM daily_kline "  # noqa: S608
+            f"WHERE date IN ({placeholders}) ORDER BY symbol, date",
+            rec_dates,
+        ).fetchall()
+        # 按 symbol 分组
+        by_sym: dict[str, list[KlineBar]] = {}
+        for sym, dt, o, h, lo, c, v in rows:
+            bar: KlineBar = {"date": dt, "open": o, "high": h, "low": lo, "close": c, "volume": v}
+            by_sym.setdefault(sym, []).append(bar)
+        kline_cache = by_sym
+    # 对每个 (rec_date, symbol) 评估规则
+    passed: set[tuple[str, str]] = set()
+    for (rec_date, sym), _sig in by_key.items():
+        klines = kline_cache.get(sym, [])
+        if not klines:
+            continue
+        # 找到 rec_date 在 klines 中的下标
+        kline_dates = [b["date"] for b in klines]
+        try:
+            today_idx = kline_dates.index(rec_date)
+        except ValueError:
+            continue
+        features = _compute_features(klines, today_idx)
+        if features is None:
+            continue
+        ma5r, atrpct, ret20 = features
+        if ma5r >= NEXTDAY_RULE_MA5R_MIN and atrpct >= NEXTDAY_RULE_ATRPCT_MIN and ret20 <= NEXTDAY_RULE_RET20_MAX:
+            passed.add((rec_date, sym))
+    result = [s for s in signals if (s.rec_date, s.symbol) in passed]
+    logger.info("nextday_rule filter: %d → %d signals (%d passed rule)", len(signals), len(result), len(passed))
+    return result
 
 
 # ── 核心模拟 ────────────────────────────────────────────────────────────────
@@ -707,6 +760,11 @@ def main() -> None:
         "（recommendations 存旧权重冻结分，改 config 不 retrospective 生效；"
         "须用 appearances+daily_kline 重跑引擎；comeback 为 off-list 变体保持冻结分）",
     )
+    parser.add_argument(
+        "--use-nextday-rule",
+        action="store_true",
+        help="仅买入通过次日大涨规则（ma5r≥5%% & atrpct≥8%% & ret20≤40%%）的信号",
+    )
     parser.add_argument("--export", default=None, help="导出 NAV 序列 CSV 路径")
     args = parser.parse_args()
 
@@ -737,6 +795,7 @@ def main() -> None:
         stamp_duty=args.stamp_duty,
         slippage=args.slippage,
         rescore=args.rescore,
+        use_nextday_rule=args.use_nextday_rule,
     )
 
     if args.compare:

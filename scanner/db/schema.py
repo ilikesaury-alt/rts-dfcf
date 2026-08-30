@@ -14,7 +14,7 @@ from scanner.config import now_beijing
 
 # schema 版本：每次结构性变更（新表/新列/新索引）+1，并在 init_db 里补对应的
 # 幂等迁移。schema_version 表记录演进历史，供工具判断库是否需要重建/回填。
-SCHEMA_VERSION = 3  # v3 (2026-08-30): +scan_rejections（硬过滤审计）
+SCHEMA_VERSION = 4  # v4 (2026-08-30): market_extra_cache PK (symbol,data_type)→(symbol,data_type,date)
 
 
 def get_conn(db_path: str | None = None) -> sqlite3.Connection:
@@ -112,9 +112,10 @@ def init_db() -> sqlite3.Connection:
             data_type TEXT NOT NULL,
             payload_json TEXT NOT NULL,
             updated TEXT NOT NULL,
-            PRIMARY KEY(symbol, data_type)
+            PRIMARY KEY(symbol, data_type, date)
         )
     """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mec_sym_type ON market_extra_cache(symbol, data_type)")
     # 回马枪掉榜跟踪池：凡上过榜的 GEM 股入池，掉榜后保留若干交易日供 off-list 评估。
     # over_limit=1 表示"超限启动"入池（当日涨幅超过 short_term 上限，强得没法买），
     # 需在后续交易日持续评估（次日即使不上榜也被盯住）。
@@ -264,6 +265,42 @@ def init_db() -> sqlite3.Connection:
         conn.execute(
             "INSERT INTO schema_version (version, updated) VALUES (?, ?)", (SCHEMA_VERSION, now_beijing().isoformat())
         )
+    # market_extra_cache PK 迁移（v4）：旧 PK(symbol, data_type) 每日 INSERT OR REPLACE
+    # 会覆盖历史日期数据，导致 today_report --date 历史回放的资金流永远为空。
+    # 迁移：重建表使 PK 包含 date，保留历史行。
+    try:
+        cur = conn.execute("PRAGMA table_info(market_extra_cache)")
+        mec_cols = [r[1] for r in cur.fetchall()]
+        if mec_cols:  # 表已存在，检查 PK 是否需要迁移
+            cur2 = conn.execute("PRAGMA index_list(market_extra_cache)")
+            pk_indexes = [r[1] for r in cur2.fetchall() if r[2]]  # pk=1 表示主键
+            old_pk = False
+            for idx_name in pk_indexes:
+                cur3 = conn.execute(f"PRAGMA index_info('{idx_name}')")  # noqa: S608
+                pk_cols = [r[2] for r in cur3.fetchall()]
+                if pk_cols == ["symbol", "data_type"]:
+                    old_pk = True
+                    break
+            if old_pk:
+                conn.execute("ALTER TABLE market_extra_cache RENAME TO market_extra_cache_old")
+                conn.execute("""
+                    CREATE TABLE market_extra_cache (
+                        symbol TEXT NOT NULL,
+                        date TEXT NOT NULL,
+                        data_type TEXT NOT NULL,
+                        payload_json TEXT NOT NULL,
+                        updated TEXT NOT NULL,
+                        PRIMARY KEY(symbol, data_type, date)
+                    )
+                """)
+                conn.execute(
+                    "INSERT INTO market_extra_cache (symbol, date, data_type, payload_json, updated) "
+                    "SELECT symbol, date, data_type, payload_json, updated FROM market_extra_cache_old"
+                )
+                conn.execute("DROP TABLE market_extra_cache_old")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_mec_sym_type ON market_extra_cache(symbol, data_type)")
+    except sqlite3.Error:
+        pass  # 迁移失败不阻塞初始化，最坏情况是历史数据仍不可查
     # 收盘定稿标记（2026-08-18 拓斯达脏数据事故后新增）：盘中扫描把未收盘的今日 bar
     # （盘中价+部分量能）写入 daily_kline 属预期（today_report 盘中读），但收盘后无
     # 定稿覆盖会残留污染 next_day_pct → 回测/归因/复盘全口径。finalized=0 表示
