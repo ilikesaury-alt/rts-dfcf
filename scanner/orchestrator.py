@@ -44,6 +44,7 @@ from scanner.enhancer import (
     compute_time_bonus,
 )
 from scanner.intraday_fetch import parallel_fetch
+from scanner.intraday_tactics import stock_actions
 from scanner.kline_fetch import fetch_all_klines
 from scanner.models import Candidate, ScanResult, StockInfo
 from scanner.rank_trend import update_rank_history
@@ -265,6 +266,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
     intraday_scores: dict[str, float | None] = {}
     opening_scores: dict[str, float | None] = {}
     live_volumes: dict[str, float | None] = {}
+    minute_trends: dict[str, dict | None] = {}
 
     if all_candidates:
         # wait=False 关闭：_parallel_fetch 各相已有 phase_deadline 限时，超时被
@@ -272,9 +274,23 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         # 不能让 with-exit 的 shutdown(wait=True) 阻塞主扫描循环等待它们。
         pool = ThreadPoolExecutor(max_workers=6)
         try:
-            parallel_fetch(pool, all_candidates, intraday_scores, opening_scores, live_volumes, adapter)
+            parallel_fetch(
+                pool, all_candidates, intraday_scores, opening_scores, live_volumes, adapter,
+                minute_trends=minute_trends,
+            )
         finally:
             pool.shutdown(wait=False)
+
+    # 分时趋势摘要写入候选维度（盘中操作纪律 rule 3/5/7 数据源，纯展示不参与评分）
+    for c in all_candidates:
+        trend = minute_trends.get(c.stock.symbol)
+        if c.kline and trend:
+            c.kline.dimensions.update({
+                "minute_steady_rise": trend.get("steady_rise_ratio", 0.0),
+                "minute_day_high": trend.get("day_high_pct", 0.0),
+                "minute_am_high": trend.get("am_high_pct", 0.0),
+                "minute_vol_trend": trend.get("vol_trend", 1.0),
+            })
 
     market_idx_pct = adapter.fetch_market_index()
     time_bonus = compute_time_bonus()
@@ -376,6 +392,19 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         sym: {"percent": d.get("percent", 0.0), "current": d.get("current", 0.0), "high_pct": d.get("high_pct")}
         for sym, d in market_caps.items()
     }
+
+    # 盘中操作纪律（2026-08-31）：12 条操盘纪律的个股标签。逐票 try/except——
+    # 一只票的脏数据只跳过该票，不再静默放弃全部票的标签（审查修复）。
+    # fail-open：单票异常不阻塞扫描，不影响评分/排序/落库。
+    for c in all_candidates:
+        try:
+            _quote = current_quotes.get(c.stock.symbol, {})
+            # high_pct 由 quote 的 high/昨收计算（api._quote_high_pct），是真实日内
+            # 最高涨幅；None = 无数据 → 纪律内部 fail-open 跳过依赖项。
+            _high_pct = _quote.get("high_pct") if _quote else None
+            c.tactic_tags = stock_actions(c, now=None, kline_bars=klines.get(c.stock.symbol), high_pct=_high_pct)
+        except EXTERNAL_FAILURES as e:
+            print(f"  [!] 盘中操作纪律计算失败 {c.stock.symbol}（跳过）: {type(e).__name__}: {e}")
 
     # 数据血缘日志（2026-08-14）：本轮数据质量快照落库——补拉失败/缺今日bar/兜底构造/
     # stale 推荐数。跨函数静默降级是本项目最难发现的 bug 类别（网宿案例），常态计数器

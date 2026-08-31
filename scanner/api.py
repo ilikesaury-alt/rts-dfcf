@@ -2,6 +2,7 @@ import logging
 import threading
 import time
 from datetime import datetime
+from datetime import time as _dt_time
 
 import requests
 
@@ -24,6 +25,8 @@ from scanner.config import (
     SENTIMENT_PCT_GT5_COOL,
     SENTIMENT_PCT_GT5_WARM,
     SENTIMENT_WARM,
+    TACTICS_MINUTE_VOL_RECENT_BARS,
+    TACTICS_STEADY_RISE_MINS,
 )
 from scanner.models import KlineBar, make_kline_bar
 from scanner.utils import EXTERNAL_FAILURES
@@ -762,4 +765,62 @@ def analyze_intraday(session: requests.Session, symbol: str, items: list[dict] |
         if use_cache:
             with _intraday_cache_lock:
                 _cache_put(_INTRADAY_CACHE, symbol, (None, now))
+        return None
+
+
+def analyze_minute_trend(session: requests.Session, symbol: str, items: list[dict] | None = None) -> dict | None:
+    """分时趋势摘要（盘中操作纪律 rule 3/5/7 的数据源，2026-08-31）。
+
+    从已拉取的分时 bar（items 由调用方传 入，不重复拉取）计算：
+      - steady_rise_ratio: 近 TACTICS_STEADY_RISE_MINS 个采样中价格爬升占比（0~1）
+      - day_high_pct: 当日分时最高涨幅（%，item.percent 字段，vs 昨收）
+      - am_high_pct: 早盘（11:30 前）最高涨幅（%）
+      - vol_trend: 近段均量 / 全期均量（>1 放量，<1 缩量）
+    items 为空 / 采样不足 / 全脏数据 → 返回 None（调用方 fail-open 跳过对应纪律）。
+    """
+    if items is None:
+        items = _fetch_minute_data(session, symbol)
+    if not items or len(items) < 2:
+        return None
+    try:
+        percents = [p for p in (_num(it.get("percent")) for it in items) if p != 0.0]
+        currents = [c for c in (_num(it.get("current")) for it in items) if c > 0]
+        if not percents or not currents:
+            return None
+
+        # 早/午分段：按 timestamp 转北京时间判 11:30 前后（无 timestamp 的 bar 归早盘）
+        am_high = 0.0
+        day_high = max(percents)
+        for it in items:
+            pct = _num(it.get("percent"))
+            ts = it.get("timestamp")
+            is_am = True
+            if ts:
+                try:
+                    is_am = datetime.fromtimestamp(ts / 1000, tz=BEIJING_TZ).time() <= _dt_time(11, 30)
+                except (OSError, OverflowError, ValueError):
+                    is_am = True
+            if is_am and pct > am_high:
+                am_high = pct
+
+        # 稳步走高：近 N 个采样爬升占比
+        window = items[-TACTICS_STEADY_RISE_MINS:]
+        prices = [_num(it.get("current")) for it in window]
+        rises = sum(1 for i in range(1, len(prices)) if prices[i] > prices[i - 1] > 0)
+        steady_ratio = rises / max(len(prices) - 1, 1)
+
+        # 量能趋势：近段均量 / 全期均量
+        vols = [_num(it.get("volume")) for it in items]
+        recent_n = min(TACTICS_MINUTE_VOL_RECENT_BARS, len(vols))
+        recent_avg = sum(vols[-recent_n:]) / max(recent_n, 1)
+        overall_avg = sum(vols) / max(len(vols), 1)
+        vol_trend = recent_avg / overall_avg if overall_avg > 0 else 1.0
+
+        return {
+            "steady_rise_ratio": round(steady_ratio, 3),
+            "day_high_pct": round(day_high, 2),
+            "am_high_pct": round(am_high, 2),
+            "vol_trend": round(vol_trend, 3),
+        }
+    except EXTERNAL_FAILURES:
         return None

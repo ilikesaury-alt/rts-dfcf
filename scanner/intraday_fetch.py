@@ -9,7 +9,7 @@
 
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 
-from scanner.api import analyze_intraday, analyze_opening_strength, estimate_live_volume
+from scanner.api import analyze_intraday, analyze_minute_trend, analyze_opening_strength, estimate_live_volume
 from scanner.config import MINUTE_FETCH_PHASE_DEADLINE
 from scanner.models import Candidate
 
@@ -20,15 +20,21 @@ def parallel_fetch(pool: ThreadPoolExecutor,
                     opening_scores: dict[str, float | None],
                     live_volumes: dict[str, float | None],
                     adapter,
+                    minute_trends: dict[str, dict | None] | None = None,
                     phase_deadline: float = MINUTE_FETCH_PHASE_DEADLINE):
-    """并行拉取分时强度/开盘强度/实时量比。
+    """并行拉取分时强度/开盘强度/实时量比/分时趋势摘要。
 
     分时数据统一经 adapter.fetch_minute 拉取一次（每 symbol 一条），再并行喂给
-    三个评分函数——AKShare 源（fetch_minute 返回 None）时整体降级为无分时信号，
-    不再静默回退雪球（此前 api.analyze_* 直接走雪球分钟接口）。
-    三相 + 拉取相每相都带 phase_deadline 限时——minute API 挂死时单只请求最坏
+    三个评分函数与趋势摘要——AKShare 源（fetch_minute 返回 None）时整体降级为
+    无分时信号，不再静默回退雪球（此前 api.analyze_* 直接走雪球分钟接口）。
+    四相 + 拉取相每相都带 phase_deadline 限时——minute API 挂死时单只请求最坏
     ~48s（15s×3 重试），若用 as_completed 无限等待，40 只候选 6 线程并发可卡死
     扫描循环最长 ~5 分钟。超时的票降级为 None（无分时信号）。
+
+    minute_trends（可选，2026-08-31 新增第 4 相）：分时趋势摘要
+    {symbol: {steady_rise_ratio, day_high_pct, am_high_pct, vol_trend}}，
+    供盘中操作纪律（intraday_tactics）规则 3/5/7 消费；None 时跳过该相
+    （向后兼容旧调用方签名）。
     """
     syms: list[str] = []
     seen: set[str] = set()
@@ -93,3 +99,5 @@ def parallel_fetch(pool: ThreadPoolExecutor,
     _run_phase(analyze_intraday, intraday_scores)
     _run_phase(analyze_opening_strength, opening_scores)
     _run_phase(estimate_live_volume, live_volumes)
+    if minute_trends is not None:
+        _run_phase(analyze_minute_trend, minute_trends)

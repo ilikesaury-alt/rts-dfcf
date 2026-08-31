@@ -210,6 +210,7 @@ class Candidate:
     stale_kline: bool = False  # 评分所用 K 线缺今日 bar（补拉失败旧缓存兜底）——审计用（2026-08-14）
     excluded_reason: str = ""  # 硬过滤命中标签串（审计用，2026-08-20）：excluded=1 时记录
     # 命中哪些 RISK_FLAGS_HARD_FILTER 标签，消除"无依据误杀"盲点
+    tactic_tags: list[str] = field(default_factory=list)  # 盘中操作纪律标签（减仓/加仓/落袋，纯展示）
 
 
 @dataclass

@@ -86,8 +86,8 @@ def _to_score(value) -> int:
         return 0
 
 
-def _fmt_row(symbol, name, rank, pct, accum, score, risk_flags, ff_pct, zt_lb) -> str:
-    """单行：排名 名称 代码 涨幅 5日累计 评分 [风险] [资金流/连板]。"""
+def _fmt_row(symbol, name, rank, pct, accum, score, risk_flags, ff_pct, zt_lb, tactic_tags=None) -> str:
+    """单行：排名 名称 代码 涨幅 5日累计 评分 [风险] [资金流/连板] [操作纪律]。"""
     rs = f"{rank:>3}" if rank else "  —"
     pct_str = f"+{pct:.1f}%" if pct >= 0 else f"{pct:.1f}%"
     acc_str = f"{accum:+.1f}%" if accum is not None else "N/A"
@@ -110,7 +110,9 @@ def _fmt_row(symbol, name, rank, pct, accum, score, risk_flags, ff_pct, zt_lb) -
     if zt_lb:
         extra_parts.append(f"📈{zt_lb}板")
     extra_str = (" " + " ".join(extra_parts)) if extra_parts else ""
-    return f"`{rs} {_pad_vis(name, 8)} {symbol} {pct_str:>7} {acc_str:>7}  {score:>2}分{risk_str}{extra_str}`"
+    # 操作纪律标签在反引号定宽块之外追加——不破坏 _pad_vis 列对齐（审查修复）
+    tactic_str = (" " + " ".join(tactic_tags)) if tactic_tags else ""
+    return f"`{rs} {_pad_vis(name, 8)} {symbol} {pct_str:>7} {acc_str:>7}  {score:>2}分{risk_str}{extra_str}`{tactic_str}"
 
 
 def _row_line(entry, view, rank=None, accum=None, score=None) -> str:
@@ -121,6 +123,8 @@ def _row_line(entry, view, rank=None, accum=None, score=None) -> str:
         accum = _row_accum(entry)
     if score is None:
         score = _to_score(entry.get("score"))
+    c = entry.get("_candidate")
+    tactic_tags = getattr(c, "tactic_tags", []) if c else []
     return _fmt_row(
         entry["symbol"],
         entry["name"],
@@ -131,6 +135,7 @@ def _row_line(entry, view, rank=None, accum=None, score=None) -> str:
         _row_risk(entry),
         _row_ff_pct(entry, view.flow_pct_map),
         _row_zt(entry),
+        tactic_tags,
     )
 
 

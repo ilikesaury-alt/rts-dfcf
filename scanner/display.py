@@ -313,6 +313,10 @@ def _entry_row_suffix(
         parts.append(f" {ANSI['GREEN']}🎯{ANSI['RESET']}")
     if breakout_marked:
         parts.append(f" {ANSI['CYAN']}⚡{ANSI['RESET']}")
+    # 盘中操作纪律标签（纯展示，不参与排序/评分）
+    if c and getattr(c, "tactic_tags", None):
+        for tag in c.tactic_tags:
+            parts.append(f" {ANSI['YELLOW']}{tag}{ANSI['RESET']}")
     return "".join(parts)
 
 
@@ -707,6 +711,16 @@ def build_scan_view(
 
     # 降级告警收集器：计算阶段不 print，统一由 render_terminal 输出。
     warnings: list[str] = []
+
+    # 盘中操作纪律：全局时段提醒（纯展示，fail-open）
+    try:
+        from scanner.intraday_tactics import session_advice
+
+        _advice = session_advice()
+        if _advice:
+            warnings.append(_advice)
+    except EXTERNAL_FAILURES:
+        pass
 
     today_recs = get_today_recommendations(conn)
     if not today_recs:
