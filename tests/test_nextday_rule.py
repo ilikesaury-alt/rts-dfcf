@@ -10,6 +10,7 @@ import sqlite3
 
 import pytest
 
+from scanner.models import KlineBar
 from scanner.nextday_rule import _compute_features, scan_rule
 
 TODAY = "2026-08-30"
@@ -17,8 +18,9 @@ TODAY = "2026-08-30"
 
 # ── _compute_features 单元测试 ──
 
-def _make_bar(date: str, close: float, high: float = 0.0, low: float = 0.0, **kw):
-    """构造一根 kline bar dict。"""
+
+def _make_bar(date: str, close: float, high: float = 0.0, low: float = 0.0, **kw) -> KlineBar:
+    """构造一根 kline bar dict（TypedDict 契约，list 不变性要求精确类型）。"""
     return {
         "date": date,
         "open": kw.get("open", close),
@@ -102,6 +104,7 @@ def test_compute_features_today_bar_ignored():
 
 # ── scan_rule 集成测试 ──
 
+
 def _setup_db(bars_map: dict[str, list], today: str, board: list[tuple[str, str]]):
     """构造内存 SQLite（含 get_cached_klines 依赖的 finalized 列）。"""
     conn = sqlite3.connect(":memory:")
@@ -122,8 +125,7 @@ def _setup_db(bars_map: dict[str, list], today: str, board: list[tuple[str, str]
     )
     for sym, name in board:
         conn.execute(
-            "INSERT INTO appearances (symbol, name, date, rank, percent, value) "
-            "VALUES (?, ?, ?, 1, 5.0, 1e8)",
+            "INSERT INTO appearances (symbol, name, date, rank, percent, value) VALUES (?, ?, ?, 1, 5.0, 1e8)",
             (sym, name, today),
         )
     for sym, bars in bars_map.items():
@@ -131,8 +133,7 @@ def _setup_db(bars_map: dict[str, list], today: str, board: list[tuple[str, str]
             conn.execute(
                 "INSERT INTO daily_kline (symbol, date, open, close, high, low, "
                 "volume, percent, finalized) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)",
-                (sym, b["date"], b["open"], b["close"], b["high"], b["low"],
-                 b["volume"], b["percent"]),
+                (sym, b["date"], b["open"], b["close"], b["high"], b["low"], b["volume"], b["percent"]),
             )
     conn.commit()
     return conn
@@ -222,10 +223,7 @@ def test_scan_rule_fallback_no_today_bar():
     （旧 bug 用 len-1=24 → ma5r≈11.11%，用 ma5r 精确值区分两种回退。）
     """
     closes = [10.0] * 20 + [8.0] + [12.0] * 4
-    bars = [
-        _make_bar(d, closes[i], high=closes[i] * 1.10, low=closes[i] * 0.90)
-        for i, d in enumerate(_seq_dates(25))
-    ]
+    bars = [_make_bar(d, closes[i], high=closes[i] * 1.10, low=closes[i] * 0.90) for i, d in enumerate(_seq_dates(25))]
     conn = _setup_db({"SZ300004": bars}, TODAY, [("SZ300004", "无今日bar")])
     result = scan_rule(conn, TODAY)
     assert result is not None
@@ -251,6 +249,7 @@ def test_scan_rule_empty_board():
 
 # ── ScanView 默认值测试 ──
 
+
 def test_scanview_rule_result_default():
     """ScanView 新增字段有默认值，不传不报错（feishu.py 构造点兼容）。"""
     from scanner.display import ScanView
@@ -260,7 +259,6 @@ def test_scanview_rule_result_default():
         comeback_rows=[],
         core_dip_rows=[],
         nextday_mark={},
-        tier_map={},
         breakout_mark={},
         flow_pct_map={},
         last_ranks={},

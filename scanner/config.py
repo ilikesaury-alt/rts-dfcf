@@ -556,10 +556,10 @@ REVERSAL_OVERSHOOT_DROP = 10.0
 #   short_term 6.8%（低于基准 8.7%）→ 冻结（不产出新推荐，历史数据保留）
 #   momentum 10.3%（≈基准但回测 P&L -7.6%）→ 冻结
 #   core_dip 9.4%（高于基准但仅 53 样本）→ 不进主推荐，保留数据采集
-ENABLE_COMEBACK = False
-ENABLE_CORE_DIP = False
-ENABLE_SHORT_TERM = False
-ENABLE_MOMENTUM = False
+ENABLE_COMEBACK = True
+ENABLE_CORE_DIP = True
+ENABLE_SHORT_TERM = True
+ENABLE_MOMENTUM = True
 # 实验开关：放开 MIN_SCORE 门槛，让所有评分的候选都进入推荐。
 # 归因数据显示 score 0-20 hit 21.8%（全场最高），MIN_SCORE=18 把它们全砍了。
 # 开启后观察：① 信号量暴增是否稀释质量 ② 组合 P&L 是否改善 ③ hit rate 是否变化。
@@ -603,7 +603,7 @@ COMEBACK_REENTRY_DISPLAY_WATCH_MAX = 0  # "观察中"补充最多显示条数（
 # 隐藏回马枪/核心低吸两低吸区（避免刷屏）；主区推荐条数 ≤ 该值（含为空）时补充展示，
 # 最多前 COMEBACK_DISPLAY_MAX 条（回马枪为掉榜无热榜背书票，评分语义弱于榜上推荐）。
 # 2026-08-24 用户决策：阈值 3→5，且删除大盘弱势 OR 门——主表 >5 条一律隐藏。
-COMEBACK_DISPLAY_MAX = 10  # 回马枪区最多显示条数
+COMEBACK_DISPLAY_MAX = 3  # 回马枪/核心区最多显示条数
 COMEBACK_DISPLAY_MIN_MAIN = 5  # 主区推荐条数大于此值 → 隐藏回马枪/核心低吸区；≤ 此值 → 补充显示
 
 # 核心方向低吸（2026-08-19，`scanner/core_themes.py` + display 独立区）：
@@ -770,6 +770,6 @@ BREAKOUT_PULLBACK_MAX = -8.0  # 回撤上限：太浅=还在高位，太深=趋�
 # 全部只用 T-1 及之前已完成 bar，盘中任意时刻可算，全天不漂移。
 # 阈值在 H1（2026-05-28..07-14）拟合、H2（2026-07-15..08-28）盲测确认。
 NEXTDAY_RULE_MA5R_MIN = 5.0    # 收盘距5日均线最小距离（%）
-NEXTDAY_RULE_ATRPCT_MIN = 8.0  # 21日平均真实波幅下限（%）
+NEXTDAY_RULE_ATRPCT_MIN = 7.0  # 21日平均真实波幅下限（%）
 NEXTDAY_RULE_RET20_MAX = 40.0  # 21日涨幅上限（排除长期过热）
 NEXTDAY_RULE_BARS = 21         # 回看 bar 数（ATP / ret20 计算窗口）

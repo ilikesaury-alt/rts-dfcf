@@ -3,6 +3,7 @@
 import sqlite3
 from datetime import timedelta
 
+import pytest
 import wcwidth
 
 import scanner.display as disp_mod
@@ -684,6 +685,58 @@ def test_display_priority_pool_shows_price_and_rank_dash(monkeypatch, capsys):
     assert "—" in ln2, "无排名应显示 —"
 
 
+def test_display_header_env_tag_matches_regime(monkeypatch, capsys):
+    """头部大盘标签与动态推荐/飞书同源 _regime_weak（2026-08-30 统一）：弱市显示「弱势·谨慎」。
+
+    此前头部走 market_env_bonus、动态推荐走 _regime_weak，两套信号可能同屏矛盾。
+    """
+    conn = _rec_db()
+    monkeypatch.setattr(disp_mod, "_regime_weak", lambda c, lookback=10: True)
+    disp_mod.display(100, 60, conn=conn, today_pool={})
+    out = capsys.readouterr().out
+    assert "大盘弱势·谨慎" in out
+    monkeypatch.setattr(disp_mod, "_regime_weak", lambda c, lookback=10: False)
+    disp_mod.display(100, 60, conn=conn, today_pool={})
+    out = capsys.readouterr().out
+    assert "大盘强势" in out
+    """优选池行尾渲染 🎯（2026-08-30 主视图标记恢复）：甜蜜带+非超买+累计达门槛的票在主列表可见。
+
+    此前 🎯/⚡ 仅在回马枪/低吸区渲染，换成策略优选池后主视图丢失画像信息。"""
+    conn = _rec_db()
+    _insert_rec_pct(conn, "SZ300001", "甜蜜动量", "momentum", 70, 1.0)
+    pool = {"SZ300001": _cand_tier("SZ300001", 70, "momentum", percent=1.0, accum=8.0)}
+    disp_mod.display_priority(conn, today_pool=pool)
+    out = capsys.readouterr().out
+    line = next(ln for ln in _main_lines(out) if "SZ300001" in ln)
+    assert "🎯" in line, f"优选池行应渲染 🎯 标记: {line}"
+
+
+def test_entry_display_quote_fallback_chain():
+    """涨幅/现价单源回退链：live 0.00% 合法不被 `or` 吞 → 候选快照 → DB 落库。"""
+    # ① live 优先：0.00% 是合法涨幅，不得回退到 DB percent=5.0
+    live0 = {
+        "live_quote_available": True,
+        "live_percent": 0.0,
+        "live_current": 10.0,
+        "percent": 5.0,
+        "_candidate": None,
+    }
+    pct, cur = disp_mod._entry_display_quote(live0)
+    assert pct == 0.0
+    assert cur == 10.0
+    # ② 掉榜行（无候选无 live）：落库 percent，现价无数据
+    dropped = {"percent": 5.0, "live_percent": None, "_candidate": None}
+    pct, cur = disp_mod._entry_display_quote(dropped)
+    assert pct == 5.0
+    assert cur == 0.0
+    # ③ 可信候选快照：候选 percent/current 生效
+    cand = _cand_tier("SZ300099", 70, "momentum", percent=2.5)
+    cand_entry = {"percent": 1.0, "_candidate": cand}
+    pct, cur = disp_mod._entry_display_quote(cand_entry)
+    assert pct == pytest.approx(2.5)
+    assert cur == pytest.approx(10.0)
+
+
 def test_display_priority_recommended_region_shown_when_main_dense(monkeypatch, capsys):
     """动态推荐弱市把核心低吸/回马枪排到前列时，即使主区密集也强制展示对应区
     （修复「动态推荐=低吸 却看不到对应标的」的割裂）。强市下这两类排在末尾，仍保持隐藏门。"""
@@ -788,26 +841,29 @@ def test_prominence_no_longer_sorts(monkeypatch, capsys):
 
 
 def test_display_priority_tier_banner_separates_groups(monkeypatch, capsys):
-    """档位分隔横幅下线后，辨识度档仍排前；净流出票不再劣后过滤（2026-08-11）。"""
+    """档位分隔横幅下线后，净流出票不再劣后过滤（2026-08-11）；排序改按涨幅升序优先
+    （2026-08-28 规则：榜上优先 → 涨幅升序 → 回调核心 → 排名升序 → 新面孔，档位不再
+    参与主排序）。"""
     conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "置顶", "rebound", 50)
-    _insert_rec_cat(conn, "SZ300002", "普通", "momentum", 70)
-    _insert_rec_cat(conn, "SZ300003", "流出", "rebound", 90)
-    pool = {
-        "SZ300001": _cand_tier("SZ300001", 50, "rebound", percent=1.0),
-        "SZ300002": _cand_tier("SZ300002", 70, "momentum"),
-        "SZ300003": _cand_tier("SZ300003", 90, "rebound", fund_flow=-6.0, percent=1.0),
-    }
-    disp_mod.display_priority(conn, today_pool=pool)
+    # 主排序键的 chg 取 DB percent（候选池 percent 不参与排序键，见 build_scan_view），
+    # 故此处用 DB 列驱动不同涨幅，验证「涨幅升序」优先。
+    _insert_rec_pct(conn, "SZ300001", "置顶", "rebound", 50, 1.0)  # 低涨幅
+    _insert_rec_pct(conn, "SZ300002", "普通", "momentum", 70, 3.0)  # 高涨幅
+    _insert_rec_sb(conn, "SZ300003", "流出", "rebound", 90, 2.0, '{"fund_flow_main_pct": -6.0}')  # 净流出+中涨幅
+    disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     assert "▶ 置顶档" not in out
     assert "▶ 普通档" not in out
     lines = _main_lines(out)
     assert len(lines) == 3, f"净流出票(SZ300003)应正常展示，不再被劣后过滤: {lines}"
-    # 档0（🎯）内按类别优先级+分数降序：SZ300003(rebound,90) 与 SZ300001(rebound,50) 同档，高分在前
-    assert "SZ300003" in lines[0], f"🎯 档高分票应在前: {lines}"
-    assert "SZ300001" in lines[1]
-    assert "SZ300002" in lines[2]
+
+    # 涨幅升序优先：1.0% → 2.0% → 3.0%（档位不再决定顺序）
+    def _idx(sym: str) -> int:
+        return next(i for i, ln in enumerate(lines) if sym in ln)
+
+    assert _idx("SZ300001") == 0, f"最低涨幅(1.0%)应排最前: {lines}"
+    assert _idx("SZ300003") == 1, f"中涨幅(2.0%)应居中: {lines}"
+    assert _idx("SZ300002") == 2, f"高涨幅(3.0%)应排最后: {lines}"
 
 
 def test_display_priority_comeback_separate_region(monkeypatch, capsys):
@@ -983,7 +1039,9 @@ def test_display_priority_tier4_comeback_fundflow(monkeypatch, capsys):
 
 
 def test_display_priority_tier4_sector_resonance_low(monkeypatch, capsys):
-    """档位 4 级：小板块共振（cnt<15）档3 劣后；大板块（cnt>=15）豁免；🎯 票豁免。"""
+    """排序规则（2026-08-28）：榜上优先 → 涨幅升序 → 回调核心 → 排名升序 → 新面孔；
+    档位不再参与主排序。故 🎯 票（涨幅 1.0% 最低）排最前，小板块共振(档3)不再因档位
+    被劣后到末尾，仅与其余 6% 票按稳定顺序并列。"""
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "普通超短", "short_term", 60, 6.0)  # 档2 无警示
     _insert_rec_sb(
@@ -1004,14 +1062,11 @@ def test_display_priority_tier4_sector_resonance_low(monkeypatch, capsys):
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     lines = [ln for ln in _main_lines(out) if "SZ3000" in ln]
-    # 档0(SZ300004) > 档2(SZ300001, SZ300003) > 档3(SZ300002)
-    assert "SZ300004" in lines[0], f"🎯 弱转强应档0 置顶（板块共振豁免）: {lines}"
-    assert lines.index(next(ln for ln in lines if "SZ300001" in ln)) < lines.index(
-        next(ln for ln in lines if "SZ300002" in ln)
-    ), f"小板块共振应劣后: {lines}"
-    assert lines.index(next(ln for ln in lines if "SZ300003" in ln)) < lines.index(
-        next(ln for ln in lines if "SZ300002" in ln)
-    ), f"大板块豁免不劣后: {lines}"
+    # 涨幅升序优先：SZ300004(1.0%) 最低涨幅排最前（🎯 画像仍成立）
+    assert "SZ300004" in lines[0], f"最低涨幅(1.0%)应排最前: {lines}"
+    # 档位不再排序：四只票全部正常展示（档3 小板块共振不再被劣后到末尾）
+    assert len(lines) == 4, f"档位不应再过滤/劣后排序: {lines}"
+    assert any("SZ300002" in ln for ln in lines), f"小板块共振(档3)仍应展示: {lines}"
 
 
 def test_priority_row_breakout_mark_single_symbol(capsys):

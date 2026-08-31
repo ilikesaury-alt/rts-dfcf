@@ -334,13 +334,12 @@ def save_core_dips(conn: sqlite3.Connection | None, dips: list[dict], today: str
 
 
 def _low_buy_quality(c: dict) -> tuple:
-    """低吸质量排序键（升序，越小越优）：今日波动(涨多/跌狠) → 主力回流 → 回撤深 → 龙头强。
+    """低吸质量排序键（升序，越小越优）：主力回流 → 回撤深 → 龙头强 → 今日波动。
 
-    2026-08-29 调整：今日波动剧烈（涨多/跌狠）优先排前（|today| 越大越靠前）；同幅度下
-    主力回流 → 回撤深 → 龙头强。低吸语义：资金先于价格（主力转正是接盘确认），
-    价格先于气势（同资金下回撤更深=更便宜），最后看龙头强度。
+    2026-08-31 调整：主力回流排第一（资金先于价格是低吸核心逻辑）；同资金下
+    回撤更深=更便宜优先；龙头强度次之；今日波动降为辅助（无数据时不惩罚）。
     flow_tier：>=5% 强流入 2 / >=0 转正 1 / <-5% 流出 -1 / 其余(含无数据) 0。
-    today_pct 为比率（与 run/pullback 同口径），abs 取波动幅度，涨/跌两向极端均排前。
+    today_pct 为比率（与 run/pullback 同口径），abs 取波动幅度，涨/跌两向均排前。
     """
     ff = c.get("flow_pct")
     if ff is None:
@@ -354,9 +353,9 @@ def _low_buy_quality(c: dict) -> tuple:
     else:
         flow_tier = 0
     today = c.get("today_pct") or 0.0
-    # 今日波动剧烈（涨多/跌狠）优先：|today| 越大 → -abs(today) 越小 → 排前；
-    # 同幅度下：主力回流(flow_tier 取负) → 回撤深(pullback 为负，越深越小) → 龙头强(run 取负)。
-    return (-abs(today), -flow_tier, c["pullback"], -c["run"])
+    # 主力回流优先（-flow_tier 取负，强流入排前）→ 回撤深(pullback 越负越小) →
+    # 龙头强(run 取负) → 今日波动(辅助，无数据时不惩罚)。
+    return (-flow_tier, c["pullback"], -c["run"], -abs(today))
 
 
 def core_stock_symbols(conn: sqlite3.Connection | None, today: str | None = None) -> set[str]:

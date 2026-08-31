@@ -1,19 +1,45 @@
 """scanner.ranking 单源不变量（设计审查 P0 #1）。
 
-防止档位/🎯 排序逻辑再次散落为 display 内的副本：
+防止档位/🎯 排序逻辑散落到其它模块重写副本：
 - ranking 必须定义全部排序纯函数；
-- display 必须 re-export **同一个对象**（不是重新实现一份）；
-  一旦有人在 display 里又写 `def _entry_tier`，`display._entry_tier is
-  ranking._entry_tier` 即变 False，本测试报警，挡住口径漂移。
+- 消费方（display/today_report/scripts）直接 import ranking，不再持有副本
+  （2026-08-30 起 display 的全量 re-export 已下线，消费方直接 import）。
 """
 
 import sqlite3
 
 import pytest
 
-import scanner.display as D
 import scanner.ranking as R
 from scanner.ranking import _nextday_entry_accum, build_accum_map
+
+
+class _StubStock:
+    """StockInfo 鸭子替身（替代 type("S", (), {}) 动态 stub，属性可静态检查）。"""
+
+    def __init__(self, percent: float = 0.0, current: float = 0.0, rank: int | None = None):
+        self.percent = percent
+        self.current = current
+        self.rank = rank
+
+
+class _StubKline:
+    """KlineSummary 鸭子替身。"""
+
+    def __init__(self, dimensions: dict | None = None, accumulated_pct: float | None = None):
+        self.dimensions = dimensions if dimensions is not None else {}
+        self.accumulated_pct = accumulated_pct
+
+
+class _StubCandidate:
+    """Candidate 鸭子替身。"""
+
+    def __init__(self) -> None:
+        self.stock: _StubStock | None = None
+        self.kline: _StubKline | None = None
+        self.category: str | None = None
+        self.is_stale: bool = False
+
 
 RANKING_FUNCS = [
     "_entry_band",
@@ -37,15 +63,6 @@ RANKING_FUNCS = [
 def test_ranking_defines_all_functions():
     missing = [n for n in RANKING_FUNCS if not hasattr(R, n)]
     assert not missing, f"scanner.ranking 缺少函数: {missing}"
-
-
-def test_display_reexports_same_objects():
-    """display 必须指向与 ranking 完全相同的函数对象（单源，非副本）。"""
-    for n in RANKING_FUNCS:
-        assert hasattr(D, n), f"display 未 re-export {n}"
-        assert getattr(D, n) is getattr(R, n), (
-            f"display.{n} 不是 scanner.ranking.{n} 的同一对象——疑似在 display 内重写了排序逻辑（口径漂移风险）"
-        )
 
 
 def test_sweet_band_pure_logic():
@@ -109,11 +126,8 @@ class TestBuildAccumMap:
 
     def test_candidate_row_uses_dimensions(self):
         conn = _mk_db()
-        cand = type("C", (), {})()
-        kline = type("K", (), {})()
-        kline.dimensions = {"accumulated_incl_today": 8.5}
-        kline.accumulated_pct = 99.0
-        cand.kline = kline
+        cand = _StubCandidate()
+        cand.kline = _StubKline(dimensions={"accumulated_incl_today": 8.5}, accumulated_pct=99.0)
         e = {"symbol": "SZ300003", "date": "2026-08-16", "category": "momentum", "score": 50, "_candidate": cand}
         batch = build_accum_map(conn, [e])
         assert batch["SZ300003"] == 8.5  # 维度优先，不查 DB
@@ -155,10 +169,8 @@ def test_stale_candidate_not_used_for_nextday_percent():
     候选分支漏守卫——冻结在掉榜时刻的 percent 会让甜蜜带/陷阱带判定偏离推荐
     时刻落库口径。stale 视同无候选，直接落 DB percent。
     """
-    cand = type("C", (), {})()
-    stock = type("S", (), {})()
-    stock.percent = 9.5  # 冻结快照（掉榜时刻），若被消费会判 8-10% 陷阱带
-    cand.stock = stock
+    cand = _StubCandidate()
+    cand.stock = _StubStock(percent=9.5)  # 冻结快照（掉榜时刻），若被消费会判 8-10% 陷阱带
     cand.is_stale = True
     e = {
         "symbol": "SZ300012",
@@ -170,10 +182,8 @@ def test_stale_candidate_not_used_for_nextday_percent():
     }
     assert R._nextday_entry_percent(e) == 4.5
 
-    fresh = type("C", (), {})()
-    fresh_stock = type("S", (), {})()
-    fresh_stock.percent = 9.5
-    fresh.stock = fresh_stock
+    fresh = _StubCandidate()
+    fresh.stock = _StubStock(percent=9.5)
     fresh.is_stale = False
     e_fresh = {
         "symbol": "SZ300013",
@@ -266,14 +276,9 @@ class TestFreshCandidate:
 
     @staticmethod
     def _mk_cand(category="short_term", dims=None, stale=False):
-        cand = type("C", (), {})()
-        stock = type("S", (), {})()
-        stock.percent = 9.5
-        cand.stock = stock
-        kline = type("K", (), {})()
-        kline.dimensions = dims if dims is not None else {}
-        kline.accumulated_pct = 77.0
-        cand.kline = kline
+        cand = _StubCandidate()
+        cand.stock = _StubStock(percent=9.5)
+        cand.kline = _StubKline(dimensions=dims if dims is not None else {}, accumulated_pct=77.0)
         cand.category = category
         cand.is_stale = stale
         return cand

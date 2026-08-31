@@ -30,30 +30,18 @@ from scanner.database import (
 from scanner.models import Candidate, RecommendationRow
 from scanner.nextday_rule import RuleResult, scan_rule
 
-# 纯排序逻辑已迁至 scanner.ranking（单源）；此处全量 re-export 供内部调用与
-# scripts/review_tier_replay.py 的 display._entry_* 属性访问保持兼容。
-# F401 为有意导出（test_ranking_single_source.py 断言 display.X is ranking.X）。
-from scanner.ranking import (  # noqa: F401
+# 排序/画像纯逻辑单源在 scanner.ranking；display 只导入渲染所需子集。
+# 此前的全量 re-export（供 scripts 的 display._entry_* 属性访问）已下线：
+# 消费方直接 import scanner.ranking（scripts/review_tier_replay.py 已改）。
+from scanner.ranking import (
     _breakout_profile_key,
     _breakout_structure_ok,
-    _entry_band,
     _entry_dims,
-    _entry_fund_flow_pct,
-    _entry_overbought,
-    _entry_sector_resonance,
-    _entry_tier,
-    _entry_weak_to_strong,
     _fresh_candidate,
-    _in_nextday_sweet_band,
-    _is_breakout_setup,
     _is_nextday_marked,
-    _is_relist_breakout_setup,
-    _nextday_entry_accum,
-    _nextday_entry_percent,
     build_accum_map,
     build_breakout_kline_map,
     comeback_sort_key,
-    sort_main_entries,
 )
 from scanner.sector import classify_sector
 from scanner.utils import EXTERNAL_FAILURES, clear_screen, to_float, to_int
@@ -264,18 +252,80 @@ def _market_extra_str(c: Candidate) -> str:
     return " ".join(parts) if parts else ""
 
 
-def _market_env_tag(today_pool: dict[str, Candidate] | None) -> str:
-    """大盘环境标签（中性/强势/弱势·谨慎），从候选池 dims 读 market_env_bonus。"""
-    env_bonus = 0.0
-    for c in (today_pool or {}).values():
-        if c.kline and c.kline.dimensions:
-            env_bonus = to_float(c.kline.dimensions.get("market_env_bonus")) or 0.0
-            break
-    if env_bonus > 0:
-        return f"{ANSI['GREEN']}[大盘强势]{ANSI['RESET']}"
-    if env_bonus < 0:
+def _entry_display_quote(entry: RecommendationRow | dict) -> tuple[float, float]:
+    """涨幅/现价统一回退链（单源）：实时行情 → 可信候选快照 → DB 落库。
+
+    - live_quote_available 时 live_percent=0.0 是合法 0.00%，不得被 `or` 吞成 DB 值；
+    - stale 掉榜候选 / 双挂票类别错位候选经 _fresh_candidate 视同无候选，直接落 DB；
+    - live_current 缺失时用候选快照现价兜底（保持原 _print_priority_row 行为）。
+
+    优选池行、回马枪/低吸区行、涨幅升序排序键共用——杜绝同一票两区涨幅口径漂移。
+    返回 (pct, current)。
+    """
+    c = _fresh_candidate(entry)
+    if entry.get("live_quote_available"):
+        pct = to_float(entry.get("live_percent"), default=0.0)
+        cur = to_float(entry.get("live_current"), default=0.0)
+    elif c and c.stock:
+        pct = to_float(c.stock.percent, default=0.0)
+        cur = to_float(c.stock.current, default=0.0)
+    else:
+        _lp = entry.get("live_percent")
+        pct = to_float(_lp, default=0.0) if _lp is not None else to_float(entry.get("percent"), default=0.0)
+        cur = 0.0
+    if not cur and c and c.stock.current:
+        cur = to_float(c.stock.current, default=0.0)
+    return pct, cur
+
+
+def _entry_row_suffix(
+    entry: RecommendationRow | dict,
+    flow_pct_map: dict[str, float],
+    marked: bool = False,
+    breakout_marked: bool = False,
+) -> str:
+    """行尾可变区统一渲染：风险标记 → 资金流/连板 extra → 🎯 → ⚡。
+
+    优选池行与回马枪/核心低吸区行共用（2026-08-30 收口）——此前仅补充区渲染这些
+    标记，主视图优选池行丢失 🎯/⚡/资金流信息。顺序与原 _print_priority_row 一致。
+    """
+    c = _fresh_candidate(entry)
+    parts: list[str] = []
+    if c and c.risk_flags:
+        hard, soft_count = split_risk_flags(c.risk_flags)
+        if hard:
+            seg = f" {ANSI['RED']}⚠{'/'.join(hard)}{ANSI['RESET']}"
+            if soft_count:
+                seg += f"{ANSI['YELLOW']}+{soft_count}{ANSI['RESET']}"
+            parts.append(seg)
+        elif soft_count:
+            parts.append(f" {ANSI['YELLOW']}⚠+{soft_count}{ANSI['RESET']}")
+    extra = _market_extra_str(c) if c else ""
+    ff_pct = c.kline.dimensions.get("fund_flow_main_pct") if c and c.kline else None
+    if ff_pct is None:
+        # 扫描时无资金流维度（掉榜/拉取失败）回退 DB 快照图标
+        icon = _fund_flow_icon_str(flow_pct_map.get(entry["symbol"]))
+        if icon:
+            extra = f"{extra} {icon}".strip() if extra else icon
+    if extra:
+        parts.append(f" {extra}")
+    if marked:
+        parts.append(f" {ANSI['GREEN']}🎯{ANSI['RESET']}")
+    if breakout_marked:
+        parts.append(f" {ANSI['CYAN']}⚡{ANSI['RESET']}")
+    return "".join(parts)
+
+
+def _market_env_tag(weak: bool) -> str:
+    """大盘环境标签（与动态推荐 / 飞书 env_tag 同源，统一走 _regime_weak 判定）。
+
+    2026-08-30 收敛：此前头部读候选池 dims 的 market_env_bonus、与动态推荐/飞书用的
+    _regime_weak 是两个独立信号，可能同屏矛盾（头部「强势」却按弱市剔除动量）。现统一
+    为同一 weak 布尔——header 与动态推荐/飞书三者口径一致。
+    """
+    if weak:
         return f"{ANSI['RED']}[大盘弱势·谨慎]{ANSI['RESET']}"
-    return "[大盘中性]"
+    return f"{ANSI['GREEN']}[大盘强势]{ANSI['RESET']}"
 
 
 def _core_dip_entry_quality(entry: RecommendationRow | dict) -> tuple:
@@ -305,7 +355,7 @@ def display(
     today_pool: dict[str, Candidate] | None = None,
     last_ranks: dict[str, int] | None = None,
 ) -> "ScanView | None":
-    """扫描主屏：头部摘要 + 综合排序总表（含回马枪/次日大涨子区）。
+    """扫描主屏：头部摘要 + 展示视图（构建/渲染委托 display_priority）。
 
     ScanView 定义在本文件更下方（视图模型区），此处为前向引用故写成字符串注解；
     render_terminal / build_scan_view 均在类定义之后，无需引号。
@@ -313,33 +363,27 @@ def display(
     返回本轮 ScanView 供飞书复用（同一份选择，避免两端分叉与重复计算）；
     conn 为空或今日无推荐时返回 None。
 
-    策略桶（新面孔/动量/反弹/回马枪/超短）2026-08-10 下线：与综合排序重复列同一批票、
-    每桶重复列头；综合排序表已带类别标签，桶区信息不再单列。
-
     today_pool：本轮候选池快照（symbol → Candidate），由调用方（scan_with_raw 的
     ScanResult）传入，display 不直接访问 orchestrator 内部状态。
-    last_ranks: 上一轮扫描的榜单排名 {symbol: rank}，供综合排序「排名」列显示变化
-    （+N 升 / -N 降），与已下线策略桶同口径。
+    last_ranks: 上一轮扫描的榜单排名 {symbol: rank}，供「排名」列显示变化（+N 升 / -N 降）。
     """
     clear_screen()
     now = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
     print(f"{'=' * 96}")
     print(f"  创业板飙升榜监控  ({now})")
     filter_info = f" | 过滤{filtered_large_cap}只" if filtered_large_cap else ""
-    print(f"  创业板共 {gem_total} 只{filter_info} | 每{interval}s刷新 | {_market_env_tag(today_pool)}")
+    # 统一市况信号：与动态推荐 / 飞书 env_tag 同源（_regime_weak），避免同屏矛盾。
+    weak = _regime_weak(conn) if conn is not None else False
+    print(f"  创业板共 {gem_total} 只{filter_info} | 每{interval}s刷新 | {_market_env_tag(weak)}")
     print(f"{'=' * 96}")
-    # 构建一次视图、渲染并回传：飞书卡片复用同一份 ScanView。
-    # 不能走 display_priority——它内部会再跑一遍 build_scan_view，等于每轮双倍 DB 查询。
-    view = build_scan_view(
-        conn,
+    return display_priority(
+        conn=conn,
         live_quotes=live_quotes,
         rank_map=rank_map,
         today_pool=today_pool,
         last_ranks=last_ranks,
+        weak=weak,
     )
-    if view is not None:
-        render_terminal(view)
-    return view
 
 
 def _print_priority_row(
@@ -357,7 +401,7 @@ def _print_priority_row(
     breakout_mark: 蓄势突破观察画像（⚡）——新面孔/首推或重上榜 short_term + 横盘缩量回调位
     （见 _is_breakout_setup / _is_relist_breakout_setup；2026-08-22 渲染合并为单一 ⚡，
     变体区分保留在判定函数供样本统计）。纯观察标记，不参与排序/评分/落库。
-    视觉标记 + 参与综合排序档位置顶（display_priority._sort_tier 档0），不改 score / 不落库。
+    视觉标记，不参与排序/评分/落库；行尾标记统一走 _entry_row_suffix（与优选池行同口径）。
     last_ranks: 上一轮扫描的榜单排名 {symbol: rank}，用于「排名」列展示雪球榜单排名变化
     （+N 升 / -N 降），与已下线策略桶的 _rank_delta_str 同口径；缺省 None 不显示变化。
     """
@@ -383,25 +427,9 @@ def _print_priority_row(
     # 掉榜候选的冻结快照（仙乐健康案例：掉榜后仍显示上榜时的 rank 15）与双挂票
     # 类别错位候选都视同无候选，落 DB 回退链。
     _fresh_c = _fresh_candidate(entry)
-    if entry.get("live_quote_available"):
-        pct = entry.get("live_percent")
-        if pct is None:
-            pct = 0.0
-        live_cur = entry.get("live_current", 0.0)
-        live_rank = entry.get("live_rank")
-    elif _fresh_c:
-        pct = _fresh_c.stock.percent
-        live_cur = _fresh_c.stock.current
-        live_rank = _fresh_c.stock.rank
-    else:
-        # live_percent 可能为 0.0（合法 0.00% 涨幅），不能用 `or` 回退——
-        # 否则 0.00% 的票会错误显示成推荐时落库的 percent（如 5.0%）。
-        _lp = entry.get("live_percent")
-        pct = _lp if _lp is not None else entry.get("percent", 0.0)
-        live_cur = 0.0
-        live_rank = entry.get("live_rank")
-    if not live_cur and _fresh_c and _fresh_c.stock.current:
-        live_cur = _fresh_c.stock.current
+    # 涨幅/现价走 _entry_display_quote 单源回退链（与优选池行/涨幅升序排序键同口径）。
+    pct, live_cur = _entry_display_quote(entry)
+    live_rank = entry.get("live_rank")
     if not live_rank and _fresh_c and _fresh_c.stock.rank:
         live_rank = _fresh_c.stock.rank
     price_str = f"{live_cur:.2f}" if live_cur else "—"
@@ -430,37 +458,12 @@ def _print_priority_row(
             label_display += f"{ANSI['CYAN']}·{variant}{ANSI['RESET']}"
     # 辨识度（↻）行内标记已下线（2026-08-22 标记精简）：回测证独立增量≈0、已退出排序，
     # 纯装饰性噪音；prominence 数据仍在 today_report 归因中使用，不受影响。
-    # 风险标记：掉榜/重启行 DB 无 risk_flags；候选行用与 _print_row 相同的分级渲染
-    risk_str = ""
-    if c and c.risk_flags:
-        hard, soft_count = split_risk_flags(c.risk_flags)
-        if hard:
-            risk_str = f" {ANSI['RED']}⚠{'/'.join(hard)}{ANSI['RESET']}"
-            if soft_count:
-                risk_str += f"{ANSI['YELLOW']}+{soft_count}{ANSI['RESET']}"
-        elif soft_count:
-            risk_str = f" {ANSI['YELLOW']}⚠+{soft_count}{ANSI['RESET']}"
-    # 建议列已下线（2026-08-28）：操作建议与展示优先级/档位解耦后纯装饰噪音，
-    # 移除不影响排序/评分/落库；SUGGEST_BY_CAT 仍保留于 categories 注册表供 today_report 归因。
     first_time = str(entry.get("first_time") or entry.get("time") or "")[:5]
     # 5日累计涨幅：优先用候选池可信快照（_fresh_candidate），否则用 DB 落库值
-    accum_val = None
     accum_val = _fresh_c.kline.accumulated_pct if _fresh_c and _fresh_c.kline else entry.get("accumulated_pct")
     accum_str = "—" if accum_val is None else f"{accum_val:+.2f}%"
-    extra_str = ""
-    if _fresh_c:
-        extra_str = _market_extra_str(_fresh_c)
-        ff_pct = _fresh_c.kline.dimensions.get("fund_flow_main_pct") if _fresh_c.kline else None
-    else:
-        ff_pct = None
-    if ff_pct is None:
-        # 扫描时无资金流维度（掉榜/拉取失败）回退 DB 快照图标
-        icon = _fund_flow_icon_str(flow_pct_map.get(entry["symbol"]))
-        if icon:
-            extra_str = f"{extra_str} {icon}".strip() if extra_str else icon
-    extra_suffix = f" {extra_str}" if extra_str else ""
-    nd_mark_str = f" {ANSI['GREEN']}🎯{ANSI['RESET']}" if nextday_mark else ""
-    bo_mark_str = f" {ANSI['CYAN']}⚡{ANSI['RESET']}" if breakout_mark else ""
+    # 行尾标记（风险/资金流/连板/🎯/⚡）走 _entry_row_suffix 单源，与优选池行同口径。
+    tail = _entry_row_suffix(entry, flow_pct_map, marked=nextday_mark, breakout_marked=breakout_mark)
     # 板块普涨避雷行尾标记已下线（2026-08-17 用户反馈「太扎眼」）：小板块共振避雷
     # 结论保留于回测（cnt<15 票 hit 5.9-6.7%/cum_3d -2.2~-2.6 最差），但黄色长文本
     # 移除，避免干扰 🎯 档0 等主信号。
@@ -489,7 +492,7 @@ def _print_priority_row(
             ],
             COLS_DETAIL,
         )
-        + f"{risk_str}{extra_suffix}{nd_mark_str}{bo_mark_str}"
+        + tail
     )
 
 
@@ -649,6 +652,8 @@ class MainRow:
     score: float
     core: bool  # 核心股高亮
     cat_label: str  # RBD / MOM / NEW / kNF / ST
+    pct: float  # 涨幅（_entry_display_quote 单源回退链）
+    current: float  # 现价（0.0 = 无数据 → 渲染为 —）
 
 
 @dataclass
@@ -663,7 +668,6 @@ class ScanView:
     comeback_rows: list[RecommendationRow]
     core_dip_rows: list[RecommendationRow]
     nextday_mark: dict[tuple[str, str], bool]
-    tier_map: dict[tuple[str, str], int]
     breakout_mark: dict[tuple[str, str], bool]
     flow_pct_map: dict[str, float]
     last_ranks: dict[str, int]
@@ -681,6 +685,7 @@ def build_scan_view(
     rank_map: dict[str, int] | None = None,
     today_pool: dict[str, Candidate] | None = None,
     last_ranks: dict[str, int] | None = None,
+    weak: bool | None = None,
 ):
     """构建一次扫描的展示视图（纯计算，不 print）：读今日推荐并算出档位/标记/排序。
 
@@ -693,12 +698,9 @@ def build_scan_view(
     渲染最新候选数据（实时候选 > DB 快照）。
     last_ranks: 上一轮扫描的榜单排名 {symbol: rank}，供「排名」列显示雪球榜单排名变化
     （+N 升 / -N 降），与已下线策略桶同口径；缺省 None 不显示变化。
-    排序键 = (档位, CAT_DISPLAY_PRIORITY, 分数键)：档0置前(次日大涨🎯) < 档1强信号 < 档2普通 < 档3警示劣后。
-    2026-08-18 统一口径为「次日大涨」：档位因子与 CAT_DISPLAY_PRIORITY 均校准于
-    next_day（≥7% hit）口径（scanner.nextday_attribution 1184 去重样本），不再混用 cum_3d。
-    2026-08-11 起资金流不再参与档位排序/劣后过滤（净流出票正常展示，仅保留图标与「资金流出」标签）。
-    2026-08-12 次日大涨画像(🎯)置顶；辨识度(↻)不再参与排序（次日大涨本身即辨识度属性），
-    仅保留行内 ↻ 展示。档位只影响排序，不改评分列/不落库。
+
+    策略优选池排序键（2026-08-30）：榜上优先 → 涨幅升序 → 回调核心 → 排名升序 → 新面孔。
+    🎯（次日大涨画像）/⚡（蓄势突破观察）为行尾展示标记，不参与排序、不改评分、不落库。
     """
     if conn is None:
         return None
@@ -745,36 +747,23 @@ def build_scan_view(
     # 保存的全市场快照——避免综合排序大量行因进程重启丢失资金流图标。
     flow_pct_map = get_fund_flow_pct_map(conn, [e["symbol"] for e in today_recs])
 
-    # 档位置顶（2026-08-06 引入；2026-08-11 去掉资金流因子；2026-08-12 档0=辨识度∪次日大涨；
-    # 2026-08-12 去掉辨识度排序）：排序键 (档位, 类别优先级, 分数键)，跨类别全局生效。
-    # 档0置前 = 次日大涨画像(🎯)（推荐时刻涨幅甜蜜带 + 非超买 + 5日累计门槛，见 _is_nextday_marked）；
-    # 档1 = 其余。辨识度(↻)不再参与排序——次日大涨画像本身即辨识度属性（用户决策），
-    # ↻ 仅保留行内展示。资金流不参与排序/劣后过滤（净流出票正常展示，仅保留「资金流出」标签与图标提醒）。
-    # 2026-08-14：预计算 mark map（排序+渲染各调一次 _is_nextday_marked 会触发两次 daily_kline
-    # 回放全表扫描；预计算后只查一次，_sort_tier 与渲染共用同一结果保证一致性）。
-    # 2026-08-26：mark/tier map 键改 (symbol, category) 复合键——此前按 symbol 键控时
-    # nf∩st 双挂票两行的归属取决于遍历顺序（隐式依赖）。双挂票展示规则（用户确认）：
-    # 档位/🎯 以 short_term 行判定为准——预计算后按 symbol 归一，非 st 行覆盖为 st 值，
-    # 与「nf∩st 双挂恒存 short_term」的池内事实对齐。
+    # 🎯 标记预计算（2026-08-14 起 map 化：排序+渲染各调一次 _is_nextday_marked 会触发
+    # 两次 daily_kline 回放全表扫描；预计算后只查一次，判定与行尾渲染共用同一结果）。
+    # 键 (symbol, category) 复合——nf∩st 双挂票两行判定口径不同，按 symbol 键控时归属
+    # 取决于遍历顺序（隐式依赖）。
     nextday_mark: dict[tuple[str, str], bool] = {}
-    tier_map: dict[tuple[str, str], int] = {}
     # P1-9（2026-08-20）：全部推荐一次性批量回放累计（build_accum_map 单查询），
     # 替代逐行 _nextday_entry_accum 的 N+1 daily_kline 查询。
     accum_map = build_accum_map(conn, today_recs)
     for e in today_recs:
-        key = (e["symbol"], e["category"])
-        marked = _is_nextday_marked(e, conn, accum_map=accum_map)
-        nextday_mark[key] = marked
-        # 2026-08-17 档位 4 级：tier_map 与 nextday_mark 同源预计算（_entry_tier 复用
-        # 同一 accum/marked，避免二次回放），排序与任何行内展示共用同一结果。
-        tier_map[key] = _entry_tier(e, conn, accum_map=accum_map, marked=marked)
-    # 双挂票归一：同 symbol 存在 short_term 行时，其余类别行沿用 st 行的档位/🎯 判定。
-    st_tiers = {(s, c): v for (s, c), v in tier_map.items() if c == "short_term"}
-    for key in list(tier_map):
+        nextday_mark[(e["symbol"], e["category"])] = _is_nextday_marked(e, conn, accum_map=accum_map)
+    # 双挂票归一（用户确认）：同 symbol 存在 short_term 行时，其余类别行沿用 st 行的
+    # 🎯 判定，与「nf∩st 双挂恒存 short_term」的池内事实对齐。
+    st_marks = {(s, c): v for (s, c), v in nextday_mark.items() if c == "short_term"}
+    for key in list(nextday_mark):
         st_key = (key[0], "short_term")
-        if key[1] != "short_term" and st_key in st_tiers:
-            tier_map[key] = st_tiers[st_key]
-            nextday_mark[key] = nextday_mark.get(st_key, False)
+        if key[1] != "short_term" and st_key in st_marks:
+            nextday_mark[key] = st_marks[st_key]
 
     # 回马枪独立成区（2026-08-07 方案A）：comeback 是 off_list 掉榜跟踪票，语义与榜上票不同，
     # 从主排序表抽出放到末尾独立区块；主表只排榜上五类（rebound/known_new_face/new_face/
@@ -793,13 +782,8 @@ def build_scan_view(
     for e in today_recs:
         e["_core_stock"] = e["symbol"] in core_syms
 
-    # 2026-08-10: known_new_face 分数反指（回测分桶：低分档[18,37) cum_3d +5.58/64%胜率，
-    # 高分档[77,98) -3.76/33%）——分区内 score 升序，把"低调二次上榜"的低分票排前，
-    # 避免把最差的追高票顶在最前。其余类别仍降序。
-    # 2026-08-20 收敛：排序组合层（档位+类别优先级+分数键含 kNF 升序）统一走 ranking.sort_main_entries，
-    # 与 today_report 同源，消除两处排序分化。该函数经本模块 re-export 供 today_report 复用
-    # （test_ranking_single_source 守护 display.sort_main_entries is ranking.sort_main_entries）；
-    # 主表隐藏后 display 不再调用它，策略优选池使用下方独立排序键。
+    # kNF 分数反指等组内分数键语义单源在 ranking.score_sort_key（today_report 归因复用
+    # 同一实现）；策略优选池（下方 5 级排序键）不再使用它。
 
     # 蓄势突破观察标记（2026-08-21，⚡）：新面孔/首推或重上榜 short_term + 横盘缩量回调位
     # + MA 多头。纯展示层观察——不改排序/评分/落库（用户决策：先观察积累样本，达标后再评估
@@ -822,7 +806,7 @@ def build_scan_view(
     # （档位分组渲染的旧实现已删除；需还原见 git 历史，勿在此堆积注释代码。）
 
     # 策略优选池（2026-08-28）：按优先级规则排序的详细列表，关键列展示。
-    # 排序规则：榜上优先 → 档位 → 回调核心 → 排名升序 → 新面孔 → 涨幅升序。
+    # 排序规则：榜上优先 → 涨幅升序 → 回调核心 → 排名升序 → 新面孔。
     def _cb_core_pullback_ok(sym: str) -> bool:
         kl = breakout_kmap.get(sym)
         if not kl or len(kl) < 20:
@@ -849,11 +833,11 @@ def build_scan_view(
             cat = e["category"]
             rk = e.get("live_rank") or e.get("rank")
             has_rank = isinstance(rk, (int, float)) and rk > 0
-            tier = tier_map.get((sym, cat), 2)
             is_core = bool(e.get("_core_stock"))
             is_cb_core = is_core and _cb_core_pullback_ok(sym)
             is_new = _stg_map.get(cat) in ("NEW", "kNF")
-            chg = to_float(e.get("live_percent") or e.get("percent"), default=0.0)
+            # 涨幅键与展示列同源（_entry_display_quote）：live 0.00% 合法不被 `or` 吞。
+            chg = _entry_display_quote(e)[0]
             _fresh_c = _fresh_candidate(e)
             accum_val = None
             if _fresh_c and _fresh_c.kline:
@@ -863,28 +847,28 @@ def build_scan_view(
             score = e.get("score", 0)
             _seq_rows.append(
                 (
-                    0 if has_rank else 1,
-                    tier,
-                    0 if is_cb_core else 1,
-                    rk if has_rank else 9999,
-                    0 if is_new else 1,
-                    chg,
+                    0 if has_rank else 1,  # ① 榜上优先
+                    chg,  # ② 涨幅升序
+                    0 if is_cb_core else 1,  # ③ 回调核心
+                    rk if has_rank else 9999,  # ④ 排名升序
+                    0 if is_new else 1,  # ⑤ 新面孔
                     e,
                     is_core,
                     accum_val,
                     score,
                 )
             )
-        _seq_rows.sort(key=lambda x: x[:6])
+        _seq_rows.sort(key=lambda x: x[:5])
         # 逐行解析为 MainRow（排序在上面的元组里完成，此处只做展示字段定型）。
         # 2026-08-29：候选（_fresh_c）必须逐行重算——构建循环里的 _fresh_c 只保留末行，
         # 跨行复用会把上一只票的行情安到本行。
-        for _hr, _t, _cpc, _rk, _nw, _ch, _e, _ic, _av, _sc in _seq_rows:
+        for _hr, _cpc, _rk, _nw, _ch, _e, _ic, _av, _sc in _seq_rows:
             _fresh_c = _fresh_candidate(_e)
             _rk_disp = _e.get("live_rank") or _e.get("rank")
             if _rk_disp is None and _fresh_c:
                 _rk_disp = _fresh_c.stock.rank
             _rk_val = _rk_disp if isinstance(_rk_disp, (int, float)) and _rk_disp > 0 else None
+            _pct_row, _cur_row = _entry_display_quote(_e)
             main_rows.append(
                 MainRow(
                     entry=_e,
@@ -893,6 +877,8 @@ def build_scan_view(
                     score=_sc or 0,
                     core=_ic,
                     cat_label=_stg_map.get(_e["category"], "?"),
+                    pct=_pct_row,
+                    current=_cur_row,
                 )
             )
     except EXTERNAL_FAILURES as _e:
@@ -904,14 +890,17 @@ def build_scan_view(
     # 动态推荐（2026-08-27）：根据近端主表档次日表现自动判断 regime，弱市下把
     # momentum/known_new_face/new_face 类🎯 从推荐序列剔除、优先 核心低吸/回马枪/
     # rebound🎯/弱转强；强市则正常优先级。纯展示行，不改排序/评分/落库。
-    # regime 判定每轮只跑一次（此前 _adjusted_picks 内一次 + 此处一次，同轮重复同一 SQL）。
-    try:
-        _weak = _regime_weak(conn)
-    except EXTERNAL_FAILURES as _e:
-        # 编程错误（KeyError/TypeError 等）不再被吞——冒泡到主循环记录完整 traceback；
-        # 此处仅承接数据类异常并按强市 fail-open。
-        warnings.append(f"regime 判定中断（数据缺失，按强市处理）: {type(_e).__name__}: {_e}")
-        _weak = False
+    # 市况信号与头部 _market_env_tag / 飞书 env_tag 同源（统一 _regime_weak）；
+    # weak 由调用方传入时复用（避免 Display 头/体重复查询），None 时自算一次。
+    if weak is None:
+        try:
+            weak = _regime_weak(conn)
+        except EXTERNAL_FAILURES as _e:
+            # 编程错误（KeyError/TypeError 等）不再被吞——冒泡到主循环记录完整 traceback；
+            # 此处仅承接数据类异常并按强市 fail-open。
+            warnings.append(f"regime 判定中断（数据缺失，按强市处理）: {type(_e).__name__}: {_e}")
+            weak = False
+    _weak = weak
     try:
         _adj = _adjusted_picks(today_recs, nextday_mark, conn, flow_pct_map, weak=_weak)
     except EXTERNAL_FAILURES as _e:
@@ -942,7 +931,6 @@ def build_scan_view(
         comeback_rows=_comeback_sorted[:COMEBACK_DISPLAY_MAX],
         core_dip_rows=core_dips[:COMEBACK_DISPLAY_MAX],
         nextday_mark=nextday_mark,
-        tier_map=tier_map,
         breakout_mark=breakout_mark,
         flow_pct_map=flow_pct_map,
         last_ranks=last_ranks or {},
@@ -970,28 +958,22 @@ def render_terminal(view: ScanView) -> None:
     for _si, row in enumerate(view.main_rows, 1):
         _e = row.entry
         _nm = _e["name"]
-        _lp = _e.get("live_percent")
-        _pct = _lp if _lp is not None else (_e.get("percent") or 0.0)
         _nm_disp = f"{ANSI['BOLD']}{ANSI['MAGENTA']}{_nm}{ANSI['RESET']}" if row.core else _nm
         _av_str = f"{row.accum:+.2f}%" if row.accum is not None else "—"
         _rk_val = str(row.rank) if row.rank is not None else "—"
         _sc_str = f"{row.score:.0f}" if row.score else "—"
-        # 现价：实时行情(live_current) > 候选快照(current) > 无数据「—」
-        _fresh_c = _fresh_candidate(_e)
-        if _e.get("live_quote_available"):
-            _cur = to_float(_e.get("live_current"), default=0.0)
-        elif _fresh_c:
-            _cur = to_float(_fresh_c.stock.current, default=0.0)
-        else:
-            _cur = 0.0
-        _cur_str = f"{_cur:.2f}" if _cur else "—"
+        _cur_str = f"{row.current:.2f}" if row.current else "—"
+        # 行尾标记与回马枪/低吸区同源（_entry_row_suffix）：风险/资金流/🎯/⚡。
+        _marked = view.nextday_mark.get((_e["symbol"], _e["category"]), False)
+        _bolt = view.breakout_mark.get((_e["symbol"], _e["category"]), False)
+        _suffix = _entry_row_suffix(_e, view.flow_pct_map, marked=_marked, breakout_marked=_bolt)
         print(
             _table_row(
                 [
                     str(_si),
                     _e["symbol"],
                     _nm_disp,
-                    pct_colored(_pct),
+                    pct_colored(row.pct),
                     _av_str,
                     _cur_str,
                     _rk_val,
@@ -1000,6 +982,7 @@ def render_terminal(view: ScanView) -> None:
                 ],
                 COLS_POOL,
             )
+            + _suffix
         )
 
     # ── 动态推荐 / ⚡ ──
@@ -1057,15 +1040,12 @@ def render_terminal(view: ScanView) -> None:
             f"ma5r≥{NEXTDAY_RULE_MA5R_MIN:.0f}% & atrpct≥{NEXTDAY_RULE_ATRPCT_MIN:.0f}%"
             f" & ret20≤{NEXTDAY_RULE_RET20_MAX:.0f}%"
         )
-        print(
-            f"\n{ANSI['BOLD']}{ANSI['YELLOW']}"
-            f"◆ 次日大涨高概率候选（实证规则）"
-            f"{ANSI['RESET']}"
-            f"（{_rule_desc}）"
-        )
+        print(f"\n{ANSI['BOLD']}{ANSI['YELLOW']}◆ 次日大涨高概率候选（实证规则）{ANSI['RESET']}（{_rule_desc}）")
         print(_table_header(COLS_RULE))
         for ri, pick in enumerate(_rp.picks, 1):
-            _status = f"{ANSI['GREEN']}已推荐{ANSI['RESET']}" if pick.already_rec else f"{ANSI['YELLOW']}新增{ANSI['RESET']}"
+            _status = (
+                f"{ANSI['GREEN']}已推荐{ANSI['RESET']}" if pick.already_rec else f"{ANSI['YELLOW']}新增{ANSI['RESET']}"
+            )
             print(
                 _table_row(
                     [
@@ -1096,11 +1076,14 @@ def display_priority(
     rank_map: dict[str, int] | None = None,
     today_pool: dict[str, Candidate] | None = None,
     last_ranks: dict[str, int] | None = None,
-):
+    weak: bool | None = None,
+) -> "ScanView | None":
     """构建展示视图并渲染到终端（build_scan_view + render_terminal 的便捷入口）。
 
-    保留原签名供 unified_scanner / 测试调用。新增出口（飞书）请直接用
-    build_scan_view 取同一份 ScanView，避免与终端各取各的数。
+    weak：市况信号（弱市布尔）。None 时由 build_scan_view 内部按 _regime_weak 自算；
+    传入则复用（display 主屏已在打印头部前算过一次，避免重复查询）。
+    返回 ScanView 供复用（display 主屏回传飞书 / 测试捕获输出后取数据两用）；
+    无 conn 或今日无推荐时返回 None。
     """
     view = build_scan_view(
         conn=conn,
@@ -1108,7 +1091,9 @@ def display_priority(
         rank_map=rank_map,
         today_pool=today_pool,
         last_ranks=last_ranks,
+        weak=weak,
     )
     if view is None:
-        return
+        return None
     render_terminal(view)
+    return view
