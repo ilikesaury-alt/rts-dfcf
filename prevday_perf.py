@@ -36,6 +36,7 @@ import json
 import sqlite3
 import statistics
 import sys
+from collections import defaultdict
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -318,6 +319,84 @@ def _render(hist, days_arg):
     return "\n".join(out)
 
 
+def _rejection_audit(conn):
+    """硬过滤审计原始数据：入选 vs 落选 次日表现 + 分月漂移。
+
+    - 入选 = recommendations.next_day_pct（硬过滤幸存组，进了推荐列表）
+    - 落选 = scan_rejections.next_day_pct（被硬过滤移出组，独立审计表）
+
+    两者口径同源（daily_kline 收盘回填），直接对比即可回答「硬过滤到底有没有用」，
+    规避「只看活下来的票」的幸存者偏差。本函数只读，不落库、不改评分。
+    """
+    sel = [r[0] for r in conn.execute(
+        "SELECT next_day_pct FROM recommendations WHERE next_day_pct IS NOT NULL").fetchall()]
+    rej = [r[0] for r in conn.execute(
+        "SELECT next_day_pct FROM scan_rejections WHERE next_day_pct IS NOT NULL").fetchall()]
+    sel_month: dict[str, list] = defaultdict(list)
+    for d, v in conn.execute(
+        "SELECT date, next_day_pct FROM recommendations WHERE next_day_pct IS NOT NULL").fetchall():
+        sel_month[d[:7]].append(v)
+    rej_month: dict[str, list] = defaultdict(list)
+    for d, v in conn.execute(
+        "SELECT date, next_day_pct FROM scan_rejections WHERE next_day_pct IS NOT NULL").fetchall():
+        rej_month[d[:7]].append(v)
+    return {"selected": sel, "rejected": rej,
+            "selected_month": dict(sel_month), "rejected_month": dict(rej_month)}
+
+
+def _render_rejection_audit(audit):
+    """硬过滤审计报表：入选 vs 落选 对比 + 分月漂移。"""
+    out = []
+    out.append("\n七、入选 vs 落选（硬过滤审计，规避幸存者偏差）")
+    out.append(f"  口径：入选=recommendations 次日 / 落选=scan_rejections 次日（同源 daily_kline 收盘）；"
+               f"hit 阈值 ≥+{HIT_THRESHOLD:.0f}%")
+    s_sel = _stats(audit["selected"])
+    s_rej = _stats(audit["rejected"])
+    out.append(f"  {'组':<22}{'n':>5} {'均次日':>8} {'hit≥7%':>8} {'胜率':>7} {'中位':>8}")
+    out.append("  " + "-" * 58)
+    for label, st in (("入选（硬过滤幸存）", s_sel), ("落选（被硬过滤移出）", s_rej)):
+        n, avg, hit, win, med = st
+        if n == 0:
+            out.append(f"  {label:<22}{0:>5} {'—':>8} {'—':>8} {'—':>7} {'—':>8}")
+        else:
+            out.append(f"  {label:<22}{n:>5} {_fmt_pct(avg)} {f'{hit:.1f}%':>8} "
+                       f"{f'{win:.1f}%':>7} {_fmt_pct(med)}")
+
+    # 结论（数据驱动；-2pp 显著线来自 Phase 1 验证门约定）
+    # 最小样本护栏：落选需 ≥10 条、入选需 ≥30 条才有统计意义——否则 1~2 条落选的
+    # 次日涨跌会把结论带偏（正是 Phase 1 要规避的「小样本噪声当成结论」陷阱）。
+    out.append("\n  结论：")
+    if s_sel[0] >= 30 and s_rej[0] >= 10 and s_rej[1] is not None and s_sel[1] is not None:
+        diff = s_rej[1] - s_sel[1]
+        if diff <= -2:
+            out.append(f"    • 硬过滤有效：落选均次日 {s_rej[1]:+.2f}% 显著低于入选 {s_sel[1]:+.2f}%（差 {diff:+.2f}pp）")
+        elif diff >= 0:
+            out.append(f"    • ⚠ 硬过滤疑似无效：落选均次日 {s_rej[1]:+.2f}% 未低于（甚至高于）入选 {s_sel[1]:+.2f}%（差 {diff:+.2f}pp）")
+        else:
+            out.append(f"    • 硬过滤轻度有效：落选均次日 {s_rej[1]:+.2f}% 略低于入选 {s_sel[1]:+.2f}%（差 {diff:+.2f}pp，未达 -2pp 显著线）")
+    else:
+        out.append(f"    • 落选样本不足（入选 n={s_sel[0]}，落选 n={s_rej[0]}；需落选 ≥10），"
+                   f"硬过滤有效性待积累——scan_rejections 的 next_day_pct 由 backfill_kline.py 每日收盘后回填，"
+                   f"随扫描天数增长自然达到判定门槛")
+
+    # 分月漂移（入选 vs 落选 均次日，弱市低吸扩容失效的早期预警）
+    months = sorted(set(audit["selected_month"]) | set(audit["rejected_month"]))
+    if months:
+        out.append("\n  分月漂移（入选 vs 落选 均次日）：")
+        out.append(f"  {'月份':<10}{'入选n':>6} {'入选均':>8} {'落选n':>6} {'落选均':>8} {'差':>8}")
+        out.append("  " + "-" * 52)
+        for m in months:
+            sv = audit["selected_month"].get(m, [])
+            rv = audit["rejected_month"].get(m, [])
+            sa = (sum(sv) / len(sv)) if sv else None
+            ra = (sum(rv) / len(rv)) if rv else None
+            sas = _fmt_pct(sa) if sa is not None else "—"
+            ras = _fmt_pct(ra) if ra is not None else "—"
+            diff_s = f"{(ra - sa):+.2f}%" if (sa is not None and ra is not None) else "—"
+            out.append(f"  {m:<10}{len(sv):>6} {sas:>8} {len(rv):>6} {ras:>8} {diff_s:>8}")
+    return "\n".join(out)
+
+
 def main():
     parser = argparse.ArgumentParser(description="综合排序历史复盘：各组次日表现汇总")
     parser.add_argument("--days", type=int, default=30, help="最近 N 个交易日（0=全期）")
@@ -356,6 +435,7 @@ def main():
         if idx_banner:
             print(idx_banner)
     hist = _build_history(conn, dates)
+    audit = _rejection_audit(conn)
     conn.close()
 
     if args.json:
@@ -371,9 +451,16 @@ def main():
             pcts = [p for h in base for p in h[g]]
             n, avg, hit, win, med = _stats(pcts)
             payload["groups"][g] = {"n": n, "avg": avg, "hit": hit, "win": win, "median": med}
+        s_sel = _stats(audit["selected"])
+        s_rej = _stats(audit["rejected"])
+        payload["rejection_audit"] = {
+            "selected": {"n": s_sel[0], "avg": s_sel[1], "hit": s_sel[2], "win": s_sel[3], "median": s_sel[4]},
+            "rejected": {"n": s_rej[0], "avg": s_rej[1], "hit": s_rej[2], "win": s_rej[3], "median": s_rej[4]},
+        }
         print(json.dumps(payload, ensure_ascii=False, indent=1))
     else:
         print(_render(hist, args.days))
+        print(_render_rejection_audit(audit))
 
 
 if __name__ == "__main__":

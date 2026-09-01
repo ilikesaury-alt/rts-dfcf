@@ -188,6 +188,65 @@ def backfill_outcomes(
     return updated
 
 
+def backfill_rejection_outcomes(
+    conn: sqlite3.Connection,
+    dry_run: bool = False,
+    since_days: int = BACKFILL_OUTCOMES_WINDOW_DAYS,
+) -> int:
+    """回填 scan_rejections（被硬过滤移出推荐的候选）的 N 日收益字段，返回更新行数。
+
+    与 backfill_outcomes 同源口径：
+    - next_day_pct = 次一交易日 percent（硬过滤「次日避开了什么」主指标）
+    - fwd_3d = T+3 交易日 percent
+    - nd10_pct = T+10 交易日 percent（弱市低吸扩容的中长期漂移观测）
+
+    新值非 None 时覆盖（纠正旧错误值）；新值 None 时保留已有值（防 K 线临时缺失丢数据）。
+    实时扫描不直接写 outcome——被拒票的次日 K 线收盘后才可得，由 backfill_kline.py
+    收盘后批量回填，从而让「硬过滤到底有没有用」每月可审计（避免幸存者偏差）。
+    scan_rejections 无 id 列，用隐式 rowid 定位更新行。
+    """
+    if since_days > 0:
+        cutoff = (now_beijing() - timedelta(days=since_days)).date().isoformat()
+        rows = conn.execute(
+            "SELECT rowid, symbol, date, next_day_pct, fwd_3d, nd10_pct "
+            "FROM scan_rejections WHERE date >= ?",
+            (cutoff,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT rowid, symbol, date, next_day_pct, fwd_3d, nd10_pct FROM scan_rejections"
+        ).fetchall()
+    if not rows:
+        return 0
+    needed_syms = {r[1] for r in rows}
+    kline_map = {sym: _load_sym_kline(conn, sym) for sym in needed_syms}
+    updated = 0
+    for rid, sym, dt, ndp, f3, nd10 in rows:
+        sym_kl = kline_map.get(sym)
+        new_ndp, new_f3, new_nd10 = ndp, f3, nd10
+        if sym_kl and dt in sym_kl:
+            rec_dt = date.fromisoformat(dt)
+            nxt = _nth_trading_day_after(rec_dt, 1)
+            if nxt and (nk := nxt.isoformat()) in sym_kl and sym_kl[nk].get("percent") is not None:
+                new_ndp = sym_kl[nk]["percent"]
+            d3 = _nth_trading_day_after(rec_dt, 3)
+            if d3 and (dk := d3.isoformat()) in sym_kl and sym_kl[dk].get("percent") is not None:
+                new_f3 = sym_kl[dk]["percent"]
+            d10 = _nth_trading_day_after(rec_dt, 10)
+            if d10 and (d10k := d10.isoformat()) in sym_kl and sym_kl[d10k].get("percent") is not None:
+                new_nd10 = sym_kl[d10k]["percent"]
+        if (new_ndp != ndp) or (new_f3 != f3) or (new_nd10 != nd10):
+            updated += 1
+            if not dry_run:
+                conn.execute(
+                    "UPDATE scan_rejections SET next_day_pct=?, fwd_3d=?, nd10_pct=? WHERE rowid=?",
+                    (new_ndp, new_f3, new_nd10, rid),
+                )
+    if not dry_run and updated:
+        conn.commit()
+    return updated
+
+
 def spearman(values: list[float], returns: list[float]) -> float | None:
     """Rank IC（Spearman 秩相关）：values 与 returns 的秩 Pearson 系数。
 

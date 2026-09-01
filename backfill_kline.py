@@ -29,7 +29,7 @@ import time
 from collections import defaultdict
 
 from scanner.api import fetch_kline, make_session
-from scanner.backtest import backfill_outcomes
+from scanner.backtest import backfill_outcomes, backfill_rejection_outcomes
 from scanner.config import DB_PATH, now_beijing
 from scanner.database import save_kline_to_db
 
@@ -108,7 +108,7 @@ def backfill(dry_run: bool = False, days: int = 60, verbose: bool = True) -> dic
     stats = {
         "total_symbols": 0, "missing_symbols": 0, "missing_dates_total": 0,
         "fetched_symbols": 0, "fetched_rows": 0, "api_failures": 0,
-        "outcomes_updated": 0,
+        "outcomes_updated": 0, "rejection_outcomes_updated": 0,
     }
 
     today = now_beijing().date()
@@ -185,6 +185,13 @@ def backfill(dry_run: bool = False, days: int = 60, verbose: bool = True) -> dic
         stats["outcomes_updated"] = backfill_outcomes(conn, dry_run=False)
         if verbose:
             print(f"[backfill] 重算 {stats['outcomes_updated']} 条 recommendations")
+
+        # 落选票 outcome 回填（Phase 1 观测闭环：硬过滤审计，避免幸存者偏差）
+        if verbose:
+            print("[backfill] 重算 scan_rejections.next_day_pct/fwd_3d/nd10_pct ...")
+        stats["rejection_outcomes_updated"] = backfill_rejection_outcomes(conn, dry_run=False)
+        if verbose:
+            print(f"[backfill] 重算 {stats['rejection_outcomes_updated']} 条 scan_rejections")
 
         if verbose:
             print(f"[backfill] 完成: {stats}")
