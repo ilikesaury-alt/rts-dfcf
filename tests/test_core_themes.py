@@ -326,6 +326,53 @@ class TestSaveCoreDips:
         sb = json.loads(row[5])
         assert sb["pullback"] == -0.08
 
+    def test_saves_accumulated_pct(self, db, monkeypatch):
+        """核心低吸行必须落库 accumulated_pct（与主表「5日累计」列同口径）。
+
+        此前 save_core_dips 漏写该列 → 展示层回退链取到 None → 核心低吸区
+        「5日累计」整列恒显 —（见 display._print_priority_row）。
+        """
+        from scanner.core_themes import save_core_dips
+
+        dips = [
+            {
+                "symbol": "SZ300001",
+                "name": "龙头",
+                "concept": "华为概念",
+                "run": 0.2,
+                "pullback": -0.08,
+                "today_pct": -0.01,
+                "below_ma20_ratio": 0.0,
+                "flow_pct": 3.0,
+                "accum_5": 6.18,
+            }
+        ]
+        monkeypatch.setattr(
+            "scanner.core_themes.now_beijing", lambda: __import__("datetime").datetime(2026, 8, 19, 10, 0, 0)
+        )
+        save_core_dips(db, dips, "2026-08-19")
+        acc = db.execute("SELECT accumulated_pct FROM recommendations").fetchone()[0]
+        assert acc == 6.18
+        # 数据缺失（无 accum_5）应落 NULL 而非报错
+        save_core_dips(
+            db,
+            [
+                {
+                    "symbol": "SZ300002",
+                    "name": "x",
+                    "concept": "c",
+                    "run": 0.2,
+                    "pullback": -0.08,
+                    "today_pct": 0.0,
+                    "below_ma20_ratio": 0.0,
+                    "flow_pct": 1.0,
+                }
+            ],
+            "2026-08-19",
+        )
+        acc2 = db.execute("SELECT accumulated_pct FROM recommendations WHERE symbol='SZ300002'").fetchone()[0]
+        assert acc2 is None
+
     def test_dedup_keeps_highest_score(self, db, monkeypatch):
         from scanner.core_themes import save_core_dips
 

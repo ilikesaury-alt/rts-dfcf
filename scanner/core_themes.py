@@ -104,6 +104,10 @@ def _dip_metrics(close: list[float], dates: list[str], today: str) -> dict | Non
     top_gain = hi20 / base20 - 1.0  # 高点相对 20 日前涨幅（超买判断）
     # 跌破 MA20 的超跌比例（0 = 未跌破；正值 = 跌破幅度，判断是否破位）
     below_ma20_ratio = (ma20 - latest) / ma20 if ma20 > 0 and latest < ma20 else 0.0
+    # 历史5日累计（排除今日 bar，与主表「5日累计」列同口径）：剔除今日 bar 后
+    # 取 最新历史收盘 / 6 根前收盘 - 1；数据不足 6 根（极少见）返回 None（显示 —）。
+    hist_close = close[:-1] if (dates and dates[-1] == today) else list(close)
+    accum_5 = (hist_close[-1] - hist_close[-6]) / hist_close[-6] * 100 if len(hist_close) >= 6 else None
     return {
         "run": run,
         "pullback": pullback,
@@ -111,6 +115,7 @@ def _dip_metrics(close: list[float], dates: list[str], today: str) -> dict | Non
         "overheated": top_gain > CORE_NOT_OVERHEATED,
         "today_pct": _today_percent(dates, close, today, latest),
         "below_ma20_ratio": below_ma20_ratio,
+        "accum_5": accum_5,
     }
 
 
@@ -284,6 +289,8 @@ def save_core_dips(conn: sqlite3.Connection | None, dips: list[dict], today: str
         for c in dips:
             score = _dip_score(c)
             percent = round(c["today_pct"] * 100, 2) if c.get("today_pct") is not None else None
+            # 历史5日累计（排除今日 bar，与主表「5日累计」列同口径）；无值落 NULL（显示 —）。
+            accum = round(c["accum_5"], 2) if c.get("accum_5") is not None else None
             breakdown = json.dumps(
                 {
                     "concept": c.get("concept"),
@@ -306,14 +313,14 @@ def save_core_dips(conn: sqlite3.Connection | None, dips: list[dict], today: str
                     # 首次插入的旧值，两字段互相矛盾且 ORDER BY score DESC 失真）
                     conn.execute(
                         "UPDATE recommendations SET time=?, score=?, percent=?, trend=?, "
-                        "score_breakdown=?, concept=?, source=? WHERE id=?",
-                        (now, score, percent, "主线回调", breakdown, c.get("concept"), "core_dip", existing[0]),
+                        "score_breakdown=?, concept=?, source=?, accumulated_pct=? WHERE id=?",
+                        (now, score, percent, "主线回调", breakdown, c.get("concept"), "core_dip", accum, existing[0]),
                     )
                 continue
             conn.execute(
                 "INSERT INTO recommendations (date, time, symbol, name, category, "
-                "score, percent, trend, score_breakdown, source, concept) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "score, percent, trend, score_breakdown, source, concept, accumulated_pct) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     today,
                     now,
@@ -326,6 +333,7 @@ def save_core_dips(conn: sqlite3.Connection | None, dips: list[dict], today: str
                     breakdown,
                     "core_dip",
                     c.get("concept"),
+                    accum,
                 ),
             )
         conn.commit()
@@ -457,6 +465,7 @@ def find_core_theme_dips(conn: sqlite3.Connection | None, today: str | None = No
                         "pullback": m["pullback"],
                         "today_pct": m["today_pct"],
                         "below_ma20_ratio": m["below_ma20_ratio"],
+                        "accum_5": m["accum_5"],
                         "flow_pct": flow_pct,
                     }
                 )
