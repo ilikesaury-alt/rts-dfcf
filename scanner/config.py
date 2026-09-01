@@ -197,16 +197,14 @@ def _env_flag(name: str, default: bool) -> bool:
 
 
 def pipeline_mode() -> str:
-    """池→排雷→低吸 重构管道开关（RTS_PIPELINE=v1|v2，默认 v1）。
+    """池→排雷→低吸 重构管道开关（RTS_PIPELINE=v1|v2，默认 v2）。
 
-    - v1：现行推荐管道，行为完全不变（默认，零行为变更）。
-    - v2：重构管道。当前阶段（Phase 2）仅启用「池层 + 排雷」影子旁路——
-      只落库 pool_log / scan_rejections，不进入任何展示或推荐输出。
-      Phase 3 起 v2 将切换为低吸匹配主路径。
+    - v2（默认）：重构管道——池层→排雷→matcher 低吸匹配，momentum/short_term 冻结。
+    - v1：旧推荐管道（回滚用，Phase 4 之前始终可用）。
 
-    回滚只需设 RTS_PIPELINE=v1（Phase 4 之前始终可用）。
+    回滚只需设 RTS_PIPELINE=v1。
     """
-    return (os.environ.get("RTS_PIPELINE", "v1") or "v1").strip().lower()
+    return (os.environ.get("RTS_PIPELINE", "v2") or "v2").strip().lower()
 
 
 ENABLE_ZT_POOL = _env_flag("RTS_ENABLE_ZT_POOL", True)  # 涨停池
