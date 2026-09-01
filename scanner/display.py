@@ -11,13 +11,9 @@ from scanner.config import (
     CORE_DIP_CATEGORY,
     CORE_PULLBACK_MAX,
     CORE_PULLBACK_MIN,
-    FUND_FLOW_MAIN_PCT_EXTREME,
-    FUND_FLOW_MAIN_PCT_STRONG,
-    FUND_FLOW_MAIN_PCT_WEAK,
     NEXTDAY_RULE_ATRPCT_MIN,
     NEXTDAY_RULE_MA5R_MIN,
     NEXTDAY_RULE_RET20_MAX,
-    RISK_FLAGS_DISPLAY_HARD,
     TOP40_THRESHOLD,
     now_beijing,
 )
@@ -44,6 +40,7 @@ from scanner.ranking import (
     comeback_sort_key,
 )
 from scanner.sector import classify_sector
+from scanner.signals import fund_flow_signal, split_risk_flags
 from scanner.utils import EXTERNAL_FAILURES, clear_screen, to_float, to_int
 
 # ANSI SGR 转义序列（\x1b[...m：颜色/加粗/复位）。_vis_len 必须先剥离它们再量宽度，
@@ -175,34 +172,6 @@ def pct_colored(pct: float | None, width: int = 8) -> str:
     else:
         c = ""
     return f"{c}{s:>{width}}{ANSI['RESET']}" if c else f"{s:>{width}}"
-
-
-def fund_flow_signal(main_pct: float | None) -> str:
-    """主力净占比 → 强弱档位（与 enhancer 加分/资金流出标签阈值同源）。
-
-    返回 strong_in / in / neutral / out / strong_out；无数据返回 ""。
-    """
-    if main_pct is None:
-        return ""
-    if main_pct >= FUND_FLOW_MAIN_PCT_EXTREME:
-        return "strong_in"
-    if main_pct >= FUND_FLOW_MAIN_PCT_STRONG:
-        return "in"
-    if main_pct <= -FUND_FLOW_MAIN_PCT_EXTREME:
-        return "strong_out"
-    if main_pct <= FUND_FLOW_MAIN_PCT_WEAK:
-        return "out"
-    return "neutral"
-
-
-def split_risk_flags(risk_flags: list[str]) -> tuple[list[str], int]:
-    """风险标签分级：返回 (硬信号列表, 软信号数量)。
-
-    硬信号（RISK_FLAGS_DISPLAY_HARD：超买/主力出货/趋势破位）展开文字显示，
-    软信号折叠成 +N 角标。display/feishu 共用，避免两处各自维护阈值集合。
-    """
-    hard = [f for f in risk_flags if f in RISK_FLAGS_DISPLAY_HARD]
-    return hard, len(risk_flags) - len(hard)
 
 
 _FUND_FLOW_ICON = {

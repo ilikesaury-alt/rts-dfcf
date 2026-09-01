@@ -169,6 +169,7 @@ TOP20_EXTRA = 2
 FEISHU_WEBHOOK = os.environ.get("RTS_FEISHU_WEBHOOK", "")
 FEISHU_KEYWORD = "lichun"
 FEISHU_MIN_INTERVAL = 300  # 飞书最小推送间隔（秒），防止触发 Lark 限流
+FEISHU_TOP_N = 10  # 飞书卡片精选池展示条数（去重/门控同源，勿与 build_feishu_card 双处硬编码）
 
 HEADERS = {
     "User-Agent": (

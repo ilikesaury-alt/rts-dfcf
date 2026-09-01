@@ -1,25 +1,134 @@
+"""飞书卡片推送。
+
+单文件按职责分四层，自上而下：
+  # ── 推送决策 ──   PushState / Decision / should_push（纯函数，无全局可变状态）
+  # ── 字段提取 ──   RowSnapshot / _extract_row（回退链收口，单一取值真相）
+  # ── 卡片渲染 ──   _fmt_row / build_feishu_card（纯函数，不触碰 I/O）
+  # ── 传输与编排 ── _post_card（HTTP + 退避重试）/ push_feishu（取状态→决策→渲染→发送→回写）
+
+与终端同源：卡片与终端共用同一个 ScanView（由 display.build_scan_view 供数），
+共用同一套信号语义（scanner.signals fund_flow_signal / split_risk_flags，阈值集中在
+config.py）。依赖方向收紧为：feishu → display(数据契约 ScanView) + signals(信号语义)，
+不再「推送依赖终端渲染」。
+
+2026-08 重构：拆出 should_push/RowSnapshot/_post_card，节流状态收进 PushState
+（模块级 _DEFAULT_STATE 单例），消除原有 _last_push_time/_last_push_symbols 两个
+散落 global；_view_symbols 与 build_feishu_card 共用 FEISHU_TOP_N，门控与去重不再双处硬编码。
+"""
+
+import time
+from dataclasses import dataclass, field
+
 import requests
 import wcwidth
 
-from scanner.config import FEISHU_KEYWORD, FEISHU_MIN_INTERVAL, FEISHU_WEBHOOK, now_beijing
-from scanner.display import ScanView, fund_flow_signal, split_risk_flags
+from scanner.config import (
+    FEISHU_KEYWORD,
+    FEISHU_MIN_INTERVAL,
+    FEISHU_TOP_N,
+    FEISHU_WEBHOOK,
+    now_beijing,
+)
+from scanner.display import ScanView
+from scanner.log_utils import log_event
+from scanner.signals import fund_flow_signal, split_risk_flags
 from scanner.utils import EXTERNAL_FAILURES, to_float
 
-_last_push_time: float = 0.0
-_last_push_symbols: set[str] = set()
+# ═══════════════════════════════════════════════════════════════════════════
+# ── 推送决策 ──
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class PushState:
+    """节流状态：上次推送时间 + 上次推送的票集（去重用）。
+
+    原本是 feishu.py 里两个散落 global（_last_push_time / _last_push_symbols），
+    测试需 monkeypatch、状态不可观测。收进 dataclass 后由 push_feishu 持有，
+    可注入自定义实例做单元测试；模块级 _DEFAULT_STATE 维持「调用点零改动」。
+    """
+
+    last_time: float = 0.0
+    last_symbols: set[str] = field(default_factory=set)
+
+
+@dataclass
+class Decision:
+    """should_push 的结论。
+
+    reason ∈ {disabled, empty, cooldown, ok}：
+      disabled — 未配置 webhook，整体不推
+      empty    — 本轮无任何可展示票（不推空卡片）
+      cooldown — 内容无变化且距上次推送不足 FEISHU_MIN_INTERVAL
+      ok       — 允许推送（内容有变化，或超时后重新推送）
+    """
+
+    push: bool
+    reason: str
+
+
+# 模块级默认状态单例；unified_scanner 调用 push_feishu() 即走它。
+_DEFAULT_STATE = PushState()
+
+
+def should_push(state: PushState, symbols: set[str], now: float) -> Decision:
+    """纯函数决策：此刻是否应推送。
+
+    不触碰 I/O、不读模块级 global，便于单元测试（见 tests/test_feishu.py）。
+    与原 push_feishu 的节流/去重/空池语义完全等价：
+      - webhook 缺失 → disabled
+      - 无票         → empty
+      - 票集未变且冷却中 → cooldown
+      - 其余（票集变化 / 超时后重推）→ ok
+    """
+    if not FEISHU_WEBHOOK:
+        return Decision(False, "disabled")
+    if not symbols:
+        # 全空推荐时不推空卡片（无推荐时段会每 5 分钟刷一张空卡，2026-08-17 审查修复）。
+        return Decision(False, "empty")
+    has_change = symbols != state.last_symbols
+    if not has_change and (now - state.last_time) < FEISHU_MIN_INTERVAL:
+        return Decision(False, "cooldown")
+    return Decision(True, "ok")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ── 字段提取（回退链收口）──
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class RowSnapshot:
+    """一条推荐行的展示快照：把 _row_* 六个回退链的结果收口成单一对象。
+
+    此前 _fmt_row 接受 10 个位置参数，调用点可读性差、加字段成本高；现在
+    提取与渲染解耦——_extract_row 负责「从 entry/candidate 取值」，_fmt_row
+    只负责「把快照画成一行文本」。这些回退链必须与终端 _print_priority_row
+    同口径（2026-08-29 收口：此前飞书直接读 Candidate、终端读 DB 行 + 实时覆盖，
+    两端对「涨幅/排名/累计」的取值可能不同）。
+    """
+
+    symbol: str = ""
+    name: str = ""
+    rank: int | None = None
+    pct: float = 0.0
+    accum: float | None = None
+    score: int = 0
+    risk_flags: list[str] = field(default_factory=list)
+    ff_pct: float | None = None
+    zt_lb: int | None = None
+    tactic_tags: list[str] = field(default_factory=list)
 
 
 def _pad_vis(s: str, width: int) -> str:
     """按显示宽度补空格（中文全角按 2 列，与 display._pad 同口径）。
+
     2026-08-20 修复：原 `{s.name:<8}` 按字符数补位，3 字中文名（6 列）与 4 字名（8 列）
     在飞书等宽字体下错位。"""
     pad = max(0, width - sum(max(0, wcwidth.wcwidth(ch)) for ch in s))
     return f"{s}{' ' * pad}"
 
 
-# ── 从推荐行（RecommendationRow）解析展示字段 ──
-# 这些回退链必须与终端 _print_priority_row 同口径：此前飞书直接读 Candidate、
-# 终端读 DB 行 + 实时覆盖，两端对「涨幅/排名/累计」的取值可能不同（2026-08-29 收口）。
 def _row_percent(entry) -> float:
     """涨幅：实时行情 > 推荐时落库值。live_percent=0.0 是合法的 0.00%，不能当缺失。"""
     lp = entry.get("live_percent")
@@ -86,13 +195,35 @@ def _to_score(value) -> int:
         return 0
 
 
-def _fmt_row(symbol, name, rank, pct, accum, score, risk_flags, ff_pct, zt_lb, tactic_tags=None) -> str:
+def _extract_row(entry, flow_pct_map) -> RowSnapshot:
+    """从推荐行（entry + _candidate）按回退链收口成 RowSnapshot。"""
+    c = entry.get("_candidate")
+    return RowSnapshot(
+        symbol=entry["symbol"],
+        name=entry["name"],
+        rank=_row_rank(entry),
+        pct=_row_percent(entry),
+        accum=_row_accum(entry),
+        score=_to_score(entry.get("score")),
+        risk_flags=_row_risk(entry),
+        ff_pct=_row_ff_pct(entry, flow_pct_map),
+        zt_lb=_row_zt(entry),
+        tactic_tags=list(getattr(c, "tactic_tags", [])) if c else [],
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ── 卡片渲染 ──
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _fmt_row(s: RowSnapshot) -> str:
     """单行：排名 名称 代码 涨幅 5日累计 评分 [风险] [资金流/连板] [操作纪律]。"""
-    rs = f"{rank:>3}" if rank else "  —"
-    pct_str = f"+{pct:.1f}%" if pct >= 0 else f"{pct:.1f}%"
-    acc_str = f"{accum:+.1f}%" if accum is not None else "N/A"
+    rs = f"{s.rank:>3}" if s.rank else "  —"
+    pct_str = f"+{s.pct:.1f}%" if s.pct >= 0 else f"{s.pct:.1f}%"
+    acc_str = f"{s.accum:+.1f}%" if s.accum is not None else "N/A"
     # 风险标签分级（与终端共用 split_risk_flags，阈值集中在 config）
-    hard, soft_count = split_risk_flags(risk_flags)
+    hard, soft_count = split_risk_flags(s.risk_flags)
     risk_parts = []
     if hard:
         tag = f"⚠{'/'.join(hard)}"
@@ -103,49 +234,39 @@ def _fmt_row(symbol, name, rank, pct, accum, score, risk_flags, ff_pct, zt_lb, t
         risk_parts.append(f"⚠+{soft_count}")
     risk_str = (" " + " ".join(risk_parts)) if risk_parts else ""
     extra_parts = []
-    if ff_pct is not None:
-        mark = {"strong_in": "🟢🟢", "in": "🟢", "out": "🔴", "strong_out": "🔴🔴"}.get(fund_flow_signal(ff_pct))
+    if s.ff_pct is not None:
+        mark = {"strong_in": "🟢🟢", "in": "🟢", "out": "🔴", "strong_out": "🔴🔴"}.get(fund_flow_signal(s.ff_pct))
         if mark:
             extra_parts.append(mark)
-    if zt_lb:
-        extra_parts.append(f"📈{zt_lb}板")
+    if s.zt_lb:
+        extra_parts.append(f"📈{s.zt_lb}板")
     extra_str = (" " + " ".join(extra_parts)) if extra_parts else ""
     # 操作纪律标签在反引号定宽块之外追加——不破坏 _pad_vis 列对齐（审查修复）
-    tactic_str = (" " + " ".join(tactic_tags)) if tactic_tags else ""
-    return f"`{rs} {_pad_vis(name, 8)} {symbol} {pct_str:>7} {acc_str:>7}  {score:>2}分{risk_str}{extra_str}`{tactic_str}"
+    tactic_str = (" " + " ".join(s.tactic_tags)) if s.tactic_tags else ""
+    return f"`{rs} {_pad_vis(s.name, 8)} {s.symbol} {pct_str:>7} {acc_str:>7}  {s.score:>2}分{risk_str}{extra_str}`{tactic_str}"
 
 
 def _row_line(entry, view, rank=None, accum=None, score=None) -> str:
     """把一条推荐行渲染成卡片文本行（rank/accum/score 可由调用方直接给最终值）。"""
-    if rank is None:
-        rank = _row_rank(entry)
-    if accum is None:
-        accum = _row_accum(entry)
-    if score is None:
-        score = _to_score(entry.get("score"))
-    c = entry.get("_candidate")
-    tactic_tags = getattr(c, "tactic_tags", []) if c else []
-    return _fmt_row(
-        entry["symbol"],
-        entry["name"],
-        rank,
-        _row_percent(entry),
-        accum,
-        score,
-        _row_risk(entry),
-        _row_ff_pct(entry, view.flow_pct_map),
-        _row_zt(entry),
-        tactic_tags,
-    )
+    snap = _extract_row(entry, view.flow_pct_map)
+    if rank is not None:
+        snap.rank = rank
+    if accum is not None:
+        snap.accum = accum
+    if score is not None:
+        snap.score = score
+    return _fmt_row(snap)
 
 
-def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 0, top_n: int = 10) -> dict:
+def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 0, top_n: int = FEISHU_TOP_N) -> dict:
     """从 ScanView 构建飞书卡片（与终端共用同一份选择）。
 
     2026-08-29：此前 _build_card 读「本轮候选桶」（new_faces/momentum/...），终端
     display_priority 读「DB 当日累计推荐」——同一只票可能一边排第 1、另一边不出现。
     现统一由 build_scan_view 供数；回马枪/核心低吸区是否出现也跟随终端门控
     （view.show_comeback / show_core_dip），保证「终端看得到什么，卡片就推什么」。
+
+    top_n 默认 FEISHU_TOP_N，与 _view_symbols 共用同一常量，去重集合与展示条数永不同源漂移。
     """
     now = now_beijing().strftime("%H:%M")
     main = view.main_rows[:top_n]
@@ -203,8 +324,12 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
 
 
 def _view_symbols(view: ScanView) -> set[str]:
-    """卡片实际会展示的票（与 build_feishu_card 的分节门控一致）。"""
-    syms = {row.entry["symbol"] for row in view.main_rows[:10]}
+    """卡片实际会展示的票（与 build_feishu_card 的分节门控一致）。
+
+    取自 main_rows[:FEISHU_TOP_N]（与卡片展示条数同源），避免此前「卡片推了
+    但去重没算到」的双处硬编码 drift。
+    """
+    syms = {row.entry["symbol"] for row in view.main_rows[:FEISHU_TOP_N]}
     if view.show_comeback:
         syms |= {e["symbol"] for e in view.comeback_rows}
     if view.show_core_dip:
@@ -212,41 +337,71 @@ def _view_symbols(view: ScanView) -> set[str]:
     return syms
 
 
-def push_feishu(view: ScanView | None, gem_total: int, filtered_large_cap: int = 0) -> bool:
-    """推送飞书卡片。view 为 None（无 conn / 今日无推荐）时不推送。"""
-    global _last_push_time, _last_push_symbols
+# ═══════════════════════════════════════════════════════════════════════════
+# ── 传输与编排 ──
+# ═══════════════════════════════════════════════════════════════════════════
 
-    if not FEISHU_WEBHOOK:
-        return False
+
+def _post_card(card: dict) -> tuple[bool, str | None]:
+    """POST 卡片到飞书 webhook。返回 (成功, 失败原因/None)。
+
+    仅对连接/超时类外部故障（EXTERNAL_FAILURES）重试 1 次（退避 1s）；
+    已收到飞书响应（含非 0 code）不重试——重试会重复推送两张卡片。
+    编程错误（NameError/TypeError）不捕，冒泡到 unified_scanner 主循环记录完整 traceback。
+    """
+    last_err: BaseException | None = None
+    for attempt in range(2):  # 首次 + 1 次退避重试
+        try:
+            resp = requests.post(FEISHU_WEBHOOK, json={"msg_type": "interactive", "card": card}, timeout=10)
+            result = resp.json()
+            if result.get("code") != 0:
+                return False, f"飞书返回非 0: {result.get('msg')}"
+            return True, None
+        except EXTERNAL_FAILURES as e:
+            last_err = e
+            if attempt == 0:
+                time.sleep(1)
+    return False, f"请求异常: {last_err}"
+
+
+def push_feishu(
+    view: ScanView | None,
+    gem_total: int,
+    filtered_large_cap: int = 0,
+    state: PushState | None = None,
+) -> bool:
+    """推送飞书卡片。view 为 None（无 conn / 今日无推荐）时不推送。
+
+    编排：取状态 → should_push 决策 → build 渲染 → _post_card 发送 →
+    成功回写状态。state 默认走模块级 _DEFAULT_STATE（调用点零改动）；
+    传入自定义 state 可做单元测试，不影响默认实例。
+    """
+    if state is None:
+        state = _DEFAULT_STATE
+
     if view is None:
         return False
 
-    import time
-
     now = time.time()
     current_symbols = _view_symbols(view)
-    has_change = current_symbols != _last_push_symbols
-
-    if not current_symbols:
-        # 2026-08-17 审查修复：全空推荐时不再推空卡片（无推荐时段会每 5 分钟刷一张空卡）。
-        return False
-
-    if not has_change and (now - _last_push_time) < FEISHU_MIN_INTERVAL:
+    decision = should_push(state, current_symbols, now)
+    if not decision.push:
         return False
 
     try:
         card = build_feishu_card(view, gem_total, filtered_large_cap)
-        resp = requests.post(FEISHU_WEBHOOK, json={"msg_type": "interactive", "card": card}, timeout=10)
-        result = resp.json()
-        if result.get("code") != 0:
-            print(f"\n  [!] 飞书推送失败: {result.get('msg')}")
+        ok, err = _post_card(card)
+        if not ok:
+            print(f"\n  [!] 飞书推送失败: {err}")
+            log_event(f"push failed: {err}")
             return False
-        _last_push_time = now
-        _last_push_symbols = current_symbols
+        state.last_time = now
+        state.last_symbols = set(current_symbols)
         return True
     except EXTERNAL_FAILURES as e:
         # 2026-08-29：原为裸 except Exception——会把编程错误（NameError/TypeError）
         # 一并吞成「推送异常」，与 AGENTS.md 的收口要求一致改为只捕外部故障；
         # 编程错误冒泡到 unified_scanner 主循环记录完整 traceback。
         print(f"\n  [!] 飞书推送异常: {e}")
+        log_event(f"push exception: {e}")
         return False
