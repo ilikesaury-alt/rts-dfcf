@@ -9,6 +9,8 @@
 PushState 可注入，避免原 _last_push_time/_last_push_symbols 散落 global 的 monkeypatch。
 """
 
+from typing import Any, cast
+
 from scanner.feishu import (
     FEISHU_MIN_INTERVAL,
     PushState,
@@ -67,7 +69,7 @@ def _fake_view(symbols):
 
     main_rows 项需有 .entry(dict) / .rank / .accum / .score；
     flow_pct_map / show_comeback / comeback_rows / show_core_dip / core_dip_rows /
-    weak / warnings 为渲染所需最小集合。
+    pool_rows / weak / warnings 为渲染所需最小集合。
     """
 
     class _Row:
@@ -85,10 +87,13 @@ def _fake_view(symbols):
             self.comeback_rows = []
             self.show_core_dip = False
             self.core_dip_rows = []
+            self.pool_rows = None
             self.weak = False
             self.warnings = []
 
-    return _View(symbols)
+    # duck-typed 替身：结构上满足 push_feishu/_view_symbols/build_feishu_card 的读取面，
+    # cast 仅为通过类型检查（测试桩不继承 ScanView）。
+    return cast(Any, _View(symbols))
 
 
 def test_push_feishu_none_view_returns_false(monkeypatch):

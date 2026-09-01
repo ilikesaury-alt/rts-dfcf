@@ -148,7 +148,7 @@ def _finalize_today_klines(conn, adapter) -> None:
     target = datetime.combine(today, AFTERNOON_END, tzinfo=now.tzinfo) + timedelta(minutes=2)
     remaining = (target - now).total_seconds()
     if remaining > 0:
-        print(f"\r  🌙 非交易时段 | 等待收盘定稿 ({int(remaining)}s)  ", end="", flush=True)
+        print(f"\r  🌙 非交易时段 | 等待收盘定稿 ({remaining:.0f}s)  ", end="", flush=True)
         time.sleep(min(remaining, 120))
     # 只取「盘中未定稿」的今日 bar（finalized=0）：定稿成功的票写回后 finalized=1，
     # 下一轮循环天然只补剩余票 —— deadline 截断导致的半成品因此可续传，不需要
@@ -404,7 +404,9 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 log_results(new_faces + pool_picks, momentum + rebound_list + short_term_list + comeback_list)
                 if not no_feishu:
                     pushed = push_feishu(view, len(all_gem), filtered_large_cap=filtered_large_cap)
-                    has_rows = view is not None and bool(view.main_rows or view.comeback_rows or view.core_dip_rows)
+                    has_rows = view is not None and bool(
+                        view.main_rows or view.pool_rows or view.comeback_rows or view.core_dip_rows
+                    )
                     if not pushed and has_rows:
                         print("\r  📤 飞书推送跳过（冷却中/无变化）", end="", flush=True)
 
@@ -445,7 +447,8 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     )
                 if pool_picks:
                     top_p = pool_picks[0]
-                    labels = top_p.kline.dimensions.get("dip_labels", []) if top_p.kline else []
+                    labels_raw = top_p.kline.dimensions.get("dip_labels") if top_p.kline else None
+                    labels = [str(x) for x in labels_raw] if isinstance(labels_raw, (list, tuple)) else []
                     label_str = "/".join(labels) if labels else "无标签"
                     print(
                         f"  ▶ 池选首选: {top_p.stock.name}({top_p.stock.symbol}) "

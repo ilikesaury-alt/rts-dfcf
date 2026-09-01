@@ -270,9 +270,11 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
     """
     now = now_beijing().strftime("%H:%M")
     main = view.main_rows[:top_n]
+    pool_rows = (view.pool_rows or [])[:top_n]
 
     env_tag = " | 🔴大盘弱势·谨慎" if view.weak else ""
-    header_text = f"**{now}** | 优选 {len(main)} 只{env_tag}"
+    pool_n = f" + 池选 {len(pool_rows)}" if pool_rows else ""
+    header_text = f"**{now}** | 优选 {len(main)}{pool_n} 只{env_tag}"
     elements: list[dict] = [{"tag": "div", "text": {"tag": "lark_md", "content": header_text}}]
 
     sections: list[tuple[str, list[str]]] = []
@@ -281,6 +283,16 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
     ]
     if pool_lines:
         sections.append(("◆ 策略优选池", pool_lines))
+    if pool_rows:
+        sections.append(
+            (
+                "◆ v2 池选",
+                [
+                    _row_line(row.entry, view, rank=row.rank, accum=row.accum, score=_to_score(row.score))
+                    for row in pool_rows
+                ],
+            )
+        )
     if view.show_comeback:
         sections.append(("◆ 回马枪", [_row_line(e, view) for e in view.comeback_rows]))
     if view.show_core_dip:
@@ -330,6 +342,7 @@ def _view_symbols(view: ScanView) -> set[str]:
     但去重没算到」的双处硬编码 drift。
     """
     syms = {row.entry["symbol"] for row in view.main_rows[:FEISHU_TOP_N]}
+    syms |= {row.entry["symbol"] for row in (view.pool_rows or [])[:FEISHU_TOP_N]}
     if view.show_comeback:
         syms |= {e["symbol"] for e in view.comeback_rows}
     if view.show_core_dip:

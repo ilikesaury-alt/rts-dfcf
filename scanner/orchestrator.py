@@ -18,6 +18,7 @@ from scanner.config import (
     ENABLE_COMEBACK,
     ENABLE_CORE_DIP,
     ENABLE_MOMENTUM,
+    ENABLE_POOL_PIPELINE,
     ENABLE_SHORT_TERM,
     KLINE_FETCH_DEADLINE,
     MAX_MARKET_CAP,
@@ -27,7 +28,6 @@ from scanner.config import (
     WATCH_OFFLIST_KEEP_DAYS,
     YI,
     now_beijing,
-    pipeline_mode,
 )
 from scanner.database import (
     get_cached_market_caps,
@@ -224,11 +224,22 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
     rebound_list: list[Candidate] = []
     short_term_list: list[Candidate] = []
 
-    if pipeline_mode() == "v2":
-        # ── v2 主路径：pool → danger → 候选构建（跳过 5 桶评分）──
-        from scanner.danger import danger_flags_json, evaluate_pool
+    # ── 双跑模式（2026-09-02）：v1 五桶 + v2 池管道无条件都执行，共享同一份榜单/
+    # K线/资金流数据，两套候选合并进 all_candidates 走同一套下游（加分/硬过滤/落库）。
+    # 显示层同屏双区输出（v1 主表 + v2 池选区，见 display.build_scan_view）；落库按
+    # (date, symbol, category) 并存。RTS_PIPELINE 不再切换行为；单独关闭 v2 管道
+    # （回滚杠杆）用 RTS_ENABLE_POOL=0。
+    from scanner.danger import danger_flags_json, evaluate_pool  # 二次排雷在 gate 外引用，需无条件导入
+    from scanner.models import V2_CATEGORY  # 末尾 pool_picks 重建需要（gate 关闭时也执行）
+
+    pool_rows: list = []
+    danger_map: dict = {}
+    danger_syms: set[str] = set()
+    pool_log_rows: list[dict] = []
+    pool_picks: list[Candidate] = []
+    if ENABLE_POOL_PIPELINE:
+        # v2 池管道：pool → danger → 候选构建（score 恒 0，matcher 只标注不淘汰）
         from scanner.matcher import label_all_candidates
-        from scanner.models import V2_CATEGORY
         from scanner.pool import build_pool
 
         prev_ranks = get_prev_ranks(conn, today)
@@ -242,7 +253,6 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
 
         # 从安全池构建 Candidate
         stock_by_sym = {s.symbol: s for s in gem_stocks_filtered}
-        pool_picks: list[Candidate] = []
         for row in pool_rows:
             if row.symbol in danger_syms:
                 continue
@@ -263,9 +273,6 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         # 语义标签（不淘汰）
         label_all_candidates(pool_picks, klines, today)
 
-        # all_candidates = pool_picks + comeback（后面合并）
-        all_candidates = pool_picks
-
         # pool_log 行先构建，落库延迟到二次排雷之后（danger_flags 补全资金流/财务信号）
         pool_log_rows = [
             {
@@ -284,19 +291,20 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
             }
             for r in pool_rows
         ]
-    else:
-        for stock in gem_stocks_filtered:
-            nf, mo, rb, st = score_stock(stock, conn, klines, today, session_state, clusters)
-            if nf:
-                new_faces.append(nf)
-            if mo and ENABLE_MOMENTUM:
-                momentum.append(mo)
-            if rb:
-                rebound_list.append(rb)
-            if st and ENABLE_SHORT_TERM:
-                short_term_list.append(st)
 
-        all_candidates = new_faces + momentum + rebound_list + short_term_list
+    # v1 五桶评分（双跑：与 v2 消费同一份 klines，口径与历史 v1 完全一致）
+    for stock in gem_stocks_filtered:
+        nf, mo, rb, st = score_stock(stock, conn, klines, today, session_state, clusters)
+        if nf:
+            new_faces.append(nf)
+        if mo and ENABLE_MOMENTUM:
+            momentum.append(mo)
+        if rb:
+            rebound_list.append(rb)
+        if st and ENABLE_SHORT_TERM:
+            short_term_list.append(st)
+
+    all_candidates = pool_picks + new_faces + momentum + rebound_list + short_term_list
 
     # 回马枪：评估掉榜跟踪池 + 近 N 日推荐（两变体均 category="comeback"）。
     # 开关关闭时不评估（hit 3.3% 远低于基准，不再作为活跃推荐桶产出）。
@@ -317,10 +325,8 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         except EXTERNAL_FAILURES as e:
             print(f"  [!] 回马枪评估失败: {type(e).__name__}: {e}")
 
-    if pipeline_mode() == "v2":
-        all_candidates = all_candidates + comeback_rebound + comeback_reentry
-    else:
-        all_candidates = new_faces + momentum + rebound_list + short_term_list + comeback_rebound + comeback_reentry
+    # 双跑：v1 五桶 + pool_picks 已在上方合并，回马枪对两管道统一追加
+    all_candidates = all_candidates + comeback_rebound + comeback_reentry
     for c in all_candidates:
         enrich_candidate_market_cap(c, market_caps.get(c.stock.symbol, {}))
 
@@ -354,7 +360,9 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
     # 尚未收集（传空 dict），主力出货（净流出≤-5%）与财务风险两个信号恒不触发。
     # 现在两类数据已就绪，补一轮带全量数据的排雷：新命中的票从候选中剔除，
     # 并把合并后的 danger_flags 补进 pool_log 落库（首轮只含 bias20/冲高回落/翻绿）。
-    if pipeline_mode() == "v2":
+    # 双跑语义（2026-09-02）：只作用于 v2 域（pool_pick + comeback）——v1 五桶保持
+    # 自身 validator/硬过滤口径（历史上该块仅在 v2 模式运行，从未移除过 v1 候选）。
+    if pool_log_rows:
         try:
             late_map = evaluate_pool(pool_rows, klines, market_extra, fund_risk)
             merged_flags: dict[str, list[str]] = {}
@@ -363,10 +371,16 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
             new_danger_syms = {sym for sym, fl in merged_flags.items() if fl} - danger_syms
             if new_danger_syms:
                 _names = "、".join(
-                    f"{c.stock.name}({c.stock.symbol})" for c in all_candidates if c.stock.symbol in new_danger_syms
+                    f"{c.stock.name}({c.stock.symbol})"
+                    for c in all_candidates
+                    if c.stock.symbol in new_danger_syms and c.category in (V2_CATEGORY, "comeback")
                 )
                 print(f"  [排雷] {len(new_danger_syms)} 只命中资金流/财务危险信号，已排除：{_names}")
-                all_candidates = [c for c in all_candidates if c.stock.symbol not in new_danger_syms]
+                all_candidates = [
+                    c
+                    for c in all_candidates
+                    if c.stock.symbol not in new_danger_syms or c.category not in (V2_CATEGORY, "comeback")
+                ]
             for _r in pool_log_rows:
                 _r["danger_flags"] = danger_flags_json(merged_flags.get(str(_r["symbol"]), []))
             save_pool_log(conn, pool_log_rows)
@@ -572,14 +586,11 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         except EXTERNAL_FAILURES as e:
             print(f"  [!] 核心方向低吸落库失败: {e}")
 
-    # v2 模式：pool_picks 已在顶部构建，此处按涨幅排序
-    if pipeline_mode() == "v2":
-        from scanner.models import V2_CATEGORY
-
-        pool_picks = [c for c in all_candidates if c.category == V2_CATEGORY]
-        pool_picks.sort(key=lambda c: -(c.stock.percent or 0))
-    else:
-        pool_picks = []
+    # 双跑：pool_picks 从 all_candidates 重建并按涨幅排序——加分循环的
+    # dataclass_replace 已创建新对象，旧列表持有的是未累加 extra 的过期对象
+    # （与下方 v1 分类列表重建同理）。
+    pool_picks = [c for c in all_candidates if c.category == V2_CATEGORY]
+    pool_picks.sort(key=lambda c: -(c.stock.percent or 0))
 
     return ScanResult(
         new_faces=new_faces,

@@ -197,14 +197,17 @@ def _env_flag(name: str, default: bool) -> bool:
 
 
 def pipeline_mode() -> str:
-    """池→排雷→低吸 重构管道开关（RTS_PIPELINE=v1|v2，默认 v2）。
+    """管道模式（RTS_PIPELINE=v1|v2，默认 v2）。
 
-    - v2（默认）：重构管道——池层→排雷→matcher 低吸匹配，momentum/short_term 冻结。
-    - v1：旧推荐管道（回滚用，Phase 4 之前始终可用）。
-
-    回滚只需设 RTS_PIPELINE=v1。
+    2026-09-02 起双跑：v1 五桶与 v2 池管道在 scan_with_raw 内无条件都执行、各自
+    落库（recommendations 按 (date, symbol, category) 并存），显示层同屏双区输出
+    （v1 主表 + v2 池选区）——本开关不再切换任何行为，仅为兼容保留。
+    单独关闭 v2 管道（回滚杠杆）用 RTS_ENABLE_POOL=0。
     """
     return (os.environ.get("RTS_PIPELINE", "v2") or "v2").strip().lower()
+
+
+ENABLE_POOL_PIPELINE = _env_flag("RTS_ENABLE_POOL", True)  # v2 池管道开关（双跑下的回滚杠杆）
 
 
 ENABLE_ZT_POOL = _env_flag("RTS_ENABLE_ZT_POOL", True)  # 涨停池

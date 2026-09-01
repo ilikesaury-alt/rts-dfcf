@@ -16,7 +16,6 @@ from scanner.config import (
     NEXTDAY_RULE_RET20_MAX,
     TOP40_THRESHOLD,
     now_beijing,
-    pipeline_mode,
 )
 from scanner.core_themes import _low_buy_quality as _core_dip_quality
 from scanner.core_themes import core_stock_symbols
@@ -24,7 +23,7 @@ from scanner.database import (
     get_fund_flow_pct_map,
     get_today_recommendations,
 )
-from scanner.models import Candidate, RecommendationRow
+from scanner.models import V2_CATEGORY, Candidate, RecommendationRow
 from scanner.nextday_rule import RuleResult, scan_rule
 
 # 排序/画像纯逻辑单源在 scanner.ranking；display 只导入渲染所需子集。
@@ -653,6 +652,8 @@ class ScanView:
     show_core_dip: bool
     warnings: list[str]
     rule_result: RuleResult | None = None
+    # v2 池选区行（双跑同屏，2026-09-02）：独立于主表（两套排序口径不同），None = 今日无 pool_pick。
+    pool_rows: list[MainRow] | None = None
 
 
 def build_scan_view(
@@ -756,7 +757,11 @@ def build_scan_view(
     # momentum/short_term，不含 comeback/pullback）。
     comeback_recs = [e for e in today_recs if e["category"] == "comeback"]
     core_dip_recs = [e for e in today_recs if e["category"] == CORE_DIP_CATEGORY]
-    main_recs = [e for e in today_recs if e["category"] not in ("comeback", CORE_DIP_CATEGORY)]
+    # 双跑同屏（2026-09-02 用户确认）：主表显 v1 五桶；v2 pool_pick 独立成区
+    # （view.pool_rows）——两套排序口径不同（v1 档位序 / v2 涨幅降序），合并单表
+    # 会破坏各自语义。RTS_PIPELINE 不再影响显示层。
+    main_recs = [e for e in today_recs if e["category"] not in ("comeback", CORE_DIP_CATEGORY, V2_CATEGORY)]
+    pool_pick_recs = [e for e in today_recs if e["category"] == V2_CATEGORY]
 
     # 核心股高亮（2026-08-19）：综合排序/回马枪列表里属于当前主线方向核心股的票，
     # 名称加粗高亮。**判定 = core_stock_symbols（核心主题成员 + 20日累计≥CORE_RUN_MIN
@@ -846,11 +851,6 @@ def build_scan_view(
                 )
             )
         _seq_rows.sort(key=lambda x: x[:5])
-        # v2 模式（2026-09-01）：主表直接按今日涨幅降序（pipeline 设计口径），
-        # 不再套用 v1 策略优选池的「榜上优先→涨幅升序→…」规则。chg 取元素 [1]
-        # （_entry_display_quote，live 行情优先于 DB 落库值）。
-        if pipeline_mode() == "v2":
-            _seq_rows.sort(key=lambda x: -x[1])
         # 逐行解析为 MainRow（排序在上面的元组里完成，此处只做展示字段定型）。
         # 2026-08-29：候选（_fresh_c）必须逐行重算——构建循环里的 _fresh_c 只保留末行，
         # 跨行复用会把上一只票的行情安到本行。
@@ -878,6 +878,37 @@ def build_scan_view(
         # 都会让整张榜单静默截断，用户只看到"票变少了"而无从察觉。收窄到数据类异常
         # 并显式告警（代码 bug 则冒泡到主循环记录完整 traceback）。
         warnings.append(f"策略优选池构建中断（数据缺失）: {type(_e).__name__}: {_e}")
+
+    # v2 池选区（双跑同屏）：按今日涨幅降序（v2 pipeline 设计口径），行结构与主表
+    # 同源（复用 MainRow，终端/飞书共用同一份排序结果）。
+    pool_rows: list[MainRow] = []
+    try:
+        for _pe in sorted(pool_pick_recs, key=lambda e: -_entry_display_quote(e)[0]):
+            _fresh_c = _fresh_candidate(_pe)
+            _rk_disp = _pe.get("live_rank") or _pe.get("rank")
+            if _rk_disp is None and _fresh_c:
+                _rk_disp = _fresh_c.stock.rank
+            _rk_val = _rk_disp if isinstance(_rk_disp, (int, float)) and _rk_disp > 0 else None
+            _pct_row, _cur_row = _entry_display_quote(_pe)
+            _av = None
+            if _fresh_c and _fresh_c.kline:
+                _av = _fresh_c.kline.accumulated_pct
+            if _av is None:
+                _av = accum_map.get(_pe["symbol"])
+            pool_rows.append(
+                MainRow(
+                    entry=_pe,
+                    rank=_rk_val,
+                    accum=_av,
+                    score=_pe.get("score", 0) or 0,
+                    core=bool(_pe.get("_core_stock")),
+                    cat_label=_stg_map.get(_pe["category"], "?"),
+                    pct=_pct_row,
+                    current=_cur_row,
+                )
+            )
+    except EXTERNAL_FAILURES as _pex:
+        warnings.append(f"v2 池选区构建中断（数据缺失）: {type(_pex).__name__}: {_pex}")
 
     # 动态推荐（2026-08-27）：根据近端主表档次日表现自动判断 regime，弱市下把
     # momentum/known_new_face/new_face 类🎯 从推荐序列剔除、优先 核心低吸/回马枪/
@@ -932,6 +963,7 @@ def build_scan_view(
         show_core_dip=_show_core_dip,
         warnings=warnings,
         rule_result=_rule_result,
+        pool_rows=pool_rows,
     )
 
 
@@ -944,10 +976,8 @@ def render_terminal(view: ScanView) -> None:
     for _w in view.warnings:
         print(f"  [!] {_w}")
 
-    # ── 策略优选池 ──
-    print(f"  {ANSI['BOLD']}◆ 策略优选池 — 按优先级排序{ANSI['RESET']}")
-    print(_table_header(COLS_POOL))
-    for _si, row in enumerate(view.main_rows, 1):
+    # ── 主表 / v2 池选区共用行渲染（同列 spec，行尾标记与回马枪/低吸区同源）──
+    def _emit_pool_table_row(view: ScanView, row: MainRow, idx: int) -> None:
         _e = row.entry
         _nm = _e["name"]
         _nm_disp = f"{ANSI['BOLD']}{ANSI['MAGENTA']}{_nm}{ANSI['RESET']}" if row.core else _nm
@@ -962,7 +992,7 @@ def render_terminal(view: ScanView) -> None:
         print(
             _table_row(
                 [
-                    str(_si),
+                    str(idx),
                     _e["symbol"],
                     _nm_disp,
                     pct_colored(row.pct),
@@ -976,6 +1006,20 @@ def render_terminal(view: ScanView) -> None:
             )
             + _suffix
         )
+
+    # ── 策略优选池 ──
+    print(f"  {ANSI['BOLD']}◆ 策略优选池 — 按优先级排序{ANSI['RESET']}")
+    print(_table_header(COLS_POOL))
+    for _si, row in enumerate(view.main_rows, 1):
+        _emit_pool_table_row(view, row, _si)
+
+    # ── v2 池选独立区（双跑同屏，2026-09-02）：pool→danger→低吸匹配输出 ──
+    if view.pool_rows:
+        print(f"\n{ANSI['BOLD']}◆ v2 池选 — 池→排雷→低吸匹配（按今日涨幅降序）{ANSI['RESET']}")
+        print(_table_header(COLS_POOL))
+        for _vi, row in enumerate(view.pool_rows, 1):
+            _emit_pool_table_row(view, row, _vi)
+        print(f"  {'-' * 92}")
 
     # ── 动态推荐 / ⚡ ──
     if view.adj_picks:

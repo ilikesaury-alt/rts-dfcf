@@ -840,11 +840,10 @@ def test_prominence_no_longer_sorts(monkeypatch, capsys):
     assert "↻" not in out, "↻ 行内标记已下线，不应再渲染"
 
 
-def test_display_priority_tier_banner_separates_groups(monkeypatch, capsys):
+def test_display_priority_tier_banner_separates_groups(capsys):
     """档位分隔横幅下线后，净流出票不再劣后过滤（2026-08-11）；排序改按涨幅升序优先
     （2026-08-28 规则：榜上优先 → 涨幅升序 → 回调核心 → 排名升序 → 新面孔，档位不再
-    参与主排序）。v1 管道语义——v2 主表按涨幅降序（test_display_priority_v2_sorts_by_percent_desc）。"""
-    monkeypatch.setattr(disp_mod, "pipeline_mode", lambda: "v1")
+    参与主排序）。双跑同屏后主表恒为 v1 五桶口径（2026-09-02）。"""
     conn = _rec_db()
     # 主排序键的 chg 取 DB percent（候选池 percent 不参与排序键，见 build_scan_view），
     # 故此处用 DB 列驱动不同涨幅，验证「涨幅升序」优先。
@@ -867,24 +866,46 @@ def test_display_priority_tier_banner_separates_groups(monkeypatch, capsys):
     assert _idx("SZ300002") == 2, f"高涨幅(3.0%)应排最后: {lines}"
 
 
-def test_display_priority_v2_sorts_by_percent_desc(monkeypatch, capsys):
-    """v2 管道（2026-09-01）：主表直接按今日涨幅降序，不套用 v1 策略优选池规则。"""
-    monkeypatch.setattr(disp_mod, "pipeline_mode", lambda: "v2")
+def test_display_priority_pool_pick_independent_section_sorted(capsys):
+    """双跑同屏（2026-09-02）：pool_pick 独立成 v2 池选区、按今日涨幅降序；
+    主表只含 v1 五桶（pool_pick 不混入主表），两区同屏输出，RTS_PIPELINE 不再影响显示。"""
     conn = _rec_db()
-    _insert_rec_pct(conn, "SZ300001", "低", "rebound", 50, 1.0)
-    _insert_rec_pct(conn, "SZ300002", "高", "momentum", 70, 3.0)
-    _insert_rec_pct(conn, "SZ300003", "中", "rebound", 90, 2.0)
+    _insert_rec_pct(conn, "SZ300001", "v1票", "rebound", 50, 1.0)
+    _insert_rec_pct(conn, "SZ300002", "池高", "pool_pick", 70, 3.0)
+    _insert_rec_pct(conn, "SZ300003", "池中", "pool_pick", 90, 2.0)
+    _insert_rec_pct(conn, "SZ300004", "池低", "pool_pick", 40, 0.5)
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
-    lines = _main_lines(out)
-    assert len(lines) == 3, f"三只票都应展示: {lines}"
+    assert "◆ v2 池选" in out, "双跑同屏：pool_pick 必须有独立 v2 池选区"
+
+    main_part = out.split("v2 池选")[0]
+    pool_part = out.split("v2 池选")[1].split("动态推荐")[0]
+    main_syms = [ln for ln in main_part.splitlines() if "SZ30000" in ln]
+    pool_syms = [ln for ln in pool_part.splitlines() if "SZ30000" in ln]
+
+    assert any("SZ300001" in ln for ln in main_syms), f"v1 行应留在主表: {main_syms}"
+    assert not any("SZ300002" in ln or "SZ300003" in ln or "SZ300004" in ln for ln in main_syms), (
+        f"pool_pick 不应混入主表: {main_syms}"
+    )
+    assert len(pool_syms) == 3, f"池选区应显示 3 只 pool_pick: {pool_syms}"
 
     def _idx(sym: str) -> int:
-        return next(i for i, ln in enumerate(lines) if sym in ln)
+        return next(i for i, ln in enumerate(pool_syms) if sym in ln)
 
-    assert _idx("SZ300002") == 0, f"最高涨幅(3.0%)应排最前: {lines}"
-    assert _idx("SZ300003") == 1, f"中涨幅(2.0%)应居中: {lines}"
-    assert _idx("SZ300001") == 2, f"最低涨幅(1.0%)应排最后: {lines}"
+    assert _idx("SZ300002") < _idx("SZ300003") < _idx("SZ300004"), f"池选区按涨幅降序(3.0→2.0→0.5): {pool_syms}"
+
+
+def test_display_priority_pool_pick_kept_out_of_main_even_higher_pct(capsys):
+    """双跑同屏：pool_pick 涨幅再高（9.9%）也不进策略优选池主表，只在 v2 池选区展示。"""
+    conn = _rec_db()
+    _insert_rec_pct(conn, "SZ300001", "v1票", "rebound", 50, 1.0)
+    _insert_rec_pct(conn, "SZ300002", "池选票", "pool_pick", 70, 9.9)
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    main_part = out.split("v2 池选")[0]
+    main_syms = [ln for ln in main_part.splitlines() if "SZ30000" in ln]
+    assert len(main_syms) == 1 and "SZ300001" in main_syms[0], f"主表只应显示 v1 rebound: {main_syms}"
+    assert "SZ300002" in out and "◆ v2 池选" in out, "pool_pick 应在 v2 池选区展示"
 
 
 def test_display_priority_comeback_separate_region(monkeypatch, capsys):
@@ -1059,11 +1080,10 @@ def test_display_priority_tier4_comeback_fundflow(monkeypatch, capsys):
     assert "SZ300102" in cb_lines[1]
 
 
-def test_display_priority_tier4_sector_resonance_low(monkeypatch, capsys):
-    """排序规则（2026-08-28，v1 管道）：榜上优先 → 涨幅升序 → 回调核心 → 排名升序 → 新面孔；
-    档位不再参与主排序。故 🎯 票（涨幅 1.0% 最低）排最前，小板块共振(档3)不再因档位
-    被劣后到末尾，仅与其余 6% 票按稳定顺序并列。"""
-    monkeypatch.setattr(disp_mod, "pipeline_mode", lambda: "v1")
+def test_display_priority_tier4_sector_resonance_low(capsys):
+    """排序规则（2026-08-28，双跑同屏后主表恒为 v1 口径）：榜上优先 → 涨幅升序 → 回调核心
+    → 排名升序 → 新面孔；档位不再参与主排序。故 🎯 票（涨幅 1.0% 最低）排最前，
+    小板块共振(档3)不再因档位被劣后到末尾，仅与其余 6% 票按稳定顺序并列。"""
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "普通超短", "short_term", 60, 6.0)  # 档2 无警示
     _insert_rec_sb(
