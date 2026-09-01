@@ -770,10 +770,10 @@ BREAKOUT_PULLBACK_MAX = -8.0  # 回撤上限：太浅=还在高位，太深=趋�
 # 均值 +1.59%（扣 0.30% 成本净 +1.29%），跌超7% 仅 7.5%（基准 11.6%）。
 # 全部只用 T-1 及之前已完成 bar，盘中任意时刻可算，全天不漂移。
 # 阈值在 H1（2026-05-28..07-14）拟合、H2（2026-07-15..08-28）盲测确认。
-NEXTDAY_RULE_MA5R_MIN = 5.0    # 收盘距5日均线最小距离（%）
+NEXTDAY_RULE_MA5R_MIN = 5.0  # 收盘距5日均线最小距离（%）
 NEXTDAY_RULE_ATRPCT_MIN = 7.0  # 21日平均真实波幅下限（%）
 NEXTDAY_RULE_RET20_MAX = 40.0  # 21日涨幅上限（排除长期过热）
-NEXTDAY_RULE_BARS = 21         # 回看 bar 数（ATP / ret20 计算窗口）
+NEXTDAY_RULE_BARS = 21  # 回看 bar 数（ATP / ret20 计算窗口）
 
 # ── 盘中操作纪律（intraday tactics，2026-08-31）──
 # 12 条操盘纪律的参数化阈值。纯展示层，不参与评分/排序/落库。
@@ -781,32 +781,32 @@ NEXTDAY_RULE_BARS = 21         # 回看 bar 数（ATP / ret20 计算窗口）
 ENABLE_INTRADAY_TACTICS = _env_flag("RTS_ENABLE_INTRADAY_TACTICS", True)
 
 # ── 时段窗口（minutes since midnight，用于 session_advice）──
-TACTICS_MORNING_SPIKE_START = 570   # 09:30
-TACTICS_SELL_WINDOW_START = 585     # 09:45 → rule 8 卖出黄金窗口
-TACTICS_SELL_WINDOW_END = 600       # 10:00 → rule 8 卖出黄金窗口
-TACTICS_TOP_WINDOW_1_END = 573      # 09:33 → rule 9 冲高见顶段（早盘）
-TACTICS_TOP_WINDOW_2_START = 800    # 13:20 → rule 9 冲高见顶段（午后）
-TACTICS_TOP_WINDOW_2_END = 810      # 13:30
-TACTICS_LIMITUP_STRONG_END = 600    # 10:00 → rule 10 强势股封板截止
-TACTICS_LIMITUP_WEAK_START = 840    # 14:00 → rule 10 弱股封板截止
-TACTICS_LOWBUY_START = 870          # 14:30 → rule 4 低吸窗口
-TACTICS_LOWBUY_END = 885            # 14:45
-TACTICS_TAIL_DIVE_START = 870       # 14:30 → rule 5 尾盘跳水判定
+TACTICS_MORNING_SPIKE_START = 570  # 09:30
+TACTICS_SELL_WINDOW_START = 585  # 09:45 → rule 8 卖出黄金窗口
+TACTICS_SELL_WINDOW_END = 600  # 10:00 → rule 8 卖出黄金窗口
+TACTICS_TOP_WINDOW_1_END = 573  # 09:33 → rule 9 冲高见顶段（早盘）
+TACTICS_TOP_WINDOW_2_START = 800  # 13:20 → rule 9 冲高见顶段（午后）
+TACTICS_TOP_WINDOW_2_END = 810  # 13:30
+TACTICS_LIMITUP_STRONG_END = 600  # 10:00 → rule 10 强势股封板截止
+TACTICS_LIMITUP_WEAK_START = 840  # 14:00 → rule 10 弱股封板截止
+TACTICS_LOWBUY_START = 870  # 14:30 → rule 4 低吸窗口
+TACTICS_LOWBUY_END = 885  # 14:45
+TACTICS_TAIL_DIVE_START = 870  # 14:30 → rule 5 尾盘跳水判定
 
 # ── 状态阈值（用于 stock_actions）──
-TACTICS_HIGH_OPEN_REDUCE_PCT = 5.0     # rule 2：高开≥此值且封不住板 → 减半仓
-TACTICS_FLAT_OPEN_LOW = -1.0           # rule 3：平开区间下限（%）
-TACTICS_FLAT_OPEN_HIGH = 1.0           # rule 3：平开区间上限（%）
-TACTICS_STEADY_RISE_MINS = 20          # rule 3：平开后观察稳步走高分钟数
-TACTICS_TAIL_DIVE_PCT = 2.0            # rule 5：尾盘跳水幅度（从日内高点回落≥此值）
-TACTICS_SHRINK_VOL_RATIO = 0.7         # rule 7：缩量判定（当前量比 < 此值）
-TACTICS_AM_NOT_OVER_HIGH_MINS = 810    # rule 7：午盘段起点（13:30 后看冲高回落）
-TACTICS_MIDDAY_WINDOW_END = 870        # rule 7：午盘段终点（14:30，与尾盘跳水段衔接）
-TACTICS_LIMITUP_WINDOW_MINS = 30       # rule 6：14:00 涨停落袋窗口长度（14:00-14:30）
-TACTICS_SPIKE_REDUCE_PCT = 3.0         # rule 1：早盘冲高减仓线（现涨幅 ≥ 此值且未封板）
-TACTICS_MORNING_CRASH_PCT = -3.0       # rule 12：早上大跌加仓线（现涨幅 ≤ 此值且无硬风险）
-TACTICS_STEADY_RATIO_MIN = 0.6         # rule 3：稳步走高判定（爬升采样占比 ≥ 此值）
-TACTICS_STEADY_VOL_RATIO = 1.0         # rule 3：量能同步判定（量比 ≥ 此值）
-TACTICS_MORNING_SPIKE_MINS = 30        # rule 1/12：早盘窗口长度（09:30 起 30 分钟）
+TACTICS_HIGH_OPEN_REDUCE_PCT = 5.0  # rule 2：高开≥此值且封不住板 → 减半仓
+TACTICS_FLAT_OPEN_LOW = -1.0  # rule 3：平开区间下限（%）
+TACTICS_FLAT_OPEN_HIGH = 1.0  # rule 3：平开区间上限（%）
+TACTICS_STEADY_RISE_MINS = 20  # rule 3：平开后观察稳步走高分钟数
+TACTICS_TAIL_DIVE_PCT = 2.0  # rule 5：尾盘跳水幅度（从日内高点回落≥此值）
+TACTICS_SHRINK_VOL_RATIO = 0.7  # rule 7：缩量判定（当前量比 < 此值）
+TACTICS_AM_NOT_OVER_HIGH_MINS = 810  # rule 7：午盘段起点（13:30 后看冲高回落）
+TACTICS_MIDDAY_WINDOW_END = 870  # rule 7：午盘段终点（14:30，与尾盘跳水段衔接）
+TACTICS_LIMITUP_WINDOW_MINS = 30  # rule 6：14:00 涨停落袋窗口长度（14:00-14:30）
+TACTICS_SPIKE_REDUCE_PCT = 3.0  # rule 1：早盘冲高减仓线（现涨幅 ≥ 此值且未封板）
+TACTICS_MORNING_CRASH_PCT = -3.0  # rule 12：早上大跌加仓线（现涨幅 ≤ 此值且无硬风险）
+TACTICS_STEADY_RATIO_MIN = 0.6  # rule 3：稳步走高判定（爬升采样占比 ≥ 此值）
+TACTICS_STEADY_VOL_RATIO = 1.0  # rule 3：量能同步判定（量比 ≥ 此值）
+TACTICS_MORNING_SPIKE_MINS = 30  # rule 1/12：早盘窗口长度（09:30 起 30 分钟）
 # 分时趋势摘要（intraday_fetch 第 4 相产出，写入 kline.dimensions["minute_*"]）
-TACTICS_MINUTE_VOL_RECENT_BARS = 30    # 量能趋势对比的近期分钟窗口
+TACTICS_MINUTE_VOL_RECENT_BARS = 30  # 量能趋势对比的近期分钟窗口
