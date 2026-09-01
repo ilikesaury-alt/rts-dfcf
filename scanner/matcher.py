@@ -112,12 +112,14 @@ def chain_a_watch(
         if not any(p >= _WATCH_RECENT_GAIN_MIN for p in recent_pcts):
             continue
 
-        additions.append({
-            "symbol": row.symbol,
-            "name": row.name,
-            "last_list_date": today,
-            "over_limit": False,
-        })
+        additions.append(
+            {
+                "symbol": row.symbol,
+                "name": row.name,
+                "last_list_date": today,
+                "over_limit": False,
+            }
+        )
 
     return additions
 
@@ -290,3 +292,87 @@ def match(
         watch_additions=watch_additions,
         rebound_candidates=rebound_candidates,
     )
+
+
+# ── v2 语义标签层（不淘汰，只标注）──────────────────────────────────────
+
+_DIP_LABELS = ("超跌反转", "缩量回调", "均线支撑", "放量突破", "弱转强")
+
+
+def _detect_dip_labels(c: Candidate, klines: dict, today: str) -> list[str]:
+    """检测单票的低吸语义标签，返回命中的标签列表（可能为空）。"""
+    kl = klines.get(c.stock.symbol)
+    if not kl:
+        return []
+
+    labels: list[str] = []
+    hist = [k for k in kl if k.get("date") != today]
+    kt = next((k for k in kl if k.get("date") == today), None)
+    if not hist or not kt:
+        return []
+
+    closes = [k["close"] for k in hist]
+    today_pct = kt.get("percent", 0.0)
+    today_volume = kt.get("volume", 0.0)
+
+    # 1. 超跌反转：近5日跌≥10% + 今日企稳（2~8%）
+    if len(closes) >= 5:
+        base5 = closes[-5]
+        if base5 > 0:
+            drop5 = (closes[-1] - base5) / base5 * 100.0
+            if drop5 <= -10.0 and 2.0 <= today_pct <= 8.0:
+                labels.append("超跌反转")
+
+    # 2. 缩量回调：量比<0.8 + 近3日有涨幅
+    if len(hist) >= 4:
+        avg_vol = sum(k.get("volume", 0) for k in hist[-4:-1]) / 3
+        vol_ratio = today_volume / avg_vol if avg_vol > 0 else 0.0
+        recent_pcts = [k.get("percent", 0) for k in hist[-3:]]
+        if vol_ratio < 0.8 and any(p >= 1.0 for p in recent_pcts):
+            labels.append("缩量回调")
+
+    # 3. 均线支撑：距MA20<3% + MA20上行
+    if len(closes) >= 21:
+        ma20 = compute_ma(closes, 20)
+        ma20_prev = compute_ma(closes[:-1], 20)
+        if ma20 and ma20 > 0:
+            dev_pct = abs(closes[-1] - ma20) / ma20 * 100.0
+            ma20_up = bool(ma20_prev and ma20 > ma20_prev)
+            if dev_pct < 3.0 and ma20_up:
+                labels.append("均线支撑")
+
+    # 4. 放量突破：量比>1.5 + rank上升
+    if len(hist) >= 4:
+        avg_vol = sum(k.get("volume", 0) for k in hist[-4:-1]) / 3
+        vol_ratio = today_volume / avg_vol if avg_vol > 0 else 0.0
+        if vol_ratio > 1.5 and c.kline and c.kline.dimensions.get("rank_trend", 0) > 0:
+            labels.append("放量突破")
+
+    # 5. 弱转强：昨日长上影 + 今日反弹
+    if len(hist) >= 1:
+        yest = hist[-1]
+        yest_high = yest.get("high", 0)
+        yest_close = yest.get("close", 0)
+        yest_open = yest.get("open", 0)
+        if yest_close > 0 and yest_open > 0:
+            upper_shadow_pct = (yest_high - max(yest_open, yest_close)) / yest_close * 100.0
+            if upper_shadow_pct >= 3.0 and today_pct >= 2.0:
+                labels.append("弱转强")
+
+    return labels
+
+
+def label_all_candidates(candidates: list[Candidate], klines: dict, today: str) -> None:
+    """对全量安全票打低吸语义标签（不淘汰任何票）。
+
+    标签写入 c.kline.dimensions["dip_labels"]，供 ranking 和展示层消费。
+    """
+    for c in candidates:
+        if not c.kline:
+            continue
+        try:
+            labels = _detect_dip_labels(c, klines, today)
+            c.kline.dimensions["dip_labels"] = labels
+        except Exception:
+            # fail-open: 单票异常跳过
+            c.kline.dimensions["dip_labels"] = []

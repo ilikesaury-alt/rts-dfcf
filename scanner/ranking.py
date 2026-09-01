@@ -463,6 +463,7 @@ def _entry_tier(
 #   - accum_required=False 为豁免累计门槛（rebound 超跌反弹负累计天然 /
 #     short_term 规律不在累计口径）；True 时累计缺失 fail-open 放行。
 NEXTDAY_CAT_SPECS: dict[str, tuple[str, bool]] = {
+    "pool_pick": ("sweet_band", False),
     "rebound": ("sweet_band", False),
     "known_new_face": ("sweet_band", True),
     "momentum": ("sweet_band", True),

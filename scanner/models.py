@@ -227,7 +227,11 @@ class ScanResult:
     rebound: list[Candidate] = field(default_factory=list)
     short_term: list[Candidate] = field(default_factory=list)
     comeback: list[Candidate] = field(default_factory=list)
+    pool_picks: list[Candidate] = field(default_factory=list)  # v2: pool→danger→matcher 统一输出
     gem_stocks: list[StockInfo] = field(default_factory=list)
     filtered_large_cap: int = 0
     current_quotes: dict[str, dict] = field(default_factory=dict)
     today_pool: dict[str, Candidate] = field(default_factory=dict)
+
+
+V2_CATEGORY = "pool_pick"  # v2 管道统一 category

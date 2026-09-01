@@ -843,7 +843,8 @@ def test_prominence_no_longer_sorts(monkeypatch, capsys):
 def test_display_priority_tier_banner_separates_groups(monkeypatch, capsys):
     """档位分隔横幅下线后，净流出票不再劣后过滤（2026-08-11）；排序改按涨幅升序优先
     （2026-08-28 规则：榜上优先 → 涨幅升序 → 回调核心 → 排名升序 → 新面孔，档位不再
-    参与主排序）。"""
+    参与主排序）。v1 管道语义——v2 主表按涨幅降序（test_display_priority_v2_sorts_by_percent_desc）。"""
+    monkeypatch.setattr(disp_mod, "pipeline_mode", lambda: "v1")
     conn = _rec_db()
     # 主排序键的 chg 取 DB percent（候选池 percent 不参与排序键，见 build_scan_view），
     # 故此处用 DB 列驱动不同涨幅，验证「涨幅升序」优先。
@@ -864,6 +865,26 @@ def test_display_priority_tier_banner_separates_groups(monkeypatch, capsys):
     assert _idx("SZ300001") == 0, f"最低涨幅(1.0%)应排最前: {lines}"
     assert _idx("SZ300003") == 1, f"中涨幅(2.0%)应居中: {lines}"
     assert _idx("SZ300002") == 2, f"高涨幅(3.0%)应排最后: {lines}"
+
+
+def test_display_priority_v2_sorts_by_percent_desc(monkeypatch, capsys):
+    """v2 管道（2026-09-01）：主表直接按今日涨幅降序，不套用 v1 策略优选池规则。"""
+    monkeypatch.setattr(disp_mod, "pipeline_mode", lambda: "v2")
+    conn = _rec_db()
+    _insert_rec_pct(conn, "SZ300001", "低", "rebound", 50, 1.0)
+    _insert_rec_pct(conn, "SZ300002", "高", "momentum", 70, 3.0)
+    _insert_rec_pct(conn, "SZ300003", "中", "rebound", 90, 2.0)
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    lines = _main_lines(out)
+    assert len(lines) == 3, f"三只票都应展示: {lines}"
+
+    def _idx(sym: str) -> int:
+        return next(i for i, ln in enumerate(lines) if sym in ln)
+
+    assert _idx("SZ300002") == 0, f"最高涨幅(3.0%)应排最前: {lines}"
+    assert _idx("SZ300003") == 1, f"中涨幅(2.0%)应居中: {lines}"
+    assert _idx("SZ300001") == 2, f"最低涨幅(1.0%)应排最后: {lines}"
 
 
 def test_display_priority_comeback_separate_region(monkeypatch, capsys):
@@ -1039,9 +1060,10 @@ def test_display_priority_tier4_comeback_fundflow(monkeypatch, capsys):
 
 
 def test_display_priority_tier4_sector_resonance_low(monkeypatch, capsys):
-    """排序规则（2026-08-28）：榜上优先 → 涨幅升序 → 回调核心 → 排名升序 → 新面孔；
+    """排序规则（2026-08-28，v1 管道）：榜上优先 → 涨幅升序 → 回调核心 → 排名升序 → 新面孔；
     档位不再参与主排序。故 🎯 票（涨幅 1.0% 最低）排最前，小板块共振(档3)不再因档位
     被劣后到末尾，仅与其余 6% 票按稳定顺序并列。"""
+    monkeypatch.setattr(disp_mod, "pipeline_mode", lambda: "v1")
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "普通超短", "short_term", 60, 6.0)  # 档2 无警示
     _insert_rec_sb(

@@ -59,6 +59,8 @@ __all__ = [
     "get_conn",
     "init_db",
     # dal（写入）
+    "ensure_observation_schema",
+    "get_prev_ranks",
     "mark_reversed_recommendations",
     "mark_watch_evaluated",
     "prune_watch_pool",
@@ -69,6 +71,7 @@ __all__ = [
     "save_market_caps",
     "save_market_extra_cache",
     "save_market_index_log",
+    "save_pool_log",
     "save_recommendations",
     "save_rejections",
     "save_scan_quality",

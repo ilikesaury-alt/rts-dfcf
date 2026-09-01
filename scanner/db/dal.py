@@ -16,7 +16,7 @@ from scanner.config import (
     now_beijing,
 )
 from scanner.db._common import _n_trading_days_ago
-from scanner.models import KlineBar, RecommendationRow
+from scanner.models import V2_CATEGORY, KlineBar, RecommendationRow
 from scanner.trading_session import is_trading_time
 from scanner.utils import is_gem, to_float
 
@@ -364,7 +364,7 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, 
     """保存当日推荐记录：new_faces（新面孔）+ rest（其余所有类别合并列表）。
 
     rest 在调用方由 momentum/rebound/short_term/comeback 各桶合并传入，
-    与 new_faces 在本函数内同等对待（统一去重 + 取当日最高分）。
+    与 new_faces 在本函数内同等对待（统一去重 + 取当日最高分，平分刷新最新行情）。
 
     去重实现（审查卫生项：原逐候选 SELECT 一次，N 只票 N 次查询）：单次预载当日
     全部 (symbol, category) → (id, score)，循环内维护内存 map——同批重复
@@ -405,8 +405,10 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, 
             stale_kline = 1 if getattr(c, "stale_kline", False) else 0
             excluded_reason = getattr(c, "excluded_reason", "") or ""
             if existing:
-                # 同日同股同策略已存在：仅当新分更高时更新（保留当日最高分用于回测归因）
-                if c.score > existing[1]:
+                # 同日同股同策略已存在：新分更高时更新（保留当日最高分用于回测归因）。
+                # 例外：v2 pool_pick 分数恒 0，严格大于会让同日后续轮次的 percent/trend
+                # 永远不落库（冻结在首轮，掉榜行 🎯 判定与回测口径漂移）——平分也刷新。
+                if c.score > existing[1] or (c.score == existing[1] and c.category == V2_CATEGORY):
                     conn.execute(
                         "UPDATE recommendations SET time = ?, score = ?, percent = ?, trend = ?, "
                         "score_breakdown = ?, source = ?, concept = ?, accumulated_pct = ?, "

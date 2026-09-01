@@ -49,7 +49,7 @@ from scanner.enhancer import (
 from scanner.intraday_fetch import parallel_fetch
 from scanner.intraday_tactics import stock_actions
 from scanner.kline_fetch import fetch_all_klines
-from scanner.models import Candidate, ScanResult, StockInfo
+from scanner.models import Candidate, KlineSummary, ScanResult, StockInfo
 from scanner.rank_trend import update_rank_history
 from scanner.ranking import comeback_sort_key
 from scanner.sector import get_sector_clusters
@@ -86,6 +86,52 @@ def _update_excluded_marks(conn: sqlite3.Connection, today: str, excluded_by_ris
             passed_syms,
         )
     conn.commit()
+
+
+def _v2_kline_summary(row, kl: list | None, today: str) -> KlineSummary:
+    """v2 池选候选的轻量 KlineSummary。
+
+    此前池选候选 kline=None，导致：matcher 语义标签全跳过（label_all_candidates
+    对 kline=None 直接 continue）、enhancer 资金流/连板/疲劳等维度不写入、
+    minute_trends 不落 dims——v2 的标签与展示维度整体失效。此构造补齐最小字段集：
+    - accumulated_pct：历史 5 日累计（排除今日，与 v1 各桶口径一致）；
+    - volume_ratio/avg_volume：今日量 / 前 5 日均量（matcher 放量突破、疲劳判定消费）；
+    - dimensions：accumulated_incl_today（🎯 含今日口径）/ bias20 / rank_trend
+      （matcher 放量突破标签读 rank_trend 维度）。
+    """
+    hist = [k for k in (kl or []) if k.get("date") != today]
+    closes = [k["close"] for k in hist if k.get("close")]
+    vols = [k["volume"] for k in hist if k.get("volume")]
+    avg_volume = (sum(vols[-5:]) / len(vols[-5:])) if vols else 0.0
+    today_bar = kl[-1] if kl and kl[-1].get("date") == today else None
+    volume_ratio = 0.0
+    if today_bar and avg_volume > 0:
+        volume_ratio = (today_bar.get("volume") or 0.0) / avg_volume
+    accum = None
+    if len(closes) >= 6 and closes[-6] > 0:
+        accum = (closes[-1] - closes[-6]) / closes[-6] * 100.0
+    dims: dict[str, object] = {"rank_trend": row.rank_trend}
+    if row.acc5 is not None:
+        dims["accumulated_incl_today"] = row.acc5
+    if row.bias20 is not None:
+        dims["bias20"] = round(row.bias20, 2)
+    if accum is not None:
+        dims["accumulated_5d"] = round(accum, 2)
+    if row.acc5 is not None and row.acc5 >= 15:
+        trend = "强势"
+    elif row.acc5 is not None and row.acc5 <= -10:
+        trend = "超跌"
+    else:
+        trend = "整理"
+    return KlineSummary(
+        trend=trend,
+        accumulated_pct=round(accum, 2) if accum is not None else 0.0,
+        volume_ratio=round(volume_ratio, 2),
+        bottom_confirmed=False,
+        score=0,
+        dimensions=dims,
+        avg_volume=avg_volume,
+    )
 
 
 def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanResult:
@@ -178,16 +224,79 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
     rebound_list: list[Candidate] = []
     short_term_list: list[Candidate] = []
 
-    for stock in gem_stocks_filtered:
-        nf, mo, rb, st = score_stock(stock, conn, klines, today, session_state, clusters)
-        if nf:
-            new_faces.append(nf)
-        if mo and ENABLE_MOMENTUM:
-            momentum.append(mo)
-        if rb:
-            rebound_list.append(rb)
-        if st and ENABLE_SHORT_TERM:
-            short_term_list.append(st)
+    if pipeline_mode() == "v2":
+        # ── v2 主路径：pool → danger → 候选构建（跳过 5 桶评分）──
+        from scanner.danger import danger_flags_json, evaluate_pool
+        from scanner.matcher import label_all_candidates
+        from scanner.models import V2_CATEGORY
+        from scanner.pool import build_pool
+
+        prev_ranks = get_prev_ranks(conn, today)
+        pool_rows = build_pool(gem_stocks_filtered, klines, today, prev_ranks)
+        danger_map = evaluate_pool(pool_rows, klines, {}, {})
+
+        danger_syms = {sym for sym, flags in danger_map.items() if flags}
+        danger_count = len(danger_syms)
+        if danger_count:
+            print(f"  [排雷] {danger_count} 只命中危险信号，已排除")
+
+        # 从安全池构建 Candidate
+        stock_by_sym = {s.symbol: s for s in gem_stocks_filtered}
+        pool_picks: list[Candidate] = []
+        for row in pool_rows:
+            if row.symbol in danger_syms:
+                continue
+            stock = stock_by_sym.get(row.symbol)
+            if not stock:
+                continue
+            c = Candidate(
+                stock=stock,
+                category=V2_CATEGORY,
+                score=0,
+                reason="池选",
+                kline=_v2_kline_summary(row, klines.get(row.symbol), today),
+                first_seen=now_beijing().strftime("%H:%M"),
+                history_pct=[],
+            )
+            pool_picks.append(c)
+
+        # 语义标签（不淘汰）
+        label_all_candidates(pool_picks, klines, today)
+
+        # all_candidates = pool_picks + comeback（后面合并）
+        all_candidates = pool_picks
+
+        # pool_log 行先构建，落库延迟到二次排雷之后（danger_flags 补全资金流/财务信号）
+        pool_log_rows = [
+            {
+                "date": today,
+                "symbol": r.symbol,
+                "name": r.name,
+                "percent": r.percent,
+                "rank": r.rank,
+                "rank_trend": r.rank_trend,
+                "bias20": r.bias20,
+                "acc5": r.acc5,
+                "on_board": r.on_board,
+                "market_cap": r.market_cap,
+                "danger_flags": danger_flags_json(danger_map.get(r.symbol, [])),
+                "v1_passed": False,
+            }
+            for r in pool_rows
+        ]
+    else:
+        for stock in gem_stocks_filtered:
+            nf, mo, rb, st = score_stock(stock, conn, klines, today, session_state, clusters)
+            if nf:
+                new_faces.append(nf)
+            if mo and ENABLE_MOMENTUM:
+                momentum.append(mo)
+            if rb:
+                rebound_list.append(rb)
+            if st and ENABLE_SHORT_TERM:
+                short_term_list.append(st)
+
+        all_candidates = new_faces + momentum + rebound_list + short_term_list
 
     # 回马枪：评估掉榜跟踪池 + 近 N 日推荐（两变体均 category="comeback"）。
     # 开关关闭时不评估（hit 3.3% 远低于基准，不再作为活跃推荐桶产出）。
@@ -208,7 +317,10 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         except EXTERNAL_FAILURES as e:
             print(f"  [!] 回马枪评估失败: {type(e).__name__}: {e}")
 
-    all_candidates = new_faces + momentum + rebound_list + short_term_list + comeback_rebound + comeback_reentry
+    if pipeline_mode() == "v2":
+        all_candidates = all_candidates + comeback_rebound + comeback_reentry
+    else:
+        all_candidates = new_faces + momentum + rebound_list + short_term_list + comeback_rebound + comeback_reentry
     for c in all_candidates:
         enrich_candidate_market_cap(c, market_caps.get(c.stock.symbol, {}))
 
@@ -237,6 +349,29 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
             print(f"  [财务风险] {len(fund_risk)} 只资不抵债（退市风险级），将移出推荐：{names}")
     except EXTERNAL_FAILURES as e:
         print(f"  [!] 基本面风险收集失败（忽略，不影响扫描）: {e}")
+
+    # v2 二次排雷（2026-09-01 审查修复）：首轮 evaluate_pool 时 market_extra/fund_risk
+    # 尚未收集（传空 dict），主力出货（净流出≤-5%）与财务风险两个信号恒不触发。
+    # 现在两类数据已就绪，补一轮带全量数据的排雷：新命中的票从候选中剔除，
+    # 并把合并后的 danger_flags 补进 pool_log 落库（首轮只含 bias20/冲高回落/翻绿）。
+    if pipeline_mode() == "v2":
+        try:
+            late_map = evaluate_pool(pool_rows, klines, market_extra, fund_risk)
+            merged_flags: dict[str, list[str]] = {}
+            for _sym in set(danger_map) | set(late_map):
+                merged_flags[_sym] = list(dict.fromkeys((danger_map.get(_sym) or []) + (late_map.get(_sym) or [])))
+            new_danger_syms = {sym for sym, fl in merged_flags.items() if fl} - danger_syms
+            if new_danger_syms:
+                _names = "、".join(
+                    f"{c.stock.name}({c.stock.symbol})" for c in all_candidates if c.stock.symbol in new_danger_syms
+                )
+                print(f"  [排雷] {len(new_danger_syms)} 只命中资金流/财务危险信号，已排除：{_names}")
+                all_candidates = [c for c in all_candidates if c.stock.symbol not in new_danger_syms]
+            for _r in pool_log_rows:
+                _r["danger_flags"] = danger_flags_json(merged_flags.get(str(_r["symbol"]), []))
+            save_pool_log(conn, pool_log_rows)
+        except EXTERNAL_FAILURES as e:
+            print(f"  [!] v2 二次排雷/pool_log 落库失败: {e}")
 
     rps_scores: dict[str, int] = {}
     # RPS 基准：全 GEM 监控集（过滤后、含未入选候选）的 5 日累计涨幅列表，
@@ -278,7 +413,12 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         pool = ThreadPoolExecutor(max_workers=6)
         try:
             parallel_fetch(
-                pool, all_candidates, intraday_scores, opening_scores, live_volumes, adapter,
+                pool,
+                all_candidates,
+                intraday_scores,
+                opening_scores,
+                live_volumes,
+                adapter,
                 minute_trends=minute_trends,
             )
         finally:
@@ -288,12 +428,14 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
     for c in all_candidates:
         trend = minute_trends.get(c.stock.symbol)
         if c.kline and trend:
-            c.kline.dimensions.update({
-                "minute_steady_rise": trend.get("steady_rise_ratio", 0.0),
-                "minute_day_high": trend.get("day_high_pct", 0.0),
-                "minute_am_high": trend.get("am_high_pct", 0.0),
-                "minute_vol_trend": trend.get("vol_trend", 1.0),
-            })
+            c.kline.dimensions.update(
+                {
+                    "minute_steady_rise": trend.get("steady_rise_ratio", 0.0),
+                    "minute_day_high": trend.get("day_high_pct", 0.0),
+                    "minute_am_high": trend.get("am_high_pct", 0.0),
+                    "minute_vol_trend": trend.get("vol_trend", 1.0),
+                }
+            )
 
     market_idx_pct = adapter.fetch_market_index()
     time_bonus = compute_time_bonus()
@@ -361,51 +503,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
     except EXTERNAL_FAILURES as e:
         print(f"  [!] 风险过滤落标失败: {e}")
 
-    # ── v2 影子旁路：池层 + 排雷器 + 低吸匹配（Phase 2/3）──
-    # 仅在 RTS_PIPELINE=v2 时运行。Phase 2 只写 pool_log；
-    # Phase 3 起同时运行 matcher，match 结果写入 pool_log 并替换 v1 推荐。
-    v2_match = None
-    if pipeline_mode() == "v2":
-        try:
-            from scanner.danger import danger_flags_json, evaluate_pool
-            from scanner.matcher import match as matcher_match
-            from scanner.pool import build_pool
-
-            prev_ranks = get_prev_ranks(conn, today)
-            pool_rows = build_pool(gem_stocks_filtered, klines, today, prev_ranks)
-            danger_map = evaluate_pool(pool_rows, klines, market_extra, fund_risk)
-            v1_syms = {c.stock.symbol for c in all_candidates}
-
-            # Chain A/B: 低吸匹配（在榜回调观察 + 企稳转强 rebound）
-            v2_match = matcher_match(pool_rows, danger_map, klines, today, all_candidates, clusters)
-
-            # Chain A 新增票入 watch_pool（供下一轮 Chain B 评估）
-            if v2_match.watch_additions:
-                try:
-                    upsert_watch_symbols(conn, v2_match.watch_additions)
-                except EXTERNAL_FAILURES as we:
-                    print(f"  [!] v2 watch_pool 入池失败: {we}")
-
-            pool_log_rows = [
-                {
-                    "date": today,
-                    "symbol": r.symbol,
-                    "name": r.name,
-                    "percent": r.percent,
-                    "rank": r.rank,
-                    "rank_trend": r.rank_trend,
-                    "bias20": r.bias20,
-                    "acc5": r.acc5,
-                    "on_board": r.on_board,
-                    "market_cap": r.market_cap,
-                    "danger_flags": danger_flags_json(danger_map.get(r.symbol, [])),
-                    "v1_passed": r.symbol in v1_syms,
-                }
-                for r in pool_rows
-            ]
-            save_pool_log(conn, pool_log_rows)
-        except EXTERNAL_FAILURES as e:
-            print(f"  [!] v2 影子旁路（池层+排雷+匹配）失败（不影响 v1 推荐）: {e}")
+    # 分类列表必须从 all_candidates 重建（v1 路径）
 
     # 分类列表必须从 all_candidates 重建，而非沿用旧对象引用——
     # dataclass_replace 已创建新对象（含最终 score），
@@ -474,11 +572,14 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         except EXTERNAL_FAILURES as e:
             print(f"  [!] 核心方向低吸落库失败: {e}")
 
-    # v2 模式：用 matcher 产出替换 v1 推荐（momentum/short_term 冻结，rebound 由 matcher 低吸匹配产出）
-    if pipeline_mode() == "v2" and v2_match is not None:
-        rebound_list = v2_match.rebound_candidates
-        momentum = []
-        short_term_list = []
+    # v2 模式：pool_picks 已在顶部构建，此处按涨幅排序
+    if pipeline_mode() == "v2":
+        from scanner.models import V2_CATEGORY
+
+        pool_picks = [c for c in all_candidates if c.category == V2_CATEGORY]
+        pool_picks.sort(key=lambda c: -(c.stock.percent or 0))
+    else:
+        pool_picks = []
 
     return ScanResult(
         new_faces=new_faces,
@@ -486,6 +587,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         rebound=rebound_list,
         short_term=short_term_list,
         comeback=comeback_list,
+        pool_picks=pool_picks,
         gem_stocks=gem_stocks_filtered,
         filtered_large_cap=filtered_large_cap,
         current_quotes=current_quotes,

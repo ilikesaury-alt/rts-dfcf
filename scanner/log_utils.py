@@ -44,6 +44,7 @@ def log_results(new_faces: list[Candidate], momentum: list[Candidate]):
                     "momentum": "动量",
                     "rebound": "反",
                     "short_term": "超短",
+                    "pool_pick": "池选",
                 }.get(c.category, "?")
                 intra = f"{c.intraday_score:+.1f}" if c.intraday_score is not None and c.intraday_score != 0.0 else ""
                 f.write(

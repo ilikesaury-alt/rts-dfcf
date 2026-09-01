@@ -16,6 +16,7 @@ from scanner.config import (
     NEXTDAY_RULE_RET20_MAX,
     TOP40_THRESHOLD,
     now_beijing,
+    pipeline_mode,
 )
 from scanner.core_themes import _low_buy_quality as _core_dip_quality
 from scanner.core_themes import core_stock_symbols
@@ -551,6 +552,8 @@ def _pick_tag(cat: str, marked: bool) -> str:
         return "低吸"
     if cat == "comeback":
         return "回马"
+    if cat == "pool_pick":
+        return "池选"
     if cat in ("rebound", "short_term"):
         if marked:
             return "🎯弹" if cat == "rebound" else "🎯转"
@@ -807,6 +810,7 @@ def build_scan_view(
         "new_face": "NEW",
         "known_new_face": "kNF",
         "short_term": "ST",
+        "pool_pick": "池选",
     }
     main_rows: list[MainRow] = []
     try:
@@ -842,6 +846,11 @@ def build_scan_view(
                 )
             )
         _seq_rows.sort(key=lambda x: x[:5])
+        # v2 模式（2026-09-01）：主表直接按今日涨幅降序（pipeline 设计口径），
+        # 不再套用 v1 策略优选池的「榜上优先→涨幅升序→…」规则。chg 取元素 [1]
+        # （_entry_display_quote，live 行情优先于 DB 落库值）。
+        if pipeline_mode() == "v2":
+            _seq_rows.sort(key=lambda x: -x[1])
         # 逐行解析为 MainRow（排序在上面的元组里完成，此处只做展示字段定型）。
         # 2026-08-29：候选（_fresh_c）必须逐行重算——构建循环里的 _fresh_c 只保留末行，
         # 跨行复用会把上一只票的行情安到本行。
