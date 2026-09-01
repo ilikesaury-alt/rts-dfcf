@@ -527,6 +527,109 @@ def save_rejections(conn: sqlite3.Connection, rejected: list, today: str | None 
         return 0
 
 
+def ensure_observation_schema(conn: sqlite3.Connection) -> None:
+    """观测表幂等迁移（Phase 1/2）：补齐 scan_rejections 的 outcome 列 + 建 pool_log。
+
+    幂等：每次扫描调用也安全（PRAGMA 内省列、CREATE TABLE IF NOT EXISTS）。
+    解决孤儿会话在磁盘库上加列但未进代码的问题——从干净 init_db 起库也能正常回填。
+    fail-open：迁移失败仅告警，不影响扫描主流程（沿用 save_rejections 的 DB 写守护约定）。
+    """
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(scan_rejections)").fetchall()}
+        for col in ("next_day_pct", "fwd_3d", "nd10_pct"):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE scan_rejections ADD COLUMN {col} REAL")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pool_log (
+                date TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                name TEXT,
+                percent REAL,
+                rank INTEGER,
+                rank_trend INTEGER,
+                bias20 REAL,
+                acc5 REAL,
+                on_board INTEGER,
+                market_cap REAL,
+                danger_flags TEXT,
+                v1_passed INTEGER,
+                next_day_pct REAL,
+                PRIMARY KEY (date, symbol)
+            )
+            """
+        )
+        conn.commit()
+    except Exception as e:  # noqa: BLE001 — 迁移失败不应中断扫描；记录后放行
+        logger.warning(f"ensure_observation_schema 迁移失败（观测表可能缺失）: {e}")
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+
+
+def get_prev_ranks(conn: sqlite3.Connection, today: str) -> dict[str, int]:
+    """取上一交易日各票榜单排名（appearances），用于 rank_trend 计算。
+
+    返回 {symbol: rank}；无历史返回空 dict。
+    """
+    row = conn.execute("SELECT MAX(date) FROM appearances WHERE date < ?", (today,)).fetchone()
+    if not row or not row[0]:
+        return {}
+    d = row[0]
+    return {r[0]: r[1] for r in conn.execute("SELECT symbol, rank FROM appearances WHERE date=?", (d,))}
+
+
+def save_pool_log(conn: sqlite3.Connection, rows: list[dict]) -> int:
+    """落库全量池快照（池层 + 排雷影子观测，pool_log 表）。
+
+    rows: [{date, symbol, name, percent, rank, rank_trend, bias20, acc5, on_board,
+            market_cap, danger_flags, v1_passed}]
+    同一 (date, symbol) 重复扫描只覆盖（UPSERT）。fail-open：失败仅告警，不影响扫描。
+    """
+    if not rows:
+        return 0
+    payload = [
+        (
+            r["date"],
+            r["symbol"],
+            r.get("name"),
+            r.get("percent"),
+            r.get("rank"),
+            r.get("rank_trend"),
+            r.get("bias20"),
+            r.get("acc5"),
+            1 if r.get("on_board") else 0,
+            r.get("market_cap"),
+            r.get("danger_flags") or "[]",
+            1 if r.get("v1_passed") else 0,
+        )
+        for r in rows
+    ]
+    try:
+        conn.executemany(
+            "INSERT INTO pool_log "
+            "(date, symbol, name, percent, rank, rank_trend, bias20, acc5, on_board, "
+            " market_cap, danger_flags, v1_passed) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(date, symbol) DO UPDATE SET "
+            "name=excluded.name, percent=excluded.percent, rank=excluded.rank, "
+            "rank_trend=excluded.rank_trend, bias20=excluded.bias20, acc5=excluded.acc5, "
+            "on_board=excluded.on_board, market_cap=excluded.market_cap, "
+            "danger_flags=excluded.danger_flags, v1_passed=excluded.v1_passed",
+            payload,
+        )
+        conn.commit()
+        return len(payload)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"save_pool_log 落库失败（池层观测缺失，不影响扫描）: {e}")
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        return 0
+
+
 def upsert_watch_symbol(
     conn: sqlite3.Connection, symbol: str, name: str, last_list_date: str | None = None, over_limit: bool = False
 ) -> None:

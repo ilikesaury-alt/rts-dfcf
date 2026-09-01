@@ -12,6 +12,8 @@
 
 from scanner.db._common import _n_trading_days_ago
 from scanner.db.dal import (
+    ensure_observation_schema,
+    get_prev_ranks,
     mark_reversed_recommendations,
     mark_watch_evaluated,
     prune_watch_pool,
@@ -22,6 +24,7 @@ from scanner.db.dal import (
     save_market_caps,
     save_market_extra_cache,
     save_market_index_log,
+    save_pool_log,
     save_recommendations,
     save_rejections,
     save_scan_quality,

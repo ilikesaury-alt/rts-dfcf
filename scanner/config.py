@@ -196,6 +196,19 @@ def _env_flag(name: str, default: bool) -> bool:
     return v.strip().lower() in ("1", "true", "yes", "on")
 
 
+def pipeline_mode() -> str:
+    """池→排雷→低吸 重构管道开关（RTS_PIPELINE=v1|v2，默认 v1）。
+
+    - v1：现行推荐管道，行为完全不变（默认，零行为变更）。
+    - v2：重构管道。当前阶段（Phase 2）仅启用「池层 + 排雷」影子旁路——
+      只落库 pool_log / scan_rejections，不进入任何展示或推荐输出。
+      Phase 3 起 v2 将切换为低吸匹配主路径。
+
+    回滚只需设 RTS_PIPELINE=v1（Phase 4 之前始终可用）。
+    """
+    return (os.environ.get("RTS_PIPELINE", "v1") or "v1").strip().lower()
+
+
 ENABLE_ZT_POOL = _env_flag("RTS_ENABLE_ZT_POOL", True)  # 涨停池
 ENABLE_FUND_FLOW = _env_flag("RTS_ENABLE_FUND_FLOW", True)  # 个股资金流
 
@@ -528,6 +541,16 @@ RISK_FLAGS_HARD_FILTER: set[str] = {
     WTS_FAIL_TAG,
 }
 
+# ── 排雷器（池→排雷→低吸 重构 Phase 2）实证危险信号阈值 ──
+# 全部为「卖出/止损」级硬信号，仅用于影子观测（落库 pool_log），不进入 v1 推荐。
+# 阈值集中此处（config 单一阈值源），categories 不加新类别。
+# 信号含义与 enhancer 主力出货 / validator 冲高回落口径对齐，避免双套语义漂移。
+DANGER_BIAS20_MAX = 28.0  # 偏离 MA20 过大（>28%）→ 高位乖离，追高回落风险
+DANGER_MAIN_OUTFLOW_PCT = -5.0  # 主力净占比(%) ≤ -5 → 主力出货派发
+# 冲高回落复用 REVERSAL_OVERSHOOT_DROP=10.0（最高涨幅−收盘涨幅，口径见上）
+# 当日翻绿+高开回落：open>prev_close 且 close<open（无独立阈值，布尔组合）
+# 财务风险复用 FUND_RISK_TAG（资不抵债，每股净资产<0）
+
 # Time-based bonus thresholds (minutes since midnight)
 
 # 推荐后快速反转移出（2026-08-13）：今日已推荐（榜上主类别，不含回马枪跟踪池）且当前不在
@@ -559,8 +582,8 @@ REVERSAL_OVERSHOOT_DROP = 10.0
 #   core_dip 9.4%（高于基准但仅 53 样本）→ 不进主推荐，保留数据采集
 ENABLE_COMEBACK = True
 ENABLE_CORE_DIP = True
-ENABLE_SHORT_TERM = True
-ENABLE_MOMENTUM = True
+ENABLE_SHORT_TERM = False  # Phase 3: 冻结（matcher 低吸匹配替代；代码保留供回测/归因）
+ENABLE_MOMENTUM = False  # Phase 3: 冻结（matcher 低吸匹配替代；代码保留供回测/归因）
 # 实验开关：放开 MIN_SCORE 门槛，让所有评分的候选都进入推荐。
 # 归因数据显示 score 0-20 hit 21.8%（全场最高），MIN_SCORE=18 把它们全砍了。
 # 开启后观察：① 信号量暴增是否稀释质量 ② 组合 P&L 是否改善 ③ hit rate 是否变化。

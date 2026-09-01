@@ -265,6 +265,11 @@ def init_db() -> sqlite3.Connection:
         conn.execute(
             "INSERT INTO schema_version (version, updated) VALUES (?, ?)", (SCHEMA_VERSION, now_beijing().isoformat())
         )
+    # 观测表迁移（Phase 1/2）：补齐 scan_rejections outcome 列 + 建 pool_log。
+    # 独立函数，幂等；每次扫描亦由 orchestrator 调用兜底（干净 init_db 起库也能回填）。
+    from scanner.db.dal import ensure_observation_schema
+
+    ensure_observation_schema(conn)
     # market_extra_cache PK 迁移（v4）：旧 PK(symbol, data_type) 每日 INSERT OR REPLACE
     # 会覆盖历史日期数据，导致 today_report --date 历史回放的资金流永远为空。
     # 迁移：重建表使 PK 包含 date，保留历史行。

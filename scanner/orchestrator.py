@@ -27,13 +27,16 @@ from scanner.config import (
     WATCH_OFFLIST_KEEP_DAYS,
     YI,
     now_beijing,
+    pipeline_mode,
 )
 from scanner.database import (
     get_cached_market_caps,
+    get_prev_ranks,
     prune_watch_pool,
     record_appearances,
     save_market_caps,
     save_market_index_log,
+    save_pool_log,
     save_rejections,
     save_scan_quality,
     upsert_watch_symbols,
@@ -358,6 +361,52 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
     except EXTERNAL_FAILURES as e:
         print(f"  [!] 风险过滤落标失败: {e}")
 
+    # ── v2 影子旁路：池层 + 排雷器 + 低吸匹配（Phase 2/3）──
+    # 仅在 RTS_PIPELINE=v2 时运行。Phase 2 只写 pool_log；
+    # Phase 3 起同时运行 matcher，match 结果写入 pool_log 并替换 v1 推荐。
+    v2_match = None
+    if pipeline_mode() == "v2":
+        try:
+            from scanner.danger import danger_flags_json, evaluate_pool
+            from scanner.matcher import match as matcher_match
+            from scanner.pool import build_pool
+
+            prev_ranks = get_prev_ranks(conn, today)
+            pool_rows = build_pool(gem_stocks_filtered, klines, today, prev_ranks)
+            danger_map = evaluate_pool(pool_rows, klines, market_extra, fund_risk)
+            v1_syms = {c.stock.symbol for c in all_candidates}
+
+            # Chain A/B: 低吸匹配（在榜回调观察 + 企稳转强 rebound）
+            v2_match = matcher_match(pool_rows, danger_map, klines, today, all_candidates, clusters)
+
+            # Chain A 新增票入 watch_pool（供下一轮 Chain B 评估）
+            if v2_match.watch_additions:
+                try:
+                    upsert_watch_symbols(conn, v2_match.watch_additions)
+                except EXTERNAL_FAILURES as we:
+                    print(f"  [!] v2 watch_pool 入池失败: {we}")
+
+            pool_log_rows = [
+                {
+                    "date": today,
+                    "symbol": r.symbol,
+                    "name": r.name,
+                    "percent": r.percent,
+                    "rank": r.rank,
+                    "rank_trend": r.rank_trend,
+                    "bias20": r.bias20,
+                    "acc5": r.acc5,
+                    "on_board": r.on_board,
+                    "market_cap": r.market_cap,
+                    "danger_flags": danger_flags_json(danger_map.get(r.symbol, [])),
+                    "v1_passed": r.symbol in v1_syms,
+                }
+                for r in pool_rows
+            ]
+            save_pool_log(conn, pool_log_rows)
+        except EXTERNAL_FAILURES as e:
+            print(f"  [!] v2 影子旁路（池层+排雷+匹配）失败（不影响 v1 推荐）: {e}")
+
     # 分类列表必须从 all_candidates 重建，而非沿用旧对象引用——
     # dataclass_replace 已创建新对象（含最终 score），
     # 旧列表持有的仍是未累加 extra 的过期对象。
@@ -424,6 +473,12 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
             save_core_dips(conn, find_core_theme_dips(conn, today), today)
         except EXTERNAL_FAILURES as e:
             print(f"  [!] 核心方向低吸落库失败: {e}")
+
+    # v2 模式：用 matcher 产出替换 v1 推荐（momentum/short_term 冻结，rebound 由 matcher 低吸匹配产出）
+    if pipeline_mode() == "v2" and v2_match is not None:
+        rebound_list = v2_match.rebound_candidates
+        momentum = []
+        short_term_list = []
 
     return ScanResult(
         new_faces=new_faces,
