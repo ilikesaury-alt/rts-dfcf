@@ -289,14 +289,12 @@ def _entry_row_suffix(
     flow_pct_map: dict[str, float],
     marked: bool = False,
     breakout_marked: bool = False,
-    dip_labels: list[str] | None = None,
 ) -> str:
-    """行尾可变区统一渲染：风险标记 → 资金流/连板 extra → 🎯 → ⚡ → 💡低吸标签。
+    """行尾可变区统一渲染：风险标记 → 资金流/连板 extra → 🎯 → ⚡。
 
     优选池行与核心低吸区行共用（2026-08-30 收口）——此前仅补充区渲染这些
     标记，主视图优选池行丢失 🎯/⚡/资金流信息。顺序与原 _print_priority_row 一致。
-    dip_labels：v2 池选行的低吸语义标签（matcher 层标注，两段式排序依据，
-    2026-09-03 方案B）——渲染为 💡 段使排序可解释，纯展示不参与评分。
+    （💡低吸标签行尾渲染已按需求移除——只用于排序不展示，2026-09-03）
     """
     c = _fresh_candidate(entry)
     parts: list[str] = []
@@ -322,8 +320,6 @@ def _entry_row_suffix(
         parts.append(f" {ANSI['GREEN']}🎯{ANSI['RESET']}")
     if breakout_marked:
         parts.append(f" {ANSI['CYAN']}⚡{ANSI['RESET']}")
-    if dip_labels:
-        parts.append(f" {ANSI['CYAN']}💡{'·'.join(dip_labels)}{ANSI['RESET']}")
     # 盘中操作纪律标签（纯展示，不参与排序/评分）
     if c and getattr(c, "tactic_tags", None):
         for tag in c.tactic_tags:
@@ -1012,13 +1008,11 @@ def render_terminal(view: ScanView) -> None:
         _sc_str = f"{row.score:.0f}" if row.score else "—"
         _cur_str = f"{row.current:.2f}" if row.current else "—"
         _sec = _trunc(row.sector, COLS_POOL[7][1])
-        # 行尾标记与低吸区同源（_entry_row_suffix）：风险/资金流/🎯/⚡/💡低吸标签。
+        # 行尾标记与低吸区同源（_entry_row_suffix）：风险/资金流/🎯/⚡。
+        # 💡低吸标签不再行尾展示（太杂乱，2026-09-03），仅作两段式排序依据（_v2_pool_sort_key）。
         _marked = view.nextday_mark.get((_e["symbol"], _e["category"]), False)
         _bolt = view.breakout_mark.get((_e["symbol"], _e["category"]), False)
-        _pool_labels = _entry_dip_labels(_e) if _e["category"] == V2_CATEGORY else None
-        _suffix = _entry_row_suffix(
-            _e, view.flow_pct_map, marked=_marked, breakout_marked=_bolt, dip_labels=_pool_labels
-        )
+        _suffix = _entry_row_suffix(_e, view.flow_pct_map, marked=_marked, breakout_marked=_bolt)
         print(
             _table_row(
                 [
