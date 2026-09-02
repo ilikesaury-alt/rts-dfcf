@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=64.0"]
+# 2026-08-29 修复：此前为 "setuptools.backends._legacy:_Backend"——该模块不存在
+# （importlib 验证失败），任何 pip install / 构建入口都会直接报错。
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+# 2026-08-29 扩充：原 select 仅 E/F/W/I，漏检 C901 58 / PLR0913 35 /
+# PLR0912 34 / PLR0915 27 共 163 条复杂度与坏味道。分档纳入，先守正确性
+# （B=bugbear 常见 bug、S=bandit 安全），再守可读性（C4/SIM/RET/ARG/PTH）。
+select = [
+    "E", "F", "W",  # pycodestyle / pyflakes（含 F821 未定义名）/ warning
+    "I",            # isort
+    "B",            # flake8-bugbear：可变默认参数、zip 无 strict、误用 assertRaises
+    "S",            # flake8-bandit：静默吞异常（S110/S112）、SQL 拼接（S608）
+    "C4",           # flake8-comprehensions
+    "RET",          # flake8-return
+    "SIM",          # flake8-simplify
+]
+ignore = [
+    "S101",  # assert：本项目在测试与数据断言中大量使用，属既有风格
+    # ── 已知技术债（2026-08-29 实测存量，逐个排期后移出本表）──
+    "C901",     # 圈复杂度过高 58 处：stock_report.main(461L) / display_priority(352L) 等
+    "PLR0913",  # 参数过多 35 处：apply_all_bonuses(13参) / validate(6参)，待引入上下文对象
+    "PLR0912",  # 分支过多 34 处
+    "PLR0915",  # 语句过多 27 处
+    "SIM105",   # 用 contextlib.suppress 替代 try/except/pass 15 处（与 S110 重叠，择一处理）
+    "E501",     # 行过长 9 处
+]
+# 说明：ARG（未使用参数 460 处，多为测试 lambda 与回调签名）与 PTH（os.path → pathlib
+# 60 处，纯churn 无收益）经评估不纳入，避免噪音淹没真实信号。
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S105", "S106", "S311", "S608"]
+"scripts/*" = ["S603", "S607", "S608"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+strict = false
+warn_unused_ignores = true
+warn_return_any = false
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+markers = [
+    "smoke: 真实 scanner.db / 外网依赖的集成测试（默认跳过，--run-smoke 运行）",
+]

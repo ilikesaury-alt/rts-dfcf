@@ -1,0 +1,238 @@
+def compute_rsi(closes: list[float], period: int = 14) -> float | None:
+    """计算 RSI（Wilder 平滑），返回最终 RSI 值。
+
+    需要完整 RSI 序列时（如背离检测），使用 compute_rsi_sequence。
+    """
+    if len(closes) < period + 1:
+        return None
+    gains, losses = 0.0, 0.0
+    for i in range(1, period + 1):
+        diff = closes[i] - closes[i - 1]
+        if diff > 0:
+            gains += diff
+        else:
+            losses -= diff
+    avg_gain = gains / period
+    avg_loss = losses / period
+    for i in range(period + 1, len(closes)):
+        diff = closes[i] - closes[i - 1]
+        gain = diff if diff > 0 else 0
+        loss = -diff if diff < 0 else 0
+        avg_gain = (avg_gain * (period - 1) + gain) / period
+        avg_loss = (avg_loss * (period - 1) + loss) / period
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def compute_rsi_sequence(closes: list[float], period: int = 6) -> list[float]:
+    """计算 RSI 完整序列（Wilder 平滑），rsi_list[i] 对应 closes[period+i]。
+
+    用于背离检测（validator._mo_divergence）等需要比较不同时间点 RSI 值的场景。
+    与 compute_rsi 使用相同算法，区别在于返回完整序列而非仅最终值。
+    """
+    if len(closes) < period + 1:
+        return []
+    gains, losses = 0.0, 0.0
+    for i in range(1, period + 1):
+        diff = closes[i] - closes[i - 1]
+        if diff > 0:
+            gains += diff
+        else:
+            losses -= diff
+    avg_gain = gains / period
+    avg_loss = losses / period
+    rsi_list: list[float] = []
+    if avg_loss == 0:
+        rsi_list.append(100.0)
+    else:
+        rs = avg_gain / avg_loss
+        rsi_list.append(100.0 - 100.0 / (1.0 + rs))
+    for i in range(period + 1, len(closes)):
+        diff = closes[i] - closes[i - 1]
+        gain = diff if diff > 0 else 0
+        loss = -diff if diff < 0 else 0
+        avg_gain = (avg_gain * (period - 1) + gain) / period
+        avg_loss = (avg_loss * (period - 1) + loss) / period
+        if avg_loss == 0:
+            rsi_list.append(100.0)
+        else:
+            rs = avg_gain / avg_loss
+            rsi_list.append(100.0 - 100.0 / (1.0 + rs))
+    return rsi_list
+
+
+def compute_ma(closes: list[float], period: int, ema: bool = False) -> float | None:
+    """Simple or exponential moving average of the last `period` closes.
+
+    EMA is preferred for high-volatility GEM stocks (less noise than SMA),
+    and aligns with the EMA used inside MACD so the whole indicator stack
+    uses one moving-average convention.
+
+    标准 EMA 实现：遍历完整序列（非仅最后 period 个值），种子用前 period 个的 SMA，
+    alpha=2/(period+1)。与 compute_macd 内部 EMA 口径一致。
+    """
+    if len(closes) < period:
+        return None
+    if not ema:
+        return sum(closes[-period:]) / period
+    # 标准 EMA：种子 = 前 period 个的 SMA，遍历完整序列递推
+    m = 2 / (period + 1)
+    result = sum(closes[:period]) / period
+    for v in closes[period:]:
+        result = (v - result) * m + result
+    return result
+
+
+def compute_kdj(highs: list[float], lows: list[float],
+                closes: list[float], n: int = 9,
+                k_smooth: int = 3, d_smooth: int = 3) -> dict | None:
+    if len(closes) < n:
+        return None
+    rsv_list = []
+    for i in range(n - 1, len(closes)):
+        hh = max(highs[i - n + 1:i + 1])
+        ll = min(lows[i - n + 1:i + 1])
+        if hh == ll:
+            rsv_list.append(50.0)
+        else:
+            rsv = (closes[i] - ll) / (hh - ll) * 100
+            rsv_list.append(rsv)
+    # 保留完整 K/D 序列以输出 prev_K/prev_D，支持金叉时刻判定
+    k, d = 50.0, 50.0
+    k_history, d_history = [k], [d]
+    for rsv in rsv_list:
+        k = (k_smooth - 1) / k_smooth * k + (1 / k_smooth) * rsv
+        d = (d_smooth - 1) / d_smooth * d + (1 / d_smooth) * k
+        k_history.append(k)
+        d_history.append(d)
+    j = 3 * k - 2 * d
+    return {
+        "K": round(k, 2), "D": round(d, 2), "J": round(j, 2),
+        "prev_K": round(k_history[-2], 2), "prev_D": round(d_history[-2], 2),
+    }
+
+
+def compute_macd(closes: list[float], fast: int = 12,
+                 slow: int = 26, signal: int = 9) -> dict | None:
+    if len(closes) < slow + signal - 1:
+        return None
+
+    def ema(data: list[float], period: int) -> list[float]:
+        result = [data[0]]
+        m = 2 / (period + 1)
+        for v in data[1:]:
+            result.append((v - result[-1]) * m + result[-1])
+        return result
+
+    ema_fast = ema(closes, fast)
+    ema_slow = ema(closes, slow)
+    macd_line = [f - s for f, s in zip(ema_fast, ema_slow, strict=True)]
+    signal_line = ema(macd_line, signal)
+    histogram = [m - s for m, s in zip(macd_line, signal_line, strict=True)]
+
+    return {
+        "macd": round(macd_line[-1], 4),
+        "signal": round(signal_line[-1], 4),
+        "histogram": round(histogram[-1], 4),
+        "histogram_prev": round(histogram[-2], 4) if len(histogram) >= 2 else 0,
+    }
+
+
+def compute_adx(highs: list[float], lows: list[float],
+                closes: list[float], period: int = 14) -> dict | None:
+    if len(closes) < period * 2:
+        return None
+
+    tr_list, plus_dm_list, minus_dm_list = [], [], []
+    for i in range(1, len(closes)):
+        tr = max(highs[i] - lows[i],
+                 abs(highs[i] - closes[i - 1]),
+                 abs(lows[i] - closes[i - 1]))
+        tr_list.append(tr)
+        up_move = highs[i] - highs[i - 1]
+        down_move = lows[i - 1] - lows[i]
+        plus_dm = up_move if up_move > down_move and up_move > 0 else 0
+        minus_dm = down_move if down_move > up_move and down_move > 0 else 0
+        plus_dm_list.append(plus_dm)
+        minus_dm_list.append(minus_dm)
+
+    def _smooth(data: list[float], p: int) -> list[float]:
+        result = [sum(data[:p]) / p]
+        for v in data[p:]:
+            result.append((result[-1] * (p - 1) + v) / p)
+        return result
+
+    atr = _smooth(tr_list, period)
+    plus_di = _smooth(plus_dm_list, period)
+    minus_di = _smooth(minus_dm_list, period)
+
+    adx_list = _smooth([
+        abs(p - m) / max(p + m, 0.001) * 100
+        for p, m in zip(plus_di, minus_di, strict=True)
+    ], period)
+
+    return {
+        "adx": round(adx_list[-1], 2),
+        "plus_di": round(plus_di[-1] / max(atr[-1], 0.001) * 100, 2),
+        "minus_di": round(minus_di[-1] / max(atr[-1], 0.001) * 100, 2),
+    }
+
+
+def compute_bollinger_bands(closes: list[float], period: int = 20,
+                             std_mult: float = 2.0) -> dict | None:
+    if len(closes) < period:
+        return None
+    window = closes[-period:]
+    ma = sum(window) / period
+    variance = sum((x - ma) ** 2 for x in window) / period
+    std = variance ** 0.5
+    upper = ma + std_mult * std
+    lower = ma - std_mult * std
+    current = closes[-1]
+    bandwidth = (upper - lower) / max(ma, 0.001)
+    b_pct = 0.5 if upper == lower else (current - lower) / (upper - lower)
+    return {
+        "upper": round(upper, 4),
+        "middle": round(ma, 4),
+        "lower": round(lower, 4),
+        "bandwidth": round(bandwidth, 4),
+        "b_pct": round(b_pct, 4),
+    }
+
+
+def compute_atr(highs: list[float], lows: list[float],
+                closes: list[float], period: int = 14) -> float | None:
+    if len(closes) < period + 1:
+        return None
+    tr_list = []
+    for i in range(1, len(closes)):
+        tr = max(highs[i] - lows[i],
+                 abs(highs[i] - closes[i - 1]),
+                 abs(lows[i] - closes[i - 1]))
+        tr_list.append(tr)
+    atr = sum(tr_list[:period]) / period
+    for v in tr_list[period:]:
+        atr = (atr * (period - 1) + v) / period
+    return round(atr, 4)
+
+
+def compute_obv(closes: list[float], volumes: list[float]) -> dict | None:
+    if len(closes) < 2 or len(volumes) < 2:
+        return None
+    n = min(len(closes), len(volumes))
+    obv = 0
+    obv_history = [0]
+    for i in range(1, n):
+        if closes[i] > closes[i - 1]:
+            obv += volumes[i]
+        elif closes[i] < closes[i - 1]:
+            obv -= volumes[i]
+        obv_history.append(obv)
+    recent_5 = obv_history[-5:]
+    # 严格单调：uptrend 用 <，downtrend 用 >，平价序列两者都为 False，趋势为 0
+    uptrend = all(recent_5[i] < recent_5[i + 1] for i in range(len(recent_5) - 1))
+    downtrend = all(recent_5[i] > recent_5[i + 1] for i in range(len(recent_5) - 1))
+    trend = 1 if uptrend else (-1 if downtrend else 0)
+    return {"obv": obv, "obv_trend": trend}

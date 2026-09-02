@@ -1,6 +1,41 @@
 /logs
 /*.db
+*.db-shm
+*.db-wal
 /__pycache__
 /.claude
 /.opencode
 /scanner/__pycache__/*.pyc
+/scanner/evolution/__pycache__
+**/__pycache__/
+
+# IDE / 个人会话数据（含本地绝对路径与私人笔记，不入库）
+.vscode/
+.trae/
+.workbuddy/
+/opencode.json
+/opencode-quota/
+
+/.reasonix
+
+# 回测产物（组合级对比报告，临时，不入库）
+pb_*.txt
+backfill_log.txt
+
+# 孤儿表导出备份（scripts/dump_orphan_tables.sql 的产物，数据量大且可从库重建）
+orphan_tables_backup.sql
+
+
+# THS 候选池 / 环境变量（API Key 等）
+.env
+
+# Node
+node_modules/
+
+# Python caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# 输出产物
+graphify-out/
