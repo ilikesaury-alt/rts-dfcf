@@ -121,9 +121,15 @@ def load_rows_replay(conn: sqlite3.Connection, days: int) -> list[dict]:
             pos = next((i for i, (kd, _) in enumerate(lst) if kd == d), None)
             closes_upto = [c for kd, c in lst[: pos + 1]] if pos is not None else []
             r: dict[str, Any] = {
-                "date": d, "symbol": sym, "name": "", "percent": None, "rank": rk,
-                "rank_trend": None, "bias20": compute_bias20(closes_upto),
-                "acc5": compute_acc5(closes_upto), "market_cap": None,
+                "date": d,
+                "symbol": sym,
+                "name": "",
+                "percent": None,
+                "rank": rk,
+                "rank_trend": None,
+                "bias20": compute_bias20(closes_upto),
+                "acc5": compute_acc5(closes_upto),
+                "market_cap": None,
             }
             rows.append(r)
     _attach_next_pct(conn, rows)
@@ -183,8 +189,15 @@ def load_rows_pool_log(conn: sqlite3.Connection, days: int) -> list[dict]:
     start = f"{days} days ago"
     rows = [
         {
-            "date": r[0], "symbol": r[1], "name": r[2], "percent": r[3], "rank": r[4],
-            "rank_trend": r[5], "bias20": r[6], "acc5": r[7], "market_cap": r[8],
+            "date": r[0],
+            "symbol": r[1],
+            "name": r[2],
+            "percent": r[3],
+            "rank": r[4],
+            "rank_trend": r[5],
+            "bias20": r[6],
+            "acc5": r[7],
+            "market_cap": r[8],
         }
         for r in conn.execute(
             "SELECT date, symbol, name, percent, rank, rank_trend, bias20, acc5, market_cap "
@@ -249,11 +262,15 @@ def _bucket_stats(rows: list[dict[str, Any]]) -> tuple[int, float, float, float,
         return n_valid, 0.0, 0.0, 0.0, 0.0
 
 
-def report_dimension(rows: list[dict], dim: str, buckets: list[tuple[str, Callable[[dict], bool]]], overall: tuple) -> None:
+def report_dimension(
+    rows: list[dict], dim: str, buckets: list[tuple[str, Callable[[dict], bool]]], overall: tuple
+) -> None:
     """单维度分桶报告 + 剔除模拟 + 采纳判据。"""
     total_n, total_hit, total_mean, _, _ = overall
     print(f"\n── 维度：{dim}（全池 n={total_n}, hit7={total_hit:.1f}%, 均值={total_mean:+.2f}%）──")
-    print(f"  {'桶':<10} {'n':>6} {'占比':>6} {'hit7%':>7} {'次日均值':>9} {'中位':>7} {'P75':>7}  剔除后hit7→(Δ)  判定")
+    print(
+        f"  {'桶':<10} {'n':>6} {'占比':>6} {'hit7%':>7} {'次日均值':>9} {'中位':>7} {'P75':>7}  剔除后hit7→(Δ)  判定"
+    )
     for label, pred in buckets:
         sub = [r for r in rows if pred(r)]
         n, hit, mean, med, p75 = _bucket_stats(sub)
@@ -319,7 +336,9 @@ def backfill(conn: sqlite3.Connection, rows: list[dict]) -> None:
     for r in rows:
         if r["next_pct"] is None:
             continue
-        cur = conn.execute("UPDATE pool_log SET next_day_pct=? WHERE date=? AND symbol=?", (r["next_pct"], r["date"], r["symbol"]))
+        cur = conn.execute(
+            "UPDATE pool_log SET next_day_pct=? WHERE date=? AND symbol=?", (r["next_pct"], r["date"], r["symbol"])
+        )
         filled += cur.rowcount
     conn.commit()
     print(f"[backfill] pool_log.next_day_pct 已回填 {filled} 行")
@@ -330,9 +349,15 @@ def main() -> None:
     parser.add_argument("--days", type=int, default=60, help="回看自然日数（默认 60）")
     parser.add_argument("--dim", nargs="*", default=["rank", "board_days", "acc5", "mcap", "labels"], help="分析维度")
     parser.add_argument("--csv", type=str, default=None, help="明细落 CSV 路径")
-    parser.add_argument("--source", choices=["auto", "pool_log", "replay"], default="auto",
-                        help="样本源：auto=pool_log 样本不足自动回放（默认）/ pool_log / replay")
-    parser.add_argument("--backfill", action="store_true", help="回填 pool_log.next_day_pct（显式写库，仅 pool_log 源）")
+    parser.add_argument(
+        "--source",
+        choices=["auto", "pool_log", "replay"],
+        default="auto",
+        help="样本源：auto=pool_log 样本不足自动回放（默认）/ pool_log / replay",
+    )
+    parser.add_argument(
+        "--backfill", action="store_true", help="回填 pool_log.next_day_pct（显式写库，仅 pool_log 源）"
+    )
     args = parser.parse_args()
 
     conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True) if not args.backfill else sqlite3.connect(DB_PATH)
@@ -383,12 +408,37 @@ def main() -> None:
 
             with open(args.csv, "w", newline="", encoding="utf-8-sig") as f:
                 w = csv.writer(f)
-                w.writerow(["date", "symbol", "name", "rank", "board_days", "acc5", "bias20",
-                            "market_cap", "labels", "next_pct", "hit7"])
+                w.writerow(
+                    [
+                        "date",
+                        "symbol",
+                        "name",
+                        "rank",
+                        "board_days",
+                        "acc5",
+                        "bias20",
+                        "market_cap",
+                        "labels",
+                        "next_pct",
+                        "hit7",
+                    ]
+                )
                 for r in sample:
-                    w.writerow([r["date"], r["symbol"], r["name"], r["rank"], r["board_days"],
-                                r["acc5"], r["bias20"], r["market_cap"], "|".join(r["labels"]),
-                                f"{r['next_pct']:.2f}", int(r["hit7"])])
+                    w.writerow(
+                        [
+                            r["date"],
+                            r["symbol"],
+                            r["name"],
+                            r["rank"],
+                            r["board_days"],
+                            r["acc5"],
+                            r["bias20"],
+                            r["market_cap"],
+                            "|".join(r["labels"]),
+                            f"{r['next_pct']:.2f}",
+                            int(r["hit7"]),
+                        ]
+                    )
             print(f"明细已写入 {args.csv}")
         if args.backfill:
             if args.source == "replay":

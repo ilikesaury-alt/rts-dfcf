@@ -891,22 +891,33 @@ def build_scan_view(
         # 并显式告警（代码 bug 则冒泡到主循环记录完整 traceback）。
         warnings.append(f"策略优选池构建中断（数据缺失）: {type(_e).__name__}: {_e}")
 
+    # v1 主表 symbol 集合（用于 v2 池选去重：已在主表展示的票不重复展示）
+    _v1_symbols = {row.entry["symbol"] for row in main_rows}
+
     # v2 池选区（双跑同屏）：榜上排名升序 → 涨幅降序（_v2_pool_sort_key，2026-09-03 用户确认），
     # 行结构与主表同源（复用 MainRow，终端/飞书共用同一份排序结果）。只展示前
     # V2_POOL_DISPLAY_TOP 行（全量快照仍在 pool_log/落库），pool_total 保留全量计数。
     pool_rows: list[MainRow] = []
     pool_total = 0
+    # 减仓类纪律标签（卖出信号）：有这些标签的票从 v2 池选区过滤掉
+    _SELL_TAGS = {"⬇减仓", "⬇减半", "🔻勿接", "💰落袋"}
     try:
         # 预计算行情/排名各一次（排序与行构建复用同一份，消除原每行两次 _entry_display_quote）。
+        # 过滤掉已在 v1 主表展示的票（避免重复展示）和有减仓类纪律标签的票。
         _pool_quoted: list[tuple[RecommendationRow, float, float, float | None, Candidate | None]] = []
         for _pe in pool_pick_recs:
+            if _pe["symbol"] in _v1_symbols:
+                continue  # 已在 v1 主表，跳过
+            # 检查减仓类纪律标签
+            _fc = _fresh_candidate(_pe)
+            if _fc and _fc.tactic_tags and any(t in _SELL_TAGS for t in _fc.tactic_tags):
+                continue  # 有减仓类标签，跳过
             _pct_row, _cur_row = _entry_display_quote(_pe)
-            _fresh_c = _fresh_candidate(_pe)
             _rk_disp = _pe.get("live_rank") or _pe.get("rank")
-            if _rk_disp is None and _fresh_c:
-                _rk_disp = _fresh_c.stock.rank
+            if _rk_disp is None and _fc:
+                _rk_disp = _fc.stock.rank
             _rk_val = _rk_disp if isinstance(_rk_disp, (int, float)) and _rk_disp > 0 else None
-            _pool_quoted.append((_pe, _pct_row, _cur_row, _rk_val, _fresh_c))
+            _pool_quoted.append((_pe, _pct_row, _cur_row, _rk_val, _fc))
         _pool_quoted.sort(key=lambda t: _v2_pool_sort_key(bool(_entry_dip_labels(t[0])), t[1], t[3]))
         pool_total = len(_pool_quoted)
         for _pe, _pct_row, _cur_row, _rk_val, _fresh_c in _pool_quoted[:V2_POOL_DISPLAY_TOP]:
@@ -1033,7 +1044,7 @@ def render_terminal(view: ScanView) -> None:
         )
 
     # ── 策略优选池 ──
-    print(f"  {ANSI['BOLD']}◆ 策略优选池 — 按优先级排序{ANSI['RESET']}")
+    print(f"  {ANSI['BOLD']}◆ 策略优选池 — 榜上优先·涨幅升序·回调核心{ANSI['RESET']}")
     print(_table_header(COLS_POOL))
     for _si, row in enumerate(view.main_rows, 1):
         _emit_pool_table_row(view, row, _si)
