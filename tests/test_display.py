@@ -777,6 +777,22 @@ def test_display_priority_pool_pick_kept_out_of_main_even_higher_pct(capsys):
     assert "SZ300002" in out and "◆ v2 池选" in out, "pool_pick 应在 v2 池选区展示"
 
 
+def test_display_priority_pool_pick_dip_label_segment_sorted(capsys):
+    """方案B（2026-09-03）：v2 池选两段式排序——命中低吸标签的票排前段
+    （段内榜上排名/涨幅），行尾 💡 标签渲染使排序可解释。"""
+    conn = _rec_db()
+    _insert_rec_sb(conn, "SZ300001", "无标签", "pool_pick", 70, 9.9, "{}")  # 高涨幅无标签
+    _insert_rec_sb(conn, "SZ300002", "有标签", "pool_pick", 70, 1.0, '{"dip_labels": ["弱转强"]}')  # 低涨幅有标签
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    assert "◆ v2 池选" in out
+    assert "💡弱转强" in out, "低吸标签应行尾渲染（排序可解释）"
+    pool_part = out.split("v2 池选")[1]
+    pool_syms = [ln for ln in pool_part.splitlines() if "SZ30000" in ln]
+    assert "SZ300002" in pool_syms[0], f"有标签票应排前段（与涨幅无关）: {pool_syms}"
+    assert "SZ300001" in pool_syms[1], f"无标签票应沉后段: {pool_syms}"
+
+
 def test_display_priority_core_dip_capped(monkeypatch, capsys):
     """核心低吸区最多显示 COMEBACK_DISPLAY_MAX 条（超量截断，避免刷屏）。
     （原回马枪区截断测试，区块移除后改测核心低吸区，2026-09-03）"""

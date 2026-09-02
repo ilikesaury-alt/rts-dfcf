@@ -245,16 +245,26 @@ def _entry_display_quote(entry: RecommendationRow | dict) -> tuple[float, float]
     return pct, cur
 
 
-def _v2_pool_sort_key(pct: float, is_live: bool, rank: float | None) -> tuple:
-    """v2 池选区排序键（2026-09-03）：实时优先 → 涨幅降序 → 榜上排名升序。
+def _v2_pool_sort_key(has_label: bool, pct: float, rank: float | None) -> tuple:
+    """v2 池选区排序键（2026-09-03 方案B 用户确认）：低吸标签优先 → 榜上排名升序 → 涨幅降序。
 
-    - is_live：有实时行情的票在前，stale/掉榜票（涨幅为快照旧值）沉底——杜绝旧涨幅
-      票混进实时序列造成「显示涨幅与排序位次矛盾」；全市场无实时行情（收盘后）时
-      全部同为 1，退化为纯涨幅序，口径仍然同源。
-    - 同涨幅按榜上 rank 升序、rank 缺失排最后——消除平局洗牌（此前仅按涨幅降序，
-      平局序随 DB 返回序每轮漂移）。
+    - 主键：命中任一低吸标签（超跌反转/缩量回调/均线支撑/放量突破/弱转强）的票进前段
+      ——区块名「低吸匹配」落到排序；无标签段沉后。
+    - 段内：榜上排名升序（rank 缺失即掉榜票 10**9 沉底）；同排名按涨幅降序消除平局洗牌。
+    - 抖动口径（简版）：标签依赖当日 bar，盘中可能进出导致段间越界跳动，接受
+      （主键 rank 段内不变；粘性并集留作杠杆，见 dal pool_pick 落库）。
     """
-    return (0 if is_live else 1, -pct, rank if rank is not None else 10**9)
+    return (0 if has_label else 1, rank if rank is not None else 10**9, -pct)
+
+
+def _entry_dip_labels(entry: RecommendationRow | dict) -> list[str]:
+    """单条推荐记录的低吸语义标签（matcher 层标注，单源回退链）。
+
+    统一走 _entry_dims（ranking.py）：实时候选 dims → DB score_breakdown → 空。
+    排序与行尾渲染共用，杜绝两处口径漂移。
+    """
+    labels = _entry_dims(entry).get("dip_labels")
+    return labels if isinstance(labels, list) and labels else []
 
 
 def _entry_sector(entry: RecommendationRow | dict) -> str:
@@ -279,11 +289,14 @@ def _entry_row_suffix(
     flow_pct_map: dict[str, float],
     marked: bool = False,
     breakout_marked: bool = False,
+    dip_labels: list[str] | None = None,
 ) -> str:
-    """行尾可变区统一渲染：风险标记 → 资金流/连板 extra → 🎯 → ⚡。
+    """行尾可变区统一渲染：风险标记 → 资金流/连板 extra → 🎯 → ⚡ → 💡低吸标签。
 
-    优选池行与回马枪/核心低吸区行共用（2026-08-30 收口）——此前仅补充区渲染这些
+    优选池行与核心低吸区行共用（2026-08-30 收口）——此前仅补充区渲染这些
     标记，主视图优选池行丢失 🎯/⚡/资金流信息。顺序与原 _print_priority_row 一致。
+    dip_labels：v2 池选行的低吸语义标签（matcher 层标注，两段式排序依据，
+    2026-09-03 方案B）——渲染为 💡 段使排序可解释，纯展示不参与评分。
     """
     c = _fresh_candidate(entry)
     parts: list[str] = []
@@ -309,6 +322,8 @@ def _entry_row_suffix(
         parts.append(f" {ANSI['GREEN']}🎯{ANSI['RESET']}")
     if breakout_marked:
         parts.append(f" {ANSI['CYAN']}⚡{ANSI['RESET']}")
+    if dip_labels:
+        parts.append(f" {ANSI['CYAN']}💡{'·'.join(dip_labels)}{ANSI['RESET']}")
     # 盘中操作纪律标签（纯展示，不参与排序/评分）
     if c and getattr(c, "tactic_tags", None):
         for tag in c.tactic_tags:
@@ -880,7 +895,7 @@ def build_scan_view(
         # 并显式告警（代码 bug 则冒泡到主循环记录完整 traceback）。
         warnings.append(f"策略优选池构建中断（数据缺失）: {type(_e).__name__}: {_e}")
 
-    # v2 池选区（双跑同屏）：实时优先 → 涨幅降序 → 榜上排名升序（_v2_pool_sort_key），
+    # v2 池选区（双跑同屏）：榜上排名升序 → 涨幅降序（_v2_pool_sort_key，2026-09-03 用户确认），
     # 行结构与主表同源（复用 MainRow，终端/飞书共用同一份排序结果）。只展示前
     # V2_POOL_DISPLAY_TOP 行（全量快照仍在 pool_log/落库），pool_total 保留全量计数。
     pool_rows: list[MainRow] = []
@@ -896,7 +911,7 @@ def build_scan_view(
                 _rk_disp = _fresh_c.stock.rank
             _rk_val = _rk_disp if isinstance(_rk_disp, (int, float)) and _rk_disp > 0 else None
             _pool_quoted.append((_pe, _pct_row, _cur_row, _rk_val, _fresh_c))
-        _pool_quoted.sort(key=lambda t: _v2_pool_sort_key(t[1], bool(t[0].get("live_quote_available")), t[3]))
+        _pool_quoted.sort(key=lambda t: _v2_pool_sort_key(bool(_entry_dip_labels(t[0])), t[1], t[3]))
         pool_total = len(_pool_quoted)
         for _pe, _pct_row, _cur_row, _rk_val, _fresh_c in _pool_quoted[:V2_POOL_DISPLAY_TOP]:
             _av = None
@@ -997,10 +1012,13 @@ def render_terminal(view: ScanView) -> None:
         _sc_str = f"{row.score:.0f}" if row.score else "—"
         _cur_str = f"{row.current:.2f}" if row.current else "—"
         _sec = _trunc(row.sector, COLS_POOL[7][1])
-        # 行尾标记与回马枪/低吸区同源（_entry_row_suffix）：风险/资金流/🎯/⚡。
+        # 行尾标记与低吸区同源（_entry_row_suffix）：风险/资金流/🎯/⚡/💡低吸标签。
         _marked = view.nextday_mark.get((_e["symbol"], _e["category"]), False)
         _bolt = view.breakout_mark.get((_e["symbol"], _e["category"]), False)
-        _suffix = _entry_row_suffix(_e, view.flow_pct_map, marked=_marked, breakout_marked=_bolt)
+        _pool_labels = _entry_dip_labels(_e) if _e["category"] == V2_CATEGORY else None
+        _suffix = _entry_row_suffix(
+            _e, view.flow_pct_map, marked=_marked, breakout_marked=_bolt, dip_labels=_pool_labels
+        )
         print(
             _table_row(
                 [
@@ -1030,9 +1048,7 @@ def render_terminal(view: ScanView) -> None:
     if view.pool_rows:
         _pool_top = len(view.pool_rows)
         _pool_cnt = f"（前{_pool_top}/共{view.pool_total}只）" if view.pool_total > _pool_top else ""
-        print(
-            f"\n{ANSI['BOLD']}◆ v2 池选 — 池→排雷→低吸匹配（实时优先·涨幅降序·榜上排名次序）{_pool_cnt}{ANSI['RESET']}"
-        )
+        print(f"\n{ANSI['BOLD']}◆ v2 池选 — 池→排雷→低吸匹配（榜上排名次序·涨幅降序）{_pool_cnt}{ANSI['RESET']}")
         print(_table_header(COLS_POOL))
         for _vi, row in enumerate(view.pool_rows, 1):
             _emit_pool_table_row(view, row, _vi)
