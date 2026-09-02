@@ -263,7 +263,7 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
 
     2026-08-29：此前 _build_card 读「本轮候选桶」（new_faces/momentum/...），终端
     display_priority 读「DB 当日累计推荐」——同一只票可能一边排第 1、另一边不出现。
-    现统一由 build_scan_view 供数；回马枪/核心低吸区是否出现也跟随终端门控
+    现统一由 build_scan_view 供数；核心低吸区是否出现也跟随终端门控
     （view.show_comeback / show_core_dip），保证「终端看得到什么，卡片就推什么」。
 
     top_n 默认 FEISHU_TOP_N，与 _view_symbols 共用同一常量，去重集合与展示条数永不同源漂移。
@@ -298,8 +298,6 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
                 ],
             )
         )
-    if view.show_comeback:
-        sections.append(("◆ 回马枪", [_row_line(e, view) for e in view.comeback_rows]))
     if view.show_core_dip:
         sections.append(("◆ 核心方向低吸", [_row_line(e, view) for e in view.core_dip_rows]))
 

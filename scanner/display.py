@@ -11,9 +11,6 @@ from scanner.config import (
     CORE_DIP_CATEGORY,
     CORE_PULLBACK_MAX,
     CORE_PULLBACK_MIN,
-    NEXTDAY_RULE_ATRPCT_MIN,
-    NEXTDAY_RULE_MA5R_MIN,
-    NEXTDAY_RULE_RET20_MAX,
     TOP40_THRESHOLD,
     V2_POOL_DISPLAY_TOP,
     now_beijing,
@@ -567,21 +564,6 @@ def _adjusted_picks(today_recs, nextday_mark, conn, flow_pct_map, top_n=10, weak
     return [(e["name"], e["category"], nextday_mark.get((e["symbol"], e["category"]), False)) for e in ordered[:top_n]]
 
 
-def _pick_tag(cat: str, marked: bool) -> str:
-    """动态推荐行内用的极简分类标签（2 字以内），配色辅助快速区分。"""
-    if cat == "core_dip":
-        return "低吸"
-    if cat == "comeback":
-        return "回马"
-    if cat == "pool_pick":
-        return "池选"
-    if cat in ("rebound", "short_term"):
-        if marked:
-            return "🎯弹" if cat == "rebound" else "🎯转"
-        return "反弹" if cat == "rebound" else "弱转"
-    return {"momentum": "动量", "known_new_face": "kNF", "new_face": "新面"}.get(cat, cat)
-
-
 # ── 展示视图模型（2026-08-29）──
 # 此前终端「读 DB 当日累计推荐」、飞书「读本轮候选桶」，两个出口各渲染各的——
 # 同一只票可能一边排第 1、另一边不出现。ScanView 收口为唯一展示数据源：
@@ -614,15 +596,6 @@ COLS_DETAIL: tuple = (
     ("策略", 5, "r"),  # 行内策略标签为右对齐（沿用 _print_priority_row 原渲染口径）
     ("评分", 4, "r"),
     ("时间", 6, "l"),
-)
-COLS_RULE: tuple = (
-    ("#", 3, "r"),
-    ("代码", 12, "l"),
-    ("名称", 10, "l"),
-    ("离5日线", 8, "r"),
-    ("波幅%", 7, "r"),
-    ("20日涨%", 8, "r"),
-    ("状态", 6, "l"),
 )
 
 
@@ -1065,39 +1038,12 @@ def render_terminal(view: ScanView) -> None:
             _emit_pool_table_row(view, row, _vi)
         print(f"  {'-' * 92}")
 
-    # ── 动态推荐 / ⚡ ──
-    if view.adj_picks:
-        _seen = set()
-        _parts = []
-        for _n, _c, _m in view.adj_picks:
-            _tag = _pick_tag(_c, _m)
-            _key = (_tag, _c)
-            if _key in _seen:
-                continue
-            _seen.add(_key)
-            if _c == "core_dip":
-                _parts.append(f"{ANSI['GREEN']}{_tag}{ANSI['RESET']}")
-            elif _c == "comeback":
-                _parts.append(f"{ANSI['CYAN']}{_tag}{ANSI['RESET']}")
-            elif _m:
-                _parts.append(f"{ANSI['BOLD']}{ANSI['MAGENTA']}{_tag}{ANSI['RESET']}")
-            else:
-                _parts.append(_tag)
-        print(f"  {ANSI['BOLD']}动态推荐{ANSI['RESET']}: {' > '.join(_parts)}")
+    # ── ⚡ 蓄势突破观察（动态推荐区已按需求移除，2026-09-03；adj_picks 仍在 ScanView 保留供复用）──
     if any(view.breakout_mark.values()):
         print(
             f"  {ANSI['CYAN']}⚡ 蓄势突破观察{ANSI['RESET']}（缩量回调蓄势位·含新面孔/重上榜两变体"
             f"·样本收集中·非排序因子）"
         )
-
-    # ── 回马枪独立区 ──
-    if view.show_comeback:
-        print(f"\n{ANSI['CYAN']}◆ 回马枪 — 掉榜跟踪/回调买点（主区稀少·补充参考）{ANSI['RESET']}")
-        print(_table_header(COLS_DETAIL))
-        for ci, entry in enumerate(view.comeback_rows, 1):
-            _print_priority_row(entry, ci, view.flow_pct_map, last_ranks=view.last_ranks)
-        print("  排序=今日波动（涨多/跌狠优先）→主力净占比→评分。")
-        print(f"  {'-' * 92}")
 
     # ── 核心方向低吸独立区（2026-08-19，scanner/core_themes.py）──
     # 大跌市中找「当前主线方向核心股低吸」参考。2026-08-19 起随扫描落库
@@ -1108,45 +1054,6 @@ def render_terminal(view: ScanView) -> None:
         for di, entry in enumerate(view.core_dip_rows, 1):
             _print_priority_row(entry, di, view.flow_pct_map, last_ranks=view.last_ranks)
         print("  排序=今日波动（涨多/跌狠优先）→主力回流→回撤深→龙头强。")
-        print(f"  {'-' * 92}")
-
-    # ── 次日大涨高概率候选（实证规则，2026-08-30）──
-    # 规则阈值从 config 读取（单源，与 scanner/nextday_rule.py 同一套常量）。
-    # H2 盲测 LIFT 2.58x，均值 +1.31%（脚本 nextday_rule_scan.py 可复现）。
-    # 全部只用已完成 bar，盘中任意时刻可算，全天不漂移。
-    _rp = view.rule_result
-    if _rp and _rp.picks:
-        _rule_desc = (
-            f"ma5r≥{NEXTDAY_RULE_MA5R_MIN:.0f}% & atrpct≥{NEXTDAY_RULE_ATRPCT_MIN:.0f}%"
-            f" & ret20≤{NEXTDAY_RULE_RET20_MAX:.0f}%"
-        )
-        print(f"\n{ANSI['BOLD']}{ANSI['YELLOW']}◆ 次日大涨高概率候选（实证规则）{ANSI['RESET']}（{_rule_desc}）")
-        print(_table_header(COLS_RULE))
-        for ri, pick in enumerate(_rp.picks, 1):
-            _status = (
-                f"{ANSI['GREEN']}已推荐{ANSI['RESET']}" if pick.already_rec else f"{ANSI['YELLOW']}新增{ANSI['RESET']}"
-            )
-            print(
-                _table_row(
-                    [
-                        str(ri),
-                        pick.symbol,
-                        pick.name,
-                        f"{pick.ma5r:+.1f}%",
-                        f"{pick.atrpct:.1f}",
-                        f"{pick.ret20:+.1f}%",
-                        _status,
-                    ],
-                    COLS_RULE,
-                )
-            )
-        _rec_cnt = sum(1 for p in _rp.picks if p.already_rec)
-        _new_cnt = _rp.rule_hit - _rec_cnt
-        print(
-            f"  命中 {_rp.rule_hit}/{_rp.board_size} 只"
-            f"（已推荐 {_rec_cnt} + 新增 {_new_cnt}）"
-            f"  H2 盲测 LIFT 1.53x · 均次日 +1.59% · 跌超7% 7.5%"
-        )
         print(f"  {'-' * 92}")
 
 

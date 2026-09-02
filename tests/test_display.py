@@ -141,8 +141,9 @@ def test_market_extra_str_zt_kept():
 
 
 def _main_lines(out: str) -> list[str]:
-    """策略优选池+回马枪+核心低吸区行（动态推荐之前），用于测试断言。"""
-    main_part = out.split("动态推荐")[0]
+    """策略优选池+v2 池选区行（核心低吸区之前），用于测试断言。
+    （动态推荐/回马枪/次日大涨规则区已移除，2026-09-03）"""
+    main_part = out.split("◆ 核心方向低吸")[0]
     return [ln for ln in main_part.splitlines() if "SZ30000" in ln]
 
 
@@ -173,8 +174,8 @@ def test_display_priority_fund_flow_icon_from_db(capsys):
     conn.executemany(
         "INSERT INTO recommendations (date, time, symbol, name, category, score, percent) VALUES (?, ?, ?, ?, ?, ?, ?)",
         [
-            (today, "13:00", "SZ300001", "有数据", "comeback", 60, 2.0),
-            (today, "13:00", "SZ300002", "无数据", "comeback", 55, 1.0),
+            (today, "13:00", "SZ300001", "有数据", "core_dip", 60, 2.0),
+            (today, "13:00", "SZ300002", "无数据", "core_dip", 55, 1.0),
         ],
     )
     conn.execute(
@@ -190,87 +191,7 @@ def test_display_priority_fund_flow_icon_from_db(capsys):
     assert "▲" not in line2
 
 
-# ── 回马枪显示（2026-08-07）──
-def _comeback_candidate(name: str, symbol: str, variant: str, score: int = 70) -> Candidate:
-    k = KlineSummary(
-        trend=f"{variant}·超跌企稳",
-        accumulated_pct=-12.0,
-        volume_ratio=1.5,
-        bottom_confirmed=False,
-        score=score,
-        dimensions={"comeback_variant": variant},
-    )
-    return Candidate(
-        stock=StockInfo(
-            symbol=symbol, name=name, code=symbol[-6:], percent=3.0, current=12.0, value=1e8, rank_change=0, rank=0
-        ),
-        category="comeback",
-        score=score,
-        reason=k.trend,
-        kline=k,
-        off_list=True,
-        comeback_variant=variant,
-    )
-
-
-def test_display_comeback_section(monkeypatch, capsys):
-    """策略桶下线（2026-08-10）后回马枪改走综合排序独立区，变体（反转/回踩）随标签展示。
-    2026-08-12：主区推荐条数 < COMEBACK_DISPLAY_MIN_MAIN（此处为空）时兜底展示，
-    仅显示前 COMEBACK_DISPLAY_MAX 条。"""
-    conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300986", "志特新材", "comeback", 70)
-    _insert_rec_cat(conn, "SZ300111", "回踩股", "comeback", 55)
-    # 变体来源：候选 kline.dimensions（DB-only 行走 trend 前缀）
-    pool = {
-        "SZ300986": _comeback_candidate("志特新材", "SZ300986", "反转", 70),
-        "SZ300111": _comeback_candidate("回踩股", "SZ300111", "回踩", 55),
-    }
-    disp_mod.display_priority(conn, today_pool=pool)
-    out = capsys.readouterr().out
-    assert "◆ 回马枪" in out
-    assert "补充参考" in out
-    line_rt = next(ln for ln in out.splitlines() if "SZ300986" in ln)
-    line_re = next(ln for ln in out.splitlines() if "SZ300111" in ln)
-    assert "CB" in line_rt
-    # 注：回马枪操作建议「回马」原来自已下线的「建议」列（SUGGEST_BY_CAT['comeback']），
-    # 2026-08-28 移除该列后不再出现在数据行；类别标签为 CB，变体随标签展示（反转/回踩）。
-    assert "反转" in line_rt
-    assert "回踩" in line_re
-
-
-def test_display_priority_comeback_hidden_when_main_has_recs(monkeypatch, capsys):
-    """主区充足（>阈值）且大盘强势时不显示回马枪独立区（避免刷屏）。
-    2026-08-24 OR 门：隐藏需同时「主区充足 + 强势」；无市场日志 fail-open 按弱势显示。"""
-    conn = _rec_db()
-    # 主区 6 条（≥ 阈值 3）→ 隐藏回马枪
-    for i in range(1, 7):
-        _insert_rec_cat(conn, f"SZ3000{i}", f"反弹{i}", "rebound", 50 + i)
-    _insert_rec_cat(conn, "SZ300007", "回马", "comeback", 90)
-    _set_market_index(conn, 2.0)
-    disp_mod.display_priority(conn, today_pool={})
-    out = capsys.readouterr().out
-    assert "◆ 回马枪" not in out
-    assert "SZ300007" not in out  # comeback 行随区块整体隐藏
-
-
-def test_display_priority_comeback_shown_when_main_scarce(monkeypatch, capsys):
-    """2026-08-12：主区推荐条数 < COMEBACK_DISPLAY_MIN_MAIN（如盘中仅 1-2 条）时
-    也显示回马枪独立区，避免主区稀少时回马枪条目被整体隐藏。"""
-    conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "反弹", "rebound", 50)
-    _insert_rec_cat(conn, "SZ300002", "回马", "comeback", 90)
-    _insert_rec_cat(conn, "SZ300003", "超短", "short_term", 80)
-    disp_mod.display_priority(conn, today_pool={})
-    out = capsys.readouterr().out
-    assert "◆ 回马枪" in out
-    cb_part = out.split("◆ 回马枪", 1)[1]
-    assert "SZ300002" in cb_part  # comeback 行在回马枪区展示
-    # 主区两行仍在主表
-    main_part = out.split("◆ 回马枪", 1)[0]
-    assert "SZ300001" in main_part
-    assert "SZ300003" in main_part
-
-
+# ── 显示门控工具（回马枪/动态推荐/次日大涨规则区已移除，2026-09-03）──
 def _set_market_index(conn, index_pct: float):
     today = now_beijing().date().isoformat()
     conn.execute(
@@ -279,52 +200,6 @@ def _set_market_index(conn, index_pct: float):
         (today, "10:00", index_pct, today, "test", now_beijing().isoformat()),
     )
     conn.commit()
-
-
-def test_display_priority_comeback_shown_when_main_sparse(monkeypatch, capsys):
-    """回马枪/核心低吸显示门控（阈值 COMEBACK_DISPLAY_MIN_MAIN=5，2026-08-24 用户决策）：
-    唯一显示条件 = 主区（榜上五类）推荐条数 ≤ 5（含为空）；主表 >5 条一律隐藏，
-    无论大盘强弱（此前的弱市 OR 门已移除）。无市场日志无关。"""
-
-    def _build_main2(pct):
-        conn = _rec_db()
-        _insert_rec_cat(conn, "SZ300001", "反弹", "rebound", 50)
-        _insert_rec_cat(conn, "SZ300002", "回马", "comeback", 90)
-        _insert_rec_cat(conn, "SZ300003", "超短", "short_term", 80)
-        _set_market_index(conn, pct)
-        disp_mod.display_priority(conn, today_pool={})
-        return capsys.readouterr().out
-
-    # 主区 2 条（≤ 阈值 5）：弱市 / 强市 / 中性 均显示
-    assert "◆ 回马枪" in _build_main2(-3.0)
-    assert "◆ 回马枪" in _build_main2(2.0)
-    assert "◆ 回马枪" in _build_main2(0.0)
-
-    # 主区 5 条（= 阈值）：仍显示（弱市/强市一致）
-    def _build_five(pct):
-        conn = _rec_db()
-        for i in range(1, 6):
-            _insert_rec_cat(conn, f"SZ3000{i}", f"反弹{i}", "rebound", 50 + i)
-        _insert_rec_cat(conn, "SZ300007", "回马", "comeback", 90)
-        _set_market_index(conn, pct)
-        disp_mod.display_priority(conn, today_pool={})
-        return capsys.readouterr().out
-
-    assert "◆ 回马枪" in _build_five(-3.0)
-    assert "◆ 回马枪" in _build_five(2.0)
-
-    # 主区充足（6 条）> 阈值 5：无论弱市/强市都隐藏
-    def _build_dense(pct):
-        conn = _rec_db()
-        for i in range(1, 7):
-            _insert_rec_cat(conn, f"SZ3000{i}", f"反弹{i}", "rebound", 50 + i)
-        _insert_rec_cat(conn, "SZ300007", "回马", "comeback", 90)
-        _set_market_index(conn, pct)
-        disp_mod.display_priority(conn, today_pool={})
-        return capsys.readouterr().out
-
-    assert "◆ 回马枪" not in _build_dense(-3.0)
-    assert "◆ 回马枪" not in _build_dense(2.0)
 
 
 def test_display_priority_core_dip_shown_when_main_sparse(monkeypatch, capsys):
@@ -381,7 +256,7 @@ def _cand_in_pool(symbol: str, pct: float, cur: float, rank: int) -> Candidate:
         stock=StockInfo(
             symbol=symbol, name="测试", code=symbol[-6:], percent=pct, current=cur, value=1e8, rank_change=0, rank=rank
         ),
-        category="comeback",
+        category="core_dip",
         score=60,
         reason="",
         kline=k,
@@ -392,7 +267,7 @@ def _insert_rec(conn, symbol: str, name: str, percent: float):
     today = now_beijing().date().isoformat()
     conn.execute(
         "INSERT INTO recommendations (date, time, symbol, name, category, score, percent) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (today, "13:00", symbol, name, "comeback", 60, percent),
+        (today, "13:00", symbol, name, "core_dip", 60, percent),
     )
     conn.commit()
 
@@ -537,9 +412,9 @@ def test_rank_delta_str():
 def test_display_priority_rank_delta_from_last_ranks(monkeypatch, capsys):
     """综合排序「排名」列显示较上一轮扫描的雪球榜单排名变化（+N 升 / -N 降）。"""
     conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "升名", "comeback", 60)
-    _insert_rec_cat(conn, "SZ300002", "降名", "comeback", 55)
-    _insert_rec_cat(conn, "SZ300003", "稳名", "comeback", 50)
+    _insert_rec_cat(conn, "SZ300001", "升名", "core_dip", 60)
+    _insert_rec_cat(conn, "SZ300002", "降名", "core_dip", 55)
+    _insert_rec_cat(conn, "SZ300003", "稳名", "core_dip", 50)
     pool = {
         "SZ300001": _cand_in_pool("SZ300001", 2.0, 10.0, 5),
         "SZ300002": _cand_in_pool("SZ300002", 2.0, 10.0, 8),
@@ -558,7 +433,7 @@ def test_display_priority_rank_delta_from_last_ranks(monkeypatch, capsys):
 def test_display_priority_rank_delta_absent_by_default(monkeypatch, capsys):
     """未传 last_ranks（缺省 None）时排名列仅显示名次，不带 +N/-N（回归旧显示）。"""
     conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "仅名次", "comeback", 60)
+    _insert_rec_cat(conn, "SZ300001", "仅名次", "core_dip", 60)
     pool = {"SZ300001": _cand_in_pool("SZ300001", 2.0, 10.0, 5)}
     disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
@@ -589,8 +464,8 @@ def test_display_priority_rank_top40_highlight(monkeypatch, capsys):
     """名次在雪球榜单前 TOP40 内时排名数字加粗+红色高亮；40 名之外不高亮。"""
     _force_ansi(monkeypatch)
     conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "榜内40", "comeback", 60)
-    _insert_rec_cat(conn, "SZ300002", "榜外41", "comeback", 55)
+    _insert_rec_cat(conn, "SZ300001", "榜内40", "core_dip", 60)
+    _insert_rec_cat(conn, "SZ300002", "榜外41", "core_dip", 55)
     pool = {
         "SZ300001": _cand_in_pool("SZ300001", 2.0, 10.0, 40),
         "SZ300002": _cand_in_pool("SZ300002", 2.0, 10.0, 41),
@@ -609,7 +484,7 @@ def test_display_priority_rank_top40_highlight_with_delta(monkeypatch, capsys):
     """高亮只作用于名次数字，不吞掉排名变化（+N/-N 保持原样跟在后面）。"""
     _force_ansi(monkeypatch)
     conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "榜内升名", "comeback", 60)
+    _insert_rec_cat(conn, "SZ300001", "榜内升名", "core_dip", 60)
     pool = {"SZ300001": _cand_in_pool("SZ300001", 2.0, 10.0, 5)}
     disp_mod.display_priority(conn, today_pool=pool, last_ranks={"SZ300001": 8})
     out = capsys.readouterr().out
@@ -622,23 +497,22 @@ def test_display_priority_rank_top40_highlight_with_delta(monkeypatch, capsys):
 # {core_dip} ⊆ 核心股集——高亮比低吸区更宽：可覆盖「创新高走强中的主线龙头」（江天化学
 # 08-19 案例：央国企改革成员、20日+22.3%，回撤0%落不进低吸窗口）。
 def test_display_priority_core_stock_name_highlight(monkeypatch, capsys):
-    """综合排序/回马枪列表里属于核心股（core_stock_symbols 判定）的票名称加粗品红高亮；
+    """综合排序/核心低吸区里属于核心股（core_stock_symbols 判定）的票名称加粗品红高亮；
     非核心股不亮。两区共用 _print_priority_row 同规则。
 
-    回马核心同时有 comeback 与 core_dip 记录时，靠 get_today_recommendations 的去重桶修复
-    （2026-08-19）保住 comeback 行，再按 core_stock_symbols 符号集高亮。
+    回马枪区已移除（2026-09-03），低吸行改走核心方向低吸区验证同一渲染规则。
     """
     _force_ansi(monkeypatch)
-    # 模拟 core_stock_symbols：SZ300001（主表）与 SZ300003（回马枪）今日为核心股
+    # 模拟 core_stock_symbols：SZ300001（主表）与 SZ300003（低吸区）今日为核心股
     monkeypatch.setattr(disp_mod, "core_stock_symbols", lambda conn, today=None: {"SZ300001", "SZ300003"})
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300001", "核心动量", "momentum", 70)
     _insert_rec_cat(conn, "SZ300002", "普通动量", "momentum", 65)
-    _insert_rec_cat(conn, "SZ300003", "回马核心", "comeback", 80)
-    _insert_rec_cat(conn, "SZ300004", "回马普通", "comeback", 70)
+    _insert_rec_cat(conn, "SZ300003", "低吸核心", "core_dip", 80)
+    _insert_rec_cat(conn, "SZ300004", "低吸普通", "core_dip", 70)
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
-    # 主表行先于回马枪区渲染，next() 取到的是主表/回马枪区行
+    # 主表行先于低吸区渲染，next() 取到的是主表/低吸区行
     lines = {
         sym: next(row for row in out.splitlines() if sym in row)
         for sym in ["SZ300001", "SZ300002", "SZ300003", "SZ300004"]
@@ -647,19 +521,19 @@ def test_display_priority_core_stock_name_highlight(monkeypatch, capsys):
     assert disp_mod.ANSI["MAGENTA"] in lines["SZ300001"]
     assert disp_mod.ANSI["BOLD"] in lines["SZ300001"]
     assert disp_mod.ANSI["MAGENTA"] not in lines["SZ300002"]
-    # 回马枪区：回马核心高亮，回马普通不亮
-    assert "◆ 回马枪" in out
+    # 低吸区：低吸核心高亮，低吸普通不亮
+    assert "◆ 核心方向低吸" in out
     assert disp_mod.ANSI["MAGENTA"] in lines["SZ300003"]
     assert disp_mod.ANSI["MAGENTA"] not in lines["SZ300004"]
 
 
 def test_display_priority_no_core_stock_no_highlight(monkeypatch, capsys):
-    """今日无核心股（core_stock_symbols 空集）时，主表/回马枪均无高亮（空集判定不误伤）。"""
+    """今日无核心股（core_stock_symbols 空集）时，主表/低吸区均无高亮（空集判定不误伤）。"""
     _force_ansi(monkeypatch)
     monkeypatch.setattr(disp_mod, "core_stock_symbols", lambda conn, today=None: set())
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300001", "动量票", "momentum", 70)
-    _insert_rec_cat(conn, "SZ300002", "回马票", "comeback", 70)
+    _insert_rec_cat(conn, "SZ300002", "低吸票", "core_dip", 70)
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     lines = [row for row in out.splitlines() if "SZ30000" in row]
@@ -738,8 +612,8 @@ def test_entry_display_quote_fallback_chain():
 
 
 def test_display_priority_recommended_region_shown_when_main_dense(monkeypatch, capsys):
-    """动态推荐弱市把核心低吸/回马枪排到前列时，即使主区密集也强制展示对应区
-    （修复「动态推荐=低吸 却看不到对应标的」的割裂）。强市下这两类排在末尾，仍保持隐藏门。"""
+    """弱市 regime 下主区密集也强制展示核心低吸区（修复「推荐了却看不到标的」割裂）。
+    （动态推荐/回马枪区已移除，2026-09-03；核心低吸区保留弱市强制展示门）"""
     monkeypatch.setattr(disp_mod, "_regime_weak", lambda conn, lookback=10: True)
     conn = _rec_db()
     for i in range(1, 7):
@@ -760,15 +634,10 @@ def test_display_priority_recommended_region_shown_when_main_dense(monkeypatch, 
             _json.dumps({"run": 0.2, "pullback": -0.1, "flow_pct": 5.0}),
         ),
     )
-    conn.execute(
-        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (now_beijing().date().isoformat(), "13:00", "SZ300088", "回马", "comeback", 90, 3.0),
-    )
     conn.commit()
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
-    assert "◆ 核心方向低吸" in out, "动态推荐=低吸 时主区密集也应展示核心低吸区"
-    assert "◆ 回马枪" in out, "动态推荐=回马 时主区密集也应展示回马枪区"
+    assert "◆ 核心方向低吸" in out, "弱市 regime 下主区密集也应展示核心低吸区"
 
 
 # ── 综合排序分组顺序（2026-08-07 复核：rebound > short_term > momentum > known_new_face > new_face > pullback）──
@@ -879,7 +748,7 @@ def test_display_priority_pool_pick_independent_section_sorted(capsys):
     assert "◆ v2 池选" in out, "双跑同屏：pool_pick 必须有独立 v2 池选区"
 
     main_part = out.split("v2 池选")[0]
-    pool_part = out.split("v2 池选")[1].split("动态推荐")[0]
+    pool_part = out.split("v2 池选")[1]
     main_syms = [ln for ln in main_part.splitlines() if "SZ30000" in ln]
     pool_syms = [ln for ln in pool_part.splitlines() if "SZ30000" in ln]
 
@@ -908,38 +777,18 @@ def test_display_priority_pool_pick_kept_out_of_main_even_higher_pct(capsys):
     assert "SZ300002" in out and "◆ v2 池选" in out, "pool_pick 应在 v2 池选区展示"
 
 
-def test_display_priority_comeback_separate_region(monkeypatch, capsys):
-    """方案A：回马枪独立成区（主区无推荐时兜底），区内按资金流优先排序（2026-08-24）：净流出不再劣后过滤但强流出沉底。"""
-    conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300101", "马低分", "comeback", 55)
-    _insert_rec_cat(conn, "SZ300102", "马高分", "comeback", 120)
-    pool = {
-        "SZ300101": _cand_tier("SZ300101", 55, "comeback", prominent=True),
-        "SZ300102": _cand_tier("SZ300102", 120, "comeback", fund_flow=-6.0),
-    }
-    disp_mod.display_priority(conn, today_pool=pool)
-    out = capsys.readouterr().out
-    assert "◆ 回马枪" in out
-    cb_part = out.split("◆ 回马枪", 1)[1]
-    # 独立区：资金流降序优先——无流水中性(0)在前，强流出(-6%)沉底；同流水分数降序
-    cb_lines = [ln for ln in cb_part.splitlines() if "SZ300101" in ln or "SZ300102" in ln]
-    assert "SZ300101" in cb_lines[0], f"中性(0)应排在强流出(-6%)前: {cb_lines}"
-    assert "SZ300102" in cb_lines[1]
-
-
-def test_display_priority_comeback_capped(monkeypatch, capsys):
-    """2026-08-11：回马枪区最多显示 COMEBACK_DISPLAY_MAX 条（超量截断，避免刷屏）。"""
+def test_display_priority_core_dip_capped(monkeypatch, capsys):
+    """核心低吸区最多显示 COMEBACK_DISPLAY_MAX 条（超量截断，避免刷屏）。
+    （原回马枪区截断测试，区块移除后改测核心低吸区，2026-09-03）"""
     conn = _rec_db()
     for i in range(12):
-        _insert_rec_cat(conn, f"SZ3003{i:02d}", f"马{i}", "comeback", 50 + i)
+        _insert_rec_cat(conn, f"SZ3003{i:02d}", f"低吸{i}", "core_dip", 50 + i)
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
-    assert "◆ 回马枪" in out
-    # 截到精选决策区之前，避免精选区（2026-08-17 新增，承载全部推荐含 comeback）
-    # 的 comeback 行混入回马枪独立区行数断言
-    cb_part = out.split("◆ 精选决策", 1)[0].split("◆ 回马枪", 1)[1]
-    cb_lines = [ln for ln in cb_part.splitlines() if "SZ3003" in ln]
-    assert len(cb_lines) == disp_mod.COMEBACK_DISPLAY_MAX
+    assert "◆ 核心方向低吸" in out
+    dip_part = out.split("◆ 核心方向低吸", 1)[1]
+    dip_lines = [ln for ln in dip_part.splitlines() if "SZ3003" in ln]
+    assert len(dip_lines) == disp_mod.COMEBACK_DISPLAY_MAX
 
 
 # ── 次日大涨画像标记（2026-08-11 起并入主表行尾 🎯；2026-08-12 起成为排序档0唯一因子）──
@@ -1063,23 +912,6 @@ def _insert_rec_sb(conn, symbol: str, name: str, category: str, score: int, perc
 # ── 档位 4 级（2026-08-17）：今日总结的选股规则全部编码进排序键 ──
 # 档0=🎯 次日画像 / 档1=rebound·comeback资金流≥3% / 档2=普通 / 档3=警示劣后
 # （超买·陷阱带·死区·累计≥50%过热·资金流出≤-8%）。跨类别全局生效，纯排序层不改评分。
-def test_display_priority_tier4_comeback_fundflow(monkeypatch, capsys):
-    """回马枪区内资金流优先（2026-08-24）：▲▲回流(+8.6%)排在中性无流水之前，
-    同流水分数降序。档位统一档2（2026-08-18）。"""
-    conn = _rec_db()
-    _insert_rec_sb(
-        conn, "SZ300101", "回踩回流", "comeback", 102, 1.0, '{"fund_flow_main_pct": 8.6}'
-    )  # 档2（原档1，已统一）
-    _insert_rec_sb(conn, "SZ300102", "回踩无资金", "comeback", 120, 1.0, "{}")  # 档2
-    disp_mod.display_priority(conn, today_pool={})
-    out = capsys.readouterr().out
-    assert "◆ 回马枪" in out
-    cb_part = out.split("◆ 精选决策", 1)[0].split("◆ 回马枪", 1)[1]
-    cb_lines = [ln for ln in cb_part.splitlines() if "SZ30010" in ln]
-    assert "SZ300101" in cb_lines[0], f"回流(+8.6%)应排在无流水(0)前: {cb_lines}"
-    assert "SZ300102" in cb_lines[1]
-
-
 def test_display_priority_tier4_sector_resonance_low(capsys):
     """排序规则（2026-08-28，双跑同屏后主表恒为 v1 口径）：榜上优先 → 涨幅升序 → 回调核心
     → 排名升序 → 新面孔；档位不再参与主排序。故 🎯 票（涨幅 1.0% 最低）排最前，
