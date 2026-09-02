@@ -609,6 +609,7 @@ COMEBACK_MIN_TODAY_PCT = 2.0  # off_list 今日涨幅下限（比 rebound 0.5 �
 COMEBACK_MAX_TODAY_PCT = 12.0  # 与 short_term 上限同源：覆盖 8-12% 续涨（掉榜日无热榜背书）
 COMEBACK_PREFILTER_5D_DROP = -8.0  # 5日累计跌幅≤此值才补拉当日 bar（成本预过滤，从~600降到数十/日）
 COMEBACK_POS_DIMS = 3  # off_list 交叉验证维度下限（榜上为2，掉榜无热榜背书更严）
+COMEBACK_KLINE_DEADLINE = 15  # 回马枪独立 K 线拉取 deadline（秒）：不与主榜共用，避免主榜耗尽预算后回马枪全 stale
 # 回踩变体（吸收原历史推荐跟踪 tracker）：近 N 日推荐回调到买点 → 二次上车
 COMEBACK_REENTRY_DAYS = 5  # 回踩跟踪窗口（交易日）
 COMEBACK_REENTRY_BASE_SCORE = 40  # 回踩基础分（每命中一个买点信号 +15）

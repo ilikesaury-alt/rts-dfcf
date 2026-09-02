@@ -15,6 +15,7 @@ from scanner.candidates import (
 from scanner.comeback import evaluate_comeback
 from scanner.concept import compute_driving_concepts
 from scanner.config import (
+    COMEBACK_KLINE_DEADLINE,
     ENABLE_COMEBACK,
     ENABLE_CORE_DIP,
     ENABLE_MOMENTUM,
@@ -211,8 +212,8 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
     except EXTERNAL_FAILURES as e:
         print(f"  [!] 掉榜跟踪池维护失败: {e}")
 
-    # 双批 K 线拉取共用同一个 deadline：榜上票 45s + 回马枪幸存者再 45s 会串行 ~90s，
-    # 超 60s 扫描间隔。共用一个 deadline 保证两批总耗时仍被 KLINE_FETCH_DEADLINE 兜底。
+    # 主榜 K 线拉取 deadline（45s）。回马枪使用独立 deadline（COMEBACK_KLINE_DEADLINE=15s），
+    # 不再共用此 deadline，避免主榜耗尽预算后回马枪全部 stale 缓存。
     kline_deadline = now_beijing().timestamp() + KLINE_FETCH_DEADLINE
     quality_stats: dict = {}
     klines = fetch_all_klines(conn, adapter, gem_stocks_filtered, deadline=kline_deadline, stats=quality_stats)
@@ -324,7 +325,13 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
             comeback_rebound, comeback_reentry, cb_quotes = evaluate_comeback(
                 conn,
                 adapter,
-                lambda stocks: fetch_all_klines(conn, adapter, stocks, deadline=kline_deadline, stats=quality_stats),
+                lambda stocks: fetch_all_klines(
+                    conn,
+                    adapter,
+                    stocks,
+                    deadline=now_beijing().timestamp() + COMEBACK_KLINE_DEADLINE,
+                    stats=quality_stats,
+                ),
                 today,
                 on_list_symbols,
                 clusters,

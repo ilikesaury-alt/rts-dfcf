@@ -247,6 +247,23 @@ def _entry_display_quote(entry: RecommendationRow | dict) -> tuple[float, float]
     return pct, cur
 
 
+def _entry_sector(entry: RecommendationRow | dict) -> str:
+    """板块列单源（主表/详情区同口径，防两处回退链漂移）。
+
+    优先级：推荐时落库的推动概念 > 当前池候选的推动概念 > 分类板块 > 名称关键词。
+    """
+    db_concept = (entry.get("concept") or "").strip()
+    if db_concept:
+        return db_concept
+    c = entry.get("_candidate")
+    if c:
+        if c.driving_concept:
+            return c.driving_concept
+        if c.sector:
+            return c.sector
+    return classify_sector(entry["name"])
+
+
 def _entry_row_suffix(
     entry: RecommendationRow | dict,
     flow_pct_map: dict[str, float],
@@ -379,21 +396,13 @@ def _print_priority_row(
     （+N 升 / -N 降），与已下线策略桶的 _rank_delta_str 同口径；缺省 None 不显示变化。
     """
     c = entry.get("_candidate")
-    sector = classify_sector(entry["name"])
     # 标签/优先级列统一用 entry["category"]（与排序口径一致），
     # 不用 c.category：双挂票的 today_pool 按 symbol 覆盖会拿到 short_term 候选，
     # 而 DB 保留的是最高分行的 category（可能是 new_face），两者不一致会导致
     # 排到 new_face 档却显示 ST 标签 + 回避建议的矛盾。
     cat = entry["category"]
-    # 板块列优先级：推荐时落库的推动概念 > 当前池候选的推动概念 > 分类板块 > 名称关键词
-    db_concept = (entry.get("concept") or "").strip()
-    if db_concept:
-        sector = db_concept
-    elif c:
-        if c.driving_concept:
-            sector = c.driving_concept
-        elif c.sector:
-            sector = c.sector
+    # 板块列单源（_entry_sector）：与主表 MainRow.sector 同一实现。
+    sector = _entry_sector(entry)
     # 涨幅/现价/排名统一回退链：实时行情(live_quotes/rank_map) → 候选池当前扫描快照 →
     # appearances(DB) → 推荐时落库值。
     # 候选可信性走 _fresh_candidate 单源助手（2026-08-24 第二轮审查收口）：stale
@@ -576,6 +585,7 @@ COLS_POOL: tuple = (
     ("5日累计", 8, "r"),
     ("现价", 7, "r"),
     ("排名", 8, "r"),
+    ("板块", 14, "l"),
     ("评分", 4, "r"),
     ("策略", 5, "l"),
 )
@@ -629,6 +639,7 @@ class MainRow:
     cat_label: str  # RBD / MOM / NEW / kNF / ST
     pct: float  # 涨幅（_entry_display_quote 单源回退链）
     current: float  # 现价（0.0 = 无数据 → 渲染为 —）
+    sector: str  # 板块（_entry_sector 单源，与详情区同口径）
 
 
 @dataclass
@@ -871,6 +882,7 @@ def build_scan_view(
                     cat_label=_stg_map.get(_e["category"], "?"),
                     pct=_pct_row,
                     current=_cur_row,
+                    sector=_entry_sector(_e),
                 )
             )
     except EXTERNAL_FAILURES as _e:
@@ -905,6 +917,7 @@ def build_scan_view(
                     cat_label=_stg_map.get(_pe["category"], "?"),
                     pct=_pct_row,
                     current=_cur_row,
+                    sector=_entry_sector(_pe),
                 )
             )
     except EXTERNAL_FAILURES as _pex:
@@ -985,6 +998,7 @@ def render_terminal(view: ScanView) -> None:
         _rk_val = str(row.rank) if row.rank is not None else "—"
         _sc_str = f"{row.score:.0f}" if row.score else "—"
         _cur_str = f"{row.current:.2f}" if row.current else "—"
+        _sec = _trunc(row.sector, COLS_POOL[7][1])
         # 行尾标记与回马枪/低吸区同源（_entry_row_suffix）：风险/资金流/🎯/⚡。
         _marked = view.nextday_mark.get((_e["symbol"], _e["category"]), False)
         _bolt = view.breakout_mark.get((_e["symbol"], _e["category"]), False)
@@ -999,6 +1013,7 @@ def render_terminal(view: ScanView) -> None:
                     _av_str,
                     _cur_str,
                     _rk_val,
+                    _sec,
                     _sc_str,
                     row.cat_label,
                 ],

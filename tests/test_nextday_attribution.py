@@ -41,7 +41,7 @@ def _make_db(path, rows):
     conn.execute(
         "CREATE TABLE recommendations (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, "
         "time TEXT, symbol TEXT, name TEXT, category TEXT, score INTEGER, percent REAL, "
-        "trend TEXT, score_breakdown TEXT, source TEXT, next_day_pct REAL)"
+        "trend TEXT, score_breakdown TEXT, source TEXT, next_day_pct REAL, excluded INTEGER DEFAULT 0)"
     )
     for _i, r in enumerate(rows):
         conn.execute(
@@ -53,22 +53,21 @@ def _make_db(path, rows):
     return conn
 
 
-def test_dedup_keeps_highest_score():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
-    try:
-        conn = _make_db(path, [
-            ("2026-07-01", "SZ300001", "测试", "momentum", 50, 3.0, 5.0, None, None),
-            ("2026-07-01", "SZ300001", "测试", "momentum", 80, 4.0, 5.0, None, None),
-            ("2026-07-02", "SZ300001", "测试", "momentum", 60, 3.0, 8.0, None, None),
-        ])
-        recs = _load_dedup(conn)
-        conn.close()
-        assert len(recs) == 2, "同(date,symbol)应去重"
-        by_date = {r["date"]: r for r in recs}
-        assert by_date["2026-07-01"]["score"] == 80, "保留最高分"
-    finally:
-        os.remove(path)
+def test_dedup_keeps_last_round_not_highest_score():
+    # 2026-09-02 口径修正：同 (date,symbol) 去重保留【最后一轮】，不再按 score 挑选
+    # （按分数挑选会系统性偏向高分档，污染"高分档 hit 更高"的校准结论）。
+    # 用内存库规避 Windows 上 conn.close() 后文件锁延迟释放导致的 cleanup 偶发失败。
+    conn = _make_db(":memory:", [
+        ("2026-07-01", "SZ300001", "测试", "momentum", 50, 3.0, 5.0, None, None),  # 第1轮
+        ("2026-07-01", "SZ300001", "测试", "momentum", 30, 4.0, 5.0, None, None),  # 第2轮=最后一轮(分更低)
+        ("2026-07-02", "SZ300001", "测试", "momentum", 60, 3.0, 8.0, None, None),
+    ])
+    recs = _load_dedup(conn)
+    conn.close()
+    assert len(recs) == 2, "同(date,symbol)应去重"
+    by_date = {r["date"]: r for r in recs}
+    # 关键断言：保留的是最后一轮(score=30)，而非最高分(50)——证明不再按 score 挑选
+    assert by_date["2026-07-01"]["score"] == 30, "应保留最后一轮而非最高分"
 
 
 def test_hit_stats_threshold():

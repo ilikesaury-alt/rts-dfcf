@@ -78,7 +78,9 @@ def test_primary_ok_no_fallback():
 
 
 def test_primary_exc_falls_to_secondary():
-    fa = _make(_Ad("pri", exc=RuntimeError), _Ad("sec", kline=[5]))
+    # 主源抛【外部依赖失败】(OSError=网络/IO) 才降级；编程错误(RuntimeError 等)
+    # 不在此列，应上抛而非静默切源（见 scanner/utils.EXTERNAL_FAILURES 约定）。
+    fa = _make(_Ad("pri", exc=OSError), _Ad("sec", kline=[5]))
     assert fa.fetch_kline("300xxx") == [5]
 
 

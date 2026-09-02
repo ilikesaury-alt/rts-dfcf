@@ -316,7 +316,10 @@ class FallbackAdapter:
         if self._use_primary:
             try:
                 result = getattr(self._primary, method)(*args, **kwargs)
-            except Exception as e:
+            except EXTERNAL_FAILURES as e:
+                # 只捕获「外部依赖失败」（网络/超时/JSON 脏值/契约缺字段），编程错误
+                # （方法名拼错、签名漂移、属性错误等）一律上抛，避免静默永久切到备用源、
+                # 在无人察觉下把 K 线口径（qfq/forward）或字段语义切换掉。
                 if self._secondary:
                     logger.warning("%s.%s 异常: %s，降级到 %s", self._primary.name, method, e, self._secondary.name)
                     self._last_used_source = self._secondary.name

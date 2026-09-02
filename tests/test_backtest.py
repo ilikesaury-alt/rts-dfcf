@@ -136,7 +136,8 @@ def _ranking_db():
     conn = sqlite3.connect(":memory:")
     conn.execute(
         "CREATE TABLE recommendations "
-        "(date TEXT, category TEXT, score REAL, next_day_pct REAL, cum_3d REAL, score_breakdown TEXT)"
+        "(date TEXT, category TEXT, score REAL, next_day_pct REAL, cum_3d REAL, "
+        "score_breakdown TEXT, symbol TEXT, excluded INTEGER DEFAULT 0)"
     )
     return conn
 

@@ -313,6 +313,73 @@ def _check_metric(metric: str) -> str:
     return metric
 
 
+def load_attribution_rows(
+    conn: sqlite3.Connection,
+    metric: str,
+    cols: str = "",
+    categories: list[str] | None = None,
+    days: int = 0,
+    require_breakdown: bool = False,
+) -> list[sqlite3.Row]:
+    """归因样本统一加载：**excluded=0 + 指标非空 + 按 (date, symbol) 去重取最后一轮**。
+
+    2026-09-02 修复（样本口径统一——三处归因此前各写一套 SQL 且互不一致）：
+
+    1. **重复样本有偏加权**：recommendations 是**每轮扫描一行**（60s 一轮），同票同日
+       在榜 N 轮即有 N 行。实测 3882 行仅对应 1774 个 (date, symbol)，虚高 **2.19x**，
+       单票单日最多 43 行。更关键的是重复次数与**停留榜上时长正相关**——这不是中性
+       放大，而是系统性偏向"停留久"的票：动量票天然停留久 → momentum hit 由 16.5%
+       (n=508) 修正为 10.0%(n=290)，**-6.5pp**；old_face 反向 6.6%(n=1269)→11.4%(n=88)。
+    2. **未过滤硬过滤票**：旧查询缺 `excluded = 0`，把已被风险标签判定"不该买"的票
+       （当前 70 行）计入策略收益，等于给"明知不可买"的票记成绩。
+    3. **去重取哪一轮不统一**：walkforward 取最后一轮（无偏）；nextday_attribution
+       旧逻辑取 **score 最高**——按分数挑选样本会系统性偏向高分档，正是"高分档 hit
+       更高"结论的选择偏差来源。现统一取最后一轮（不按 score 挑选）。
+
+    口径与 scanner.walkforward.load_rows 对齐（后者本就正确，本次未改）。
+
+    cols：附加列（逗号分隔，调用方传入内部字面量，不接受外部输入）。
+    require_breakdown：为 True 时额外要求 score_breakdown IS NOT NULL。
+    返回 sqlite3.Row 列表（含 date/symbol/category/score + cols + metric 列）。
+    """
+    metric = _check_metric(metric)
+    cats = list(categories if categories is not None else ACTIVE_CATEGORIES)
+    if not cats:
+        return []
+    # 统一行工厂：调用方（含单测内存库）未必设置 row_factory，本函数按列名取数。
+    # Row 仅影响本连接本次读取，无副作用。
+    conn.row_factory = sqlite3.Row
+    params: list = list(cats)
+    date_filter = ""
+    if days > 0:
+        cutoff = (now_beijing() - timedelta(days=days)).date().isoformat()
+        date_filter = "AND date >= ? "
+        params.append(cutoff)
+    extra = f", {cols}" if cols else ""
+    bd_filter = "AND score_breakdown IS NOT NULL " if require_breakdown else ""
+    # 排序用 rowid 而非 time 列：time 只有 HH:MM 精度，同一分钟内的多轮扫描
+    # time 完全相同 → "取最后一轮"的结果在并列行间不确定（去重结果不稳定）。
+    # rowid 按插入顺序单调递增，而 recommendations 正是逐轮追加，故 rowid 即
+    # 真实的轮次序，且无额外列依赖（测试夹具的精简 schema 也适用）。
+    rows = conn.execute(
+        f"SELECT rowid AS _rid, date, symbol, category, score{extra}, {metric} "  # noqa: S608 - metric 已白名单校验
+        f"FROM recommendations "
+        f"WHERE category IN ({','.join('?' * len(cats))}) "
+        f"AND excluded = 0 AND {metric} IS NOT NULL {bd_filter}{date_filter}"
+        f"ORDER BY date, rowid",
+        tuple(params),
+    ).fetchall()
+    # 去重：同 (date, symbol) 保留最后一轮（不按 score 挑选，避免分数选择偏差）。
+    # symbol 为空（脏数据/测试夹具）时回退 rowid 作键——否则所有空 symbol 行会塌缩
+    # 成一行，静默丢掉整批样本。
+    dedup: dict[tuple, sqlite3.Row] = {}
+    for r in rows:
+        sym = r["symbol"]
+        key = (r["date"], sym) if sym else ("__no_symbol__", r["_rid"])
+        dedup[key] = r
+    return list(dedup.values())
+
+
 def strategy_performance(
     conn: sqlite3.Connection,
     metric: str = "next_day_pct",
@@ -328,23 +395,12 @@ def strategy_performance(
     metric = _check_metric(metric)
     # 用 Beijing UTC+8 计算截止日，避免服务器本地时区导致日期偏移
     # （'localtime' 修饰符依赖服务器时区，违反项目硬约束）
-    params = list(ACTIVE_CATEGORIES)
-    if days > 0:
-        cutoff = (now_beijing() - timedelta(days=days)).date().isoformat()
-        date_filter = "AND date >= ? "
-        params.append(cutoff)
-    else:
-        date_filter = ""
-    rows = conn.execute(
-        f"SELECT category, score, {metric} FROM recommendations "  # noqa: S608 - metric 已白名单校验
-        f"WHERE category IN ({','.join('?' * len(ACTIVE_CATEGORIES))}) "
-        f"AND {metric} IS NOT NULL {date_filter}",
-        tuple(params),
-    ).fetchall()
+    # 样本口径统一：excluded=0 + 同票同日取最后一轮（详见 load_attribution_rows）
+    rows = load_attribution_rows(conn, metric, days=days)
 
     by_cat: dict[str, list[tuple[int, float]]] = defaultdict(list)
-    for cat, score, ret in rows:
-        by_cat[cat].append((score, ret))
+    for r in rows:
+        by_cat[r["category"]].append((r["score"], r[metric]))
 
     stats: list[StrategyStat] = []
     for cat, pairs in by_cat.items():
@@ -398,25 +454,16 @@ def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct", days: i
     }
     metric = _check_metric(metric)
     # 用 Beijing UTC+8 计算截止日，避免服务器本地时区导致日期偏移
-    params = list(ACTIVE_CATEGORIES)
-    if days > 0:
-        cutoff = (now_beijing() - timedelta(days=days)).date().isoformat()
-        date_filter = "AND date >= ? "
-        params.append(cutoff)
-    else:
-        date_filter = ""
-    rows = conn.execute(
-        f"SELECT score_breakdown, {metric} FROM recommendations "  # noqa: S608 - metric 已白名单校验
-        f"WHERE category IN ({','.join('?' * len(ACTIVE_CATEGORIES))}) "
-        f"AND {metric} IS NOT NULL AND score_breakdown IS NOT NULL {date_filter}",
-        tuple(params),
-    ).fetchall()
+    # 样本口径统一：excluded=0 + 同票同日取最后一轮（详见 load_attribution_rows）
+    rows = load_attribution_rows(conn, metric, cols="score_breakdown",
+                                 days=days, require_breakdown=True)
 
     # dim -> (list_of_dim_value, list_of_return)
     dim_vals: dict[str, list[float]] = defaultdict(list)
     dim_rets: dict[str, list[float]] = defaultdict(list)
-    for breakdown, ret in rows:
-        d = parse_score_breakdown(breakdown)
+    for r in rows:
+        d = parse_score_breakdown(r["score_breakdown"])
+        ret = r[metric]
         for dim, val in d.items():
             if dim in dead_dim_keys:
                 continue
@@ -473,23 +520,12 @@ def rank_category_stats(
     2026-08-18 默认口径改为 next_day_pct（统一「次日大涨」）。
     """
     metric = _check_metric(metric)
-    params = list(ACTIVE_CATEGORIES)
-    if days > 0:
-        cutoff = (now_beijing() - timedelta(days=days)).date().isoformat()
-        date_filter = "AND date >= ? "
-        params.append(cutoff)
-    else:
-        date_filter = ""
-    rows = conn.execute(
-        f"SELECT category, score, {metric} FROM recommendations "  # noqa: S608 - metric 已白名单校验
-        f"WHERE category IN ({','.join('?' * len(ACTIVE_CATEGORIES))}) "
-        f"AND {metric} IS NOT NULL {date_filter}",
-        tuple(params),
-    ).fetchall()
+    # 样本口径统一：excluded=0 + 同票同日取最后一轮（详见 load_attribution_rows）
+    rows = load_attribution_rows(conn, metric, days=days)
 
     by: dict[str, list[tuple[int, float]]] = defaultdict(list)
-    for cat, score, ret in rows:
-        by[cat].append((score, ret))
+    for r in rows:
+        by[r["category"]].append((r["score"], r[metric]))
 
     stats: list[RankCategoryStat] = []
     for cat, pairs in by.items():

@@ -118,27 +118,50 @@ def evaluate_factor(
 
 
 def _entry(row: dict) -> dict:
-    """recommendations 行 → ranking 层 entry 形状（掉榜行路径，无 _candidate）。"""
+    """recommendations 行 → ranking 层 entry 形状（掉榜行路径，无 _candidate）。
+
+    幂等（2026-09-02 修复）：DB 行里 score_breakdown 是 **JSON 字符串**，而
+    ranking._entry_dims 只在 isinstance(sb, dict) 时才返回它，否则返回 {}。
+    本函数此前无条件执行 json.loads——对已解析过的 dict 再 loads 会抛 TypeError
+    并被下方 except 吞掉，反把已有维度**清空**；调用方因此不敢重复包裹，间接导致
+    _dim / sweet_non_overbought 等谓词直接拿原始行调 _entry_dims（见 build_factors
+    注释）。现先判 dict 直接返回，使 _entry(_entry(e)) == _entry(e)。
+    """
     e = dict(row)
+    sb = e.get("score_breakdown")
+    if isinstance(sb, dict):
+        return e  # 已解析：幂等返回，避免 json.loads(dict) → TypeError → 维度被清空
     try:
-        e["score_breakdown"] = json.loads(row.get("score_breakdown") or "{}")
+        e["score_breakdown"] = json.loads(sb or "{}")
     except (TypeError, ValueError):
         e["score_breakdown"] = {}
     return e
 
 
 def build_factors() -> list[tuple[str, object]]:
-    """系统核心校准结论 → 判定谓词（与 ranking/档位因子同源）。"""
+    """系统核心校准结论 → 判定谓词（与 ranking/档位因子同源）。
+
+    2026-09-02 修复（4 因子静默失效）：`_dim` / `sweet_non_overbought` /
+    `small_sector` / `fund_outflow` /「超买」五个谓词此前**直接对原始行**调
+    `_entry_dims(e)`。而 DB 行里 score_breakdown 是 JSON 字符串，`_entry_dims`
+    只在 isinstance(sb, dict) 时返回它、否则返回 {} —— 五个谓词恒读到空维度，
+    输出「样本不足」或恒定 False，只有走 `_entry(e)` 的「🎯 完整画像」能解析。
+    滚动检验最核心的 4 条结论（弱转强/超买/小板块共振/资金流出）等于从未被测过。
+    现全部谓词统一经 `_entry(e)` 解析（该函数已幂等，重复包裹安全）。
+    """
+    # 统一入口：谓词一律先转 _entry（解析 score_breakdown），再取维度。
+    def dims_of(e):
+        return _entry_dims(_entry(e))
 
     def _dim(e, key):
-        return (_entry_dims(e).get(key) or 0) > 0
+        return (dims_of(e).get(key) or 0) > 0
 
     def sweet_non_overbought(e):
         p = e.get("percent")
         if p is None:
             return False
         sweet = p < 2.0 or 4.0 <= p < 8.0
-        d = _entry_dims(e)
+        d = dims_of(e)
         overbought = bool(
             d.get("st_overbought_flag")
             or d.get("mo_overbought_flag")
@@ -148,7 +171,7 @@ def build_factors() -> list[tuple[str, object]]:
         return sweet and not overbought
 
     def small_sector(e):
-        d = _entry_dims(e)
+        d = dims_of(e)
         if not (d.get("v_st_sector") or d.get("v_pb_sector") or d.get("v_nf_sector")):
             return False
         cnt = d.get("v_st_sector_count") or d.get("v_pb_sector_count") or d.get("v_nf_sector_count") or 0
@@ -159,15 +182,19 @@ def build_factors() -> list[tuple[str, object]]:
         return acc is not None and acc >= 50
 
     def fund_outflow(e):
-        v = _entry_dims(e).get("fund_flow_main_pct")
+        v = dims_of(e).get("fund_flow_main_pct")
         return v is not None and v <= -8
+
+    def overbought(e):
+        d = dims_of(e)
+        return bool(d.get("v_st_overbought") or d.get("v_mo_overbought"))
 
     return [
         ("rebound 类别", lambda e: e["category"] == "rebound"),
         ("甜蜜带+非超买", sweet_non_overbought),
         ("🎯 完整画像", lambda e: _is_nextday_marked(_entry(e))),
         ("弱转强", lambda e: _dim(e, "st_weak_to_strong") or _dim(e, "v_st_weak")),
-        ("超买", lambda e: bool(_entry_dims(e).get("v_st_overbought") or _entry_dims(e).get("v_mo_overbought"))),
+        ("超买", overbought),
         ("累计≥50 过热", overheated),
         ("小板块共振 cnt<15", small_sector),
         ("资金流出≤-8%", fund_outflow),

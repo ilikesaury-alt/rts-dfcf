@@ -53,7 +53,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 
-from scanner.categories import PORTFOLIO_CATEGORIES
+from scanner.categories import PORTFOLIO_CATEGORIES, SCORE_DESCENDING_BY_CAT
 from scanner.config import DB_PATH, NEXTDAY_RULE_ATRPCT_MIN, NEXTDAY_RULE_MA5R_MIN, NEXTDAY_RULE_RET20_MAX
 from scanner.models import KlineBar, parse_score_breakdown
 from scanner.nextday_rule import _compute_features
@@ -328,17 +328,32 @@ def _load_signals(
 
 
 def _assign_rank_scores(signals: list[Signal]) -> None:
-    """对 signals 计算 within-(rec_date, category) 百分位 rank_score（0-100），就地修改。"""
+    """对 signals 计算 within-(rec_date, category) 百分位 rank_score（0-100），就地修改。
+
+    rank_score 恒为「越大越优先」（run_backtest 按 -rank_score 降序选前 N），
+    而"该类哪一档分更好"由 categories.SCORE_DESCENDING_BY_CAT 单源决定：
+      - score_descending=True （多数类别）：高分优先，降序排后 pos=0 是最高分；
+      - score_descending=False（known_new_face，分数反指）：**低分优先**——
+        升序排后 pos=0 是最低分，仍需拿到最高 rank_score。
+
+    2026-09-02 修复（kNF 方向反转）：旧实现一律按 score 升序赋 pos（低分→0、
+    高分→100），等价于"永远买最高分"。而线上排序层（ranking.score_sort_key）
+    对 kNF 走升序（刻意买最低分，因其实测低分档 hit 更高）。两者方向相反 →
+    `--compare` 输出的 kNF 行与综合行系统性失真：回测在买线上刻意回避的那批票。
+    现按类别翻转排序方向，使 rank_score 与线上 score_sort_key 同向。
+    """
     groups: dict[tuple, list[Signal]] = {}
     for s in signals:
         groups.setdefault((s.rec_date, s.category), []).append(s)
-    for recs in groups.values():
+    for (_rec_date, cat), recs in groups.items():
         n = len(recs)
         if n == 0:
             continue
-        ordered = sorted(recs, key=lambda s: s.score)
+        descending = SCORE_DESCENDING_BY_CAT.get(cat, True)
+        # ordered[0] 恒为「该类认为最好」的一档（高分 或 反指低分）
+        ordered = sorted(recs, key=lambda s: s.score, reverse=descending)
         for pos, s in enumerate(ordered):
-            s.rank_score = 100.0 if n == 1 else pos / (n - 1) * 100.0
+            s.rank_score = 100.0 if n == 1 else (n - 1 - pos) / (n - 1) * 100.0
 
 
 def _filter_nextday_rule(conn: sqlite3.Connection, signals: list[Signal]) -> list[Signal]:

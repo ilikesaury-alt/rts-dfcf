@@ -300,7 +300,8 @@ class TestFallbackAdapter:
         primary = MagicMock()
         primary.is_available.return_value = True
         primary.name = "xueqiu"
-        primary.fetch_kline.side_effect = Exception("connection error")
+        # 外部依赖失败(OSError=网络/IO)才降级；编程错误不应静默切源
+        primary.fetch_kline.side_effect = OSError("connection error")
         secondary = MagicMock()
         secondary.name = "akshare"
         secondary.fetch_kline.return_value = [{"date": "secondary"}]
@@ -318,6 +319,23 @@ class TestFallbackAdapter:
 
         adapter = FallbackAdapter(primary, secondary)
         assert adapter.is_available() is False
+
+    def test_primary_programming_error_does_not_fall_back(self):
+        """主源抛编程错误(RuntimeError 等非外部失败)应上抛，而非静默降级 secondary。
+
+        回归（2026-09-02）：此前 except Exception 会把方法名拼错/签名漂移等编程
+        错误也当成"外部失败"吞掉并永久切源，导致 K 线口径(qfq/forward)在无察觉下切换。
+        现仅 EXTERNAL_FAILURES 触发降级。
+        """
+        primary = MagicMock()
+        primary.is_available.return_value = True
+        primary.name = "xueqiu"
+        primary.fetch_kline.side_effect = RuntimeError("bug: 方法内部状态错误")
+
+        adapter = FallbackAdapter(primary, MagicMock())
+        adapter.is_available()
+        with pytest.raises(RuntimeError):
+            adapter.fetch_kline("SZ300001")
 
     def test_market_caps_empty_falls_back_to_secondary(self):
         """回归（2026-08-19）：api.fetch_market_caps_batch 在内部 catch 异常后返回 {}
@@ -339,11 +357,11 @@ class TestFallbackAdapter:
         secondary.fetch_market_caps_batch.assert_called_once_with(["SZ300001"])
 
     def test_market_caps_exception_falls_back_to_secondary(self):
-        """雪球市值批量查询抛异常 → 降级到 secondary 补拉。"""
+        """雪球市值批量查询抛【外部依赖失败】(OSError) → 降级到 secondary 补拉。"""
         primary = MagicMock()
         primary.is_available.return_value = True
         primary.name = "xueqiu"
-        primary.fetch_market_caps_batch.side_effect = Exception("403")
+        primary.fetch_market_caps_batch.side_effect = OSError("403")
         secondary = MagicMock()
         secondary.name = "akshare"
         secondary.fetch_market_caps_batch.return_value = {"SZ300002": {"market_cap": 2e9}}

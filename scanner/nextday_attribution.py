@@ -29,11 +29,10 @@ import argparse
 import csv
 import sqlite3
 from collections import Counter, defaultdict
-from datetime import timedelta
 from typing import Any, Callable
 
-from scanner.backtest import ACTIVE_CATEGORIES, spearman
-from scanner.config import DB_PATH, NEXTDAY_HIT_THRESHOLD, now_beijing
+from scanner.backtest import load_attribution_rows, spearman
+from scanner.config import DB_PATH, NEXTDAY_HIT_THRESHOLD
 from scanner.data_health import check_kline_health, health_banner
 from scanner.database import get_prominence_map
 from scanner.models import parse_score_breakdown
@@ -70,31 +69,32 @@ FACTOR_CONDITIONS: list[tuple[str, Callable[[dict], bool]]] = [
 
 
 def _load_dedup(conn: sqlite3.Connection, days: int = 0) -> list[dict]:
-    """加载现役类别推荐，同 (date, symbol) 去重保留最高分（综合排序展示口径）。"""
-    params = list(ACTIVE_CATEGORIES)
-    if days > 0:
-        cutoff = (now_beijing() - timedelta(days=days)).date().isoformat()
-        date_filter = "AND date >= ? "
-        params.append(cutoff)
-    else:
-        date_filter = ""
-    rows = conn.execute(
-        f"SELECT date, symbol, name, category, score, percent, next_day_pct, score_breakdown "  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
-        f"FROM recommendations "
-        f"WHERE category IN ({','.join('?' * len(ACTIVE_CATEGORIES))}) "
-        f"AND next_day_pct IS NOT NULL {date_filter}",
-        tuple(params),
-    ).fetchall()
-    best: dict[tuple[str, str], dict] = {}
-    for date, symbol, name, category, score, percent, ndp, sb in rows:
-        key = (date, symbol)
-        if key not in best or score > best[key]["score"]:
-            best[key] = {
-                "date": date, "symbol": symbol, "name": name, "category": category,
-                "score": score, "percent": percent or 0.0, "next_day": ndp,
-                "breakdown": sb,
-            }
-    return list(best.values())
+    """加载现役类别推荐，同 (date, symbol) 去重（口径统一：excluded=0 + 取最后一轮）。
+
+    2026-09-02 修复（样本口径统一，本模块是档位/画像阈值的校准数据源，影响面最大）：
+    1. **缺 excluded = 0**：把已被硬过滤判定"不该买"的票计入归因，等于给明知不可买
+       的票记成绩（当前 70 行），直接污染「档3 劣后因子是否真的更差」的判定。
+    2. **去重取最高分 → 分数选择偏差**：按 score 挑选样本会系统性偏向高分档，而本
+       模块正是"分数分档 → hit 率"的校准源，该偏差会自我强化（高分档 hit 被人为抬
+       高，进而佐证"高分更好"）。现与 walkforward / backtest 统一为「取最后一轮」，
+       不按 score 挑选。
+    3. **去重前样本虚高 2.19x**（3882 行 → 1774 个 (date, symbol)），且重复次数与
+       停留榜上时长正相关，属有偏加权：momentum hit 16.5%(n=508) → 10.0%(n=290)。
+
+    注：函数名保留 _load_dedup（去重语义不变），仅口径改为统一标准。
+    """
+    rows = load_attribution_rows(
+        conn, "next_day_pct", cols="name, percent, score_breakdown", days=days
+    )
+    return [
+        {
+            "date": r["date"], "symbol": r["symbol"], "name": r["name"],
+            "category": r["category"], "score": r["score"],
+            "percent": r["percent"] or 0.0, "next_day": r["next_day_pct"],
+            "breakdown": r["score_breakdown"],
+        }
+        for r in rows
+    ]
 
 
 def _parse(d: dict) -> dict:
