@@ -557,6 +557,10 @@ DANGER_MAIN_OUTFLOW_PCT = -5.0  # 主力净占比(%) ≤ -5 → 主力出货派�
 # 财务风险保持硬剔除。回滚杠杆：RTS_DANGER_SOFT_KLINE=0 恢复全量硬剔除。
 DANGER_KLINE_SOFT = _env_flag("RTS_DANGER_SOFT_KLINE", True)
 
+# v2 池选区展示条数（2026-09-03）：池为「榜上全量快照」（matcher 只标注不淘汰），
+# 终端/飞书只渲染涨幅降序前 N 行，尾部注明总数——过滤属消费层，落库/pool_log/回测不受影响。
+V2_POOL_DISPLAY_TOP = 10
+
 # Time-based bonus thresholds (minutes since midnight)
 
 # 推荐后快速反转移出（2026-08-13）：今日已推荐（榜上主类别，不含回马枪跟踪池）且当前不在

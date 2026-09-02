@@ -15,6 +15,7 @@ from scanner.config import (
     NEXTDAY_RULE_MA5R_MIN,
     NEXTDAY_RULE_RET20_MAX,
     TOP40_THRESHOLD,
+    V2_POOL_DISPLAY_TOP,
     now_beijing,
 )
 from scanner.core_themes import _low_buy_quality as _core_dip_quality
@@ -245,6 +246,18 @@ def _entry_display_quote(entry: RecommendationRow | dict) -> tuple[float, float]
     if not cur and c and c.stock.current:
         cur = to_float(c.stock.current, default=0.0)
     return pct, cur
+
+
+def _v2_pool_sort_key(pct: float, is_live: bool, rank: float | None) -> tuple:
+    """v2 池选区排序键（2026-09-03）：实时优先 → 涨幅降序 → 榜上排名升序。
+
+    - is_live：有实时行情的票在前，stale/掉榜票（涨幅为快照旧值）沉底——杜绝旧涨幅
+      票混进实时序列造成「显示涨幅与排序位次矛盾」；全市场无实时行情（收盘后）时
+      全部同为 1，退化为纯涨幅序，口径仍然同源。
+    - 同涨幅按榜上 rank 升序、rank 缺失排最后——消除平局洗牌（此前仅按涨幅降序，
+      平局序随 DB 返回序每轮漂移）。
+    """
+    return (0 if is_live else 1, -pct, rank if rank is not None else 10**9)
 
 
 def _entry_sector(entry: RecommendationRow | dict) -> str:
@@ -665,6 +678,9 @@ class ScanView:
     rule_result: RuleResult | None = None
     # v2 池选区行（双跑同屏，2026-09-02）：独立于主表（两套排序口径不同），None = 今日无 pool_pick。
     pool_rows: list[MainRow] | None = None
+    # 池选全量票数（2026-09-03）：pool_rows 只展示前 V2_POOL_DISPLAY_TOP 行，
+    # 终端尾部注明与飞书头部「池选 N 只」计数用全量值，避免截断后失真。
+    pool_total: int = 0
 
 
 def build_scan_view(
@@ -891,17 +907,25 @@ def build_scan_view(
         # 并显式告警（代码 bug 则冒泡到主循环记录完整 traceback）。
         warnings.append(f"策略优选池构建中断（数据缺失）: {type(_e).__name__}: {_e}")
 
-    # v2 池选区（双跑同屏）：按今日涨幅降序（v2 pipeline 设计口径），行结构与主表
-    # 同源（复用 MainRow，终端/飞书共用同一份排序结果）。
+    # v2 池选区（双跑同屏）：实时优先 → 涨幅降序 → 榜上排名升序（_v2_pool_sort_key），
+    # 行结构与主表同源（复用 MainRow，终端/飞书共用同一份排序结果）。只展示前
+    # V2_POOL_DISPLAY_TOP 行（全量快照仍在 pool_log/落库），pool_total 保留全量计数。
     pool_rows: list[MainRow] = []
+    pool_total = 0
     try:
-        for _pe in sorted(pool_pick_recs, key=lambda e: -_entry_display_quote(e)[0]):
+        # 预计算行情/排名各一次（排序与行构建复用同一份，消除原每行两次 _entry_display_quote）。
+        _pool_quoted: list[tuple[RecommendationRow, float, float, float | None, Candidate | None]] = []
+        for _pe in pool_pick_recs:
+            _pct_row, _cur_row = _entry_display_quote(_pe)
             _fresh_c = _fresh_candidate(_pe)
             _rk_disp = _pe.get("live_rank") or _pe.get("rank")
             if _rk_disp is None and _fresh_c:
                 _rk_disp = _fresh_c.stock.rank
             _rk_val = _rk_disp if isinstance(_rk_disp, (int, float)) and _rk_disp > 0 else None
-            _pct_row, _cur_row = _entry_display_quote(_pe)
+            _pool_quoted.append((_pe, _pct_row, _cur_row, _rk_val, _fresh_c))
+        _pool_quoted.sort(key=lambda t: _v2_pool_sort_key(t[1], bool(t[0].get("live_quote_available")), t[3]))
+        pool_total = len(_pool_quoted)
+        for _pe, _pct_row, _cur_row, _rk_val, _fresh_c in _pool_quoted[:V2_POOL_DISPLAY_TOP]:
             _av = None
             if _fresh_c and _fresh_c.kline:
                 _av = _fresh_c.kline.accumulated_pct
@@ -977,6 +1001,7 @@ def build_scan_view(
         warnings=warnings,
         rule_result=_rule_result,
         pool_rows=pool_rows,
+        pool_total=pool_total,
     )
 
 
@@ -1030,7 +1055,11 @@ def render_terminal(view: ScanView) -> None:
 
     # ── v2 池选独立区（双跑同屏，2026-09-02）：pool→danger→低吸匹配输出 ──
     if view.pool_rows:
-        print(f"\n{ANSI['BOLD']}◆ v2 池选 — 池→排雷→低吸匹配（按今日涨幅降序）{ANSI['RESET']}")
+        _pool_top = len(view.pool_rows)
+        _pool_cnt = f"（前{_pool_top}/共{view.pool_total}只）" if view.pool_total > _pool_top else ""
+        print(
+            f"\n{ANSI['BOLD']}◆ v2 池选 — 池→排雷→低吸匹配（实时优先·涨幅降序·榜上排名次序）{_pool_cnt}{ANSI['RESET']}"
+        )
         print(_table_header(COLS_POOL))
         for _vi, row in enumerate(view.pool_rows, 1):
             _emit_pool_table_row(view, row, _vi)

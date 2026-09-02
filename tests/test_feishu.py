@@ -88,6 +88,7 @@ def _fake_view(symbols):
             self.show_core_dip = False
             self.core_dip_rows = []
             self.pool_rows = None
+            self.pool_total = 0  # 池选全量计数（2026-09-03 feishu 头部/标题读取）
             self.weak = False
             self.warnings = []
 

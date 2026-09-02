@@ -271,9 +271,12 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
     now = now_beijing().strftime("%H:%M")
     main = view.main_rows[:top_n]
     pool_rows = (view.pool_rows or [])[:top_n]
+    # 池选计数用全量值（view.pool_total，2026-09-03）：view.pool_rows 已被展示层截到
+    # 前 V2_POOL_DISPLAY_TOP 行，头部「池选 N 只」若用 len(pool_rows) 会失真。
+    pool_count = view.pool_total if view.pool_total else len(pool_rows)
 
     env_tag = " | 🔴大盘弱势·谨慎" if view.weak else ""
-    pool_n = f" + 池选 {len(pool_rows)}" if pool_rows else ""
+    pool_n = f" + 池选 {pool_count}" if pool_count else ""
     header_text = f"**{now}** | 优选 {len(main)}{pool_n} 只{env_tag}"
     elements: list[dict] = [{"tag": "div", "text": {"tag": "lark_md", "content": header_text}}]
 
@@ -284,9 +287,11 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
     if pool_lines:
         sections.append(("◆ 策略优选池", pool_lines))
     if pool_rows:
+        _pool_top = len(pool_rows)
+        _pool_cnt = f"（前{_pool_top}/共{pool_count}只）" if pool_count > _pool_top else ""
         sections.append(
             (
-                "◆ v2 池选",
+                f"◆ v2 池选{_pool_cnt}",
                 [
                     _row_line(row.entry, view, rank=row.rank, accum=row.accum, score=_to_score(row.score))
                     for row in pool_rows
