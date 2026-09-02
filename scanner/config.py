@@ -588,8 +588,10 @@ REVERSAL_OVERSHOOT_DROP = 10.0
 #   core_dip 9.4%（高于基准但仅 53 样本）→ 不进主推荐，保留数据采集
 ENABLE_COMEBACK = True
 ENABLE_CORE_DIP = True
-ENABLE_SHORT_TERM = False  # Phase 3: 冻结（matcher 低吸匹配替代；代码保留供回测/归因）
-ENABLE_MOMENTUM = False  # Phase 3: 冻结（matcher 低吸匹配替代；代码保留供回测/归因）
+# 2026-09-02 用户决策：重开（此前 Phase 3 冻结，因盘中 v1 主表多日仅 new_face/rebound
+# 两桶在产、策略优选池频繁空表）。重开前归因基线见上方注释；如需回滚改回 False 即可。
+ENABLE_SHORT_TERM = True
+ENABLE_MOMENTUM = True
 # 实验开关：放开 MIN_SCORE 门槛，让所有评分的候选都进入推荐。
 # 归因数据显示 score 0-20 hit 21.8%（全场最高），MIN_SCORE=18 把它们全砍了。
 # 开启后观察：① 信号量暴增是否稀释质量 ② 组合 P&L 是否改善 ③ hit rate 是否变化。
