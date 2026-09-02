@@ -1,15 +1,22 @@
 """排雷器（重构 Phase 2）：实证危险信号。
 
-只装「卖出/止损」级硬信号，从 validator.py 的 RISK_FLAGS 与 enhancer 主力出货逻辑中
-抽离，作用于全量池（PoolRow），不依赖候选评分对象。当前仅影子落库（pool_log），
-不进入 v1 推荐。阈值全部来自 config（DANGER_* / REVERSAL_OVERSHOOT_DROP / FUND_RISK_TAG）。
+作用于全量池（PoolRow），不依赖候选评分对象。信号分级（2026-09-02）：
+  - 硬信号（剔除）：DANGER_MAIN_OUTFLOW（派发）、DANGER_FINANCIAL（资不抵债）——
+    「真正有害」的规避级信号；
+  - 软信号（DANGER_KLINE_SOFT 开启时不剔除，只标记）：K 线动量类三信号
+    （bias20 过高/冲高回落/翻绿+高开回落）——v2 历史回测显示它们剔除的恰是
+    次日 hit7 更高的强势票（被剔组 13.2% vs 池内 9.0%），降级后进候选
+    risk_flags 展示（⚠+N）与 pool_log 落库，保留审计轨迹。
+  - 回滚：RTS_DANGER_SOFT_KLINE=0 恢复全量硬剔除（与历史行为一致）。
+
+阈值全部来自 config（DANGER_* / REVERSAL_OVERSHOOT_DROP / FUND_RISK_TAG）。
 
 信号（与 enhancer / validator 既有口径对齐，避免双套语义漂移）：
-  DANGER_BIAS20       bias20 > DANGER_BIAS20_MAX（高位乖离）
-  DANGER_OVERSHOOT    冲高回落 ≥ REVERSAL_OVERSHOOT_DROP（最高涨幅 − 收盘涨幅）
-  DANGER_MAIN_OUTFLOW 主力净占比 ≤ DANGER_MAIN_OUTFLOW_PCT（派发）
-  DANGER_FINANCIAL    资不抵债（fund_risk 命中，复用 FUND_RISK_TAG）
-  DANGER_TURNED_RED_GAP 当日翻绿（close<open）且高开（open>prev_close）→ 高开回落
+  DANGER_BIAS20       bias20 > DANGER_BIAS20_MAX（高位乖离）[软]
+  DANGER_OVERSHOOT    冲高回落 ≥ REVERSAL_OVERSHOOT_DROP（最高涨幅 − 收盘涨幅）[软]
+  DANGER_MAIN_OUTFLOW 主力净占比 ≤ DANGER_MAIN_OUTFLOW_PCT（派发）[硬]
+  DANGER_FINANCIAL    资不抵债（fund_risk 命中，复用 FUND_RISK_TAG）[硬]
+  DANGER_TURNED_RED_GAP 当日翻绿（close<open）且高开（open>prev_close）→ 高开回落 [软]
 
 prev_close 由当日 bar 的 close/(1+percent/100) 反推（KlineBar 无该字段，percent 即
 (close−prev_close)/prev_close，反推精确无近似）。
@@ -21,6 +28,7 @@ import json
 
 from scanner.config import (
     DANGER_BIAS20_MAX,
+    DANGER_KLINE_SOFT,
     DANGER_MAIN_OUTFLOW_PCT,
     FUND_RISK_TAG,
     REVERSAL_OVERSHOOT_DROP,
@@ -31,6 +39,28 @@ DANGER_OVERSHOOT = "冲高回落(≥10%)"
 DANGER_MAIN_OUTFLOW = "主力出货(资金净流出)"
 DANGER_FINANCIAL = FUND_RISK_TAG  # "财务风险"（资不抵债）
 DANGER_TURNED_RED_GAP = "当日翻绿+高开回落"
+
+# 软信号集合（DANGER_KLINE_SOFT 开启时不剔除，仅标记）：K 线动量类三信号。
+# 主力出货/财务风险不在其中，恒为硬剔除。
+KLINE_DANGER_SIGNALS = frozenset({DANGER_BIAS20, DANGER_OVERSHOOT, DANGER_TURNED_RED_GAP})
+
+
+def hard_flags(flags: list[str]) -> list[str]:
+    """从信号列表中取剔除级（硬）信号。
+
+    DANGER_KLINE_SOFT 开启（默认）时 K 线动量类信号降为软标记，不返回；
+    关闭时恢复历史行为（全量视为硬信号，与旧版 evaluate 消费方一致）。
+    """
+    if DANGER_KLINE_SOFT:
+        return [f for f in flags if f not in KLINE_DANGER_SIGNALS]
+    return list(flags)
+
+
+def soft_flags(flags: list[str]) -> list[str]:
+    """从信号列表中取软标记信号（DANGER_KLINE_SOFT 关闭时恒为空——无降级语义）。"""
+    if DANGER_KLINE_SOFT:
+        return [f for f in flags if f in KLINE_DANGER_SIGNALS]
+    return []
 
 
 def _prev_close_of(kline_today: dict) -> float | None:
@@ -45,7 +75,9 @@ def _prev_close_of(kline_today: dict) -> float | None:
     return close / denom
 
 
-def check_danger(row, kline_today: dict | None, market_extra_sym: dict | None, fund_risk_reason: str | None) -> list[str]:
+def check_danger(
+    row, kline_today: dict | None, market_extra_sym: dict | None, fund_risk_reason: str | None
+) -> list[str]:
     """对单只池票返回命中的危险信号标签列表（可能为空）。"""
     flags: list[str] = []
     if row.bias20 is not None and row.bias20 > DANGER_BIAS20_MAX:

@@ -543,7 +543,6 @@ RISK_FLAGS_HARD_FILTER: set[str] = {
 }
 
 # ── 排雷器（池→排雷→低吸 重构 Phase 2）实证危险信号阈值 ──
-# 全部为「卖出/止损」级硬信号，仅用于影子观测（落库 pool_log），不进入 v1 推荐。
 # 阈值集中此处（config 单一阈值源），categories 不加新类别。
 # 信号含义与 enhancer 主力出货 / validator 冲高回落口径对齐，避免双套语义漂移。
 DANGER_BIAS20_MAX = 28.0  # 偏离 MA20 过大（>28%）→ 高位乖离，追高回落风险
@@ -551,6 +550,12 @@ DANGER_MAIN_OUTFLOW_PCT = -5.0  # 主力净占比(%) ≤ -5 → 主力出货派�
 # 冲高回落复用 REVERSAL_OVERSHOOT_DROP=10.0（最高涨幅−收盘涨幅，口径见上）
 # 当日翻绿+高开回落：open>prev_close 且 close<open（无独立阈值，布尔组合）
 # 财务风险复用 FUND_RISK_TAG（资不抵债，每股净资产<0）
+#
+# 信号分级（2026-09-02 v2 历史回测结论）：K 线动量类信号（bias20/冲高回落/翻绿+高开
+# 回落）剔除的恰是次日 hit7 更高的强势票（被剔组 hit7 13.2% vs 池内 9.0%，冲高回落
+# 组 18.6%），降为软标记（进 risk_flags 展示 + pool_log 落库）不剔除；主力出货与
+# 财务风险保持硬剔除。回滚杠杆：RTS_DANGER_SOFT_KLINE=0 恢复全量硬剔除。
+DANGER_KLINE_SOFT = _env_flag("RTS_DANGER_SOFT_KLINE", True)
 
 # Time-based bonus thresholds (minutes since midnight)
 

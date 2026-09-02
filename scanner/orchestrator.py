@@ -229,7 +229,12 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
     # 显示层同屏双区输出（v1 主表 + v2 池选区，见 display.build_scan_view）；落库按
     # (date, symbol, category) 并存。RTS_PIPELINE 不再切换行为；单独关闭 v2 管道
     # （回滚杠杆）用 RTS_ENABLE_POOL=0。
-    from scanner.danger import danger_flags_json, evaluate_pool  # 二次排雷在 gate 外引用，需无条件导入
+    from scanner.danger import (  # 二次排雷在 gate 外引用，需无条件导入
+        danger_flags_json,
+        evaluate_pool,
+        hard_flags,
+        soft_flags,
+    )
     from scanner.models import V2_CATEGORY  # 末尾 pool_picks 重建需要（gate 关闭时也执行）
 
     pool_rows: list = []
@@ -246,10 +251,10 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         pool_rows = build_pool(gem_stocks_filtered, klines, today, prev_ranks)
         danger_map = evaluate_pool(pool_rows, klines, {}, {})
 
-        danger_syms = {sym for sym, flags in danger_map.items() if flags}
+        danger_syms = {sym for sym, flags in danger_map.items() if hard_flags(flags)}
         danger_count = len(danger_syms)
         if danger_count:
-            print(f"  [排雷] {danger_count} 只命中危险信号，已排除")
+            print(f"  [排雷] {danger_count} 只命中硬危险信号，已排除")
 
         # 从安全池构建 Candidate
         stock_by_sym = {s.symbol: s for s in gem_stocks_filtered}
@@ -268,6 +273,9 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
                 first_seen=now_beijing().strftime("%H:%M"),
                 history_pct=[],
             )
+            # 软排雷信号（DANGER_KLINE_SOFT）：K 线动量类不剔除，进 risk_flags 供
+            # 行尾 ⚠+N 展示与 pool_log 审计（回测：剔的恰是次日 hit7 更高的强势票）。
+            c.risk_flags.extend(soft_flags(danger_map.get(row.symbol, [])))
             pool_picks.append(c)
 
         # 语义标签（不淘汰）
@@ -368,7 +376,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
             merged_flags: dict[str, list[str]] = {}
             for _sym in set(danger_map) | set(late_map):
                 merged_flags[_sym] = list(dict.fromkeys((danger_map.get(_sym) or []) + (late_map.get(_sym) or [])))
-            new_danger_syms = {sym for sym, fl in merged_flags.items() if fl} - danger_syms
+            new_danger_syms = {sym for sym, fl in merged_flags.items() if hard_flags(fl)} - danger_syms
             if new_danger_syms:
                 _names = "、".join(
                     f"{c.stock.name}({c.stock.symbol})"
@@ -384,6 +392,13 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
             for _r in pool_log_rows:
                 _r["danger_flags"] = danger_flags_json(merged_flags.get(str(_r["symbol"]), []))
             save_pool_log(conn, pool_log_rows)
+            # 存留的 v2 候选补挂二轮新命中的软信号（硬信号已被上面剔除，不会走到这里）
+            for c in all_candidates:
+                if c.category not in (V2_CATEGORY, "comeback"):
+                    continue
+                for f in soft_flags(merged_flags.get(c.stock.symbol, [])):
+                    if f not in c.risk_flags:
+                        c.risk_flags.append(f)
         except EXTERNAL_FAILURES as e:
             print(f"  [!] v2 二次排雷/pool_log 落库失败: {e}")
 
