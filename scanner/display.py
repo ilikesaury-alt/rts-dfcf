@@ -15,6 +15,7 @@ from scanner.config import (
     REDESIGN_BLOCK_AFTER_HOUR,
     REDESIGN_EXCLUDE_CATS,
     REDESIGN_EXIT_TIME,
+    REDESIGN_MAX_PICKS,
     REDESIGN_MAX_TODAY_PCT,
     REDESIGN_POOL_WIDTH_MIN,
     REDESIGN_TREND_ALLOW,
@@ -975,6 +976,14 @@ def build_scan_view(
         # 都会让整张榜单静默截断，用户只看到"票变少了"而无从察觉。收窄到数据类异常
         # 并显式告警（代码 bug 则冒泡到主循环记录完整 traceback）。
         warnings.append(f"策略优选池构建中断（数据缺失）: {type(_e).__name__}: {_e}")
+
+    # L2 等权分散（重新设计）：收敛用户可见规模，避免一次性几十只冲击决策。
+    # 真实过滤已在 orchestrator 完成，此处仅限量展示（DB 仍存全量通过 L1 的候选供审计）。
+    # main_rows 已按「榜上优先→涨幅升序→回调核心→排名→新面孔」排序（line 949），
+    # 取前 N 即「限量高把握集」；core_dip/comeback 显示门控依赖 len(main_recs) 真实条数，
+    # 故限量只作用于 main_rows，不碰 main_recs。
+    if ENABLE_REDESIGN_PICK and len(main_rows) > REDESIGN_MAX_PICKS:
+        main_rows = main_rows[:REDESIGN_MAX_PICKS]
 
     # v1 主表 symbol 集合（用于 v2 池选去重：已在主表展示的票不重复展示）
     _v1_symbols = {row.entry["symbol"] for row in main_rows}

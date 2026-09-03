@@ -343,6 +343,26 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     conn, new_faces + pool_picks, momentum + rebound_list + short_term_list + comeback_list
                 )
 
+                # 市场状态采集（P1）：每日首轮扫描顺带落盘三大指数 + 涨停池，
+                # 供 L0 展示与未来校准。仅当日缺失时采集（避免每 60s 轮次重复请求）。
+                # fail-open：采集失败不阻塞扫描主流程。
+                try:
+                    from scanner.api import make_session
+                    from scanner.market_state import collect_market_state, get_market_state
+                    from scanner.utils import now_beijing as _nb
+
+                    _ms_today = _nb().strftime("%Y-%m-%d")
+                    if get_market_state(conn, _ms_today) is None:
+                        _sess = make_session()
+                        _ms = collect_market_state(conn, _ms_today, _sess)
+                        if _ms:
+                            print(
+                                "  [市场状态] 已更新："
+                                + ", ".join(f"{k}={v}" for k, v in _ms.items() if k not in ("date", "fetched_at"))
+                            )
+                except Exception as e:
+                    print(f"  [!] 市场状态采集失败（跳过）: {e}")
+
                 # 为综合推荐补拉今日曾推荐但不在 current_quotes 中的票的实时行情
                 live_quotes: dict[str, dict] = {}
                 live_quotes.update(current_quotes)

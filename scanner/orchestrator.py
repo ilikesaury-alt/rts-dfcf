@@ -20,11 +20,13 @@ from scanner.config import (
     ENABLE_CORE_DIP,
     ENABLE_MOMENTUM,
     ENABLE_POOL_PIPELINE,
+    ENABLE_REDESIGN_PICK,
     ENABLE_SHORT_TERM,
     KLINE_FETCH_DEADLINE,
     MAX_MARKET_CAP,
     MAX_STOCK_PRICE,
     MCAP_CACHE_MAX_AGE_DAYS,
+    REDESIGN_POOL_WIDTH_MIN,
     SHORT_TERM_MAX_TODAY_PCT,
     WATCH_OFFLIST_KEEP_DAYS,
     YI,
@@ -527,6 +529,34 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         _more = f" 等{len(excluded_by_risk)}只" if len(excluded_by_risk) > 8 else ""
         print(f"  [风险过滤] {len(excluded_by_risk)} 只命中硬排除标签，已移出推荐：{_names}{_more}")
     all_candidates = [c for c in all_candidates if not candidate_excluded_by_risk(c)]
+
+    # === 重新设计 L0/L1 真过滤（2026-09-03 落地）===
+    # 不过关候选从 all_candidates 移除（不进 ScanResult → 不落库 → 不展示 → 不推飞书），
+    # 并标 excluded=1 + scan_rejections 留痕；L0 池窄则当日整体空仓（撤销全部推荐）。
+    # 复用风险过滤同款排除模式；fail-open：gate 异常则当轮不拦截，回退原逻辑。
+    if ENABLE_REDESIGN_PICK:
+        try:
+            from scanner.redesign_gate import apply_redesign_gate
+
+            redesign_blocked, l0_closed, r5 = apply_redesign_gate(all_candidates, conn, today)
+        except EXTERNAL_FAILURES as e:
+            print(f"  [!] 重新设计 gate 失败（跳过，保持原逻辑）: {type(e).__name__}: {e}")
+            redesign_blocked, l0_closed, r5 = [], False, 0
+        if l0_closed:
+            print(
+                f"  [L0 市场闸门·池窄] 今日 R5 合格 {r5} 只 "
+                f"< {REDESIGN_POOL_WIDTH_MIN}，整体空仓（撤销全部推荐）"
+            )
+            all_candidates = []
+        elif redesign_blocked:
+            _blocked_keys = {(c.stock.symbol, c.category) for c in redesign_blocked}
+            all_candidates = [
+                c for c in all_candidates if (c.stock.symbol, c.category) not in _blocked_keys
+            ]
+            try:
+                save_rejections(conn, redesign_blocked, today)
+            except EXTERNAL_FAILURES as e:
+                print(f"  [!] 重新设计拒绝落痕失败: {type(e).__name__}: {e}")
 
     # P1-7 (2026-08-10): 硬过滤落标——被过滤的今日推荐标记 excluded=1（综合排序不再展示），
     # 通过硬过滤的候选置 0（同日风险标签可能随时间变化，以最新轮次为准）。

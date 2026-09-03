@@ -847,9 +847,13 @@ TACTICS_MORNING_SPIKE_MINS = 30  # rule 1/12：早盘窗口长度（09:30 起 30
 # 分时趋势摘要（intraday_fetch 第 4 相产出，写入 kline.dimensions["minute_*"]）
 TACTICS_MINUTE_VOL_RECENT_BARS = 30  # 量能趋势对比的近期分钟窗口
 
-# ── 重新设计筛选系统：L0/L1/L3 gate（2026-09-03 验证结论，纯展示层，不改评分/排序/落库）──
+# ── 重新设计筛选系统：L0/L1/L2/L3 gate（2026-09-03 验证 → 2026-09-03 落地为真过滤）──
 # 验证样本：1637 条 / 69 交易日（2026-05-28..09-03）。完整论证见 docs/重新设计方案.md。
-# 总开关，环境变量 RTS_REDESIGN_PICK=0 可关闭（默认开）。关闭后展示层完全回退到原逻辑。
+# 落地方式（redesign_gate.py + orchestrator 接入）：L0/L1 为*真过滤* —— 不过关候选
+#   从候选集移除（不进 ScanResult/落库/展示/飞书）并标 excluded=1 + scan_rejections 留痕；
+#   L0 池窄（R5<阈值）则当日整体空仓（撤销全部推荐）。
+#   展示层（display.py）仅保留警示横幅 + 操作纪律 + 🎯降级，不再重复过滤。
+# 总开关，环境变量 RTS_REDESIGN_PICK=0 可关闭（默认开）。关闭后完全回退原逻辑。
 ENABLE_REDESIGN_PICK = _env_flag("RTS_REDESIGN_PICK", True)
 
 # L0 市场闸门：当日「R5 合格」候选数（主表五类里通过 L1 三条件的只数）≥ 此阈值才建议出手。
@@ -890,3 +894,7 @@ REDESIGN_BLOCK_AFTER_HOUR = 14
 # 验证（exit_timing_matrix.py）：10:00 卖 -0.32%/日 → 14:30 卖 -0.20%/日（少亏 ~3.5 点），
 # 根因是飙升榜次日系统性低开 ~0.5%、全天回补，早盘卖吃满跳空。
 REDESIGN_EXIT_TIME = "14:30"
+
+# L2 等权分散 —— 展示/推送的每日推荐上限（避免一次性几十只冲击决策）。
+# DB 仍存全量通过 L1 的候选供审计；此处仅收敛用户可见规模。限量取 score DESC 前 N。
+REDESIGN_MAX_PICKS = 5
