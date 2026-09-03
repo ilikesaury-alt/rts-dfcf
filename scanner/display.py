@@ -894,7 +894,7 @@ def build_scan_view(
     # v1 主表 symbol 集合（用于 v2 池选去重：已在主表展示的票不重复展示）
     _v1_symbols = {row.entry["symbol"] for row in main_rows}
 
-    # v2 池选区（双跑同屏）：榜上排名升序 → 涨幅降序（_v2_pool_sort_key，2026-09-03 用户确认），
+    # v2 池选区（双跑同屏）：低吸标签优先 → 榜上排名升序 → 涨幅降序（_v2_pool_sort_key，2026-09-03 用户确认），
     # 行结构与主表同源（复用 MainRow，终端/飞书共用同一份排序结果）。只展示前
     # V2_POOL_DISPLAY_TOP 行（全量快照仍在 pool_log/落库），pool_total 保留全量计数。
     pool_rows: list[MainRow] = []
@@ -1053,7 +1053,7 @@ def render_terminal(view: ScanView) -> None:
     if view.pool_rows:
         _pool_top = len(view.pool_rows)
         _pool_cnt = f"（前{_pool_top}/共{view.pool_total}只）" if view.pool_total > _pool_top else ""
-        print(f"\n{ANSI['BOLD']}◆ v2 池选 — 池→排雷→低吸匹配（榜上排名次序·涨幅降序）{_pool_cnt}{ANSI['RESET']}")
+        print(f"\n{ANSI['BOLD']}◆ v2 池选 — 池→排雷→低吸匹配（低吸标签优先·排名升序·涨幅降序）{_pool_cnt}{ANSI['RESET']}")
         print(_table_header(COLS_POOL))
         for _vi, row in enumerate(view.pool_rows, 1):
             _emit_pool_table_row(view, row, _vi)
