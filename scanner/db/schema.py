@@ -354,5 +354,30 @@ def init_db() -> sqlite3.Connection:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_source ON recommendations(source)")
     except sqlite3.Error:
         pass  # 回滚/清理失败无补救手段，外层已记录原始错误；仅捕获 sqlite3.Error，避免吞掉代码 bug
+    _purge_foreign_excluded_marks(conn)
     conn.commit()
     return conn
+
+
+def _purge_foreign_excluded_marks(conn: sqlite3.Connection) -> None:
+    """自愈清除外来分支写入的 excluded 标记（2026-09-03）。
+
+    redesign-pick-gate 分支与 master 共享主库，其 redesign_gate 可写入
+    reason='redesign:*' 的 excluded=1（L0 池窄→撤销当日全部推荐）。切回 master
+    后这些标记会遮蔽核心低吸/回马枪区（get_today_recommendations 过滤 excluded=1）。
+    master 侧只认自家硬过滤（enhancer RISK_FLAGS_HARD_FILTER）打的标记，
+    reason 以 FOREIGN_EXCLUDED_PREFIXES 开头的视为跨分支污染，启动时置回 excluded=0
+    （reason 字段保留供审计追溯）。
+
+    注意：仅重置布尔位，不动 reason——今天被外来门撤销的事实仍在库可查；
+    若日后合入 redesign gate，需同步删除本函数与 FOREIGN_EXCLUDED_PREFIXES。
+    """
+    from scanner.config import FOREIGN_EXCLUDED_PREFIXES  # 避免循环导入（config 不依赖 db 层）
+
+    # recommendations 表此时必然已建（上方 DDL 先行），UPDATE 失败即真异常，
+    # 冒泡给调用方（sqlite3.Error ∈ EXTERNAL_FAILURES，主循环兜底）。
+    for prefix in FOREIGN_EXCLUDED_PREFIXES:
+        conn.execute(
+            "UPDATE recommendations SET excluded = 0 WHERE excluded = 1 AND excluded_reason LIKE ?",
+            (prefix + "%",),
+        )

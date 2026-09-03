@@ -183,8 +183,18 @@ HEADERS = {
 }
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(BASE_DIR, "scanner.db")
+# DB 路径：默认仓库根 scanner.db；环境变量 RTS_DB_PATH 可覆盖（分支隔离用）。
+# 实验分支（如 redesign-pick-gate）可设 RTS_DB_PATH 指向独立库，避免其改动
+# （excluded 标记/新表/新列）写入主库后切回 master 时污染展示与回测口径。
+DB_PATH = os.environ.get("RTS_DB_PATH") or os.path.join(BASE_DIR, "scanner.db")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
+
+# 外来分支排除标记前缀（2026-09-03）：redesign-pick-gate 分支的 redesign_gate 会在
+# 共享主库写入 reason='redesign:*' 的 excluded=1 标记（L0 池窄→撤销当日全部推荐），
+# 切回 master 后这些标记会遮蔽核心低吸/回马枪区。master 启动（init_db）时自愈清除。
+# ⚠ 若日后把 redesign gate 合入 master，务必同步移除此清陳逻辑（否则每次启动会撤销
+# gate 的过滤结果）。
+FOREIGN_EXCLUDED_PREFIXES = ("redesign:",)
 
 
 # ── 行情增强数据（涨停池 AKShare + 个股资金流自实现直连 push2delay）──

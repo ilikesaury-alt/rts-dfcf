@@ -55,6 +55,8 @@ class _RecRowRequired(TypedDict):
     time: str
     percent: float
     concept: str
+    # 首推时间：当日该票未移出行的最早 time（queries.get_today_recommendations 固定构造）
+    first_time: str
 
 
 class RecommendationRow(_RecRowRequired, total=False):
