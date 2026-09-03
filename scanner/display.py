@@ -838,6 +838,27 @@ def build_scan_view(
         warnings.append(f"出场纪律：次日 {REDESIGN_EXIT_TIME} 卖出 · 回避 {REDESIGN_BLOCK_AFTER_HOUR}:00 后信号")
         warnings.append("⚠ 🎯 已降级为反指警示（样本外全买 -19%）；⛔ 已过滤行不建议操作")
 
+        # 市场状态展示（仅供参考，不驱动 L0 决策）：验证表明外生指数/涨停涨跌幅
+        # 无可靠增量预测力，故仅作环境参考展示，fail-open 不影响主流程。
+        try:
+            from scanner.market_state import get_market_state as _get_ms
+
+            _ms = _get_ms(conn, now_beijing().strftime("%Y-%m-%d"))
+            if _ms:
+                _mp = []
+                if _ms.get("cyb_pct") is not None:
+                    _c = ANSI["GREEN"] if _ms["cyb_pct"] >= 0 else ANSI["RED"]
+                    _mp.append(f"创业板指 {_c}{_ms['cyb_pct']:+.2f}%{ANSI['RESET']}")
+                if _ms.get("limit_up") is not None:
+                    _mp.append(f"涨停 {_ms['limit_up']} 家")
+                if _ms.get("limit_up_prev") is not None:
+                    _mp.append(f"连板 {_ms['limit_up_prev']}")
+                if _mp:
+                    warnings.append("[市场状态·参考] " + " | ".join(_mp) + "（仅供参考，不用于决策）")
+        except EXTERNAL_FAILURES:
+            # 市场状态仅作展示参考，取数/落库失败静默跳过，不影响主流程。
+            pass
+
     # 核心股高亮（2026-08-19）：综合排序/回马枪列表里属于当前主线方向核心股的票，
     # 名称加粗高亮。**判定 = core_stock_symbols（核心主题成员 + 20日累计≥CORE_RUN_MIN
     # 走强龙头），不用 core_dip 列表**——低吸区只含「回调中的核心股」，会漏掉创新高走强
