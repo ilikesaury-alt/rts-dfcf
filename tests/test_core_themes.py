@@ -1,8 +1,9 @@
 import sqlite3
-from datetime import date, timedelta
+from datetime import timedelta
 
 import pytest
 
+from scanner.config import now_beijing
 from scanner.core_themes import (
     _dip_metrics,
     _recent_10d_return,
@@ -10,6 +11,20 @@ from scanner.core_themes import (
     find_core_theme_dips,
     identify_core_themes,
 )
+
+# 相对日期（2026-09-03 修复）：get_cached_klines 有「近 60 天」滚动过滤，
+# 此前测试硬编码 2026-07-01 起的 K 线日期随真实时间漂移出窗口（09-03 起
+# 前 4 根被滤掉只剩 22 根 < _MIN_BARS=24，find_core_theme_dips 恒空）。
+# 所有日期一律相对真实今天生成，不再随时间漂移。
+TODAY = now_beijing().date().isoformat()
+# 主题持续上榜日：today-5 / today-3 / today-1（3 个不同日 ≥ CORE_THEME_MIN_DAYS）
+REC_DATES = (
+    (now_beijing().date() - timedelta(days=5)).isoformat(),
+    (now_beijing().date() - timedelta(days=3)).isoformat(),
+    (now_beijing().date() - timedelta(days=1)).isoformat(),
+)
+# 回看起点 mock：足够早，使任意相对推荐日都落入回看窗口
+LOOKBACK_START = "2000-01-01"
 
 
 @pytest.fixture
@@ -55,15 +70,15 @@ def _mk_series(base, run_pct, pullback_pct, n=26, today=None):
     """升序日期价格序列：前 20 根 flat=base，随后 5 根 ramp 到 peak，最后一根今日回撤。
 
     这样 close[-21] 恰为 base（20 日涨幅基准精确），回撤基准为 20 日窗口内高点。
-    返回 (dates, closes)，最后一根 date=today。
+    返回 (dates, closes)，最后一根 date=today。日期相对真实今天生成（见文件头说明）。
     """
     dates = []
     closes = []
-    start = date(2026, 7, 1)
+    end = now_beijing().date()
     flat_n = n - 6  # 前 flat_n 根 flat = base（n=26 → 20 根）
     peak = base * (1 + run_pct)
     for i in range(n - 1):
-        dates.append((start + timedelta(days=i)).isoformat())
+        dates.append((end - timedelta(days=n - 1 - i)).isoformat())
         if i < flat_n:
             closes.append(base)
         else:
@@ -71,7 +86,7 @@ def _mk_series(base, run_pct, pullback_pct, n=26, today=None):
             closes.append(base + (peak - base) * frac)
     # 最后一根 = 今日，回撤
     closes.append(peak * (1 + pullback_pct))
-    dates.append((today or date(2026, 8, 19)).isoformat())
+    dates.append((today or end).isoformat())
     return dates, closes
 
 
@@ -135,56 +150,58 @@ class TestFindCoreThemeDips:
         assert find_core_theme_dips(None, "2026-08-19") == []
 
     def test_returns_dip_candidates(self, db, monkeypatch):
-        monkeypatch.setattr("scanner.core_themes._n_trading_days_ago", lambda *a, **k: "2026-08-01")
+        monkeypatch.setattr("scanner.core_themes._n_trading_days_ago", lambda *a, **k: LOOKBACK_START)
         # 核心主题：华为概念持续上榜
-        for d in ("2026-08-12", "2026-08-14", "2026-08-18"):
+        for d in REC_DATES:
             _insert_rec(db, "SZ300001", "龙头", "华为概念", d)
         # 成员：涨20%后回撤5% = 低吸候选
         dates, closes = _mk_series(10.0, 0.20, -0.05)
         _write_klines(db, "SZ300001", dates, closes)
         db.execute(
-            "INSERT INTO concept_cache (symbol, concepts, updated) "
-            "VALUES ('SZ300001', '[\"华为概念\", \"电子\"]', '2026-08-19')"
+            "INSERT INTO concept_cache (symbol, concepts, updated) VALUES ('SZ300001', '[\"华为概念\", \"电子\"]', ?)",
+            (TODAY,),
         )
-        db.execute("INSERT INTO appearances (symbol, name, date) VALUES ('SZ300001', '龙头', '2026-08-19')")
+        db.execute("INSERT INTO appearances (symbol, name, date) VALUES ('SZ300001', '龙头', ?)", (TODAY,))
         db.commit()
 
-        dips = find_core_theme_dips(db, "2026-08-19")
+        dips = find_core_theme_dips(db, TODAY)
         assert len(dips) == 1
         assert dips[0]["symbol"] == "SZ300001"
         assert dips[0]["concept"] == "华为概念"
         assert dips[0]["run"] > 0
 
     def test_crash_day_filtered(self, db, monkeypatch):
-        monkeypatch.setattr("scanner.core_themes._n_trading_days_ago", lambda *a, **k: "2026-08-01")
-        for d in ("2026-08-12", "2026-08-14", "2026-08-18"):
+        monkeypatch.setattr("scanner.core_themes._n_trading_days_ago", lambda *a, **k: LOOKBACK_START)
+        for d in REC_DATES:
             _insert_rec(db, "SZ300001", "龙头", "华为概念", d)
         # 成员今日崩盘 -8% → 被 CORE_TODAY_FLOOR 过滤
         dates, closes = _mk_series(10.0, 0.20, -0.05)
         closes[-1] = closes[-2] * 0.92
         _write_klines(db, "SZ300001", dates, closes)
         db.execute(
-            "INSERT INTO concept_cache (symbol, concepts, updated) VALUES ('SZ300001', '[\"华为概念\"]', '2026-08-19')"
+            "INSERT INTO concept_cache (symbol, concepts, updated) VALUES ('SZ300001', '[\"华为概念\"]', ?)",
+            (TODAY,),
         )
         db.commit()
-        assert find_core_theme_dips(db, "2026-08-19") == []
+        assert find_core_theme_dips(db, TODAY) == []
 
     def test_theme_member_even_if_not_recently_rec(self, db, monkeypatch):
         """核心主题成员可来自 concept_cache（未被近 N 日推荐也纳入，扩大核心股来源）。"""
-        monkeypatch.setattr("scanner.core_themes._n_trading_days_ago", lambda *a, **k: "2026-08-01")
-        for d in ("2026-08-12", "2026-08-14", "2026-08-18"):
+        monkeypatch.setattr("scanner.core_themes._n_trading_days_ago", lambda *a, **k: LOOKBACK_START)
+        for d in REC_DATES:
             _insert_rec(db, "SZ300001", "龙头", "华为概念", d)
         # 成员2 只存在于 concept_cache，不在近期推荐，但属于华为概念且回调 → 应纳入
         dates2, closes2 = _mk_series(20.0, 0.30, -0.05)
         _write_klines(db, "SZ300002", dates2, closes2)
         db.execute(
             "INSERT INTO concept_cache (symbol, concepts, updated) VALUES "
-            "('SZ300001', '[\"华为概念\"]', '2026-08-19'), "
-            "('SZ300002', '[\"华为概念\"]', '2026-08-19')"
+            "('SZ300001', '[\"华为概念\"]', ?), "
+            "('SZ300002', '[\"华为概念\"]', ?)",
+            (TODAY, TODAY),
         )
         db.commit()
 
-        dips = find_core_theme_dips(db, "2026-08-19")
+        dips = find_core_theme_dips(db, TODAY)
         got = {c["symbol"] for c in dips}
         assert "SZ300002" in got
 
@@ -201,13 +218,11 @@ class TestCoreStockSymbols:
     @staticmethod
     def _seed_theme(db, monkeypatch, member_syms):
         """造一个核心主题（华为概念，3 个推荐日）+ concept_cache 成员。"""
-        monkeypatch.setattr("scanner.core_themes._n_trading_days_ago", lambda *a, **k: "2026-08-01")
-        for d in ("2026-08-12", "2026-08-14", "2026-08-18"):
+        monkeypatch.setattr("scanner.core_themes._n_trading_days_ago", lambda *a, **k: LOOKBACK_START)
+        for d in REC_DATES:
             _insert_rec(db, "SZ300099", "主题日", "华为概念", d)
         for sym, concepts in member_syms:
-            db.execute(
-                "INSERT INTO concept_cache (symbol, concepts, updated) VALUES (?, ?, '2026-08-19')", (sym, concepts)
-            )
+            db.execute("INSERT INTO concept_cache (symbol, concepts, updated) VALUES (?, ?, ?)", (sym, concepts, TODAY))
         db.commit()
 
     def test_none_conn_returns_empty(self):
@@ -219,7 +234,7 @@ class TestCoreStockSymbols:
         self._seed_theme(db, monkeypatch, [("SZ300001", '["华为概念"]')])
         dates, closes = _mk_series(10.0, 0.25, 0.0)  # 走强 + 创新高（无回撤）
         _write_klines(db, "SZ300001", dates, closes)
-        got = core_stock_symbols(db, "2026-08-19")
+        got = core_stock_symbols(db, TODAY)
         assert "SZ300001" in got
 
     def test_weak_member_excluded(self, db, monkeypatch):
@@ -227,7 +242,7 @@ class TestCoreStockSymbols:
         self._seed_theme(db, monkeypatch, [("SZ300001", '["华为概念"]')])
         dates, closes = _mk_series(10.0, 0.05, 0.0)  # 20日仅 +5% < 12%
         _write_klines(db, "SZ300001", dates, closes)
-        got = core_stock_symbols(db, "2026-08-19")
+        got = core_stock_symbols(db, TODAY)
         assert "SZ300001" not in got
 
     def test_non_member_excluded(self, db, monkeypatch):
@@ -235,7 +250,7 @@ class TestCoreStockSymbols:
         self._seed_theme(db, monkeypatch, [("SZ300001", '["冷门概念"]')])
         dates, closes = _mk_series(10.0, 0.30, 0.0)
         _write_klines(db, "SZ300001", dates, closes)
-        got = core_stock_symbols(db, "2026-08-19")
+        got = core_stock_symbols(db, TODAY)
         assert "SZ300001" not in got
 
     def test_dip_candidate_is_core_stock_subset(self, db, monkeypatch):
@@ -244,9 +259,9 @@ class TestCoreStockSymbols:
         self._seed_theme(db, monkeypatch, [("SZ300001", '["华为概念"]')])
         dates, closes = _mk_series(10.0, 0.20, -0.05)  # 涨20%回撤5% = 低吸候选
         _write_klines(db, "SZ300001", dates, closes)
-        dips = {c["symbol"] for c in find_core_theme_dips(db, "2026-08-19")}
+        dips = {c["symbol"] for c in find_core_theme_dips(db, TODAY)}
         assert "SZ300001" in dips
-        assert "SZ300001" in core_stock_symbols(db, "2026-08-19")
+        assert "SZ300001" in core_stock_symbols(db, TODAY)
 
 
 class TestLowBuyQualitySort:
