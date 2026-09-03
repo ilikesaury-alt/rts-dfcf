@@ -37,8 +37,8 @@ from scanner.config import (
 from scanner.data_source import _ak_to_xq
 from scanner.database import get_market_extra_cache, save_market_extra_cache
 from scanner.net import EASTMONEY_HEADERS, EASTMONEY_UT_TOKEN, _bounded_call
+from scanner.utils import EXTERNAL_FAILURES, to_float
 from scanner.utils import cache_put as _cache_put
-from scanner.utils import to_float
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +157,7 @@ def fetch_zt_pool(today: str | None = None) -> dict[str, dict]:
                 }
         _cache_put_all(_zt_cache, result, key)
         return result
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         print(f"  [!] 涨停池获取失败: {e}")
         # 短退避：失败空结果只冻结 FUND_FLOW_PARTIAL_TTL_SEC(60s) 而非默认 300s——
         # 默认 TTL 会让失败在 5 分钟内零重试（2026-08-20 修复，此前注释声称"短退避"实际 300s）。
@@ -195,7 +195,7 @@ def _collect_fund_flow(box: dict, deadline: float) -> dict:
             if not isinstance(data, dict):
                 return [], None
             return data.get("diff") or [], data.get("total")
-        except Exception:
+        except EXTERNAL_FAILURES:
             return [], None
 
     def _absorb(diff):
@@ -291,7 +291,7 @@ def fetch_fund_flow_rank() -> dict[str, dict]:
             _last_ff_partial = False
             _cache_put_all(_ff_cache, result, key)
         return result
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         _last_ff_partial = True
         print(f"  [!] 个股资金流获取失败: {e}")
         # 短退避：失败空结果只冻结 FUND_FLOW_PARTIAL_TTL_SEC(60s) 而非默认 300s

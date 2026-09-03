@@ -7,6 +7,7 @@ prevday_perf / scripts 现统一从此处取数，消除层违规与对渲染层
 """
 
 import math
+import sqlite3
 from typing import Any
 
 from scanner.categories import SCORE_DESCENDING_BY_CAT
@@ -159,7 +160,7 @@ def _nextday_entry_accum(entry: Any, conn=None) -> float | None:
             "SELECT date, close, percent FROM daily_kline WHERE symbol = ? AND date <= ? ORDER BY date DESC",
             (sym, rec_date[:10]),
         ).fetchall()
-    except Exception:
+    except (sqlite3.Error, ValueError, KeyError):
         rows = []
     accum = _replay_accum_from_rows(rows, rec_date[:10])
     if accum is not None:
@@ -201,7 +202,7 @@ def build_accum_map(conn, entries: list[Any]) -> dict[str, float | None]:
             f"SELECT symbol, date, close, percent FROM daily_kline WHERE symbol IN ({ph})",  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
             tuple(syms),
         ).fetchall()
-    except Exception:
+    except (sqlite3.Error, ValueError, KeyError):
         rows = []
     by_sym: dict[str, list[tuple[str, float, float]]] = {}
     for sym, dt, close, pct in rows:
@@ -545,7 +546,7 @@ def build_breakout_kline_map(conn, entries: list[Any]) -> dict[str, list[tuple[s
             f"SELECT symbol, date, high, close, volume FROM daily_kline WHERE symbol IN ({ph})",  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
             tuple(syms),
         ).fetchall()
-    except Exception:
+    except (sqlite3.Error, ValueError, KeyError):
         return {}
     by_sym: dict[str, list[tuple[str, float, float, float]]] = {}
     for sym, dt, high, close, vol in rows:
@@ -604,7 +605,7 @@ def _breakout_structure_ok(
                 "SELECT date, high, close, volume FROM daily_kline WHERE symbol = ? AND date < ? ORDER BY date",
                 (entry["symbol"], entry["date"][:10]),
             ).fetchall()
-        except Exception:
+        except (sqlite3.Error, ValueError, KeyError):
             return False
         cleaned: list[tuple[str, float, float, float]] = []
         for dt, high, close, vol in rows:

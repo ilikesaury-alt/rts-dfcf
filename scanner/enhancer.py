@@ -287,7 +287,8 @@ def _detect_overvalued(c: Candidate) -> bool:
     - 累计涨幅 >= OVERVALUED_ACCUM_THRESHOLD（所有策略）
     - 累计涨幅 >= OVERVALUED_ACCUM_MOMENTUM_THRESHOLD（momentum 策略，容忍度更高）
     """
-    accum = c.kline.accumulated_pct if c.kline else 0.0
+    dims = c.kline.dimensions if c.kline else {}
+    accum = _calibrated_accum(c, dims)
     return accum >= OVERVALUED_ACCUM_THRESHOLD or (
         c.category == "momentum" and accum >= OVERVALUED_ACCUM_MOMENTUM_THRESHOLD
     )

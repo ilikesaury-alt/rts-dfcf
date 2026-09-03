@@ -11,6 +11,7 @@ from datetime import date
 from scanner.config import now_beijing
 from scanner.models import KlineBar, StockInfo, make_kline_bar
 from scanner.trading_session import is_trading_time
+from scanner.utils import EXTERNAL_FAILURES
 
 # 盘中 K 线补拉失败兜底（2026-08-14）：分时数据构造今日 bar 的限时（秒）。
 # 主链路已由 KLINE_FETCH_DEADLINE 兜底，此兜底只对补拉失败的票追加一次分时拉取，
@@ -32,7 +33,7 @@ def build_today_bar_from_minute(adapter, stock: StockInfo, today: date) -> Kline
     """
     try:
         items = adapter.fetch_minute(stock.symbol)
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         print(f"  [!] 今日bar分时兜底失败 {stock.symbol}: {e}")
         return None
     if not items:

@@ -21,6 +21,7 @@ from scanner.database import get_cached_klines, save_kline_to_db
 from scanner.minute_bar import merge_minute_today_bar
 from scanner.models import KlineBar, StockInfo
 from scanner.trading_session import is_trading_time
+from scanner.utils import EXTERNAL_FAILURES
 
 # 盘中今日 K 线刷新 TTL（秒）：盘中时段已缓存今日 bar 时，超过该时长仍强制补拉，
 # 避免整日复用早盘残次 bar（stock.current 实时价与缓存 close 脱节）。
@@ -98,7 +99,7 @@ def fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo],
             fetched[sym] = kline
             if not kline:
                 _stats["fetch_failed"] = _stats.get("fetch_failed", 0) + 1
-        except Exception as e:
+        except EXTERNAL_FAILURES as e:
             _stats["fetch_failed"] = _stats.get("fetch_failed", 0) + 1
             print(f"  [!] K线获取失败 {sym}: {e}")
     if deadline_skipped:
@@ -120,7 +121,7 @@ def fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo],
                 result[sym] = kline
             try:
                 save_kline_to_db(conn, sym, kline)
-            except Exception as e:
+            except EXTERNAL_FAILURES as e:
                 print(f"  [!] K线写入DB失败 {sym}: {e}")
         elif sym in stale_cache:
             # 补拉失败回退旧缓存。盘中时尝试用分时构造今日 bar 兜底（2026-08-14）：

@@ -145,6 +145,7 @@ class TestUnifiedScannerFailOpen:
 
         class BoomConn:
             def execute(self, *a, **k):
-                raise RuntimeError("boom")
+                import sqlite3
+                raise sqlite3.Error("boom")
 
         us._persist_ranking_snapshot_once(BoomConn())  # 不应抛出

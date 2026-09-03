@@ -36,7 +36,7 @@ from scanner.config import DB_PATH, NEXTDAY_HIT_THRESHOLD
 from scanner.data_health import check_kline_health, health_banner
 from scanner.database import get_prominence_map
 from scanner.models import parse_score_breakdown
-from scanner.utils import clear_screen
+from scanner.utils import EXTERNAL_FAILURES, clear_screen
 
 DEFAULT_THRESHOLD = NEXTDAY_HIT_THRESHOLD   # 单源见 config，兼容旧 import
 DEFAULT_RECENT_DAYS = 0   # 0=全部历史；>0=最近 N 天
@@ -110,7 +110,7 @@ def _attach_prominence(conn: sqlite3.Connection, recs: list[dict]) -> list[dict]
     """
     try:
         conn.execute("SELECT 1 FROM appearances LIMIT 1").fetchone()
-    except Exception:
+    except EXTERNAL_FAILURES:
         for r in recs:
             r["_prominent"] = None
         return recs

@@ -62,7 +62,7 @@ def fetch_stock_boards(symbol: str) -> list[str]:
         resp = requests.get(url, headers=EASTMONEY_HEADERS, timeout=CONCEPT_API_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         logger.warning("概念拉取失败 %s: %s", symbol, e)
         return []
     boards: list[str] = []
@@ -99,7 +99,7 @@ def _fetch_many(symbols: list[str], deadline: float | None = None) -> dict[str, 
                 boards = fut.result()
                 if boards:
                     result[sym] = boards
-            except Exception as e:
+            except EXTERNAL_FAILURES as e:
                 logger.warning("概念拉取异常 %s: %s", sym, e)
     except TimeoutError:
         remaining = sum(1 for f in futs if not f.done())

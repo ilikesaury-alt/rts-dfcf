@@ -146,7 +146,8 @@ class TestFinalizeTodayKlines:
             def fetch_kline(self, symbol, days):
                 self.calls += 1
                 if symbol == "SZ300607":
-                    raise RuntimeError("network down")
+                    import requests as _requests
+                    raise _requests.RequestException("network down")
                 return [bar]
 
         adapter = _FlakyAdapter()

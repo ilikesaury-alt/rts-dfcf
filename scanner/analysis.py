@@ -113,8 +113,7 @@ def _project_today_vol(kline: list[KlineBar], today_str: str, now=None) -> float
     return today_vol
 
 
-def _compute_volume_metrics(kline: list[KlineBar], today_str: str,
-                            now=None) -> tuple[float, float]:
+def _compute_volume_metrics(kline: list[KlineBar], today_str: str, now=None) -> tuple[float, float]:
     """统一计算 vol_ratio 与 avg_volume（各 analyze_* 共用，分析/验证端口径一致）。
 
     早盘偏置修复：当末根 bar 是今日盘中部分量能时，按已交易分钟数投影为全天量能
@@ -164,8 +163,7 @@ def _accum_incl_today(kline: list[KlineBar], today_str: str, today_pct: float) -
     return 0.0
 
 
-def _get_features(closes: list[float], historical_kline: list[KlineBar],
-                  features: dict | None = None) -> dict:
+def _get_features(closes: list[float], historical_kline: list[KlineBar], features: dict | None = None) -> dict:
     """构建特征（调用方已预计算则复用，否则从 historical_kline 抽取 high/low/volume 现算）。"""
     if features is not None:
         return features
@@ -251,8 +249,7 @@ def _vol_rank_combo_score(vol_ratio: float, rank_change: int) -> int:
     return 0
 
 
-def _vol_peak_ratio(volumes: list[float], lookback: int = VOL_PEAK_LOOKBACK,
-                    today_vol: float | None = None) -> float:
+def _vol_peak_ratio(volumes: list[float], lookback: int = VOL_PEAK_LOOKBACK, today_vol: float | None = None) -> float:
     """末根量能 / 近 N 根量能峰值。
 
     today_vol 传入时优先用投影后的今日全天量能（_project_today_vol），
@@ -265,8 +262,7 @@ def _vol_peak_ratio(volumes: list[float], lookback: int = VOL_PEAK_LOOKBACK,
     return last / peak if peak > 0 else 1.0
 
 
-def _band_score(value: float, bands: list[tuple[float, str]], W: dict,
-                default_key: str | None = None) -> int:
+def _band_score(value: float, bands: list[tuple[float, str]], W: dict, default_key: str | None = None) -> int:
     """升序阶梯打分：bands 为 [(上界, 权重键), ...]（上界递增）。
 
     返回首个满足 value < 上界 的 W[权重键]；都不满足时返回 W[default_key] 或 0。
@@ -284,14 +280,15 @@ def _score_today_pct(today_pct: float, W: dict, prefix: str) -> tuple[int, str, 
     score = _band_score(
         today_pct,
         [(0.5, "today_pct_lt_0_5"), (1, "today_pct_0_5_1"), (2, "today_pct_1_2")],
-        W, default_key="today_pct_2_6",
+        W,
+        default_key="today_pct_2_6",
     )
     return score, f"{prefix}_today_pct", score
 
 
-
-def _compute_new_face_indicators(closes: list[float], historical_kline: list[KlineBar],
-                                 W: dict, feats: dict | None = None) -> tuple[int, dict]:
+def _compute_new_face_indicators(
+    closes: list[float], historical_kline: list[KlineBar], W: dict, feats: dict | None = None
+) -> tuple[int, dict]:
     """New face specific indicator scoring (oversold reversal signals)."""
     feats = _get_features(closes, historical_kline, feats)
     rsi_val = feats["rsi6"]
@@ -354,8 +351,9 @@ def _compute_new_face_indicators(closes: list[float], historical_kline: list[Kli
     return bonus, dims
 
 
-def _compute_momentum_indicators(closes: list[float], historical_kline: list[KlineBar],
-                                 W: dict, feats: dict | None = None) -> tuple[int, dict]:
+def _compute_momentum_indicators(
+    closes: list[float], historical_kline: list[KlineBar], W: dict, feats: dict | None = None
+) -> tuple[int, dict]:
     """Momentum specific indicator scoring (trend confirmation signals)."""
     feats = _get_features(closes, historical_kline, feats)
     rsi_val = feats["rsi6"]
@@ -417,10 +415,9 @@ def _compute_momentum_indicators(closes: list[float], historical_kline: list[Kli
     return bonus, dims
 
 
-def analyze_new_face(stock: StockInfo, kline: list[KlineBar] | None,
-                     today_str: str | None = None,
-                     features: dict | None = None,
-                     now=None) -> KlineSummary | None:
+def analyze_new_face(
+    stock: StockInfo, kline: list[KlineBar] | None, today_str: str | None = None, features: dict | None = None, now=None
+) -> KlineSummary | None:
     if not kline or len(kline) < 5:
         return None
 
@@ -441,10 +438,12 @@ def analyze_new_face(stock: StockInfo, kline: list[KlineBar] | None,
     down_days = sum(1 for p in recent_5_pcts if p < 0)
     has_crash_day = any(p <= WEAK_FORM_CRASH_THRESHOLD for p in recent_5_pcts)
     sum_5 = sum(recent_5_pcts)
-    if (not has_crash_day
-            and down_days >= WEAK_FORM_MIN_DOWN_DAYS
-            and WEAK_FORM_MIN_ACCUM < sum_5 <= WEAK_FORM_MAX_ACCUM
-            and today_pct < WEAK_FORM_MAX_TODAY_PCT):
+    if (
+        not has_crash_day
+        and down_days >= WEAK_FORM_MIN_DOWN_DAYS
+        and WEAK_FORM_MIN_ACCUM < sum_5 <= WEAK_FORM_MAX_ACCUM
+        and today_pct < WEAK_FORM_MAX_TODAY_PCT
+    ):
         return None
 
     accumulated = (closes[-1] - closes[-6]) / closes[-6] * 100 if len(closes) >= 6 else sum(pcts[-5:])
@@ -461,15 +460,14 @@ def analyze_new_face(stock: StockInfo, kline: list[KlineBar] | None,
     recent_3_pcts = pcts[-3:] if len(pcts) >= 3 else pcts
     no_heavy_loss = all(p > BOTTOM_MAX_LOSS for p in recent_3_pcts)
     volume_surge = vol_ratio > BOTTOM_VOL_SURGE
-    near_20d_low = ((closes[-1] - min(closes[-20:])) / max(min(closes[-20:]), 0.01)
-                    < BOTTOM_NEAR_LOW_PCT if len(closes) >= 20 else False)
+    near_20d_low = (
+        (closes[-1] - min(closes[-20:])) / max(min(closes[-20:]), 0.01) < BOTTOM_NEAR_LOW_PCT
+        if len(closes) >= 20
+        else False
+    )
     bottom_confirmed = no_heavy_loss and volume_surge and near_20d_low
 
-    v_shape_reversal = (
-        accumulated < -5
-        and volume_surge
-        and today_pct > 2
-    )
+    v_shape_reversal = accumulated < -5 and volume_surge and today_pct > 2
 
     if bottom_confirmed:
         trend = "⚡底部启动"
@@ -554,15 +552,20 @@ def analyze_new_face(stock: StockInfo, kline: list[KlineBar] | None,
     score += pattern_score
     dims.update(pattern_dims)
 
-    return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
-                        volume_ratio=round(vol_ratio, 2), bottom_confirmed=bottom_confirmed,
-                        score=score, dimensions=dims, avg_volume=round(avg_vol, 2))
+    return KlineSummary(
+        trend=trend,
+        accumulated_pct=round(accumulated, 2),
+        volume_ratio=round(vol_ratio, 2),
+        bottom_confirmed=bottom_confirmed,
+        score=score,
+        dimensions=dims,
+        avg_volume=round(avg_vol, 2),
+    )
 
 
-def analyze_momentum(stock: StockInfo, kline: list[KlineBar] | None,
-                     today_str: str | None = None,
-                     features: dict | None = None,
-                     now=None) -> KlineSummary | None:
+def analyze_momentum(
+    stock: StockInfo, kline: list[KlineBar] | None, today_str: str | None = None, features: dict | None = None, now=None
+) -> KlineSummary | None:
     if not kline or len(kline) < 5:
         return None
 
@@ -734,15 +737,20 @@ def analyze_momentum(stock: StockInfo, kline: list[KlineBar] | None,
     # 末周期超买判定已统一至 validator._mo_is_overbought 单点判断 + enhancer 标记，
     # 分析侧不再做软惩罚（避免与 validator 口径不一致及双重计分）。
 
-    return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
-                        volume_ratio=round(vol_ratio, 2), bottom_confirmed=not has_crash_day,
-                        score=score, dimensions=dims, avg_volume=round(avg_vol, 2))
+    return KlineSummary(
+        trend=trend,
+        accumulated_pct=round(accumulated, 2),
+        volume_ratio=round(vol_ratio, 2),
+        bottom_confirmed=not has_crash_day,
+        score=score,
+        dimensions=dims,
+        avg_volume=round(avg_vol, 2),
+    )
 
 
-def analyze_short_term(stock: StockInfo, kline: list[KlineBar] | None,
-                       today_str: str | None = None,
-                       features: dict | None = None,
-                       now=None) -> KlineSummary | None:
+def analyze_short_term(
+    stock: StockInfo, kline: list[KlineBar] | None, today_str: str | None = None, features: dict | None = None, now=None
+) -> KlineSummary | None:
     if not kline or len(kline) < 5:
         return None
 
@@ -759,10 +767,9 @@ def analyze_short_term(stock: StockInfo, kline: list[KlineBar] | None,
 
     # short_term 的 accumulated 包含今日 bar（与策略语义"今日异动"一致）
     all_closes = [k["close"] for k in kline]
-    if len(all_closes) >= 6:
-        accumulated = (all_closes[-1] - all_closes[-6]) / all_closes[-6] * 100
-    else:
-        accumulated = sum(pcts[-5:]) + today_pct
+    accumulated = (
+        (all_closes[-1] - all_closes[-6]) / all_closes[-6] * 100 if len(all_closes) >= 6 else sum(pcts[-5:]) + today_pct
+    )
     accum_incl_today = accumulated
 
     vol_ratio, avg_vol = _compute_volume_metrics(kline, today_str, now)
@@ -878,8 +885,7 @@ def analyze_short_term(stock: StockInfo, kline: list[KlineBar] | None,
         if yc > 0:
             upper_shadow = (yh - max(yo, yc)) / yc
             close_to_high = yc / yh - 1 if yh > 0 else 0
-            yest_divergence = (upper_shadow > ST_DIVERGE_UPPER_SHADOW
-                                and close_to_high < ST_DIVERGE_CLOSE_WEAK)
+            yest_divergence = upper_shadow > ST_DIVERGE_UPPER_SHADOW and close_to_high < ST_DIVERGE_CLOSE_WEAK
             prev_close = historical_kline[-2]["close"]
             if prev_close > 0 and (yh / prev_close - 1) >= ST_BOMB_HIGH and (yc / prev_close - 1) < ST_BOMB_CLOSE:
                 yest_divergence = True  # 曾触板但收盘大回落 = 炸板/烂板
@@ -891,16 +897,25 @@ def analyze_short_term(stock: StockInfo, kline: list[KlineBar] | None,
     else:
         trend = "放量启动" if vol_ratio > 1.3 else "温和放量" if vol_ratio > 1.0 else "缩量"
 
-    return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
-                        volume_ratio=round(vol_ratio, 2), bottom_confirmed=False,
-                        score=score, dimensions=dims, avg_volume=round(avg_vol, 2))
+    return KlineSummary(
+        trend=trend,
+        accumulated_pct=round(accumulated, 2),
+        volume_ratio=round(vol_ratio, 2),
+        bottom_confirmed=False,
+        score=score,
+        dimensions=dims,
+        avg_volume=round(avg_vol, 2),
+    )
 
 
-def analyze_rebound(stock: StockInfo, kline: list[KlineBar] | None,
-                    today_str: str | None = None,
-                    features: dict | None = None,
-                    off_list: bool = False,
-                    now=None) -> KlineSummary | None:
+def analyze_rebound(
+    stock: StockInfo,
+    kline: list[KlineBar] | None,
+    today_str: str | None = None,
+    features: dict | None = None,
+    off_list: bool = False,
+    now=None,
+) -> KlineSummary | None:
     """超跌反弹策略：识别暴跌后的企稳首阳。
 
     与 new_face 的区别：new_face 要求 accumulated >= -10%（前期无大跌），
@@ -1017,7 +1032,7 @@ def analyze_rebound(stock: StockInfo, kline: list[KlineBar] | None,
         dims["rebound_bollinger"] = round(boll["b_pct"], 2)
 
     # V型反转特征（前5日累计<-15% + 放量 + 今日>2%）
-    v_shape = (drop_5d < -15 and vol_ratio > 1.5 and today_pct > 2)
+    v_shape = drop_5d < -15 and vol_ratio > 1.5 and today_pct > 2
     if v_shape:
         score += W["v_shape"]
         dims["rebound_v_shape"] = W["v_shape"]
@@ -1039,6 +1054,12 @@ def analyze_rebound(stock: StockInfo, kline: list[KlineBar] | None,
     else:
         trend = "超跌企稳"
 
-    return KlineSummary(trend=trend, accumulated_pct=round(accumulated, 2),
-                        volume_ratio=round(vol_ratio, 2), bottom_confirmed=near_20d_low,
-                        score=score, dimensions=dims, avg_volume=round(avg_vol, 2))
+    return KlineSummary(
+        trend=trend,
+        accumulated_pct=round(accumulated, 2),
+        volume_ratio=round(vol_ratio, 2),
+        bottom_confirmed=near_20d_low,
+        score=score,
+        dimensions=dims,
+        avg_volume=round(avg_vol, 2),
+    )

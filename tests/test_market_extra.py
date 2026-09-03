@@ -102,9 +102,10 @@ class TestFetchZtPool:
         assert fake.zt_calls == 1
 
     def test_fail_soft(self, monkeypatch):
+        import requests as _requests
         class Bad:
             def stock_zt_pool_em(self, date):
-                raise RuntimeError("network down")
+                raise _requests.RequestException("network down")
         monkeypatch.setattr(me, "_get_ak", lambda: Bad())
         assert me.fetch_zt_pool("20260805") == {}
 
@@ -144,8 +145,9 @@ class TestFetchZtPoolThsSource:
         assert fake.zt_calls == 1
 
     def test_ths_exception_falls_back_to_ak(self, monkeypatch):
+        import requests as _requests
         def _boom(date_key=None):
-            raise RuntimeError("ths down")
+            raise _requests.RequestException("ths down")
         monkeypatch.setattr(me, "_fetch_zt_pool_ths", _boom)
         fake = FakeAk()
         monkeypatch.setattr(me, "_get_ak", lambda: fake)
@@ -168,7 +170,8 @@ class TestFetchFundFlow:
         assert result["300001"]["super_net"] == 60000000.0
 
     def test_fail_soft(self, monkeypatch):
-        net = _NetCounter(error=RuntimeError("blocked by proxy"))
+        import requests as _requests
+        net = _NetCounter(error=_requests.RequestException("blocked by proxy"))
         monkeypatch.setattr(me._requests, "get", net.get)
         assert me.fetch_fund_flow_rank() == {}
         assert net.calls >= 1
@@ -346,18 +349,20 @@ class TestCacheDateKey:
         assert fake.zt_calls == 2, "不同日期不应命中同一进程缓存"
 
     def test_fund_flow_failure_backoff(self, monkeypatch):
-        net = _NetCounter(error=RuntimeError("blocked"))
+        import requests as _requests
+        net = _NetCounter(error=_requests.RequestException("blocked"))
         monkeypatch.setattr(me._requests, "get", net.get)
         assert me.fetch_fund_flow_rank() == {}
         assert me.fetch_fund_flow_rank() == {}
         assert net.calls == 1, "失败缓存空结果：TTL 内第二次调用不再打网络"
 
     def test_zt_failure_backoff(self, monkeypatch):
+        import requests as _requests
         class Bad:
             calls = 0
             def stock_zt_pool_em(self, date):
                 Bad.calls += 1
-                raise RuntimeError("network down")
+                raise _requests.RequestException("network down")
         monkeypatch.setattr(me, "_get_ak", lambda: Bad())
         assert me.fetch_zt_pool("20260805") == {}
         assert me.fetch_zt_pool("20260805") == {}

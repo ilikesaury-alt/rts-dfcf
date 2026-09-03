@@ -22,6 +22,7 @@ from scanner.ranking import (
     entry_tier_reasons,
     sort_main_entries,
 )
+from scanner.utils import EXTERNAL_FAILURES
 
 
 def persist_ranking_snapshot(conn, target_date: str | None = None) -> int:
@@ -85,7 +86,7 @@ def load_ranking_snapshot(conn, target_date: str) -> dict[tuple[str, str], dict]
             "FROM ranking_snapshot WHERE date = ?",
             (target_date,),
         ).fetchall()
-    except Exception:
+    except EXTERNAL_FAILURES:
         return {}
     result: dict[tuple[str, str], dict] = {}
     for sym, cat, tier, marked, reasons_json, rank in rows:

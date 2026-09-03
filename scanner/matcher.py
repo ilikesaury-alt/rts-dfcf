@@ -33,6 +33,7 @@ from scanner.indicators import (
     compute_rsi,
 )
 from scanner.models import Candidate, KlineBar, StockInfo
+from scanner.utils import EXTERNAL_FAILURES
 from scanner.validator import validate
 
 # ── Chain A 阈值（在榜回调观察）──
@@ -373,6 +374,6 @@ def label_all_candidates(candidates: list[Candidate], klines: dict, today: str) 
         try:
             labels = _detect_dip_labels(c, klines, today)
             c.kline.dimensions["dip_labels"] = labels
-        except Exception:
-            # fail-open: 单票异常跳过
+        except EXTERNAL_FAILURES:
+            # fail-open: 单票数据异常跳过
             c.kline.dimensions["dip_labels"] = []

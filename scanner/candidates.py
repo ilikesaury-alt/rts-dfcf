@@ -187,7 +187,8 @@ def filter_gem_stocks(raw: list[dict]) -> list[StockInfo]:
             rc_val = float(item.get("rank_change") or 0)
             # rank 与 rank_change 同口径 float 中转：API 偶发返回 "5.0" 这类数值字符串时，
             # 直接 int("5.0") 抛 ValueError 会让整只票被跳过（漏推荐），float 中转则正常解析。
-            rank_val = float(item.get("rank") or i)
+            rank_raw = item.get("rank")
+            rank_val = float(rank_raw) if rank_raw is not None else i
         except (TypeError, ValueError):
             continue
         # NaN/inf 防御（Python json 默认解析 JSON 字面量 NaN/Infinity，与字符串脏值同族）：

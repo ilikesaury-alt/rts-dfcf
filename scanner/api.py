@@ -113,7 +113,7 @@ def _request_with_retry(
                 logger.warning("  雪球 session 疑似失效(HTTP %s)，重建 cookie 后重试 %s", resp.status_code, url[:60])
                 try:
                     _refresh_session(session)
-                except Exception as e:
+                except EXTERNAL_FAILURES as e:
                     logger.warning("  雪球 session 重建失败，按原逻辑继续: %s", e)
                 time.sleep(1)
                 continue
@@ -257,7 +257,7 @@ def fetch_market_index(session: requests.Session) -> float | None:
                 with _index_cache_lock:
                     _market_index_cache = (pct, bar_date, now)
                 return pct
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         print(f"  [!] 获取大盘指数失败: {e}")
     return None
 
@@ -323,7 +323,7 @@ def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[
     )
     try:
         resp = _request_with_retry(session, url)
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         logger.warning("K线获取失败 %s: %s", symbol, e)
         return None
     data = resp.json().get("data")
@@ -442,7 +442,7 @@ def fetch_biaosheng(session: requests.Session, size: int = 100) -> list[dict]:
             logger.warning("飙升榜返回空 data（软错误），按失败处理")
             return _biaosheng_circuit_breaker([], success=False)
         return _biaosheng_circuit_breaker(items, success=True)
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         logger.error("飙升榜获取失败: %s", e)
         return _biaosheng_circuit_breaker([], success=False)
 
@@ -506,7 +506,7 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
                             "percent": _num(q.get("percent")),
                             "high_pct": _quote_high_pct(q),
                         }
-        except Exception as e:
+        except EXTERNAL_FAILURES as e:
             print(f"  [!] 市值批量查询失败(批次{i // 50 + 1}): {e}")
             continue
 
@@ -599,7 +599,7 @@ def _fetch_minute_data(session: requests.Session, symbol: str) -> list[dict] | N
         with _minute_data_cache_lock:
             _cache_put(_MINUTE_DATA_CACHE, symbol, (None, now))
         return None
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         print(f"  [!] 获取分时数据失败 {symbol}: {e}")
         with _minute_data_cache_lock:
             _cache_put(_MINUTE_DATA_CACHE, symbol, (None, now))
@@ -760,7 +760,7 @@ def analyze_intraday(session: requests.Session, symbol: str, items: list[dict] |
             with _intraday_cache_lock:
                 _cache_put(_INTRADAY_CACHE, symbol, (score, now))
         return score
-    except Exception as e:
+    except EXTERNAL_FAILURES as e:
         print(f"  [!] 分析分时强度失败 {symbol}: {e}")
         if use_cache:
             with _intraday_cache_lock:

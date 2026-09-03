@@ -12,6 +12,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from scanner.api import analyze_intraday, analyze_minute_trend, analyze_opening_strength, estimate_live_volume
 from scanner.config import MINUTE_FETCH_PHASE_DEADLINE
 from scanner.models import Candidate
+from scanner.utils import EXTERNAL_FAILURES
 
 
 def parallel_fetch(pool: ThreadPoolExecutor,
@@ -62,7 +63,7 @@ def parallel_fetch(pool: ThreadPoolExecutor,
         sym = fetch_futs[fut]
         try:
             items_map[sym] = fut.result()
-        except Exception:
+        except EXTERNAL_FAILURES:
             items_map[sym] = None
 
     def _run_phase(fn, store):
@@ -93,7 +94,7 @@ def parallel_fetch(pool: ThreadPoolExecutor,
             sym = futs[fut]
             try:
                 store[sym] = fut.result()
-            except Exception:
+            except EXTERNAL_FAILURES:
                 store[sym] = None
 
     _run_phase(analyze_intraday, intraday_scores)
