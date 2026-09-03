@@ -11,6 +11,13 @@ from scanner.config import (
     CORE_DIP_CATEGORY,
     CORE_PULLBACK_MAX,
     CORE_PULLBACK_MIN,
+    ENABLE_REDESIGN_PICK,
+    REDESIGN_BLOCK_AFTER_HOUR,
+    REDESIGN_EXCLUDE_CATS,
+    REDESIGN_EXIT_TIME,
+    REDESIGN_MAX_TODAY_PCT,
+    REDESIGN_POOL_WIDTH_MIN,
+    REDESIGN_TREND_ALLOW,
     TOP40_THRESHOLD,
     V2_POOL_DISPLAY_TOP,
     now_beijing,
@@ -325,6 +332,38 @@ def _entry_row_suffix(
         for tag in c.tactic_tags:
             parts.append(f" {ANSI['YELLOW']}{tag}{ANSI['RESET']}")
     return "".join(parts)
+
+
+def _redesign_block_reasons(entry: RecommendationRow | dict) -> list[str]:
+    """重新设计筛选系统 —— L1 硬 gate 判定（纯展示，不改排序/评分/落库）。
+
+    返回命中原因列表（空 = 通过「R5 合格」）。依据 docs/重新设计方案.md 五组验证：
+      · 动量族（momentum/known_new_face/new_face）次日显著负 → 排除
+      · 当日涨幅（推荐时刻 percent）≥ REDESIGN_MAX_TODAY_PCT → 过热陷阱（累涨≥10% 胜率趋0）
+      · trend 不在 REDESIGN_TREND_ALLOW 白名单 → 加速/主升/连板类次日均为负
+      · 推荐时刻 ≥ REDESIGN_BLOCK_AFTER_HOUR → 尾盘拉升次日回落（验证 -1.47%/日）
+    trend 取 recommendations.trend 列；涨幅优先 live_percent（实时）回退 percent（落库）。
+    fail-open：解析异常不剔（返回空），避免误杀。
+    """
+    reasons: list[str] = []
+    try:
+        if entry.get("category") in REDESIGN_EXCLUDE_CATS:
+            reasons.append("动量族")
+        pct = entry.get("live_percent")
+        if pct is None:
+            pct = entry.get("percent")
+        if pct is not None and pct >= REDESIGN_MAX_TODAY_PCT:
+            reasons.append(f"涨幅{pct:.1f}%≥{REDESIGN_MAX_TODAY_PCT:.0f}%")
+        trend = entry.get("trend") or ""
+        if trend and trend not in REDESIGN_TREND_ALLOW:
+            reasons.append(f"trend:{trend}")
+        t = entry.get("time") or ""
+        hh = int(t[:2])
+        if hh >= REDESIGN_BLOCK_AFTER_HOUR:
+            reasons.append(f"尾盘{t[:5]}")
+    except (ValueError, TypeError, IndexError):
+        pass
+    return reasons
 
 
 def _market_env_tag(weak: bool) -> str:
@@ -774,6 +813,31 @@ def build_scan_view(
     main_recs = [e for e in today_recs if e["category"] not in ("comeback", CORE_DIP_CATEGORY, V2_CATEGORY)]
     pool_pick_recs = [e for e in today_recs if e["category"] == V2_CATEGORY]
 
+    # 重新设计筛选系统 gate（2026-09-03，纯展示层，不改排序/评分/落库）。
+    # 关闭开关（RTS_REDESIGN_PICK=0）则完全回退原逻辑：不挂标记、不加任何提示。
+    # 逐行算 L1 硬 gate 挂到 entry，统计 L0 闸门所需的 R5 合格数，并注入操作纪律提示。
+    _redesign_r5_hits = 0
+    if ENABLE_REDESIGN_PICK:
+        for _e in main_recs:
+            _rs = _redesign_block_reasons(_e)
+            _e["_redesign_blocked"] = bool(_rs)
+            _e["_redesign_reasons"] = _rs
+            if not _rs:
+                _redesign_r5_hits += 1
+        for _e in pool_pick_recs:
+            _rs = _redesign_block_reasons(_e)
+            _e["_redesign_blocked"] = bool(_rs)
+            _e["_redesign_reasons"] = _rs
+        if _redesign_r5_hits < REDESIGN_POOL_WIDTH_MIN:
+            warnings.append(
+                f"{ANSI['RED']}[L0 市场闸门·池窄] 今日 R5 合格 {_redesign_r5_hits} 只 "
+                f"< {REDESIGN_POOL_WIDTH_MIN}，建议空仓观望{ANSI['RESET']}"
+            )
+        else:
+            warnings.append(f"[L0 市场闸门] 今日 R5 合格 {_redesign_r5_hits} 只 ≥ {REDESIGN_POOL_WIDTH_MIN}，可出手")
+        warnings.append(f"出场纪律：次日 {REDESIGN_EXIT_TIME} 卖出 · 回避 {REDESIGN_BLOCK_AFTER_HOUR}:00 后信号")
+        warnings.append("⚠ 🎯 已降级为反指警示（样本外全买 -19%）；⛔ 已过滤行不建议操作")
+
     # 核心股高亮（2026-08-19）：综合排序/回马枪列表里属于当前主线方向核心股的票，
     # 名称加粗高亮。**判定 = core_stock_symbols（核心主题成员 + 20日累计≥CORE_RUN_MIN
     # 走强龙头），不用 core_dip 列表**——低吸区只含「回调中的核心股」，会漏掉创新高走强
@@ -1024,6 +1088,8 @@ def render_terminal(view: ScanView) -> None:
         _marked = view.nextday_mark.get((_e["symbol"], _e["category"]), False)
         _bolt = view.breakout_mark.get((_e["symbol"], _e["category"]), False)
         _suffix = _entry_row_suffix(_e, view.flow_pct_map, marked=_marked, breakout_marked=_bolt)
+        if _e.get("_redesign_blocked"):
+            _suffix += f" {ANSI['RED']}⛔{ANSI['RESET']}"
         print(
             _table_row(
                 [
@@ -1053,7 +1119,9 @@ def render_terminal(view: ScanView) -> None:
     if view.pool_rows:
         _pool_top = len(view.pool_rows)
         _pool_cnt = f"（前{_pool_top}/共{view.pool_total}只）" if view.pool_total > _pool_top else ""
-        print(f"\n{ANSI['BOLD']}◆ v2 池选 — 池→排雷→低吸匹配（低吸标签优先·排名升序·涨幅降序）{_pool_cnt}{ANSI['RESET']}")
+        print(
+            f"\n{ANSI['BOLD']}◆ v2 池选 — 池→排雷→低吸匹配（低吸标签优先·排名升序·涨幅降序）{_pool_cnt}{ANSI['RESET']}"
+        )
         print(_table_header(COLS_POOL))
         for _vi, row in enumerate(view.pool_rows, 1):
             _emit_pool_table_row(view, row, _vi)

@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>选票决策卡</title>
+<style>
+  :root{
+    --ink:#1f2328; --muted:#5b6570; --line:#d8dee4; --bg:#ffffff;
+    --good-bg:#e7f4ec; --good-bd:#1a7f45; --good-tx:#0f5c31;
+    --bad-bg:#fdeceb;  --bad-bd:#c0392b;  --bad-tx:#922012;
+    --warn-bg:#fdf4e3; --warn-bd:#b7791f; --warn-tx:#8a5a10;
+    --note-bg:#eef2f7; --note-bd:#4a6785; --note-tx:#2c4359;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:24px; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+    font-size:13px; line-height:1.55;
+  }
+  .sheet{max-width:820px; margin:0 auto}
+  h1{font-size:20px; margin:0 0 4px; font-weight:600; letter-spacing:.5px}
+  .sub{color:var(--muted); font-size:11.5px; margin-bottom:16px}
+  h2{
+    font-size:14px; margin:22px 0 8px; padding:5px 10px; font-weight:600;
+    background:var(--note-bg); border-left:4px solid var(--note-bd); border-radius:3px;
+  }
+  table{width:100%; border-collapse:collapse; margin:8px 0}
+  th,td{border:1px solid var(--line); padding:6px 9px; text-align:left; vertical-align:top}
+  th{background:#f6f8fa; font-weight:600; font-size:12.5px}
+  td.num{text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap}
+  .neg{color:var(--bad-tx); font-weight:600}
+  .pos{color:var(--good-tx); font-weight:600}
+  .box{padding:10px 12px; border-radius:5px; margin:10px 0; border:1px solid}
+  .bad{background:var(--bad-bg); border-color:var(--bad-bd); color:var(--bad-tx)}
+  .good{background:var(--good-bg); border-color:var(--good-bd); color:var(--good-tx)}
+  .warn{background:var(--warn-bg); border-color:var(--warn-bd); color:var(--warn-tx)}
+  .note{background:var(--note-bg); border-color:var(--note-bd); color:var(--note-tx)}
+  .box b{font-weight:700}
+  .tags{display:flex; flex-wrap:wrap; gap:6px; margin:8px 0}
+  .tag{padding:3px 9px; border-radius:11px; font-size:12px; font-weight:600}
+  .tag.ok{background:var(--good-bg); color:var(--good-tx); border:1px solid var(--good-bd)}
+  .tag.no{background:var(--bad-bg); color:var(--bad-tx); border:1px solid var(--bad-bd)}
+  ol,ul{margin:6px 0; padding-left:20px}
+  li{margin:3px 0}
+  .foot{margin-top:22px; padding-top:10px; border-top:1px solid var(--line); color:var(--muted); font-size:11px}
+  @media print{
+    body{padding:0; font-size:11.5px}
+    .sheet{max-width:none}
+    h2{background:#eef2f7 !important; -webkit-print-color-adjust:exact; print-color-adjust:exact}
+    .box,.tag{-webkit-print-color-adjust:exact; print-color-adjust:exact}
+    @page{size:A4; margin:12mm}
+  }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+<h1>选票决策卡</h1>
+<div class="sub">
+  样本 2026-06-08 ~ 09-02，1637 条（excluded=0 · 按 date+symbol 去重）　·
+  收益口径 = 推荐日收盘 → 次日收盘　·
+  样本外验证段 2026-07-30 ~ 09-02（25 个交易日，未参与规则挑选）
+</div>
+
+<div class="box bad">
+  <b>一句话结论：</b>系统整体是负期望的 —— 全买 62 天累计 <b>−35.2%</b>。
+  你亏钱不是运气差，是池子本身有毒。能救你的不是「选得更准」，而是<b>先把有毒的一大半扔掉</b>。
+</div>
+
+<h2>一 · 三条硬规则（照做即可，不用改代码）</h2>
+<table>
+  <tr><th style="width:34px">#</th><th style="width:190px">规则</th><th>依据</th></tr>
+  <tr><td>1</td><td><b>只看 trend 标签，别看分数</b></td>
+      <td>分数几乎无区分度：score≥85 的 542 只超额仅 +0.15%，score 55-70 反而 <span class="neg">−0.58%</span></td></tr>
+  <tr><td>2</td><td><b>当日涨幅 &lt; 10%</b></td>
+      <td>涨幅 ≥10% 的票样本外日均 <span class="neg">−0.53%</span></td></tr>
+  <tr><td>3</td><td><b>排除 MOM（动量）类别</b></td>
+      <td>momentum 逐票 <span class="neg">−0.63%</span>，是主要负 alpha 来源</td></tr>
+</table>
+
+<div style="margin-top:10px"><b>trend 白名单</b>（只从这里挑）</div>
+<div class="tags">
+  <span class="tag ok">企稳回升</span><span class="tag ok">主线回调</span><span class="tag ok">回踩·到买点</span>
+  <span class="tag ok">温和放量</span><span class="tag ok">震荡整理</span><span class="tag ok">低位企稳</span><span class="tag ok">整理</span>
+</div>
+
+<div><b>trend 黑名单</b>（出现即放弃）</div>
+<div class="tags">
+  <span class="tag no">回踩整理 −3.08%</span><span class="tag no">动量启动 −1.43%</span>
+  <span class="tag no">阴跌企稳 −1.15%</span><span class="tag no">弱转强 −0.70%</span>
+  <span class="tag no">加速启动 −0.40%</span><span class="tag no">动量延续 −0.31%</span>
+</div>
+<div class="sub" style="margin:2px 0 0">（百分比 = 日期中性化后的次日超额收益）</div>
+
+<h2>二 · 红线：这些绝对不碰</h2>
+<table>
+  <tr><th style="width:210px">红线</th><th>实测后果</th></tr>
+  <tr><td><b>5 日累计涨幅 ≥ 10%</b></td>
+      <td><span class="neg">12 个交易日胜率 0.0%</span>，日均 <span class="neg">−2.37%</span>；≥15% 日均 <span class="neg">−4.07%</span></td></tr>
+  <tr><td><b>照着 🎯 买</b></td>
+      <td>样本外 23 天累计 <span class="neg">−19.1%</span>，日胜率 30.4%；同期闭眼全买是 <span class="pos">+3.1%</span></td></tr>
+  <tr><td><b>只买 1 只</b></td>
+      <td>Top1 样本外严重衰减（IS +1.36%/日 → OOS +0.30%/日），单票方差吃掉全部边际</td></tr>
+  <tr><td><b>尾盘才出现的信号</b></td>
+      <td>time_bonus&gt;0 的 106 只日均 <span class="neg">−1.41%</span></td></tr>
+</table>
+
+<div class="box warn">
+  <b>关于 🎯 的重要提醒：</b>它的判定要求「5 日累计 ≥ 6%」，而 5 日累计涨幅恰恰是全场最强的
+  <b>负向</b>因子。代码里 2026-08-14 的校准注释写「累计低=安全是反指、10~15 档 hit 21.2% 最好」——
+  <b>这个结论在当前数据下方向是反的</b>。
+  另外 🎯 甜蜜带里的 <span style="font-weight:700">&lt;2% 低吸潜伏</span> 这一支（44 天，样本最大）
+  累计 <span class="neg">−32.7%</span>、回撤 42.6%，是拖垮整体的主因。
+</div>
+
+<h2>三 · 验证结果（组合口径 = 你每天的真实体验）</h2>
+<table>
+  <tr><th>选法（全样本 62 天）</th><th class="num">日收益</th><th class="num">累计</th><th class="num">日胜率</th><th class="num">回撤</th></tr>
+  <tr><td>全买（无筛选）</td><td class="num neg">−0.65%</td><td class="num neg">−35.2%</td><td class="num">38.7%</td><td class="num">43.4%</td></tr>
+  <tr><td>只买 🎯</td><td class="num neg">−0.39%</td><td class="num neg">−23.3%</td><td class="num">38.6%</td><td class="num">32.2%</td></tr>
+  <tr><td>只看 trend 白名单</td><td class="num pos">+0.09%</td><td class="num pos">+2.8%</td><td class="num">45.8%</td><td class="num">25.9%</td></tr>
+  <tr style="background:var(--good-bg)"><td><b>R5 = 白名单 + 排MOM + 涨幅&lt;10%</b></td>
+      <td class="num pos">+0.14%</td><td class="num pos">+5.9%</td><td class="num">47.5%</td><td class="num">24.5%</td></tr>
+</table>
+
+<table>
+  <tr><th>样本外检验（25 天，未参与规则挑选）</th><th class="num">日收益</th><th class="num">累计</th><th class="num">日胜率</th><th class="num">回撤</th></tr>
+  <tr><td>全买</td><td class="num pos">+0.16%</td><td class="num pos">+3.1%</td><td class="num">44.0%</td><td class="num">8.9%</td></tr>
+  <tr><td>只买 🎯</td><td class="num neg">−0.84%</td><td class="num neg">−19.1%</td><td class="num">30.4%</td><td class="num">30.0%</td></tr>
+  <tr style="background:var(--good-bg)"><td><b>R5（上述三条硬规则）</b></td>
+      <td class="num pos">+0.69%</td><td class="num pos">+16.6%</td><td class="num pos">54.2%</td><td class="num pos">6.2%</td></tr>
+  <tr><td>R5 + 非尾盘 + 非高RPS（需改代码）</td><td class="num pos">+0.84%</td><td class="num pos">+20.8%</td><td class="num pos">58.3%</td><td class="num pos">7.4%</td></tr>
+  <tr><td>上面这条再取 Top5</td><td class="num pos">+1.02%</td><td class="num pos">+25.9%</td><td class="num pos">62.5%</td><td class="num pos">7.4%</td></tr>
+</table>
+<div class="sub">IS 与 OOS 同号且量级接近 → 规则有真实边际，不是过拟合。</div>
+
+<h2>四 · 卖出时点：别在早盘卖　<span style="font-weight:400;color:var(--muted);font-size:12px">2026-09-03 新增 · 盘中口径实测</span></h2>
+<div class="sub" style="margin-bottom:8px">
+  2026-07-22 ~ 09-02，1084 个样本，东财 5 分钟 K 线（该接口最多回溯约 31 个交易日，是硬上限）
+</div>
+
+<div class="box bad">
+  <b>推荐时刻买入 → 次日 10:00 卖出 = 日均 −0.32%，31 天累计 −9.9%，日胜率 38.7%。</b><br>
+  亏损几乎全部来自<b>隔夜跳空</b>，跟盘中几点买<b>无关</b>。
+</div>
+
+<table>
+  <tr><th style="width:300px">收益拆解环节</th><th class="num">日均</th></tr>
+  <tr><td>推荐时刻买 → T 日收盘</td><td class="num">≈ −0.02%（几乎无差别）</td></tr>
+  <tr style="background:var(--bad-bg)"><td><b>T 日收盘 → T+1 开盘（隔夜跳空）</b></td><td class="num neg"><b>−0.52%</b>　← 大头</td></tr>
+  <tr><td>T+1 开盘 → T+1 15:00（日内修复）</td><td class="num pos">+0.42%</td></tr>
+</table>
+
+<div style="margin-top:10px"><b>次日各时点卖出的日均收益</b>（买入 = 推荐时刻）</div>
+<table>
+  <tr><th>卖出时点</th><th class="num">日均</th><th class="num">31 天累计</th><th style="width:110px">建议</th></tr>
+  <tr style="background:var(--bad-bg)"><td>09:35</td><td class="num neg">−0.63%</td><td class="num neg">−18.0%</td><td><b>最差，别卖</b></td></tr>
+  <tr><td>10:00</td><td class="num neg">−0.32%</td><td class="num neg">−9.9%</td><td>差</td></tr>
+  <tr><td>10:30 / 11:00</td><td class="num neg">−0.37%</td><td class="num neg">−11.0%</td><td>差</td></tr>
+  <tr style="background:var(--good-bg)"><td><b>11:30</b></td><td class="num">−0.20%</td><td class="num">−6.4%</td><td><b>可以</b></td></tr>
+  <tr><td>14:00</td><td class="num neg">−0.29%</td><td class="num neg">−9.1%</td><td>一般</td></tr>
+  <tr style="background:var(--good-bg)"><td><b>14:30</b></td><td class="num">−0.20%</td><td class="num">−6.8%</td><td><b>可以（最优）</b></td></tr>
+  <tr><td>15:00</td><td class="num">−0.21%</td><td class="num">−7.2%</td><td>可以</td></tr>
+</table>
+<div class="box good">
+  <b>操作建议：把卖出时间从 10:00 挪到 14:30 或收盘，31 天能少亏约 3.5%。</b>
+</div>
+
+<div style="margin-top:10px"><b>选法 × 卖出时点</b>（日均收益，括号内为样本外 13 天）</div>
+<table>
+  <tr><th>选法</th><th class="num">10:00 卖</th><th class="num">11:30 卖</th><th class="num">14:30 卖</th><th class="num">15:00 卖</th></tr>
+  <tr><td>全买</td><td class="num neg">−0.31%<br><span style="font-weight:400">(−0.78%)</span></td>
+      <td class="num neg">−0.20%<br><span style="font-weight:400">(−0.61%)</span></td>
+      <td class="num neg">−0.20%<br><span style="font-weight:400">(−0.51%)</span></td>
+      <td class="num neg">−0.21%<br><span style="font-weight:400">(−0.54%)</span></td></tr>
+  <tr><td>只买 🎯</td><td class="num neg">−0.46%<br><span style="font-weight:400">(−1.27%)</span></td>
+      <td class="num neg">−0.02%<br><span style="font-weight:400">(−1.08%)</span></td>
+      <td class="num neg">−0.29%<br><span style="font-weight:400">(−1.62%)</span></td>
+      <td class="num neg">−0.42%<br><span style="font-weight:400">(−1.73%)</span></td></tr>
+  <tr style="background:var(--good-bg)"><td><b>R5 三条硬规则</b></td>
+      <td class="num pos">+0.43%<br><span style="font-weight:400">(−0.36%)</span></td>
+      <td class="num pos">+0.44%<br><span style="font-weight:400">(−0.24%)</span></td>
+      <td class="num pos"><b>+0.50%</b><br><span style="font-weight:400">(−0.05%)</span></td>
+      <td class="num pos">+0.50%<br><span style="font-weight:400">(−0.06%)</span></td></tr>
+</table>
+<ul>
+  <li><b>🎯 是选股问题</b>：所有卖出时点都是负的，改时点救不了</li>
+  <li><b>R5 的样本外亏损大部分是「卖早了」</b>：10:00 卖 −0.36%，改成 14:30 卖收敛到 −0.05%</li>
+</ul>
+
+<div style="margin-top:10px"><b>另一个发现：推荐时刻本身有信息</b>（→ 次日 10:00 卖）</div>
+<table>
+  <tr><th>推荐时段</th><th class="num">日均</th><th>备注</th></tr>
+  <tr><td>09:30-10:30</td><td class="num neg">−0.82%</td><td></td></tr>
+  <tr><td>10:30-11:30</td><td class="num neg">−0.24%</td><td></td></tr>
+  <tr style="background:var(--good-bg)"><td><b>13:00-14:00</b></td><td class="num pos"><b>+0.39%</b></td><td>唯一为正</td></tr>
+  <tr style="background:var(--bad-bg)"><td>14:00-15:00</td><td class="num neg"><b>−1.47%</b></td><td>最差：尾盘拉升 → 次日回落</td></tr>
+</table>
+
+<div class="box warn">
+  <b>⚠️ 本段局限：</b>窗口只有 31 个交易日、样本外 13 天，强度弱于上面日线口径的结论。
+  R5 在此窗口样本外未能翻正，与第三节 25 天样本外 +0.69%/日不一致 ——
+  两个窗口重叠但不同，<b>不要据此推翻 R5，也不要据此重仓</b>。
+</div>
+
+<h2>五 · 每日操作流程</h2>
+<ol>
+  <li>打开终端主表，<b>先删掉所有 trend 在黑名单里的行</b></li>
+  <li>再删掉<b>当日涨幅 ≥ 10%</b> 的行</li>
+  <li>再删掉 <b>MOM 类别</b></li>
+  <li>剩下的票里<b>挑 3~5 只</b>分散买入 —— 不要只买 1 只</li>
+  <li><b>优先买 13:00-14:00 推荐出来的票</b>，回避 14:00 以后的尾盘信号</li>
+  <li><b>次日 14:30 或收盘卖出 —— 不要早盘卖</b></li>
+</ol>
+
+<h2>六 · 别忘了成本</h2>
+<div class="box note">
+  次日买入持有一天，双边成本约 <b>0.15% ~ 0.30%</b>（佣金 + 印花税 + 滑点）。<br>
+  R5 日均 +0.69%，扣成本后约 <b>+0.4 ~ +0.5%/日</b> → 可执行。<br>
+  但 <code>next_day_pct</code> 是「收盘→收盘」，你实际<b>次日开盘</b>买入会错过跳空高开的部分，
+  实盘收益会低于上表。<b>建议先小仓位实盘验证 2 周</b>再放量。
+</div>
+
+<div class="foot">
+  生成脚本：scripts/pick_edge_analysis.py · pick_rule_test.py · nextday_mark_test.py ·
+  pick_portfolio.py · pick_oos_check.py · mark_why.py · fetch_m5.py · intraday_exit_test.py ·
+  next_day_curve.py · exit_timing_matrix.py　|　生成日期 2026-09-03
+</div>
+
+</div>
+</body>
+</html>

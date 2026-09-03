@@ -846,3 +846,47 @@ TACTICS_STEADY_VOL_RATIO = 1.0  # rule 3：量能同步判定（量比 ≥ 此�
 TACTICS_MORNING_SPIKE_MINS = 30  # rule 1/12：早盘窗口长度（09:30 起 30 分钟）
 # 分时趋势摘要（intraday_fetch 第 4 相产出，写入 kline.dimensions["minute_*"]）
 TACTICS_MINUTE_VOL_RECENT_BARS = 30  # 量能趋势对比的近期分钟窗口
+
+# ── 重新设计筛选系统：L0/L1/L3 gate（2026-09-03 验证结论，纯展示层，不改评分/排序/落库）──
+# 验证样本：1637 条 / 69 交易日（2026-05-28..09-03）。完整论证见 docs/重新设计方案.md。
+# 总开关，环境变量 RTS_REDESIGN_PICK=0 可关闭（默认开）。关闭后展示层完全回退到原逻辑。
+ENABLE_REDESIGN_PICK = _env_flag("RTS_REDESIGN_PICK", True)
+
+# L0 市场闸门：当日「R5 合格」候选数（主表五类里通过 L1 三条件的只数）≥ 此阈值才建议出手。
+# 验证（redesign_final.py，IS/OOS 同口径）：≥25 时 IS +0.363% / OOS +0.613%
+# （唯一 IS/OOS 同号且为正的配置）；<15 只时次日 -1.66%、日胜率 26.7%。
+# 注意：这是内生变量（依赖本系统产出宽度），仅 ~33/69 天满足，需市场级特征补全后才更稳。
+REDESIGN_POOL_WIDTH_MIN = 25
+
+# L1 硬 gate —— trend 白名单（命中白名单才通过，其余 trend 视为剔除建议）。
+# 依据 R5 验证（pick_portfolio.py / redesign_final.py）：这些「企稳/回调/低吸」类 trend
+# 次日显著优于过热/加速类；5 日累计≥10% 的票胜率趋 0、日均 -2.37%。
+REDESIGN_TREND_ALLOW = {
+    "企稳回升",
+    "震荡整理",
+    "低位企稳",
+    "温和放量",
+    "缩量",
+    "回踩·到买点",
+    "主线回调",
+    "整理",
+    "超跌企稳",
+    "阴跌企稳",
+    "⚡底部启动",
+}
+
+# L1 硬 gate —— 当日涨幅（推荐时刻 percent）上限，超过剔除。
+# 验证（mark_why.py）：当日涨幅≥10% 次日胜率衰减明显，累涨≥15% 日均 -4.07%。
+REDESIGN_MAX_TODAY_PCT = 9.8
+
+# L1 硬 gate —— 排除类别（动量族，验证为反指/弱：全买动量族次日显著负）。
+REDESIGN_EXCLUDE_CATS = {"momentum", "known_new_face", "new_face"}
+
+# L3 出场纪律 —— 回避尾盘信号（推荐时刻 ≥ 此小时的信号剔除）。
+# 验证（intraday_exit_test.py）：14:00 后信号次日 -1.47%/日（最差），13:00-14:00 唯一为正 +0.39%。
+REDESIGN_BLOCK_AFTER_HOUR = 14
+
+# L3 出场纪律 —— 建议卖出时点（纯提示，不改任何成交逻辑）。
+# 验证（exit_timing_matrix.py）：10:00 卖 -0.32%/日 → 14:30 卖 -0.20%/日（少亏 ~3.5 点），
+# 根因是飙升榜次日系统性低开 ~0.5%、全天回补，早盘卖吃满跳空。
+REDESIGN_EXIT_TIME = "14:30"

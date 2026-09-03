@@ -39,3 +39,6 @@ node_modules/
 
 # 输出产物
 graphify-out/
+
+# 分钟级数据抓取缓存（本地分析产物，可从 API 重建）
+scripts/.cache_m5.sqlite3
