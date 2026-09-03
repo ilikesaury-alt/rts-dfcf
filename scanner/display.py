@@ -831,9 +831,15 @@ def build_scan_view(
     main_rows: list[MainRow] = []
     try:
         _seq_rows = []
+        # 减仓类纪律标签（卖出信号）：有这些标签的票从主表过滤掉
+        _SELL_TAGS = {"⬇减仓", "⬇减半", "🔻勿接", "💰落袋"}
         for e in main_recs:
             sym = e["symbol"]
             cat = e["category"]
+            # 检查减仓类纪律标签
+            _fc = _fresh_candidate(e)
+            if _fc and _fc.tactic_tags and any(t in _SELL_TAGS for t in _fc.tactic_tags):
+                continue  # 有减仓类标签，跳过
             rk = e.get("live_rank") or e.get("rank")
             has_rank = isinstance(rk, (int, float)) and rk > 0
             is_core = bool(e.get("_core_stock"))
@@ -841,7 +847,7 @@ def build_scan_view(
             is_new = _stg_map.get(cat) in ("NEW", "kNF")
             # 涨幅键与展示列同源（_entry_display_quote）：live 0.00% 合法不被 `or` 吞。
             chg = _entry_display_quote(e)[0]
-            _fresh_c = _fresh_candidate(e)
+            _fresh_c = _fc
             accum_val = None
             if _fresh_c and _fresh_c.kline:
                 accum_val = _fresh_c.kline.accumulated_pct
