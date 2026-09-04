@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from datetime import datetime
 
 from scanner.config import (
@@ -70,7 +71,7 @@ from scanner.database import get_consecutive_appearance_days_batch, get_prominen
 from scanner.models import Candidate
 from scanner.rank_trend import rank_trajectory_score
 from scanner.sector import classify_sector
-from scanner.utils import EXTERNAL_FAILURES, to_float, to_int
+from scanner.utils import EXTERNAL_FAILURES, to_float, to_int, today_kline_bar
 
 
 def apply_all_bonuses(
@@ -83,13 +84,14 @@ def apply_all_bonuses(
     clusters: dict[str, list[str]],
     market_idx_pct: float | None,
     time_bonus: int,
-    sentiment_info: dict = None,
-    rps_scores: dict[str, int] = None,
-    list_streaks: dict[str, int] = None,
-    market_extra: dict = None,
-    fund_risk: dict[str, str] = None,
-    klines: dict = None,
+    sentiment_info: dict | None = None,
+    rps_scores: dict[str, int] | None = None,
+    list_streaks: dict[str, int] | None = None,
+    market_extra: dict | None = None,
+    fund_risk: dict[str, str] | None = None,
+    klines: dict | None = None,
     conn=None,
+    today: str | None = None,
 ):
     syms = [c.stock.symbol for c in candidates]
     # N+1 → 批量：连续上榜天数 / 辨识度各一次 SQL 查询（此前每个候选各发一条）
@@ -109,7 +111,7 @@ def apply_all_bonuses(
         _apply_fund_flow_bonus(c, market_extra)
         _apply_zt_bonus(c, market_extra)
         _record_dimensions(c, market_idx_pct, opening_scores)
-        _set_risk_flags(c, fund_risk=fund_risk, klines=klines)
+        _set_risk_flags(c, fund_risk=fund_risk, klines=klines, today=today)
         _compute_prominence_labels(c, prominence_map)
 
 
@@ -124,11 +126,19 @@ def _compute_prominence_labels(c: Candidate, prominence_map: dict):
         pass  # 外部依赖降级，非代码错误
 
 
-def _set_risk_flags(c: Candidate, fund_risk: dict[str, str] = None, klines: dict = None):
+def _set_risk_flags(
+    c: Candidate, fund_risk: dict[str, str] | None = None, klines: dict | None = None, today: str | None = None
+):
     """设置复合风险标签，供 UI 显示⚠️标记。
 
     每个标签对应明确的交易决策含义，基于多字段组合判断。
     不清零加分（基础评分维度清零会破坏策略逻辑），仅加风险标签供人工判断。
+
+    today：K 线"当日"信号（翻绿+高开回落）的基准日，只认 date == today 的 bar。
+    缺省取北京时区今天（线上语义）。传 None 且 K 线补拉失败（序列末位是昨日
+    bar）时不会误触发——2026-09-04 审查修复：此前 kl[-1] 无日期校验，stale K
+    线会拿昨日形态打硬过滤。历史重扫（historical_rescan）不传 klines，本分支
+    自动短路，重扫口径不受影响。
     """
     dims = c.kline.dimensions if c.kline else {}
 
@@ -146,17 +156,20 @@ def _set_risk_flags(c: Candidate, fund_risk: dict[str, str] = None, klines: dict
 
     # 当日翻绿+高开回落：open>prev_close 且 close<open（实测有害，硬过滤）。
     # prev_close 由 close/(1+percent/100) 反推，与 danger.py 口径一致。
+    # 只认 date==today 的今日 bar（utils.today_kline_bar），缺今日 bar 不评估。
     if klines:
         kl = klines.get(c.stock.symbol) or []
-        kline_today = kl[-1] if kl else None
+        kline_today = today_kline_bar(kl, today or now_beijing().date().isoformat())
         if kline_today:
             close_ = kline_today.get("close")
             pct_ = kline_today.get("percent")
             open_ = kline_today.get("open")
             if (
-                isinstance(close_, (int, float)) and close_ > 0
+                isinstance(close_, (int, float))
+                and close_ > 0
                 and isinstance(pct_, (int, float))
-                and isinstance(open_, (int, float)) and open_ > 0
+                and isinstance(open_, (int, float))
+                and open_ > 0
             ):
                 denom = 1.0 + pct_ / 100.0
                 if denom != 0:
@@ -169,10 +182,10 @@ def _set_risk_flags(c: Candidate, fund_risk: dict[str, str] = None, klines: dict
     if dims.get("st_overbought_flag") or dims.get("mo_overbought_flag"):
         c.risk_flags.append("超买")
     # 疲劳：连续上榜后劲不足（fatigue 惩罚已触发）
-    if (dims.get("fatigue") or 0) < 0:
+    if to_float(dims.get("fatigue"), 0.0) < 0:
         c.risk_flags.append("疲劳")
     # 弱市：大盘涨幅<-1.0%
-    if (dims.get("market_env_bonus") or 0) < 0:
+    if to_float(dims.get("market_env_bonus"), 0.0) < 0:
         c.risk_flags.append("弱市")
     # 主力出货：高位派发复合判断
     if _detect_main_force_distribution(c, dims):
@@ -183,7 +196,7 @@ def _set_risk_flags(c: Candidate, fund_risk: dict[str, str] = None, klines: dict
     # 全期 12 样本：大跌(≤-7%) 25% vs 大涨 8.3%，平均次日 -2.61%，含 -16.34/-18.44
     # 两个极端日（均弱转强+盘中弱）→ 硬过滤（RISK_FLAGS_HARD_FILTER 移出推荐列表）。
     if (
-        (dims.get("v_st_weak") or 0) > 0
+        to_float(dims.get("v_st_weak"), 0.0) > 0
         and c.intraday_score is not None
         and c.intraday_score <= DISTRIBUTION_INTRADAY_WEAK
     ):
@@ -200,10 +213,10 @@ def _set_risk_flags(c: Candidate, fund_risk: dict[str, str] = None, klines: dict
     if _detect_volume_price_divergence(c, dims):
         c.risk_flags.append("量价背离")
     # 资金流出：主力净流出占比超阈值（展示型警告，非硬过滤）
-    if (dims.get("fund_flow_main_pct") or 0) <= FUND_OUTFLOW_NET_PCT:
+    if to_float(dims.get("fund_flow_main_pct"), 0.0) <= FUND_OUTFLOW_NET_PCT:
         c.risk_flags.append("资金流出")
     # 炸板：今日曾涨停但盘中炸板（封板未稳，追高/筹码松动风险，展示型警告）
-    if (dims.get("zt_zhaban") or 0) >= ZT_ZHA_BAN_MIN:
+    if to_int(dims.get("zt_zhaban"), 0) >= ZT_ZHA_BAN_MIN:
         c.risk_flags.append("炸板")
 
     # 落库审计：硬过滤命中标签串（逗号分隔）。被硬过滤砍的票从 DB 可反推原因，
@@ -361,7 +374,7 @@ def _apply_intraday_bonus(c: Candidate, intraday_scores: dict[str, float | None]
         c.intraday_score = intra
 
 
-def _apply_live_vol_bonus(c: Candidate, live_volumes: dict[str, float | None]):
+def _apply_live_vol_bonus(c: Candidate, live_volumes: Mapping[str, float | None]):
     live_vol = live_volumes.get(c.stock.symbol)
     if live_vol is not None and c.kline and c.kline.avg_volume > 0:
         live_vol_ratio = live_vol / c.kline.avg_volume  # 实时量比 = 今日成交量 / 日均量
@@ -381,12 +394,12 @@ def _apply_turnover_bonus(c: Candidate, market_caps: dict[str, dict]):
                 c.turnover_bonus = TURNOVER_BONUS_HEALTHY
 
 
-def _apply_sentiment_bonus(c: Candidate, sentiment_info: dict):
+def _apply_sentiment_bonus(c: Candidate, sentiment_info: dict | None):
     if sentiment_info:
         c.market_sentiment_bonus = sentiment_info.get("bonus", 0)
 
 
-def _apply_rps_bonus(c: Candidate, rps_scores: dict[str, int]):
+def _apply_rps_bonus(c: Candidate, rps_scores: dict[str, int] | None):
     if rps_scores:
         c.rps_bonus = rps_scores.get(c.stock.symbol, 0)
 
@@ -404,7 +417,7 @@ def _apply_market_cap_bonus(c: Candidate):
 def _apply_gap_up_bonus(c: Candidate):
     if c.kline and c.kline.dimensions:
         gap_key = "new_face_gap_up" if c.category in ("new_face", "known_new_face") else "momentum_gap_up"
-        c.gap_up_bonus = c.kline.dimensions.get(gap_key, 0)
+        c.gap_up_bonus = to_int(c.kline.dimensions.get(gap_key), 0)
 
 
 def _safe_float(v, default: float = 0.0) -> float:
@@ -420,7 +433,7 @@ def _safe_int(v, default: int = 0) -> int:
     return to_int(v, default)
 
 
-def _apply_fund_flow_bonus(c: Candidate, market_extra: dict):
+def _apply_fund_flow_bonus(c: Candidate, market_extra: dict | None):
     """主力资金流评分：主力净流入占比 ≥阈值加分，净流出明显扣分。
 
     原始数据写入 dimensions（fund_flow_*），供展示与 backtest dimension_ic 归因。
@@ -437,7 +450,7 @@ def _apply_fund_flow_bonus(c: Candidate, market_extra: dict):
         c.fund_flow_bonus = FUND_FLOW_BONUS_WEAK
 
 
-def _apply_zt_bonus(c: Candidate, market_extra: dict):
+def _apply_zt_bonus(c: Candidate, market_extra: dict | None):
     """涨停池评分：连板数加分（动量/超短），≥4 板追高降权。
 
     连板信息也写入 dimensions（zt_*），供展示与风险标签使用。
@@ -458,7 +471,7 @@ def _apply_zt_bonus(c: Candidate, market_extra: dict):
             c.zt_lianban_bonus = ZT_LIANBAN_BONUS_2
 
 
-def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None, cross_days: int = 0):
+def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] | None = None, cross_days: int = 0):
     if c.off_list:
         # 掉榜跟踪票（回马枪）整体豁免榜单动能：cross_days/盘中 streak 是掉榜前残留
         # （跟踪池最长保留 WATCH_OFFLIST_KEEP_DAYS=15 交易日，连榜早已结束）；traj 来自
@@ -553,7 +566,7 @@ def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] = None
 def _record_dimensions(
     c: Candidate,
     market_idx_pct: float | None,
-    opening_scores: dict[str, float | None],
+    opening_scores: Mapping[str, float | None],
 ):
     if not c.kline or c.kline.dimensions is None:
         return
@@ -645,7 +658,8 @@ def accumulate_final_score(c: Candidate, opening_scores: dict[str, float | None]
     market_env_bonus（市场环境，全市场非个股）属热度放大器，仅作展示维度，不入排序键。
     """
     opening = opening_scores.get(c.stock.symbol)
-    opening_bonus = int(round(opening)) if opening is not None else 0
+    # to_int 收敛（pi-lens 审查）：int(round()) 对 NaN/inf 会抛，走统一防御入口
+    opening_bonus = to_int(opening, 0) if opening is not None else 0
     return (
         c.first_today_bonus
         + c.first_breakout_bonus

@@ -281,6 +281,11 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 clear_screen()
                 now = now_beijing()
                 if not is_trading_time(now):
+                    # 连接自愈前置（2026-09-04 审查修复）：非交易分支此前直接用 conn，
+                    # 连接隔夜锁死/损坏时收盘定稿与档位快照整夜反复失败走主循环
+                    # 兜底，直到开盘交易分支才自愈。快照是历史存证，应在定稿前
+                    # 确保连接可用。
+                    conn = _ensure_conn(conn)
                     # 收盘后自动定稿今日K线（每个交易日一次）：盘中残留的部分 bar 用
                     # 最终收盘 bar 覆盖，防止次日复盘/回测读到脏数据（拓斯达案例）。
                     _finalize_today_klines(conn, adapter)
@@ -318,7 +323,9 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 # fail-open：落库失败不阻塞扫描主流程。
                 try:
                     prev_board_syms = record_leaderboard_log(conn, "biaosheng", xq_raw, prev_board_syms)
-                except Exception as e:
+                except EXTERNAL_FAILURES as e:
+                    # 收窄为 EXTERNAL_FAILURES（2026-09-04 审查修复）：与全模块
+                    # 异常纪律对齐，编程错误冒泡到主循环兜底记录完整 traceback。
                     print(f"  [!] 榜单可观测性落库失败: {e}")
 
                 res = scan_with_raw(xq_raw, conn, adapter)

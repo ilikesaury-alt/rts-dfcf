@@ -33,6 +33,7 @@ from scanner.config import (
     FUND_RISK_TAG,
     REVERSAL_OVERSHOOT_DROP,
 )
+from scanner.utils import today_kline_bar
 
 DANGER_BIAS20 = "bias20过高(>28%)"
 DANGER_OVERSHOOT = "冲高回落(≥10%)"
@@ -108,12 +109,21 @@ def check_danger(
     return flags
 
 
-def evaluate_pool(pool_rows: list, klines: dict, market_extra: dict, fund_risk: dict) -> dict[str, list[str]]:
-    """对全量池逐票排雷，返回 symbol -> 危险信号标签列表。"""
+def evaluate_pool(
+    pool_rows: list, klines: dict, market_extra: dict, fund_risk: dict, today: str
+) -> dict[str, list[str]]:
+    """对全量池逐票排雷，返回 symbol -> 危险信号标签列表。
+
+    today 为评估基准日（信号日），必传：K 线"当日"信号（冲高回落/翻绿+高开回落）
+    只认 date == today 的 bar——补拉失败导致序列缺今日 bar 时按无法度量 fail-open
+    跳过，不得拿昨日 bar 冒充当日（2026-09-04 审查修复：此前 kl[-1] 无日期校验，
+    stale K 线会消费昨日形态误杀/漏杀；口径与 utils.today_kline_bar、
+    orchestrator._v2_kline_summary 统一）。
+    """
     out: dict[str, list[str]] = {}
     for row in pool_rows:
         kl = klines.get(row.symbol) or []
-        kline_today = kl[-1] if kl else None
+        kline_today = today_kline_bar(kl, today)
         me = market_extra.get(row.symbol)
         fr = fund_risk.get(row.symbol)
         out[row.symbol] = check_danger(row, kline_today, me, fr)

@@ -219,7 +219,7 @@ def main() -> None:
             continue
 
         pool_rows = build_pool(usable, klines, d, get_prev_ranks(conn, d))
-        danger_map = evaluate_pool(pool_rows, klines, {}, {})
+        danger_map = evaluate_pool(pool_rows, klines, {}, {}, today=d)
         danger_syms = {sym for sym, fl in danger_map.items() if hard_flags(fl)}
         soft_syms = {
             sym

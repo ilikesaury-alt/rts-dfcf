@@ -55,7 +55,7 @@ from scanner.rank_trend import update_rank_history
 from scanner.ranking import comeback_sort_key
 from scanner.sector import get_sector_clusters
 from scanner.trading_session import is_trading_time
-from scanner.utils import EXTERNAL_FAILURES
+from scanner.utils import EXTERNAL_FAILURES, today_kline_bar
 
 # fail-open 异常策略（2026-08-29）：本模块所有降级分支只捕获 EXTERNAL_FAILURES
 # （OSError/超时/requests/DB 运行期错误/脏值 ValueError/响应结构 KeyError），
@@ -104,7 +104,7 @@ def _v2_kline_summary(row, kl: list | None, today: str) -> KlineSummary:
     closes = [k["close"] for k in hist if k.get("close")]
     vols = [k["volume"] for k in hist if k.get("volume")]
     avg_volume = (sum(vols[-5:]) / len(vols[-5:])) if vols else 0.0
-    today_bar = kl[-1] if kl and kl[-1].get("date") == today else None
+    today_bar = today_kline_bar(kl, today)
     volume_ratio = 0.0
     if today_bar and avg_volume > 0:
         volume_ratio = (today_bar.get("volume") or 0.0) / avg_volume
@@ -250,7 +250,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
 
         prev_ranks = get_prev_ranks(conn, today)
         pool_rows = build_pool(gem_stocks_filtered, klines, today, prev_ranks)
-        danger_map = evaluate_pool(pool_rows, klines, {}, {})
+        danger_map = evaluate_pool(pool_rows, klines, {}, {}, today=today)
 
         danger_syms = {sym for sym, flags in danger_map.items() if hard_flags(flags)}
         danger_count = len(danger_syms)
@@ -375,11 +375,17 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
     # 尚未收集（传空 dict），主力出货（净流出≤-5%）与财务风险两个信号恒不触发。
     # 现在两类数据已就绪，补一轮带全量数据的排雷：新命中的票从候选中剔除，
     # 并把合并后的 danger_flags 补进 pool_log 落库（首轮只含 bias20/冲高回落/翻绿）。
-    # 双跑语义（2026-09-02）：只作用于 v2 域（pool_pick + comeback）——v1 五桶保持
-    # 自身 validator/硬过滤口径（历史上该块仅在 v2 模式运行，从未移除过 v1 候选）。
+    # 双跑语义（2026-09-02）：只作用于 v2 域——v1 五桶保持自身 validator/硬过滤
+    # 口径（历史上该块仅在 v2 模式运行，从未移除过 v1 候选）。
+    # 覆盖边界（2026-09-04 审查修正）：evaluate_pool 输入是 pool_rows（在榜池），
+    # 回马枪是掉榜票、symbol 不在池内，故 DANGER_MAIN_OUTFLOW / DANGER_FINANCIAL /
+    # DANGER_TURNED_RED_GAP 的 danger 通道对 comeback 实际不触发（下方过滤条件里
+    # 的 comeback 分支防御性保留，勿据此认定已覆盖）。comeback 的风险覆盖来自
+    # enhancer 硬过滤（主力出货复合判定/财务风险/翻绿回落/弱转强失效）+
+    # candidate_excluded_by_risk。
     if pool_log_rows:
         try:
-            late_map = evaluate_pool(pool_rows, klines, market_extra, fund_risk)
+            late_map = evaluate_pool(pool_rows, klines, market_extra, fund_risk, today=today)
             merged_flags: dict[str, list[str]] = {}
             for _sym in set(danger_map) | set(late_map):
                 merged_flags[_sym] = list(dict.fromkeys((danger_map.get(_sym) or []) + (late_map.get(_sym) or [])))
@@ -446,6 +452,8 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         # wait=False 关闭：_parallel_fetch 各相已有 phase_deadline 限时，超时被
         # cancel 的任务仍在后台跑（受请求自身超时约束，最坏 ~48s 后自然结束），
         # 不能让 with-exit 的 shutdown(wait=True) 阻塞主扫描循环等待它们。
+        # cancel_futures=True（2026-09-04 审查修复）：未开始的排队任务一并取消，
+        # 否则 interval 调小时上一轮残余任务与下一轮 6 线程叠加。
         pool = ThreadPoolExecutor(max_workers=6)
         try:
             parallel_fetch(
@@ -458,7 +466,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
                 minute_trends=minute_trends,
             )
         finally:
-            pool.shutdown(wait=False)
+            pool.shutdown(wait=False, cancel_futures=True)
 
     # 分时趋势摘要写入候选维度（盘中操作纪律 rule 3/5/7 数据源，纯展示不参与评分）
     for c in all_candidates:
@@ -504,6 +512,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         fund_risk=fund_risk,
         klines=klines,
         conn=conn,
+        today=today,
     )
 
     # 双挂候选（首板票同时挂 new_face + short_term）需各自独立计算 extra：
@@ -572,9 +581,13 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
     except EXTERNAL_FAILURES as e:
         print(f"  [!] 驱动概念计算失败: {type(e).__name__}: {e}")
 
+    # 行情降级条目（current<=0，如停牌/字段缺失被强转 0）不入实时行情——
+    # 与主循环补拉路径同口径（2026-08-14 fail-open 修复只堵了补拉路径，此处
+    # 此前仍会把 0.00% 当真实涨幅喂给 display/mark_reversed）。
     current_quotes = {
         sym: {"percent": d.get("percent", 0.0), "current": d.get("current", 0.0), "high_pct": d.get("high_pct")}
         for sym, d in market_caps.items()
+        if d.get("current")
     }
 
     # 盘中操作纪律（2026-08-31）：12 条操盘纪律的个股标签。逐票 try/except——
