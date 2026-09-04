@@ -143,17 +143,17 @@ def test_view_symbols_uses_feishu_top_n(monkeypatch):
     view = _fake_view(syms)
     view_syms = _view_symbols(view)
 
-    # 卡片实际展示条数必须等于 TOP_N（首节「策略优选池」）
+    # 卡片实际展示条数必须等于 TOP_N（首节「v1 池选」）
     card = build_feishu_card(view, gem_total=100)
     # 首节 div 的 text.content 以标题开头；元素序列为 header(hr+div) 交替，故按内容定位
     section_divs = [
         e
         for e in card["elements"]
-        if e.get("tag") == "div" and e.get("text", {}).get("content", "").startswith("**◆ 策略优选池**")
+        if e.get("tag") == "div" and e.get("text", {}).get("content", "").startswith("**◆ v1 池选**")
     ]
-    assert section_divs, "卡片应含「策略优选池」分节"
+    assert section_divs, "卡片应含「v1 池选」分节"
     first_section = section_divs[0]["text"]["content"]
-    assert first_section.startswith("**◆ 策略优选池**")
+    assert first_section.startswith("**◆ v1 池选**")
     shown_lines = [ln for ln in first_section.splitlines() if ln.strip().startswith("`")]
     assert len(shown_lines) == FEISHU_TOP_N
     # 去重集合也应恰好覆盖被展示的 TOP_N 只

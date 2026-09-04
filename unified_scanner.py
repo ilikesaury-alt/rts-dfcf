@@ -17,6 +17,9 @@ import time
 from datetime import datetime, timedelta
 
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()  # 从 .env 加载环境变量（飞书 webhook 等）
 
 from scanner.backtest import backfill_outcomes
 from scanner.config import (

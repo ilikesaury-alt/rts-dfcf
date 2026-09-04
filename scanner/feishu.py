@@ -294,7 +294,7 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
         _row_line(row.entry, view, rank=row.rank, accum=row.accum, score=_to_score(row.score)) for row in main
     ]
     if pool_lines:
-        sections.append(("◆ 策略优选池", pool_lines))
+        sections.append(("◆ v1 池选", pool_lines))
     if pool_rows:
         _pool_top = len(pool_rows)
         _pool_cnt = f"（前{_pool_top}/共{pool_count}只）" if pool_count > _pool_top else ""

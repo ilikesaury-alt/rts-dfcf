@@ -141,7 +141,7 @@ def test_market_extra_str_zt_kept():
 
 
 def _main_lines(out: str) -> list[str]:
-    """策略优选池+v2 池选区行（核心低吸区之前），用于测试断言。
+    """v1 池选+v2 池选区行（核心低吸区之前），用于测试断言。
     （动态推荐/回马枪/次日大涨规则区已移除，2026-09-03）"""
     main_part = out.split("◆ 核心方向低吸")[0]
     return [ln for ln in main_part.splitlines() if "SZ30000" in ln]
@@ -542,7 +542,7 @@ def test_display_priority_no_core_stock_no_highlight(monkeypatch, capsys):
 
 
 def test_display_priority_pool_shows_price_and_rank_dash(monkeypatch, capsys):
-    """策略优选池渲染「现价」列；无榜单排名时显示 — 而非排序占位 9999（2026-08-28 修复）。"""
+    """v1 池选渲染「现价」列；无榜单排名时显示 — 而非排序占位 9999（2026-08-28 修复）。"""
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "有价票", "momentum", 70, 3.0)
     _insert_rec_pct(conn, "SZ300002", "掉榜票", "rebound", 50, 2.0)  # 无 rank
@@ -552,7 +552,7 @@ def test_display_priority_pool_shows_price_and_rank_dash(monkeypatch, capsys):
     out = capsys.readouterr().out
     lines = _main_lines(out)
     ln1 = next(ln for ln in lines if "SZ300001" in ln)
-    assert "10.00" in ln1, "策略优选池应渲染候选现价"
+    assert "10.00" in ln1, "v1 池选应渲染候选现价"
     assert " 1" in ln1, "候选排名应显示"
     ln2 = next(ln for ln in lines if "SZ300002" in ln)
     assert "9999" not in ln2, "无排名不应显示排序占位 9999"
@@ -575,7 +575,7 @@ def test_display_header_env_tag_matches_regime(monkeypatch, capsys):
     assert "大盘强势" in out
     """优选池行尾渲染 🎯（2026-08-30 主视图标记恢复）：甜蜜带+非超买+累计达门槛的票在主列表可见。
 
-    此前 🎯/⚡ 仅在回马枪/低吸区渲染，换成策略优选池后主视图丢失画像信息。
+    此前 🎯/⚡ 仅在回马枪/低吸区渲染，换成 v1 池选后主视图丢失画像信息。
     2026-09-04: 🎯 命中率过低，暂时不渲染（档位判定逻辑保留）。"""
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "甜蜜动量", "momentum", 70, 1.0)
@@ -767,7 +767,7 @@ def test_display_priority_pool_pick_independent_section_sorted(capsys):
 
 
 def test_display_priority_pool_pick_kept_out_of_main_even_higher_pct(capsys):
-    """双跑同屏：pool_pick 涨幅再高（7.9%，帽下最高带）也不进策略优选池主表，只在 v2 池选区展示。"""
+    """双跑同屏：pool_pick 涨幅再高（7.9%，帽下最高带）也不进 v1 池选主表，只在 v2 池选区展示。"""
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "v1票", "rebound", 50, 1.0)
     _insert_rec_pct(conn, "SZ300002", "池选票", "pool_pick", 70, 7.9)

@@ -627,7 +627,7 @@ def _table_row(cells, spec: tuple) -> str:
 
 @dataclass
 class MainRow:
-    """策略优选池一行（已排好序，字段均为渲染所需的最终值）。"""
+    """v1 池选一行（已排好序，字段均为渲染所需的最终值）。"""
 
     entry: RecommendationRow  # 含 _candidate / _core_stock / live_* 展示层注入键
     rank: int | float | None  # 展示用排名（None = 掉榜/无数据 → 渲染为 —）
@@ -691,7 +691,7 @@ def build_scan_view(
     last_ranks: 上一轮扫描的榜单排名 {symbol: rank}，供「排名」列显示雪球榜单排名变化
     （+N 升 / -N 降），与已下线策略桶同口径；缺省 None 不显示变化。
 
-    策略优选池排序键（2026-08-30）：榜上优先 → 涨幅升序 → 回调核心 → 排名升序 → 新面孔。
+    v1 池选排序键（2026-08-30）：榜上优先 → 涨幅升序 → 回调核心 → 排名升序 → 新面孔。
     🎯（次日大涨画像）/⚡（蓄势突破观察）为行尾展示标记，不参与排序、不改评分、不落库。
     """
     if conn is None:
@@ -789,7 +789,7 @@ def build_scan_view(
         e["_core_stock"] = e["symbol"] in core_syms
 
     # kNF 分数反指等组内分数键语义单源在 ranking.score_sort_key（today_report 归因复用
-    # 同一实现）；策略优选池（下方 5 级排序键）不再使用它。
+    # 同一实现）；v1 池选（下方 5 级排序键）不再使用它。
 
     # 蓄势突破观察标记（2026-08-21，⚡）：新面孔/首推或重上榜 short_term + 横盘缩量回调位
     # + MA 多头。纯展示层观察——不改排序/评分/落库（用户决策：先观察积累样本，达标后再评估
@@ -808,10 +808,10 @@ def build_scan_view(
         for e in main_recs
     }
 
-    # 综合排序主表已隐藏（2026-08-28）：策略优选池已替代其展示功能。
+    # 综合排序主表已隐藏（2026-08-28）：v1 池选已替代其展示功能。
     # （档位分组渲染的旧实现已删除；需还原见 git 历史，勿在此堆积注释代码。）
 
-    # 策略优选池（2026-08-28）：按优先级规则排序的详细列表，关键列展示。
+    # v1 池选（2026-08-28）：按优先级规则排序的详细列表，关键列展示。
     # 排序规则：榜上优先 → 涨幅升序 → 回调核心 → 排名升序 → 新面孔。
     def _cb_core_pullback_ok(sym: str) -> bool:
         kl = breakout_kmap.get(sym)
@@ -903,7 +903,7 @@ def build_scan_view(
         # 2026-08-29：原为 `except Exception: pass`——渲染循环里任何 KeyError/TypeError
         # 都会让整张榜单静默截断，用户只看到"票变少了"而无从察觉。收窄到数据类异常
         # 并显式告警（代码 bug 则冒泡到主循环记录完整 traceback）。
-        warnings.append(f"策略优选池构建中断（数据缺失）: {type(_e).__name__}: {_e}")
+        warnings.append(f"v1 池选构建中断（数据缺失）: {type(_e).__name__}: {_e}")
 
     # v1 主表 symbol 集合（用于 v2 池选去重：已在主表展示的票不重复展示）
     _v1_symbols = {row.entry["symbol"] for row in main_rows}
@@ -1082,8 +1082,8 @@ def render_terminal(view: ScanView) -> None:
             + _suffix
         )
 
-    # ── 策略优选池 ──
-    print(f"  {ANSI['BOLD']}◆ 策略优选池 — 榜上优先·涨幅升序·回调核心{ANSI['RESET']}")
+    # ── v1 池选 ──
+    print(f"  {ANSI['BOLD']}◆ v1 池选 — 榜上优先·涨幅升序·回调核心{ANSI['RESET']}")
     print(_table_header(COLS_POOL))
     for _si, row in enumerate(view.main_rows, 1):
         _emit_pool_table_row(view, row, _si)
