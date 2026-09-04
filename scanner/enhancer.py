@@ -88,6 +88,7 @@ def apply_all_bonuses(
     list_streaks: dict[str, int] = None,
     market_extra: dict = None,
     fund_risk: dict[str, str] = None,
+    klines: dict = None,
     conn=None,
 ):
     syms = [c.stock.symbol for c in candidates]
@@ -108,7 +109,7 @@ def apply_all_bonuses(
         _apply_fund_flow_bonus(c, market_extra)
         _apply_zt_bonus(c, market_extra)
         _record_dimensions(c, market_idx_pct, opening_scores)
-        _set_risk_flags(c, fund_risk=fund_risk)
+        _set_risk_flags(c, fund_risk=fund_risk, klines=klines)
         _compute_prominence_labels(c, prominence_map)
 
 
@@ -123,7 +124,7 @@ def _compute_prominence_labels(c: Candidate, prominence_map: dict):
         pass  # 外部依赖降级，非代码错误
 
 
-def _set_risk_flags(c: Candidate, fund_risk: dict[str, str] = None):
+def _set_risk_flags(c: Candidate, fund_risk: dict[str, str] = None, klines: dict = None):
     """设置复合风险标签，供 UI 显示⚠️标记。
 
     每个标签对应明确的交易决策含义，基于多字段组合判断。
@@ -142,6 +143,27 @@ def _set_risk_flags(c: Candidate, fund_risk: dict[str, str] = None):
         reason = f"{FUND_RISK_TAG}:{fund_risk[c.stock.symbol]}"
         c.risk_flags.append(FUND_RISK_TAG)
         hard_hits.append(reason)
+
+    # 当日翻绿+高开回落：open>prev_close 且 close<open（实测有害，硬过滤）。
+    # prev_close 由 close/(1+percent/100) 反推，与 danger.py 口径一致。
+    if klines:
+        kl = klines.get(c.stock.symbol) or []
+        kline_today = kl[-1] if kl else None
+        if kline_today:
+            close_ = kline_today.get("close")
+            pct_ = kline_today.get("percent")
+            open_ = kline_today.get("open")
+            if (
+                isinstance(close_, (int, float)) and close_ > 0
+                and isinstance(pct_, (int, float))
+                and isinstance(open_, (int, float)) and open_ > 0
+            ):
+                denom = 1.0 + pct_ / 100.0
+                if denom != 0:
+                    prev_close = close_ / denom
+                    if open_ > prev_close and close_ < open_:
+                        c.risk_flags.append("当日翻绿+高开回落")
+                        hard_hits.append("当日翻绿+高开回落")
 
     # 超买：末周期鱼尾段（BOLL %B>1.0 或 KDJ J>105 或 20日涨幅>60%）
     if dims.get("st_overbought_flag") or dims.get("mo_overbought_flag"):

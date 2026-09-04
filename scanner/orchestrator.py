@@ -502,6 +502,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         list_streaks=session_state.list_presence,
         market_extra=market_extra,
         fund_risk=fund_risk,
+        klines=klines,
         conn=conn,
     )
 
