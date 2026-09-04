@@ -296,6 +296,18 @@ def _detect_trend_breakage(dims: dict) -> bool:
     合并 MA 破位场景（满足任一即判定）：
     - momentum MA 空头排列（v_mo_ma == V_MO_MA_NONE）
     - short_term 跌破 MA5（v_st_ma == V_ST_MA_BROKEN）
+
+    ⚠ 结构性作用域（2026-09-04 P0-2 实测确认，勿"修复"成全局过滤）：
+    两个维度分别只在 validate_momentum / validate_short_term 中写入，
+    故本检测只对分类为 momentum/short_term 的候选生效——破位状态的票
+    大多在分类阶段已被归入 rebound/comeback/core_dip（超跌买入是这些
+    策略的常态：实测 rebound 56.9%/comeback 62.2% 的推荐日收于 EMA5
+    下方，且次日均值为正）。全局"收<EMA5 即硬过滤"会消灭唯一有效桶
+    rebound，属于错误修复方向。
+    触发率低（71 天 1 次）是设计结果而非 bug：破位票在上游打分/门控
+    已被 -5 惩罚拦下，本函数只是最后一道兜底网（行云科技 2026-08-14）。
+    已知观察缺口：momentum 多头排列但收于 EMA5 下方（回调破 5 日线）
+    的小分组未覆盖，样本 n≈3（8 月后）不支持立规则，先观测不调参。
     """
     if dims.get("v_mo_ma") == V_MO_MA_NONE:
         return True
