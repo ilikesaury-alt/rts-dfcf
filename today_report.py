@@ -177,8 +177,11 @@ def _tier0_verdict(entry: Any, flow_pct_map: dict) -> dict:
     if trap:
         risks.append("8-10%陷阱带")
 
-    # 评级：类别基线（rebound / short_term弱转强 = 2，其余 1）扣风险
-    base = 2 if (cat == "rebound" or (cat == "short_term" and w2s)) else 1
+    # 评级：类别基线（rebound / short_term弱转强 = 2，其余 1；short_term 非弱转强 = 0）
+    # 2026-09-04 审计修正：非弱转强 short_term 是「唯一有效子集」结论之外的部分
+    # （实测 hit7 5.7%/avg -0.54，低于基准 10.8%），基线降到 0——与 today_report
+    # docstring 的回测口径自洽，此前 base 1 与 new_face 同级属高估。
+    base = 2 if (cat == "rebound" or (cat == "short_term" and w2s)) else (0 if cat == "short_term" else 1)
     verdict = (
         base
         - to_int(tail_pullback)

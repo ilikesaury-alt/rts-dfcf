@@ -69,9 +69,11 @@ def test_verdict_short_term_weak_to_strong_strong():
 
 
 def test_verdict_short_term_non_weak_not_preferred():
-    """short_term 非弱转强（甜蜜带但无弱转强）→ 基线 1，不享受首选特权。"""
+    """short_term 非弱转强（甜蜜带但无弱转强）→ 基线 0。
+    2026-09-04 审计修正：非弱转强在「唯一有效子集」结论之外（实测 hit7 5.7%
+    低于基准 10.8%），基线从 1 降到 0——甜蜜带/非超买不再白送 ★★。"""
     a = _tier0_verdict(_entry(category="short_term", percent=5.0, accum=8.0, dims={}), {})
-    assert a["verdict"] == 1 and a["label"] == "可参与"
+    assert a["verdict"] == 0 and a["label"] == "谨慎"
 
 
 def test_verdict_outflow_risk():
