@@ -1,12 +1,12 @@
 """排雷器（重构 Phase 2）：实证危险信号。
 
-作用于全量池（PoolRow），不依赖候选评分对象。信号分级（2026-09-02）：
-  - 硬信号（剔除）：DANGER_MAIN_OUTFLOW（派发）、DANGER_FINANCIAL（资不抵债）——
-    「真正有害」的规避级信号；
-  - 软信号（DANGER_KLINE_SOFT 开启时不剔除，只标记）：K 线动量类三信号
-    （bias20 过高/冲高回落/翻绿+高开回落）——v2 历史回测显示它们剔除的恰是
-    次日 hit7 更高的强势票（被剔组 13.2% vs 池内 9.0%），降级后进候选
-    risk_flags 展示（⚠+N）与 pool_log 落库，保留审计轨迹。
+作用于全量池（PoolRow），不依赖候选评分对象。信号分级（2026-09-04）：
+  - 硬信号（剔除）：DANGER_MAIN_OUTFLOW（派发）、DANGER_FINANCIAL（资不抵债）、
+    DANGER_TURNED_RED_GAP（翻绿+高开回落）——后者经 pool_log 实测，
+    有该信号票均次日 -0.28% vs 无信号 +0.22%，确认有害；
+  - 软信号（DANGER_KLINE_SOFT 开启时不剔除，只标记）：K 线动量类两信号
+    （bias20 过高/冲高回落）——历史回测显示剔除反而损失收益（被剔组 hit7 更高），
+    降级后进 risk_flags 展示（⚠+N）与 pool_log 落库，保留审计轨迹。
   - 回滚：RTS_DANGER_SOFT_KLINE=0 恢复全量硬剔除（与历史行为一致）。
 
 阈值全部来自 config（DANGER_* / REVERSAL_OVERSHOOT_DROP / FUND_RISK_TAG）。
@@ -16,7 +16,7 @@
   DANGER_OVERSHOOT    冲高回落 ≥ REVERSAL_OVERSHOOT_DROP（最高涨幅 − 收盘涨幅）[软]
   DANGER_MAIN_OUTFLOW 主力净占比 ≤ DANGER_MAIN_OUTFLOW_PCT（派发）[硬]
   DANGER_FINANCIAL    资不抵债（fund_risk 命中，复用 FUND_RISK_TAG）[硬]
-  DANGER_TURNED_RED_GAP 当日翻绿（close<open）且高开（open>prev_close）→ 高开回落 [软]
+  DANGER_TURNED_RED_GAP 当日翻绿（close<open）且高开（open>prev_close）→ 高开回落 [硬]
 
 prev_close 由当日 bar 的 close/(1+percent/100) 反推（KlineBar 无该字段，percent 即
 (close−prev_close)/prev_close，反推精确无近似）。
@@ -40,9 +40,9 @@ DANGER_MAIN_OUTFLOW = "主力出货(资金净流出)"
 DANGER_FINANCIAL = FUND_RISK_TAG  # "财务风险"（资不抵债）
 DANGER_TURNED_RED_GAP = "当日翻绿+高开回落"
 
-# 软信号集合（DANGER_KLINE_SOFT 开启时不剔除，仅标记）：K 线动量类三信号。
-# 主力出货/财务风险不在其中，恒为硬剔除。
-KLINE_DANGER_SIGNALS = frozenset({DANGER_BIAS20, DANGER_OVERSHOOT, DANGER_TURNED_RED_GAP})
+# 软信号集合（DANGER_KLINE_SOFT 开启时不剔除，仅标记）：K 线动量类两信号。
+# 主力出货/财务风险/翻绿+高开回落不在其中，恒为硬剔除。
+KLINE_DANGER_SIGNALS = frozenset({DANGER_BIAS20, DANGER_OVERSHOOT})
 
 
 def hard_flags(flags: list[str]) -> list[str]:
