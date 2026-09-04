@@ -410,51 +410,6 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     if not pushed and has_rows:
                         print("\r  📤 飞书推送跳过（冷却中/无变化）", end="", flush=True)
 
-                if new_faces:
-                    top = new_faces[0]
-                    src = _SOURCE_LABELS.get(top.stock.source_tag, top.stock.source_tag)
-                    print(
-                        f"  ▶ 新面孔首选: {top.stock.name}({top.stock.symbol}) [{src}] "
-                        f"{top.stock.percent:+.2f}% | {top.kline.trend if top.kline else ''}"
-                    )
-                if momentum:
-                    top_m = momentum[0]
-                    src = _SOURCE_LABELS.get(top_m.stock.source_tag, top_m.stock.source_tag)
-                    print(
-                        f"  ▶ 动量延续首选: {top_m.stock.name}({top_m.stock.symbol}) [{src}] "
-                        f"{top_m.stock.percent:+.2f}% | {top_m.kline.trend if top_m.kline else ''}"
-                    )
-                if rebound_list:
-                    top_r = rebound_list[0]
-                    src = _SOURCE_LABELS.get(top_r.stock.source_tag, top_r.stock.source_tag)
-                    print(
-                        f"  ▶ 超跌反弹首选: {top_r.stock.name}({top_r.stock.symbol}) [{src}] "
-                        f"{top_r.stock.percent:+.2f}% | {top_r.kline.trend if top_r.kline else ''}"
-                    )
-                if comeback_list:
-                    top_c = comeback_list[0]
-                    print(
-                        f"  ▶ 回马枪首选: {top_c.stock.name}({top_c.stock.symbol}) "
-                        f"[{top_c.comeback_variant}] {top_c.stock.percent:+.2f}% "
-                        f"| {top_c.kline.trend if top_c.kline else ''}"
-                    )
-                if short_term_list:
-                    top_s = short_term_list[0]
-                    src = _SOURCE_LABELS.get(top_s.stock.source_tag, top_s.stock.source_tag)
-                    print(
-                        f"  ▶ 超短次日首选: {top_s.stock.name}({top_s.stock.symbol}) [{src}] "
-                        f"{top_s.stock.percent:+.2f}% | RPS:{top_s.rps_bonus}"
-                    )
-                if pool_picks:
-                    top_p = pool_picks[0]
-                    labels_raw = top_p.kline.dimensions.get("dip_labels") if top_p.kline else None
-                    labels = [str(x) for x in labels_raw] if isinstance(labels_raw, (list, tuple)) else []
-                    label_str = "/".join(labels) if labels else "无标签"
-                    print(
-                        f"  ▶ 池选首选: {top_p.stock.name}({top_p.stock.symbol}) "
-                        f"{top_p.stock.percent:+.2f}% | {label_str}"
-                    )
-
                 try:
                     n = backfill_outcomes(conn)
                     if n:
