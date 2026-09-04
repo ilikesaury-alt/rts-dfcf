@@ -11,6 +11,7 @@ from scanner.config import (
     CORE_DIP_CATEGORY,
     CORE_PULLBACK_MAX,
     CORE_PULLBACK_MIN,
+    DISPLAY_MAX_TODAY_PCT,
     TOP40_THRESHOLD,
     V2_POOL_DISPLAY_TOP,
     now_beijing,
@@ -246,15 +247,13 @@ def _entry_display_quote(entry: RecommendationRow | dict) -> tuple[float, float]
 
 
 def _v2_pool_sort_key(has_label: bool, pct: float, rank: float | None) -> tuple:
-    """v2 池选区排序键（2026-09-03 方案B 用户确认）：低吸标签优先 → 榜上排名升序 → 涨幅降序。
+    """v2 池选区排序键（2026-09-04 修改）：排名升序 → 低吸标签优先 → 涨幅降序。
 
-    - 主键：命中任一低吸标签（超跌反转/缩量回调/均线支撑/放量突破/弱转强）的票进前段
-      ——区块名「低吸匹配」落到排序；无标签段沉后。
-    - 段内：榜上排名升序（rank 缺失即掉榜票 10**9 沉底）；同排名按涨幅降序消除平局洗牌。
-    - 抖动口径（简版）：标签依赖当日 bar，盘中可能进出导致段间越界跳动，接受
-      （主键 rank 段内不变；粘性并集留作杠杆，见 dal pool_pick 落库）。
+    - 主键：榜上排名升序（rank 缺失即掉榜票 10**9 沉底）
+    - 次键：命中任一低吸标签（超跌反转/缩量回调/均线支撑/放量突破/弱转强）的票进前段
+    - 三键：涨幅降序消除平局洗牌
     """
-    return (0 if has_label else 1, rank if rank is not None else 10**9, -pct)
+    return (rank if rank is not None else 10**9, 0 if has_label else 1, -pct)
 
 
 def _entry_dip_labels(entry: RecommendationRow | dict) -> list[str]:
@@ -316,8 +315,9 @@ def _entry_row_suffix(
             extra = f"{extra} {icon}".strip() if extra else icon
     if extra:
         parts.append(f" {extra}")
-    if marked:
-        parts.append(f" {ANSI['GREEN']}🎯{ANSI['RESET']}")
+    # 2026-09-04: 🎯 命中率过低，暂时不渲染（档位判定逻辑保留）
+    # if marked:
+    #     parts.append(f" {ANSI['GREEN']}🎯{ANSI['RESET']}")
     if breakout_marked:
         parts.append(f" {ANSI['CYAN']}⚡{ANSI['RESET']}")
     # 盘中操作纪律标签（纯展示，不参与排序/评分）
@@ -847,6 +847,10 @@ def build_scan_view(
             is_new = _stg_map.get(cat) in ("NEW", "kNF")
             # 涨幅键与展示列同源（_entry_display_quote）：live 0.00% 合法不被 `or` 吞。
             chg = _entry_display_quote(e)[0]
+            # 不追涨过滤（2026-09-04 用户决策）：今日实时涨幅超过阈值的票不进主表
+            # （纯显示层，不改评分/落库；回马枪/核心低吸区不受影响）。
+            if chg > DISPLAY_MAX_TODAY_PCT:
+                continue
             _fresh_c = _fc
             accum_val = None
             if _fresh_c and _fresh_c.kline:
@@ -900,7 +904,7 @@ def build_scan_view(
     # v1 主表 symbol 集合（用于 v2 池选去重：已在主表展示的票不重复展示）
     _v1_symbols = {row.entry["symbol"] for row in main_rows}
 
-    # v2 池选区（双跑同屏）：低吸标签优先 → 榜上排名升序 → 涨幅降序（_v2_pool_sort_key，2026-09-03 用户确认），
+    # v2 池选区（双跑同屏）：排名升序 → 低吸标签优先 → 涨幅降序（_v2_pool_sort_key，2026-09-04 修改），
     # 行结构与主表同源（复用 MainRow，终端/飞书共用同一份排序结果）。只展示前
     # V2_POOL_DISPLAY_TOP 行（全量快照仍在 pool_log/落库），pool_total 保留全量计数。
     pool_rows: list[MainRow] = []
@@ -919,6 +923,10 @@ def build_scan_view(
             if _fc and _fc.tactic_tags and any(t in _SELL_TAGS for t in _fc.tactic_tags):
                 continue  # 有减仓类标签，跳过
             _pct_row, _cur_row = _entry_display_quote(_pe)
+            # 不追涨过滤（2026-09-04 用户决策）：今日实时涨幅超过阈值的票不进 v2 池选区
+            # （过滤在 pool_total 计数前，终端「池选 N 只」与飞书头部计数同源不含被滤票）。
+            if _pct_row > DISPLAY_MAX_TODAY_PCT:
+                continue
             _rk_disp = _pe.get("live_rank") or _pe.get("rank")
             if _rk_disp is None and _fc:
                 _rk_disp = _fc.stock.rank
@@ -1059,7 +1067,9 @@ def render_terminal(view: ScanView) -> None:
     if view.pool_rows:
         _pool_top = len(view.pool_rows)
         _pool_cnt = f"（前{_pool_top}/共{view.pool_total}只）" if view.pool_total > _pool_top else ""
-        print(f"\n{ANSI['BOLD']}◆ v2 池选 — 池→排雷→低吸匹配（低吸标签优先·排名升序·涨幅降序）{_pool_cnt}{ANSI['RESET']}")
+        print(
+            f"\n{ANSI['BOLD']}◆ v2 池选 — 池→排雷→低吸匹配（排名升序→低吸标签优先→涨幅降序）{_pool_cnt}{ANSI['RESET']}"
+        )
         print(_table_header(COLS_POOL))
         for _vi, row in enumerate(view.pool_rows, 1):
             _emit_pool_table_row(view, row, _vi)

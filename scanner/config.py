@@ -206,6 +206,17 @@ def _env_flag(name: str, default: bool) -> bool:
     return v.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _env_float(name: str, default: float) -> float:
+    """浮点阈值的环境变量读取：缺省/脏值回退 default（不让阈值解析炸掉启动）。"""
+    v = os.environ.get(name)
+    if v is None or not v.strip():
+        return default
+    try:
+        return float(v)
+    except ValueError:
+        return default
+
+
 def pipeline_mode() -> str:
     """管道模式（RTS_PIPELINE=v1|v2，默认 v2）。
 
@@ -570,6 +581,11 @@ DANGER_KLINE_SOFT = _env_flag("RTS_DANGER_SOFT_KLINE", True)
 # v2 池选区展示条数（2026-09-03）：池为「榜上全量快照」（matcher 只标注不淘汰），
 # 终端/飞书只渲染涨幅降序前 N 行，尾部注明总数——过滤属消费层，落库/pool_log/回测不受影响。
 V2_POOL_DISPLAY_TOP = 10
+
+# 显示层「不追涨」过滤（2026-09-04 用户决策）：主表+v2 池选区里今日实时涨幅超过该值
+# 的票不再展示（只影响显示，不改评分/落库/回测）。回滚杠杆：RTS_DISPLAY_MAX_TODAY_PCT
+# （脏值回退默认 14.0）。
+DISPLAY_MAX_TODAY_PCT = _env_float("RTS_DISPLAY_MAX_TODAY_PCT", 14.0)
 
 # Time-based bonus thresholds (minutes since midnight)
 

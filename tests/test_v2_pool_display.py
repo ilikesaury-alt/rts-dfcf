@@ -1,7 +1,7 @@
-"""v2 池选区排序与展示截断单测（2026-09-03）。
+"""v2 池选区排序与展示截断单测（2026-09-04）。
 
-覆盖 _v2_pool_sort_key 三级排序键（低吸标签优先 → 榜上排名升序 → 涨幅降序，
-2026-09-03 方案B 用户确认）、_entry_dip_labels 单源回退链与 ScanView.pool_total
+覆盖 _v2_pool_sort_key 三级排序键（排名升序 → 低吸标签优先 → 涨幅降序，
+2026-09-04 修改）、_entry_dip_labels 单源回退链与 ScanView.pool_total
 全量计数字段。纯函数测试，不依赖 DB/网络。
 """
 
@@ -12,30 +12,31 @@ from scanner.display import ScanView, _entry_dip_labels, _v2_pool_sort_key
 
 
 class TestV2PoolSortKey:
-    def test_label_tier_is_primary(self):
-        """主键：命中低吸标签的票排前段，与排名/涨幅无关。"""
-        labeled = _v2_pool_sort_key(True, 1.0, 50)
-        unlabeled_top = _v2_pool_sort_key(False, 9.9, 1)
-        assert labeled < unlabeled_top
+    def test_rank_is_primary(self):
+        """主键：榜上排名升序，与标签/涨幅无关。"""
+        rank1_unlabeled = _v2_pool_sort_key(False, 1.0, 1)
+        rank50_labeled = _v2_pool_sort_key(True, 5.0, 50)
+        assert rank1_unlabeled < rank50_labeled
 
-    def test_rank_ascending_within_segment(self):
-        """段内：榜上排名升序（与涨幅无关）。"""
-        assert _v2_pool_sort_key(False, 1.0, 5) < _v2_pool_sort_key(False, 9.9, 8)
-        assert _v2_pool_sort_key(True, 1.0, 3) < _v2_pool_sort_key(True, 9.9, 10)
+    def test_label_tier_is_secondary(self):
+        """次键：同排名时命中低吸标签的票排前段。"""
+        labeled = _v2_pool_sort_key(True, 1.0, 5)
+        unlabeled = _v2_pool_sort_key(False, 9.9, 5)
+        assert labeled < unlabeled
 
     def test_pct_descending_tiebreak(self):
-        """末键：同排名按涨幅降序（消除平局洗牌）。"""
+        """末键：同排名同标签状态按涨幅降序（消除平局洗牌）。"""
         assert _v2_pool_sort_key(False, 9.0, 5) < _v2_pool_sort_key(False, 5.0, 5)
         assert _v2_pool_sort_key(True, 3.0, 12) < _v2_pool_sort_key(True, -2.0, 12)
 
-    def test_missing_rank_sinks_within_segment(self):
-        """rank 缺失（掉榜/无排名）段内沉底，仍按涨幅降序。"""
+    def test_missing_rank_sinks(self):
+        """rank 缺失（掉榜/无排名）沉底，仍按标签/涨幅降序。"""
         assert _v2_pool_sort_key(False, -5.0, 999) < _v2_pool_sort_key(False, 9.9, None)
         assert _v2_pool_sort_key(True, 1.0, None) < _v2_pool_sort_key(True, -1.0, None)
 
-    def test_labeled_dropped_still_beats_unlabeled_top(self):
-        """极端组合：有标签掉榜票仍排无标签榜首前（标签为最高优先级）。"""
-        assert _v2_pool_sort_key(True, -20.0, None) < _v2_pool_sort_key(False, 20.0, 1)
+    def test_unlabeled_top_beats_labeled_low_rank(self):
+        """无标签榜首（rank=1）仍排有标签掉榜票前（排名优先级最高）。"""
+        assert _v2_pool_sort_key(False, 20.0, 1) < _v2_pool_sort_key(True, -20.0, None)
 
     def test_pool_display_top_configured(self):
         """展示截断常量存在且为正（config 单一阈值源）。"""

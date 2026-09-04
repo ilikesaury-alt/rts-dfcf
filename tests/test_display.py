@@ -575,14 +575,16 @@ def test_display_header_env_tag_matches_regime(monkeypatch, capsys):
     assert "大盘强势" in out
     """优选池行尾渲染 🎯（2026-08-30 主视图标记恢复）：甜蜜带+非超买+累计达门槛的票在主列表可见。
 
-    此前 🎯/⚡ 仅在回马枪/低吸区渲染，换成策略优选池后主视图丢失画像信息。"""
+    此前 🎯/⚡ 仅在回马枪/低吸区渲染，换成策略优选池后主视图丢失画像信息。
+    2026-09-04: 🎯 命中率过低，暂时不渲染（档位判定逻辑保留）。"""
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "甜蜜动量", "momentum", 70, 1.0)
     pool = {"SZ300001": _cand_tier("SZ300001", 70, "momentum", percent=1.0, accum=8.0)}
     disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
     line = next(ln for ln in _main_lines(out) if "SZ300001" in ln)
-    assert "🎯" in line, f"优选池行应渲染 🎯 标记: {line}"
+    # 2026-09-04: 🎯 临时不渲染，但档0逻辑保留
+    assert "🎯" not in line, f"🎯 临时不渲染: {line}"
 
 
 def test_entry_display_quote_fallback_chain():

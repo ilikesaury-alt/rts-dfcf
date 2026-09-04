@@ -31,6 +31,7 @@
     python prevday_perf.py --days 10       # 自定义窗口
     python prevday_perf.py --json          # 机器可读 JSON
 """
+
 import argparse
 import json
 import sqlite3
@@ -38,7 +39,12 @@ import statistics
 import sys
 from collections import defaultdict
 
-sys.stdout.reconfigure(encoding="utf-8")
+# sys.stdout 的静态类型是 TextIO（无 reconfigure 属性）；运行时的 TextIOWrapper
+# 才有（CPython 3.7+）。用 getattr 取值，同时满足类型检查与非控制台场景
+# （重定向/pty 下可能没有该属性，静默跳过即可）。
+_reconfigure = getattr(sys.stdout, "reconfigure", None)
+if callable(_reconfigure):
+    _reconfigure(encoding="utf-8")
 
 from scanner.config import DB_PATH  # noqa: E402  (reconfigure 后导入避免编码异常)
 from scanner.data_health import check_kline_health, health_banner  # noqa: E402
@@ -56,9 +62,9 @@ GROUP_LABEL = {
     "core_dip": "核心方向低吸",
     "excluded": "被移出",
 }
-HIT_THRESHOLD = DEFAULT_THRESHOLD   # 次日大涨阈值（与 nextday_attribution 主决策口径同源，防漂移）
-MARKET_UP = 1.0       # 普涨日（推荐日 GEM 均值 ≥ +1%）
-MARKET_DOWN = -1.0    # 普跌日（≤ -1%）
+HIT_THRESHOLD = DEFAULT_THRESHOLD  # 次日大涨阈值（与 nextday_attribution 主决策口径同源，防漂移）
+MARKET_UP = 1.0  # 普涨日（推荐日 GEM 均值 ≥ +1%）
+MARKET_DOWN = -1.0  # 普跌日（≤ -1%）
 # 近端可信窗口起点（08-04 起落库维度含超买/弱转强，档0 判定完整）
 DIMS_COMPLETE_SINCE = "2026-08-04"
 
@@ -79,8 +85,8 @@ def _gem_market_avg(conn, date):
 def _next_day_map(conn, date):
     """当日推荐 → 次日涨跌（next_day_pct 落库回填值）。"""
     rows = conn.execute(
-        "SELECT symbol, next_day_pct FROM recommendations "
-        "WHERE date = ? AND next_day_pct IS NOT NULL", (date,),
+        "SELECT symbol, next_day_pct FROM recommendations WHERE date = ? AND next_day_pct IS NOT NULL",
+        (date,),
     ).fetchall()
     return {r[0]: r[1] for r in rows}
 
@@ -118,8 +124,9 @@ def _case(items, d):
     发生——一旦有人把 _case 存起来延后调用，所有案例都会拿到循环最后一日的日期。
     改为显式传参 + 提到模块级，消除这个陷阱。
     """
-    return [{"date": d, "name": x["name"], "symbol": x["symbol"],
-             "score": x["score"], "next": x["next"]} for x in items]
+    return [
+        {"date": d, "name": x["name"], "symbol": x["symbol"], "score": x["score"], "next": x["next"]} for x in items
+    ]
 
 
 def _build_history(conn, dates):
@@ -135,8 +142,13 @@ def _build_history(conn, dates):
         # 档0 内部类别（含 short_term 弱转强子集）→ 次日
         t0_cats: dict[str, list] = {}
         for a in rep["tier0"]:
-            key = ("short_term·弱转强" if (a["category"] == "short_term" and a["pos"] == "弱转强低位")
-                   else "short_term·其他" if a["category"] == "short_term" else a["category"])
+            key = (
+                "short_term·弱转强"
+                if (a["category"] == "short_term" and a["pos"] == "弱转强低位")
+                else "short_term·其他"
+                if a["category"] == "short_term"
+                else a["category"]
+            )
             p = nd_map.get(a["symbol"])
             if p is not None:
                 t0_cats.setdefault(key, []).append(p)
@@ -156,15 +168,30 @@ def _build_history(conn, dates):
 
         # 案例样本（档0 命中 / 档3 大坑 / 回马枪最佳）
         day["cases"] = {
-            "tier0": _case([{"name": a["name"], "symbol": a["symbol"], "score": a["score"],
-                              "next": nd_map.get(a["symbol"])} for a in rep["tier0"]
-                             if a["symbol"] in nd_map], d),
-            "tier3": _case([{"name": e["name"], "symbol": e["symbol"], "score": e["score"],
-                              "next": nd_map.get(e["symbol"])} for e in rep["tier3"]
-                             if e["symbol"] in nd_map], d),
-            "comeback": _case([{"name": c["name"], "symbol": c["symbol"], "score": c["score"],
-                                 "next": nd_map.get(c["symbol"])} for c in rep["comeback_flow"]
-                                if c["symbol"] in nd_map], d),
+            "tier0": _case(
+                [
+                    {"name": a["name"], "symbol": a["symbol"], "score": a["score"], "next": nd_map.get(a["symbol"])}
+                    for a in rep["tier0"]
+                    if a["symbol"] in nd_map
+                ],
+                d,
+            ),
+            "tier3": _case(
+                [
+                    {"name": e["name"], "symbol": e["symbol"], "score": e["score"], "next": nd_map.get(e["symbol"])}
+                    for e in rep["tier3"]
+                    if e["symbol"] in nd_map
+                ],
+                d,
+            ),
+            "comeback": _case(
+                [
+                    {"name": c["name"], "symbol": c["symbol"], "score": c["score"], "next": nd_map.get(c["symbol"])}
+                    for c in rep["comeback_flow"]
+                    if c["symbol"] in nd_map
+                ],
+                d,
+            ),
         }
         history.append(day)
     return history
@@ -181,14 +208,19 @@ def _render(hist, days_arg):
     dates = [h["date"] for h in hist]
     start, end = dates[0], dates[-1]
     recent = [h for h in hist if h["date"] >= DIMS_COMPLETE_SINCE]
-    window = (f"最近 {len(hist)} 交易日（{start} ~ {end}）" if days_arg
-              else f"全期 {len(hist)} 交易日（{start} ~ {end}）")
+    window = (
+        f"最近 {len(hist)} 交易日（{start} ~ {end}）" if days_arg else f"全期 {len(hist)} 交易日（{start} ~ {end}）"
+    )
     out.append(f"\n◆ 综合排序历史复盘：{window}")
-    out.append(f"  口径：档位/🎯 逐日重建（today_report 同源）；表现=次日收盘涨跌（next_day_pct，"
-               f"hit 阈值 ≥+{HIT_THRESHOLD:.0f}%）；市场=推荐日 GEM 均值代理")
+    out.append(
+        f"  口径：档位/🎯 逐日重建（today_report 同源）；表现=次日收盘涨跌（next_day_pct，"
+        f"hit 阈值 ≥+{HIT_THRESHOLD:.0f}%）；市场=推荐日 GEM 均值代理"
+    )
     if recent and recent != hist:
-        out.append(f"  ⚠️ {DIMS_COMPLETE_SINCE} 前落库缺超买/弱转强维度，档0 判定退化——"
-                   f"下方主表用近端窗口（{recent[0]['date']} 起，{len(recent)} 日，维度完整）")
+        out.append(
+            f"  ⚠️ {DIMS_COMPLETE_SINCE} 前落库缺超买/弱转强维度，档0 判定退化——"
+            f"下方主表用近端窗口（{recent[0]['date']} 起，{len(recent)} 日，维度完整）"
+        )
 
     def _table(title, rows):
         out.append(f"\n{title}")
@@ -199,8 +231,7 @@ def _render(hist, days_arg):
             if n == 0:
                 out.append(f"  {label:<22}{0:>5} {'—':>8} {'—':>8} {'—':>7} {'—':>8}")
             else:
-                out.append(f"  {label:<22}{n:>5} {_fmt_pct(avg)} {f'{hit:.1f}%':>8} "
-                           f"{f'{win:.1f}%':>7} {_fmt_pct(med)}")
+                out.append(f"  {label:<22}{n:>5} {_fmt_pct(avg)} {f'{hit:.1f}%':>8} {f'{win:.1f}%':>7} {_fmt_pct(med)}")
 
     # 一、各组次日表现（近端窗口为主表，全期对照）
     base = recent if recent else hist
@@ -214,8 +245,7 @@ def _render(hist, days_arg):
         for h in hist:
             for g in GROUPS:
                 agg_all[g].extend(h[g])
-        _table("对照：全期（含维度退化期，仅供参考）",
-               [(GROUP_LABEL[g], _stats(agg_all[g])) for g in GROUPS])
+        _table("对照：全期（含维度退化期，仅供参考）", [(GROUP_LABEL[g], _stats(agg_all[g])) for g in GROUPS])
 
     # 二、档0 内部类别 × 次日
     t0_cat_agg: dict[str, list] = {}
@@ -223,13 +253,14 @@ def _render(hist, days_arg):
         for key, pcts in h["tier0_cats"].items():
             t0_cat_agg.setdefault(key, []).extend(pcts)
     if t0_cat_agg:
-        _table("二、档0 内部（类别 × 次日）",
-               [(k, _stats(v)) for k, v in sorted(t0_cat_agg.items())])
+        _table("二、档0 内部（类别 × 次日）", [(k, _stats(v)) for k, v in sorted(t0_cat_agg.items())])
 
     # 三、市场环境分层（推荐日 GEM 均值 → 次日表现）
-    buckets = {"普涨日(≥+1%)": {"tier0": [], "tier3": [], "all": []},
-               "震荡日": {"tier0": [], "tier3": [], "all": []},
-               "普跌日(≤-1%)": {"tier0": [], "tier3": [], "all": []}}
+    buckets = {
+        "普涨日(≥+1%)": {"tier0": [], "tier3": [], "all": []},
+        "震荡日": {"tier0": [], "tier3": [], "all": []},
+        "普跌日(≤-1%)": {"tier0": [], "tier3": [], "all": []},
+    }
     for h in base:
         b = _market_bucket(h["market"])
         if b not in buckets:
@@ -263,8 +294,9 @@ def _render(hist, days_arg):
     s3 = _stats(agg["tier3"])
     out.append("\n四、档0 vs 档3 单调性（逐日对比）")
     if s0[0] and s3[0]:
-        out.append(f"  档0 胜 {t0_win} 天 / 档3 胜 {t3_win} 天 / 平 {tie} 天"
-                   f"（档0 整体 {s0[1]:+.2f}% vs 档3 {s3[1]:+.2f}%）")
+        out.append(
+            f"  档0 胜 {t0_win} 天 / 档3 胜 {t3_win} 天 / 平 {tie} 天（档0 整体 {s0[1]:+.2f}% vs 档3 {s3[1]:+.2f}%）"
+        )
 
     # 五、案例
     all_cases = {g: [c for h in hist for c in h["cases"][g]] for g in ("tier0", "tier3", "comeback")}
@@ -293,29 +325,39 @@ def _render(hist, days_arg):
     verdicts = []
     if s0[0] >= 30:
         if t0_avg is not None and s3[1] is not None and t0_avg > s3[1]:
-            verdicts.append(f"档位排序有效：档0 均次日 {t0_avg:+.2f}% > 档3 {s3[1]:+.2f}%"
-                            f"（hit {t0_hit:.1f}% vs {s3[2]:.1f}%），胜 {t0_win} 天")
+            verdicts.append(
+                f"档位排序有效：档0 均次日 {t0_avg:+.2f}% > 档3 {s3[1]:+.2f}%"
+                f"（hit {t0_hit:.1f}% vs {s3[2]:.1f}%），胜 {t0_win} 天"
+            )
         else:
-            verdicts.append(f"档位排序未跑赢：档0 {t0_avg:+.2f}% ≤ 档3 {s3[1]:+.2f}%"
-                            f"（hit {t0_hit:.1f}% vs {s3[2]:.1f}%），样本 {s0[0]}")
+            verdicts.append(
+                f"档位排序未跑赢：档0 {t0_avg:+.2f}% ≤ 档3 {s3[1]:+.2f}%"
+                f"（hit {t0_hit:.1f}% vs {s3[2]:.1f}%），样本 {s0[0]}"
+            )
     if _stats(agg["comeback"])[0] >= 20:
-        verdicts.append(f"回马枪（低吸语义）整体 {c_avg:+.2f}%/hit {c_hit:.1f}%——"
-                        + ("在回调日更抗跌" if c_avg is not None and c_avg > (t0_avg or 0) else "与主表相当"))
+        verdicts.append(
+            f"回马枪（低吸语义）整体 {c_avg:+.2f}%/hit {c_hit:.1f}%——"
+            + ("在回调日更抗跌" if c_avg is not None and c_avg > (t0_avg or 0) else "与主表相当")
+        )
     if _stats(agg["excluded"])[0] >= 10 and e_avg is not None and e_avg < 0:
         verdicts.append(f"被移出票均次日 {e_avg:+.2f}%——硬过滤/反转移出排除有效（避开了下跌）")
     up_s, dn_s = _stats(buckets["普涨日(≥+1%)"]["all"]), _stats(buckets["普跌日(≤-1%)"]["all"])
     if up_s[0] >= 20 and dn_s[0] >= 20 and up_s[1] is not None and dn_s[1] is not None:
         diff = up_s[1] - dn_s[1]
-        verdicts.append(f"市场环境影响显著：普涨日次日 {up_s[1]:+.2f}%（hit {up_s[2]:.1f}%）vs "
-                        f"普跌日次日 {dn_s[1]:+.2f}%（hit {dn_s[2]:.1f}%），差 {diff:+.2f}pp——"
-                        + ("普涨次日兑现，追高需谨慎" if diff < 0 else "普涨次日延续性强"))
+        verdicts.append(
+            f"市场环境影响显著：普涨日次日 {up_s[1]:+.2f}%（hit {up_s[2]:.1f}%）vs "
+            f"普跌日次日 {dn_s[1]:+.2f}%（hit {dn_s[2]:.1f}%），差 {diff:+.2f}pp——"
+            + ("普涨次日兑现，追高需谨慎" if diff < 0 else "普涨次日延续性强")
+        )
     if not verdicts:
         verdicts.append("样本不足（窗口内有效交易日太少），结论待数据积累。")
     for v in verdicts:
         out.append(f"  • {v}")
     out.append("")
-    out.append("  说明：本复盘为筛选系统选股质量自检尺（校验档位/避雷/低吸假设），"
-               "非实盘收益预测；单日样本小，结论以整体统计为准。")
+    out.append(
+        "  说明：本复盘为筛选系统选股质量自检尺（校验档位/避雷/低吸假设），"
+        "非实盘收益预测；单日样本小，结论以整体统计为准。"
+    )
     return "\n".join(out)
 
 
@@ -328,28 +370,33 @@ def _rejection_audit(conn):
     两者口径同源（daily_kline 收盘回填），直接对比即可回答「硬过滤到底有没有用」，
     规避「只看活下来的票」的幸存者偏差。本函数只读，不落库、不改评分。
     """
-    sel = [r[0] for r in conn.execute(
-        "SELECT next_day_pct FROM recommendations WHERE next_day_pct IS NOT NULL").fetchall()]
-    rej = [r[0] for r in conn.execute(
-        "SELECT next_day_pct FROM scan_rejections WHERE next_day_pct IS NOT NULL").fetchall()]
+    sel = [
+        r[0] for r in conn.execute("SELECT next_day_pct FROM recommendations WHERE next_day_pct IS NOT NULL").fetchall()
+    ]
+    rej = [
+        r[0] for r in conn.execute("SELECT next_day_pct FROM scan_rejections WHERE next_day_pct IS NOT NULL").fetchall()
+    ]
     sel_month: dict[str, list] = defaultdict(list)
     for d, v in conn.execute(
-        "SELECT date, next_day_pct FROM recommendations WHERE next_day_pct IS NOT NULL").fetchall():
+        "SELECT date, next_day_pct FROM recommendations WHERE next_day_pct IS NOT NULL"
+    ).fetchall():
         sel_month[d[:7]].append(v)
     rej_month: dict[str, list] = defaultdict(list)
     for d, v in conn.execute(
-        "SELECT date, next_day_pct FROM scan_rejections WHERE next_day_pct IS NOT NULL").fetchall():
+        "SELECT date, next_day_pct FROM scan_rejections WHERE next_day_pct IS NOT NULL"
+    ).fetchall():
         rej_month[d[:7]].append(v)
-    return {"selected": sel, "rejected": rej,
-            "selected_month": dict(sel_month), "rejected_month": dict(rej_month)}
+    return {"selected": sel, "rejected": rej, "selected_month": dict(sel_month), "rejected_month": dict(rej_month)}
 
 
 def _render_rejection_audit(audit):
     """硬过滤审计报表：入选 vs 落选 对比 + 分月漂移。"""
     out = []
     out.append("\n七、入选 vs 落选（硬过滤审计，规避幸存者偏差）")
-    out.append(f"  口径：入选=recommendations 次日 / 落选=scan_rejections 次日（同源 daily_kline 收盘）；"
-               f"hit 阈值 ≥+{HIT_THRESHOLD:.0f}%")
+    out.append(
+        f"  口径：入选=recommendations 次日 / 落选=scan_rejections 次日（同源 daily_kline 收盘）；"
+        f"hit 阈值 ≥+{HIT_THRESHOLD:.0f}%"
+    )
     s_sel = _stats(audit["selected"])
     s_rej = _stats(audit["rejected"])
     out.append(f"  {'组':<22}{'n':>5} {'均次日':>8} {'hit≥7%':>8} {'胜率':>7} {'中位':>8}")
@@ -359,8 +406,7 @@ def _render_rejection_audit(audit):
         if n == 0:
             out.append(f"  {label:<22}{0:>5} {'—':>8} {'—':>8} {'—':>7} {'—':>8}")
         else:
-            out.append(f"  {label:<22}{n:>5} {_fmt_pct(avg)} {f'{hit:.1f}%':>8} "
-                       f"{f'{win:.1f}%':>7} {_fmt_pct(med)}")
+            out.append(f"  {label:<22}{n:>5} {_fmt_pct(avg)} {f'{hit:.1f}%':>8} {f'{win:.1f}%':>7} {_fmt_pct(med)}")
 
     # 结论（数据驱动；-2pp 显著线来自 Phase 1 验证门约定）
     # 最小样本护栏：落选需 ≥10 条、入选需 ≥30 条才有统计意义——否则 1~2 条落选的
@@ -369,15 +415,23 @@ def _render_rejection_audit(audit):
     if s_sel[0] >= 30 and s_rej[0] >= 10 and s_rej[1] is not None and s_sel[1] is not None:
         diff = s_rej[1] - s_sel[1]
         if diff <= -2:
-            out.append(f"    • 硬过滤有效：落选均次日 {s_rej[1]:+.2f}% 显著低于入选 {s_sel[1]:+.2f}%（差 {diff:+.2f}pp）")
+            out.append(
+                f"    • 硬过滤有效：落选均次日 {s_rej[1]:+.2f}% 显著低于入选 {s_sel[1]:+.2f}%（差 {diff:+.2f}pp）"
+            )
         elif diff >= 0:
-            out.append(f"    • ⚠ 硬过滤疑似无效：落选均次日 {s_rej[1]:+.2f}% 未低于（甚至高于）入选 {s_sel[1]:+.2f}%（差 {diff:+.2f}pp）")
+            out.append(
+                f"    • ⚠ 硬过滤疑似无效：落选均次日 {s_rej[1]:+.2f}% 未低于（甚至高于）入选 {s_sel[1]:+.2f}%（差 {diff:+.2f}pp）"
+            )
         else:
-            out.append(f"    • 硬过滤轻度有效：落选均次日 {s_rej[1]:+.2f}% 略低于入选 {s_sel[1]:+.2f}%（差 {diff:+.2f}pp，未达 -2pp 显著线）")
+            out.append(
+                f"    • 硬过滤轻度有效：落选均次日 {s_rej[1]:+.2f}% 略低于入选 {s_sel[1]:+.2f}%（差 {diff:+.2f}pp，未达 -2pp 显著线）"
+            )
     else:
-        out.append(f"    • 落选样本不足（入选 n={s_sel[0]}，落选 n={s_rej[0]}；需落选 ≥10），"
-                   f"硬过滤有效性待积累——scan_rejections 的 next_day_pct 由 backfill_kline.py 每日收盘后回填，"
-                   f"随扫描天数增长自然达到判定门槛")
+        out.append(
+            f"    • 落选样本不足（入选 n={s_sel[0]}，落选 n={s_rej[0]}；需落选 ≥10），"
+            f"硬过滤有效性待积累——scan_rejections 的 next_day_pct 由 backfill_kline.py 每日收盘后回填，"
+            f"随扫描天数增长自然达到判定门槛"
+        )
 
     # 分月漂移（入选 vs 落选 均次日，弱市低吸扩容失效的早期预警）
     months = sorted(set(audit["selected_month"]) | set(audit["rejected_month"]))
@@ -401,8 +455,7 @@ def main():
     parser = argparse.ArgumentParser(description="综合排序历史复盘：各组次日表现汇总")
     parser.add_argument("--days", type=int, default=30, help="最近 N 个交易日（0=全期）")
     parser.add_argument("--json", action="store_true", help="机器可读 JSON 输出")
-    parser.add_argument("--force", action="store_true",
-                        help="跳过数据健康检查（交叉验证不符时仍强行出报告）")
+    parser.add_argument("--force", action="store_true", help="跳过数据健康检查（交叉验证不符时仍强行出报告）")
     args = parser.parse_args()
 
     conn = sqlite3.connect(DB_PATH, timeout=15)
@@ -411,7 +464,7 @@ def main():
     # 只保留有次日表现的日期（最新一天 next_day_pct 未回填则自动排除）
     dates = [d for d in all_dates if _next_day_map(conn, d)]
     if args.days and args.days > 0:
-        dates = dates[-args.days:]
+        dates = dates[-args.days :]
     # 数据真实性前置检查（2026-08-18 拓斯达脏数据事故）：复盘口径基于落库
     # next_day_pct（daily_kline 回填），脏 bar 会静默污染各组统计；出报告前抽样
     # 与独立源交叉验证，不符比例超阈值即中止。
@@ -421,8 +474,7 @@ def main():
         if banner:
             print(banner)
         if report.blocked:
-            print("  [中止] 数据疑似污染，先跑 python repair_kline.py 修复后重试"
-                  "（--force 强行出报告）")
+            print("  [中止] 数据疑似污染，先跑 python repair_kline.py 修复后重试（--force 强行出报告）")
             conn.close()
             return
         # 大盘指数对账（2026-08-19）：大盘标签曾把当日 -6.26% 崩盘读成昨日 -0.93%
