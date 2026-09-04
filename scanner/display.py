@@ -13,6 +13,7 @@ from scanner.config import (
     CORE_PULLBACK_MIN,
     DECISION_LAYER_ENABLED,
     DISPLAY_MAX_TODAY_PCT,
+    FINAL_PICK_ENABLED,
     TOP40_THRESHOLD,
     V2_POOL_DISPLAY_TOP,
     now_beijing,
@@ -669,6 +670,9 @@ class ScanView:
     # 决策层文本行（2026-09-04）：≤3 只短名单或空仓原因，渲染在所有区块之前。
     # 由 build_scan_view 计算并落库 decision_picks（终端/飞书共用同一份）。
     decision_lines: list[str] | None = None
+    # 终选参考区文本行（2026-09-04）：v1+v2 合池 → 档0画像评级 ≤3 只 + 落选理由。
+    # 与决策层互补（决策层答「该不该买」，终选区答「必须持仓时买谁」），渲染在决策层之后。
+    final_pick_lines: list[str] | None = None
 
 
 def build_scan_view(
@@ -1011,6 +1015,19 @@ def build_scan_view(
         except EXTERNAL_FAILURES as _de:
             warnings.append(f"决策层构建失败: {type(_de).__name__}: {_de}")
 
+    # 终选参考区（2026-09-04）：v1+v2 合池 → 档0画像评级 ≤3 只 + 落选理由。
+    # 纯计算无落库，fail-open 不阻断展示主流程（评级单源在 scanner.final_pick）。
+    _final_pick_lines: list[str] | None = None
+    if FINAL_PICK_ENABLED:
+        try:
+            from scanner.final_pick import final_pick_lines as _build_final
+
+            _final_pick_lines = _build_final(
+                conn, main_recs + pool_pick_recs, accum_map, flow_pct_map, nextday_mark
+            )
+        except EXTERNAL_FAILURES as _fpx:
+            warnings.append(f"终选区构建失败: {type(_fpx).__name__}: {_fpx}")
+
     return ScanView(
         main_rows=main_rows,
         comeback_rows=_comeback_sorted[:COMEBACK_DISPLAY_MAX],
@@ -1028,6 +1045,7 @@ def build_scan_view(
         pool_rows=pool_rows,
         pool_total=pool_total,
         decision_lines=_decision_lines,
+        final_pick_lines=_final_pick_lines,
     )
 
 
@@ -1047,6 +1065,12 @@ def render_terminal(view: ScanView) -> None:
         for _dl in view.decision_lines:
             print(_dl)
         print("=" * 78)
+
+    # 终选参考区（2026-09-04）：v1+v2 合池的档0画像终选，紧跟决策层——
+    # 决策层说「该不该买」，终选区说「必须持仓时买谁、谁被否」。
+    if view.final_pick_lines:
+        for _fpl in view.final_pick_lines:
+            print(_fpl)
 
     # ── 主表 / v2 池选区共用行渲染（同列 spec，行尾标记与回马枪/低吸区同源）──
     def _emit_pool_table_row(view: ScanView, row: MainRow, idx: int) -> None:

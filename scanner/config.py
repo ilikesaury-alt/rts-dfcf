@@ -609,6 +609,14 @@ DISPLAY_MAX_TODAY_PCT = _env_float("RTS_DISPLAY_MAX_TODAY_PCT", 8.0)
 # 回滚杠杆：RTS_DECISION_LAYER=0 关闭。
 DECISION_LAYER_ENABLED = _env_flag("RTS_DECISION_LAYER", True)
 
+# ── 终选参考区（2026-09-04）：v1+v2 合池 → 档0画像评级 → ≤N 只终选 + 落选理由 ──
+# 与决策层互补：决策层答「现在该不该买」（门关→空仓），终选区答「若必须持仓买谁」
+# （无论门开关都给结论）。评级单源复用 today_report._tier0_verdict（已回测口径），
+# momentum 负先验永禁。纯展示层，不改评分/排序/落库。回滚杠杆：RTS_FINAL_PICK=0 关闭。
+FINAL_PICK_ENABLED = _env_flag("RTS_FINAL_PICK", True)
+FINAL_PICK_MAX = 3  # 终选最多 N 只（稀缺配额，同决策层语义）
+FINAL_PICK_REJECT_TOP = 4  # 落选理由最多展示条数（按评分降序取头部）
+
 # Time-based bonus thresholds (minutes since midnight)
 
 # 推荐后快速反转移出（2026-08-13）：今日已推荐（榜上主类别，不含回马枪跟踪池）且当前不在

@@ -290,6 +290,13 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
             "text": {"tag": "lark_md", "content": "**" + view.decision_lines[0] + "**\n"
                      + "\n".join(view.decision_lines[1:])},
         })
+    # 终选参考区（2026-09-04）：v1+v2 合池档0画像终选，紧跟决策层（终端同源同序）。
+    if getattr(view, "final_pick_lines", None):
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": "**" + view.final_pick_lines[0] + "**\n"
+                     + "\n".join(view.final_pick_lines[1:])},
+        })
     pool_lines = [
         _row_line(row.entry, view, rank=row.rank, accum=row.accum, score=_to_score(row.score)) for row in main
     ]

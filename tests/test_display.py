@@ -142,8 +142,13 @@ def test_market_extra_str_zt_kept():
 
 def _main_lines(out: str) -> list[str]:
     """v1 池选+v2 池选区行（核心低吸区之前），用于测试断言。
-    （动态推荐/回马枪/次日大涨规则区已移除，2026-09-03）"""
+    （动态推荐/回马枪/次日大涨规则区已移除，2026-09-03）
+    终选参考区（2026-09-04）位于 v1 之前且含个股行，剥离该区块保留 v1/v2 部分。"""
     main_part = out.split("◆ 核心方向低吸")[0]
+    head, sep, rest = main_part.partition("◆ 终选参考")
+    if sep:
+        _, sep2, v12 = rest.partition("◆ v1 池选")
+        main_part = head + ("◆ v1 池选" + v12 if sep2 else "")
     return [ln for ln in main_part.splitlines() if "SZ30000" in ln]
 
 
@@ -749,8 +754,9 @@ def test_display_priority_pool_pick_independent_section_sorted(capsys):
     out = capsys.readouterr().out
     assert "◆ v2 池选" in out, "双跑同屏：pool_pick 必须有独立 v2 池选区"
 
-    main_part = out.split("v2 池选")[0]
-    pool_part = out.split("v2 池选")[1]
+    # 终选参考区（2026-09-04）位于 v1 之前，主表取「◆ v1 池选 → ◆ v2 池选」之间。
+    main_part = out.split("◆ v1 池选")[1].split("◆ v2 池选")[0]
+    pool_part = out.split("◆ v2 池选")[1]
     main_syms = [ln for ln in main_part.splitlines() if "SZ30000" in ln]
     pool_syms = [ln for ln in pool_part.splitlines() if "SZ30000" in ln]
 
@@ -773,7 +779,8 @@ def test_display_priority_pool_pick_kept_out_of_main_even_higher_pct(capsys):
     _insert_rec_pct(conn, "SZ300002", "池选票", "pool_pick", 70, 7.9)
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
-    main_part = out.split("v2 池选")[0]
+    # 终选参考区（2026-09-04）位于 v1 之前，主表取「◆ v1 池选 → ◆ v2 池选」之间。
+    main_part = out.split("◆ v1 池选")[1].split("◆ v2 池选")[0]
     main_syms = [ln for ln in main_part.splitlines() if "SZ30000" in ln]
     assert len(main_syms) == 1 and "SZ300001" in main_syms[0], f"主表只应显示 v1 rebound: {main_syms}"
     assert "SZ300002" in out and "◆ v2 池选" in out, "pool_pick 应在 v2 池选区展示"
