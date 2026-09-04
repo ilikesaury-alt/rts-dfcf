@@ -767,10 +767,10 @@ def test_display_priority_pool_pick_independent_section_sorted(capsys):
 
 
 def test_display_priority_pool_pick_kept_out_of_main_even_higher_pct(capsys):
-    """双跑同屏：pool_pick 涨幅再高（9.9%）也不进策略优选池主表，只在 v2 池选区展示。"""
+    """双跑同屏：pool_pick 涨幅再高（7.9%，帽下最高带）也不进策略优选池主表，只在 v2 池选区展示。"""
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "v1票", "rebound", 50, 1.0)
-    _insert_rec_pct(conn, "SZ300002", "池选票", "pool_pick", 70, 9.9)
+    _insert_rec_pct(conn, "SZ300002", "池选票", "pool_pick", 70, 7.9)
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     main_part = out.split("v2 池选")[0]
@@ -783,7 +783,7 @@ def test_display_priority_pool_pick_dip_label_segment_sorted(capsys):
     """方案B（2026-09-03）：v2 池选两段式排序——命中低吸标签的票排前段
     （段内榜上排名/涨幅）。💡 标签不渲染（太杂乱），仅作排序依据。"""
     conn = _rec_db()
-    _insert_rec_sb(conn, "SZ300001", "无标签", "pool_pick", 70, 9.9, "{}")  # 高涨幅无标签
+    _insert_rec_sb(conn, "SZ300001", "无标签", "pool_pick", 70, 7.9, "{}")  # 帽下高涨幅无标签
     _insert_rec_sb(conn, "SZ300002", "有标签", "pool_pick", 70, 1.0, '{"dip_labels": ["弱转强"]}')  # 低涨幅有标签
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
@@ -815,6 +815,21 @@ def test_display_priority_core_dip_capped(monkeypatch, capsys):
 # 推荐时刻涨幅甜蜜带（<2% 低吸潜伏 / 4~8% 中段启动）且非超买死亡信号。
 # 2026-08-12：🎯 从纯视觉标记升级为排序档0唯一因子——辨识度退出排序（次日大涨本身即
 # 辨识度属性），↻ 仅保留行内展示。
+def test_display_max_today_pct_hides_trap_band(capsys):
+    """不追涨帽（2026-09-04 修正默认 8.0）：主表与 v2 池选区均隐藏今日涨幅 >8% 的票
+    （8-12% 是实测陷阱带：超额 -0.70 / 大跌率 13%）；帽下票正常展示。
+    纯显示层过滤——落库/评分/回测不受影响。"""
+    conn = _rec_db()
+    _insert_rec_pct(conn, "SZ300001", "帽下票", "momentum", 70, 7.9)
+    _insert_rec_pct(conn, "SZ300002", "陷阱票", "momentum", 70, 9.5)   # 8-12% 陷阱带
+    _insert_rec_pct(conn, "SZ300003", "帽上票", "rebound", 50, 12.0)
+    disp_mod.display_priority(conn, today_pool={})
+    out = capsys.readouterr().out
+    assert "SZ300001" in out, "帽下票（7.9%）应正常展示"
+    assert "SZ300002" not in out, f"陷阱带票（9.5%）应被帽隐藏: {out}"
+    assert "SZ300003" not in out, f"帽上票（12.0%）应被帽隐藏: {out}"
+
+
 def _insert_rec_pct(conn, symbol: str, name: str, category: str, score: int, percent: float):
     today = now_beijing().date().isoformat()
     conn.execute(
@@ -827,7 +842,7 @@ def _insert_rec_pct(conn, symbol: str, name: str, category: str, score: int, per
 def test_nextday_mark_no_hits_omitted(monkeypatch, capsys):
     """🎯 标记：无甜蜜带票时不打印图例行（主表正常显示）。"""
     conn = _rec_db()
-    _insert_rec_pct(conn, "SZ300001", "陷阱票", "momentum", 70, 9.0)  # 8-10% 陷阱带
+    _insert_rec_pct(conn, "SZ300001", "普通票", "momentum", 70, 5.0)  # 帽下正常带
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     assert "次日大涨画像" not in out, "无甜蜜带票时不应有 🎯 组标题（档0 应无票）"
