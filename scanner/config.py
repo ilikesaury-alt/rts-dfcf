@@ -602,6 +602,13 @@ V2_POOL_DISPLAY_TOP = 10
 # 8-12% 才是真陷阱（n=211），旧值 14 只砍掉了陷阱上方的噪音/好区。
 DISPLAY_MAX_TODAY_PCT = _env_float("RTS_DISPLAY_MAX_TODAY_PCT", 8.0)
 
+# ── 决策层（2026-09-04）：≤3 只「现在值得买什么」短名单，置顶渲染 ──
+# 三道门：市场门（创业板指>0 且 5日>-3%，实测唯一正期望状态）→ 类别先验门
+# （仅 core_dip/kNF/rebound 等正超额类别）→ 稀缺配额（全局 ≤3）。
+# 空仓是合法输出。详见 scanner/decision.py 模块 docstring 与 docs/review-2026-09-04.md。
+# 回滚杠杆：RTS_DECISION_LAYER=0 关闭。
+DECISION_LAYER_ENABLED = _env_flag("RTS_DECISION_LAYER", True)
+
 # Time-based bonus thresholds (minutes since midnight)
 
 # 推荐后快速反转移出（2026-08-13）：今日已推荐（榜上主类别，不含回马枪跟踪池）且当前不在

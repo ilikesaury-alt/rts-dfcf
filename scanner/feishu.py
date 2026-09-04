@@ -281,6 +281,15 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
     elements: list[dict] = [{"tag": "div", "text": {"tag": "lark_md", "content": header_text}}]
 
     sections: list[tuple[str, list[str]]] = []
+    # 决策层置顶（2026-09-04）：≤3 只短名单或空仓原因，卡片第一区块——
+    # 与终端 render_decision 同源（view.decision_lines），先看决策再看观察池。
+    # getattr 容错：测试桩/旧视图对象可能没有该字段（dataclass 默认 None 之外的构造方）
+    if getattr(view, "decision_lines", None):
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": "**" + view.decision_lines[0] + "**\n"
+                     + "\n".join(view.decision_lines[1:])},
+        })
     pool_lines = [
         _row_line(row.entry, view, rank=row.rank, accum=row.accum, score=_to_score(row.score)) for row in main
     ]

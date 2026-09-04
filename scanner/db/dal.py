@@ -561,6 +561,23 @@ def ensure_observation_schema(conn: sqlite3.Connection) -> None:
             )
             """
         )
+        # 决策层落库（2026-09-04）：≤3 只短名单 + 市场门状态行（symbol='__gate__'）。
+        # 闭环用途：backfill_kline/prevday_perf 对比「决策层 vs 全池」次日表现。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS decision_picks (
+                date TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                name TEXT,
+                category TEXT,
+                score REAL,
+                percent REAL,
+                reason TEXT,
+                created TEXT,
+                PRIMARY KEY (date, symbol)
+            )
+            """
+        )
         conn.commit()
     except Exception as e:  # noqa: BLE001 — 迁移失败不应中断扫描；记录后放行
         logger.warning(f"ensure_observation_schema 迁移失败（观测表可能缺失）: {e}")

@@ -11,6 +11,7 @@ from scanner.config import (
     CORE_DIP_CATEGORY,
     CORE_PULLBACK_MAX,
     CORE_PULLBACK_MIN,
+    DECISION_LAYER_ENABLED,
     DISPLAY_MAX_TODAY_PCT,
     TOP40_THRESHOLD,
     V2_POOL_DISPLAY_TOP,
@@ -665,6 +666,9 @@ class ScanView:
     # 池选全量票数（2026-09-03）：pool_rows 只展示前 V2_POOL_DISPLAY_TOP 行，
     # 终端尾部注明与飞书头部「池选 N 只」计数用全量值，避免截断后失真。
     pool_total: int = 0
+    # 决策层文本行（2026-09-04）：≤3 只短名单或空仓原因，渲染在所有区块之前。
+    # 由 build_scan_view 计算并落库 decision_picks（终端/飞书共用同一份）。
+    decision_lines: list[str] | None = None
 
 
 def build_scan_view(
@@ -995,6 +999,18 @@ def build_scan_view(
     # conn 此时已非 None（函数入口对 conn is None 提前返回 None）
     _rule_result = scan_rule(conn)
 
+    # 决策层（2026-09-04）：≤3 只短名单/空仓判定，fail-open 不阻断展示主流程。
+    # 注意：此处有落库副作用（decision_picks 表），与「纯计算」的约定冲突，
+    # 但决策层需要与展示同源（同一轮的推荐快照），独立出来会造成两次读取竞态。
+    _decision_lines: list[str] | None = None
+    if DECISION_LAYER_ENABLED:
+        try:
+            from scanner.decision import decision_lines as _build_decision
+
+            _decision_lines = _build_decision(conn)
+        except EXTERNAL_FAILURES as _de:
+            warnings.append(f"决策层构建失败: {type(_de).__name__}: {_de}")
+
     return ScanView(
         main_rows=main_rows,
         comeback_rows=_comeback_sorted[:COMEBACK_DISPLAY_MAX],
@@ -1011,6 +1027,7 @@ def build_scan_view(
         rule_result=_rule_result,
         pool_rows=pool_rows,
         pool_total=pool_total,
+        decision_lines=_decision_lines,
     )
 
 
@@ -1022,6 +1039,14 @@ def render_terminal(view: ScanView) -> None:
     """
     for _w in view.warnings:
         print(f"  [!] {_w}")
+
+    # 决策层置顶（2026-09-04）：先看 ≤3 只的决策，再看观察/跟踪池。
+    # 空仓是合法且高频的输出——决策的价值在于替用户放弃 95% 的机会。
+    if view.decision_lines:
+        print("=" * 78)
+        for _dl in view.decision_lines:
+            print(_dl)
+        print("=" * 78)
 
     # ── 主表 / v2 池选区共用行渲染（同列 spec，行尾标记与回马枪/低吸区同源）──
     def _emit_pool_table_row(view: ScanView, row: MainRow, idx: int) -> None:
