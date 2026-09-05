@@ -85,15 +85,15 @@ def compute_ma(closes: list[float], period: int, ema: bool = False) -> float | N
     return result
 
 
-def compute_kdj(highs: list[float], lows: list[float],
-                closes: list[float], n: int = 9,
-                k_smooth: int = 3, d_smooth: int = 3) -> dict | None:
+def compute_kdj(
+    highs: list[float], lows: list[float], closes: list[float], n: int = 9, k_smooth: int = 3, d_smooth: int = 3
+) -> dict | None:
     if len(closes) < n:
         return None
     rsv_list = []
     for i in range(n - 1, len(closes)):
-        hh = max(highs[i - n + 1:i + 1])
-        ll = min(lows[i - n + 1:i + 1])
+        hh = max(highs[i - n + 1 : i + 1])
+        ll = min(lows[i - n + 1 : i + 1])
         if hh == ll:
             rsv_list.append(50.0)
         else:
@@ -109,13 +109,15 @@ def compute_kdj(highs: list[float], lows: list[float],
         d_history.append(d)
     j = 3 * k - 2 * d
     return {
-        "K": round(k, 2), "D": round(d, 2), "J": round(j, 2),
-        "prev_K": round(k_history[-2], 2), "prev_D": round(d_history[-2], 2),
+        "K": round(k, 2),
+        "D": round(d, 2),
+        "J": round(j, 2),
+        "prev_K": round(k_history[-2], 2),
+        "prev_D": round(d_history[-2], 2),
     }
 
 
-def compute_macd(closes: list[float], fast: int = 12,
-                 slow: int = 26, signal: int = 9) -> dict | None:
+def compute_macd(closes: list[float], fast: int = 12, slow: int = 26, signal: int = 9) -> dict | None:
     if len(closes) < slow + signal - 1:
         return None
 
@@ -140,16 +142,13 @@ def compute_macd(closes: list[float], fast: int = 12,
     }
 
 
-def compute_adx(highs: list[float], lows: list[float],
-                closes: list[float], period: int = 14) -> dict | None:
+def compute_adx(highs: list[float], lows: list[float], closes: list[float], period: int = 14) -> dict | None:
     if len(closes) < period * 2:
         return None
 
     tr_list, plus_dm_list, minus_dm_list = [], [], []
     for i in range(1, len(closes)):
-        tr = max(highs[i] - lows[i],
-                 abs(highs[i] - closes[i - 1]),
-                 abs(lows[i] - closes[i - 1]))
+        tr = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
         tr_list.append(tr)
         up_move = highs[i] - highs[i - 1]
         down_move = lows[i - 1] - lows[i]
@@ -168,10 +167,7 @@ def compute_adx(highs: list[float], lows: list[float],
     plus_di = _smooth(plus_dm_list, period)
     minus_di = _smooth(minus_dm_list, period)
 
-    adx_list = _smooth([
-        abs(p - m) / max(p + m, 0.001) * 100
-        for p, m in zip(plus_di, minus_di, strict=True)
-    ], period)
+    adx_list = _smooth([abs(p - m) / max(p + m, 0.001) * 100 for p, m in zip(plus_di, minus_di, strict=True)], period)
 
     return {
         "adx": round(adx_list[-1], 2),
@@ -180,14 +176,13 @@ def compute_adx(highs: list[float], lows: list[float],
     }
 
 
-def compute_bollinger_bands(closes: list[float], period: int = 20,
-                             std_mult: float = 2.0) -> dict | None:
+def compute_bollinger_bands(closes: list[float], period: int = 20, std_mult: float = 2.0) -> dict | None:
     if len(closes) < period:
         return None
     window = closes[-period:]
     ma = sum(window) / period
     variance = sum((x - ma) ** 2 for x in window) / period
-    std = variance ** 0.5
+    std = variance**0.5
     upper = ma + std_mult * std
     lower = ma - std_mult * std
     current = closes[-1]
@@ -202,15 +197,12 @@ def compute_bollinger_bands(closes: list[float], period: int = 20,
     }
 
 
-def compute_atr(highs: list[float], lows: list[float],
-                closes: list[float], period: int = 14) -> float | None:
+def compute_atr(highs: list[float], lows: list[float], closes: list[float], period: int = 14) -> float | None:
     if len(closes) < period + 1:
         return None
     tr_list = []
     for i in range(1, len(closes)):
-        tr = max(highs[i] - lows[i],
-                 abs(highs[i] - closes[i - 1]),
-                 abs(lows[i] - closes[i - 1]))
+        tr = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
         tr_list.append(tr)
     atr = sum(tr_list[:period]) / period
     for v in tr_list[period:]:
@@ -222,8 +214,8 @@ def compute_obv(closes: list[float], volumes: list[float]) -> dict | None:
     if len(closes) < 2 or len(volumes) < 2:
         return None
     n = min(len(closes), len(volumes))
-    obv = 0
-    obv_history = [0]
+    obv: float = 0.0
+    obv_history: list[float] = [0.0]
     for i in range(1, n):
         if closes[i] > closes[i - 1]:
             obv += volumes[i]

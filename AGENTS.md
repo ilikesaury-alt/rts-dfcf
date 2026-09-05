@@ -7,6 +7,7 @@ A-share (创业板) stock scanner that watches the Xueqiu biaosheng (飙升) lea
 ## Commands
 
 ### Run the scanner
+
 ```
 python unified_scanner.py          # default 60s refresh
 python unified_scanner.py 120      # custom interval
@@ -14,6 +15,7 @@ python unified_scanner.py --no-feishu  # disable Feishu push
 ```
 
 ### Individual tools
+
 ```
 python stock_report.py 300319      # deep-dive report for one stock
 python stock_report.py 麦捷科技    # name works too
@@ -25,6 +27,7 @@ python backfill_kline.py           # manual kline backfill after market close
 ```
 
 ### Validate changes
+
 ```
 python -m pytest tests/                    # unit tests (skips smoke)
 python -m pytest tests/ --run-smoke        # integration (needs real scanner.db + network)
@@ -38,10 +41,31 @@ mypy scanner/                              # type check (lenient, ignore_missing
 ```
 
 ### Full P&L validation after weight/scoring changes
+
 ```
 python -m scanner.portfolio_backtest --compare --rescore --buy-delay 0 --buy-at close --hold-days 3
+python -m scanner.portfolio_backtest --compare-horizons "1,3" --buy-delay 0 --buy-at close --hold-days-auto
 ```
+
 **`--buy-at open` is rejected** — 信号收盘后才产生，无法以当日开盘价买入。必须用 `--buy-at close`。
+`--hold-days-auto`（M1.1）：类别级持有期——cum_3d 语义类（comeback/core_dip）按
+`config.HOLD_DAYS_BY_CATEGORY` 覆盖，next_day 靶点类沿用 `--hold-days` 基准；
+`--compare-horizons "1,3"` 逐持有期跑全套对比（学术依据：涨停类信号次日高开随后反转，
+next_day 靶点不应与 3 日 P&L 混算）。
+
+### Offline label / data-quality tooling
+
+```
+python -m scanner.triple_barrier --report   # 三重屏障标签重建 + 新旧标签一致性（M2）
+```
+
+- **triple_barrier_labels 表**（M2）：(止盈 +7% / 止损 -5% / 时间 3 日) 三屏障标注，
+  样本口径与 load_attribution_rows 一致（excluded=0 + 同票同日取最后一轮）；
+  幂等重建，旧 next_day 标签链路不动。
+- **kline_drift（M1.2，自动运行）**：unified_scanner 非交易分支每日对 daily_kline
+  锚定窗口做价格 SHA256 指纹比对（雪球前复权价会被除权事件静默重算 → 回测/rescore
+  跨期不可复现）；漂移即告警 + 写 logs/finalize.log（同一变更只告警一次）。
+  首次自动锚定「截至昨日的 min(可用历史, 250) 根 × 当时 symbol 集合」。
 
 This rebuilds scores via `scanner/historical_rescan.py --rescore` (faithful to the live orchestrator pipeline). Read-only changes to config.py thresholds do NOT retroactively affect `recommendations` — you must use `--rescore`.
 

@@ -35,6 +35,7 @@ ignore = [
 # 60 处，纯churn 无收益）经评估不纳入，避免噪音淹没真实信号。
 
 [tool.ruff.lint.per-file-ignores]
+"unified_scanner.py" = ["E402"]  # load_dotenv/win32 reconfigure 必须先于 config 导入（有意为之）
 "tests/*" = ["S105", "S106", "S311", "S608"]
 "scripts/*" = ["S603", "S607", "S608"]
 

@@ -32,6 +32,7 @@ from scanner.config import (
     REFRESH_INTERVAL,
     now_beijing,
 )
+from scanner.data_health import check_kline_fingerprint
 from scanner.data_source import get_adapter
 from scanner.database import (
     get_today_recommendations,
@@ -222,6 +223,40 @@ def _finalize_today_klines(conn, adapter) -> None:
     print(f"\r  [收盘定稿] 覆盖 {refreshed}/{len(symbols)} 只今日K线为最终收盘价{tail}  ", flush=True)
 
 
+# 复权指纹校验标记：记录当日已完成的 kline_fingerprint 比对（每交易日一次）。
+_drift_checked_date: str | None = None
+
+
+def _check_kline_fingerprint_once(conn) -> None:
+    """收盘后校验 daily_kline 锚定窗口价格指纹（M1.2，每交易日一次，fail-open）。
+
+    前复权（qfq）价会被除权事件静默重算全部历史 → 回测/rescore 跨期不可复现。
+    首次运行自动锚定窗口；漂移时告警 + 写 finalize.log（同一变更只告警一次）。
+    任何异常只告警不阻断（与 _finalize_today_klines 同纪律）。
+    """
+    global _drift_checked_date
+    now = now_beijing()
+    today = now.date().isoformat()
+    if _drift_checked_date == today:
+        return
+    if not is_trading_day(now.date()):
+        return
+    try:
+        line = check_kline_fingerprint(conn)
+        _drift_checked_date = today
+    except EXTERNAL_FAILURES as e:
+        print(f"\r  [!] 复权指纹校验失败（明日重试）: {e}  ", end="", flush=True)
+        return
+    if line:
+        print(f"\r  {line}  ", flush=True)
+        try:
+            os.makedirs(LOG_DIR, exist_ok=True)
+            with open(os.path.join(LOG_DIR, "finalize.log"), "a", encoding="utf-8") as f:
+                f.write(f"{today} {now.strftime('%H:%M:%S')} {line}\n")
+        except OSError:
+            pass  # 日志落盘失败不阻断（控制台已可见）
+
+
 # 档位快照落库标记：记录已完成当日 ranking_snapshot 写入的日期（每交易日一次）。
 _snapshot_done_date: str | None = None
 
@@ -292,6 +327,9 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     # 定稿后写当日综合排序档位快照（每交易日一次，fail-open）：
                     # 历史归因存证，ranking 代码演进不篡改历史（见 ranking_snapshot.py）。
                     _persist_ranking_snapshot_once(conn)
+                    # 复权漂移指纹校验（M1.2，每交易日一次，fail-open）：qfq 除权重算
+                    # 会静默改写历史价格，指纹漂移即告警（详见 kline_drift.py）。
+                    _check_kline_fingerprint_once(conn)
                     wait = seconds_until_next_session(now)
                     label = next_session_label(now)
                     print(f"\r  🌙 非交易时段 | {label} ({wait // 60}分后)  ", end="", flush=True)

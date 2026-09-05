@@ -3,6 +3,7 @@ import threading
 import time
 from datetime import datetime
 from datetime import time as _dt_time
+from typing import Any
 
 import requests
 
@@ -93,7 +94,7 @@ def _request_with_retry(
     base_delay: float = 1.0,
     timeout: int | tuple | None = None,
 ) -> requests.Response:
-    last_exc = None
+    last_exc: requests.RequestException | None = None
     rebuilt = False
     # 2026-08-20 修复：session 重建后必须再给一次真正用上新 cookie 的尝试。
     # 原 range(max_retries)：若最后一次尝试（attempt=max_retries-1）才检测到 400016 失效，
@@ -370,8 +371,15 @@ def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[
     return result
 
 
-# Circuit breaker state for biaosheng
-_biaosheng_cb = {"failures": 0, "last_ok": 0.0, "cached": [], "cooldown_until": 0.0, "stale_warned": False}
+# Circuit breaker state for biaosheng（值类型混合 int/float/list/bool，统一 Any 表达，
+# 消除后续字典值算术的 object 推导错误，2026-09-05 类型收敛）
+_biaosheng_cb: dict[str, Any] = {
+    "failures": 0,
+    "last_ok": 0.0,
+    "cached": [],
+    "cooldown_until": 0.0,
+    "stale_warned": False,
+}
 
 
 def _warn_stale_cached(name: str, seconds: float) -> None:

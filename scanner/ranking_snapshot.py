@@ -11,7 +11,9 @@
 定位：观测基建，不改排序/评分/候选生成；prevday_perf/today_report 的报告语义
 不受影响（仍走 today_report._build_report 同源管线）。
 """
+
 import json
+from typing import Any
 
 from scanner.config import CORE_DIP_CATEGORY, now_beijing
 from scanner.database import get_today_recommendations
@@ -39,7 +41,9 @@ def persist_ranking_snapshot(conn, target_date: str | None = None) -> int:
         return 0
 
     accum_map = build_accum_map(conn, recs)
-    main: list[dict] = []
+    # list[Any]：e 是 RecommendationRow（sqlite Row 子类），统一按 Any 处理与
+    # sort_main_entries/_entry_tier 的 Any 形参对齐（2026-09-05 类型收敛）
+    main: list[Any] = []
     rows: list[tuple] = []
     for e in recs:
         marked = _is_nextday_marked(e, conn, accum_map=accum_map)
@@ -51,17 +55,25 @@ def persist_ranking_snapshot(conn, target_date: str | None = None) -> int:
             main.append(e)
 
     # 主表展示序号与当日综合排序一致（排序组合层单源）
-    tier_map = {(e["symbol"], e["category"]): t for e, t, _, _ in rows
-                if e["category"] not in ("comeback", CORE_DIP_CATEGORY)}
+    tier_map = {
+        (e["symbol"], e["category"]): t for e, t, _, _ in rows if e["category"] not in ("comeback", CORE_DIP_CATEGORY)
+    }
     rank_in_table: dict[tuple[str, str], int] = {}
     for i, e in enumerate(sort_main_entries(main, tier_map), 1):
         rank_in_table[(e["symbol"], e["category"])] = i
 
     created = now_beijing().isoformat(timespec="seconds")
     payload = [
-        (target_date, e["symbol"], e["category"], tier, int(marked),
-         json.dumps(reasons, ensure_ascii=False), rank_in_table.get((e["symbol"], e["category"])),
-         created)
+        (
+            target_date,
+            e["symbol"],
+            e["category"],
+            tier,
+            int(marked),
+            json.dumps(reasons, ensure_ascii=False),
+            rank_in_table.get((e["symbol"], e["category"])),
+            created,
+        )
         for e, tier, marked, reasons in rows
     ]
     with conn:
@@ -82,8 +94,7 @@ def load_ranking_snapshot(conn, target_date: str) -> dict[tuple[str, str], dict]
     """
     try:
         rows = conn.execute(
-            "SELECT symbol, category, tier, marked, reasons_json, rank_in_table "
-            "FROM ranking_snapshot WHERE date = ?",
+            "SELECT symbol, category, tier, marked, reasons_json, rank_in_table FROM ranking_snapshot WHERE date = ?",
             (target_date,),
         ).fetchall()
     except EXTERNAL_FAILURES:

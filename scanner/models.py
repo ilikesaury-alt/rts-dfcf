@@ -171,8 +171,10 @@ class KlineSummary:
     volume_ratio: float
     bottom_confirmed: bool
     score: int
-    # 维度值混合 int/float/str（validator 的 detail 字符串也写入），用 object 显式表达。
-    dimensions: dict[str, object] = field(default_factory=dict)
+    # 维度值混合 int/float/str/bool（validator detail 字符串、fatigue 布尔等均写入），
+    # Any 表达混合值类型（dict[str, object] 对调用方构造的 dict[str, int | float] 不变
+    # 性不兼容，2026-09-05 类型收敛：单点改 Any 消除 5 处 arg-type）。
+    dimensions: dict[str, Any] = field(default_factory=dict)
     avg_volume: float = 0.0
 
 

@@ -46,12 +46,15 @@ from scanner.validator import validate
 
 def build_candidate(
     stock: StockInfo,
-    kline_summary: KlineSummary | None,
+    kline_summary: KlineSummary,
     category: str,
     is_first_today: bool,
     first_date: str,
     kline: list[KlineBar] | None,
 ) -> Candidate:
+    # 签名收敛（2026-09-05）：唯一调用方 try_candidate 已在入口对 None/HIGH_RISK
+    # 短路，此处直接解引用 volume_ratio/score/trend——参数不再接受 None（原
+    # `KlineSummary | None` 注解与实现不符，引发 3 处 union-attr 误报）。
     first_breakout = (
         stock.rank_change >= FIRST_BREAKOUT_RANK_CHANGE and kline_summary.volume_ratio > FIRST_BREAKOUT_VOL_RATIO
     )
@@ -300,7 +303,10 @@ def score_stock(
     # 非交易时段缓存本就停在最近交易日，缺今日 bar 属正常，不打 stale（与 fail-loud
     # 告警同口径：仅交易时段缺今日 bar 才是数据降级）。historical_rescan 直接调用本函数
     # 时 now_ref 若落在非交易时段同样不应误标。
-    _stale = bool(kline) and max(k["date"] for k in kline) < today and is_trading_time()
+    _stale = False
+    if kline and max(k["date"] for k in kline) < today and is_trading_time():
+        # if kline 收窄后 genexp 才可迭代（原布尔短路写法 mypy 无法收窄，union-attr 误报）
+        _stale = True
     for _c in (c_nf, c_mo, c_rb, c_st):
         if _c is not None:
             _c.stale_kline = _stale
@@ -346,8 +352,13 @@ def compute_rps(
     """
     scores: dict[str, int] = {}
     # 双挂票（同代码出现在多个桶）只计一次排名，避免拉高 total 扭曲分位
+    # （显式循环重写：原 `seen.add(...)` 在推导式里的返回值技巧触发 func-returns-value）
+    uniq: list[Candidate] = []
     seen: set[str] = set()
-    uniq = [c for c in candidates if not (c.stock.symbol in seen or seen.add(c.stock.symbol))]
+    for c in candidates:
+        if c.stock.symbol not in seen:
+            seen.add(c.stock.symbol)
+            uniq.append(c)
     candidates = uniq
     if len(candidates) < 2:
         return {c.stock.symbol: 0 for c in candidates}

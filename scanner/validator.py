@@ -53,8 +53,7 @@ from scanner.sector import classify_sector
 from scanner.utils import today_close_from_kline
 
 
-def _get_features(closes: list[float], historical_kline: list[KlineBar],
-                  feats: dict | None = None) -> dict:
+def _get_features(closes: list[float], historical_kline: list[KlineBar], feats: dict | None = None) -> dict:
     """构建特征（调用方已预计算则复用，否则从 historical_kline 抽取 high/low 现算）。
 
     与 analysis._get_features 的唯一差异：validator 各维度不需要 volumes/OBV
@@ -67,8 +66,9 @@ def _get_features(closes: list[float], historical_kline: list[KlineBar],
     return build_features(closes, highs, lows)
 
 
-def _nf_convergence(closes: list[float], historical_kline: list[KlineBar],
-                    feats: dict | None = None) -> tuple[int, str, int]:
+def _nf_convergence(
+    closes: list[float], historical_kline: list[KlineBar], feats: dict | None = None
+) -> tuple[int, str, int]:
     if len(closes) < 10:
         return 0, "data_short", 0
 
@@ -175,10 +175,10 @@ def _nf_higher_low(closes: list[float]) -> tuple[int, str]:
     prev_zone = max(prev_zone, 0.001)
 
     if recent_zone > prev_zone * 1.01:
-        return 0, f"hl_neutral_clear_{recent_zone/prev_zone:.3f}"
+        return 0, f"hl_neutral_clear_{recent_zone / prev_zone:.3f}"
     if recent_zone > prev_zone * 0.98:
-        return 0, f"hl_neutral_stable_{recent_zone/prev_zone:.3f}"
-    return 0, f"hl_neutral_fail_{recent_zone/prev_zone:.3f}"
+        return 0, f"hl_neutral_stable_{recent_zone / prev_zone:.3f}"
+    return 0, f"hl_neutral_fail_{recent_zone / prev_zone:.3f}"
 
 
 def _nf_sector(name: str, clusters: dict[str, list[str]] | None) -> tuple[int, int]:
@@ -202,10 +202,14 @@ def _nf_volume_surge(kline_summary) -> tuple[int, str]:
     return 0, f"vol_{vr:.1f}x"
 
 
-def validate_nf(stock, kline_summary, closes: list[float],
-                historical_kline: list[KlineBar], clusters: dict[str, list[str]] | None,
-                feats: dict | None = None
-                ) -> tuple[bool, int, dict]:
+def validate_nf(
+    stock,
+    kline_summary,
+    closes: list[float],
+    historical_kline: list[KlineBar],
+    clusters: dict[str, list[str]] | None,
+    feats: dict | None = None,
+) -> tuple[bool, int, dict]:
     feats = _get_features(closes, historical_kline, feats)
     conv_bonus, conv_detail, conv_hits = _nf_convergence(closes, historical_kline, feats)
     hl_bonus, hl_detail = _nf_higher_low(closes)
@@ -269,8 +273,7 @@ def _rsi_seq(closes: list[float], period: int = 6) -> list[float]:
     return compute_rsi_sequence(closes, period)
 
 
-def _mo_divergence(closes: list[float], historical_kline: list[KlineBar],
-                   feats: dict | None = None) -> tuple[int, str]:
+def _mo_divergence(closes: list[float], historical_kline: list[KlineBar], feats: dict | None = None) -> tuple[int, str]:
     """RSI 顶背离：价格创新高，但 RSI 未创新高（动能衰竭）。
 
     标准顶背离两条件：
@@ -317,8 +320,8 @@ def _mo_divergence(closes: list[float], historical_kline: list[KlineBar],
     # 条件3：OBV 顶背离（价升量减=资金流出）
     # OBV 序列与 closes 对齐，比较两个价格高点处的 OBV 值
     if historical_kline and len(historical_kline) >= len(closes):
-        volumes = [k["volume"] for k in historical_kline[:len(closes)]]
-        obv_seq = [0]
+        volumes = [k["volume"] for k in historical_kline[: len(closes)]]
+        obv_seq: list[float] = [0.0]
         for i in range(1, len(closes)):
             if closes[i] > closes[i - 1]:
                 obv_seq.append(obv_seq[-1] + volumes[i])
@@ -360,11 +363,16 @@ def _mo_volume_uniformity(historical_kline: list[KlineBar]) -> tuple[int, str]:
     return V_MO_VOL_SPIKE, f"vol_spike_r{ratio:.1f}"
 
 
-def validate_momentum(stock, kline_summary, closes: list[float],
-                       historical_kline: list[KlineBar], clusters: dict[str, list[str]] | None,
-                       feats: dict | None = None, kline: list[KlineBar] | None = None,
-                       today: str | None = None
-                       ) -> tuple[bool, int, dict]:
+def validate_momentum(
+    stock,
+    kline_summary,
+    closes: list[float],
+    historical_kline: list[KlineBar],
+    clusters: dict[str, list[str]] | None,
+    feats: dict | None = None,
+    kline: list[KlineBar] | None = None,
+    today: str | None = None,
+) -> tuple[bool, int, dict]:
     feats = _get_features(closes, historical_kline, feats)
     ma_bonus, ma_detail = _mo_ma_alignment(closes, feats)
     div_bonus, div_detail = _mo_divergence(closes, historical_kline, feats)
@@ -397,8 +405,7 @@ def validate_momentum(stock, kline_summary, closes: list[float],
     return passed, total, details
 
 
-def _rb_oversold(closes: list[float], historical_kline: list[KlineBar],
-                feats: dict | None = None) -> tuple[int, str]:
+def _rb_oversold(closes: list[float], historical_kline: list[KlineBar], feats: dict | None = None) -> tuple[int, str]:
     """超卖确认：RSI<30 或 KDJ J<0 或 MACD 柱翻红。"""
     if len(closes) < 10:
         return 0, "data_short"
@@ -465,10 +472,14 @@ def _rb_pattern_dim(kline_summary) -> tuple[int, str]:
     return 0, "no_pattern"
 
 
-def validate_rebound(stock, kline_summary, closes: list[float],
-                     historical_kline: list[KlineBar], clusters: dict[str, list[str]] | None,
-                     feats: dict | None = None
-                     ) -> tuple[bool, int, dict]:
+def validate_rebound(
+    stock,
+    kline_summary,
+    closes: list[float],
+    historical_kline: list[KlineBar],
+    clusters: dict[str, list[str]] | None,
+    feats: dict | None = None,
+) -> tuple[bool, int, dict]:
     """超跌反弹交叉验证：4 维独立判断，pos_dims >= 2 通过。
 
     维度：超卖确认 / 量能确认 / 板块共振 / 形态确认。
@@ -502,11 +513,16 @@ def validate_rebound(stock, kline_summary, closes: list[float],
     return passed, total, details
 
 
-def validate_short_term(stock, kline_summary, closes: list[float],
-                         historical_kline: list[KlineBar], clusters: dict[str, list[str]] | None,
-                         feats: dict | None = None, kline: list[KlineBar] | None = None,
-                         today: str | None = None
-                         ) -> tuple[bool, int, dict]:
+def validate_short_term(
+    stock,
+    kline_summary,
+    closes: list[float],
+    historical_kline: list[KlineBar],
+    clusters: dict[str, list[str]] | None,
+    feats: dict | None = None,
+    kline: list[KlineBar] | None = None,
+    today: str | None = None,
+) -> tuple[bool, int, dict]:
     # 硬门禁：量比 < 1.0 直接淘汰（超短必须放量）。软维度为下方 4 项。
     # 放行条件（P0-sector 单维度刷屏修复）：弱转强直接放行；否则要求 ≥2 正维度
     # 且至少 1 项非 sector —— 杜绝板块普涨日仅靠 sector 单维度批量放行。
@@ -607,9 +623,13 @@ def validate_short_term(stock, kline_summary, closes: list[float],
     return passed, total, details
 
 
-def _is_overbought(closes: list[float], historical_kline: list[KlineBar],
-                   stock: object, kline: list[KlineBar] | None = None,
-                   today_str: str | None = None) -> bool:
+def _is_overbought(
+    closes: list[float],
+    historical_kline: list[KlineBar],
+    stock: object,
+    kline: list[KlineBar] | None = None,
+    today_str: str | None = None,
+) -> bool:
     """判定候选是否处于末周期超买（鱼尾段）。
 
     BOLL %B 用 closes + 今日收盘（series，反映最新价）；
@@ -662,13 +682,18 @@ _st_is_overbought = _is_overbought
 _mo_is_overbought = _is_overbought
 
 
-def validate(cat: str, stock, kline_summary, closes: list[float],
-              historical_kline: list[KlineBar], clusters: dict[str, list[str]] | None = None,
-              feats: dict | None = None,
-              off_list: bool = False,
-              kline: list[KlineBar] | None = None,
-              today: str | None = None,
-              ) -> tuple[bool, int, dict]:
+def validate(
+    cat: str,
+    stock,
+    kline_summary,
+    closes: list[float],
+    historical_kline: list[KlineBar],
+    clusters: dict[str, list[str]] | None = None,
+    feats: dict | None = None,
+    off_list: bool = False,
+    kline: list[KlineBar] | None = None,
+    today: str | None = None,
+) -> tuple[bool, int, dict]:
     if cat in ("new_face", "known_new_face"):
         return validate_nf(stock, kline_summary, closes, historical_kline, clusters, feats)
     if cat == "momentum":

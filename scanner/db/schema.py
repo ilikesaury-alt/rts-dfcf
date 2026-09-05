@@ -153,7 +153,39 @@ def init_db() -> sqlite3.Connection:
             updated TEXT DEFAULT ''
         )
     """)
+    # 复权漂移指纹（2026-09-05 M1.2）：锚定历史窗口的价格 SHA256。daily_kline 存雪球
+    # 前复权（qfq）价，除权事件会静默重算全部历史 → 回测/rescore 跨期不可复现。
+    # 单行设计：首次运行锚定「截至昨日的最近 N 根 × 当时存在的 symbol 集合」
+    # （symbol 集合 JSON 快照——后补历史票不污染哈希），此后每日用同一窗口重算。
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS kline_fingerprint (
+            anchor_date TEXT PRIMARY KEY,
+            start_date TEXT,
+            end_date TEXT,
+            symbols TEXT,          -- JSON list：锚定时点的 symbol 集合快照
+            kline_hash TEXT,       -- SHA256（OHLC+percent，4dp；volume 不参与——复权重算只改价格）
+            updated TEXT DEFAULT ''
+        )
+    """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sql_date ON scan_quality_log(date)")
+    # 三重屏障标签（2026-09-05 M2）：(止盈, 止损, 时间) 三屏障的推荐结果标注，
+    # 供模型桶训练与持有期优化消费。样本口径与 load_attribution_rows 一致
+    # （excluded=0 + 同票同日取最后一轮）。旧 next_day 标签链路不动，本表并存。
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS triple_barrier_labels (
+            date TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            category TEXT NOT NULL,
+            label INTEGER,          -- +1=先触止盈 / -1=先触止损 / 0=时间到期或同日双触（不可判定）
+            touch_date TEXT,        -- 首次触屏障日（label=±1 时非空）
+            touch_pct REAL,         -- 触及日 high/low 极值相对买入价的收益幅度（%）
+            ret_at_horizon REAL,    -- 时间屏障到期日收盘收益（%，全部样本均有）
+            buy_price REAL,         -- 信号日收盘买入价（T close，与 cum_3d 口径一致）
+            updated TEXT DEFAULT '',
+            PRIMARY KEY (date, symbol, category)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tb_date ON triple_barrier_labels(date)")
     # 市值缓存（2026-08-20）：市值批量查询（雪球 batch/quote + akshare 兜底）曾瞬时双源
     # 同时失败 → 返回空 → "小叶美规则暂不生效"。市值本身变化缓慢（日级），落库后可在
     # 全失时回退陈旧缓存，避免单轮静默失效。盘中限当日（涨停/停牌股本就无新市值），

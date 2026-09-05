@@ -12,15 +12,19 @@
     if banner: print(banner)
     if report.blocked: ...  # 中止，提示先跑 python repair_kline.py
 """
+
 from __future__ import annotations
 
+import hashlib
+import json
+import math
 import random
 import sqlite3
 from dataclasses import dataclass, field
 
 import requests
 
-from scanner.config import now_beijing
+from scanner.config import KLINE_DRIFT_FINGERPRINT_BARS, KLINE_DRIFT_MIN_BARS, KLINE_DRIFT_ROUND_DP, now_beijing
 from scanner.utils import EXTERNAL_FAILURES, to_float
 
 # 抽验最少对数：不足时只能警告不能阻断（避免小样本误判）
@@ -64,7 +68,6 @@ def _sina_close(symbol: str, date_str: str) -> float | None:
         if len(row):
             return float(row.iloc[0]["close"])
     except EXTERNAL_FAILURES:  # noqa: BLE001  网络/解析失败 → None，由调用方按 source_ok 处理
-
         pass  # 外部依赖降级，非代码错误
     return None
 
@@ -84,18 +87,16 @@ def _ths_close(symbol: str, date_str: str) -> float | None:
     return closes.get(date_str)
 
 
-def check_kline_health(conn: sqlite3.Connection,
-                       dates: list[str] | None = None,
-                       sample_n: int = 10) -> HealthReport:
+def check_kline_health(conn: sqlite3.Connection, dates: list[str] | None = None, sample_n: int = 10) -> HealthReport:
     """抽样交叉验证 daily_kline 与独立数据源（新浪 qfq）的一致性。
 
     dates 为 None 时取最近 10 个有数据的交易日。抽验样本按日期倒序取（近端优先，
     近端数据对回测结论影响最大）。结果含不符样本明细，供 health_banner 展示。
     """
     if dates is None:
-        dates = [r[0] for r in conn.execute(
-            "SELECT DISTINCT date FROM daily_kline ORDER BY date DESC LIMIT 10"
-        ).fetchall()]
+        dates = [
+            r[0] for r in conn.execute("SELECT DISTINCT date FROM daily_kline ORDER BY date DESC LIMIT 10").fetchall()
+        ]
     if not dates:
         return HealthReport()
     placeholders = ",".join("?" * len(dates))
@@ -170,8 +171,7 @@ def _eastmoney_index_pct() -> float | None:
     """
     try:
         url = "https://push2delay.eastmoney.com/api/qt/stock/get?secid=0.399006&fields=f43,f170"
-        r = requests.get(url, timeout=(5, 10),
-                         headers={"User-Agent": "Mozilla/5.0"})
+        r = requests.get(url, timeout=(5, 10), headers={"User-Agent": "Mozilla/5.0"})
         data = (r.json() or {}).get("data") or {}
         pct = to_float(data.get("f170"), None)
         if pct is not None:
@@ -184,8 +184,8 @@ def _eastmoney_index_pct() -> float | None:
 @dataclass
 class IndexHealthReport:
     checked: int = 0
-    stale_bar: bool = False        # 记录 bar 日期滞后（读到旧 bar = 涨幅可能非当日）
-    mismatch: bool = False         # 同日内扫描涨幅与独立源偏差超容差
+    stale_bar: bool = False  # 记录 bar 日期滞后（读到旧 bar = 涨幅可能非当日）
+    mismatch: bool = False  # 同日内扫描涨幅与独立源偏差超容差
     recorded_pct: float | None = None
     recorded_bar: str | None = None
     recorded_time: str | None = None
@@ -193,8 +193,7 @@ class IndexHealthReport:
     source_ok: bool = True
 
 
-def check_market_index_health(conn: sqlite3.Connection,
-                              date_str: str | None = None) -> IndexHealthReport:
+def check_market_index_health(conn: sqlite3.Connection, date_str: str | None = None) -> IndexHealthReport:
     """对账大盘指数血缘日志（market_index_log）与独立源（东财）。
 
     背景（2026-08-19）：大盘标签曾因雪球 kline 接口 begin/count 语义错位，把当日
@@ -224,8 +223,7 @@ def check_market_index_health(conn: sqlite3.Connection,
     if date_str is None:
         date_str = now_beijing().date().isoformat()
     # 交易日 09:30 后扫描应读到当日 bar（开盘前今日 bar 尚未生成，读到昨日属正常）
-    if (report.recorded_bar and report.recorded_bar < date_str
-            and (report.recorded_time or "") >= "09:30"):
+    if report.recorded_bar and report.recorded_bar < date_str and (report.recorded_time or "") >= "09:30":
         report.stale_bar = True
     ref = _eastmoney_index_pct()
     if ref is None:
@@ -234,8 +232,11 @@ def check_market_index_health(conn: sqlite3.Connection,
     report.ref_pct = ref
     # 2026-08-29：recorded_pct 为 None（血缘表缺 pct 列值）时直接相减会抛 TypeError，
     # 让整个审计函数崩掉、横幅退化为"无法对账"。显式判空后再比对。
-    if (report.recorded_bar == date_str and report.recorded_pct is not None
-            and abs(report.recorded_pct - ref) > INDEX_PCT_TOLERANCE):
+    if (
+        report.recorded_bar == date_str
+        and report.recorded_pct is not None
+        and abs(report.recorded_pct - ref) > INDEX_PCT_TOLERANCE
+    ):
         report.mismatch = True
     return report
 
@@ -246,12 +247,16 @@ def index_health_banner(report: IndexHealthReport) -> str:
         return "  ⚠ 大盘指数审计：无当日血缘记录（扫描未跑/落库失败），无法对账"
     lines = []
     if report.stale_bar:
-        lines.append(f"  ❌ 大盘指数审计：扫描读到旧 bar（{report.recorded_bar}，"
-                     f"时间 {report.recorded_time}）——涨幅非当日，大盘标签失真！")
+        lines.append(
+            f"  ❌ 大盘指数审计：扫描读到旧 bar（{report.recorded_bar}，"
+            f"时间 {report.recorded_time}）——涨幅非当日，大盘标签失真！"
+        )
     if report.mismatch and report.recorded_pct is not None and report.ref_pct is not None:
-        lines.append(f"  ❌ 大盘指数审计：扫描涨幅 {report.recorded_pct}% vs 独立源(东财) "
-                     f"{report.ref_pct}%（偏差 {abs(report.recorded_pct - report.ref_pct):.2f}pp，"
-                     f"容差 {INDEX_PCT_TOLERANCE}pp）——数据源口径异常！")
+        lines.append(
+            f"  ❌ 大盘指数审计：扫描涨幅 {report.recorded_pct}% vs 独立源(东财) "
+            f"{report.ref_pct}%（偏差 {abs(report.recorded_pct - report.ref_pct):.2f}pp，"
+            f"容差 {INDEX_PCT_TOLERANCE}pp）——数据源口径异常！"
+        )
     if not report.source_ok:
         lines.append("  ⚠ 大盘指数审计：独立源（东财）不可达或记录缺失，跳过涨幅对比")
     return "\n".join(lines)
@@ -260,18 +265,152 @@ def index_health_banner(report: IndexHealthReport) -> str:
 def health_banner(report: HealthReport) -> str:
     """把 HealthReport 渲染成终端横幅；无异常返回空串。"""
     if not report.source_ok:
-        return ("  ⚠ 数据健康检查：独立数据源（新浪/同花顺）均不可达，跳过交叉验证\n"
-                "    （不影响报告；建议稍后跑 python repair_kline.py --dry-run 自查）")
+        return (
+            "  ⚠ 数据健康检查：独立数据源（新浪/同花顺）均不可达，跳过交叉验证\n"
+            "    （不影响报告；建议稍后跑 python repair_kline.py --dry-run 自查）"
+        )
     if report.mismatched == 0:
         return ""
     if report.blocked:
         lines = [
             f"  [数据健康检查] ❌ 抽验 {report.checked} 条，{report.mismatched} 条与独立源不符"
-            f"（{report.ratio*100:.0f}%，阈值 {BLOCK_RATIO*100:.0f}%）——数据疑似污染！",
+            f"（{report.ratio * 100:.0f}%，阈值 {BLOCK_RATIO * 100:.0f}%）——数据疑似污染！",
         ]
         for sym, d, dbc, ref in report.samples[:5]:
             lines.append(f"      {sym} {d}: DB={dbc} 独立源={ref}")
         lines.append("      先跑 python repair_kline.py 修复后重试；确属噪声可加 --force 强行出报告")
         return "\n".join(lines)
-    return (f"  ⚠ 数据健康检查：抽验 {report.checked} 条，{report.mismatched} 条与独立源不符"
-            f"（{report.ratio*100:.0f}%），低于阈值 {BLOCK_RATIO*100:.0f}%，报告继续但请注意数据质量")
+    return (
+        f"  ⚠ 数据健康检查：抽验 {report.checked} 条，{report.mismatched} 条与独立源不符"
+        f"（{report.ratio * 100:.0f}%），低于阈值 {BLOCK_RATIO * 100:.0f}%，报告继续但请注意数据质量"
+    )
+
+
+# ── 复权漂移指纹监控（M1.2，2026-09-05；自 scanner/kline_drift.py 并入）──
+#
+# 背景：daily_kline 存雪球前复权（qfq）价——qfq 以最新 bar 为锚整体重算，
+# 除权事件会**静默改写全部历史价格**（HTTP 不报错、无任何痕迹）。后果：
+#   - --rescore 重扫 / 回测跨期不可复现（同一窗口两次读取数值不同）；
+#   - accumulated_pct / 🎯 门槛（NEXTDAY_ACCUM_MIN）在除权日附近失真。
+#
+# 防御：收盘定稿后（unified_scanner 非交易分支）对**锚定历史窗口**做 SHA256
+# 指纹比对——首次运行记录「截至昨日的最近 N 根 bar × 当时存在的 symbol 集合」，
+# 此后每日用同一窗口重算哈希；不一致即前复权重算/数据回改，告警并更新指纹
+# （同一变更只告警一次，审计走 logs/finalize.log）。
+#
+# 设计约束：
+#   - symbol 集合取锚定时点快照（JSON 存行内）——后补历史票（repair_kline/
+#     backfill_kline 补新票的历史）不污染哈希，只在锚定集合内部比对；
+#   - volume 不参与哈希（复权重算只改价格；量能修正属另一类数据事件，
+#     由 scan_quality_log 计数器覆盖，避免双通道误报混淆）；
+#   - 窗口缺失（锚定票全被清理）标记为 kline_hash=''，只告警一次；
+#   - fail-open：任何异常由调用方捕获告警，不阻断扫描主流程。
+
+
+def _fingerprint_hash(
+    conn: sqlite3.Connection, start_date: str, end_date: str, symbols: list[str]
+) -> tuple[str | None, int]:
+    """对固定窗口（date 范围 × symbol 集合）计算价格指纹。返回 (hash, bar 数)。
+
+    哈希输入：symbol/date（顺序键）+ OHLC/percent（round 到 KLINE_DRIFT_ROUND_DP，
+    非有限值按 0.0——与 api._num 口径一致）。window 为空 → (None, 0)。
+    """
+    if not symbols:
+        return None, 0
+    # 临时表 JOIN 代替动态 IN 占位符拼接：完全参数化，零字符串拼 SQL
+    # （静态 SQL 安全规则不再命中，且大 symbol 集合下 sqlite 参数上限无虞）
+    conn.execute("CREATE TEMP TABLE IF NOT EXISTS fp_symbols (symbol TEXT PRIMARY KEY)")
+    conn.execute("DELETE FROM fp_symbols")
+    conn.executemany("INSERT INTO fp_symbols (symbol) VALUES (?)", [(s,) for s in symbols])
+    rows = conn.execute(
+        "SELECT d.symbol, d.date, d.open, d.high, d.low, d.close, d.percent "
+        "FROM daily_kline d JOIN fp_symbols f ON d.symbol = f.symbol "
+        "WHERE d.date >= ? AND d.date <= ? ORDER BY d.symbol, d.date",
+        (start_date, end_date),
+    ).fetchall()
+    conn.execute("DELETE FROM fp_symbols")
+    h = hashlib.sha256()
+    dp = KLINE_DRIFT_ROUND_DP
+    for sym, dt, o, hi, low, c, pct in rows:
+        parts = [str(sym), str(dt)]
+        for x in (o, hi, low, c, pct):
+            v = to_float(x, default=0.0)
+            if not math.isfinite(v):
+                v = 0.0
+            parts.append(f"{round(v, dp):.{dp}f}")
+        h.update(("|".join(parts) + "\n").encode("utf-8"))
+    # 空窗口返回 None（而非空内容哈希）：调用方靠 None 识别「窗口数据缺失」
+    return (h.hexdigest() if rows else None), len(rows)
+
+
+def _init_fingerprint(conn: sqlite3.Connection, today: str) -> str | None:
+    """首次运行：锚定「截至昨日的最近 N 根 × 当时存在的 symbol 集合」。
+
+    N = min(可用历史，KLINE_DRIFT_FINGERPRINT_BARS)；历史不足 KLINE_DRIFT_MIN_BARS
+    → 返回 None（不初始化，次日再试）。直接要求满 250 日会让新库长期处于
+    无监控状态（真实库实测仅 ~70 交易日），降级为小窗口立即生效。
+    """
+    dates = [r[0] for r in conn.execute("SELECT DISTINCT date FROM daily_kline WHERE date < ? ORDER BY date", (today,))]
+    if len(dates) < KLINE_DRIFT_MIN_BARS:
+        return None  # 历史不足，窗口无法锚定（新库/清库后需积累）
+    end_date = dates[-1]
+    start_date = dates[-min(len(dates), KLINE_DRIFT_FINGERPRINT_BARS)]
+    syms = [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT symbol FROM daily_kline WHERE date >= ? AND date <= ? ORDER BY symbol",
+            (start_date, end_date),
+        )
+    ]
+    if not syms:
+        return None
+    h, n = _fingerprint_hash(conn, start_date, end_date, syms)
+    now = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute(
+        "INSERT OR REPLACE INTO kline_fingerprint "
+        "(anchor_date, start_date, end_date, symbols, kline_hash, updated) VALUES (?,?,?,?,?,?)",
+        (today, start_date, end_date, json.dumps(syms), h or "", now),
+    )
+    conn.commit()
+    return f"[指纹] 复权漂移监控初始化：窗口 {start_date}~{end_date}（{len(syms)} 票 / {n} bars）"
+
+
+def check_kline_fingerprint(conn: sqlite3.Connection) -> str | None:
+    """每日一次指纹校验（每库单锚定行）。返回状态/告警行（None=无事件）。
+
+    异常向上抛——调用方（unified_scanner._check_kline_fingerprint_once）fail-open。
+    """
+    today = now_beijing().date().isoformat()
+    row = conn.execute(
+        "SELECT anchor_date, start_date, end_date, symbols, kline_hash FROM kline_fingerprint LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return _init_fingerprint(conn, today)
+    anchor, start_date, end_date, symbols_json, old_hash = row
+    try:
+        symbols: list[str] = json.loads(symbols_json or "[]")
+    except (TypeError, ValueError):
+        symbols = []
+    new_hash, n = _fingerprint_hash(conn, start_date, end_date, symbols)
+    now = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
+    line: str | None = None
+    if new_hash is None:
+        # 窗口数据消失（锚定票全被清理/库重建，_fingerprint_hash 对空结果返回 None）：
+        # 只告警一次（存 hash 置空哨兵），后续静默直至数据恢复。
+        if old_hash:
+            line = f"[指纹] 复权漂移监控：锚定窗口 {start_date}~{end_date} 数据缺失（{len(symbols)} 票现无 bar）"
+        new_hash_stored = ""
+    elif old_hash and old_hash != new_hash:
+        line = (
+            f"[指纹] ⚠ 复权漂移告警：窗口 {start_date}~{end_date}（{n} bars）历史价格被改写"
+            f"（前复权重算/数据回改）——回测/rescore 跨期口径需复查"
+        )
+        new_hash_stored = new_hash
+    else:
+        new_hash_stored = new_hash or ""
+    conn.execute(
+        "UPDATE kline_fingerprint SET kline_hash = ?, updated = ? WHERE anchor_date = ?",
+        (new_hash_stored, now, anchor),
+    )
+    conn.commit()
+    return line

@@ -76,7 +76,7 @@ from scanner.candidates import candidate_excluded_by_risk, filter_gem_stocks, sc
 # 可忠实重扫的类别（comeback 为 off-list 变体，无法从 appearances 重建，保持冻结分）。
 # 2026-08-20 收敛：单一事实来源见 scanner/categories.RESCANABLE_CATEGORIES。
 from scanner.categories import RESCANABLE_CATEGORIES  # noqa: E402
-from scanner.config import MAX_STOCK_PRICE
+from scanner.config import MAX_STOCK_PRICE, hold_days_for
 from scanner.enhancer import _apply_gap_up_bonus, _set_risk_flags
 from scanner.models import Candidate, KlineBar, make_kline_bar
 from scanner.portfolio_backtest import Signal, _assign_rank_scores, _dedup_signals
@@ -94,7 +94,12 @@ def _post_close(d: str) -> datetime:
     （elapsed=240，倍数恒为 1）。不传的话会用「跑回测那一刻」的真实时间算 elapsed，
     早盘跑回测会把历史上已收盘的完整量能再放大 ~10 倍，结果随运行时刻漂移。
     """
-    y, m, dd = (int(x) for x in d.split("-"))
+    try:
+        y, m, dd = (int(x) for x in d.split("-"))
+    except ValueError as e:
+        # 日期串脏值防御：调用方（rescan_all_signals）的 d 来自 appearances.date，
+        # 格式由写入端保证 ISO；非法输入 fail-loud 但给出可读信息
+        raise ValueError(f"_post_close: 非法日期串 {d!r}（期望 YYYY-MM-DD）") from e
     return datetime(y, m, dd, 15, 30)
 
 
@@ -271,7 +276,10 @@ def rescan_all_signals(
                 continue
             sig.buy_date = buy_str
             sig.buy_index = cal_index[buy_str]
-            exit_idx = sig.buy_index + cfg.hold_days
+            # M1.1 持有期口径分化：--hold-days-auto 时按类别覆盖（与 _load_signals 同款；
+            # comeback 在重扫路径不可重建，仅当冻结信号含 comeback 时生效）
+            _hold = hold_days_for(sig.category, cfg.hold_days) if cfg.hold_days_auto else cfg.hold_days
+            exit_idx = sig.buy_index + _hold
             if exit_idx >= len(calendar):
                 exit_idx = len(calendar) - 1
             if exit_idx <= sig.buy_index:

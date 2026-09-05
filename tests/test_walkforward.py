@@ -1,4 +1,5 @@
 """walk-forward 滚动检验测试：窗口切分 / 翻转判定 / 样本守卫 / 档位单调性结构。"""
+
 import sqlite3
 
 from scanner.walkforward import (
@@ -12,13 +13,19 @@ from scanner.walkforward import (
 
 def _mk_db(rows):
     """rows: tuple 行或 dict 行（_row 输出）混用均可。"""
-    cols = ("date", "time", "symbol", "name", "category", "score", "percent",
-            "next_day_pct", "accumulated_pct", "score_breakdown")
-    tuples = [
-        tuple(r[c] for c in cols) + (r.get("excluded", 0),)
-        if isinstance(r, dict) else r
-        for r in rows
-    ]
+    cols = (
+        "date",
+        "time",
+        "symbol",
+        "name",
+        "category",
+        "score",
+        "percent",
+        "next_day_pct",
+        "accumulated_pct",
+        "score_breakdown",
+    )
+    tuples = [tuple(r[c] for c in cols) + (r.get("excluded", 0),) if isinstance(r, dict) else r for r in rows]
     conn = sqlite3.connect(":memory:")
     conn.execute("""
         CREATE TABLE recommendations (
@@ -42,9 +49,18 @@ def _mk_db(rows):
 
 def _row(date, sym, pct_rec, nd, category="momentum", accum=None, sb="{}"):
     """dict 形状的推荐行（与 load_rows 输出一致）。"""
-    return {"date": date, "time": "13:00", "symbol": sym, "name": "T",
-            "category": category, "score": 50.0, "percent": pct_rec,
-            "next_day_pct": nd, "accumulated_pct": accum, "score_breakdown": sb}
+    return {
+        "date": date,
+        "time": "13:00",
+        "symbol": sym,
+        "name": "T",
+        "category": category,
+        "score": 50.0,
+        "percent": pct_rec,
+        "next_day_pct": nd,
+        "accumulated_pct": accum,
+        "score_breakdown": sb,
+    }
 
 
 class TestWalkforwardWindows:
@@ -100,29 +116,33 @@ class TestEvaluateFactor:
             rows.append(_row("2026-01-06", f"D{i:03d}", 1.0, 10.0))
         train = {"2026-01-01"}
         test = {"2026-01-06"}
-        r = evaluate_factor("rev", rows, lambda e: e["symbol"][0] in "AC",
-                            train, test, threshold=7.0)
+        r = evaluate_factor("rev", rows, lambda e: e["symbol"][0] in "AC", train, test, threshold=7.0)
         assert r["flip"] is True
         assert r["train_delta"] > 0 and r["test_delta"] < 0
 
     def test_small_sample_guarded(self):
         rows = [_row("2026-01-01", "S001", 1.0, 10.0)]
-        r = evaluate_factor("tiny", rows, lambda e: True,
-                            {"2026-01-01"}, {"2026-01-01"}, threshold=7.0)
+        r = evaluate_factor("tiny", rows, lambda e: True, {"2026-01-01"}, {"2026-01-01"}, threshold=7.0)
         assert "样本不足" in r["note"] and r["flip"] is False
 
 
 class TestRun:
     def test_end_to_end_structure_and_tier_keys(self):
         rows = []
-        for d in range(1, 9):  # 8 个交易日 → train=4/test=2 → 2 个窗口
+        # M1.3 embargo=1：9 个交易日 → train=4/test=2 → 2 个窗口（test 首日跳过
+        # train 末日 +1：02-05 被空窗，test 从 02-06 起）
+        for d in range(1, 10):
             date = f"2026-02-{d:02d}"
-            rows.append(_row(date, f"S{d:03d}", 1.0, 10.0 if d % 2 else 0.0,
-                             category="rebound" if d % 3 == 0 else "momentum"))
+            rows.append(
+                _row(date, f"S{d:03d}", 1.0, 10.0 if d % 2 else 0.0, category="rebound" if d % 3 == 0 else "momentum")
+            )
         conn = _mk_db(rows)
         result = run(conn, train_days=4, test_days=2)
-        assert result["total"] == 8
+        assert result["total"] == 9
         assert len(result["windows"]) == 2
+        # embargo 空窗：test 窗从 train 末日 +2 开始（02-05 被跳过）
+        assert "2026-02-01~2026-02-04" in result["windows"][0]
+        assert "2026-02-06~2026-02-07" in result["windows"][0]
         assert {f["factor"] for f in result["factors"]} >= {"rebound 类别", "🎯 完整画像"}
         for tw in result["tier_windows"]:
             assert set(tw["tiers"].keys()) == {0, 1, 2, 3}
@@ -138,7 +158,7 @@ class TestRun:
         loaded = load_rows(conn)
         syms = [r["symbol"] for r in loaded]
         assert syms.count("S1") == 1  # 同票同日去重
-        assert "S3" not in syms       # excluded=1 不参与
+        assert "S3" not in syms  # excluded=1 不参与
 
     def test_render_contains_verdicts(self):
         rows = []

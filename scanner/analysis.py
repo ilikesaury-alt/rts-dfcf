@@ -645,7 +645,9 @@ def analyze_momentum(
         return None
 
     score = 0
-    dims: dict[str, int | float] = {}
+    # 无注解重赋值：与上方 launch 分支的 dims 同名但处于不同分支（mypy no-redef 规避，
+    # 类型由首处赋值推导，2026-09-05 类型收敛）
+    dims = {}
     dims["accumulated_incl_today"] = round(accum_incl_today, 2)
 
     if today_pct > MAX_MOMENTUM_TODAY_PCT:

@@ -32,9 +32,11 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sqlite3
 import sys
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 
@@ -43,9 +45,13 @@ from scanner.models import parse_score_breakdown
 from scanner.trading_session import _nth_trading_day_after
 from scanner.utils import clear_screen
 
-# Windows GBK 控制台无法编码 ‱ 等字符，统一走 UTF-8（项目其它入口同款处理）
+# Windows GBK 控制台无法编码 ‱ 等字符，统一走 UTF-8（项目其它入口同款处理）。
+# getattr 模式（2026-09-05 类型收敛）：sys.stdout 静态类型是 TextIO（无 reconfigure
+# 属性），运行时的 TextIOWrapper 才有；非控制台场景静默跳过（与 unified_scanner 同款）。
 if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8")
+    _reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(_reconfigure):
+        _reconfigure(encoding="utf-8")
 
 
 # 当前有效策略类别（过滤已废弃的 old_face / early_momentum）。
@@ -208,8 +214,7 @@ def backfill_rejection_outcomes(
     if since_days > 0:
         cutoff = (now_beijing() - timedelta(days=since_days)).date().isoformat()
         rows = conn.execute(
-            "SELECT rowid, symbol, date, next_day_pct, fwd_3d, nd10_pct "
-            "FROM scan_rejections WHERE date >= ?",
+            "SELECT rowid, symbol, date, next_day_pct, fwd_3d, nd10_pct FROM scan_rejections WHERE date >= ?",
             (cutoff,),
         ).fetchall()
     else:
@@ -247,11 +252,13 @@ def backfill_rejection_outcomes(
     return updated
 
 
-def spearman(values: list[float], returns: list[float]) -> float | None:
+def spearman(values: Sequence[float], returns: list[float]) -> float | None:
     """Rank IC（Spearman 秩相关）：values 与 returns 的秩 Pearson 系数。
 
     2026-08-20 收敛单源：ic_attribution / nextday_attribution 此前各抄一份等价实现，
     tie 处理规则不同（1e-9 容差 vs 严格相等）导致浮点近邻分数算出不同 IC。统一到此。
+    values 用 Sequence（协变，2026-09-05 类型收敛）：调用方传 list[int]
+    （recommendations.score 为 int）可直接接受，无需逐点转换。
     """
     if len(values) < 5 or len(values) != len(returns):
         return None
@@ -269,7 +276,7 @@ def spearman(values: list[float], returns: list[float]) -> float | None:
     return cov / (var_v * var_r)
 
 
-def _rank(xs: list[float]) -> list[float]:
+def _rank(xs: Sequence[float]) -> list[float]:
     # 标准秩：相等值取平均秩（tie-averaging），避免并列时 rank-IC 偏置
     # 浮点判等改用 1e-9 阈值，避免浮点累加误差让本应并列的分数分到不同秩
     order = sorted(range(len(xs)), key=lambda i: xs[i])
@@ -455,8 +462,7 @@ def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct", days: i
     metric = _check_metric(metric)
     # 用 Beijing UTC+8 计算截止日，避免服务器本地时区导致日期偏移
     # 样本口径统一：excluded=0 + 同票同日取最后一轮（详见 load_attribution_rows）
-    rows = load_attribution_rows(conn, metric, cols="score_breakdown",
-                                 days=days, require_breakdown=True)
+    rows = load_attribution_rows(conn, metric, cols="score_breakdown", days=days, require_breakdown=True)
 
     # dim -> (list_of_dim_value, list_of_return)
     dim_vals: dict[str, list[float]] = defaultdict(list)
@@ -469,8 +475,11 @@ def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct", days: i
                 continue
             if not isinstance(val, (int, float)):
                 continue
-            dim_vals[dim].append(float(val))
-            dim_rets[dim].append(float(ret))
+            if not isinstance(ret, (int, float)):
+                continue  # 收益列脏值防御（SQL 已过滤 IS NOT NULL，理论不可达）
+            # +0.0 转换（isinstance 已守卫 int/float，无需 float() 调用）
+            dim_vals[dim].append(val + 0.0)
+            dim_rets[dim].append(ret + 0.0)
 
     results: list[DimensionIC] = []
     for dim, vals in dim_vals.items():
@@ -480,8 +489,8 @@ def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct", days: i
         pos_rets = [dim_rets[dim][i] for i in range(len(vals)) if vals[i] > 0]
         # 浮点判等改用阈值，避免累加误差使 zero_rets 恒为空
         zero_rets = [dim_rets[dim][i] for i in range(len(vals)) if abs(vals[i]) < 1e-9]
-        avg_pos = sum(pos_rets) / len(pos_rets) if pos_rets else float("nan")
-        avg_zero = sum(zero_rets) / len(zero_rets) if zero_rets else float("nan")
+        avg_pos = sum(pos_rets) / len(pos_rets) if pos_rets else math.nan
+        avg_zero = sum(zero_rets) / len(zero_rets) if zero_rets else math.nan
         results.append(
             DimensionIC(
                 dimension=dim,
@@ -563,10 +572,11 @@ def print_ranking_report(conn: sqlite3.Connection, metric: str = "next_day_pct",
     full_map = {s.category: s for s in full}
     recent_map = {s.category: s for s in recent}
 
-    current_order = sorted(CAT_DISPLAY_PRIORITY, key=CAT_DISPLAY_PRIORITY.get)
+    current_order = sorted(CAT_DISPLAY_PRIORITY, key=lambda c: CAT_DISPLAY_PRIORITY[c])
 
-    def _pick(cat: str) -> RankCategoryStat:
-        # 近期样本足够用近期；否则用全期；再否则用近期并打标
+    def _pick(cat: str) -> RankCategoryStat | None:
+        # 近期样本足够用近期；否则用全期；再否则用近期并打标（两者都缺返回 None，
+        # 调用方已判 None；2026-09-05 类型收敛：原注解漏掉 None 分支）
         if cat in recent_map and recent_map[cat].count >= RANK_MIN_SAMPLE:
             return recent_map[cat]
         if cat in full_map and full_map[cat].count >= RANK_MIN_SAMPLE:

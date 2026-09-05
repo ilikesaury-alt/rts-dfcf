@@ -76,8 +76,14 @@ def _update_excluded_marks(conn: sqlite3.Connection, today: str, excluded_by_ris
     NOT IN ('comeback','core_dip') 守卫，置回侧同类防线。
     """
     if excluded_by_risk:
+        # 类别守卫（2026-09-05 审查修复）：置 1 侧原按 (date,symbol) 全量排除——同 symbol
+        # 当日早先落库的 comeback/core_dip 行（本轮回马枪未重建候选，如评估失败或
+        # 变体未触发）会被 v1 候选的硬过滤连带排除，违反「回马枪/核心低吸不参与
+        # v1 硬过滤连带」的设计语义（mark_reversed 2026-08-17 已加同款守卫，
+        # d3c519b 只补了置回侧，置 1 侧同族遗漏）。
         conn.executemany(
-            "UPDATE recommendations SET excluded=1, excluded_reason=? WHERE date=? AND symbol=?",
+            "UPDATE recommendations SET excluded=1, excluded_reason=? WHERE date=? AND symbol=? "
+            "AND COALESCE(category, '') NOT IN ('comeback', 'core_dip')",
             [(c.excluded_reason, today, c.stock.symbol) for c in excluded_by_risk],
         )
     passed_syms = [(today, c.stock.symbol, c.category) for c in all_candidates]

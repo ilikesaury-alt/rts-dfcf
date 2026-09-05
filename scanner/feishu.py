@@ -283,20 +283,32 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
     sections: list[tuple[str, list[str]]] = []
     # 决策层置顶（2026-09-04）：≤3 只短名单或空仓原因，卡片第一区块——
     # 与终端 render_decision 同源（view.decision_lines），先看决策再看观察池。
-    # getattr 容错：测试桩/旧视图对象可能没有该字段（dataclass 默认 None 之外的构造方）
-    if getattr(view, "decision_lines", None):
-        elements.append({
-            "tag": "div",
-            "text": {"tag": "lark_md", "content": "**" + view.decision_lines[0] + "**\n"
-                     + "\n".join(view.decision_lines[1:])},
-        })
+    # getattr 容错：测试桩/旧视图对象可能没有该字段（dataclass 默认 None 之外的构造方）。
+    # 局部变量中转（2026-09-05 类型收敛）：mypy 无法穿过 getattr 收窄属性访问，
+    # 直接 view.decision_lines[0] 会报 index 误报；局部变量保留真值语义不变。
+    decision_lines = getattr(view, "decision_lines", None)
+    if decision_lines:
+        elements.append(
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": "**" + decision_lines[0] + "**\n" + "\n".join(decision_lines[1:]),
+                },
+            }
+        )
     # 终选参考区（2026-09-04）：v1+v2 合池档0画像终选，紧跟决策层（终端同源同序）。
-    if getattr(view, "final_pick_lines", None):
-        elements.append({
-            "tag": "div",
-            "text": {"tag": "lark_md", "content": "**" + view.final_pick_lines[0] + "**\n"
-                     + "\n".join(view.final_pick_lines[1:])},
-        })
+    final_pick_lines = getattr(view, "final_pick_lines", None)
+    if final_pick_lines:
+        elements.append(
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": "**" + final_pick_lines[0] + "**\n" + "\n".join(final_pick_lines[1:]),
+                },
+            }
+        )
     pool_lines = [
         _row_line(row.entry, view, rank=row.rank, accum=row.accum, score=_to_score(row.score)) for row in main
     ]

@@ -8,6 +8,7 @@
 进程内再叠加短 TTL 缓存，避免同一轮扫描重复读 DB。
 本模块只影响展示，不参与任何打分逻辑。
 """
+
 import logging
 import threading
 import time
@@ -153,8 +154,7 @@ def _collect_concepts(conn, symbols: list[str]) -> dict[str, list[str]]:
     return result
 
 
-def _driving_for(sym: str, concepts_map: dict[str, list[str]],
-                 board_members: dict[str, list[float]]) -> str:
+def _driving_for(sym: str, concepts_map: dict[str, list[str]], board_members: dict[str, list[float]]) -> str:
     """选个股的「推动概念」：今日飙升成员最多且成员涨幅最强的概念。
 
     评分 = 成员数 × (1 + 平均涨幅/10)，同时奖励"参与度"与"上涨强度"。
@@ -186,8 +186,10 @@ def compute_driving_concepts(conn, symbols: list[str], surge_pool: list) -> dict
     """
     pool_by_sym = {s.symbol: s for s in surge_pool}
     # 驱动计数需要全飙升池的概念归属，不只候选
-    all_syms = set(symbols) | set(pool_by_sym.keys())
-    concepts_map = _collect_concepts(conn, all_syms)
+    # （str() 收敛：surge_pool 无类型标注使 keys() 推导为 Any，直接并集会让
+    #  _collect_concepts 的 list[str] 形参报 arg-type，2026-09-05 类型收敛）
+    all_syms: set[str] = {str(x) for x in set(symbols) | set(pool_by_sym.keys())}
+    concepts_map = _collect_concepts(conn, list(all_syms))
 
     # board → 今日飙升成员涨幅列表
     board_members: dict[str, list[float]] = {}

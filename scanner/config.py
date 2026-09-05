@@ -833,6 +833,20 @@ NEXTDAY_ACCUM_MIN = 6.0
 # 原散落于 nextday_attribution.DEFAULT_THRESHOLD 与 scripts/*.py 各抄一份，
 # 2026-08-20 收敛到 config 单源（见 AGENTS.md「次日大涨归因」）。
 NEXTDAY_HIT_THRESHOLD = 7.0
+
+# walk-forward embargo（2026-09-05 M1.3）：train/test 窗间强制空出的交易日数。
+# next_day 标签 horizon=1（T 日推荐的标签依赖 T+1 行情）——不空窗时 test 首日
+# 样本的答案已被 train 窗「见过」，样本外 hit 被系统性高估。升级到多日持有
+# 标签（三重屏障）时应同步调大。
+WF_EMBARGO_DAYS = 1
+
+# ── 三重屏障标签（2026-09-05 M2，López de Prado Triple Barrier）──
+# 现有 next_day>=7% 是单一固定水平二元标签，不建模「先止损」路径。三重屏障
+# 输出 (label, touch_date, touch_pct, ret_at_horizon)：更贴近实盘交易决策
+# （止盈/止损/到期），供模型桶训练与持有期优化消费。旧标签链路全部不动。
+# 上屏障复用 NEXTDAY_HIT_THRESHOLD（与 next_day 靶点同源防漂移）。
+TB_STOP_LOSS_PCT = -5.0  # 下屏障：买入价（信号日收盘）下方止损线（%）
+TB_HORIZON_DAYS = 3  # 时间屏障：最多持有的交易日数（对齐 cum_3d 校准口径）
 # 小板块共振劣后的板块规模门槛（2026-08-17，档位4级）：板块共振整体 cum_3d -2.22 全场最差，
 # 但按规模分档差异大——cnt<5 hit 5.9%/均次日 -2.14%（最差，局部抱团次日兑现）、
 # cnt 5-14 hit 6.7%/-0.74、cnt>=15 hit 11.0%/+0.18（接近无共振 11.2%，大板块有持续资金）。
@@ -843,6 +857,33 @@ SECTOR_RESONANCE_WARN_MAX = 15
 # _nextday_entry_accum 回退链）≥50% 即使命中 🎯 也劣后档3（精选区校准 hit 最低区）。
 # 资金流出档位阈值复用上方 FUND_OUTFLOW_NET_PCT（与「资金流出」标签同源防漂移）。
 OVERHEAT_ACCUM_MAX = 50.0
+
+# ── 持有期口径分化（2026-09-05 M1.1，学术对照校准）──
+# 依据：Chen/Gao/He/Jiang/Xiong《Daily Price Limits and Destructive Market Behavior》
+# （深交所账户级数据，Princeton）：涨停类信号次日高开（集中在次日开盘价）、随后长期反转。
+# 推论：next_day 靶点类 1 日持有最优（次日兑现）；回测默认 hold 3 会把「次日兑现 +
+# 后续回吐」混进同一 P&L，与 next_day 校准的排序结论系统性背离。
+# 映射只收「信号校准于 cum_3d 语义」的类别：comeback（回踩买点是 3 日修复语义，
+# 见 ranking._entry_tier 注释）、core_dip（低吸，非次日靶点）。next_day 靶点类
+# （new_face/known_new_face/momentum/short_term/rebound/pool_pick）不在映射中，
+# 沿用 base。portfolio_backtest --hold-days-auto 消费；不开该开关时回测行为
+# 与历史完全一致（回归安全）。
+HOLD_DAYS_BY_CATEGORY: dict[str, int] = {"comeback": 3, "core_dip": 3}
+
+
+def hold_days_for(category: str, base: int) -> int:
+    """类别级持有期覆盖：next_day 靶点类用 base，cum_3d 语义类用映射值。"""
+    return HOLD_DAYS_BY_CATEGORY.get(category, base)
+
+
+# ── 复权漂移指纹监控（2026-09-05 M1.2）──
+# daily_kline 存雪球前复权（qfq）价，除权事件会静默重算全部历史 → 回测/rescore
+# 跨期不可复现、accumulated_pct/🎯 门槛失真。收盘定稿后对锚定历史窗口做 SHA256
+# 指纹比对，漂移即告警（scanner/kline_drift.py，unified_scanner 非交易分支调用）。
+KLINE_DRIFT_FINGERPRINT_BARS = 250  # 指纹窗口覆盖的交易日数（约一年，上限）
+KLINE_DRIFT_MIN_BARS = 30  # 初始化最低历史：不足则不锚定；可用历史在 [30,250) 时取全量锚定
+KLINE_DRIFT_ROUND_DP = 4  # 价格哈希保留小数位（防浮点噪声误报）
+
 # ── 蓄势突破观察画像（2026-08-21 新增，纯展示层 ⚡ 标记，不参与排序/评分/落库）──
 # 来源：历史涨停复盘（全库去重 1453 条推荐，「推荐后当日封板」20 只 vs 全部推荐对照）：
 # 涨停票共性 = new_face/kNF 或首推(61%) + 前5日横盘(累计中位 +2.0% vs 对照 +4.1%) +

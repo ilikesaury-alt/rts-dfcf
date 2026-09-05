@@ -54,7 +54,13 @@ from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 
 from scanner.categories import PORTFOLIO_CATEGORIES, SCORE_DESCENDING_BY_CAT
-from scanner.config import DB_PATH, NEXTDAY_RULE_ATRPCT_MIN, NEXTDAY_RULE_MA5R_MIN, NEXTDAY_RULE_RET20_MAX
+from scanner.config import (
+    DB_PATH,
+    NEXTDAY_RULE_ATRPCT_MIN,
+    NEXTDAY_RULE_MA5R_MIN,
+    NEXTDAY_RULE_RET20_MAX,
+    hold_days_for,
+)
 from scanner.models import KlineBar, parse_score_breakdown
 from scanner.nextday_rule import _compute_features
 from scanner.trading_session import _nth_trading_day_after, is_trading_day
@@ -62,10 +68,16 @@ from scanner.utils import clear_screen
 
 logger = logging.getLogger(__name__)
 
-# Windows GBK 控制台无法编码 ‱/🎯 等字符，统一走 UTF-8（项目其它入口同款处理）
+# Windows GBK 控制台无法编码 ‱/🎯 等字符，统一走 UTF-8（项目其它入口同款处理）。
+# getattr 模式：sys.stdout 静态类型是 TextIO（无 reconfigure 属性），运行时的
+# TextIOWrapper 才有；非控制台场景（重定向/pty）静默跳过（与 unified_scanner 同款）。
 if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")  # parser.error 走 stderr，防中文提示乱码
+    _reconfigure_out = getattr(sys.stdout, "reconfigure", None)
+    if callable(_reconfigure_out):
+        _reconfigure_out(encoding="utf-8")
+    _reconfigure_err = getattr(sys.stderr, "reconfigure", None)
+    if callable(_reconfigure_err):
+        _reconfigure_err(encoding="utf-8")  # parser.error 走 stderr，防中文提示乱码
 
 
 # 热度放大器组件键（与 enhancer.HEAT_AMPLIFIER_BONUS_ATTRS 对应）：在 score_breakdown(JSON)
@@ -114,6 +126,9 @@ class PBConfig:
     # （recommendations 存的是旧权重冻结分，改 config 不 retrospective
     # 生效，必须用 appearances+daily_kline 重跑引擎；comeback 除外）
     use_nextday_rule: bool = False  # True=仅买入通过次日大涨规则（ma5r≥5% & atrpct≥8% & ret20≤40%）的信号
+    hold_days_auto: bool = False  # True=启用类别级持有期（M1.1）：cum_3d 语义类
+    # （comeback/core_dip）按 config.HOLD_DAYS_BY_CATEGORY 覆盖，
+    # next_day 靶点类沿用 hold_days 基准；False=全部类别统一 hold_days（历史行为）
 
 
 @dataclass
@@ -246,7 +261,12 @@ def _deheat_score(raw_score: int, breakdown_json: str | None, source: str | None
     for key in HEAT_BONUS_KEYS:
         v = dims.get(key)
         if isinstance(v, (int, float)):
-            total -= int(v)
+            try:
+                # int(float) 对 NaN/inf 会抛 ValueError/OverflowError（脏 breakdown 防御），
+                # 回退保留原分（与“无法解析 breakdown 时回退原始分”同语义）
+                total -= int(v)
+            except (ValueError, OverflowError):
+                continue
     return total
 
 
@@ -303,7 +323,10 @@ def _load_signals(
             continue  # 买入日不在交易日历内（行情缺口），跳过
         sig.buy_date = buy_str
         sig.buy_index = cal_index[buy_str]
-        exit_idx = sig.buy_index + cfg.hold_days
+        # M1.1 持有期口径分化：--hold-days-auto 时按类别覆盖（学术依据见 config 注释：
+        # 涨停类信号次日高开随后反转，next_day 靶点类不应与 3 日 P&L 混算）
+        hold = hold_days_for(cat, cfg.hold_days) if cfg.hold_days_auto else cfg.hold_days
+        exit_idx = sig.buy_index + hold
         if exit_idx >= len(calendar):
             exit_idx = len(calendar) - 1
         if exit_idx <= sig.buy_index:
@@ -370,14 +393,14 @@ def _filter_nextday_rule(conn: sqlite3.Connection, signals: list[Signal]) -> lis
     if rec_dates:
         placeholders = ",".join("?" for _ in rec_dates)
         rows = conn.execute(
-            f"SELECT symbol, date, open, high, low, close, volume FROM daily_kline "  # noqa: S608
+            f"SELECT symbol, date, open, high, low, close, volume, percent FROM daily_kline "  # noqa: S608
             f"WHERE date IN ({placeholders}) ORDER BY symbol, date",
             rec_dates,
         ).fetchall()
         # 按 symbol 分组
         by_sym: dict[str, list[KlineBar]] = {}
-        for sym, dt, o, h, lo, c, v in rows:
-            bar: KlineBar = {"date": dt, "open": o, "high": h, "low": lo, "close": c, "volume": v}
+        for sym, dt, o, h, lo, c, v, pct in rows:
+            bar: KlineBar = {"date": dt, "open": o, "high": h, "low": lo, "close": c, "volume": v, "percent": pct}
             by_sym.setdefault(sym, []).append(bar)
         kline_cache = by_sym
     # 对每个 (rec_date, symbol) 评估规则
@@ -539,12 +562,14 @@ def run_backtest(conn: sqlite3.Connection, cfg: PBConfig) -> BacktestResult:
         for pos in positions:
             if i >= pos.exit_index:
                 pd = prices.get(pos.symbol, {})
-                close_p = pd[today][1] if today in pd else last_close.get(pos.symbol)
-                if close_p is None or close_p <= 0:
+                # 新变量名（勿复用买入分支的 close_p：同作用域 float → float|None 重注解
+                # 触发 no-redef；卖出价语义独立，顺带可读性更好）
+                exit_close: float | None = pd[today][1] if today in pd else last_close.get(pos.symbol)
+                if exit_close is None or exit_close <= 0:
                     # 卖出日无收盘数据：继续持有（下一日再尝试），不强行平仓
                     still_open.append(pos)
                     continue
-                sell_notional = pos.shares * close_p * (1 - cfg.slippage)
+                sell_notional = pos.shares * exit_close * (1 - cfg.slippage)
                 proceeds = _sell_proceeds(sell_notional, cfg)
                 cash += proceeds
                 ret = proceeds / pos.entry_cost - 1.0
@@ -557,12 +582,12 @@ def run_backtest(conn: sqlite3.Connection, cfg: PBConfig) -> BacktestResult:
                         buy_date=pos.entry_date,
                         buy_price=pos.entry_open,
                         sell_date=today,
-                        sell_price=close_p,
+                        sell_price=exit_close,
                         hold_days=i - pos.entry_index,
                         ret_pct=ret,
                     )
                 )
-                last_close[pos.symbol] = close_p
+                last_close[pos.symbol] = exit_close
                 last_active_idx = i
             else:
                 still_open.append(pos)
@@ -574,23 +599,27 @@ def run_backtest(conn: sqlite3.Connection, cfg: PBConfig) -> BacktestResult:
         equity = cash
         for pos in positions:
             pd = prices.get(pos.symbol, {})
-            if today in pd:
-                cp = pd[today][1]
-                last_close[pos.symbol] = cp
-            else:
-                cp = last_close.get(pos.symbol)
+            # 单点定义：今日有行情用今日收盘，否则向前填充（float|None 收窄由下方 is not None 承担）
+            cp = pd[today][1] if today in pd else None
             if cp is not None:
+                last_close[pos.symbol] = cp
                 equity += pos.shares * cp
+            else:
+                cp_prev = last_close.get(pos.symbol)
+                if cp_prev is not None:
+                    equity += pos.shares * cp_prev
         nav.append((today, equity))
         cash_series.append(cash)
 
     result.nav = nav
-    # 活跃窗口：首个买入日 → 末个卖出/持仓日；剔除空仓期初/期末平值，避免稀释年化与总收益
-    s = 0 if first_active_idx is None else first_active_idx
-    e = (len(nav) - 1) if last_active_idx is None else last_active_idx
-    result.active_start = s
-    result.active_end = e
-    result.metrics = _compute_metrics(nav[s : e + 1], result.trades, cfg, cash_series[s : e + 1])
+    # 活跃窗口：首个买入日 → 末个卖出/持仓日；剔除空仓期初/期末平值，避免稀释年化与总收益。
+    # 切片变量用 a0/a1（勿用 s：函数上方 `for s in signals` 已把 s 绑定为 Signal，
+    # 同作用域重用触发 assignment/index 类型混乱）。
+    a0 = 0 if first_active_idx is None else first_active_idx
+    a1 = (len(nav) - 1) if last_active_idx is None else last_active_idx
+    result.active_start = a0
+    result.active_end = a1
+    result.metrics = _compute_metrics(nav[a0 : a1 + 1], result.trades, cfg, cash_series[a0 : a1 + 1])
     return result
 
 
@@ -725,15 +754,19 @@ def export_nav(result: BacktestResult, path: str) -> None:
     nav_slice = result.nav[s : e + 1]
     values = [v for _, v in nav_slice]
     peak = values[0]
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(["date", "equity", "daily_return", "drawdown"])
-        for i, (d, v) in enumerate(nav_slice):
-            dr = (v / values[i - 1] - 1.0) if i > 0 else 0.0
-            if v > peak:
-                peak = v
-            dd = v / peak - 1.0
-            w.writerow([d, f"{v:.2f}", f"{dr * 100:.4f}", f"{dd * 100:.4f}"])
+    try:
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["date", "equity", "daily_return", "drawdown"])
+            for i, (d, v) in enumerate(nav_slice):
+                dr = (v / values[i - 1] - 1.0) if i > 0 else 0.0
+                if v > peak:
+                    peak = v
+                dd = v / peak - 1.0
+                w.writerow([d, f"{v:.2f}", f"{dr * 100:.4f}", f"{dd * 100:.4f}"])
+    except OSError as e:
+        print(f"  [!] NAV 导出失败（路径不可写）: {e}")
+        return
     print(f"[导出] NAV 序列(活跃窗口)已写入 {path}")
 
 
@@ -780,6 +813,18 @@ def main() -> None:
         action="store_true",
         help="仅买入通过次日大涨规则（ma5r≥5%% & atrpct≥8%% & ret20≤40%%）的信号",
     )
+    parser.add_argument(
+        "--hold-days-auto",
+        action="store_true",
+        help="类别级持有期（M1.1）：cum_3d 语义类（comeback/core_dip）按 "
+        "config.HOLD_DAYS_BY_CATEGORY 覆盖，next_day 靶点类沿用 --hold-days 基准",
+    )
+    parser.add_argument(
+        "--compare-horizons",
+        default=None,
+        help='持有期对比：逗号分隔多个 hold_days（如 "1,3"），逐个跑 --compare 全套 '
+        "并输出对比表（口径分化验证：next_day 靶点 hold1 vs cum 对照 hold3）",
+    )
     parser.add_argument("--export", default=None, help="导出 NAV 序列 CSV 路径")
     args = parser.parse_args()
 
@@ -811,31 +856,49 @@ def main() -> None:
         slippage=args.slippage,
         rescore=args.rescore,
         use_nextday_rule=args.use_nextday_rule,
+        hold_days_auto=args.hold_days_auto,
     )
 
-    if args.compare:
+    def _build_compare_results(hold_cfg: PBConfig) -> tuple[list[BacktestResult], BacktestResult]:
         results: list[BacktestResult] = []
         # 基准（无筛选）
-        bench = _run_one(conn, replace(base_cfg, no_skill=True, category=None))
-        results.append(bench)
+        results.append(_run_one(conn, replace(hold_cfg, no_skill=True, category=None)))
         # 综合（去热度分，默认=Step 1 生效后的排序）
-        combined = _run_one(conn, replace(base_cfg, category=None, deheat=True, rescore=False))
+        combined = _run_one(conn, replace(hold_cfg, category=None, deheat=True, rescore=False))
         results.append(combined)
         # 综合（含热度，对照：仅对旧 score 做百分位归一，未去热度）
-        combined_heat = _run_one(conn, replace(base_cfg, category=None, deheat=False, rescore=False))
-        results.append(combined_heat)
+        results.append(_run_one(conn, replace(hold_cfg, category=None, deheat=False, rescore=False)))
         # 综合（重扫全类别）：权重改动的 P&L 验证列（仅 --rescore 时显示）
         if args.rescore:
-            combined_rescored = _run_one(conn, replace(base_cfg, category=None, rescore=True))
-            results.append(combined_rescored)
+            results.append(_run_one(conn, replace(hold_cfg, category=None, rescore=True)))
         # 各现役类别
         for cat in sorted(PORTFOLIO_CATEGORIES):
-            r = _run_one(conn, replace(base_cfg, category=cat))
-            results.append(r)
-        for r in results:
-            print_report(r)
-        print_comparison(results)
-        if args.export:
+            results.append(_run_one(conn, replace(hold_cfg, category=cat)))
+        return results, combined
+
+    if args.compare or args.compare_horizons:
+        # M1.1 持有期口径对比：--compare-horizons "1,3" 逐个持有期跑全套 --compare，
+        # 分段标题区分；单个 hold 时不打标题（与历史输出一致）
+        if args.compare_horizons:
+            try:
+                horizons = [int(x) for x in args.compare_horizons.split(",") if x.strip()]
+            except ValueError as e:
+                parser.error(f'--compare-horizons 非法值: {e}（期望逗号分隔的正整数，如 "1,3"）')
+        else:
+            horizons = [base_cfg.hold_days]
+        if any(h <= 0 for h in horizons):
+            parser.error("--compare-horizons 持有期必须为正整数")
+        combined: BacktestResult | None = None
+        for h in horizons:
+            hold_cfg = replace(base_cfg, hold_days=h)
+            if args.compare_horizons:
+                print(f"\n{'#' * 30}  持有期 {h} 个交易日  {'#' * 30}")
+            results, combined_h = _build_compare_results(hold_cfg)
+            for r in results:
+                print_report(r)
+            print_comparison(results)
+            combined = combined_h
+        if args.export and combined is not None:
             export_nav(combined, args.export)
     else:
         cfg = replace(base_cfg, category=args.category)

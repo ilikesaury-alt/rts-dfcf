@@ -22,7 +22,7 @@ import argparse
 import json
 import sys
 
-from scanner.config import NEXTDAY_HIT_THRESHOLD
+from scanner.config import NEXTDAY_HIT_THRESHOLD, WF_EMBARGO_DAYS
 from scanner.ranking import _entry_dims, _entry_tier, _is_nextday_marked
 
 # 方向翻转判定的最小样本：因子行数与基线行数各自达标才比较 delta，
@@ -48,17 +48,25 @@ def load_rows(conn) -> list[dict]:
     return sorted(dedup.values(), key=lambda x: (x["date"], x["time"]))
 
 
-def walkforward_windows(dates: list[str], train_days: int, test_days: int) -> list[tuple[list[str], list[str]]]:
+def walkforward_windows(
+    dates: list[str], train_days: int, test_days: int, embargo_days: int = 0
+) -> list[tuple[list[str], list[str]]]:
     """按交易日列表切滚动窗口：[(train_dates, test_dates), ...]。
 
     步长 = test_days（相邻 test 窗口无缝衔接）；要求 train 与 test 不重叠且
-    train 在前。数据不足一个完整窗口即停止。
+    train 在前。
+
+    embargo_days（M1.3，2026-09-05）：train 末与 test 首之间强制空出的交易日数，
+    防标签泄漏——next_day 标签 horizon=1（T 日推荐的标签依赖 T+1 行情），
+    不空窗时 test 首日样本的标签与 train 末日的「未来」重叠，train 实际见过
+    test 首日的答案，样本外 hit 被系统性高估。默认 0=旧行为（无缝，既有测试
+    兼容）；run() 传 config.WF_EMBARGO_DAYS。
     """
     unique = sorted(set(dates))
     out = []
     i = train_days
-    while i + test_days <= len(unique):
-        out.append((unique[i - train_days : i], unique[i : i + test_days]))
+    while i + embargo_days + test_days <= len(unique):
+        out.append((unique[i - train_days : i], unique[i + embargo_days : i + embargo_days + test_days]))
         i += test_days
     return out
 
@@ -97,7 +105,9 @@ def evaluate_factor(
         "flip": False,
         "note": "",
     }
-    if None in (f_tr, f_te, base_tr, base_te):
+    if None in (f_tr, f_te, base_tr, base_te) or f_tr is None or f_te is None or base_tr is None or base_te is None:
+        # 显式 None 检查（2026-09-05 类型收敛）：`None in tuple` 语义等价但 mypy
+        # 无法收窄，下方减法会报 operator 误报；运行时行为不变。
         result["note"] = "样本不足"
         return result
     d_tr = f_tr - base_tr
@@ -149,6 +159,7 @@ def build_factors() -> list[tuple[str, object]]:
     滚动检验最核心的 4 条结论（弱转强/超买/小板块共振/资金流出）等于从未被测过。
     现全部谓词统一经 `_entry(e)` 解析（该函数已幂等，重复包裹安全）。
     """
+
     # 统一入口：谓词一律先转 _entry（解析 score_breakdown），再取维度。
     def dims_of(e):
         return _entry_dims(_entry(e))
@@ -207,7 +218,7 @@ def run(conn, train_days: int = 30, test_days: int = 10, threshold: float | None
     rows = load_rows(conn)
     if not rows:
         return {"windows": [], "factors": [], "tier_windows": [], "note": "无可评估数据"}
-    windows = walkforward_windows([r["date"] for r in rows], train_days, test_days)
+    windows = walkforward_windows([r["date"] for r in rows], train_days, test_days, embargo_days=WF_EMBARGO_DAYS)
     factors = build_factors()
 
     factor_results: list[dict] = []
@@ -303,7 +314,11 @@ def main():
     args = ap.parse_args()
 
     if sys.platform == "win32":
-        sys.stdout.reconfigure(encoding="utf-8")
+        # getattr 模式（2026-09-05 类型收敛，与 unified_scanner 同款）：
+        # TextIO 静态类型无 reconfigure，运行时 TextIOWrapper 才有
+        _reconfigure = getattr(sys.stdout, "reconfigure", None)
+        if callable(_reconfigure):
+            _reconfigure(encoding="utf-8")
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     result = run(conn, train_days=args.train, test_days=args.test, threshold=args.threshold)
