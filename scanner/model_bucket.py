@@ -61,11 +61,41 @@ TEST_DAYS = 10
 TOP_FRAC = 0.2  # 头部命中率分位
 
 
+def _load_join_features(conn: sqlite3.Connection) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """加载可回溯的关联特征源（表缺失时 fail-open 返回空，不阻断训练）。
+
+    - rank：appearances 按票按日的榜单排名（历史样本也有 → 立即可用）
+    - index_pct / index_cum5：market_index_log 的当日大盘涨幅与 5 日累计
+      （与 decision.market_gate 同口径：近 5 条记录求和）
+    """
+    try:
+        rank_rows = conn.execute(
+            "SELECT date, symbol, MAX(rank) AS rank FROM appearances GROUP BY date, symbol"
+        ).fetchall()
+        df_rank = pd.DataFrame(rank_rows, columns=["date", "symbol", "f_rank"])
+    except sqlite3.Error:
+        df_rank = pd.DataFrame(columns=["date", "symbol", "f_rank"])
+    try:
+        idx_rows = conn.execute(
+            "SELECT date, index_pct,"
+            " SUM(index_pct) OVER (ORDER BY date ROWS BETWEEN 4 PRECEDING AND CURRENT ROW) AS cum5"
+            " FROM market_index_log"
+        ).fetchall()
+        df_idx = pd.DataFrame(idx_rows, columns=["date", "f_index_pct", "f_index_cum5"])
+    except sqlite3.Error:
+        df_idx = pd.DataFrame(columns=["date", "f_index_pct", "f_index_cum5"])
+    return df_rank, df_idx
+
+
 def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
     """构建训练宽表。一行 = 一条三重屏障标签（已按 PK 去重）。
 
     score_breakdown 取该 (date,symbol,category) 最后一轮推荐（rowid 最大）——
     标签的买价口径锚定信号日，特征必须来自同一轮快照，取错轮 = 特征泄漏。
+
+    可回溯关联特征（f_ 前缀，M3 特征扩容 2026-09-06）：让**已有样本**立即吃到
+    新特征而无需等待重新落库——rank（appearances）/大盘（market_index_log）/
+    星期几（日期派生）。表缺失时 fail-open 跳过。
     """
     rows = conn.execute(
         """
@@ -102,9 +132,17 @@ def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
                 rec[f"d_{k}"] = v
         records.append(rec)
     df = pd.DataFrame(records)
+    if df.empty:
+        return df
     # 类别 one-hot（前缀 c_，防与维度键撞名）
-    if not df.empty:
-        df = pd.concat([df, pd.get_dummies(df["category"], prefix="c")], axis=1)
+    df = pd.concat([df, pd.get_dummies(df["category"], prefix="c")], axis=1)
+    # ── 可回溯关联特征（f_）──
+    df_rank, df_idx = _load_join_features(conn)
+    if not df_rank.empty:
+        df = df.merge(df_rank, on=["date", "symbol"], how="left")
+    if not df_idx.empty:
+        df = df.merge(df_idx, on=["date"], how="left")
+    df["f_dow"] = pd.to_datetime(df["date"]).dt.dayofweek
     return df
 
 
@@ -131,7 +169,7 @@ def run_walkforward(df: pd.DataFrame, train_days: int = TRAIN_DAYS, test_days: i
     """walkforward 训练评估。返回逐窗指标 + 汇总 + 特征重要性。"""
     dates = sorted(df["date"].unique())
     windows = walkforward_windows(list(dates), train_days, test_days, embargo_days=WF_EMBARGO_DAYS)
-    feature_cols = [c for c in df.columns if c.startswith(("d_", "c_", "rec_"))]
+    feature_cols = [c for c in df.columns if c.startswith(("d_", "c_", "rec_", "f_"))]
     results: list[dict] = []
     importances = np.zeros(len(feature_cols))
     n_models = 0
@@ -181,8 +219,7 @@ def run_walkforward(df: pd.DataFrame, train_days: int = TRAIN_DAYS, test_days: i
 
 def render(result: dict) -> str:
     lines = [
-        f"◆ v3 模型桶离线可行性（三重屏障 y=先触止盈；样本 {result['n_samples']}，"
-        f"训练 {result['n_models']} 窗）",
+        f"◆ v3 模型桶离线可行性（三重屏障 y=先触止盈；样本 {result['n_samples']}，训练 {result['n_models']} 窗）",
         f"  汇总：加权 AUC={result['pooled_auc']}  头部命中率(前20%)="
         f"{result['mean_top_hit']}  基准率={result['mean_base']}",
         "",
@@ -192,8 +229,7 @@ def render(result: dict) -> str:
         auc = f"{w['auc']:.3f}" if w["auc"] is not None else "—"
         lift = f"{w['lift']:.2f}x" if w["lift"] is not None else "—"
         lines.append(
-            f"  {w['test_range']:<26}{w['n_test']:>6}{w['base_rate']:>8.1%}"
-            f"{w['top_hit']:>9.1%}{lift:>7}{auc:>7}"
+            f"  {w['test_range']:<26}{w['n_test']:>6}{w['base_rate']:>8.1%}{w['top_hit']:>9.1%}{lift:>7}{auc:>7}"
         )
     lines.append("")
     lines.append("  特征重要性 Top12：" + "、".join(f"{k}({v})" for k, v in result["top_features"][:12]))

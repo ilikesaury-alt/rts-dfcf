@@ -356,8 +356,13 @@ def _detect_volume_price_divergence(c: Candidate, dims: dict) -> bool:
 def _apply_sector_bonus(c: Candidate, clusters: dict[str, list[str]]):
     sec = classify_sector(c.stock.name)
     c.sector = sec
+    cluster_count = len(clusters.get(sec, [])) if clusters else 0
+    # 原始计数落 dims（M3 特征扩容，2026-09-06）：模型需要连续值而非档位映射值，
+    # 且 ranking 档3 的「小板块共振 cnt<15」规则用的就是原始 count。恒写入
+    # （含 0/1），与 sector_bonus（档位映射，>=2 才非 0）形成连续+档位互补。
+    if c.kline:
+        c.kline.dimensions["sector_cluster_count"] = cluster_count
     if sec != "其他":
-        cluster_count = len(clusters.get(sec, []))
         if cluster_count >= 5:
             c.sector_bonus = SECTOR_CLUSTER_BONUS_5
         elif cluster_count >= 4:
@@ -572,6 +577,21 @@ def _record_dimensions(
         return
     c.kline.dimensions["sector_bonus"] = c.sector_bonus
     c.kline.dimensions["live_vol_bonus"] = c.live_vol_bonus
+    # 榜单/盘面原始连续值落 dims（M3 特征扩容，2026-09-06）：模型需要连续值，
+    # 档位 bonus（rank_top10 等）丢失了「第 11 名 vs 第 30 名」的梯度信息。
+    # rank/rank_change 是 vol_rank 与 short_term 排名维度的原始依据；
+    # turnover_rate 与 value 是换手/成交额维度的原始口径；
+    # market_cap（亿元）是小市值加分的原始依据。
+    if c.stock.rank:
+        c.kline.dimensions["rank"] = c.stock.rank
+    if c.stock.rank_change:
+        c.kline.dimensions["rank_change"] = c.stock.rank_change
+    if c.stock.turnover_rate:
+        c.kline.dimensions["turnover_rate_raw"] = round(c.stock.turnover_rate, 2)
+    if c.stock.value:
+        c.kline.dimensions["board_value"] = round(c.stock.value, 1)
+    if c.stock.market_cap:
+        c.kline.dimensions["stock_market_cap_yi"] = round(c.stock.market_cap, 2)
     if c.intraday_score is not None:
         c.kline.dimensions["intraday_score"] = round(c.intraday_score, 1)
     if c.market_cap_bonus != 0:
