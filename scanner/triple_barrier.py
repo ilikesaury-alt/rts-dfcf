@@ -175,12 +175,20 @@ def build_labels(conn: sqlite3.Connection, days: int = 0) -> tuple[int, int]:
 
 
 def print_report(conn: sqlite3.Connection) -> None:
-    """新旧标签一致性对比：next_day>=7% 旧标签 vs 三重屏障 label=+1。"""
+    """新旧标签一致性对比：next_day>=7% 旧标签 vs 三重屏障 label=+1。
+
+    JOIN 必须带 category 并取最后一轮（2026-09-06 修复）：双挂票/池选会让同一
+    (date,symbol) 存在多条不同 category 的推荐行，仅按 date+symbol 关联会把
+    每条标签复制 2~5 份（实测 1689 → 3746，虚高 2.2 倍）。
+    """
     rows = conn.execute(
         "SELECT t.category, t.label, t.ret_at_horizon, r.next_day_pct "
         "FROM triple_barrier_labels t JOIN recommendations r "
-        "ON r.date = t.date AND r.symbol = t.symbol "
-        "WHERE t.touch_date IS NOT NULL OR t.ret_at_horizon IS NOT NULL"
+        "ON r.date = t.date AND r.symbol = t.symbol AND r.category = t.category "
+        "WHERE (t.touch_date IS NOT NULL OR t.ret_at_horizon IS NOT NULL) "
+        "AND r.rowid = (SELECT MAX(r2.rowid) FROM recommendations r2 "
+        "               WHERE r2.date = t.date AND r2.symbol = t.symbol "
+        "                 AND r2.category = t.category)"
     ).fetchall()
     if not rows:
         print("  [!] triple_barrier_labels 为空（先跑 python -m scanner.triple_barrier 生成）")

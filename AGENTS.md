@@ -57,11 +57,15 @@ next_day 靶点不应与 3 日 P&L 混算）。
 
 ```
 python -m scanner.triple_barrier --report   # 三重屏障标签重建 + 新旧标签一致性（M2）
+python -m scanner.model_bucket              # v3 模型桶离线可行性（M3，walkforward LightGBM）
 ```
 
 - **triple_barrier_labels 表**（M2）：(止盈 +7% / 止损 -5% / 时间 3 日) 三屏障标注，
   样本口径与 load_attribution_rows 一致（excluded=0 + 同票同日取最后一轮）；
   幂等重建，旧 next_day 标签链路不动。
+- **model_bucket**（M3 第一步）：用已有标签 + score_breakdown 宽表离线训练 LightGBM
+  （原生 API，不依赖 sklearn；训练/验证窗带 embargo），输出 walkforward AUC/头部
+  提升度基线。小样本可行性验证——结论只用于「是否继续 M3」判断，非权重替换依据。
 - **kline_drift（M1.2，自动运行）**：unified_scanner 非交易分支每日对 daily_kline
   锚定窗口做价格 SHA256 指纹比对（雪球前复权价会被除权事件静默重算 → 回测/rescore
   跨期不可复现）；漂移即告警 + 写 logs/finalize.log（同一变更只告警一次）。

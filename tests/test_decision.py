@@ -25,6 +25,13 @@ def _db() -> sqlite3.Connection:
     return conn
 
 
+# 测试锚定日（2026-09-06 修复）：种子日期硬编码在此日，所有 build_decision_picks/
+# decision_lines/save_decision_picks 调用必须显式传 today=TODAY——这些函数默认取
+# 真实今日，时钟一走种子就失效（2026-09-05 实测 5 个测试随日期漂移失败，
+# 项目纪律「禁止依赖天真本地时钟」的测试版）。
+TODAY = "2026-09-04"
+
+
 def _seed_index(conn: sqlite3.Connection, days_pct: list[tuple[str, float]]) -> None:
     conn.executemany(
         "INSERT OR REPLACE INTO market_index_log (date, index_pct) VALUES (?, ?)", days_pct
@@ -98,7 +105,7 @@ def test_picks_category_prior_order_and_cap():
     _seed_rec(conn, "2026-09-04", "SZ300004", "rebound", 60, name="反弹乙")
     _seed_rec(conn, "2026-09-04", "SZ300005", "known_new_face", 50, name="老面孔")
     _seed_rec(conn, "2026-09-04", "SZ300006", "momentum", 99, name="动量禁入")
-    result = build_decision_picks(conn)
+    result = build_decision_picks(conn, today=TODAY)
     assert result["allowed"]
     syms = [p["symbol"] for p in result["picks"]]
     # 先验顺序：core_dip 配额 2（甲80/乙70）→ kNF(50)，rebound 被全局配额截掉
@@ -112,7 +119,7 @@ def test_picks_known_new_face_score_ascending():
     _seed_strong_day(conn)
     _seed_rec(conn, "2026-09-04", "SZ300001", "known_new_face", 90)
     _seed_rec(conn, "2026-09-04", "SZ300002", "known_new_face", 40)
-    result = build_decision_picks(conn)
+    result = build_decision_picks(conn, today=TODAY)
     assert [p["symbol"] for p in result["picks"]] == ["SZ300002"]
 
 
@@ -123,7 +130,7 @@ def test_picks_excluded_and_chase_filtered():
     _seed_rec(conn, "2026-09-04", "SZ300001", "core_dip", 90, excluded=1)
     _seed_rec(conn, "2026-09-04", "SZ300002", "core_dip", 80, percent=9.9)
     _seed_rec(conn, "2026-09-04", "SZ300003", "core_dip", 70, percent=5.0)
-    result = build_decision_picks(conn)
+    result = build_decision_picks(conn, today=TODAY)
     assert [p["symbol"] for p in result["picks"]] == ["SZ300003"]
 
 
@@ -150,9 +157,9 @@ def test_save_decision_picks_persists_gate_and_rows():
     )
     _seed_strong_day(conn)
     _seed_rec(conn, "2026-09-04", "SZ300001", "core_dip", 80, name="低吸甲")
-    result = build_decision_picks(conn)
-    save_decision_picks(conn, result)
-    save_decision_picks(conn, result)  # 幂等
+    result = build_decision_picks(conn, today=TODAY)
+    save_decision_picks(conn, result, today=TODAY)
+    save_decision_picks(conn, result, today=TODAY)  # 幂等
     rows = conn.execute(
         "SELECT symbol, category FROM decision_picks WHERE date='2026-09-04' ORDER BY symbol"
     ).fetchall()
@@ -184,7 +191,7 @@ def test_decision_lines_with_picks():
     )
     _seed_strong_day(conn)
     _seed_rec(conn, "2026-09-04", "SZ300001", "core_dip", 80, name="低吸甲")
-    lines = decision_lines(conn)
+    lines = decision_lines(conn, today=TODAY)
     assert any("1. SZ300001" in ln for ln in lines)
 
 
