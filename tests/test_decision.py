@@ -33,14 +33,20 @@ TODAY = "2026-09-04"
 
 
 def _seed_index(conn: sqlite3.Connection, days_pct: list[tuple[str, float]]) -> None:
-    conn.executemany(
-        "INSERT OR REPLACE INTO market_index_log (date, index_pct) VALUES (?, ?)", days_pct
-    )
+    conn.executemany("INSERT OR REPLACE INTO market_index_log (date, index_pct) VALUES (?, ?)", days_pct)
     conn.commit()
 
 
-def _seed_rec(conn: sqlite3.Connection, date: str, sym: str, cat: str, score: float,
-              percent: float = 3.0, name: str = "", excluded: int = 0) -> None:
+def _seed_rec(
+    conn: sqlite3.Connection,
+    date: str,
+    sym: str,
+    cat: str,
+    score: float,
+    percent: float = 3.0,
+    name: str = "",
+    excluded: int = 0,
+) -> None:
     conn.execute(
         "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, excluded)"
         " VALUES (?, '10:00:00', ?, ?, ?, ?, ?, ?)",
@@ -51,11 +57,11 @@ def _seed_rec(conn: sqlite3.Connection, date: str, sym: str, cat: str, score: fl
 
 # ── 市场门 ──
 
+
 def test_gate_closed_on_big_drop_day():
     """大跌日（指数 < 0）：市场门关闭，fail-closed。"""
     conn = _db()
-    _seed_index(conn, [("2026-09-01", 0.5), ("2026-09-02", 0.3),
-                       ("2026-09-03", -0.2), ("2026-09-04", -1.8)])
+    _seed_index(conn, [("2026-09-01", 0.5), ("2026-09-02", 0.3), ("2026-09-03", -0.2), ("2026-09-04", -1.8)])
     allowed, reason = market_gate(conn)
     assert not allowed
     assert "空仓" in reason
@@ -64,8 +70,10 @@ def test_gate_closed_on_big_drop_day():
 def test_gate_closed_on_weak_5d():
     """当日反弹但 5 日累计仍弱（<= -3%）：门关闭。"""
     conn = _db()
-    _seed_index(conn, [("2026-08-28", -2.0), ("2026-08-31", -1.0),
-                       ("2026-09-01", -0.8), ("2026-09-03", -0.5), ("2026-09-04", 1.2)])
+    _seed_index(
+        conn,
+        [("2026-08-28", -2.0), ("2026-08-31", -1.0), ("2026-09-01", -0.8), ("2026-09-03", -0.5), ("2026-09-04", 1.2)],
+    )
     allowed, reason = market_gate(conn)
     assert not allowed
     assert "5日" in reason
@@ -74,8 +82,9 @@ def test_gate_closed_on_weak_5d():
 def test_gate_open_on_strong_day():
     """强势日（>0 且 5日累计 > -3%）：门开。"""
     conn = _db()
-    _seed_index(conn, [("2026-08-28", 0.5), ("2026-08-31", -0.2),
-                       ("2026-09-01", 0.3), ("2026-09-03", 0.6), ("2026-09-04", 1.0)])
+    _seed_index(
+        conn, [("2026-08-28", 0.5), ("2026-08-31", -0.2), ("2026-09-01", 0.3), ("2026-09-03", 0.6), ("2026-09-04", 1.0)]
+    )
     allowed, reason = market_gate(conn)
     assert allowed
 
@@ -90,9 +99,11 @@ def test_gate_fail_closed_without_data():
 
 # ── 决策层选票 ──
 
+
 def _seed_strong_day(conn: sqlite3.Connection, date: str = "2026-09-04") -> None:
-    _seed_index(conn, [("2026-08-28", 0.5), ("2026-08-31", -0.2),
-                       ("2026-09-01", 0.3), ("2026-09-03", 0.6), (date, 1.0)])
+    _seed_index(
+        conn, [("2026-08-28", 0.5), ("2026-08-31", -0.2), ("2026-09-01", 0.3), ("2026-09-03", 0.6), (date, 1.0)]
+    )
 
 
 def test_picks_category_prior_order_and_cap():
@@ -146,6 +157,7 @@ def test_picks_empty_when_gate_closed():
 
 # ── 落库闭环 ──
 
+
 def test_save_decision_picks_persists_gate_and_rows():
     """落库含 __gate__ 状态行 + 入选行，幂等（重扫覆盖不重复）。"""
     conn = _db()
@@ -169,6 +181,7 @@ def test_save_decision_picks_persists_gate_and_rows():
 
 
 # ── 渲染行 ──
+
 
 def test_decision_lines_empty_state():
     """空仓态渲染：标题 + ✗ 空仓 + 原因，不出现个股行。"""

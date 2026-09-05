@@ -72,10 +72,8 @@ def test_load_dataset_last_round_no_leak(conn):
     夹具键用 "a"（load_dataset 会加 d_ 前缀 → 列名 d_a；此前误写 "d_a"
     导致列名变 d_d_a、断言 KeyError）。
     """
-    _add_rec(conn, "2026-03-02", "SZ300001", "momentum",
-             '{"a": 1.0, "trend": "动量延续"}')  # 第一轮
-    _add_rec(conn, "2026-03-02", "SZ300001", "momentum",
-             '{"a": 9.0}')  # 第二轮（rowid 更大 → 应取此轮）
+    _add_rec(conn, "2026-03-02", "SZ300001", "momentum", '{"a": 1.0, "trend": "动量延续"}')  # 第一轮
+    _add_rec(conn, "2026-03-02", "SZ300001", "momentum", '{"a": 9.0}')  # 第二轮（rowid 更大 → 应取此轮）
     _add_label(conn, "2026-03-02", "SZ300001", "momentum", 1)
     df = mb.load_dataset(conn)
     assert len(df) == 1
