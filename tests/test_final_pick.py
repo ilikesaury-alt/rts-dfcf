@@ -1,7 +1,10 @@
-"""终选参考区（scanner.final_pick）单元测试：双挂归一 / 过滤门 / momentum 先验 / 渲染。
+"""终选参考区（scanner.final_pick）单元测试：双挂归一 / 过滤门 / momentum 先验 /
+概率排序 / 周期标签 / 去相关 / 渲染。
 
-终选区 = v1+v2 合池 → 档0画像评级（today_report._tier0_verdict 单源）→ ≤N 只终选
+终选区 = v1+v2+回马/低吸 合池 → 次日大涨概率终选（nextday_prob 单源）→ ≤N 只
 + 落选理由。与决策层互补：决策层答「该不该买」，终选区答「必须持仓时买谁」。
+2026-09-05 升级：排序键由「verdict→🎯→score」改为「概率→verdict→score」，
+FINAL_PICK_MAX 3→2，新增驱动概念去相关与周期标签。
 """
 
 import sqlite3
@@ -11,6 +14,7 @@ import pytest
 from scanner.final_pick import (
     build_final_picks,
     dedup_candidates,
+    horizon_label,
     render_final_pick_lines,
 )
 
@@ -72,16 +76,37 @@ def test_dedup_keeps_all_distinct_symbols():
     assert len(rows) == 2
 
 
+def test_dedup_keeps_comeback_core_dip_low_priority():
+    """2026-09-05 扩池：comeback/core_dip 纳入终选池（低优桶，不遮蔽主表类别）。"""
+    rows = dedup_candidates(
+        [
+            _entry(symbol="SZ300001", category="comeback"),
+            _entry(symbol="SZ300002", category="core_dip"),
+        ]
+    )
+    assert {r["category"] for r in rows} == {"comeback", "core_dip"}
+
+
 # ── 过滤门与排序 ──
 
 
 def test_momentum_excluded_and_marked_in_rejects():
     """momentum 负先验（唯一负超额类别）：永不入选，落选理由标注先验。"""
-    mom = _entry(symbol="SZ300009", name="动量票", category="momentum", score=99, percent=6.0, accum=10.0)
+    mom = _entry(
+        symbol="SZ300009",
+        name="动量票",
+        category="momentum",
+        score=99,
+        percent=6.0,
+        accum=10.0,
+        concept="算力",  # 与入选票不同板块，避免同板块理由抢先
+    )
     pool = _entry(symbol="SZ300001", name="池选票", category="pool_pick", score=10, percent=3.0, accum=5.0)
     result = _build(_conn(), [mom, pool])
     assert [p["symbol"] for p in result["picks"]] == ["SZ300001"]
     assert any(r["symbol"] == "SZ300009" for r in result["rejects"])
+    lines = render_final_pick_lines(result)
+    assert any("momentum负先验" in ln for ln in lines)
 
 
 def test_chase_gate_filters_overcap():
@@ -93,46 +118,111 @@ def test_chase_gate_filters_overcap():
     assert "SZ300008" not in syms and "SZ300001" in syms
 
 
-def test_picks_sorted_by_verdict_then_score():
-    """主排序：档0画像评级（verdict）降序，次键评分降序。rebound 基线 2 > 池选基线 1。"""
+def test_picks_sorted_by_probability():
+    """主排序：次日大涨概率降序。rebound 🎯（甜蜜带+非超买，base 17.9%×OR2.6）
+    概率显著高于 unmarked 池选（2-4% 死区，base 2.8%×OR0.70）——分数仅平局末键。"""
     rbd = _entry(
         symbol="SZ300002",
         name="反弹票",
         category="rebound",
-        score=60,
-        percent=1.5,
+        score=10,  # 低分但概率高
+        percent=1.5,  # 低吸带 + 非超买 → 🎯
         accum=-8.0,
-        dims={"fund_flow_main_pct": 6.0},
     )
-    pool_hi = _entry(symbol="SZ300001", name="池选高分", score=99)
+    pool_hi = _entry(symbol="SZ300001", name="池选高分", score=99)  # percent 3.0 死区
     pool_lo = _entry(symbol="SZ300003", name="池选低分", score=5)
     result = _build(_conn(), [rbd, pool_hi, pool_lo])
     syms = [p["symbol"] for p in result["picks"]]
-    assert syms.index("SZ300002") < syms.index("SZ300001")  # verdict 优先于分数
-    assert syms.index("SZ300001") < syms.index("SZ300003")  # 平级按分数
+    assert syms[0] == "SZ300002"  # 概率排序压过跨桶分数
+    assert result["picks"][1]["symbol"] == "SZ300001"  # 平级概率按分数
+
+
+def test_nextday_mark_map_feeds_probability():
+    """display 预计算 map 优先：map 标 🎯 的行概率提升并入选首位（同类别对比）。"""
+    marked_lo = _entry(symbol="SZ300001", name="池选🎯", category="pool_pick", score=13, percent=1.5)
+    unmarked_hi = _entry(symbol="SZ300002", name="池选高分", category="pool_pick", score=93, percent=3.0)
+    result = build_final_picks(
+        _conn(),
+        [unmarked_hi, marked_lo],
+        {},
+        {},
+        nextday_mark={
+            ("SZ300001", "pool_pick"): True,
+            ("SZ300002", "pool_pick"): False,
+        },
+    )
+    assert result["picks"][0]["symbol"] == "SZ300001"
 
 
 def test_max_picks_quota():
+    """终选配额 ≤ FINAL_PICK_MAX（2026-09-05 收紧为 2，对齐用户 1-2 只买入预算）。"""
+    from scanner.config import FINAL_PICK_MAX
+
     entries = [_entry(symbol=f"SZ30000{i}", name=f"票{i}") for i in range(1, 7)]
     result = _build(_conn(), entries)
-    assert 0 < len(result["picks"]) <= 3
+    assert 0 < len(result["picks"]) <= FINAL_PICK_MAX == 2
 
 
-def test_marked_beats_higher_score_same_verdict():
-    """同评级平局：🎯（次日大涨画像）优先于跨桶不可比分数（score 仅作平局末键）。"""
-    marked_lo = _entry(symbol="SZ300001", name="池选🎯", category="pool_pick", score=13)
-    unmarked_hi = _entry(symbol="SZ300002", name="ST高分", category="short_term", score=93)
-    result = build_final_picks(
-        _conn(), [unmarked_hi, marked_lo], {}, {}, nextday_mark={("SZ300001", "pool_pick"): True}
-    )
-    assert result["picks"][0]["symbol"] == "SZ300001"
+# ── 周期标签 ──
+
+
+def test_horizon_labels_cum3d_vs_nextday():
+    """周期标签单源 HOLD_DAYS_BY_CATEGORY：comeback/core_dip = 3日修复，其余次日靶点。"""
+    assert horizon_label("comeback") == "3日修复"
+    assert horizon_label("core_dip") == "3日修复"
+    assert horizon_label("rebound") == "次日靶点"
+    assert horizon_label("pool_pick") == "次日靶点"
+
+
+def test_comeback_pick_carries_horizon_tag():
+    cb = _entry(symbol="SZ300004", name="回马票", category="comeback", score=45, percent=1.0)
+    result = _build(_conn(), [cb])
+    assert result["picks"][0]["_horizon"] == "3日修复"
+
+
+# ── 去相关 ──
+
+
+def test_second_pick_prefers_different_theme():
+    """买满 2 只时同驱动概念的第 2 只跳过（同板块齐涨齐跌，覆盖度≈买 1 只）。"""
+    a = _entry(symbol="SZ300001", name="A票", category="rebound", score=50, percent=1.5, concept="AI")
+    b = _entry(symbol="SZ300002", name="B票", category="rebound", score=40, percent=1.5, concept="AI")
+    c = _entry(symbol="SZ300003", name="C票", category="rebound", score=30, percent=1.5, concept="机器人")
+    result = _build(_conn(), [a, b, c])
+    syms = [p["symbol"] for p in result["picks"]]
+    assert syms == ["SZ300001", "SZ300003"]  # B 同板块被跳过，C 补位
+    # B 落选且理由标同板块
+    b_reject = next(r for r in result["rejects"] if r["symbol"] == "SZ300002")
+    assert _reject_reason_text(result, b_reject).startswith("同板块")
+
+
+def test_backfill_when_all_same_theme():
+    """全池同板块：去相关跳过后名额不满，按概率回填（不因去相关放弃名额）。"""
+    a = _entry(symbol="SZ300001", name="A票", category="rebound", score=50, percent=1.5, concept="AI")
+    b = _entry(symbol="SZ300002", name="B票", category="rebound", score=40, percent=1.5, concept="AI")
+    result = _build(_conn(), [a, b])
+    assert [p["symbol"] for p in result["picks"]] == ["SZ300001", "SZ300002"]
+
+
+def _reject_reason_text(result, v):
+    from scanner.final_pick import _reject_reason
+
+    return _reject_reason(v, result["picks"])
 
 
 # ── 渲染 ──
 
 
 def test_render_pick_and_reject_lines():
-    mom = _entry(symbol="SZ300009", name="动量票", category="momentum", score=99, percent=6.0, accum=10.0)
+    mom = _entry(
+        symbol="SZ300009",
+        name="动量票",
+        category="momentum",
+        score=99,
+        percent=6.0,
+        accum=10.0,
+        concept="算力",
+    )
     pool = _entry(
         symbol="SZ300001",
         name="池选票",
@@ -145,8 +235,17 @@ def test_render_pick_and_reject_lines():
     result = _build(_conn(), [mom, pool])
     lines = render_final_pick_lines(result)
     assert any("终选参考" in ln for ln in lines)
-    assert any("SZ300001" in ln and "池选票" in ln for ln in lines)
-    assert any("落选" in ln and "动量票" in ln and "momentum负先验" in ln for ln in lines)
+    assert any("合格池" in ln and "排序估计非保证" in ln for ln in lines)  # 基准率诚实提示
+    assert any("SZ300001" in ln and "池选票" in ln and "P=" in ln and "次日靶点" in ln for ln in lines)
+    assert any("落选" in ln and "动量票" in ln for ln in lines)
+
+
+def test_render_theme_notes_for_second_pick():
+    a = _entry(symbol="SZ300001", name="A票", category="rebound", score=50, percent=1.5, concept="AI")
+    b = _entry(symbol="SZ300002", name="B票", category="rebound", score=40, percent=1.5, concept="机器人")
+    lines = render_final_pick_lines(_build(_conn(), [a, b]))
+    pick2 = next(ln for ln in lines if ln.strip().startswith("2."))
+    assert "与#1分散" in pick2
 
 
 def test_render_gate_closed_hint():

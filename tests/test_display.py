@@ -1,5 +1,6 @@
 """综合排序显示与资金流图标测试。"""
 
+import re
 import sqlite3
 from datetime import timedelta
 
@@ -9,6 +10,8 @@ import wcwidth
 import scanner.display as disp_mod
 from scanner.config import now_beijing
 from scanner.models import Candidate, KlineSummary, StockInfo
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 # ── 资金流强弱档位（5 档图标规则，2026-08-06）──
@@ -152,6 +155,30 @@ def _main_lines(out: str) -> list[str]:
     return [ln for ln in main_part.splitlines() if "SZ30000" in ln]
 
 
+def _main_line(out: str, sym: str) -> str:
+    """首个含 sym 的主表/分区行：剥掉终选参考区后再取首匹配。
+
+    2026-09-05 终选扩池（纳入 comeback/core_dip）后，终选区含个股行且渲染在 v1
+    之前——直接对全输出取首个含 sym 的行会命中终选行而非主表行。终选区结束于
+    下一个「◆」标题行（v1 区头同样缩进+◆；_force_ansi 测试下区头带 ANSI 前缀，
+    判定前必须剥码，否则永不退出、后续行全被误吞）。
+    """
+    lines: list[str] = []
+    in_final = False
+    for ln in out.splitlines():
+        plain = _ANSI_RE.sub("", ln)
+        if in_final:
+            if plain.lstrip().startswith("◆"):
+                in_final = False
+            else:
+                continue
+        if plain.startswith("◆ 终选参考"):
+            in_final = True
+            continue
+        lines.append(ln)  # 保留原始行（含 ANSI），供测试断言高亮码
+    return next(ln for ln in lines if sym in ln)
+
+
 def _rec_db():
     conn = sqlite3.connect(":memory:")
     conn.execute("""CREATE TABLE appearances (
@@ -286,7 +313,7 @@ def test_display_priority_live_quotes_overrides_candidate(monkeypatch, capsys):
         conn, live_quotes={"SZ300001": {"percent": 3.2, "current": 10.5}}, today_pool={"SZ300001": cand}
     )
     out = capsys.readouterr().out
-    line = next(ln for ln in out.splitlines() if "SZ300001" in ln)
+    line = _main_line(out, "SZ300001")
     assert "+3.20%" in line
     assert "10.50" in line
     assert "+1.50%" not in line
@@ -299,7 +326,7 @@ def test_display_priority_live_quotes_overrides_db_for_dropped(monkeypatch, caps
     _insert_rec(conn, "SZ300002", "掉榜票", 1.0)
     disp_mod.display_priority(conn, live_quotes={"SZ300002": {"percent": 4.5, "current": 20.0}}, today_pool={})
     out = capsys.readouterr().out
-    line = next(ln for ln in out.splitlines() if "SZ300002" in ln)
+    line = _main_line(out, "SZ300002")
     assert "+4.50%" in line
     assert "20.00" in line
     assert "+1.00%" not in line
@@ -312,7 +339,7 @@ def test_display_priority_candidate_fallback_when_no_live(monkeypatch, capsys):
     cand = _cand_in_pool("SZ300001", 1.5, 10.0, 5)
     disp_mod.display_priority(conn, today_pool={"SZ300001": cand})
     out = capsys.readouterr().out
-    line = next(ln for ln in out.splitlines() if "SZ300001" in ln)
+    line = _main_line(out, "SZ300001")
     assert "+1.50%" in line
     assert "10.00" in line
     assert "N/A" not in line  # 候选有 rank，应显示 5 而非 N/A
@@ -333,7 +360,7 @@ def test_display_priority_dropped_live_percent_zero_not_fallback(monkeypatch, ca
     conn.commit()
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
-    line = next(ln for ln in out.splitlines() if "SZ300002" in ln)
+    line = _main_line(out, "SZ300002")
     assert "+0.00%" in line
     assert "+2.00%" not in line
 
@@ -349,7 +376,7 @@ def test_display_priority_dropped_never_appeared_uses_db_percent(monkeypatch, ca
     # 关键：不写入任何 appearances 行（该票今日从未上榜）
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
-    line = next(ln for ln in out.splitlines() if "SZ300002" in ln)
+    line = _main_line(out, "SZ300002")
     assert "+2.00%" in line
     assert "+0.00%" not in line
 
@@ -367,7 +394,7 @@ def test_display_priority_stale_candidate_no_stale_rank(monkeypatch, capsys):
         today_pool={"SZ300791": cand},
     )
     out = capsys.readouterr().out
-    line = next(ln for ln in out.splitlines() if "SZ300791" in ln)
+    line = _main_line(out, "SZ300791")
     assert "+3.50%" in line and "23.00" in line
     assert " 15" not in line.replace("SZ300791", "")  # 旧排名不得残留
 
@@ -382,7 +409,7 @@ def test_display_priority_stale_candidate_no_stale_percent(monkeypatch, capsys):
     cand.is_stale = True
     disp_mod.display_priority(conn, today_pool={"SZ300792": cand})
     out = capsys.readouterr().out
-    line = next(ln for ln in out.splitlines() if "SZ300792" in ln)
+    line = _main_line(out, "SZ300792")
     assert "+3.00%" in line
     assert "+9.50%" not in line
 
@@ -393,7 +420,7 @@ def test_display_priority_rank_map_for_dropped(monkeypatch, capsys):
     _insert_rec(conn, "SZ300002", "掉榜票", 1.0)
     disp_mod.display_priority(conn, rank_map={"SZ300002": 42}, today_pool={})
     out = capsys.readouterr().out
-    line = next(ln for ln in out.splitlines() if "SZ300002" in ln)
+    line = _main_line(out, "SZ300002")
     assert "42" in line
 
 
@@ -429,7 +456,7 @@ def test_display_priority_rank_delta_from_last_ranks(monkeypatch, capsys):
     last_ranks = {"SZ300001": 8, "SZ300002": 5, "SZ300003": 6}
     disp_mod.display_priority(conn, today_pool=pool, last_ranks=last_ranks)
     out = capsys.readouterr().out
-    lines = {sym: next(row for row in out.splitlines() if sym in row) for sym in ["SZ300001", "SZ300002", "SZ300003"]}
+    lines = {sym: _main_line(out, sym) for sym in ["SZ300001", "SZ300002", "SZ300003"]}
     assert "5+3" in lines["SZ300001"]
     assert "8-3" in lines["SZ300002"]
     assert "6" in lines["SZ300003"] and "6+" not in lines["SZ300003"] and "6-" not in lines["SZ300003"]
@@ -477,8 +504,8 @@ def test_display_priority_rank_top40_highlight(monkeypatch, capsys):
     }
     disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
-    line_in = next(row for row in out.splitlines() if "SZ300001" in row)
-    line_out = next(row for row in out.splitlines() if "SZ300002" in row)
+    line_in = _main_line(out, "SZ300001")
+    line_out = _main_line(out, "SZ300002")
     assert disp_mod.ANSI["BOLD"] in line_in and disp_mod.ANSI["RED"] in line_in
     assert "40" in line_in
     assert disp_mod.ANSI["BOLD"] not in line_out and disp_mod.ANSI["RED"] not in line_out
@@ -493,7 +520,7 @@ def test_display_priority_rank_top40_highlight_with_delta(monkeypatch, capsys):
     pool = {"SZ300001": _cand_in_pool("SZ300001", 2.0, 10.0, 5)}
     disp_mod.display_priority(conn, today_pool=pool, last_ranks={"SZ300001": 8})
     out = capsys.readouterr().out
-    line = next(row for row in out.splitlines() if "SZ300001" in row)
+    line = _main_line(out, "SZ300001")
     assert disp_mod.ANSI["BOLD"] in line and "+3" in line
 
 
@@ -518,10 +545,7 @@ def test_display_priority_core_stock_name_highlight(monkeypatch, capsys):
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     # 主表行先于低吸区渲染，next() 取到的是主表/低吸区行
-    lines = {
-        sym: next(row for row in out.splitlines() if sym in row)
-        for sym in ["SZ300001", "SZ300002", "SZ300003", "SZ300004"]
-    }
+    lines = {sym: _main_line(out, sym) for sym in ["SZ300001", "SZ300002", "SZ300003", "SZ300004"]}
     # 主表：核心动量名称高亮，普通动量不亮
     assert disp_mod.ANSI["MAGENTA"] in lines["SZ300001"]
     assert disp_mod.ANSI["BOLD"] in lines["SZ300001"]
@@ -828,7 +852,7 @@ def test_display_max_today_pct_hides_trap_band(capsys):
     纯显示层过滤——落库/评分/回测不受影响。"""
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "帽下票", "momentum", 70, 7.9)
-    _insert_rec_pct(conn, "SZ300002", "陷阱票", "momentum", 70, 9.5)   # 8-12% 陷阱带
+    _insert_rec_pct(conn, "SZ300002", "陷阱票", "momentum", 70, 9.5)  # 8-12% 陷阱带
     _insert_rec_pct(conn, "SZ300003", "帽上票", "rebound", 50, 12.0)
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out

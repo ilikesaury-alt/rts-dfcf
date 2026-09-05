@@ -609,13 +609,15 @@ DISPLAY_MAX_TODAY_PCT = _env_float("RTS_DISPLAY_MAX_TODAY_PCT", 8.0)
 # 回滚杠杆：RTS_DECISION_LAYER=0 关闭。
 DECISION_LAYER_ENABLED = _env_flag("RTS_DECISION_LAYER", True)
 
-# ── 终选参考区（2026-09-04）：v1+v2 合池 → 档0画像评级 → ≤N 只终选 + 落选理由 ──
+# ── 终选参考区（2026-09-04；2026-09-05 升级为概率+周期感知终选）──
 # 与决策层互补：决策层答「现在该不该买」（门关→空仓），终选区答「若必须持仓买谁」
 # （无论门开关都给结论）。评级单源复用 today_report._tier0_verdict（已回测口径），
-# momentum 负先验永禁。纯展示层，不改评分/排序/落库。回滚杠杆：RTS_FINAL_PICK=0 关闭。
+# 排序单源用 scanner.nextday_prob（当日口径次日大涨概率，朴素贝叶斯式 odds 模型）；
+# 买满 ≥2 只时按驱动概念去相关（同主题第 2 只劣后），momentum 负先验永禁。
+# 纯展示层，不改评分/排序/落库。回滚杠杆：RTS_FINAL_PICK=0 关闭。
 FINAL_PICK_ENABLED = _env_flag("RTS_FINAL_PICK", True)
-FINAL_PICK_MAX = 3  # 终选最多 N 只（稀缺配额，同决策层语义）
-FINAL_PICK_REJECT_TOP = 4  # 落选理由最多展示条数（按评分降序取头部）
+FINAL_PICK_MAX = 2  # 终选最多 N 只（用户买入预算 1-2 只，2026-09-05 由 3 收紧为 2）
+FINAL_PICK_REJECT_TOP = 4  # 落选理由最多展示条数（按概率降序取头部）
 
 # Time-based bonus thresholds (minutes since midnight)
 

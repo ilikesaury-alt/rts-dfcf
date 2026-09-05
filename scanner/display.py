@@ -1015,7 +1015,8 @@ def build_scan_view(
         except EXTERNAL_FAILURES as _de:
             warnings.append(f"决策层构建失败: {type(_de).__name__}: {_de}")
 
-    # 终选参考区（2026-09-04）：v1+v2 合池 → 档0画像评级 ≤3 只 + 落选理由。
+    # 终选参考区（2026-09-05 升级）：v1+v2+回马/低吸 合池 → 次日大涨概率终选 ≤2 只
+    # + 落选理由 + 周期标签（概率排序单源 scanner.nextday_prob，去相关在 final_pick）。
     # 纯计算无落库，fail-open 不阻断展示主流程（评级单源在 scanner.final_pick）。
     _final_pick_lines: list[str] | None = None
     if FINAL_PICK_ENABLED:
@@ -1023,7 +1024,11 @@ def build_scan_view(
             from scanner.final_pick import final_pick_lines as _build_final
 
             _final_pick_lines = _build_final(
-                conn, main_recs + pool_pick_recs, accum_map, flow_pct_map, nextday_mark
+                conn,
+                main_recs + pool_pick_recs + _comeback_sorted + core_dips,
+                accum_map,
+                flow_pct_map,
+                nextday_mark,
             )
         except EXTERNAL_FAILURES as _fpx:
             warnings.append(f"终选区构建失败: {type(_fpx).__name__}: {_fpx}")
