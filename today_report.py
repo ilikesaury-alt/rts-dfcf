@@ -234,7 +234,7 @@ def _tier0_verdict(entry: Any, flow_pct_map: dict) -> dict:
 
 
 # ── 报告组装（与 display_priority 同源的档位/🎯 判定）──
-def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dict:
+def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int | None) -> dict:
     recs = get_today_recommendations(conn, as_of=target_date)
     if not recs:
         return {"date": target_date, "empty": True}
@@ -254,6 +254,7 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
     main = [e for e in recs if e["category"] not in ("comeback", CORE_DIP_CATEGORY)]
     comeback = [e for e in recs if e["category"] == "comeback"]
     core_dip = [e for e in recs if e["category"] == CORE_DIP_CATEGORY]
+
     # 2026-08-20 收敛：排序组合层（档位+类别优先级+分数键含 kNF 升序）统一走 ranking.sort_main_entries，
     # 与综合排序终端同源（此前 today_report 漏掉 kNF 升序特判，两处排序分化）。
     def _t(e):
@@ -273,7 +274,7 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int) -> dic
     analyzed.sort(key=lambda a: (-a["verdict"], -a["score"]))
 
     # 档3 避雷汇总（统计劣后原因）——2026-08-26 收敛到 ranking.entry_tier_reasons 单源
-    #（与 _entry_tier 判定、scripts/tier3_reason_perf 归因同源；原内联副本的小板块共振
+    # （与 _entry_tier 判定、scripts/tier3_reason_perf 归因同源；原内联副本的小板块共振
     # 判定漏 v_*_sector 成员门，已随收口对齐档位判定口径）
     tier3_reasons: dict[str, int] = {}
     for e in tier3:

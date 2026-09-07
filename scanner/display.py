@@ -9,6 +9,7 @@ from scanner.config import (
     COMEBACK_DISPLAY_MAX,
     COMEBACK_DISPLAY_MIN_MAIN,
     CORE_DIP_CATEGORY,
+    CORE_DIP_DISPLAY_MAX,
     CORE_PULLBACK_MAX,
     CORE_PULLBACK_MIN,
     DECISION_LAYER_ENABLED,
@@ -1036,7 +1037,7 @@ def build_scan_view(
     return ScanView(
         main_rows=main_rows,
         comeback_rows=_comeback_sorted[:COMEBACK_DISPLAY_MAX],
-        core_dip_rows=core_dips[:COMEBACK_DISPLAY_MAX],
+        core_dip_rows=core_dips[:CORE_DIP_DISPLAY_MAX],
         nextday_mark=nextday_mark,
         breakout_mark=breakout_mark,
         flow_pct_map=flow_pct_map,
@@ -1063,19 +1064,20 @@ def render_terminal(view: ScanView) -> None:
     for _w in view.warnings:
         print(f"  [!] {_w}")
 
-    # 决策层置顶（2026-09-04）：先看 ≤3 只的决策，再看观察/跟踪池。
-    # 空仓是合法且高频的输出——决策的价值在于替用户放弃 95% 的机会。
-    if view.decision_lines:
+    # 决策层 + 终选参考置顶同级展示（2026-09-08）：两个区块共用 "=" 分隔线，
+    # 决策层说「该不该买」（空仓合法），终选区说「必须持仓时买谁、谁被否」，
+    # 视觉层级一致。空仓是合法且高频的输出——决策的价值在于替用户放弃 95% 的机会。
+    if view.decision_lines or view.final_pick_lines:
         print("=" * 78)
-        for _dl in view.decision_lines:
-            print(_dl)
+        if view.decision_lines:
+            for _dl in view.decision_lines:
+                print(_dl)
+            if view.final_pick_lines:
+                print("=" * 78)
+        if view.final_pick_lines:
+            for _fpl in view.final_pick_lines:
+                print(_fpl)
         print("=" * 78)
-
-    # 终选参考区（2026-09-04）：v1+v2 合池的档0画像终选，紧跟决策层——
-    # 决策层说「该不该买」，终选区说「必须持仓时买谁、谁被否」。
-    if view.final_pick_lines:
-        for _fpl in view.final_pick_lines:
-            print(_fpl)
 
     # ── 主表 / v2 池选区共用行渲染（同列 spec，行尾标记与回马枪/低吸区同源）──
     def _emit_pool_table_row(view: ScanView, row: MainRow, idx: int) -> None:

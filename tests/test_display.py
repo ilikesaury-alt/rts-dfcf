@@ -217,8 +217,9 @@ def test_display_priority_fund_flow_icon_from_db(capsys):
     conn.commit()
     disp_mod.display_priority(conn)
     out = capsys.readouterr().out
-    line1 = next(ln for ln in out.splitlines() if "SZ300001" in ln)
-    line2 = next(ln for ln in out.splitlines() if "SZ300002" in ln)
+    # 用 _main_line 剥掉终选参考区（终选行也含资金流图标，直接取首行会误命中）
+    line1 = _main_line(out, "SZ300001")
+    line2 = _main_line(out, "SZ300002")
     assert "▲" in line1
     assert "▲" not in line2
 
@@ -469,7 +470,7 @@ def test_display_priority_rank_delta_absent_by_default(monkeypatch, capsys):
     pool = {"SZ300001": _cand_in_pool("SZ300001", 2.0, 10.0, 5)}
     disp_mod.display_priority(conn, today_pool=pool)
     out = capsys.readouterr().out
-    line = next(row for row in out.splitlines() if "SZ300001" in row)
+    line = _main_line(out, "SZ300001")
     assert "5" in line and "5+" not in line and "5-" not in line
 
 
@@ -827,8 +828,8 @@ def test_display_priority_pool_pick_dip_label_segment_sorted(capsys):
 
 
 def test_display_priority_core_dip_capped(monkeypatch, capsys):
-    """核心低吸区最多显示 COMEBACK_DISPLAY_MAX 条（超量截断，避免刷屏）。
-    （原回马枪区截断测试，区块移除后改测核心低吸区，2026-09-03）"""
+    """核心低吸区最多显示 CORE_DIP_DISPLAY_MAX 条（超量截断，避免刷屏）。
+    （2026-09-08 由 COMEBACK_DISPLAY_MAX=3 拆分放宽为 6，用户要求多显示几条）"""
     conn = _rec_db()
     for i in range(12):
         _insert_rec_cat(conn, f"SZ3003{i:02d}", f"低吸{i}", "core_dip", 50 + i)
@@ -837,7 +838,7 @@ def test_display_priority_core_dip_capped(monkeypatch, capsys):
     assert "◆ 核心方向低吸" in out
     dip_part = out.split("◆ 核心方向低吸", 1)[1]
     dip_lines = [ln for ln in dip_part.splitlines() if "SZ3003" in ln]
-    assert len(dip_lines) == disp_mod.COMEBACK_DISPLAY_MAX
+    assert len(dip_lines) == disp_mod.CORE_DIP_DISPLAY_MAX
 
 
 # ── 次日大涨画像标记（2026-08-11 起并入主表行尾 🎯；2026-08-12 起成为排序档0唯一因子）──

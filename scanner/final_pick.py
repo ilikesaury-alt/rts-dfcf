@@ -215,8 +215,13 @@ def build_final_picks(
 
 
 def render_final_pick_lines(result: dict[str, Any]) -> list[str]:
-    """渲染终选区文本行（纯函数，供 display / feishu / 测试共用）。"""
-    title = f"◆ 终选参考 — v1+v2+回马/低吸 合池·次日概率终选（≤{FINAL_PICK_MAX}只·非交易指令）"
+    """渲染终选区文本行（纯函数，供 display / feishu / 测试共用）。
+
+    2026-09-08 精简：个股行只保留决策核心字段（代码/名称/类别/概率/周期/星级
+    /🎯/现涨幅/驱动概念/同板块提示），位置·主力资金·风险明细·评分砍掉——
+    风险已折入星级（评级单源），明细在主表/v2 池选区可查，落选行保留理由。
+    """
+    title = f"◆ 终选参考 — 合池·次日概率终选（≤{FINAL_PICK_MAX}只·非交易指令）"
     if not result.get("available"):
         return [title, "  — 档0画像评级不可用（today_report 导入失败）"]
     if not result.get("gate_allowed"):
@@ -224,17 +229,12 @@ def render_final_pick_lines(result: dict[str, Any]) -> list[str]:
     picks: list[dict] = result.get("picks", [])
     pool_size = result.get("pool_size", 0)
     lines = [title]
-    lines.append(f"  合格池 {pool_size} 只 · 全池历史次日≥7%基准 {BASE_RATE_DEFAULT:.1%} · P=排序估计非保证")
+    lines.append(f"  合格池 {pool_size} 只 · P=排序估计非保证（全池基准 {BASE_RATE_DEFAULT:.1%}）")
     if not picks:
         lines.append("  — 合池无合格标的（全部被追涨门/减仓标签/评级过滤）")
         return lines
     for i, v in enumerate(picks, 1):
-        pos = "·".join([str(v.get("pos", "")), *v.get("pos_detail", [])])
-        flow = v.get("flow")
-        flow_s = f"{v.get('flow_icon', '')}主力{flow:+.1f}%" if flow is not None else "资金—"
-        risks = v.get("risks", [])
-        risk_s = "风险:" + ("、".join(risks) if risks else "无")
-        concept = v.get("concept") or ""
+        concept = str(v.get("concept") or "").strip()
         pct = v.get("_display_pct")
         pct_s = f"{pct:+.1f}%" if pct is not None else "—"
         marked_s = "🎯" if v.get("_marked") else ""
@@ -246,8 +246,9 @@ def render_final_pick_lines(result: dict[str, Any]) -> list[str]:
         lines.append(
             f"  {i}. {v['symbol']} {v['name']}[{v['category']}] "
             f"P={to_float(v.get('_p'), default=0.0):.0%} {v.get('_horizon', '')} "
-            f"{v.get('stars', '')}{v.get('label', '')}{marked_s} 分{to_float(v.get('score'), default=0.0):.0f} 现{pct_s} "
-            f"| {pos} | {flow_s} | {risk_s}" + (f" | {concept}" if concept else "") + theme_s
+            f"{v.get('stars', '')}{v.get('label', '')}{marked_s} 现{pct_s}"
+            + (f" {concept}" if concept else "")
+            + theme_s
         )
     rejects: list[dict] = result.get("rejects", [])
     if rejects:

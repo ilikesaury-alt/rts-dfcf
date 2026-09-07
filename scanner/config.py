@@ -698,7 +698,10 @@ COMEBACK_REENTRY_DISPLAY_WATCH_MAX = 0  # "观察中"补充最多显示条数（
 # 隐藏回马枪/核心低吸两低吸区（避免刷屏）；主区推荐条数 ≤ 该值（含为空）时补充展示，
 # 最多前 COMEBACK_DISPLAY_MAX 条（回马枪为掉榜无热榜背书票，评分语义弱于榜上推荐）。
 # 2026-08-24 用户决策：阈值 3→5，且删除大盘弱势 OR 门——主表 >5 条一律隐藏。
-COMEBACK_DISPLAY_MAX = 3  # 回马枪/核心区最多显示条数
+COMEBACK_DISPLAY_MAX = 3  # 回马枪最多显示条数
+# 核心低吸单独放宽（2026-09-08 用户要求多显示几条）：核心股有主线方向背书，
+# 语义强于回马枪，且仅主区稀少时才补充展示，多几条不刷屏。
+CORE_DIP_DISPLAY_MAX = 6  # 核心方向低吸区最多显示条数
 COMEBACK_DISPLAY_MIN_MAIN = 5  # 主区推荐条数大于此值 → 隐藏回马枪/核心低吸区；≤ 此值 → 补充显示
 
 # 核心方向低吸（2026-08-19，`scanner/core_themes.py` + display 独立区）：
