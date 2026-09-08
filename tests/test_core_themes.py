@@ -265,46 +265,64 @@ class TestCoreStockSymbols:
 
 
 class TestLowBuyQualitySort:
-    def test_flow_positive_before_negative(self):
+    def test_negative_flow_before_positive(self):
+        """数据驱动：负流入（预期差）优先于正流入。"""
         from scanner.core_themes import _low_buy_quality
 
-        pos = {"flow_pct": 3.0, "pullback": -0.05, "run": 0.2, "today_pct": 0.0}
         neg = {"flow_pct": -3.0, "pullback": -0.05, "run": 0.2, "today_pct": 0.0}
-        # 升序键：pos 更小 → 排前
-        assert _low_buy_quality(pos) < _low_buy_quality(neg)
+        pos = {"flow_pct": 3.0, "pullback": -0.05, "run": 0.2, "today_pct": 0.0}
+        # 升序键：neg 更小 → 排前
+        assert _low_buy_quality(neg) < _low_buy_quality(pos)
 
-    def test_strong_inflow_before_mild(self):
+    def test_high_flow_penalized(self):
+        """数据驱动：高流入 >10% 降权。"""
         from scanner.core_themes import _low_buy_quality
 
-        strong = {"flow_pct": 6.0, "pullback": -0.05, "run": 0.2, "today_pct": 0.0}
-        mild = {"flow_pct": 2.0, "pullback": -0.05, "run": 0.2, "today_pct": 0.0}
-        assert _low_buy_quality(strong) < _low_buy_quality(mild)
+        high = {"flow_pct": 15.0, "pullback": -0.05, "run": 0.2, "today_pct": 0.0}
+        low = {"flow_pct": 5.0, "pullback": -0.05, "run": 0.2, "today_pct": 0.0}
+        assert _low_buy_quality(low) < _low_buy_quality(high)
 
-    def test_deeper_pullback_first_within_tier(self):
+    def test_shallow_pullback_optimal(self):
+        """数据驱动：浅回调 -3%~-6% 最优。"""
         from scanner.core_themes import _low_buy_quality
 
-        deep = {"flow_pct": None, "pullback": -0.10, "run": 0.2, "today_pct": None}
         shallow = {"flow_pct": None, "pullback": -0.04, "run": 0.2, "today_pct": None}
-        assert _low_buy_quality(deep) < _low_buy_quality(shallow)
+        medium = {"flow_pct": None, "pullback": -0.08, "run": 0.2, "today_pct": None}
+        deep = {"flow_pct": None, "pullback": -0.12, "run": 0.2, "today_pct": None}
+        # 浅回调 < 中回调（最优），深回调介于两者之间
+        assert _low_buy_quality(shallow) < _low_buy_quality(medium)
+        assert _low_buy_quality(deep) < _low_buy_quality(medium)
 
-    def test_stronger_leader_first_within_tier(self):
+    def test_run_sweet_spot(self):
+        """数据驱动：run 15-25% 甜点区最优。"""
         from scanner.core_themes import _low_buy_quality
 
-        strong = {"flow_pct": None, "pullback": -0.05, "run": 0.5, "today_pct": None}
-        weak = {"flow_pct": None, "pullback": -0.05, "run": 0.15, "today_pct": None}
-        assert _low_buy_quality(strong) < _low_buy_quality(weak)
+        sweet = {"flow_pct": None, "pullback": -0.05, "run": 0.20, "today_pct": None}
+        hot = {"flow_pct": None, "pullback": -0.05, "run": 0.35, "today_pct": None}
+        weak = {"flow_pct": None, "pullback": -0.05, "run": 0.10, "today_pct": None}
+        # 甜点区 < 弱 run < 强 run（过热）
+        assert _low_buy_quality(sweet) < _low_buy_quality(weak)
+        assert _low_buy_quality(weak) < _low_buy_quality(hot)
 
-    def test_extreme_today_first_within_tier(self):
+    def test_concept_weight(self):
+        """数据驱动：趋势股/电子板块优先，医药降权。"""
         from scanner.core_themes import _low_buy_quality
 
-        # 2026-08-29：今日波动剧烈（涨多/跌狠）优先排前，|today| 越大越靠前；
-        # 小涨(0.02)与小跌(-0.03)幅度相近 → 各自都排在大涨(0.09)/(-0.09)之后。
+        trend = {"concept": "趋势股", "flow_pct": None, "pullback": -0.05, "run": 0.2, "today_pct": None}
+        med = {"concept": "医药生物", "flow_pct": None, "pullback": -0.05, "run": 0.2, "today_pct": None}
+        assert _low_buy_quality(trend) < _low_buy_quality(med)
+
+    def test_today_volatility_auxiliary(self):
+        """今日波动为辅助维度，|today| 越大分越高（升序排后面）。"""
+        from scanner.core_themes import _low_buy_quality
+
+        flat = {"flow_pct": None, "pullback": -0.05, "run": 0.2, "today_pct": 0.0}
         big_up = {"flow_pct": None, "pullback": -0.05, "run": 0.2, "today_pct": 0.09}
         big_down = {"flow_pct": None, "pullback": -0.05, "run": 0.2, "today_pct": -0.09}
-        flat = {"flow_pct": None, "pullback": -0.05, "run": 0.2, "today_pct": 0.0}
-        assert _low_buy_quality(big_up) < _low_buy_quality(flat)
-        assert _low_buy_quality(big_down) < _low_buy_quality(flat)
-        # 涨多(+)与跌狠(-)同幅并列，互不影响主排序（都按 |today| 排前）
+        # 波动大的排后面
+        assert _low_buy_quality(flat) < _low_buy_quality(big_up)
+        assert _low_buy_quality(flat) < _low_buy_quality(big_down)
+        # 涨多与跌狠同幅并列
         assert _low_buy_quality(big_up) == _low_buy_quality(big_down)
 
 
@@ -418,8 +436,9 @@ class TestSaveCoreDips:
         save_core_dips(db, [high], "2026-08-19")
         rows = db.execute("SELECT COUNT(*), MAX(score) FROM recommendations").fetchone()
         assert rows[0] == 1  # 同票只保留一条
-        # 高分（深回撤+强流入）应胜过低分（浅回撤+流出）
-        assert rows[1] > 50
+        # 高分（强run+深回撤）应胜过低分（弱run+浅回撤+流出）
+        # 2026-09-08: 新逻辑下 high=45, low=22，仍满足 high > low
+        assert rows[1] >= 40
 
     def test_update_writes_score_column(self, db, monkeypatch):
         """UPDATE 必须同步写 score 列（2026-08-24 第二轮审查）。

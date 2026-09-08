@@ -346,11 +346,12 @@ def _core_dip_entry_quality(entry: RecommendationRow | dict) -> tuple:
     """推荐记录条目 → 低吸质量排序键（复用 core_themes._low_buy_quality）。
 
     entry 是完整 recommendation 行（含 score_breakdown 的 run/pullback/today_pct/
-    flow_pct），先经 _entry_dims 抽取为低吸质量函数所需字典再排序。
+    flow_pct/concept），先经 _entry_dims 抽取为低吸质量函数所需字典再排序。
     """
     sb = _entry_dims(entry)
     return _core_dip_quality(
         {
+            "concept": sb.get("concept", ""),
             "flow_pct": to_float(sb.get("flow_pct"), default=None),
             "today_pct": to_float(sb.get("today_pct"), default=0.0),
             "run": to_float(sb.get("run"), default=0.0),

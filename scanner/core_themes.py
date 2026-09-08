@@ -248,25 +248,60 @@ def _theme_members(conn: sqlite3.Connection, theme_names: list[str]) -> dict[str
 def _dip_score(c: dict) -> int:
     """核心方向低吸候选的展示/去重分数（0-100，与 _low_buy_quality 单调一致）。
 
+    2026-09-08 与 _low_buy_quality 排序逻辑对齐（板块+非线性回调+run甜点+资金流反转）。
     仅用于存储排序与「同票跨扫描取最高分」去重，展示区排序仍按 _low_buy_quality 解析
     breakdown 重算，中间不带分数口径分歧。dict 值经 to_float 统一强转（脏值按 0 兑底，
     调用方为 DB 回读场景不可信）。
     """
-    ff = c.get("flow_pct")
-    if ff is None:
-        flow_tier = 0
-    elif ff >= 5:
-        flow_tier = 2
-    elif ff >= 0:
-        flow_tier = 1
-    elif ff < -5:
-        flow_tier = -1
-    else:
-        flow_tier = 0
-    today = to_float(c.get("today_pct")) or 0.0
+    # 板块权重
+    concept = c.get("concept", "")
+    concept_bonus = 0
+    if concept in ("趋势股", "专精特新"):
+        concept_bonus = -30
+    elif concept == "电子":
+        concept_bonus = -20
+    elif concept in ("华为概念", "新能源车", "汽车热管理", "通信技术"):
+        concept_bonus = -10
+    elif concept == "医药生物":
+        concept_bonus = 30
+    elif concept == "央国企改革":
+        concept_bonus = 15
+
     pullback = to_float(c.get("pullback"), default=0.0) or 0.0
     run = to_float(c.get("run"), default=0.0) or 0.0
-    s = 50 + flow_tier * 8 - pullback * 250 + run * 80 - today * 120
+    today = to_float(c.get("today_pct")) or 0.0
+
+    # 回调非线性
+    pb_bonus = 0
+    if -0.06 <= pullback <= -0.03:
+        pb_bonus = -10
+    elif -0.10 <= pullback < -0.06:
+        pb_bonus = 5
+    elif pullback < -0.10:
+        pb_bonus = -3
+
+    # run 甜点区
+    run_bonus = 0
+    if 0.15 <= run <= 0.25:
+        run_bonus = -10
+    elif run > 0.25:
+        run_bonus = 10
+
+    # 资金流反转
+    ff = c.get("flow_pct")
+    flow_bonus = 0
+    if ff is not None:
+        if ff < 0:
+            flow_bonus = -8
+        elif ff < 10:
+            flow_bonus = -3
+        else:
+            flow_bonus = 5
+
+    # 今日波动
+    today_bonus = abs(today) * 50
+
+    s = 50 + concept_bonus + pb_bonus + run_bonus + flow_bonus + today_bonus
     try:
         return int(max(0, min(100, round(s))))
     except (TypeError, ValueError):
@@ -342,28 +377,61 @@ def save_core_dips(conn: sqlite3.Connection | None, dips: list[dict], today: str
 
 
 def _low_buy_quality(c: dict) -> tuple:
-    """低吸质量排序键（升序，越小越优）：主力回流 → 回撤深 → 龙头强 → 今日波动。
+    """低吸质量排序键（升序，越小越优）。
 
-    2026-08-31 调整：主力回流排第一（资金先于价格是低吸核心逻辑）；同资金下
-    回撤更深=更便宜优先；龙头强度次之；今日波动降为辅助（无数据时不惩罚）。
-    flow_tier：>=5% 强流入 2 / >=0 转正 1 / <-5% 流出 -1 / 其余(含无数据) 0。
-    today_pct 为比率（与 run/pullback 同口径），abs 取波动幅度，涨/跌两向均排前。
+    2026-09-08 数据驱动优化（基于 8/1~9/7 core_dip 历史归因）：
+    - 板块权重：趋势股/电子优先，医药/央国企降权（板块 avg 差异 >3%）
+    - 回调非线性：浅回调 -3~-6% 最优（avg +1.38%），中回调 -6~-10% 减分
+    - run 甜点区：15-25% 最优（avg +1.23%），>25% 过热减分
+    - 资金流反转：负流入/低流入优先（预期差），高流入降权（众人追逐）
+    - 今日波动：辅助维度，无数据时不惩罚
     """
+    score = 0
+
+    # 1. 板块权重（最大因子，avg 差异 >3%）
+    concept = c.get("concept", "")
+    if concept in ("趋势股", "专精特新"):
+        score -= 30
+    elif concept == "电子":
+        score -= 20
+    elif concept in ("华为概念", "新能源车", "汽车热管理", "通信技术"):
+        score -= 10
+    elif concept == "医药生物":
+        score += 30
+    elif concept == "央国企改革":
+        score += 15
+
+    # 2. 回调非线性（浅回调 -3%~-6% 最优）
+    pb = c["pullback"]
+    if -0.06 <= pb <= -0.03:
+        score -= 10  # 浅回调最优
+    elif -0.10 <= pb < -0.06:
+        score += 5   # 中回调减分
+    elif pb < -0.10:
+        score -= 3   # 深回调适中
+
+    # 3. run 甜点区（15-25% 最优，>25% 过热减分）
+    run = c.get("run", 0)
+    if 0.15 <= run <= 0.25:
+        score -= 10
+    elif run > 0.25:
+        score += 10
+
+    # 4. 资金流反转（负流入优先 = 预期差）
     ff = c.get("flow_pct")
-    if ff is None:
-        flow_tier = 0
-    elif ff >= 5:
-        flow_tier = 2
-    elif ff >= 0:
-        flow_tier = 1
-    elif ff < -5:
-        flow_tier = -1
-    else:
-        flow_tier = 0
+    if ff is not None:
+        if ff < 0:
+            score -= 8
+        elif ff < 10:
+            score -= 3
+        else:
+            score += 5
+
+    # 5. 今日波动（辅助，无数据时不惩罚）
     today = c.get("today_pct") or 0.0
-    # 主力回流优先（-flow_tier 取负，强流入排前）→ 回撤深(pullback 越负越小) →
-    # 龙头强(run 取负) → 今日波动(辅助，无数据时不惩罚)。
-    return (-flow_tier, c["pullback"], -c["run"], -abs(today))
+    score += abs(today) * 50  # 波动越大分越高（升序排后面）
+
+    return (score,)
 
 
 def core_stock_symbols(conn: sqlite3.Connection | None, today: str | None = None) -> set[str]:

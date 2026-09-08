@@ -616,7 +616,7 @@ DECISION_LAYER_ENABLED = _env_flag("RTS_DECISION_LAYER", True)
 # 买满 ≥2 只时按驱动概念去相关（同主题第 2 只劣后），momentum 负先验永禁。
 # 纯展示层，不改评分/排序/落库。回滚杠杆：RTS_FINAL_PICK=0 关闭。
 FINAL_PICK_ENABLED = _env_flag("RTS_FINAL_PICK", True)
-FINAL_PICK_MAX = 2  # 终选最多 N 只（用户买入预算 1-2 只，2026-09-05 由 3 收紧为 2）
+FINAL_PICK_MAX = 3  # 终选最多 N 只（用户买入预算 1-3 只，2026-09-08 由 2 放宽为 3）
 FINAL_PICK_REJECT_TOP = 4  # 落选理由最多展示条数（按概率降序取头部）
 
 # Time-based bonus thresholds (minutes since midnight)

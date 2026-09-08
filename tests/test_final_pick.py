@@ -155,12 +155,12 @@ def test_nextday_mark_map_feeds_probability():
 
 
 def test_max_picks_quota():
-    """终选配额 ≤ FINAL_PICK_MAX（2026-09-05 收紧为 2，对齐用户 1-2 只买入预算）。"""
+    """终选配额 ≤ FINAL_PICK_MAX。"""
     from scanner.config import FINAL_PICK_MAX
 
     entries = [_entry(symbol=f"SZ30000{i}", name=f"票{i}") for i in range(1, 7)]
     result = _build(_conn(), entries)
-    assert 0 < len(result["picks"]) <= FINAL_PICK_MAX == 2
+    assert 0 < len(result["picks"]) <= FINAL_PICK_MAX
 
 
 # ── 周期标签 ──
@@ -184,16 +184,24 @@ def test_comeback_pick_carries_horizon_tag():
 
 
 def test_second_pick_prefers_different_theme():
-    """买满 2 只时同驱动概念的第 2 只跳过（同板块齐涨齐跌，覆盖度≈买 1 只）。"""
+    """买满配额时同驱动概念的第 2 只跳过（同板块齐涨齐跌，覆盖度≈买 1 只）。"""
+    from scanner.config import FINAL_PICK_MAX
+
     a = _entry(symbol="SZ300001", name="A票", category="rebound", score=50, percent=1.5, concept="AI")
     b = _entry(symbol="SZ300002", name="B票", category="rebound", score=40, percent=1.5, concept="AI")
     c = _entry(symbol="SZ300003", name="C票", category="rebound", score=30, percent=1.5, concept="机器人")
     result = _build(_conn(), [a, b, c])
     syms = [p["symbol"] for p in result["picks"]]
-    assert syms == ["SZ300001", "SZ300003"]  # B 同板块被跳过，C 补位
-    # B 落选且理由标同板块
-    b_reject = next(r for r in result["rejects"] if r["symbol"] == "SZ300002")
-    assert _reject_reason_text(result, b_reject).startswith("同板块")
+    # A 入选，B 同板块被延后，C 不同板块优先入选
+    assert syms[0] == "SZ300001"  # A 概率最高首选
+    assert syms[1] == "SZ300003"  # C 不同板块优先于 B
+    # 名额未满时 B 回填进 picks；名额满时 B 落选
+    if FINAL_PICK_MAX >= 3:
+        assert syms == ["SZ300001", "SZ300003", "SZ300002"]
+    else:
+        assert syms == ["SZ300001", "SZ300003"]
+        b_reject = next(r for r in result["rejects"] if r["symbol"] == "SZ300002")
+        assert _reject_reason_text(result, b_reject).startswith("同板块")
 
 
 def test_backfill_when_all_same_theme():
