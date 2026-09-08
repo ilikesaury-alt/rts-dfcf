@@ -146,9 +146,9 @@ def test_market_extra_str_zt_kept():
 def _main_lines(out: str) -> list[str]:
     """v1 池选+v2 池选区行（核心低吸区之前），用于测试断言。
     （动态推荐/回马枪/次日大涨规则区已移除，2026-09-03）
-    终选参考区（2026-09-04）位于 v1 之前且含个股行，剥离该区块保留 v1/v2 部分。"""
+    今日决策+终选参考合并区（2026-09-08）位于 v1 之前且含个股行，剥离该区块保留 v1/v2 部分。"""
     main_part = out.split("◆ 核心方向低吸")[0]
-    head, sep, rest = main_part.partition("◆ 终选参考")
+    head, sep, rest = main_part.partition("◆ 今日决策")
     if sep:
         _, sep2, v12 = rest.partition("◆ v1 池选")
         main_part = head + ("◆ v1 池选" + v12 if sep2 else "")
@@ -156,24 +156,22 @@ def _main_lines(out: str) -> list[str]:
 
 
 def _main_line(out: str, sym: str) -> str:
-    """首个含 sym 的主表/分区行：剥掉终选参考区后再取首匹配。
+    """首个含 sym 的主表/分区行：剥掉今日决策区后再取首匹配。
 
-    2026-09-05 终选扩池（纳入 comeback/core_dip）后，终选区含个股行且渲染在 v1
-    之前——直接对全输出取首个含 sym 的行会命中终选行而非主表行。终选区结束于
-    下一个「◆」标题行（v1 区头同样缩进+◆；_force_ansi 测试下区头带 ANSI 前缀，
-    判定前必须剥码，否则永不退出、后续行全被误吞）。
+    2026-09-08 终选参考合并为今日决策区，渲染在 v1 之前——直接对全输出取首个含
+    sym 的行会命中终选行而非主表行。今日决策区结束于下一个「◆」标题行。
     """
     lines: list[str] = []
-    in_final = False
+    in_decision = False
     for ln in out.splitlines():
         plain = _ANSI_RE.sub("", ln)
-        if in_final:
+        if in_decision:
             if plain.lstrip().startswith("◆"):
-                in_final = False
+                in_decision = False
             else:
                 continue
-        if plain.startswith("◆ 终选参考"):
-            in_final = True
+        if plain.startswith("◆ 今日决策"):
+            in_decision = True
             continue
         lines.append(ln)  # 保留原始行（含 ANSI），供测试断言高亮码
     return next(ln for ln in lines if sym in ln)

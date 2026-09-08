@@ -1065,19 +1065,26 @@ def render_terminal(view: ScanView) -> None:
     for _w in view.warnings:
         print(f"  [!] {_w}")
 
-    # 决策层 + 终选参考置顶同级展示（2026-09-08）：两个区块共用 "=" 分隔线，
-    # 决策层说「该不该买」（空仓合法），终选区说「必须持仓时买谁、谁被否」，
-    # 视觉层级一致。空仓是合法且高频的输出——决策的价值在于替用户放弃 95% 的机会。
+    # 今日决策 + 终选参考合并展示（2026-09-08）：一个区块用子标题区分
+    # 「该不该买」+「必须持仓时买谁」——避免用户混淆两个区块的用途。
     if view.decision_lines or view.final_pick_lines:
         print("=" * 78)
+        print("◆ 今日决策 — 该不该买 + 买谁（空仓是合法输出）")
         if view.decision_lines:
-            for _dl in view.decision_lines:
-                print(_dl)
-            if view.final_pick_lines:
-                print("=" * 78)
+            print("  ── 市场门 ──")
+            # decision_lines[0] 是原 header，跳过；从 gate_reason 行开始
+            for _dl in view.decision_lines[1:]:
+                print(f"  {_dl}")
+            print("  ── 决策推荐 ──")
         if view.final_pick_lines:
-            for _fpl in view.final_pick_lines:
-                print(_fpl)
+            _fp_header = view.final_pick_lines[0] if view.final_pick_lines else ""
+            _gate_open = any("允许开仓" in dl for dl in (view.decision_lines or []))
+            if _gate_open:
+                print("  ── 终选参考（合池·次日概率排序）──")
+            else:
+                print("  ── 终选参考（门关·仅观察参考）──")
+            for _fpl in view.final_pick_lines[1:]:
+                print(f"  {_fpl}")
         print("=" * 78)
 
     # ── 主表 / v2 池选区共用行渲染（同列 spec，行尾标记与回马枪/低吸区同源）──
