@@ -863,6 +863,29 @@ SECTOR_RESONANCE_WARN_MAX = 15
 # 资金流出档位阈值复用上方 FUND_OUTFLOW_NET_PCT（与「资金流出」标签同源防漂移）。
 OVERHEAT_ACCUM_MAX = 50.0
 
+# ── 统一复合评分（2026-09-08，v1+v2 合一）──
+# composite_score = cat_base + tech_norm + rank_norm + fund_norm + dip_bonus
+# 所有分量校准于 nextday_attribution 1949 去重样本（7.5% baseline hit rate）。
+# 类别基值：(hit_rate - 7.5) / (17.2 - 7.5) * 10，负值表示低于基准。
+COMPOSITE_CAT_BASE: dict[str, float] = {
+    "rebound": 10.0,        # hit 17.2% → +10.0
+    "known_new_face": 5.4,  # hit 12.7% → +5.4
+    "momentum": 2.6,        # hit 10.0% → +2.6
+    "new_face": 2.3,        # hit 9.7% → +2.3
+    "core_dip": 0.7,        # hit 8.2% → +0.7
+    "short_term": -1.4,     # hit 6.1% → -1.4
+    "pullback": -2.0,       # hit 5.6% → -2.0（已下线，保留供回测）
+    "comeback": -4.6,       # hit 3.0% → -4.6
+    "pool_pick": -5.0,      # hit 2.6% → -5.0
+}
+# 档位阈值：composite_score 推导，取代原 _entry_tier 的 if/elif 级联。
+COMPOSITE_TIER_THRESHOLDS: dict[int, float] = {
+    0: 6.0,  # 档0：次日大涨画像区
+    1: 4.0,  # 档1：强信号
+    2: 2.0,  # 档2：普通
+    # tier 3 = composite < 2.0 或过热硬门
+}
+
 # ── 持有期口径分化（2026-09-05 M1.1，学术对照校准）──
 # 依据：Chen/Gao/He/Jiang/Xiong《Daily Price Limits and Destructive Market Behavior》
 # （深交所账户级数据，Princeton）：涨停类信号次日高开（集中在次日开盘价）、随后长期反转。

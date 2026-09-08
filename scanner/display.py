@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import wcwidth
 
 from scanner.config import (
+    CAT_DISPLAY_PRIORITY,
     COMEBACK_DISPLAY_MAX,
     COMEBACK_DISPLAY_MIN_MAIN,
     CORE_DIP_CATEGORY,
@@ -40,6 +41,8 @@ from scanner.ranking import (
     build_accum_map,
     build_breakout_kline_map,
     comeback_sort_key,
+    composite_score,
+    composite_tier,
 )
 from scanner.sector import classify_sector
 from scanner.signals import fund_flow_signal, split_risk_flags
@@ -636,6 +639,7 @@ class MainRow:
     rank: int | float | None  # 展示用排名（None = 掉榜/无数据 → 渲染为 —）
     accum: float | None  # 5 日累计涨幅
     score: float
+    composite_score: float  # 统一复合评分 [0, 10]（v1+v2 合一排序键）
     core: bool  # 核心股高亮
     cat_label: str  # RBD / MOM / NEW / kNF / ST
     pct: float  # 涨幅（_entry_display_quote 单源回退链）
@@ -840,21 +844,15 @@ def build_scan_view(
     }
     main_rows: list[MainRow] = []
     try:
-        _seq_rows = []
+        _scored_rows = []
         # 减仓类纪律标签（卖出信号）：有这些标签的票从主表过滤掉
         _SELL_TAGS = {"⬇减仓", "⬇减半", "🔻勿接", "💰落袋"}
         for e in main_recs:
             sym = e["symbol"]
-            cat = e["category"]
             # 检查减仓类纪律标签
             _fc = _fresh_candidate(e)
             if _fc and _fc.tactic_tags and any(t in _SELL_TAGS for t in _fc.tactic_tags):
                 continue  # 有减仓类标签，跳过
-            rk = e.get("live_rank") or e.get("rank")
-            has_rank = isinstance(rk, (int, float)) and rk > 0
-            is_core = bool(e.get("_core_stock"))
-            is_cb_core = is_core and _cb_core_pullback_ok(sym)
-            is_new = _stg_map.get(cat) in ("NEW", "kNF")
             # 涨幅键与展示列同源（_entry_display_quote）：live 0.00% 合法不被 `or` 吞。
             chg = _entry_display_quote(e)[0]
             # 不追涨过滤（2026-09-04 用户决策）：今日实时涨幅超过阈值的票不进主表
@@ -868,24 +866,17 @@ def build_scan_view(
             if accum_val is None:
                 accum_val = accum_map.get(sym)
             score = e.get("score", 0)
-            _seq_rows.append(
-                (
-                    0 if has_rank else 1,  # ① 榜上优先
-                    chg,  # ② 涨幅升序
-                    0 if is_cb_core else 1,  # ③ 回调核心
-                    rk if has_rank else 9999,  # ④ 排名升序
-                    0 if is_new else 1,  # ⑤ 新面孔
-                    e,
-                    is_core,
-                    accum_val,
-                    score,
-                )
-            )
-        _seq_rows.sort(key=lambda x: x[:5])
+            is_core = bool(e.get("_core_stock"))
+            # 统一复合评分（2026-09-08）：取代原 5 元组排序（榜上优先→涨幅→核心→排名→新面孔）
+            cs = composite_score(e, conn, accum_map=accum_map)
+            tier = composite_tier(e, conn, accum_map=accum_map)
+            _scored_rows.append((tier, cs, e, is_core, accum_val, score))
+        # 统一排序：档位升序 → composite_score 降序 → 类别优先级（composite_score 内已含 cat_base）
+        _scored_rows.sort(key=lambda x: (x[0], -x[1], CAT_DISPLAY_PRIORITY.get(x[2].get("category", ""), 99)))
         # 逐行解析为 MainRow（排序在上面的元组里完成，此处只做展示字段定型）。
         # 2026-08-29：候选（_fresh_c）必须逐行重算——构建循环里的 _fresh_c 只保留末行，
         # 跨行复用会把上一只票的行情安到本行。
-        for _hr, _cpc, _rk, _nw, _ch, _e, _ic, _av, _sc in _seq_rows:
+        for _tier, _cs, _e, _ic, _av, _sc in _scored_rows:
             _fresh_c = _fresh_candidate(_e)
             _rk_disp = _e.get("live_rank") or _e.get("rank")
             if _rk_disp is None and _fresh_c:
@@ -898,6 +889,7 @@ def build_scan_view(
                     rank=_rk_val,
                     accum=_av,
                     score=_sc or 0,
+                    composite_score=_cs,
                     core=_ic,
                     cat_label=_stg_map.get(_e["category"], "?"),
                     pct=_pct_row,
@@ -924,7 +916,7 @@ def build_scan_view(
     try:
         # 预计算行情/排名各一次（排序与行构建复用同一份，消除原每行两次 _entry_display_quote）。
         # 过滤掉已在 v1 主表展示的票（避免重复展示）和有减仓类纪律标签的票。
-        _pool_quoted: list[tuple[RecommendationRow, float, float, float | None, Candidate | None]] = []
+        _pool_scored: list[tuple[int, float, RecommendationRow, float, float, float | None, Candidate | None]] = []
         for _pe in pool_pick_recs:
             if _pe["symbol"] in _v1_symbols:
                 continue  # 已在 v1 主表，跳过
@@ -941,10 +933,13 @@ def build_scan_view(
             if _rk_disp is None and _fc:
                 _rk_disp = _fc.stock.rank
             _rk_val = _rk_disp if isinstance(_rk_disp, (int, float)) and _rk_disp > 0 else None
-            _pool_quoted.append((_pe, _pct_row, _cur_row, _rk_val, _fc))
-        _pool_quoted.sort(key=lambda t: _v2_pool_sort_key(bool(_entry_dip_labels(t[0])), t[1], t[3]))
-        pool_total = len(_pool_quoted)
-        for _pe, _pct_row, _cur_row, _rk_val, _fresh_c in _pool_quoted[:V2_POOL_DISPLAY_TOP]:
+            # 统一复合评分（2026-09-08）：v2 池选与 v1 主表使用同一排序口径
+            _cs = composite_score(_pe, conn, accum_map=accum_map)
+            _tier = composite_tier(_pe, conn, accum_map=accum_map)
+            _pool_scored.append((_tier, _cs, _pe, _pct_row, _cur_row, _rk_val, _fc))
+        _pool_scored.sort(key=lambda t: (t[0], -t[1], CAT_DISPLAY_PRIORITY.get(t[2].get("category", ""), 99)))
+        pool_total = len(_pool_scored)
+        for _tier, _cs, _pe, _pct_row, _cur_row, _rk_val, _fresh_c in _pool_scored[:V2_POOL_DISPLAY_TOP]:
             _av = None
             if _fresh_c and _fresh_c.kline:
                 _av = _fresh_c.kline.accumulated_pct
@@ -956,6 +951,7 @@ def build_scan_view(
                     rank=_rk_val,
                     accum=_av,
                     score=_pe.get("score", 0) or 0,
+                    composite_score=_cs,
                     core=bool(_pe.get("_core_stock")),
                     cat_label=_stg_map.get(_pe["category"], "?"),
                     pct=_pct_row,

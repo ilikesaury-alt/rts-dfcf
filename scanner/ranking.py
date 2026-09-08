@@ -17,6 +17,8 @@ from scanner.config import (
     BREAKOUT_PULLBACK_MIN,
     BREAKOUT_T1_VOL_RATIO,
     CAT_DISPLAY_PRIORITY,
+    COMPOSITE_CAT_BASE,
+    COMPOSITE_TIER_THRESHOLDS,
     FUND_OUTFLOW_NET_PCT,
     NEXTDAY_ACCUM_MIN,
     NEXTDAY_SPIKE_MID_MAX,
@@ -697,6 +699,119 @@ def _is_relist_breakout_setup(
     return _breakout_structure_ok(entry, conn, accum=accum, accum_map=accum_map, klines=klines)
 
 
+# ── 统一复合评分（2026-09-08，v1+v2 合一）──
+# composite_score = cat_base + tech_norm + rank_norm + fund_norm + dip_bonus
+# 所有分量校准于 nextday_attribution 1949 去重样本。v1 五桶与 v2 池选共用同一公式。
+# 纯函数：不改评分、不落库、不改档位——只产出排序键。
+
+
+def _rank_norm(entry: Any) -> float:
+    """榜单排名归一化 [0, 1]：rank 1 → 1.0，指数衰减 exp(-(rank-1)/30)。
+
+    校准依据：rank 1-10 是飙升榜头部（最强热度信号），rank 50+ 衰减趋零。
+    """
+    rk = entry.get("live_rank") or entry.get("rank")
+    if not isinstance(rk, (int, float)) or rk <= 0:
+        return 0.0
+    return math.exp(-(rk - 1) / 30.0)
+
+
+def _fund_flow_norm(entry: Any) -> float:
+    """资金流归一化 [-0.5, +0.5]：强流出 −0.5，弱流出 −0.2，中性 +0.1，流入 +0.3，强流入 +0.5。
+
+    校准依据：资金流出 ≤-8% 是档3劣后因子（nextday_attribution 口径）；强流入正向加分
+    已于 2026-08-10 下线（强流入组次日 -1.13% 反指），此处保留弱正向 +0.3 作为
+    「有资金关注」信号（非强流入反指）。
+    """
+    flow = _entry_fund_flow_pct(entry)
+    if flow is None:
+        return 0.1  # 中性默认
+    from scanner.signals import fund_flow_signal
+
+    sig = fund_flow_signal(flow)
+    return {
+        "strong_out": -0.5,
+        "out": -0.2,
+        "neutral": 0.1,
+        "in": 0.3,
+        "strong_in": 0.5,
+    }.get(sig, 0.1)
+
+
+def _dip_label_bonus(entry: Any) -> float:
+    """低吸标签加成 [0, +0.15]：超跌反转 +0.15，弱转强/缩量回调/均线支撑 +0.10，放量突破 +0.05。
+
+    标签由 matcher._detect_dip_labels 产出，写入 kline.dimensions["dip_labels"]。
+    取最高命中标签的加成（不叠加），避免多标签票分数膨胀。
+    """
+    labels = _entry_dims(entry).get("dip_labels")
+    if not isinstance(labels, list) or not labels:
+        return 0.0
+    bonus = 0.0
+    for lb in labels:
+        if lb == "超跌反转":
+            bonus = max(bonus, 0.15)
+        elif lb in ("弱转强", "缩量回调", "均线支撑"):
+            bonus = max(bonus, 0.10)
+        elif lb == "放量突破":
+            bonus = max(bonus, 0.05)
+    return bonus
+
+
+def composite_score(entry: Any, conn: Any = None, accum_map: dict | None = None) -> float:
+    """统一复合评分 [0, 10]：cat_base + tech_norm + rank_norm + fund_norm + dip_bonus。
+
+    所有分量校准于 nextday_attribution 1949 去重样本（7.5% baseline hit rate）。
+    v1 五桶与 v2 池选共用同一公式——取代原 v1 按 bucket-specific score 排序、
+    v2 按 rank 排序的分裂口径。
+    纯函数：不改评分、不落库、不改档位。
+    """
+    cat = entry.get("category", "")
+    cat_base = COMPOSITE_CAT_BASE.get(cat, 0.0)
+    # 技术分归一化：score / 100（cap 1.0）。kNF 分数反指（低分档 hit 更高）→ 反转。
+    raw_score = to_float(entry.get("score"), default=0.0)
+    if not SCORE_DESCENDING_BY_CAT.get(cat, True):
+        tech_norm = min((100.0 - raw_score) / 100.0, 1.0)
+    else:
+        tech_norm = min(raw_score / 100.0, 1.0)
+    rank_n = _rank_norm(entry)
+    fund_n = _fund_flow_norm(entry)
+    dip_b = _dip_label_bonus(entry)
+    raw = cat_base + tech_norm + rank_n + fund_n + dip_b
+    return min(10.0, raw)
+
+
+def composite_tier(
+    entry: Any,
+    conn: Any = None,
+    accum: float | None = None,
+    accum_map: dict | None = None,
+    marked: bool | None = None,
+) -> int:
+    """复合评分推导档位：过热硬门 → composite 分档。
+
+    取代原 _entry_tier 的 if/elif 级联（类别硬编码 rebound→1, comeback→2 等）。
+    过热（accum >= 50%）仍为最优先硬门——妖股累计过高时无论 composite 多高都劣后。
+    🎯 次日大涨画像（marked）降级为展示标记：composite 的 cat_base + rank_norm +
+    fund_norm 已捕获相同底层信号（甜蜜带→cat_base 间接、非超买→tech_norm 间接）。
+    """
+    if accum_map is not None:
+        accum = accum_map.get(entry.get("symbol"))
+    elif accum is None:
+        accum = _nextday_entry_accum(entry, conn)
+    # 过热妖股优先于一切（与原 _entry_tier 同口径）
+    if accum is not None and accum >= OVERHEAT_ACCUM_MAX:
+        return 3
+    cs = composite_score(entry, conn, accum_map=accum_map)
+    if cs >= COMPOSITE_TIER_THRESHOLDS[0]:
+        return 0
+    if cs >= COMPOSITE_TIER_THRESHOLDS[1]:
+        return 1
+    if cs >= COMPOSITE_TIER_THRESHOLDS[2]:
+        return 2
+    return 3
+
+
 # ── 排序组合层（2026-08-20 收敛单源）──
 # display.py / today_report.py 此前各写一份排序键装配（tier_map 预计算 + 类别分流 +
 # 分数键），且已实际分化：today_report 漏掉 known_new_face 分数反指升序特判（display
@@ -715,13 +830,10 @@ def score_sort_key(entry: Any) -> float:
 
 
 def sort_main_entries(main_recs: list[Any], tier_map: dict[tuple[str, str], int]) -> list[Any]:
-    """综合排序主表排序键 = (档位, 类别展示优先级, 分数键)。
+    """综合排序主表排序键 = (档位, -composite_score, 类别展示优先级)。
 
-    tier_map：{(symbol, category): 档位(0..3)}，由调用方预计算（display 用 _entry_tier
-    统一预计算，today_report 用逐行 _entry_tier 结果）。2026-08-26 起 key 由 symbol 改为
-    (symbol, category) 复合键——nf∩st 双挂票同 symbol 两行类别不同、档位判定口径不同
-    （short_term 豁免涨幅带等），按 symbol 键控时归属取决于遍历顺序（隐式依赖）；
-    双挂票展示规则 = 以 short_term 行判定的档位为准（调用方预计算时保证）。
+    tier_map：{(symbol, category): 档位(0..3)}，由调用方预计算。
+    composite_score 统一 v1 五桶与 v2 池选的排序信号（cat_base + tech + rank + fund + dip）。
     类别优先级取 CAT_DISPLAY_PRIORITY（值越小越靠前，未知类别落 99）。档位只影响排序，
     不改评分/不落库。
     """
@@ -729,8 +841,8 @@ def sort_main_entries(main_recs: list[Any], tier_map: dict[tuple[str, str], int]
         main_recs,
         key=lambda x: (
             tier_map.get((x["symbol"], x["category"]), 2),
+            -composite_score(x),
             CAT_DISPLAY_PRIORITY.get(x["category"], 99),
-            score_sort_key(x),
         ),
     )
 

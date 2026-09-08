@@ -740,29 +740,27 @@ def test_prominence_no_longer_sorts(monkeypatch, capsys):
 
 
 def test_display_priority_tier_banner_separates_groups(capsys):
-    """档位分隔横幅下线后，净流出票不再劣后过滤（2026-08-11）；排序改按涨幅升序优先
-    （2026-08-28 规则：榜上优先 → 涨幅升序 → 回调核心 → 排名升序 → 新面孔，档位不再
-    参与主排序）。双跑同屏后主表恒为 v1 五桶口径（2026-09-02）。"""
+    """复合评分排序（2026-09-08）：档位升序 → composite_score 降序 → 类别优先级。
+    双跑同屏后主表恒为 v1 五桶口径（2026-09-02）。"""
     conn = _rec_db()
-    # 主排序键的 chg 取 DB percent（候选池 percent 不参与排序键，见 build_scan_view），
-    # 故此处用 DB 列驱动不同涨幅，验证「涨幅升序」优先。
-    _insert_rec_pct(conn, "SZ300001", "置顶", "rebound", 50, 1.0)  # 低涨幅
-    _insert_rec_pct(conn, "SZ300002", "普通", "momentum", 70, 3.0)  # 高涨幅
-    _insert_rec_sb(conn, "SZ300003", "流出", "rebound", 90, 2.0, '{"fund_flow_main_pct": -6.0}')  # 净流出+中涨幅
+    # composite_score = cat_base + tech_norm + rank_norm + fund_norm + dip_bonus
+    _insert_rec_pct(conn, "SZ300001", "低分", "rebound", 50, 1.0)   # cat=10, tech=0.5 → ~10.6
+    _insert_rec_pct(conn, "SZ300002", "动量", "momentum", 70, 3.0)  # cat=2.6, tech=0.7 → ~3.4
+    _insert_rec_pct(conn, "SZ300003", "高分", "rebound", 90, 2.0)  # cat=10, tech=0.9 → ~10.9
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     assert "▶ 置顶档" not in out
     assert "▶ 普通档" not in out
     lines = _main_lines(out)
-    assert len(lines) == 3, f"净流出票(SZ300003)应正常展示，不再被劣后过滤: {lines}"
+    assert len(lines) == 3, f"全部票应正常展示: {lines}"
 
-    # 涨幅升序优先：1.0% → 2.0% → 3.0%（档位不再决定顺序）
     def _idx(sym: str) -> int:
         return next(i for i, ln in enumerate(lines) if sym in ln)
 
-    assert _idx("SZ300001") == 0, f"最低涨幅(1.0%)应排最前: {lines}"
-    assert _idx("SZ300003") == 1, f"中涨幅(2.0%)应居中: {lines}"
-    assert _idx("SZ300002") == 2, f"高涨幅(3.0%)应排最后: {lines}"
+    # composite_score 排序：高分 rebound 前、低分 rebound 次之、momentum 末
+    assert _idx("SZ300003") == 0, f"高分rebound(90)应排最前: {lines}"
+    assert _idx("SZ300001") == 1, f"低分rebound(50)应居中: {lines}"
+    assert _idx("SZ300002") == 2, f"momentum应排最后: {lines}"
 
 
 def test_display_priority_pool_pick_independent_section_sorted(capsys):
@@ -792,7 +790,11 @@ def test_display_priority_pool_pick_independent_section_sorted(capsys):
     def _idx(sym: str) -> int:
         return next(i for i, ln in enumerate(pool_syms) if sym in ln)
 
-    assert _idx("SZ300002") < _idx("SZ300003") < _idx("SZ300004"), f"池选区按涨幅降序(3.0→2.0→0.5): {pool_syms}"
+    # 复合评分排序（2026-09-08）：composite_score = cat_base(-5) + tech_norm + rank + fund + dip
+    # SZ300003 score=90 → tech=0.9 → composite ≈ -4.0（最高）
+    # SZ300002 score=70 → tech=0.7 → composite ≈ -4.2
+    # SZ300004 score=40 → tech=0.4 → composite ≈ -4.5（最低）
+    assert _idx("SZ300003") < _idx("SZ300002") < _idx("SZ300004"), f"池选区按composite_score降序(90→70→40): {pool_syms}"
 
 
 def test_display_priority_pool_pick_kept_out_of_main_even_higher_pct(capsys):
@@ -999,11 +1001,12 @@ def test_display_priority_tier4_sector_resonance_low(capsys):
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     lines = [ln for ln in _main_lines(out) if "SZ3000" in ln]
-    # 涨幅升序优先：SZ300004(1.0%) 最低涨幅排最前（🎯 画像仍成立）
-    assert "SZ300004" in lines[0], f"最低涨幅(1.0%)应排最前: {lines}"
-    # 档位不再排序：四只票全部正常展示（档3 小板块共振不再被劣后到末尾）
+    # 复合评分排序（2026-09-08）：同类别 short_term 内按 composite_score 降序（tech_norm 主导）
+    # SZ300002(80) > SZ300003(70) > SZ300004(68) > SZ300001(60)
+    assert "SZ300002" in lines[0], f"高分短差(80)应排最前: {lines}"
+    # 四只票全部正常展示（小板块共振不再被劣后到末尾）
     assert len(lines) == 4, f"档位不应再过滤/劣后排序: {lines}"
-    assert any("SZ300002" in ln for ln in lines), f"小板块共振(档3)仍应展示: {lines}"
+    assert any("SZ300002" in ln for ln in lines), f"小板块共振仍应展示: {lines}"
 
 
 def test_priority_row_breakout_mark_single_symbol(capsys):
