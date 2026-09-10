@@ -744,7 +744,7 @@ def test_display_priority_tier_banner_separates_groups(capsys):
     双跑同屏后主表恒为 v1 五桶口径（2026-09-02）。"""
     conn = _rec_db()
     # composite_score = cat_base + tech_norm + rank_norm + fund_norm + dip_bonus
-    _insert_rec_pct(conn, "SZ300001", "低分", "rebound", 50, 1.0)   # cat=10, tech=0.5 → ~10.6
+    _insert_rec_pct(conn, "SZ300001", "低分", "rebound", 50, 1.0)  # cat=10, tech=0.5 → ~10.6
     _insert_rec_pct(conn, "SZ300002", "动量", "momentum", 70, 3.0)  # cat=2.6, tech=0.7 → ~3.4
     _insert_rec_pct(conn, "SZ300003", "高分", "rebound", 90, 2.0)  # cat=10, tech=0.9 → ~10.9
     disp_mod.display_priority(conn, today_pool={})
@@ -1178,3 +1178,74 @@ def test_feishu_card_matches_terminal_selection(capsys):
         f"飞书卡片与终端选择不一致：终端有而卡片缺 {terminal_syms - card_syms}；"
         f"卡片有而终端无 {card_syms - terminal_syms}"
     )
+
+
+# ── 走势美感标记（2026-09-09，满足美感标「美」，不标丑）──
+
+
+def test_beauty_mark_for_verdicts():
+    """日线漂亮+分时强 → 美；丑 → 不标；双缺失 → 不标（避免误导）。"""
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    from scanner.config import now_beijing
+    from scanner.display import _beauty_mark_for
+
+    d0 = now_beijing().date()
+    bars = []
+    prev = 10.0
+    for i in range(25):
+        d = (d0 - timedelta(days=24 - i)).isoformat()
+        close = prev * 1.01
+        bars.append(
+            {
+                "date": d,
+                "open": round(prev, 3),
+                "close": round(close, 3),
+                "high": round(close * 1.003, 3),
+                "low": round(prev * 0.997, 3),
+                "volume": 1000.0,
+                "percent": 1.0,
+            }
+        )
+        prev = close
+
+    def cand(intraday):
+        return SimpleNamespace(
+            category="pool_pick",
+            is_stale=False,
+            intraday_score=intraday,
+            tactic_tags=[],
+            stock=SimpleNamespace(percent=1.5, current=10.0),
+            kline=None,
+        )
+
+    entry: dict = {"symbol": "SZ300001", "category": "pool_pick"}
+    entry["_candidate"] = cand(5.0)
+    assert _beauty_mark_for(entry, bars) == "美"
+    assert _beauty_mark_for(entry, None) == "美"  # 日线缺失但分时可判且过
+
+    entry_bad = {"symbol": "SZ300001", "category": "pool_pick", "_candidate": cand(-2.0)}
+    assert _beauty_mark_for(entry_bad, bars) == ""  # 只标美不标丑
+
+    naked = {"symbol": "SZ300001", "category": "pool_pick"}  # 无候选无分时维度
+    assert _beauty_mark_for(naked, None) == ""
+
+
+def test_beauty_mark_disabled_when_gate_off(monkeypatch):
+    """RTS_TREND_MARK=0：展示标记整体关闭（与硬拦开关独立）。"""
+    import scanner.display as disp
+
+    monkeypatch.setattr(disp, "TREND_MARK_ENABLED", False)
+    entry = {"symbol": "SZ300001", "category": "pool_pick"}
+    assert disp._beauty_mark_for(entry, None) == ""
+
+
+def test_entry_row_suffix_renders_beauty_tag():
+    """行尾 suffix：「美」绿色，未传不渲染。"""
+    from scanner.display import ANSI, _entry_row_suffix
+
+    e = {"symbol": "SZ300001", "name": "票", "category": "pool_pick"}
+    out_ok = _entry_row_suffix(e, {}, beauty="美")
+    assert "美" in out_ok and ANSI["GREEN"] in out_ok
+    assert _entry_row_suffix(e, {}) == ""

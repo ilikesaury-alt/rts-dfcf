@@ -17,12 +17,14 @@ from scanner.config import (
     DISPLAY_MAX_TODAY_PCT,
     FINAL_PICK_ENABLED,
     TOP40_THRESHOLD,
+    TREND_MARK_ENABLED,
     V2_POOL_DISPLAY_TOP,
     now_beijing,
 )
 from scanner.core_themes import _low_buy_quality as _core_dip_quality
 from scanner.core_themes import core_stock_symbols
 from scanner.database import (
+    get_cached_klines,
     get_fund_flow_pct_map,
     get_today_recommendations,
 )
@@ -47,6 +49,9 @@ from scanner.ranking import (
 from scanner.sector import classify_sector
 from scanner.signals import fund_flow_signal, split_risk_flags
 from scanner.utils import EXTERNAL_FAILURES, clear_screen, to_float, to_int
+
+# 走势美感标记判定单源（与美感门同源；相对导入绕开 pyright 会话冻结快照的绝对名解析）
+from .trend_beauty import beauty_mark
 
 # ANSI SGR 转义序列（\x1b[...m：颜色/加粗/复位）。_vis_len 必须先剥离它们再量宽度，
 # 否则 `[`、数字、`;`、`m` 等可打印字符各被 wcwidth 计 1 列，彩色文本被高估宽度，
@@ -289,17 +294,31 @@ def _entry_sector(entry: RecommendationRow | dict) -> str:
     return classify_sector(entry["name"])
 
 
+def _beauty_mark_for(entry: RecommendationRow | dict, kline: list | None) -> str:
+    """v1/v2 行尾走势标记：满足美感 → "美"；否则空（不标丑，2026-09-09 用户口径）。
+
+    判定单源在 trend_beauty.beauty_mark（与美感门同源、fail-open 一致：数据缺失
+    不标，避免误导）。纯展示，不改过滤/排序/落库。2026-09-09 数据裁决后硬拦
+    默认关，本标记保留作买入体验参考（"稳而不爆"）。开关 RTS_TREND_MARK。
+    """
+    if not TREND_MARK_ENABLED:
+        return ""
+    return beauty_mark(entry, kline, _fresh_candidate(entry))
+
+
 def _entry_row_suffix(
     entry: RecommendationRow | dict,
     flow_pct_map: dict[str, float],
     marked: bool = False,
     breakout_marked: bool = False,
+    beauty: str = "",
 ) -> str:
-    """行尾可变区统一渲染：风险标记 → 资金流/连板 extra → 🎯 → ⚡。
+    """行尾可变区统一渲染：风险标记 → 资金流/连板 extra → 🎯 → ⚡ → 走势标记。
 
     优选池行与核心低吸区行共用（2026-08-30 收口）——此前仅补充区渲染这些
     标记，主视图优选池行丢失 🎯/⚡/资金流信息。顺序与原 _print_priority_row 一致。
     （💡低吸标签行尾渲染已按需求移除——只用于排序不展示，2026-09-03）
+    beauty: 走势美感标记（_beauty_mark_for 产出；仅 v1/v2 池选行传入）。
     """
     c = _fresh_candidate(entry)
     parts: list[str] = []
@@ -330,6 +349,9 @@ def _entry_row_suffix(
     if c and getattr(c, "tactic_tags", None):
         for tag in c.tactic_tags:
             parts.append(f" {ANSI['YELLOW']}{tag}{ANSI['RESET']}")
+    # 走势美感标记（2026-09-09，仅 v1/v2 池选行传入）：满足美感标「美」绿，不标丑
+    if beauty:
+        parts.append(f" {ANSI['GREEN']}{beauty}{ANSI['RESET']}")
     return "".join(parts)
 
 
@@ -679,6 +701,9 @@ class ScanView:
     # 终选参考区文本行（2026-09-04）：v1+v2 合池 → 档0画像评级 ≤3 只 + 落选理由。
     # 与决策层互补（决策层答「该不该买」，终选区答「必须持仓时买谁」），渲染在决策层之后。
     final_pick_lines: list[str] | None = None
+    # 走势美感标记（2026-09-09）：{(symbol, category): "✓走势"|"⚠走势"}，v1/v2 池选行
+    # 行尾渲染（_entry_row_suffix beauty 参数）。与终选美感门同源判定，纯展示预判。
+    beauty_mark: dict[tuple[str, str], str] | None = None
 
 
 def build_scan_view(
@@ -817,6 +842,17 @@ def build_scan_view(
         )
         for e in main_recs
     }
+
+    # 走势美感标记（2026-09-09，✓/⚠）：与美感门同一判定单源（trend_beauty），
+    # 纯展示预判「这票的走势口径」（硬拦降级后仅作买入体验参考），不改过滤/排序/落库。
+    # 仅 v1/v2 池选行渲染；回马枪/核心低吸区不标（日线门与低位类语义冲突）。
+    # 批量取 K 线防 N+1；RTS_TREND_MARK=0 时标记整体为空。
+    beauty_mark: dict[tuple[str, str], str] = {}  # (symbol, category) → "✓走势"/"⚠走势"
+    if TREND_MARK_ENABLED:
+        _beauty_entries = main_recs + pool_pick_recs
+        _beauty_klines = get_cached_klines(conn, sorted({e["symbol"] for e in _beauty_entries}))
+        for e in _beauty_entries:
+            beauty_mark[(e["symbol"], e["category"])] = _beauty_mark_for(e, _beauty_klines.get(e["symbol"]))
 
     # 综合排序主表已隐藏（2026-08-28）：v1 池选已替代其展示功能。
     # （档位分组渲染的旧实现已删除；需还原见 git 历史，勿在此堆积注释代码。）
@@ -1049,6 +1085,7 @@ def build_scan_view(
         pool_total=pool_total,
         decision_lines=_decision_lines,
         final_pick_lines=_final_pick_lines,
+        beauty_mark=beauty_mark,
     )
 
 
@@ -1097,7 +1134,13 @@ def render_terminal(view: ScanView) -> None:
         # 💡低吸标签不再行尾展示（太杂乱，2026-09-03），仅作两段式排序依据（_v2_pool_sort_key）。
         _marked = view.nextday_mark.get((_e["symbol"], _e["category"]), False)
         _bolt = view.breakout_mark.get((_e["symbol"], _e["category"]), False)
-        _suffix = _entry_row_suffix(_e, view.flow_pct_map, marked=_marked, breakout_marked=_bolt)
+        _suffix = _entry_row_suffix(
+            _e,
+            view.flow_pct_map,
+            marked=_marked,
+            breakout_marked=_bolt,
+            beauty=(view.beauty_mark or {}).get((_e["symbol"], _e["category"]), ""),
+        )
         print(
             _table_row(
                 [

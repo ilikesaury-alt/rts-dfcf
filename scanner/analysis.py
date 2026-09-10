@@ -503,7 +503,7 @@ def analyze_new_face(
     elif accumulated <= 15:
         acc_score = W["accum_10_15"]
         dims["new_face_accumulated"] = W["accum_10_15"]
-    elif accumulated <= 20:
+    else:  # accumulated <= 20（上方 >20 已提前 return None，else 语义等价且消除 possibly-unbound）
         acc_score = W["accum_15_20"]
         dims["new_face_accumulated"] = W["accum_15_20"]
     score += acc_score

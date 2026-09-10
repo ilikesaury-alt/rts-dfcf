@@ -609,6 +609,12 @@ DISPLAY_MAX_TODAY_PCT = _env_float("RTS_DISPLAY_MAX_TODAY_PCT", 8.0)
 # 回滚杠杆：RTS_DECISION_LAYER=0 关闭。
 DECISION_LAYER_ENABLED = _env_flag("RTS_DECISION_LAYER", True)
 
+# 决策层分时门（2026-09-09 上线，当日双窗口实测后降级）：数据结论（
+# beauty_gate_eval.py，2307 样本）——分时走弱桶（≤-3）hit 反而全场最高（11.1%/11.2%），
+# 「低吸不接回落刀」对次日大涨口径被证伪，故默认关闭（仅作可选纪律）。
+# 重开：RTS_DECISION_BEAUTY_INTRADAY=1。判定单源 scanner.trend_beauty。
+DECISION_INTRADAY_BEAUTY_ENABLED = _env_flag("RTS_DECISION_BEAUTY_INTRADAY", False)
+
 # ── 终选参考区（2026-09-04；2026-09-05 升级为概率+周期感知终选）──
 # 与决策层互补：决策层答「现在该不该买」（门关→空仓），终选区答「若必须持仓买谁」
 # （无论门开关都给结论）。评级单源复用 today_report._tier0_verdict（已回测口径），
@@ -618,6 +624,33 @@ DECISION_LAYER_ENABLED = _env_flag("RTS_DECISION_LAYER", True)
 FINAL_PICK_ENABLED = _env_flag("RTS_FINAL_PICK", True)
 FINAL_PICK_MAX = 3  # 终选最多 N 只（用户买入预算 1-3 只，2026-09-08 由 2 放宽为 3）
 FINAL_PICK_REJECT_TOP = 4  # 落选理由最多展示条数（按概率降序取头部）
+
+# ── 终选走势美感门（2026-09-09）：分时/日线走势「漂亮」是终选准入条件 ──
+# 日线漂亮（scanner/trend_beauty.evaluate_daily_trend）= 干净上升趋势 6 硬门：
+#   ① MA 多头排列 MA5>MA10>MA20 ② 近5日收盘趋势向上 ③ 无暴跌日
+#   ④ 回调可控（单日跌幅小）⑤ 无长上影冲高回落 ⑥ 收盘未远离 20 日高点。
+# 分时漂亮 = intraday_score ≥ INTRADAY_BEAUTY_MIN（复用盘中 analyze_intraday
+#   评分，-10~10；>0 平稳走高/高位不回落，<0 冲高回落/走弱）。
+# 数据缺失（日线不足/intraday_score 缺失即 0.0 默认值）fail-open 不判否——
+#   终选是展示层，只拦「可判定的丑」，不因数据缺口误杀。
+# 【2026-09-09 数据裁决：硬拦默认关】双窗口实测（beauty_gate_eval.py，2307 样本，
+#   日线 T-1 前防前视）：放行组 hit 8.4%/0.0% vs 基线 9.8%/5.5%，双窗口同向低于
+#   基线；且样本内放行仅 21/1346（1.6%）。「漂亮=稳但不爆」：放行组 avg/med 两窗
+#   均高于基线（滤掉大亏）但 hit 反而低（滤掉爆发票）。对「次日大涨」目标负贡献，
+#   硬拦降级；「美」展示标记保留（TREND_MARK_ENABLED）作为买入体验参考。
+#   重开硬拦：RTS_FINAL_PICK_BEAUTY=1。
+FINAL_PICK_BEAUTY_ENABLED = _env_flag("RTS_FINAL_PICK_BEAUTY", False)
+# 走势展示标记（「美」，2026-09-09）：v1/v2 行尾 + 终选个股行尾，纯展示。
+# 独立于硬拦开关——硬拦关了标记仍在（买入体验/回撤控制参考：放行组 avg 更高、
+# 尾部风险更小）。关：RTS_TREND_MARK=0。
+TREND_MARK_ENABLED = _env_flag("RTS_TREND_MARK", True)
+INTRADAY_BEAUTY_MIN = 2.5  # intraday_score ≥ 此值判分时漂亮（-10~10）
+DAILY_BEAUTY_MIN_BARS = 20  # 缓存日线少于此根数 → 无法判定（fail-open 放行）
+DAILY_BEAUTY_MAX_CRASH_PCT = -5.0  # 近5日无单日跌幅 ≤ 此值的暴跌日
+DAILY_BEAUTY_MAX_PULLBACK_PCT = 3.0  # 近5日单日跌幅超过此值 = 回调失控（丑）
+DAILY_BEAUTY_MAX_UPPER_SHADOW = 4.0  # 近5日最大上影线（% vs 昨收）超过此值 = 冲高回落
+DAILY_BEAUTY_MIN_SLOPE_PCT = 0.0  # 近5日收盘涨幅 ≥ 此值（趋势向上）
+DAILY_BEAUTY_MAX_OFF_HIGH_PCT = 12.0  # 收盘距 20 日最高收盘回撤超过此值 = 破位
 
 # Time-based bonus thresholds (minutes since midnight)
 
@@ -868,15 +901,15 @@ OVERHEAT_ACCUM_MAX = 50.0
 # 所有分量校准于 nextday_attribution 1949 去重样本（7.5% baseline hit rate）。
 # 类别基值：(hit_rate - 7.5) / (17.2 - 7.5) * 10，负值表示低于基准。
 COMPOSITE_CAT_BASE: dict[str, float] = {
-    "rebound": 10.0,        # hit 17.2% → +10.0
+    "rebound": 10.0,  # hit 17.2% → +10.0
     "known_new_face": 5.4,  # hit 12.7% → +5.4
-    "momentum": 2.6,        # hit 10.0% → +2.6
-    "new_face": 2.3,        # hit 9.7% → +2.3
-    "core_dip": 0.7,        # hit 8.2% → +0.7
-    "short_term": -1.4,     # hit 6.1% → -1.4
-    "pullback": -2.0,       # hit 5.6% → -2.0（已下线，保留供回测）
-    "comeback": -4.6,       # hit 3.0% → -4.6
-    "pool_pick": -5.0,      # hit 2.6% → -5.0
+    "momentum": 2.6,  # hit 10.0% → +2.6
+    "new_face": 2.3,  # hit 9.7% → +2.3
+    "core_dip": 0.7,  # hit 8.2% → +0.7
+    "short_term": -1.4,  # hit 6.1% → -1.4
+    "pullback": -2.0,  # hit 5.6% → -2.0（已下线，保留供回测）
+    "comeback": -4.6,  # hit 3.0% → -4.6
+    "pool_pick": -5.0,  # hit 2.6% → -5.0
 }
 # 档位阈值：composite_score 推导，取代原 _entry_tier 的 if/elif 级联。
 COMPOSITE_TIER_THRESHOLDS: dict[int, float] = {

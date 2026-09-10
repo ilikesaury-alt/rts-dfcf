@@ -255,7 +255,12 @@ def _row_line(entry, view, rank=None, accum=None, score=None) -> str:
         snap.accum = accum
     if score is not None:
         snap.score = score
-    return _fmt_row(snap)
+    line = _fmt_row(snap)
+    # 走势美感标记（2026-09-09）：v1/v2 池选行尾 ✓/⚠，与终端同源（view.beauty_mark）
+    bm = (getattr(view, "beauty_mark", None) or {}).get((entry.get("symbol"), entry.get("category")), "")
+    if bm:
+        line += f" {bm}"
+    return line
 
 
 def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 0, top_n: int = FEISHU_TOP_N) -> dict:
@@ -293,8 +298,7 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
             merged.append("── 决策推荐 ──")
         if final_pick_lines:
             _gate_open = any("允许开仓" in dl for dl in (decision_lines or []))
-            merged.append("── 终选参考（合池·次日概率排序）──" if _gate_open
-                          else "── 终选参考（门关·仅观察参考）──")
+            merged.append("── 终选参考（合池·次日概率排序）──" if _gate_open else "── 终选参考（门关·仅观察参考）──")
             merged.extend(final_pick_lines[1:])
         elements.append(
             {

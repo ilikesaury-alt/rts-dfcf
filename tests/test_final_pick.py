@@ -271,5 +271,178 @@ def test_render_empty_pool():
     assert any("无合格标的" in ln for ln in lines)
 
 
+# ── 走势美感门（2026-09-09）：分时/日线「漂亮」是终选准入条件 ──
+
+
+def _beauty_conn():
+    """带 daily_kline 表的内存库（get_cached_klines SELECT 含 finalized 列）。"""
+    conn = _conn()
+    conn.execute(
+        """CREATE TABLE daily_kline (
+            symbol TEXT NOT NULL, timestamp INTEGER, date TEXT NOT NULL,
+            open REAL, close REAL, high REAL, low REAL, volume REAL, percent REAL,
+            finalized INTEGER DEFAULT 1, PRIMARY KEY(symbol, date))"""
+    )
+    return conn
+
+
+def _insert_kline(conn, symbol, bars):
+    for b in bars:
+        conn.execute(
+            "INSERT OR REPLACE INTO daily_kline VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (symbol, None, b["date"], b["open"], b["close"], b["high"], b["low"], b["volume"], b["percent"], 1),
+        )
+
+
+def _beautiful_bars():
+    """25 根 +1%/日稳步上行（test_trend_beauty 同构造，视为漂亮日线）。"""
+    from datetime import timedelta
+
+    from scanner.config import now_beijing
+
+    d0 = now_beijing().date()
+    bars = []
+    prev = 10.0
+    for i in range(25):
+        d = (d0 - timedelta(days=24 - i)).isoformat()
+        close = prev * 1.01
+        bars.append(
+            {
+                "date": d,
+                "open": round(prev, 3),
+                "close": round(close, 3),
+                "high": round(close * 1.003, 3),
+                "low": round(prev * 0.997, 3),
+                "volume": 1000.0,
+                "percent": 1.0,
+            }
+        )
+        prev = close
+    return bars
+
+
+def _downtrend_bars():
+    """25 根 -1%/日阴跌（MA 空头+趋势向下+破位，视为丑日线）。"""
+    bars = _beautiful_bars()
+    prev = 10.0
+    for b in bars:
+        close = prev * 0.99
+        b.update(
+            open=round(prev, 3),
+            close=round(close, 3),
+            high=round(close * 1.003, 3),
+            low=round(prev * 0.997, 3),
+            percent=-1.0,
+        )
+        prev = close
+    return bars
+
+
+def _cand(category="pool_pick", intraday_score=0.0, percent=1.5):
+    """实时候选替身（_fresh_candidate 信任契约：is_stale=False + 类别匹配）。
+
+    需带 stock（_entry_display_quote 读 stock.percent/current 兆底）。"""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        category=category,
+        is_stale=False,
+        intraday_score=intraday_score,
+        tactic_tags=[],
+        stock=SimpleNamespace(percent=percent, current=10.0),
+        kline=None,  # _entry_dims 读 c.kline.dimensions：None → 回退 score_breakdown
+    )
+
+
+def test_beauty_gate_passes_beautiful_stock(monkeypatch):
+    """门开（硬拦默认已关，2026-09-09 数据裁决）：日线漂亮+分时强 → 入选+「美」标记。"""
+    import scanner.final_pick as fp
+
+    monkeypatch.setattr(fp, "FINAL_PICK_BEAUTY_ENABLED", True)
+    conn = _beauty_conn()
+    _insert_kline(conn, "SZ300001", _beautiful_bars())
+    good = _entry(symbol="SZ300001", name="好票", percent=1.5)
+    good["_candidate"] = _cand(intraday_score=5.0)
+    result = _build(conn, [good])
+    assert [p["symbol"] for p in result["picks"]] == ["SZ300001"]
+    assert result["beauty_blocked"] == 0
+    lines = render_final_pick_lines(result)
+    assert any(" 美" in ln for ln in lines)
+
+
+def test_beauty_gate_blocks_ugly_stock(monkeypatch):
+    """门开：日线阴跌 + 分时走弱（intraday_score=-3）→ 拦截，落选理由标注两条。"""
+    import scanner.final_pick as fp
+
+    monkeypatch.setattr(fp, "FINAL_PICK_BEAUTY_ENABLED", True)
+    from scanner.final_pick import _reject_reason
+
+    conn = _beauty_conn()
+    _insert_kline(conn, "SZ300002", _downtrend_bars())
+    bad = _entry(symbol="SZ300002", name="丑票", percent=1.5)
+    bad["_candidate"] = _cand(intraday_score=-3.0)
+    result = _build(conn, [bad])
+    assert result["picks"] == []
+    assert result["beauty_blocked"] == 1
+    reason = _reject_reason(result["rejects"][0], [])
+    assert "日线不漂亮" in reason and "分时不漂亮" in reason
+    lines = render_final_pick_lines(result)
+    assert any("日线不漂亮" in ln for ln in lines)
+
+
+def test_beauty_gate_missing_data_fails_open(monkeypatch):
+    """门开 + 无日线表 + 无候选 + 无 dims：两维度都无法判定 → fail-open 不拦截。"""
+    import scanner.final_pick as fp
+
+    monkeypatch.setattr(fp, "FINAL_PICK_BEAUTY_ENABLED", True)
+    result = _build(_conn(), [_entry(name="裸票", percent=1.5)])
+    assert [p["symbol"] for p in result["picks"]] == ["SZ300001"]
+    assert [p.get("_beauty_fail") for p in result["picks"]] == [None]
+
+
+def test_beauty_gate_intraday_dims_fallback(monkeypatch):
+    """门开：日线漂亮 + 无实时候选 → 分时回退 score_breakdown dims（-2 → 拦，+5 → 放）。"""
+    import scanner.final_pick as fp
+
+    monkeypatch.setattr(fp, "FINAL_PICK_BEAUTY_ENABLED", True)
+    conn = _beauty_conn()
+    _insert_kline(conn, "SZ300001", _beautiful_bars())
+    _insert_kline(conn, "SZ300002", _beautiful_bars())
+    weak = _entry(symbol="SZ300001", name="弱分时", percent=1.5, dims={"intraday_score": -2.0})
+    strong = _entry(symbol="SZ300002", name="强分时", percent=1.5, dims={"intraday_score": 5.0})
+    result = _build(conn, [weak, strong])
+    syms = [p["symbol"] for p in result["picks"]]
+    assert syms == ["SZ300002"]
+    assert result["beauty_blocked"] == 1
+
+
+def test_beauty_gate_zero_intraday_is_missing_not_ugly(monkeypatch):
+    """门开：intraday_score=0.0（未评分默认值）+ 日线漂亮 → fail-open 不拦截。"""
+    import scanner.final_pick as fp
+
+    monkeypatch.setattr(fp, "FINAL_PICK_BEAUTY_ENABLED", True)
+    conn = _beauty_conn()
+    _insert_kline(conn, "SZ300001", _beautiful_bars())
+    e = _entry(symbol="SZ300001", name="零分票", percent=1.5)
+    e["_candidate"] = _cand(intraday_score=0.0)
+    result = _build(conn, [e])
+    assert [p["symbol"] for p in result["picks"]] == ["SZ300001"]
+
+
+def test_beauty_gate_default_off(monkeypatch):
+    """2026-09-09 数据裁决后硬拦默认关：丑票不拦不评（beauty_blocked=0，照常入选）。
+
+    双窗口实测：放行组 hit 8.4%/0.0% vs 基线 9.8%/5.5%，硬拦对「次日大涨」负贡献，
+    故降级——✓/⚠ 展示标记仍在（TREND_MARK_ENABLED）。重开：RTS_FINAL_PICK_BEAUTY=1。
+    """
+    conn = _beauty_conn()
+    _insert_kline(conn, "SZ300002", _downtrend_bars())
+    bad = _entry(symbol="SZ300002", name="丑票", percent=1.5)
+    bad["_candidate"] = _cand(intraday_score=-3.0)
+    result = _build(conn, [bad])
+    assert [p["symbol"] for p in result["picks"]] == ["SZ300002"]
+    assert result["beauty_blocked"] == 0
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))

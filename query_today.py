@@ -4,10 +4,13 @@ import sqlite3
 import sys
 from datetime import timedelta
 
-sys.stdout.reconfigure(encoding='utf-8')
+# TextIOWrapper.reconfigure 运行时存在但 TextIO 类型存根上无此属性 → 走运行时探测
+_stdout_reconfigure = getattr(sys.stdout, "reconfigure", None)
+if callable(_stdout_reconfigure):
+    _stdout_reconfigure(encoding="utf-8")
 
-parser = argparse.ArgumentParser(description='查询今日推荐')
-parser.add_argument('--date', default=None, help='目标日期 (YYYY-MM-DD)，默认为昨日')
+parser = argparse.ArgumentParser(description="查询今日推荐")
+parser.add_argument("--date", default=None, help="目标日期 (YYYY-MM-DD)，默认为昨日")
 args = parser.parse_args()
 
 from scanner.config import DB_PATH, now_beijing  # noqa: E402  (reconfigure 后导入避免编码异常)
@@ -24,21 +27,21 @@ cur = conn.execute("SELECT * FROM recommendations r WHERE r.date = ? ORDER BY r.
 rows = cur.fetchall()
 cur.close()
 conn.close()
-print(f'{target_date} 推荐: {len(rows)} 条')
+print(f"{target_date} 推荐: {len(rows)} 条")
 print()
 for r in rows:
     dims = {}
-    idx = col_names.index('score_breakdown')
+    idx = col_names.index("score_breakdown")
     if r[idx] and str(r[idx]).strip():
         try:
             dims = json.loads(r[idx])
         except Exception as e:
             dims = {"parse_error": str(e)}
-    sym_idx = col_names.index('symbol')
-    sc_idx = col_names.index('score')
-    cat_idx = col_names.index('category')
-    tr_idx = col_names.index('trend')
-    print(f'{r[sym_idx]:10s} {r[cat_idx]:8s} score={r[sc_idx]:3d} trend={r[tr_idx]!r}')
+    sym_idx = col_names.index("symbol")
+    sc_idx = col_names.index("score")
+    cat_idx = col_names.index("category")
+    tr_idx = col_names.index("trend")
+    print(f"{r[sym_idx]:10s} {r[cat_idx]:8s} score={r[sc_idx]:3d} trend={r[tr_idx]!r}")
     for k, v in sorted(dims.items()):
-        print(f'    {k}: {v}')
+        print(f"    {k}: {v}")
     print()

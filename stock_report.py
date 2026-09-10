@@ -5,7 +5,10 @@ import re
 import sqlite3
 import sys
 
-sys.stdout.reconfigure(encoding="utf-8")
+# TextIOWrapper.reconfigure 运行时存在但 TextIO 类型存根上无此属性 → 走运行时探测
+_stdout_reconfigure = getattr(sys.stdout, "reconfigure", None)
+if callable(_stdout_reconfigure):
+    _stdout_reconfigure(encoding="utf-8")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
@@ -66,8 +69,14 @@ def get_recommendations(conn: sqlite3.Connection, symbol: str) -> list[dict]:
     ).fetchall()
     return [
         {
-            "date": r[0], "time": r[1], "category": r[2], "score": r[3],
-            "percent": r[4], "trend": r[5], "breakdown": r[6], "source": r[7],
+            "date": r[0],
+            "time": r[1],
+            "category": r[2],
+            "score": r[3],
+            "percent": r[4],
+            "trend": r[5],
+            "breakdown": r[6],
+            "source": r[7],
         }
         for r in rows
     ]
@@ -98,7 +107,16 @@ def sparkline(values: list[float], width: int = 20) -> str:
     n = len(values)
     step = max(1, n // width)
     sampled = values[::step][:width]
-    line = "".join(bars[min(7, int((v - mn) / rng * 7))] for v in sampled)
+
+    def _bar_idx(v: float) -> int:
+        """值 → 柱索引，无效输入（NaN/inf/越界）安全归零，不抛异常。"""
+        try:
+            idx = int((v - mn) / rng * 7)
+        except (TypeError, ValueError, OverflowError, ZeroDivisionError):
+            return 0
+        return min(7, max(0, idx))
+
+    line = "".join(bars[_bar_idx(v)] for v in sampled)
     return f"{line}  {mn:.1f}~{mx:.1f}"
 
 
@@ -185,6 +203,7 @@ def main():
         live_data = {}
         if not args.quick and appearances:
             from scanner.api import fetch_market_caps_batch, make_session
+
             session = make_session()
             try:
                 caps = fetch_market_caps_batch(session, [symbol])
@@ -264,6 +283,7 @@ def main():
         # 读 DB 当日缓存，无数据则尝试拉取）。资不抵债=退市风险级，醒目警示。
         try:
             from scanner.fundamentals import collect_fund_risk, get_fund_risk_from_db
+
             reason = get_fund_risk_from_db(conn, symbol)
             if reason is None and not args.quick:
                 reason = collect_fund_risk(conn, [symbol]).get(symbol)
@@ -288,9 +308,7 @@ def main():
                 bars = ["█", "▇", "▆", "▅", "▄", "▃", "▂", "▁"]
                 step = max(1, len(ranks) // width)
                 sampled = ranks[::step][:width]
-                rank_line = "".join(
-                    bars[min(7, int((r - r_min) / r_rng * 7))] for r in sampled
-                )
+                rank_line = "".join(bars[min(7, int((r - r_min) / r_rng * 7))] for r in sampled)
                 print(f"  排名轨迹(高=█ 低=▁): {r_min}~{r_max}")
                 print(f"  {rank_line}")
 
@@ -325,8 +343,11 @@ def main():
                 ma20 = sum(closes[-20:]) / 20
                 last_close = closes[-1]
                 print("\n  均线位置:")
-                ma5_pos = ('(↑ 股价在其' + ('上方' if last_close > ma5 else '下方') + ')'
-                           if ma5 and abs(last_close - ma5) / ma5 < 0.05 else '')
+                ma5_pos = (
+                    "(↑ 股价在其" + ("上方" if last_close > ma5 else "下方") + ")"
+                    if ma5 and abs(last_close - ma5) / ma5 < 0.05
+                    else ""
+                )
                 print(f"  MA5  = {ma5:.2f}  {ma5_pos}")
                 print(f"  MA10 = {ma10:.2f}")
                 # MA20 趋势需对比"前一日 MA20"，要求至少 21 根 K 线才能取到完整 20 元素窗口
@@ -354,8 +375,9 @@ def main():
 
             if kdj_val:
                 k, d, j = kdj_val["K"], kdj_val["D"], kdj_val["J"]
-                kdj_str = (green(f"KDJ K={k:.1f} D={d:.1f} J={j:.1f}") if j > k
-                           else red(f"KDJ K={k:.1f} D={d:.1f} J={j:.1f}"))
+                kdj_str = (
+                    green(f"KDJ K={k:.1f} D={d:.1f} J={j:.1f}") if j > k else red(f"KDJ K={k:.1f} D={d:.1f} J={j:.1f}")
+                )
                 if j > 100:
                     kdj_str += yellow(" ⚠J值超买")
                 elif j < 0:
@@ -428,6 +450,7 @@ def main():
             scores = [r["score"] for r in recs[:20]]
             if scores:
                 from collections import Counter
+
                 cat_counts = Counter(categories)
                 cat_summary = " | ".join(f"{k}: {v}次" for k, v in sorted(cat_counts.items(), key=lambda x: -x[1]))
                 print(f"  策略分布: {cat_summary}")
@@ -442,8 +465,10 @@ def main():
                     pct_display = red(f"{r['percent']:.2f}%")
                 else:
                     pct_display = "N/A"
-                print(f"  {r['date'][5:]:<8}  {r['category']:<16}  {r['score']:>3}  "
-                      f"{str(pct_display):>10}  {r['trend']:<10}  {r['source']}")
+                print(
+                    f"  {r['date'][5:]:<8}  {r['category']:<16}  {r['score']:>3}  "
+                    f"{str(pct_display):>10}  {r['trend']:<10}  {r['source']}"
+                )
 
             last_rec = recs[0]
             if last_rec.get("breakdown"):
@@ -472,8 +497,11 @@ def main():
             if high_ever > low_ever:
                 print(f"  区间最高: {high_ever:.2f}")
                 print(f"  区间最低: {low_ever:.2f}")
-                retrace_str = (green(f"距最高: {pct_from_high:+.2f}%") if pct_from_high > -5
-                               else red(f"距最高: {pct_from_high:+.2f}%"))
+                retrace_str = (
+                    green(f"距最高: {pct_from_high:+.2f}%")
+                    if pct_from_high > -5
+                    else red(f"距最高: {pct_from_high:+.2f}%")
+                )
                 print(f"  当前价:  {current:.2f}  ({retrace_str})")
                 print(f"  区间涨幅: {(high_ever - low_ever) / low_ever * 100:.1f}%")
 
@@ -495,21 +523,24 @@ def main():
         # 行情增强（涨停池/资金流）：只读 market_extra_cache，不发起网络请求
         try:
             from scanner.database import get_market_extra_cache
+
             extra_lines = []
             zt = get_market_extra_cache(conn, [symbol], "zt_pool").get(symbol)
             ff = get_market_extra_cache(conn, [symbol], "fund_flow").get(symbol)
             if zt:
                 extra_lines.append(
                     f"涨停池: 连板{zt.get('lianban', 0)} 统计{zt.get('zt_stat', '-')} "
-                    f"炸板{zt.get('zhaban', 0)} 行业{zt.get('industry', '-')}")
+                    f"炸板{zt.get('zhaban', 0)} 行业{zt.get('industry', '-')}"
+                )
             if ff:
                 main_net = ff.get("main_net", 0) or 0
                 main_pct = ff.get("main_pct", 0) or 0
                 super_net = ff.get("super_net", 0) or 0
                 cfn = green if main_net >= 0 else red
                 extra_lines.append(
-                    f"主力净流入: {cfn(f'{main_net/1e8:+.2f}亿 ({main_pct:+.2f}%)')} | "
-                    f"超大单: {cfn(f'{super_net/1e8:+.2f}亿')}")
+                    f"主力净流入: {cfn(f'{main_net / 1e8:+.2f}亿 ({main_pct:+.2f}%)')} | "
+                    f"超大单: {cfn(f'{super_net / 1e8:+.2f}亿')}"
+                )
             if extra_lines:
                 print("\n  行情增强:")
                 for line in extra_lines:

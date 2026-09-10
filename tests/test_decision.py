@@ -208,5 +208,110 @@ def test_decision_lines_with_picks():
     assert any("1. SZ300001" in ln for ln in lines)
 
 
+# ── 分时门（2026-09-09 扩展：低吸不接正在回落的刀）──
+
+
+def _db_sb() -> sqlite3.Connection:
+    """带 score_breakdown 列的库（分时门数据源；旧 _db 无该列 → 门 fail-open 跳过）。"""
+    conn = _db()
+    conn.execute("ALTER TABLE recommendations ADD COLUMN score_breakdown TEXT")
+    return conn
+
+
+def _seed_rec_sb(conn, sym, cat, score, intraday):
+    """种推荐行 + 落库 score_breakdown（含 intraday_score）。"""
+    import json
+
+    _seed_rec(conn, TODAY, sym, cat, score)
+    conn.execute(
+        "UPDATE recommendations SET score_breakdown=? WHERE symbol=?",
+        (json.dumps({"intraday_score": intraday}), sym),
+    )
+    conn.commit()
+
+
+def test_decision_intraday_gate_blocks_weak_intraday(monkeypatch):
+    """门开（默认已关，2026-09-09 数据裁决）：分时走弱（负分）的票不进决策推荐。"""
+    import scanner.decision as dm
+
+    monkeypatch.setattr(dm, "DECISION_INTRADAY_BEAUTY_ENABLED", True)
+    conn = _db_sb()
+    _seed_strong_day(conn)
+    _seed_rec_sb(conn, "SZ300001", "core_dip", 90, -3.0)  # 高分但分时走弱 → 拦
+    _seed_rec_sb(conn, "SZ300002", "core_dip", 70, 5.0)  # 分时漂亮 → 入选
+    result = build_decision_picks(conn, today=TODAY)
+    assert [p["symbol"] for p in result["picks"]] == ["SZ300002"]
+    assert result["beauty_blocked"] == 1
+
+
+def test_decision_intraday_gate_zero_score_fail_open():
+    """intraday_score=0.0（未评分默认值歧义）→ 按缺失 fail-open 不拦。"""
+    conn = _db_sb()
+    _seed_strong_day(conn)
+    _seed_rec_sb(conn, "SZ300001", "core_dip", 80, 0.0)
+    result = build_decision_picks(conn, today=TODAY)
+    assert [p["symbol"] for p in result["picks"]] == ["SZ300001"]
+    assert result["beauty_blocked"] == 0
+
+
+def test_decision_intraday_gate_blocks_all_reports_in_reason(monkeypatch):
+    """门开：全部分时走弱 → 空仓且 gate_reason 标注分时门拦截数。"""
+    import scanner.decision as dm
+
+    monkeypatch.setattr(dm, "DECISION_INTRADAY_BEAUTY_ENABLED", True)
+    conn = _db_sb()
+    _seed_strong_day(conn)
+    _seed_rec_sb(conn, "SZ300001", "core_dip", 90, -2.0)
+    _seed_rec_sb(conn, "SZ300002", "core_dip", 80, -1.5)
+    result = build_decision_picks(conn, today=TODAY)
+    assert result["picks"] == []
+    assert result["beauty_blocked"] == 2
+    assert "分时门拦2只" in result["gate_reason"]
+
+
+def test_decision_intraday_gate_kill_switch():
+    """2026-09-09 数据裁决后分时门默认关：走弱票不拦不评（beauty_blocked=0）。
+
+    实测分时≤-3 桶 hit 全场最高（11.1%/11.2%），「不接回落刀」对次日大涨口径被
+    证伪。重开：RTS_DECISION_BEAUTY_INTRADAY=1。
+    """
+    conn = _db_sb()
+    _seed_strong_day(conn)
+    _seed_rec_sb(conn, "SZ300001", "core_dip", 90, -3.0)
+    result = build_decision_picks(conn, today=TODAY)
+    assert [p["symbol"] for p in result["picks"]] == ["SZ300001"]
+    assert result["beauty_blocked"] == 0
+
+
+def test_decision_intraday_gate_no_sb_column_fail_open():
+    """旧库无 score_breakdown 列：分时门整体跳过，决策行为不变（fail-open）。"""
+    conn = _db()  # 无 score_breakdown 列
+    _seed_strong_day(conn)
+    _seed_rec(conn, TODAY, "SZ300001", "core_dip", 80, name="低吸甲")
+    result = build_decision_picks(conn, today=TODAY)
+    assert [p["symbol"] for p in result["picks"]] == ["SZ300001"]
+    assert result["beauty_blocked"] == 0
+
+
+def test_decision_lines_mention_intraday_block(monkeypatch):
+    """门开：渲染层输出分时门拦截提示行。"""
+    import scanner.decision as dm
+
+    monkeypatch.setattr(dm, "DECISION_INTRADAY_BEAUTY_ENABLED", True)
+    conn = _db_sb()
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS decision_picks ("
+        " date TEXT NOT NULL, symbol TEXT NOT NULL, name TEXT, category TEXT,"
+        " score REAL, percent REAL, reason TEXT, created TEXT,"
+        " PRIMARY KEY (date, symbol))"
+    )
+    _seed_strong_day(conn)
+    _seed_rec_sb(conn, "SZ300001", "core_dip", 90, -3.0)  # 拦
+    _seed_rec_sb(conn, "SZ300002", "core_dip", 70, 5.0)  # 入选
+    lines = decision_lines(conn, today=TODAY)
+    assert any("分时门拦1只" in ln for ln in lines)
+    assert any("1. SZ300002" in ln for ln in lines)
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))

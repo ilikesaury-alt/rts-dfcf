@@ -172,6 +172,7 @@ def _fetch_fund_risk_ths() -> tuple[dict, bool]:
     key = _today_key()
     # ── 快照阶段（锁内）：读当前进度 ──
     codes: list | None = None
+    done = 0  # 预初始化消除 possibly-unbound：下方两个分支任一都会在用前重新赋值
     with _ths_progress_lock:
         st = _ths_progress.get(key)
         if st is not None:
