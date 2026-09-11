@@ -63,7 +63,7 @@ while True:
 4. `_check_kline_fingerprint_once(conn)`：复权漂移 SHA256 指纹比对（M1.2，每交易日一次，漂移写 finalize.log）。
 5. `seconds_until_next_session` → 分段 sleep（每段 ≤60s，剩余不足按实际睡，避免错过开盘首分钟）。
 
-### 3.3 交易时段分支（单轮 11 步）
+### 3.3 交易时段分支（单轮 12 步）
 
 | # | 动作 | 关键点 |
 |---|---|---|
@@ -75,9 +75,10 @@ while True:
 | 6 | `save_recommendations(conn, new_faces+pool_picks, momentum+rebound+short_term+comeback)` | **先落库再展示**（终端/飞书/DB 三端同源） |
 | 7 | 补拉今日已推荐票实时行情 | 只补 `today_recs` 中缺行情的票；`current<=0` 的降级条目不入 `live_quotes` |
 | 8 | `mark_reversed_recommendations` | 今日曾推荐但已不在候选池的票：转负且回落≥`REVERSAL_TURNED_RED_DROP`(5%) 或回落≥`REVERSAL_OVERSHOOT_DROP`(10%) → `excluded=1` |
-| 9 | `display(...)` → `ScanView` | 终端渲染 + 返回视图供飞书复用 |
-| 10 | `log_results` + `push_feishu(view, ...)` | 日志 CSV + 飞书（冷却去重，见 §5.5） |
-| 11 | `backfill_outcomes(conn)` → 倒计时 | 回填历史推荐收益；倒计时期间若跌出交易时段立即退出 |
+| 9 | **`run_hot_watch(adapter, conn, xq_raw)`** | **沪深飙升独立区（2026-09-11 合入，见 §11）**：复用本轮已抓榜单，2 次批量补全 + 前 5 名 detail ≈ 3-5s；fail-open，异常仅跳过本区 |
+| 10 | `display(..., hot_rows=...)` → `ScanView` | 终端渲染（含独立区）+ 返回视图供飞书复用 |
+| 11 | `log_results` + `push_feishu(view, ...)` | 日志 CSV + 飞书（**独立区不进飞书**，见 §11.1） |
+| 12 | `backfill_outcomes(conn)` → 倒计时 | 回填历史推荐收益；倒计时期间若跌出交易时段立即退出 |
 
 ### 3.4 长跑健壮性
 
@@ -437,6 +438,64 @@ Retry-After（≤30s），全局 `_throttle` 0.15s 串行；cookie 失效（401/
 6. **`recommendations` 无唯一约束**：去重完全依赖 `save_recommendations` 的内存 map；
    预载失败会 fail-loud 上抛（防重复行污染样本）。
 7. **`sector_cache` 无写入方**：`stock_report.py` 直查该表，属历史遗留。
+
+## 十一、沪深飙升独立区（`scanner/hot_watch.py`，2026-09-11 合入）
+
+> 源自独立项目 `rts-xueqiu` 的「极有可能大涨」筛选脚本。**刻意与主線解耦**，
+> 不并入主表 —— 两者样本面、评分体系、排序键都不同，混排会让
+> 「为什么这只创业板票排在一只主板票后面」无法解释。
+
+### 11.1 与主线口径的差异（改动前务必先读）
+
+| 维度 | 主线（§4 / §5） | 本独立区 |
+|---|---|---|
+| 样本面 | 仅创业板 300/301（`filter_gem_stocks`） | 沪深主板 + 创业板：`SH 600/601/603/605`、`SZ 000/001/002/003/300/301`；白名单剔除科创板/北交所/ETF/可转债/港股 |
+| 回答的问题 | 哪只**明天**可能大涨（next_day ≥7% hit） | 哪只**今天**正在启动、极可能继续大涨 |
+| 评分 | 四路 `analyze_*` + 复合评分 + 档位 | `rank_change`35 + `percent`25 + `price`15 + 量能25（满分 100） |
+| 落库 | `recommendations` | **仅 `hot_watch_hits` / `hot_watch_meta`**（连击跟踪） |
+| 飞书 | 进主卡片 | **不进**（独立区仅供终端观察） |
+| 回测 | `--rescore` / `portfolio_backtest` 覆盖 | **不参与**（口径与 next_day 无关） |
+
+### 11.2 数据链路（两接口字段差异，勿互换）
+
+飙升榜（`hot_stock/new_list.json`，`order_by=rank_change`）**直接复用主轮已抓的
+`xq_raw`**，本区不再单独发榜单请求。但榜单**不含**成交量/成交额/市值/换手/量比/涨跌停价，
+必须二次补全：
+
+| 接口 | 成本 | 有 | **无** |
+|---|---|---|---|
+| `batch/quote.json` | 2 请求/100 票 | volume / amount / turnover_rate / market_capital / **last_close** / status | **`volume_ratio` / `limit_up` / `limit_down`（实测恒 None）** |
+| `quote.json?extend=detail` | 1 请求/票 | 额外有 volume_ratio / limit_up / limit_down | — |
+
+原 `rts-xueqiu` 逐票调 detail（60+ 请求/轮，实测 21s+）会拖垮主线 60s 刷新节拍，故改为：
+**batch 补全全量** → 硬排除 + 打分 → **仅对最终前 `HOT_DETAIL_TOP`(5) 名补拉 detail** 拿量比。
+
+**涨跌停价由 `last_close` 按板块幅度推算**（`limit_prices`：主板 ±10%、创业板 ±20%，
+四舍五入到分），因此**硬排除不依赖可选的 detail 补拉**——补拉失败时排除口径不变。
+`last_close ≤ 0`（脏值）时返回 `(0,0)`，按「无法判定」处理（fail-open，宁可放过不误杀）。
+
+### 11.3 硬性排除（必要条件，任一命中即剔除）
+
+ST/退市（`utils.is_st`）· 非样本面 · `status != 1` · 无有效报价 · 无成交量 ·
+已触及跌停 · 非上涨（`percent ≤ 0`）· 已封涨停（`current ≥ limit_up × 0.985`）·
+涨幅 > `HOT_MAX_PERCENT`(7%) · 市值 > `HOT_MAX_MARKET_CAP`(300 亿)。
+
+### 11.4 连击跟踪
+
+以「**全部通过者**」为基数（非仅 TOP N）更新 `hot_watch_hits.streak`：
+连续轮次命中且上轮也命中 → +1，否则重置 1；本轮未出现的存量记录归零。
+连击 ≥ `HOT_HIGHLIGHT_STREAK`(3) → 终端「连击」列标 `★`。
+超过 `HOT_STREAK_RESET_DAYS`(7) 天未命中的记录会被清理。
+
+> 若只按 TOP N 统计，跌出前 N 但仍在结果中的票会被误清零 —— 已由单测
+> `test_run_hot_watch_counts_all_passed_not_only_top` 锁定。
+
+### 11.5 失败纪律与开关
+
+- 只捕获 `EXTERNAL_FAILURES`；榜单空 / 补全全失败 / detail 失败 → 本区留空或量比显示 `—`，
+  **不抛异常、不杀主循环**（主循环另有 try 兜底 + 写 `logs/scanner_error.log`）。
+- `RTS_HOT_WATCH=0` 整体关闭本区。
+- 单轮成本约束：`HOT_ENRICH_LIMIT`(60) 补全上限 / `HOT_BATCH_SIZE`(50) / `HOT_DETAIL_TOP`(5)。
 
 ## 附：模块速查
 

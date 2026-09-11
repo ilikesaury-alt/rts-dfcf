@@ -14,7 +14,12 @@ from scanner.config import now_beijing
 
 # schema 版本：每次结构性变更（新表/新列/新索引）+1，并在 init_db 里补对应的
 # 幂等迁移。schema_version 表记录演进历史，供工具判断库是否需要重建/回填。
-SCHEMA_VERSION = 5  # v5 (2026-09-11): hot_watch 独立区连击跟踪表（hot_watch_hits / hot_watch_meta）
+# ⚠️ 版本号必须 **大于库中已有最大值**，否则本版迁移不会被记录（静默失效）。
+# 2026-09-11 实测：生产库 schema_version 已存在 1,2,4,5,6（5/6 于 2026-09-01 由
+# 当时代码写入，而此后代码常量一度回退到 4）→ 若沿用 5，判定 `MAX(version) < 5`
+# 为假，本版既不会插入版本行、也无法被后续迁移正确比较。故跳到 7。
+# 取版本号前先查：SELECT MAX(version) FROM schema_version;
+SCHEMA_VERSION = 7  # v7 (2026-09-11): hot_watch 独立区连击跟踪表（hot_watch_hits / hot_watch_meta）
 
 
 def get_conn(db_path: str | None = None) -> sqlite3.Connection:
