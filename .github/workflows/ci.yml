@@ -17,8 +17,12 @@ jobs:
           pip install -r requirements-dev.txt
       - name: Ruff lint (必须全绿)
         run: |
-          ruff check scanner/ unified_scanner.py stock_report.py \
+          ruff check scanner/ scripts/ unified_scanner.py stock_report.py \
             backfill_kline.py query_summary.py query_today.py
+      - name: 规则冻结校验（冻结期 2026-09-11 ~ 2026-10-16）
+        run: |
+          python scripts/check_rule_freeze.py
+        continue-on-error: true
       - name: Mypy (类型债 backlog，暂不阻断，见 AGENTS.md)
         run: |
           mypy scanner/ --ignore-missing-imports || true

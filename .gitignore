@@ -13,6 +13,7 @@
 .vscode/
 .trae/
 .workbuddy/
+.workbuddy-ai/
 /opencode.json
 /opencode-quota/
 
