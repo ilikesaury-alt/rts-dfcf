@@ -19,9 +19,9 @@ jobs:
         run: |
           ruff check scanner/ scripts/ unified_scanner.py stock_report.py \
             backfill_kline.py query_summary.py query_today.py
-      - name: 规则冻结校验（冻结期 2026-09-11 ~ 2026-10-16）
+      - name: 规则变更报告（只报告，不阻断；冻结已于 2026-09-11 解除）
         run: |
-          python scripts/check_rule_freeze.py
+          python scripts/rule_change_tracker.py
         continue-on-error: true
       - name: Mypy (类型债 backlog，暂不阻断，见 AGENTS.md)
         run: |
