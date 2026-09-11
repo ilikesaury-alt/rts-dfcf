@@ -103,6 +103,7 @@ scanner/
   historical_rescan.py      # Re-run live pipeline on historical data (--rescore)
   nextday_attribution.py    # Next-day return attribution
   prevday_perf.py           # (top-level) Multi-day performance summary
+  hot_watch.py              # 沪深飙升·极可能大涨独立区（2026-09-11 合入，与主线口径解耦）
   core_themes.py            # Core theme dip-buying opportunities
   comeback.py               # Comeback (回马枪) strategy
   concept.py                # Concept/theme board fetching (East Money F10)
@@ -145,6 +146,16 @@ tests/                      # pytest suite
 - **Windows encoding**: `unified_scanner.py` sets `sys.stdout.reconfigure(encoding="utf-8")` on win32. Console output uses Chinese text + emoji.
 - **Feishu webhook** (`FEISHU_WEBHOOK` in config.py): check for leaked tokens in git history (`git log -p -S "open.feishu.cn" -- scanner/config.py`). **Bot needs rotation.**
 - **`pullback` category** is retired (live_produced=False) but kept in `CATEGORY_REGISTRY` for historical backtest/attribution. Do NOT remove it.
+- **`hot_watch` 独立区（`scanner/hot_watch.py`，2026-09-11 合入）与主线完全解耦，改动前务必确认口径**：
+  样本面是**沪深主板+创业板**（主线 `filter_gem_stocks` 只做创业板 300/301）；口径是
+  「当日 momentum + 榜单热度跃升」（主线是 `next_day` 次日≥7% hit）。结果**不写
+  `recommendations`**、不参与复合评分/档位/🎯 画像、不进飞书主卡片，连击只落
+  `hot_watch_hits`。开关 `RTS_HOT_WATCH=0` 可整体关闭。
+- **雪球两个行情接口字段不同，勿互换**（2026-09-11 实测）：`batch/quote.json`（批量，
+  2 请求/100 票）**没有** `volume_ratio`/`limit_up`/`limit_down`（恒 None），但有
+  `last_close`；`quote.json?extend=detail`（单票）才有这三个字段。故 hot_watch 用
+  batch 做排除与打分，涨跌停价由 `last_close` 推算（`limit_prices`），仅对最终前 N 名
+  补拉 detail 拿量比。
 - **`.env`** file contains secrets (THS API key, Feishu webhook override). Never commit it.
 
 ## Testing notes

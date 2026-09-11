@@ -527,6 +527,119 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
     return result
 
 
+# ── hot_watch 行情补全（2026-09-11 自 rts-xueqiu 合入）──
+# 飙升榜（hot_stock/new_list.json）只给 code/name/percent/current/rank_change 等热度字段，
+# **不含 volume / 成交额 / 市值 / 换手 / 量比 / 涨停价**，必须二次补全才能做硬性排除与量能打分。
+# 两个接口的字段差异（2026-09-11 实测，据此分工，勿互换）：
+#   batch/quote.json（批量，2 请求/100 票）：
+#     有 symbol/code/name/exchange/status/current/percent/volume/amount/
+#        turnover_rate/market_capital/float_market_capital/last_close/high/low
+#     无 volume_ratio、limit_up、limit_down（实测恒为 None）
+#   quote.json?extend=detail（单票，1 请求/票）：额外有 volume_ratio / limit_up / limit_down
+# 故策略：批量补全全量候选做排除与打分（便宜），仅对最终前 N 名单票补 detail 拿量比。
+
+_HOT_QUOTE_FIELDS = (
+    "symbol",
+    "code",
+    "name",
+    "exchange",
+    "status",
+    "current",
+    "percent",
+    "chg",
+    "volume",
+    "amount",
+    "turnover_rate",
+    "market_capital",
+    "float_market_capital",
+    "last_close",
+    "high",
+    "low",
+)
+
+
+def _hot_pick_quote(payload: dict) -> dict:
+    """从 batch/quote 或 quote 响应里取出 quote 字典（兼容两种响应形态）。"""
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return {}
+    if "quote" in data and isinstance(data["quote"], dict):
+        return data["quote"]
+    if "items" in data:
+        items = data.get("items") or []
+        if items and isinstance(items[0], dict):
+            inner = items[0]
+            q = inner.get("quote")
+            return q if isinstance(q, dict) else inner
+    return {}
+
+
+def fetch_hot_quotes_batch(session: requests.Session, symbols: list[str], batch_size: int = 50) -> dict[str, dict]:
+    """批量补全候选行情（hot_watch 用）：返回 {symbol: {字段...}}。
+
+    与 fetch_market_caps_batch 同接口但取更全的字段集（含 volume/amount/last_close），
+    2 个请求即可覆盖 100 只候选——替代原 rts-xueqiu 逐票 quote.json（60+ 请求/轮，
+    实测 21s+，会显著拖长主线 60s 刷新节拍）。
+
+    fail-open：单批失败跳过该批（不影响其余批次），全失败返回空 dict 由调用方降级。
+    """
+    if not symbols:
+        return {}
+
+    result: dict[str, dict] = {}
+    for i in range(0, len(symbols), batch_size):
+        batch = symbols[i : i + batch_size]
+        url = f"https://stock.xueqiu.com/v5/stock/batch/quote.json?symbol={','.join(batch)}"
+        try:
+            resp = _request_with_retry(session, url)
+            payload = resp.json()
+        except EXTERNAL_FAILURES as e:
+            logger.warning("hot_watch 批量行情补全失败(批次%d): %s", i // batch_size + 1, e)
+            continue
+
+        data = payload.get("data") if isinstance(payload, dict) else None
+        items = (data or {}).get("items") if isinstance(data, dict) else None
+        if items is None and isinstance(data, dict):
+            # {symbol: {"quote": {...}}} 形态：规整为 items 统一处理
+            items = [{"quote": v.get("quote", v)} for v in data.values() if isinstance(v, dict)]
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            # 两种响应形态归一：{"quote": {...}} 或直接就是 quote 本体
+            raw_q = item.get("quote")
+            q: dict = raw_q if isinstance(raw_q, dict) else item
+            sym = str(q.get("symbol") or "")
+            if not sym:
+                continue
+            result[sym] = {k: q.get(k) for k in _HOT_QUOTE_FIELDS}
+
+    if not result:
+        logger.warning("hot_watch 批量行情补全返回空（全部批次失败）")
+    return result
+
+
+def fetch_hot_quote_detail(session: requests.Session, symbol: str) -> dict:
+    """单票 detail 行情补全：仅补 batch 接口拿不到的 volume_ratio / limit_up / limit_down。
+
+    成本为 1 请求/票，故只对最终展示的前 N 名调用（HOT_DETAIL_TOP）。
+    fail-open：失败返回空 dict（调用方按字段缺失处理，不做硬排除）。
+    """
+    url = f"https://stock.xueqiu.com/v5/stock/quote.json?symbol={symbol}&extend=detail"
+    try:
+        resp = _request_with_retry(session, url)
+        q = _hot_pick_quote(resp.json())
+    except EXTERNAL_FAILURES as e:
+        logger.warning("hot_watch detail 补全失败 %s: %s", symbol, e)
+        return {}
+    if not q:
+        return {}
+    return {
+        "volume_ratio": q.get("volume_ratio"),
+        "limit_up": q.get("limit_up"),
+        "limit_down": q.get("limit_down"),
+    }
+
+
 _INTRADAY_CACHE: dict[str, tuple[float | None, float]] = {}
 _MINUTE_DATA_CACHE: dict[str, tuple[list[dict] | None, float]] = {}
 

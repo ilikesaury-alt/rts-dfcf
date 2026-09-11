@@ -14,10 +14,31 @@ class TestIsSt:
         assert is_st("退市金钰")
         assert is_st("退市秋林")
 
+    def test_delisting_period_trailing_tui(self):
+        """退市整理期更名为「XX退」（2026-09-11 修复：此前只判开头与含"退市"）。
+
+        实测样本：300029 天龙退 曾以 rank 11 上榜且未被拦截。
+        """
+        assert is_st("天龙退")
+        assert is_st("长生退")
+        assert is_st("退")
+
+    def test_delisting_period_leading_tui(self):
+        assert is_st("退市海润")
+
     def test_normal_stock(self):
         assert not is_st("贵州茅台")
         assert not is_st("宁德时代")
         assert not is_st("东方财富")
+
+    def test_normal_stock_containing_tui_not_matched(self):
+        """票名中间含「退」但不以退开头/结尾、不含"退市" → 不误杀。
+
+        「退耕还林」这类以退开头的会被判 True（沿用原 startswith 规则），
+        真实 A 股简称无此情况，故只断言中间含退的用例。
+        """
+        assert not is_st("进退科技")
+        assert not is_st("永不退缩")
 
 
 class TestStripExchange:

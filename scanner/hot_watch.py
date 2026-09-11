@@ -1,0 +1,545 @@
+"""沪深飙升榜「极有可能大涨」独立观察区（2026-09-11 自 rts-xueqiu 合入）。
+
+与主线（创业板 + 次日大涨 next_day 口径）**完全解耦**的第二观察维度，回答的是
+不同问题：主线问「哪只明天可能大涨」，本区问「哪只今天正在启动、极可能继续大涨」。
+
+三条硬性边界（改动前请先读，避免把两个口径混起来）
+------------------------------------------------
+1. **样本面更宽**：主线 `filter_gem_stocks` 只留创业板（300/301）；本区覆盖沪深
+   主板 + 创业板个股（SH 600/601/603/605、SZ 000/001/002/003/300/301），
+   剔除科创板(688)、北交所(8/4)、ETF/基金(15/16/5x)、港股、ST/退市。
+2. **不进主线任何链路**：结果不写 `recommendations`、不参与复合评分/档位/🎯 画像、
+   不进飞书主卡片。落库仅为本区自己的连击跟踪（`hot_watch_hits`）。
+3. **口径独立**：按「榜单热度跃升 + 当日动能 + 量能」加权（rank_change 35 /
+   percent 25 / price 15 / 量能 25），与 next_day 校准无关于是本区不做
+   `--rescore` 回放、不参与 portfolio_backtest。
+
+数据源与补全分工（2026-09-11 实测，勿互换）
+------------------------------------------
+- 榜单：`hot_stock/new_list.json`（= `api.fetch_biaosheng`，同一接口同一排序键
+  `order_by=rank_change`），**直接复用主轮已抓的榜单**，不再单独发一次请求。
+- 批量补全 `batch/quote.json`：有 volume/amount/turnover_rate/market_capital/
+  last_close，**无** volume_ratio/limit_up/limit_down（实测恒 None）。2 请求/100 票。
+- 单票 detail `quote.json?extend=detail`：额外有 volume_ratio/limit_up/limit_down，
+  1 请求/票 —— 故只对最终前 `HOT_DETAIL_TOP` 名调用。
+- 涨跌停价：batch 不给，由 `last_close` 按板块幅度推算（见 `limit_prices`），
+  保证硬排除不依赖可选的 detail 补拉（补拉失败时排除口径不变）。
+
+失败纪律：只捕获 `EXTERNAL_FAILURES`（网络/超时/JSON 脏值），编程错误冒泡；
+本区任何异常由 `run_hot_watch` 外层兜住，主循环不受影响。
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+from dataclasses import dataclass, field
+from typing import Any, Sequence
+
+from scanner.config import (
+    HOT_DETAIL_TOP,
+    HOT_DISPLAY_TOP,
+    HOT_ENRICH_LIMIT,
+    HOT_LIMIT_DOWN_TOLERANCE,
+    HOT_LIMIT_PCT_GEM,
+    HOT_LIMIT_PCT_MAIN,
+    HOT_LIMIT_UP_NEAR,
+    HOT_MAX_MARKET_CAP,
+    HOT_MAX_PERCENT,
+    HOT_MIN_PERCENT,
+    HOT_PRICE_DECAY_TO,
+    HOT_PRICE_IDEAL_HIGH,
+    HOT_PRICE_IDEAL_LOW,
+    HOT_RANK_CHANGE_CAP,
+    HOT_STREAK_RESET_DAYS,
+    HOT_TR_FULL,
+    HOT_VOLUME_NO_DATA,
+    HOT_VOLUME_SINGLE_FACTOR,
+    HOT_VR_FULL,
+    HOT_VR_WEIGHT,
+    HOT_W_PERCENT,
+    HOT_W_PRICE,
+    HOT_W_RANK_CHANGE,
+    HOT_W_VOLUME,
+    now_beijing,
+)
+from scanner.utils import EXTERNAL_FAILURES, is_gem, is_st, to_float
+
+logger = logging.getLogger(__name__)
+
+# 本区样本面白名单（代码 6 位前缀）。与主线 is_gem 不同：这里要的是「沪深主板+创业板」，
+# 且必须显式排除科创板/北交所/ETF —— 白名单而非黑名单，新板块默认不入选。
+_HOT_MAIN_PREFIXES = ("600", "601", "603", "605", "000", "001", "002", "003")
+_HOT_GEM_PREFIXES = ("300", "301")
+
+
+@dataclass
+class HotCandidate:
+    """榜单字段 + 行情补全字段合并后的候选（纯内存，不落 recommendations）。"""
+
+    symbol: str
+    code: str
+    name: str
+    exchange: str
+    current: float
+    percent: float
+    rank_change: int
+    rank: int
+    volume: float = 0.0  # 成交量（股）
+    amount: float = 0.0  # 成交额（元）
+    market_capital: float = 0.0
+    float_market_capital: float = 0.0
+    turnover_rate: float = 0.0
+    volume_ratio: float = 0.0
+    limit_up: float = 0.0
+    limit_down: float = 0.0
+    status: int = 1
+    score: float = 0.0
+    streak: int = 1
+    reasons: list[str] = field(default_factory=list)
+
+
+# ── 样本面与涨跌停价 ────────────────────────────────────────────────────────
+
+
+def is_hot_universe(exchange: str, code: str) -> bool:
+    """是否属于本区样本面：沪深主板 + 创业板个股。
+
+    code 传 6 位代码或带前缀 symbol 均可（`_strip_code` 兼容）。
+    白名单判定 —— 科创板(688)/北交所(8,4)/ETF(15,16,5x)/港股一律 False。
+    """
+    if exchange not in ("SH", "SZ"):
+        return False
+    c = _strip_code(code)
+    if len(c) != 6 or not c.isdigit():
+        return False
+    if exchange == "SZ":
+        return c.startswith(_HOT_MAIN_PREFIXES[4:] + _HOT_GEM_PREFIXES)
+    return c.startswith(_HOT_MAIN_PREFIXES[:4])
+
+
+def _strip_code(code: str) -> str:
+    """去掉 SH/SZ/BJ 交易所前缀，取 6 位纯代码。"""
+    if len(code) > 2 and code[:2] in ("SH", "SZ", "BJ"):
+        return code[2:]
+    return code
+
+
+def limit_pct_for(code: str) -> float:
+    """该代码的当日涨跌幅限制（%）：创业板 20%，主板 10%。
+
+    本区样本面已剔除科创板与 ST，故只需两档。ST 为 ±5% 但已被 is_st 过滤。
+    """
+    return HOT_LIMIT_PCT_GEM if is_gem(code) else HOT_LIMIT_PCT_MAIN
+
+
+def limit_prices(last_close: float, code: str) -> tuple[float, float]:
+    """由昨收推算涨停价 / 跌停价（A 股规则：昨收 ×(1±limit%)，四舍五入到分）。
+
+    batch 行情接口不返回 limit_up/limit_down，但返回 last_close —— 据此推算可与
+    接口值逐分对齐，硬排除不依赖可选的 detail 补拉（补拉失败时口径不变）。
+    last_close ≤ 0（脏值/缺失）时返回 (0.0, 0.0) —— 调用方按「无法判定」处理，
+    不做涨跌停排除（fail-open，宁可放过也不误杀）。
+    """
+    if last_close <= 0 or not math.isfinite(last_close):
+        return 0.0, 0.0
+    pct = limit_pct_for(code)
+    return round(last_close * (1 + pct / 100.0), 2), round(last_close * (1 - pct / 100.0), 2)
+
+
+# ── 硬性排除 ────────────────────────────────────────────────────────────────
+
+
+def hard_exclude(c: HotCandidate) -> str | None:
+    """硬性排除（必要条件，任一命中即剔除）。返回排除原因，通过返回 None。
+
+    与 rts-xueqiu 同口径，两处适配本项目：
+      - ST 判定复用 utils.is_st（项目单一事实来源，不再本地实现 is_st_name）；
+      - 涨跌停价由 last_close 推算（见 limit_prices），非接口直取。
+    """
+    if is_st(c.name):
+        return "ST/退市风险股"
+    if not is_hot_universe(c.exchange, c.code):
+        return "非沪深个股(科创板/ETF/北交所/港股等)"
+    if c.status != 1:
+        return f"非正常交易状态(status={c.status})"
+    if c.current <= 0:
+        return "无有效报价"
+    if c.volume <= 0:
+        return "无成交量(停牌或未成交)"
+    if c.limit_down > 0 and c.current <= c.limit_down * HOT_LIMIT_DOWN_TOLERANCE:
+        return "已触及跌停"
+    if c.percent <= HOT_MIN_PERCENT:
+        return "当前非上涨状态"
+    if c.limit_up > 0 and c.current >= c.limit_up * HOT_LIMIT_UP_NEAR:
+        return f"已封涨停({c.percent:.2f}%), 追高性价比低"
+    if c.percent > HOT_MAX_PERCENT:
+        return f"涨幅过高({c.percent:.2f}%>{HOT_MAX_PERCENT:.0f}%)"
+    if c.market_capital > 0 and c.market_capital > HOT_MAX_MARKET_CAP:
+        return f"市值过大({c.market_capital / 1e8:.0f}亿>{HOT_MAX_MARKET_CAP / 1e8:.0f}亿)"
+    return None
+
+
+# ── 打分（合计 100）────────────────────────────────────────────────────────
+
+
+def _log_norm(value: float, cap: float) -> float:
+    """对数归一化到 [0,1]：压缩极值差距（rank_change 实测可达 9000+）。"""
+    if value <= 0 or cap <= 0:
+        return 0.0
+    return min(1.0, math.log1p(value) / math.log1p(cap))
+
+
+def score_rank_change(c: HotCandidate) -> float:
+    return _log_norm(float(c.rank_change), HOT_RANK_CHANGE_CAP)
+
+
+def score_percent(c: HotCandidate) -> float:
+    """涨幅在 (0, HOT_MAX_PERCENT] 内递增：越接近上限动能越强。
+
+    硬性排除已剔除 > 上限的标的，故以上限为满分基准。
+    """
+    if c.percent <= 0:
+        return 0.0
+    return min(c.percent / HOT_MAX_PERCENT, 1.0)
+
+
+def score_price(c: HotCandidate) -> float:
+    """价格特征：理想区间 [3,40] 满分（低价弹性好），超上限线性衰减，低于下限略降。"""
+    price = c.current
+    if price <= 0:
+        return 0.0
+    if HOT_PRICE_IDEAL_LOW <= price <= HOT_PRICE_IDEAL_HIGH:
+        return 1.0
+    if price < HOT_PRICE_IDEAL_LOW:
+        return max(0.35, price / HOT_PRICE_IDEAL_LOW)
+    return max(0.0, 1.0 - (price - HOT_PRICE_IDEAL_HIGH) / (HOT_PRICE_DECAY_TO - HOT_PRICE_IDEAL_HIGH))
+
+
+def score_volume(c: HotCandidate) -> float:
+    """量能活跃度：量比 + 换手率。
+
+    量比在批量补全里缺失（batch 接口无该字段）时以换手率为主 —— 该回退路径是
+    rts-xueqiu 原有语义，非本项目新增的降级。
+    """
+    vr = c.volume_ratio
+    tr = c.turnover_rate
+    vr_score = min(max(vr, 0.0) / HOT_VR_FULL, 1.0) if vr > 0 else 0.0
+    tr_score = min(max(tr, 0.0) / HOT_TR_FULL, 1.0) if tr > 0 else 0.0
+    if vr > 0 and tr > 0:
+        return HOT_VR_WEIGHT * vr_score + (1 - HOT_VR_WEIGHT) * tr_score
+    if tr > 0:
+        return tr_score * HOT_VOLUME_SINGLE_FACTOR
+    if vr > 0:
+        return vr_score * HOT_VOLUME_SINGLE_FACTOR
+    return HOT_VOLUME_NO_DATA
+
+
+def compute_score(c: HotCandidate) -> float:
+    return (
+        HOT_W_RANK_CHANGE * score_rank_change(c)
+        + HOT_W_PERCENT * score_percent(c)
+        + HOT_W_PRICE * score_price(c)
+        + HOT_W_VOLUME * score_volume(c)
+    )
+
+
+def build_reasons(c: HotCandidate) -> list[str]:
+    """可读的筛选理由（JSON/日志消费，不影响排序）。"""
+    rs: list[str] = []
+    if c.rank_change >= 5000:
+        rs.append(f"飙升榜排名暴升{c.rank_change}位, 热度断层领先")
+    elif c.rank_change >= 2000:
+        rs.append(f"排名大幅上升{c.rank_change}位")
+    elif c.rank_change >= 800:
+        rs.append(f"排名上升{c.rank_change}位")
+    else:
+        rs.append(f"排名小幅上升{c.rank_change}位")
+
+    if c.percent >= 6:
+        rs.append(f"涨幅{c.percent:.2f}%, 接近阈值上沿, 动能强")
+    elif c.percent >= 3:
+        rs.append(f"涨幅{c.percent:.2f}%, 稳步上行")
+    else:
+        rs.append(f"涨幅{c.percent:.2f}%, 小幅翻红(位置低较安全)")
+
+    if c.current <= 10:
+        rs.append(f"现价仅{c.current:.2f}元, 低价弹性大")
+    elif c.current <= 40:
+        rs.append(f"现价{c.current:.2f}元, 价格适中易拉升")
+    else:
+        rs.append(f"现价{c.current:.2f}元")
+
+    if c.volume_ratio >= 3:
+        rs.append(f"量比{c.volume_ratio:.2f}, 显著放量")
+    elif c.volume_ratio >= 1.5:
+        rs.append(f"量比{c.volume_ratio:.2f}, 温和放量")
+
+    if c.turnover_rate >= 15:
+        rs.append(f"换手{c.turnover_rate:.1f}%, 交投极为活跃")
+    elif c.turnover_rate >= 7:
+        rs.append(f"换手{c.turnover_rate:.1f}%, 活跃度良好")
+
+    if c.market_capital > 0:
+        cap_yi = c.market_capital / 1e8
+        if cap_yi <= 80:
+            rs.append(f"市值仅{cap_yi:.0f}亿, 小盘易炒作")
+        elif cap_yi <= 150:
+            rs.append(f"市值{cap_yi:.0f}亿, 中盘弹性尚可")
+    return rs
+
+
+# ── 候选构建 ────────────────────────────────────────────────────────────────
+
+
+def _num(v: Any, default: float = 0.0) -> float:
+    """安全转 float：None/字符串/NaN/inf → default（与 utils.to_float 同语义）。"""
+    f = to_float(v, None)
+    if f is None or not math.isfinite(f):
+        return default
+    return f
+
+
+def prefilter_board(raw_items: Sequence[dict]) -> list[dict]:
+    """榜单预筛：只用榜单自带字段剔除明显不合格者，减少后续补全请求量。
+
+    与 rts-xueqiu 同策略（先预筛再补全）。注意 percent 上界**不在此处**截断：
+    涨幅过高的判定依赖补全后的真实行情（榜单 percent 与 quote percent 偶有差异），
+    留到 hard_exclude 统一判定，避免两处口径分叉。
+    """
+    prelim: list[dict] = []
+    for it in raw_items:
+        symbol = str(it.get("symbol") or "")
+        name = str(it.get("name") or "")
+        exch = str(it.get("exchange") or "")
+        if is_st(name):
+            continue
+        if not is_hot_universe(exch, symbol):
+            continue
+        if _num(it.get("percent")) <= 0:
+            continue
+        prelim.append(it)
+    # 按排名上升幅度倒序：补全额度有限时优先覆盖热度跃升最猛的
+    prelim.sort(key=lambda x: _num(x.get("rank_change")), reverse=True)
+    return prelim
+
+
+def build_candidates(
+    board_items: Sequence[dict],
+    quotes: dict[str, dict],
+) -> tuple[list[HotCandidate], list[HotCandidate]]:
+    """合并榜单 + 补全行情 → 通过硬排除的候选（已按评分降序）。
+
+    返回 (通过候选, 被排除候选)。被排除者仅用于调试/日志，不落库。
+    """
+    passed: list[HotCandidate] = []
+    rejected: list[HotCandidate] = []
+
+    for idx, it in enumerate(board_items, 1):
+        symbol = str(it.get("symbol") or "")
+        q = quotes.get(symbol)
+        if not q:
+            continue
+        code = str(q.get("code") or _strip_code(symbol))
+        last_close = _num(q.get("last_close"))
+        limit_up, limit_down = limit_prices(last_close, code)
+        c = HotCandidate(
+            symbol=symbol,
+            code=code,
+            name=str(q.get("name") or it.get("name") or ""),
+            exchange=str(q.get("exchange") or it.get("exchange") or ""),
+            current=_num(q.get("current"), _num(it.get("current"))),
+            percent=_num(q.get("percent"), _num(it.get("percent"))),
+            rank_change=int(_num(it.get("rank_change"))),
+            rank=int(_num(it.get("rank"), idx)),
+            volume=_num(q.get("volume")),
+            amount=_num(q.get("amount")),
+            market_capital=_num(q.get("market_capital")),
+            float_market_capital=_num(q.get("float_market_capital")),
+            turnover_rate=_num(q.get("turnover_rate")),
+            status=int(_num(q.get("status"), 1)),
+            limit_up=limit_up,
+            limit_down=limit_down,
+        )
+        reason = hard_exclude(c)
+        if reason:
+            rejected.append(c)
+            continue
+        c.score = compute_score(c)
+        c.reasons = build_reasons(c)
+        passed.append(c)
+
+    passed.sort(key=lambda x: (-x.score, -x.rank_change))
+    return passed, rejected
+
+
+# ── 连击跟踪（DB 持久化，替代 rts-xueqiu 的 history.json）─────────────────────
+
+
+def _next_round(conn) -> int:
+    """取并递增全局轮次号（hot_watch_meta 表）。"""
+    row = conn.execute("SELECT value FROM hot_watch_meta WHERE key='round_no'").fetchone()
+    cur = int(row[0]) if row and str(row[0]).isdigit() else 0
+    nxt = cur + 1
+    conn.execute(
+        "INSERT INTO hot_watch_meta(key, value) VALUES('round_no', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (str(nxt),),
+    )
+    return nxt
+
+
+def update_streaks(conn, hits: Sequence[HotCandidate], round_no: int) -> None:
+    """更新连续命中轮数：本轮命中且上轮也命中 → +1；否则重置为 1。
+
+    本轮未命中的存量记录 streak 归零（保留记录供观察），与 rts-xueqiu 同语义。
+    清理超过 HOT_STREAK_RESET_DAYS 天未再命中的记录，防表无限增长。
+    """
+    now = now_beijing().isoformat(timespec="seconds")
+    hit_syms = set()
+
+    for c in hits:
+        hit_syms.add(c.symbol)
+        row = conn.execute("SELECT streak, last_round FROM hot_watch_hits WHERE symbol=?", (c.symbol,)).fetchone()
+        prev_streak = int(row[0] or 0) if row else 0
+        prev_round = int(row[1] or 0) if row else 0
+        # 上一轮也命中 → 连击累加；否则（新面孔 / 中间断过轮）重新从 1 起算
+        streak = prev_streak + 1 if prev_round == round_no - 1 else 1
+        c.streak = streak
+        conn.execute(
+            """INSERT INTO hot_watch_hits
+               (symbol, name, streak, last_round, last_seen, last_percent, last_price, last_score)
+               VALUES(?,?,?,?,?,?,?,?)
+               ON CONFLICT(symbol) DO UPDATE SET
+                 name=excluded.name, streak=excluded.streak, last_round=excluded.last_round,
+                 last_seen=excluded.last_seen, last_percent=excluded.last_percent,
+                 last_price=excluded.last_price, last_score=excluded.last_score""",
+            (
+                c.symbol,
+                c.name,
+                streak,
+                round_no,
+                now,
+                round(c.percent, 2),
+                round(c.current, 2),
+                round(c.score, 2),
+            ),
+        )
+
+    if hit_syms:
+        marks = ",".join("?" * len(hit_syms))
+        conn.execute(
+            f"UPDATE hot_watch_hits SET streak=0 WHERE symbol NOT IN ({marks})",  # noqa: S608
+            tuple(hit_syms),
+        )
+    else:
+        conn.execute("UPDATE hot_watch_hits SET streak=0")
+
+
+def _prune_stale(conn) -> None:
+    """清理长期未命中的记录（streak=0 且 last_seen 早于 HOT_STREAK_RESET_DAYS 天前）。
+
+    last_seen 为 ISO 字符串（`YYYY-MM-DDTHH:MM:SS`），取前 10 位即日期，
+    直接与截止日期字符串比较（ISO 日期字典序 == 时间序）。
+    """
+    from datetime import timedelta
+
+    cutoff = (now_beijing() - timedelta(days=HOT_STREAK_RESET_DAYS)).strftime("%Y-%m-%d")
+    conn.execute(
+        "DELETE FROM hot_watch_hits WHERE streak=0 AND COALESCE(substr(last_seen,1,10),'') <> '' "
+        "AND substr(last_seen,1,10) < ?",
+        (cutoff,),
+    )
+
+
+# ── 单轮主流程 ──────────────────────────────────────────────────────────────
+
+
+def run_hot_watch(
+    adapter,
+    conn,
+    board_items: Sequence[dict],
+    top_n: int = HOT_DISPLAY_TOP,
+) -> list[HotCandidate]:
+    """跑一轮本区筛选（含补全/排除/打分/连击落库）。返回待展示的 TOP N 候选。
+
+    依赖注入 `board_items`：复用主循环**已抓取**的飙升榜（`adapter.fetch_biaosheng()`
+    与本区同源同排序键），本区不再单独发榜单请求。
+
+    fail-open 边界：
+      - 榜单为空 / 补全全失败 → 返回 []（终端本区留空，不告警噪音）；
+      - detail 补拉失败 → 量比留 0（表格显示 —），排除与排序不受影响；
+      - 连击落库失败 → 本轮仍返回结果（连击退化为 1，不丢主功能）。
+    异常由调用方（unified_scanner 交易分支）兜底，本函数不吞编程错误。
+    """
+    if not board_items:
+        return []
+
+    prelim = prefilter_board(board_items)
+    targets = prelim[:HOT_ENRICH_LIMIT]
+    if not targets:
+        return []
+
+    symbols = [str(t.get("symbol") or "") for t in targets if t.get("symbol")]
+    fetch_batch = getattr(adapter, "fetch_hot_quotes_batch", None)
+    if fetch_batch is None:
+        return []
+    try:
+        quotes = fetch_batch(symbols)
+    except EXTERNAL_FAILURES as e:
+        logger.warning("hot_watch 批量补全失败，本区留空: %s", e)
+        return []
+    if not quotes:
+        return []
+
+    passed, _rejected = build_candidates(targets, quotes)
+    if not passed:
+        # 仍推进轮次并清零连击：否则「全员被排除」的一轮不会打断上一轮的连击链，
+        # 停牌/急跌导致的空榜会被误读为「持续重点」。
+        _safe_persist(conn, [])
+        return []
+
+    # 仅对最终前 N 名补拉 detail（拿量比 / 真实涨跌停价）：1 请求/票，成本可控。
+    if HOT_DETAIL_TOP > 0:
+        fetch_detail = getattr(adapter, "fetch_hot_quote_detail", None)
+        for c in passed[:HOT_DETAIL_TOP]:
+            if fetch_detail is None:
+                break
+            try:
+                detail = fetch_detail(c.symbol)
+            except EXTERNAL_FAILURES as e:
+                logger.warning("hot_watch detail 补全失败 %s: %s", c.symbol, e)
+                continue
+            if not detail:
+                continue
+            c.volume_ratio = _num(detail.get("volume_ratio"))
+            # 真实涨跌停价可用时覆盖推算值（仅用于展示口径校准，不回过头重判）
+            real_up = _num(detail.get("limit_up"))
+            real_down = _num(detail.get("limit_down"))
+            if real_up > 0:
+                c.limit_up = real_up
+            if real_down > 0:
+                c.limit_down = real_down
+
+    top = passed[:top_n]
+    # 连击以「全部通过者」为基数统计（非仅 TOP N）——否则跌出前 N 但仍在结果中的票
+    # 会被误判为「本轮未命中」而清零。update_streaks 会写回 passed 的 streak。
+    _safe_persist(conn, passed)
+    return top
+
+
+def _safe_persist(conn, all_hits: Sequence[HotCandidate]) -> None:
+    """连击落库（失败只告警，不影响本轮结果返回）。
+
+    update_streaks 直接写回 all_hits 各元素的 streak 字段，故调用方随后读
+    top（all_hits 前缀切片）即可拿到正确的连击数，无需二次映射。
+    """
+    if conn is None:
+        return
+    try:
+        round_no = _next_round(conn)
+        update_streaks(conn, all_hits, round_no)
+        _prune_stale(conn)
+        conn.commit()
+    except EXTERNAL_FAILURES as e:
+        logger.warning("hot_watch 连击落库失败（本轮结果不受影响）: %s", e)

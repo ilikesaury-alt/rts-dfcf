@@ -16,6 +16,9 @@ from scanner.config import (
     DECISION_LAYER_ENABLED,
     DISPLAY_MAX_TODAY_PCT,
     FINAL_PICK_ENABLED,
+    HOT_HIGHLIGHT_STREAK,
+    HOT_MAX_MARKET_CAP,
+    HOT_MAX_PERCENT,
     TACTICS_SELL_TAGS,
     TOP40_THRESHOLD,
     TREND_MARK_ENABLED,
@@ -395,6 +398,7 @@ def display(
     rank_map: dict[str, int] | None = None,
     today_pool: dict[str, Candidate] | None = None,
     last_ranks: dict[str, int] | None = None,
+    hot_rows: list | None = None,
 ) -> "ScanView | None":
     """扫描主屏：头部摘要 + 展示视图（构建/渲染委托 display_priority）。
 
@@ -424,6 +428,7 @@ def display(
         today_pool=today_pool,
         last_ranks=last_ranks,
         weak=weak,
+        hot_rows=hot_rows,
     )
 
 
@@ -638,6 +643,23 @@ COLS_DETAIL: tuple = (
     ("评分", 4, "r"),
     ("时间", 6, "l"),
 )
+# 沪深飙升·极有可能大涨独立区（2026-09-11 合入）：列与本区口径对应，
+# 与主线 COLS_POOL/COLS_DETAIL 无关（不共享 5日累计/板块/策略等主线专属列）。
+COLS_HOT: tuple = (
+    ("#", 3, "r"),
+    ("代码", 12, "l"),
+    ("名称", 10, "l"),
+    ("现价", 8, "r"),
+    ("涨幅", 8, "r"),
+    ("排名上升", 9, "r"),
+    ("成交量", 11, "r"),
+    ("成交额", 9, "r"),
+    ("量比", 6, "r"),
+    ("换手%", 7, "r"),
+    ("市值(亿)", 9, "r"),
+    ("评分", 6, "r"),
+    ("连击", 5, "r"),
+)
 
 
 def _table_header(spec: tuple) -> str:
@@ -705,6 +727,11 @@ class ScanView:
     # 走势美感标记（2026-09-09）：{(symbol, category): "✓走势"|"⚠走势"}，v1/v2 池选行
     # 行尾渲染（_entry_row_suffix beauty 参数）。与终选美感门同源判定，纯展示预判。
     beauty_mark: dict[tuple[str, str], str] | None = None
+    # 沪深飙升·极有可能大涨独立区（2026-09-11 自 rts-xueqiu 合入）：HotCandidate 列表。
+    # 与主线（创业板/next_day 口径）完全解耦——样本面更宽（沪深主板+创业板）、口径为
+    # 「当日 momentum + 榜单热度跃升」，不参与主线评分/档位/🎯，也不进飞书主卡片。
+    # None = 本轮未启用或无结果（渲染时整区跳过，不留空表）。
+    hot_rows: list | None = None
 
 
 def build_scan_view(
@@ -714,6 +741,7 @@ def build_scan_view(
     today_pool: dict[str, Candidate] | None = None,
     last_ranks: dict[str, int] | None = None,
     weak: bool | None = None,
+    hot_rows: list | None = None,
 ):
     """构建一次扫描的展示视图（纯计算，不 print）：读今日推荐并算出档位/标记/排序。
 
@@ -1085,6 +1113,79 @@ def build_scan_view(
         decision_lines=_decision_lines,
         final_pick_lines=_final_pick_lines,
         beauty_mark=beauty_mark,
+        hot_rows=hot_rows,
+    )
+
+
+def _fmt_hot_volume_hand(volume: float) -> str:
+    """成交量（股）→ 手（1 手 = 100 股），带中文单位。"""
+    if volume <= 0:
+        return "—"
+    hands = volume / 100.0
+    if hands >= 1e8:
+        return f"{hands / 1e8:.2f}亿手"
+    if hands >= 1e4:
+        return f"{hands / 1e4:.2f}万手"
+    return f"{hands:.0f}手"
+
+
+def _fmt_hot_amount(amount: float) -> str:
+    """成交额（元）→ 亿/万。"""
+    if amount <= 0:
+        return "—"
+    if amount >= 1e8:
+        return f"{amount / 1e8:.2f}亿"
+    if amount >= 1e4:
+        return f"{amount / 1e4:.1f}万"
+    return f"{amount:.0f}"
+
+
+def _render_hot_watch_region(view: ScanView) -> None:
+    """渲染「沪深飙升·极有可能大涨」独立区（无结果时整区跳过，不留空表）。
+
+    行数据源为 scanner.hot_watch.HotCandidate（本轮已在主循环算好并落连击），
+    本函数只做渲染——与 render_terminal 的「只画不算」纪律一致。
+    """
+    rows = view.hot_rows
+    if not rows:
+        return
+
+    print(
+        f"\n{ANSI['BOLD']}{ANSI['CYAN']}◆ 沪深飙升 · 极有可能大涨{ANSI['RESET']}"
+        f"（沪深主板+创业板 · 当日动能+热度跃升 · 与上方主线口径独立）"
+    )
+    print(_table_header(COLS_HOT))
+    for _hi, c in enumerate(rows, 1):
+        # 连击 ≥ 阈值 → 「★重点关注」（跨轮连续命中的稳定性信号）。
+        # 量比/市值/成交额可能因批量补全缺字段而为 0 → 显示 —（不伪造为 0.00）。
+        _streak_str = f"{c.streak}"
+        if c.streak >= HOT_HIGHLIGHT_STREAK:
+            _streak_str = f"{ANSI['RED']}★{c.streak}{ANSI['RESET']}"
+        print(
+            _table_row(
+                [
+                    str(_hi),
+                    c.code,
+                    c.name,
+                    f"{c.current:.2f}" if c.current else "—",
+                    pct_colored(c.percent),
+                    f"+{c.rank_change}",
+                    _fmt_hot_volume_hand(c.volume),
+                    _fmt_hot_amount(c.amount),
+                    f"{c.volume_ratio:.2f}" if c.volume_ratio > 0 else "—",
+                    f"{c.turnover_rate:.1f}" if c.turnover_rate > 0 else "—",
+                    f"{c.market_capital / 1e8:.0f}" if c.market_capital > 0 else "—",
+                    f"{c.score:.1f}",
+                    _streak_str,
+                ],
+                COLS_HOT,
+            )
+        )
+    print(f"  {'-' * 92}")
+    print(
+        f"  排序=评分(排名上升35/涨幅25/价格15/量能25) | 已剔除涨停·涨幅>{HOT_MAX_PERCENT:.0f}%·"
+        f"市值>{HOT_MAX_MARKET_CAP / 1e8:.0f}亿·ST·科创板/北交所/ETF | "
+        f"连击≥{HOT_HIGHLIGHT_STREAK}轮标★"
     )
 
 
@@ -1195,6 +1296,13 @@ def render_terminal(view: ScanView) -> None:
         print("  排序=今日波动（涨多/跌狠优先）→主力回流→回撤深→龙头强。")
         print(f"  {'-' * 92}")
 
+    # ── 沪深飙升·极有可能大涨 独立区（2026-09-11 自 rts-xueqiu 合入）──
+    # 与上方所有区块口径不同且互不干扰：样本面为沪深主板+创业板（主线只做创业板），
+    # 口径为「当日 momentum + 榜单热度跃升」（主线为 next_day 次日大涨）。
+    # 独立成区而非并入主线表：两者排序键、评分体系、样本面都不同，混排会让
+    # 「为什么这只创业板票排在一只主板票后面」无法解释。
+    _render_hot_watch_region(view)
+
 
 def display_priority(
     conn=None,
@@ -1203,6 +1311,7 @@ def display_priority(
     today_pool: dict[str, Candidate] | None = None,
     last_ranks: dict[str, int] | None = None,
     weak: bool | None = None,
+    hot_rows: list | None = None,
 ) -> "ScanView | None":
     """构建展示视图并渲染到终端（build_scan_view + render_terminal 的便捷入口）。
 
@@ -1218,6 +1327,7 @@ def display_priority(
         today_pool=today_pool,
         last_ranks=last_ranks,
         weak=weak,
+        hot_rows=hot_rows,
     )
     if view is None:
         return None

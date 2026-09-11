@@ -25,6 +25,8 @@ from scanner.backtest import backfill_outcomes
 from scanner.config import (
     AFTERNOON_END,
     DB_PATH,
+    HOT_DISPLAY_TOP,
+    HOT_WATCH_ENABLED,
     KLINE_FETCH_DAYS,
     KLINE_FETCH_DEADLINE,
     LOG_DIR,
@@ -44,6 +46,7 @@ from scanner.database import (
 )
 from scanner.display import display
 from scanner.feishu import push_feishu
+from scanner.hot_watch import run_hot_watch
 from scanner.log_utils import log_results
 from scanner.models import RecommendationRow
 from scanner.orchestrator import scan_with_raw
@@ -446,6 +449,19 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 except Exception as e:
                     print(f"  [!] 推荐后回落移出失败: {e}")
 
+                # 沪深飙升·极有可能大涨独立区（2026-09-11 合入）：复用本轮已抓取的
+                # 飙升榜（同源同排序键），两批批量补全 + 前 N 名单票 detail ≈ 3-5s。
+                # 完全 fail-open：本区任何失败都不影响主线（try 内捕获，仅留空该区）。
+                hot_rows = None
+                if HOT_WATCH_ENABLED:
+                    try:
+                        hot_rows = run_hot_watch(adapter, conn, xq_raw, top_n=HOT_DISPLAY_TOP)
+                    except Exception as e:
+                        # 本区是独立观察维度，异常不应拖累主线扫描；记录到 error log 供排查
+                        print(f"  [!] 沪深飙升区跳过: {type(e).__name__}: {e}")
+                        _log_exception("hot_watch 独立区异常", e)
+                        hot_rows = None
+
                 # 历史推荐跟踪已并入回马枪（2026-08-07）：tracker 模块删除，不再单独查询
                 # display() 返回本轮 ScanView，飞书复用同一份（避免两端选择分叉）。
                 view = display(
@@ -457,6 +473,7 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     rank_map=current_rank_map,
                     today_pool=res.today_pool,
                     last_ranks=last_ranks,
+                    hot_rows=hot_rows,
                 )
                 # 快照本轮榜单排名供下一轮展示排名变化（上一轮为 None 时显示纯名次）。
                 last_ranks = dict(current_rank_map)

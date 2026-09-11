@@ -60,6 +60,21 @@ class DataSourceAdapter(Protocol):
         三个评分维度整体降级——与 api._fetch_minute_data 的 None 语义一致。
         """
 
+    def fetch_hot_quotes_batch(self, symbols: list[str]) -> dict[str, dict]:
+        """hot_watch 批量行情补全：{symbol: {volume/amount/turnover_rate/market_capital...}}。
+
+        飙升榜本身不含成交量/市值等字段，需二次补全。不支持该语义的源返回空 dict
+        （本区随之为空白，fail-open）。
+        """
+        return {}
+
+    def fetch_hot_quote_detail(self, symbol: str) -> dict:
+        """hot_watch 单票 detail 补全：{volume_ratio, limit_up, limit_down}。
+
+        仅补 batch 接口拿不到的三个字段；不支持的源返回空 dict。
+        """
+        return {}
+
 
 class XueqiuAdapter:
     """雪球数据源适配器（包装现有 api.py，零改动 api.py）。"""
@@ -105,6 +120,12 @@ class XueqiuAdapter:
 
     def fetch_minute(self, symbol: str) -> list[dict] | None:
         return api._fetch_minute_data(self._get_session(), symbol)
+
+    def fetch_hot_quotes_batch(self, symbols: list[str]) -> dict[str, dict]:
+        return api.fetch_hot_quotes_batch(self._get_session(), symbols)
+
+    def fetch_hot_quote_detail(self, symbol: str) -> dict:
+        return api.fetch_hot_quote_detail(self._get_session(), symbol)
 
 
 def _as_float(v) -> float | None:
@@ -273,6 +294,14 @@ class ThsAdapter:
             logger.warning("THS 公开 API 无分钟K/tick，分时信号走主源/降级")
         return None
 
+    def fetch_hot_quotes_batch(self, symbols: list[str]) -> dict[str, dict]:
+        # 能力边界（非故障）：THS 无雪球飙升榜语义接口（fetch_biaosheng 同款返回空），
+        # hot_watch 独立区随之为空。与 fetch_biaosheng 一致不刷屏告警。
+        return {}
+
+    def fetch_hot_quote_detail(self, symbol: str) -> dict:
+        return {}
+
 
 class FallbackAdapter:
     """组合适配器：primary 异常时降级到 secondary。
@@ -383,6 +412,30 @@ class FallbackAdapter:
             if self._secondary:
                 logger.warning("%s.fetch_minute 异常: %s，降级到 %s", self._primary.name, e, self._secondary.name)
                 return self._secondary.fetch_minute(symbol)
+            raise
+
+    def fetch_hot_quotes_batch(self, symbols: list[str]) -> dict[str, dict]:
+        # 与 fetch_minute 同款：空 dict 是本区合法降级值（本区整体留空即可），
+        # 走 _call 会在每次雪球抖动时无谓转投 THS（其恒返回 {}）。
+        try:
+            return self._primary.fetch_hot_quotes_batch(symbols)
+        except EXTERNAL_FAILURES as e:
+            if self._secondary:
+                logger.warning(
+                    "%s.fetch_hot_quotes_batch 异常: %s，降级到 %s", self._primary.name, e, self._secondary.name
+                )
+                return self._secondary.fetch_hot_quotes_batch(symbols)
+            raise
+
+    def fetch_hot_quote_detail(self, symbol: str) -> dict:
+        try:
+            return self._primary.fetch_hot_quote_detail(symbol)
+        except EXTERNAL_FAILURES as e:
+            if self._secondary:
+                logger.warning(
+                    "%s.fetch_hot_quote_detail 异常: %s，降级到 %s", self._primary.name, e, self._secondary.name
+                )
+                return self._secondary.fetch_hot_quote_detail(symbol)
             raise
 
 

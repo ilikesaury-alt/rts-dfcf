@@ -14,7 +14,7 @@ from scanner.config import now_beijing
 
 # schema 版本：每次结构性变更（新表/新列/新索引）+1，并在 init_db 里补对应的
 # 幂等迁移。schema_version 表记录演进历史，供工具判断库是否需要重建/回填。
-SCHEMA_VERSION = 4  # v4 (2026-08-30): market_extra_cache PK (symbol,data_type)→(symbol,data_type,date)
+SCHEMA_VERSION = 5  # v5 (2026-09-11): hot_watch 独立区连击跟踪表（hot_watch_hits / hot_watch_meta）
 
 
 def get_conn(db_path: str | None = None) -> sqlite3.Connection:
@@ -285,6 +285,29 @@ def init_db() -> sqlite3.Connection:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rej_date ON scan_rejections(date)")
+    # ── hot_watch 独立区（沪深飙升·极可能大涨）连击跟踪（2026-09-11 合入）──
+    # rts-xueqiu 原用 history.json 文件态存连击；本项目统一走 SQLite（跨轮/跨进程
+    # 可查、与 recommendations 同库可 join 复盘）。轮次计数器单独放元表，
+    # 避免为读一个 round_no 扫整张命中表。
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS hot_watch_hits (
+            symbol TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            streak INTEGER NOT NULL DEFAULT 0,      -- 连续命中轮数（本轮未命中即归零）
+            last_round INTEGER NOT NULL DEFAULT 0,  -- 最近命中的轮次号
+            last_seen TEXT,                         -- 最近命中时间
+            last_percent REAL,
+            last_price REAL,
+            last_score REAL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_hwh_streak ON hot_watch_hits(streak)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS hot_watch_meta (
+            key TEXT PRIMARY KEY,   -- 目前仅 'round_no'
+            value TEXT NOT NULL
+        )
+    """)
     # schema 版本记录（P1-6）：幂等——首次初始化写入当前版本，之后仅在版本前进时追加。
     conn.execute("""
         CREATE TABLE IF NOT EXISTS schema_version (

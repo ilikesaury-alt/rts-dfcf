@@ -1020,10 +1020,63 @@ TACTICS_TAG_TAKE_PROFIT = "💰落袋"  # rule 6/10：14:00-14:30 涨停
 # 减仓类纪律标签集合（卖出信号）：命中即被三处硬过滤剔除
 # —— display 主表 / display v2 池选区 / final_pick 终选。语义为「回避」，
 # 不含 TACTICS_TAG_ADD（加仓是买点信号，方向相反）。
-TACTICS_SELL_TAGS: frozenset[str] = frozenset({
-    TACTICS_TAG_REDUCE,
-    TACTICS_TAG_REDUCE_HALF,
-    TACTICS_TAG_NO_CHASE,
-    TACTICS_TAG_TAKE_PROFIT,
-})
+TACTICS_SELL_TAGS: frozenset[str] = frozenset(
+    {
+        TACTICS_TAG_REDUCE,
+        TACTICS_TAG_REDUCE_HALF,
+        TACTICS_TAG_NO_CHASE,
+        TACTICS_TAG_TAKE_PROFIT,
+    }
+)
 
+# ============================================================================
+# ── 沪深飙升榜「极有可能大涨」独立区（hot_watch，2026-09-11 自 rts-xueqiu 合入）──
+# ============================================================================
+# 与主线（创业板 + 次日大涨口径）**完全解耦**的第二个观察维度：
+#   - 样本面：主线只做创业板（300/301）；本区覆盖沪深主板 + 创业板全部个股
+#     （SH 600/601/603/605、SZ 000/001/002/003/300/301），剔除科创板/北交所/ETF/港股。
+#   - 口径：主线优化 next_day（次日≥7% hit）；本区按「当日 momentum + 榜单热度跃升」
+#     加权（rank_change / percent / price / 量能），回答「今日极可能继续大涨」。
+#   - 落库与展示独立于 recommendations，不参与主线评分/档位/🎯 画像，不进飞书主卡片。
+# 所有阈值集中于此（config 为单一事实来源），hot_watch.py 不得硬编码魔法数字。
+
+HOT_WATCH_ENABLED = os.environ.get("RTS_HOT_WATCH", "1") != "0"
+
+# 硬性排除阈值
+HOT_MAX_MARKET_CAP = 300 * YI  # 总市值上限：300 亿（超过则大盘股弹性不足）
+HOT_MAX_PERCENT = 7.0  # 涨幅上限(%)：超过即排除，避免追高
+HOT_MIN_PERCENT = 0.0  # 涨幅下限：≤0 即排除（必须是上涨状态）
+HOT_LIMIT_DOWN_TOLERANCE = 1.005  # 现价 ≤ 跌停价×该系数 视为跌停
+HOT_LIMIT_UP_NEAR = 0.985  # 现价 ≥ 涨停价×该系数 视为已封涨停
+
+# A 股涨跌停幅度（%）：本区样本面已剔除科创板，故只有 10% 与 20% 两档。
+# batch 行情接口不返回 limit_up/limit_down（实测为 None），改由 last_close 推算。
+HOT_LIMIT_PCT_MAIN = 10.0  # 主板（600/601/603/605、000/001/002/003）
+HOT_LIMIT_PCT_GEM = 20.0  # 创业板（300/301）
+
+# 打分权重（合计 100）
+HOT_W_RANK_CHANGE = 35.0  # 榜单排名上升幅度（对数归一，压缩极值）
+HOT_W_PERCENT = 25.0  # 涨幅（越接近上限动能越强）
+HOT_W_PRICE = 15.0  # 价格（低价弹性好）
+HOT_W_VOLUME = 25.0  # 量能（量比 + 换手率）
+
+# 打分辅助参数
+HOT_RANK_CHANGE_CAP = 9000.0  # rank_change 对数归一化上限
+HOT_PRICE_IDEAL_LOW = 3.0  # 理想价格区间下限（元）
+HOT_PRICE_IDEAL_HIGH = 40.0  # 理想价格区间上限（元）
+HOT_PRICE_DECAY_TO = 300.0  # 价格高于理想上限时，到该价衰减至 0
+HOT_VR_FULL = 3.0  # 量比 ≥ 此值满分
+HOT_TR_FULL = 10.0  # 换手率 ≥ 此值满分
+HOT_VR_WEIGHT = 0.6  # 量比在量能分中的占比（两者齐全时）
+HOT_VOLUME_SINGLE_FACTOR = 0.85  # 仅量比或仅换手时的折扣系数
+HOT_VOLUME_NO_DATA = 0.15  # 量比/换手全缺失时的中性低分
+
+# 连击（跨轮连续命中）跟踪
+HOT_HIGHLIGHT_STREAK = 3  # 连续出现 ≥ 该轮数 → 终端标记「★重点关注」
+HOT_STREAK_RESET_DAYS = 7  # 超过该天数未再命中的记录清理（防表无限增长）
+
+# 单轮工作量上限（保护主循环刷新节拍：主线 60s 一轮，本区不得显著拖长）
+HOT_ENRICH_LIMIT = 60  # 每轮最多补全行情的候选数（预筛后按 rank_change 取前 N）
+HOT_BATCH_SIZE = 50  # 批量行情单批 symbol 数（雪球 batch/quote 上限附近）
+HOT_DETAIL_TOP = 5  # 仅对最终前 N 名补拉 detail（拿量比/涨跌停价），0=关闭
+HOT_DISPLAY_TOP = 5  # 终端独立区展示行数
