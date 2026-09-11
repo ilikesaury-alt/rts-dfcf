@@ -114,9 +114,17 @@ def _log_exception(message: str, exc: BaseException | None = None):
 
 
 def _ensure_conn(conn):
-    """DB 健康检查：SELECT 1 失败则重建连接，实现 SQLite 锁死/连接损坏自愈。"""
+    """DB 健康检查：SELECT 1 失败则重建连接，实现 SQLite 锁死/连接损坏自愈。
+
+    2026-09-11 补强：原仅 `SELECT 1`，无法发现「上轮异常残留未提交事务」——
+    此时 SELECT 正常但后续写操作会持续抛 "database is locked"（自愈永不触发）。
+    现在额外做一次 rollback 清理残留事务（无事务时是无害 no-op，不改变只读语义）。
+    """
     try:
         conn.execute("SELECT 1")
+        # 清理可能的残留未提交事务：无未提交事务时为 no-op，安全。
+        # 失败（如 WAL 锁死）同样走重连分支——这正是需要自愈的场景。
+        conn.rollback()
         return conn
     except sqlite3.Error:
         try:
@@ -314,6 +322,9 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 # 表头/状态行/回马枪等不再与上一轮残留叠加。display() 内部仍会再
                 # 清一次（保持「清屏→渲染」自包含语义），此处覆盖所有输出路径。
                 clear_screen()
+                # 本轮起始时刻（2026-09-11）：交易分支末尾的倒计时据此扣除本轮
+                # 扫描耗时，使实际刷新周期稳定在 interval 秒，而非 interval+耗时。
+                _round_started = time.monotonic()
                 now = now_beijing()
                 if not is_trading_time(now):
                     # 连接自愈前置（2026-09-04 审查修复）：非交易分支此前直接用 conn，
@@ -465,11 +476,21 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 except Exception as e:
                     print(f"    [!] 回填失败: {type(e).__name__}: {e}", flush=True)
 
-                for remaining in range(interval, 0, -5):
+                # 倒计时扣减本轮已耗时（2026-09-11）：原实现从固定的 interval 起算，
+                # 实际周期 = interval + 本轮扫描耗时（含 K 线/分时/概念三阶段，随候选数
+                # 波动可达数十秒），长跑下刷新节拍持续漂移、数据新鲜度下降。
+                # 现在以本轮起始 monotonic 时刻为基准，保证「上轮起始 → 本轮起始」
+                # ≈ interval。耗时已超 interval 时不补睡（立即进入下一轮）。
+                _elapsed = time.monotonic() - _round_started
+                _wait_total = max(0.0, interval - _elapsed)
+                _remaining = _wait_total
+                while _remaining > 0:
                     if not is_trading_time():
                         break
-                    print(f"\r  ⏳ 下次刷新还有 {remaining}s ...", end="", flush=True)
-                    time.sleep(5)
+                    print(f"\r  ⏳ 下次刷新还有 {_remaining:.0f}s ...", end="", flush=True)
+                    _step = min(5.0, _remaining)
+                    time.sleep(_step)
+                    _remaining -= _step
                 print()
             except KeyboardInterrupt:
                 raise

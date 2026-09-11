@@ -537,12 +537,14 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
     # 风险硬过滤：命中"卖出/止损"级标签（主力出货/趋势破位）的候选直接移出推荐列表。
     # 此步在 update_pool/update_stale 之后执行，不影响候选池掉榜与排名历史，
     # 仅作用于最终对外展示的推荐列表，确保推荐输出只含可买票。
+    # 2026-09-11：判定结果复用（原两处 list comprehension 对同一批候选各调一次判定函数）。
     excluded_by_risk = [c for c in all_candidates if candidate_excluded_by_risk(c)]
     if excluded_by_risk:
         _names = "、".join(f"{c.stock.name}({c.stock.symbol})" for c in excluded_by_risk[:8])
         _more = f" 等{len(excluded_by_risk)}只" if len(excluded_by_risk) > 8 else ""
         print(f"  [风险过滤] {len(excluded_by_risk)} 只命中硬排除标签，已移出推荐：{_names}{_more}")
-    all_candidates = [c for c in all_candidates if not candidate_excluded_by_risk(c)]
+        _excluded_ids = {id(c) for c in excluded_by_risk}
+        all_candidates = [c for c in all_candidates if id(c) not in _excluded_ids]
 
     # P1-7 (2026-08-10): 硬过滤落标——被过滤的今日推荐标记 excluded=1（综合排序不再展示），
     # 通过硬过滤的候选置 0（同日风险标签可能随时间变化，以最新轮次为准）。

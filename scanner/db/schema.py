@@ -302,42 +302,11 @@ def init_db() -> sqlite3.Connection:
     from scanner.db.dal import ensure_observation_schema
 
     ensure_observation_schema(conn)
-    # market_extra_cache PK 迁移（v4）：旧 PK(symbol, data_type) 每日 INSERT OR REPLACE
-    # 会覆盖历史日期数据，导致 today_report --date 历史回放的资金流永远为空。
-    # 迁移：重建表使 PK 包含 date，保留历史行。
-    try:
-        cur = conn.execute("PRAGMA table_info(market_extra_cache)")
-        mec_cols = [r[1] for r in cur.fetchall()]
-        if mec_cols:  # 表已存在，检查 PK 是否需要迁移
-            cur2 = conn.execute("PRAGMA index_list(market_extra_cache)")
-            pk_indexes = [r[1] for r in cur2.fetchall() if r[2]]  # pk=1 表示主键
-            old_pk = False
-            for idx_name in pk_indexes:
-                cur3 = conn.execute(f"PRAGMA index_info('{idx_name}')")  # noqa: S608
-                pk_cols = [r[2] for r in cur3.fetchall()]
-                if pk_cols == ["symbol", "data_type"]:
-                    old_pk = True
-                    break
-            if old_pk:
-                conn.execute("ALTER TABLE market_extra_cache RENAME TO market_extra_cache_old")
-                conn.execute("""
-                    CREATE TABLE market_extra_cache (
-                        symbol TEXT NOT NULL,
-                        date TEXT NOT NULL,
-                        data_type TEXT NOT NULL,
-                        payload_json TEXT NOT NULL,
-                        updated TEXT NOT NULL,
-                        PRIMARY KEY(symbol, data_type, date)
-                    )
-                """)
-                conn.execute(
-                    "INSERT INTO market_extra_cache (symbol, date, data_type, payload_json, updated) "
-                    "SELECT symbol, date, data_type, payload_json, updated FROM market_extra_cache_old"
-                )
-                conn.execute("DROP TABLE market_extra_cache_old")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_mec_sym_type ON market_extra_cache(symbol, data_type)")
-    except sqlite3.Error:
-        pass  # 迁移失败不阻塞初始化，最坏情况是历史数据仍不可查
+    # market_extra_cache PK 迁移（v4，2026-09-11 抽出为独立函数并改为原子化）：
+    # 旧 PK(symbol, data_type) 的每日 INSERT OR REPLACE 会覆盖历史日期数据，
+    # 导致 today_report --date 历史回放的资金流永远为空；重建表使 PK 含 date。
+    # 详见 _migrate_market_extra_cache_pk 文档字符串（原子性 + fail-loud）。
+    _migrate_market_extra_cache_pk(conn)
     # 收盘定稿标记（2026-08-18 拓斯达脏数据事故后新增）：盘中扫描把未收盘的今日 bar
     # （盘中价+部分量能）写入 daily_kline 属预期（today_report 盘中读），但收盘后无
     # 定稿覆盖会残留污染 next_day_pct → 回测/归因/复盘全口径。finalized=0 表示
@@ -389,6 +358,77 @@ def init_db() -> sqlite3.Connection:
     _purge_foreign_excluded_marks(conn)
     conn.commit()
     return conn
+
+
+def _detect_mec_pk(conn: sqlite3.Connection) -> list[str]:
+    """返回 market_extra_cache 的主键列名（按主键内序）。表不存在返回 []。"""
+    pk_indexes = [
+        r[1] for r in conn.execute("PRAGMA index_list(market_extra_cache)").fetchall() if len(r) > 3 and r[3] == "pk"
+    ]
+    for idx_name in pk_indexes:
+        cur = conn.execute(f"PRAGMA index_info('{idx_name}')")  # noqa: S608
+        pk_cols = [r[2] for r in cur.fetchall()]
+        if pk_cols:
+            return pk_cols
+    return []
+
+
+def _migrate_market_extra_cache_pk(conn: sqlite3.Connection) -> None:
+    """market_extra_cache PK 迁移（v4）：(symbol,data_type) → (symbol,data_type,date)。
+
+    **原子性（2026-09-11 修复）**：原实现把 RENAME / CREATE / INSERT SELECT / DROP
+    四条 DDL 用 `try: ... except sqlite3.Error: pass` 包住，而 Python `sqlite3` 默认
+    `isolation_level=""` 下 **DDL 自开事务并立即提交**——四步各自独立落盘，中途失败
+    （磁盘写满 / 进程被杀 / CREATE 撞名）即留下**半迁移现场**：旧表还在、新表已建、
+    数据未搬完。此时 `except ... pass` 让 init_db 若无其事继续跑，且因为新表 PK 已
+    含 date，下一轮 init_db 的 old_pk 检测为 False → **永远不再重试修复**。后果是
+    `market_extra_cache_old` 成为永不清理的孤儿表（历史资金流数据锁死其中不可查；
+    本库实测未中招——该表 PK 已正确迁移且无残留，属幸存路径）。
+
+    现改为**手工事务 + fail-loud**：
+      1. `BEGIN IMMEDIATE` 显式开启写事务（立即取写锁，避免 upgrade 死锁）；
+      2. 用 `executescript("BEGIN; ...; COMMIT;")` 让四条 DDL 处于**同一事务**——
+         脚本内 COMMIT 前任一步失败都不落盘，随后 `ROLLBACK` 整事务回退；
+      3. 失败改为 `conn.rollback()` + **原样上抛** sqlite3.Error（不再静默吞）。
+         init_db 的调用方（unified_scanner 主循环 / 各脚本）均已有 EXTERNAL_FAILURES
+         兜底，sqlite3.Error 属其列，不会打崩扫描；而且**失败即不提交**，无半迁移残留。
+
+    另修复：原判 `r[2]`（PRAGMA index_list 第 3 列是 unique 标志，非主键），
+    把任意 UNIQUE 索引误当主键；改判 `r[3] == "pk"`（origin）。当前表无其它唯一
+    索引故原代码"恰好正确"，但一旦新增 UNIQUE 索引即误判 old_pk → 每轮 init_db
+    反复全表重建（盘中短暂锁表）。见 `_detect_mec_pk`。
+    """
+    pk_cols = _detect_mec_pk(conn)
+    if not pk_cols or pk_cols == ["symbol", "data_type", "date"]:
+        return  # 表不存在（首次建库）或 PK 已正确
+    if pk_cols != ["symbol", "data_type"]:
+        # 未知 PK：不动它（宁可历史数据查不到，也不要自作主张重建），但要让运维看见
+        print(f"  [schema] market_extra_cache PK 非预期 {pk_cols}，跳过 v4 迁移（需人工确认）")
+        return
+    try:
+        conn.executescript("""
+            BEGIN IMMEDIATE;
+            ALTER TABLE market_extra_cache RENAME TO market_extra_cache_old;
+            CREATE TABLE market_extra_cache (
+                symbol TEXT NOT NULL,
+                date TEXT NOT NULL,
+                data_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                updated TEXT NOT NULL,
+                PRIMARY KEY(symbol, data_type, date)
+            );
+            INSERT INTO market_extra_cache (symbol, date, data_type, payload_json, updated)
+                SELECT symbol, date, data_type, payload_json, updated FROM market_extra_cache_old;
+            DROP TABLE market_extra_cache_old;
+            CREATE INDEX IF NOT EXISTS idx_mec_sym_type ON market_extra_cache(symbol, data_type);
+            COMMIT;
+        """)
+    except sqlite3.Error as exc:
+        # script 内的 BEGIN 已打开事务：必须显式回滚，否则连接一直持写锁
+        # （实测未回滚时其它进程读被阻塞），且半迁移状态对后续 init_db 不可见。
+        conn.rollback()
+        print(f"  [schema] market_extra_cache v4 迁移失败（已回滚，未改动原表）：{exc}")
+        raise
 
 
 def _purge_foreign_excluded_marks(conn: sqlite3.Connection) -> None:

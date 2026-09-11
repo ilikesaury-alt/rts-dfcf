@@ -25,6 +25,10 @@ backfill_log.txt
 # 孤儿表导出备份（scripts/dump_orphan_tables.sql 的产物，数据量大且可从库重建）
 orphan_tables_backup.sql
 
+# 数据库备份（改迁移/schema 前的手工快照，~50MB，含真实行情数据，不入库）
+# 注意 /*.db 是单层 glob，匹配不到 scanner.db.bak-YYYYMMDD，故单列一条
+*.db.bak-*
+
 
 # THS 候选池 / 环境变量（API Key 等）
 .env
