@@ -16,6 +16,7 @@ from scanner.config import (
     DECISION_LAYER_ENABLED,
     DISPLAY_MAX_TODAY_PCT,
     FINAL_PICK_ENABLED,
+    TACTICS_SELL_TAGS,
     TOP40_THRESHOLD,
     TREND_MARK_ENABLED,
     V2_POOL_DISPLAY_TOP,
@@ -882,12 +883,11 @@ def build_scan_view(
     try:
         _scored_rows = []
         # 减仓类纪律标签（卖出信号）：有这些标签的票从主表过滤掉
-        _SELL_TAGS = {"⬇减仓", "⬇减半", "🔻勿接", "💰落袋"}
         for e in main_recs:
             sym = e["symbol"]
             # 检查减仓类纪律标签
             _fc = _fresh_candidate(e)
-            if _fc and _fc.tactic_tags and any(t in _SELL_TAGS for t in _fc.tactic_tags):
+            if _fc and _fc.tactic_tags and any(t in TACTICS_SELL_TAGS for t in _fc.tactic_tags):
                 continue  # 有减仓类标签，跳过
             # 涨幅键与展示列同源（_entry_display_quote）：live 0.00% 合法不被 `or` 吞。
             chg = _entry_display_quote(e)[0]
@@ -948,7 +948,6 @@ def build_scan_view(
     pool_rows: list[MainRow] = []
     pool_total = 0
     # 减仓类纪律标签（卖出信号）：有这些标签的票从 v2 池选区过滤掉
-    _SELL_TAGS = {"⬇减仓", "⬇减半", "🔻勿接", "💰落袋"}
     try:
         # 预计算行情/排名各一次（排序与行构建复用同一份，消除原每行两次 _entry_display_quote）。
         # 过滤掉已在 v1 主表展示的票（避免重复展示）和有减仓类纪律标签的票。
@@ -958,7 +957,7 @@ def build_scan_view(
                 continue  # 已在 v1 主表，跳过
             # 检查减仓类纪律标签
             _fc = _fresh_candidate(_pe)
-            if _fc and _fc.tactic_tags and any(t in _SELL_TAGS for t in _fc.tactic_tags):
+            if _fc and _fc.tactic_tags and any(t in TACTICS_SELL_TAGS for t in _fc.tactic_tags):
                 continue  # 有减仓类标签，跳过
             _pct_row, _cur_row = _entry_display_quote(_pe)
             # 不追涨过滤（2026-09-04 用户决策）：今日实时涨幅超过阈值的票不进 v2 池选区

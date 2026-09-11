@@ -28,7 +28,7 @@
 
 | 文件 | 字节数 | sha256[:16] | 角色 |
 |---|---:|---|---|
-| `scanner/config.py` | 61,867 | `ff1d7de378471143` | 全部阈值单一来源 |
+| `scanner/config.py` | 63,283 | `0dc7b4f9aef04804` | 全部阈值单一来源 |
 | `scanner/categories.py` | 5,439 | `90697eb00d26f129` | 类别注册表单一来源 |
 | `scanner/weights.py` | 5,364 | `cf5fa9a489c3248f` | 四套评分权重表 |
 | `scanner/decision.py` | 11,962 | `267003fb19a3b82f` | 终选闸门 |

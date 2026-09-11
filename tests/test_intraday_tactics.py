@@ -335,3 +335,94 @@ class TestFailOpenAndSwitch:
         assert session_advice(_now(9, 31)) is None
         c = _cand(pct=6.0)
         assert stock_actions(c, _now(9, 35)) == []
+
+
+# ── 标签字面量单源（2026-09-11 收敛回归）──
+
+class TestTagSingleSource:
+    """防回归：标签字面量必须只在 config.py 定义一份。
+
+    收敛前有 7 份拷贝——产生端 4 处（本模块规则 1/2/3/5/6/7/12 的 append）+
+    消费端 3 处（display 主表 / display v2 池选区 / final_pick 终选）。
+    final_pick.py 的注释还声称「与 display 同源」，实为拷贝，改一处忘另两处
+    会导致展示与终选硬过滤口径静默不一致。
+    """
+
+    def test_sell_tags_refers_to_config_single_source(self):
+        """final_pick._SELL_TAGS 必须来自 config 单源，而非字面量拷贝。
+
+        注意：这里断言「值相等 + 源码是引用」而非 `is` 身份相等。原因：全量测试下
+        `scanner.config` 可能被重载（产生等值的另一个 frozenset 实例），
+        `is` 断言会随测试顺序虚假失败。防回归靠的是下面的源码检查。
+        """
+        import pathlib
+        import re
+
+        from scanner import final_pick
+        from scanner.config import TACTICS_SELL_TAGS
+
+        assert set(final_pick._SELL_TAGS) == set(TACTICS_SELL_TAGS)
+
+        src = pathlib.Path(final_pick.__file__).read_text(encoding="utf-8")
+        # 定义行必须是 `_SELL_TAGS = TACTICS_SELL_TAGS`，不能是字面量集合
+        assert re.search(r"^_SELL_TAGS\s*=\s*TACTICS_SELL_TAGS\s*$", src, re.M), (
+            "final_pick._SELL_TAGS 不再是 config 单源引用——"
+            "说明又被复制成了字面量，改标签会漏改此处"
+        )
+
+    def test_sell_tags_exact_membership(self):
+        """卖出集合精确等于 4 项，且不含方向相反的 ⬆加仓。"""
+        from scanner.config import TACTICS_SELL_TAGS, TACTICS_TAG_ADD
+
+        assert set(TACTICS_SELL_TAGS) == {"⬇减仓", "⬇减半", "🔻勿接", "💰落袋"}
+        assert TACTICS_TAG_ADD not in TACTICS_SELL_TAGS, "加仓是买点信号，不应被当成卖出标签剔除"
+
+    def test_produced_tags_all_defined_in_config(self):
+        """产生端产出的每个标签都必须是 config 常量（防止新增标签时又硬编码）。"""
+        from scanner.config import (
+            TACTICS_TAG_ADD,
+            TACTICS_TAG_NO_CHASE,
+            TACTICS_TAG_REDUCE,
+            TACTICS_TAG_REDUCE_HALF,
+            TACTICS_TAG_TAKE_PROFIT,
+        )
+
+        known = {
+            TACTICS_TAG_REDUCE_HALF,
+            TACTICS_TAG_TAKE_PROFIT,
+            TACTICS_TAG_NO_CHASE,
+            TACTICS_TAG_REDUCE,
+            TACTICS_TAG_ADD,
+        }
+        # 高开减半（规则 2）：最高优先级，命中即 return
+        _n = _now(9, 35)
+        assert set(stock_actions(_cand(pct=6.0), _n, kline_bars=_bars(_n, open_pct=5.5))) <= known
+        # 早盘冲高减仓（规则 1）
+        assert set(stock_actions(_cand(pct=4.0), _now(9, 40))) <= known
+        # 尾盘跳水勿接（规则 5）
+        assert set(stock_actions(_cand(pct=2.0), _now(14, 35), high_pct=5.0)) <= known
+        # 涨停落袋（规则 6）
+        assert set(stock_actions(_cand(pct=10.0), _now(14, 10))) <= known
+
+    def test_no_hardcoded_tag_literals_in_source(self):
+        """源码中除 config.py 外不得出现标签字面量（docstring 说明除外）。"""
+        import pathlib
+        import re
+
+        root = pathlib.Path(__file__).resolve().parent.parent / "scanner"
+        tags = ["⬇减仓", "⬇减半", "🔻勿接", "💰落袋", "⬆加仓"]
+        offenders: list[str] = []
+        for py in sorted(root.glob("*.py")):
+            if py.name == "config.py":
+                continue  # 定义处，豁免
+            for i, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1):
+                stripped = line.strip()
+                # 跳过 docstring / 注释——这些是给人看的说明，不是代码里的真源
+                if stripped.startswith(("#", '"', "'")) or set(stripped) <= set("\"' "):
+                    continue
+                if any(t in line for t in tags):
+                    offenders.append(f"{py.name}:{i}: {stripped}")
+        # 允许 docstring 内的标签描述（落在 """...""" 块中，上面的启发式可能漏判），
+        # 故只把「含标签的赋值语句/成员判断」视为违规。
+        offenders = [o for o in offenders if re.search(r'[=]\s*[{"]|in\s+[{"]', o)]
+        assert not offenders, "发现硬编码标签字面量（应改为 config 单源常量）：\n" + "\n".join(offenders)

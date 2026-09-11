@@ -32,6 +32,7 @@ from scanner.config import (
     FINAL_PICK_MAX,
     FINAL_PICK_REJECT_TOP,
     HOLD_DAYS_BY_CATEGORY,
+    TACTICS_SELL_TAGS,
     TREND_MARK_ENABLED,
     now_beijing,
 )
@@ -69,8 +70,11 @@ _CAT_PRIORITY: tuple[str, ...] = (
     "core_dip",
 )
 
-# 减仓类纪律标签（卖出信号，与 display 主表/v2 池选区同源）：命中即不进终选。
-_SELL_TAGS = {"⬇减仓", "⬇减半", "🔻勿接", "💰落袋"}
+# 减仓类纪律标签（卖出信号）：命中即不进终选。
+# 2026-09-11 收敛：原先此处硬编码一份拷贝，注释却写「与 display 主表/v2 池选区同源」
+# —— 实为拷贝而非共享源，改一处忘另两处会导致展示与终选口径静默不一致。
+# 现统一引用 config.TACTICS_SELL_TAGS（单一来源）。
+_SELL_TAGS = TACTICS_SELL_TAGS
 
 # 持有周期标签（HOLD_DAYS_BY_CATEGORY = 信号校准于 cum_3d 语义的类别，config 单源）。
 HORIZON_NEXTDAY = "次日靶点"

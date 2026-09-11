@@ -43,6 +43,11 @@ from scanner.config import (
     TACTICS_STEADY_RATIO_MIN,
     TACTICS_STEADY_RISE_MINS,
     TACTICS_STEADY_VOL_RATIO,
+    TACTICS_TAG_ADD,
+    TACTICS_TAG_NO_CHASE,
+    TACTICS_TAG_REDUCE,
+    TACTICS_TAG_REDUCE_HALF,
+    TACTICS_TAG_TAKE_PROFIT,
     TACTICS_TAIL_DIVE_PCT,
     TACTICS_TAIL_DIVE_START,
     TACTICS_TOP_WINDOW_1_END,
@@ -134,21 +139,21 @@ def stock_actions(
     # 高开未知（今日 bar 缺失）→ 跳过，不猜（现价涨幅冒充高开会误杀平开现涨票）
     gap_up_pct = _gap_up_pct(cand, kline_bars, now)
     if gap_up_pct is not None and gap_up_pct >= TACTICS_HIGH_OPEN_REDUCE_PCT and (not is_limit_up or zhaban > 0):
-        actions.append("⬇减半")
+        actions.append(TACTICS_TAG_REDUCE_HALF)
         return actions  # 高开减半优先级最高
 
     # ── 规则 6：14:00-14:30 涨停 → 落袋清仓 ──
     # 规则 10 并入：14:00 后才封板 = 实力偏弱的封板画像，正是该落袋而非赌连板的时刻。
     if (TACTICS_LIMITUP_WEAK_START <= t <= TACTICS_LIMITUP_WEAK_START + TACTICS_LIMITUP_WINDOW_MINS
             and is_limit_up and zhaban == 0):
-        actions.append("💰落袋")
+        actions.append(TACTICS_TAG_TAKE_PROFIT)
 
     # ── 规则 5：14:30后尾盘跳水 → 不抄底，次日观察 20 日线再决定 ──
     # 日内高点：quote high_pct（真实日内高点）→ 分时摘要回退 → 均无则跳过
     if t >= TACTICS_TAIL_DIVE_START:
         day_high = high_pct if high_pct is not None else _dims_float(dims, "minute_day_high")
         if day_high is not None and day_high - today_pct >= TACTICS_TAIL_DIVE_PCT:
-            actions.append("🔻勿接")
+            actions.append(TACTICS_TAG_NO_CHASE)
 
     # ── 规则 3：平开+稳步走高+量能同步 → 加仓（先于规则 1：稳步上行的买点信号
     #     优先于早盘冲高的普适谨慎，两者语义相反不应被减仓覆盖）──
@@ -160,7 +165,7 @@ def stock_actions(
             and TACTICS_MORNING_SPIKE_START + TACTICS_STEADY_RISE_MINS <= t <= TACTICS_MIDDAY_WINDOW_END
             and steady is not None and steady >= TACTICS_STEADY_RATIO_MIN
             and vol_trend is not None and vol_trend >= TACTICS_STEADY_VOL_RATIO):
-        actions.append("⬆加仓")
+        actions.append(TACTICS_TAG_ADD)
 
     # ── 规则 7：午盘冲高回落（不过早盘高点）+缩量 → 锁利 ──
     # 早盘高点用分时摘要（minute_am_high）；缺失 → 跳过（不拿日K历史冒充）。
@@ -172,14 +177,14 @@ def stock_actions(
                 cand.kline.volume_ratio < TACTICS_SHRINK_VOL_RATIO if cand.kline else False
             )
             if shrink:
-                actions.append("⬇减仓")
+                actions.append(TACTICS_TAG_REDUCE)
 
     # ── 规则 1：早盘冲高（09:30-10:00）减仓 ──
     # not actions 守卫：与规则 3/12 的加仓信号互斥（稳步走高/大跌加仓场景不叠加普适减仓提醒）
     if (not actions
             and TACTICS_MORNING_SPIKE_START <= t <= TACTICS_MORNING_SPIKE_START + TACTICS_MORNING_SPIKE_MINS
             and today_pct >= TACTICS_SPIKE_REDUCE_PCT and not is_limit_up):
-        actions.append("⬇减仓")
+        actions.append(TACTICS_TAG_REDUCE)
 
     # ── 规则 12：早上大跌（无硬风险）可加仓；早上大涨已在规则 1 覆盖 ──
     if (not actions
@@ -187,7 +192,7 @@ def stock_actions(
             and today_pct <= TACTICS_MORNING_CRASH_PCT
             and "趋势破位" not in cand.risk_flags
             and "主力出货" not in cand.risk_flags):
-        actions.append("⬆加仓")
+        actions.append(TACTICS_TAG_ADD)
 
     return actions
 

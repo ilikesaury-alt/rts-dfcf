@@ -1004,3 +1004,26 @@ TACTICS_STEADY_VOL_RATIO = 1.0  # rule 3：量能同步判定（量比 ≥ 此�
 TACTICS_MORNING_SPIKE_MINS = 30  # rule 1/12：早盘窗口长度（09:30 起 30 分钟）
 # 分时趋势摘要（intraday_fetch 第 4 相产出，写入 kline.dimensions["minute_*"]）
 TACTICS_MINUTE_VOL_RECENT_BARS = 30  # 量能趋势对比的近期分钟窗口
+
+# ── 盘中操作标签字面量（单一来源）──
+# 2026-09-11 收敛：此前 4 处产生端（intraday_tactics 规则 1/2/5/6/7）与 3 处消费端
+# （display.py 主表、display.py v2 池选区、final_pick.py）各自硬编码同一批 emoji 字面量，
+# 共 7 份拷贝。改名需同步 7 处，且 final_pick.py 注释声称「与 display 同源」实为拷贝
+# （误导）。现统一到此处，产生端与消费端全部改为引用。
+# ⚠️ 这些字符串是 emoji + 中文，改动会同时影响展示与终选硬过滤语义，勿轻易调整。
+TACTICS_TAG_REDUCE_HALF = "⬇减半"  # rule 2：高开≥5% 但封不住板
+TACTICS_TAG_REDUCE = "⬇减仓"  # rule 1/7：早盘冲高 / 午盘冲高回落+缩量
+TACTICS_TAG_ADD = "⬆加仓"  # rule 3/12：平开稳步走高 / 早上大跌无硬风险
+TACTICS_TAG_NO_CHASE = "🔻勿接"  # rule 5：14:30 后尾盘跳水
+TACTICS_TAG_TAKE_PROFIT = "💰落袋"  # rule 6/10：14:00-14:30 涨停
+
+# 减仓类纪律标签集合（卖出信号）：命中即被三处硬过滤剔除
+# —— display 主表 / display v2 池选区 / final_pick 终选。语义为「回避」，
+# 不含 TACTICS_TAG_ADD（加仓是买点信号，方向相反）。
+TACTICS_SELL_TAGS: frozenset[str] = frozenset({
+    TACTICS_TAG_REDUCE,
+    TACTICS_TAG_REDUCE_HALF,
+    TACTICS_TAG_NO_CHASE,
+    TACTICS_TAG_TAKE_PROFIT,
+})
+

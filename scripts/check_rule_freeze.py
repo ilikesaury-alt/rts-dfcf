@@ -28,8 +28,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 # 冻结基线：文件 -> (字节数, sha256[:16])
+# ⚠️ 此处与 docs/rule-freeze-2026-09-11.md 第 1 节表格是同一份基线的两个副本。
+#    改动规则文件后，需同时更新两处（--update 只重写文档，不重写本表）。
+#    2026-09-11：config.py 因标签字面量单源收敛而变更（见 docs/rule-freeze-log.md）。
 BASELINE: dict[str, tuple[int, str]] = {
-    "scanner/config.py": (61867, "ff1d7de378471143"),
+    "scanner/config.py": (63283, "0dc7b4f9aef04804"),
     "scanner/categories.py": (5439, "90697eb00d26f129"),
     "scanner/weights.py": (5364, "cf5fa9a489c3248f"),
     "scanner/decision.py": (11962, "267003fb19a3b82f"),
@@ -80,6 +83,33 @@ def check_files() -> list[str]:
             delta = size - exp_size
             problems.append(f"[改动] {rel}  {exp_hash} -> {h}  ({delta:+d} bytes)")
             print(f"  [改动] {rel:28s} {size:>7d} bytes  (基线 {exp_size}, {delta:+d})")
+    return problems
+
+
+def check_baseline_consistency() -> list[str]:
+    """自检：脚本内 BASELINE 与文档第 1 节表格必须一致。
+
+    存在两处基线副本是设计缺陷（--update 只重写文档）。此处主动比对，
+    避免「文档已更新、脚本未更新」导致校验器长期虚假报警。
+    """
+    if not DOC.exists():
+        return [f"[自检失败] 找不到 {DOC}"]
+    text = DOC.read_text(encoding="utf-8")
+    problems: list[str] = []
+    for rel, (exp_size, exp_hash) in BASELINE.items():
+        m = re.search(
+            r"\|\s*`" + re.escape(rel) + r"`\s*\|\s*([\d,]+)\s*\|\s*`([0-9a-f]+)`",
+            text,
+        )
+        if not m:
+            problems.append(f"[自检] 文档缺少 {rel} 的指纹行")
+            continue
+        doc_size = int(m.group(1).replace(",", ""))
+        doc_hash = m.group(2)
+        if doc_size != exp_size or doc_hash != exp_hash:
+            problems.append(
+                f"[自检] {rel} 脚本({exp_size:,}/{exp_hash}) 与文档({doc_size:,}/{doc_hash}) 不一致"
+            )
     return problems
 
 
@@ -182,8 +212,18 @@ def main() -> int:
     print("\n[3/3] 类别注册表")
     p3 = check_categories()
 
+    # 自检不计入「冻结破坏」，但同样需要人工处理
+    self_issues = check_baseline_consistency()
+
     problems = p1 + p2 + p3
     print("\n" + "=" * 68)
+    if self_issues:
+        print("⚠️  校验器基线自检告警（脚本 vs 文档不一致）：")
+        for x in self_issues:
+            print(f"    - {x}")
+        print("\n请同步 BASELINE 常量与文档第 1 节表格。")
+        print("（这属于工具维护问题，不代表规则被改动）")
+        print("=" * 68)
     if problems:
         print(f"⚠️  检测到 {len(problems)} 处冻结破坏：")
         for x in problems:
