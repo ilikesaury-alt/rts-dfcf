@@ -725,3 +725,83 @@ def test_render_hot_region_marks_dash_for_missing_fields(capsys):
     render_terminal(_make_view([c]))
     out = capsys.readouterr().out
     assert "—" in out
+
+
+# ── 独立 CLI / 离线自检 ─────────────────────────────────────────────────────
+
+
+def test_offline_demo_all_cases_match_expectation(capsys):
+    """离线自检：内置 12 条样本的期望结果必须全部命中（退出码 0）。
+
+    这条是「筛选规则回归哨兵」——改动任何阈值/排除条件却没同步 _DEMO_CASES 时，
+    这里会失败并指出具体哪条样本不符。
+    """
+    from scanner.hot_watch import run_offline_demo
+
+    rc = run_offline_demo(top_n=3, emit_json=False)
+    out = capsys.readouterr().out
+    assert rc == 0, f"离线自检未全绿：\n{out}"
+    assert "FAIL" not in out
+
+
+def test_offline_demo_covers_every_exclusion_branch():
+    """样本的排除原因必须覆盖 hard_exclude 全部分支，防止自检漏测某条规则。"""
+    from scanner.hot_watch import _DEMO_CASES, build_candidates
+
+    board = [b for _, (b, _q) in _DEMO_CASES]
+    quotes = {q["symbol"]: q for _, (_b, q) in _DEMO_CASES}
+    _passed, rejected = build_candidates(board, quotes)
+
+    reasons = " ".join(hard_exclude(c) or "" for c in rejected)
+    for keyword in ("ST", "非沪深", "非正常交易状态", "非上涨", "涨幅过高", "已封涨停", "市值过大"):
+        assert keyword in reasons, f"自检样本未覆盖排除分支：{keyword}"
+
+
+def test_cli_main_offline_demo_returns_zero():
+    """`python -m scanner.hot_watch --offline-demo` 退出码 0。"""
+    from scanner.hot_watch import main
+
+    assert main(["--offline-demo"]) == 0
+
+
+def test_cli_json_output_is_parseable(capsys):
+    import json
+
+    from scanner.hot_watch import main
+
+    assert main(["--offline-demo", "--json"]) == 0
+    out = capsys.readouterr().out
+    # JSON 在自检表格之后输出
+    payload = out[out.index("[") :]
+    rows = json.loads(payload)
+    assert len(rows) == 3
+    assert {"code", "symbol", "name", "score"} <= set(rows[0])
+
+
+def test_cli_threshold_override_changes_result(capsys):
+    """--max-percent 下调后排除了原本通过的票（证明 CLI 阈值覆盖真的生效）。
+
+    ⚠️ main() 会改写模块级阈值全局（hard_exclude/compute_score 都读它），
+    **必须还原**——否则会污染同进程后续用例（pytest 单进程内顺序执行）。
+    """
+    import scanner.hot_watch as hw
+
+    saved = (hw.HOT_MAX_PERCENT, hw.HOT_MAX_MARKET_CAP, hw.HOT_ENRICH_LIMIT)
+    try:
+        hw.main(["--offline-demo", "--max-percent", "5"])
+        assert hw.HOT_MAX_PERCENT == 5.0  # 覆盖确实落到全局
+        out = capsys.readouterr().out
+        # 山东玻纤 6.24% 在 5% 上限下被排除（自检表会同时报 FAIL，属预期）
+        assert "涨幅过高(6.24%>5%)" in out
+    finally:
+        hw.HOT_MAX_PERCENT, hw.HOT_MAX_MARKET_CAP, hw.HOT_ENRICH_LIMIT = saved
+
+
+def test_cli_conn_is_isolated():
+    """CLI 用内存库，不落生产 scanner.db。"""
+    from scanner.hot_watch import _cli_conn
+
+    conn = _cli_conn()
+    conn.execute("INSERT INTO hot_watch_hits(symbol,name,streak,last_round) VALUES('SZ999999','测试',1,1)")
+    assert conn.execute("SELECT COUNT(*) FROM hot_watch_hits").fetchone()[0] == 1
+    conn.close()

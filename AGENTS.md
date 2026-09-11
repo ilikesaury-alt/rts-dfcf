@@ -60,6 +60,20 @@ python -m scanner.triple_barrier --report   # 三重屏障标签重建 + 新旧�
 python -m scanner.model_bucket              # v3 模型桶离线可行性（M3，walkforward LightGBM）
 ```
 
+### 沪深飙升独立区（hot_watch）—— 自检入口
+
+主循环内每轮自动执行，**通常无需手动跑**。此入口用于改规则后快速自检：
+
+```
+python -m scanner.hot_watch --offline-demo       # 离线自检：12 条内置样本逐条核对，不联网
+python -m scanner.hot_watch --top 5              # 联网跑一轮（连击落内存库，不污染 scanner.db）
+python -m scanner.hot_watch --offline-demo --json
+python -m scanner.hot_watch --max-percent 5      # 临时覆盖阈值，验证边界
+```
+
+`--offline-demo` 全绿退出码 0，任一条不符即 1 —— 改动阈值/排除条件后应跑它，
+它是本区筛选规则的回归哨兵（对应单测 `test_offline_demo_all_cases_match_expectation`）。
+
 - **triple_barrier_labels 表**（M2）：(止盈 +7% / 止损 -5% / 时间 3 日) 三屏障标注，
   样本口径与 load_attribution_rows 一致（excluded=0 + 同票同日取最后一轮）；
   幂等重建，旧 next_day 标签链路不动。

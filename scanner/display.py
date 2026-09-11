@@ -1140,13 +1140,15 @@ def _fmt_hot_amount(amount: float) -> str:
     return f"{amount:.0f}"
 
 
-def _render_hot_watch_region(view: ScanView) -> None:
+def _render_hot_watch_region(rows) -> None:
     """渲染「沪深飙升·极有可能大涨」独立区（无结果时整区跳过，不留空表）。
 
-    行数据源为 scanner.hot_watch.HotCandidate（本轮已在主循环算好并落连击），
-    本函数只做渲染——与 render_terminal 的「只画不算」纪律一致。
+    行元素为 scanner.hot_watch.HotCandidate（主循环内已算好并落连击），本函数只做
+    渲染——与 render_terminal 的「只画不算」纪律一致。
+
+    形参取行列表而非 ScanView：本区与主线数据完全无关，取 view 会让独立运行
+    （`python -m scanner.hot_watch`）被迫构造一个满是空字段的 ScanView。
     """
-    rows = view.hot_rows
     if not rows:
         return
 
@@ -1187,6 +1189,15 @@ def _render_hot_watch_region(view: ScanView) -> None:
         f"市值>{HOT_MAX_MARKET_CAP / 1e8:.0f}亿·ST·科创板/北交所/ETF | "
         f"连击≥{HOT_HIGHLIGHT_STREAK}轮标★"
     )
+
+
+def render_hot_watch_standalone(rows) -> None:
+    """只渲染「沪深飙升·极有可能大涨」区（供 `python -m scanner.hot_watch` 独立运行）。
+
+    与主循环的 render_terminal 共用同一个 _render_hot_watch_region，避免两套渲染
+    逻辑分叉（独立区行宽/配色/脚注只此一份）。
+    """
+    _render_hot_watch_region(rows)
 
 
 def render_terminal(view: ScanView) -> None:
@@ -1301,7 +1312,7 @@ def render_terminal(view: ScanView) -> None:
     # 口径为「当日 momentum + 榜单热度跃升」（主线为 next_day 次日大涨）。
     # 独立成区而非并入主线表：两者排序键、评分体系、样本面都不同，混排会让
     # 「为什么这只创业板票排在一只主板票后面」无法解释。
-    _render_hot_watch_region(view)
+    _render_hot_watch_region(view.hot_rows)
 
 
 def display_priority(

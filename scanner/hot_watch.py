@@ -543,3 +543,255 @@ def _safe_persist(conn, all_hits: Sequence[HotCandidate]) -> None:
         conn.commit()
     except EXTERNAL_FAILURES as e:
         logger.warning("hot_watch 连击落库失败（本轮结果不受影响）: %s", e)
+
+
+# ── 独立运行 CLI（python -m scanner.hot_watch）───────────────────────────────
+# 主循环里本区随扫描自动跑；此入口用于**离线自检与临时查看**：
+#   - --offline-demo 不联网，用内置样本跑通「预筛→补全→排除→打分→排序→渲染」全链路
+#   - 在线模式读真实榜单，但**连击落库走内存库**（不污染生产 scanner.db）
+# 渲染复用 display.render_hot_watch_standalone（惰性导入：常规 import 本模块不拉起
+# 重量级 display 依赖链）。
+
+
+def _demo_case(
+    symbol, code, name, exch, current, percent, last_close, cap, tr=8.0, vol=1e7, amount=1e8, status=1, rc=500, rank=1
+):
+    """构造一对（榜单条目, 补全行情）—— 覆盖各硬排除分支的离线自检样本。"""
+    board = {
+        "symbol": symbol,
+        "name": name,
+        "percent": percent,
+        "current": current,
+        "rank_change": rc,
+        "rank": rank,
+        "exchange": exch,
+    }
+    quote = {
+        "symbol": symbol,
+        "code": code,
+        "name": name,
+        "exchange": exch,
+        "status": status,
+        "current": current,
+        "percent": percent,
+        "chg": round(current - last_close, 3),
+        "volume": vol,
+        "amount": amount,
+        "turnover_rate": tr,
+        "market_capital": cap,
+        "float_market_capital": cap * 0.9,
+        "last_close": last_close,
+        "high": current * 1.01,
+        "low": current * 0.99,
+    }
+    return board, quote
+
+
+# 期望结果标注在 expect 列：pass=应通过 / 其余为应命中的排除原因关键词
+_DEMO_CASES = [
+    # —— 应通过 ——
+    (
+        "pass",
+        _demo_case(
+            "SZ002443",
+            "002443",
+            "金洲管道",
+            "SZ",
+            11.81,
+            5.73,
+            11.17,
+            6.1e9,
+            tr=8.6,
+            vol=4.491e7,
+            amount=5.15e8,
+            rc=493,
+        ),
+    ),
+    (
+        "pass",
+        _demo_case(
+            "SZ300862",
+            "300862",
+            "蓝盾光电",
+            "SZ",
+            50.10,
+            5.76,
+            47.37,
+            9.249e9,
+            tr=18.18,
+            vol=2.7532e7,
+            amount=1.3569e9,
+            rc=1257,
+        ),
+    ),
+    (
+        "pass",
+        _demo_case(
+            "SH605006", "605006", "山东玻纤", "SH", 18.40, 6.24, 17.32, 8.9e9, tr=7.8, vol=2.9e7, amount=5.3e8, rc=6445
+        ),
+    ),
+    # —— 应被排除 ——
+    ("ST", _demo_case("SZ002514", "002514", "*ST宝馨", "SZ", 2.65, 9.96, 2.41, 2.4e9, rc=4463)),
+    ("非沪深", _demo_case("SH688260", "688260", "昀冢科技", "SH", 106.58, 15.1, 92.60, 1.3e10, rc=3713)),
+    ("非沪深", _demo_case("01810", "01810", "小米集团-W", "HK", 26.44, 2.01, 25.92, 6.6e11, rc=6656)),
+    ("非沪深", _demo_case("SZ159516", "159516", "半导体ETF", "SZ", 0.652, 2.10, 0.639, 1.1e10, rc=4050)),
+    (
+        "非正常交易状态",
+        _demo_case(
+            "SH600000", "600000", "浦发银行", "SH", 9.80, 0.50, 9.75, 2.9e11, status=0, vol=0, amount=0, tr=0.0, rc=900
+        ),
+    ),
+    ("非上涨", _demo_case("SH601899", "601899", "紫金矿业", "SH", 32.23, -5.51, 34.11, 8.5e11, rc=11001)),
+    ("涨幅过高", _demo_case("SZ301176", "301176", "逸豪新材", "SZ", 61.06, 7.50, 56.80, 1.03e10, rc=4432)),
+    ("已封涨停", _demo_case("SZ002201", "002201", "九鼎新材", "SZ", 11.09, 10.02, 10.08, 5.8e9, rc=4705)),
+    ("市值过大", _demo_case("SH600519", "600519", "贵州茅台", "SH", 1277.01, 0.50, 1270.65, 1.6e12, rc=5979)),
+]
+
+
+def run_offline_demo(top_n: int, emit_json: bool) -> int:
+    """离线自检：不联网，用内置样本跑通全链路并逐条核对期望结果。"""
+    board = [b for _, (b, _q) in _DEMO_CASES]
+    quotes = {q["symbol"]: q for _, (_b, q) in _DEMO_CASES}
+
+    # 注意：**故意不先过 prefilter_board** —— 预筛会提前丢掉 ST/非沪深/非上涨三类，
+    # 那些样本就走不到 hard_exclude，排除分支无法被逐条验证（会显示"缺失"）。
+    # 真实链路里预筛只是省请求量，最终判定仍以 hard_exclude 为准，故自检对全量
+    # 样本直接跑 build_candidates；下面另打印预筛存活数作为对照。
+    pre_n = len(prefilter_board(board))
+    passed, rejected = build_candidates(board, quotes)
+    passed_syms = {c.symbol for c in passed}
+    rejected_map = {c.symbol: hard_exclude(c) for c in rejected}
+
+    print("【离线自检】不联网，内置样本逐条核对")
+    print(f"{'代码':<8}{'名称':<12}{'期望':<16}{'实际':<10}结果")
+    print("-" * 60)
+    ok = True
+    for expect, (b, _q) in _DEMO_CASES:
+        sym, name = b["symbol"], b["name"]
+        code = _q["code"]
+        if expect == "pass":
+            actual = "通过" if sym in passed_syms else (rejected_map.get(sym) or "缺失")
+            good = sym in passed_syms
+        else:
+            actual = rejected_map.get(sym) or ("通过" if sym in passed_syms else "缺失")
+            good = sym not in passed_syms and expect in (actual or "")
+        ok = ok and good
+        print(f"{code:<8}{name:<12}{expect:<16}{actual:<10}{'OK' if good else 'FAIL'}")
+
+    print("-" * 60)
+    print(f"通过 {len(passed)} 只 / 排除 {len(rejected)} 只 / 样本 {len(_DEMO_CASES)} 条")
+    print(f"（真实链路中预筛先滤掉一部分 → 仅 {pre_n} 条会进入行情补全，省请求量）")
+
+    if emit_json:
+        print(_rows_to_json(passed[:top_n]))
+    else:
+        from scanner.display import render_hot_watch_standalone
+
+        render_hot_watch_standalone(passed[:top_n])
+    return 0 if ok else 1
+
+
+def _rows_to_json(rows) -> str:
+    """紧凑 JSON 输出（便于程序消费/排查）。"""
+    import json
+
+    return json.dumps(
+        [
+            {
+                "code": c.code,
+                "symbol": c.symbol,
+                "name": c.name,
+                "current": round(c.current, 3),
+                "percent": round(c.percent, 2),
+                "rank_change": c.rank_change,
+                "volume": round(c.volume),
+                "amount": round(c.amount),
+                "turnover_rate": round(c.turnover_rate, 2),
+                "market_cap_yi": round(c.market_capital / 1e8, 2),
+                "score": round(c.score, 2),
+                "streak": c.streak,
+                "reasons": c.reasons,
+            }
+            for c in rows
+        ],
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def _cli_conn():
+    """CLI 专用内存库：跑连击逻辑但不落生产 scanner.db。"""
+    import sqlite3
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute("""
+        CREATE TABLE hot_watch_hits (
+            symbol TEXT PRIMARY KEY, name TEXT NOT NULL,
+            streak INTEGER NOT NULL DEFAULT 0, last_round INTEGER NOT NULL DEFAULT 0,
+            last_seen TEXT, last_percent REAL, last_price REAL, last_score REAL)
+    """)
+    conn.execute("CREATE TABLE hot_watch_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.commit()
+    return conn
+
+
+def main(argv: "list[str] | None" = None) -> int:
+    import argparse
+
+    # 先声明：下面 argparse 的 default 就要读这些全局名，global 必须先于首次使用。
+    # hard_exclude / compute_score 均引用模块级全局名，故 main 内重新赋值即生效，
+    # 无需给核心函数加参数（保持既有签名与单测不动）。
+    global HOT_MAX_PERCENT, HOT_MAX_MARKET_CAP, HOT_ENRICH_LIMIT
+
+    p = argparse.ArgumentParser(
+        prog="python -m scanner.hot_watch",
+        description="沪深飙升·极有可能大涨（独立区·独立运行；主循环内已自动执行，此入口用于自检）",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p.add_argument("--top", type=int, default=HOT_DISPLAY_TOP, help="展示前 N 只")
+    p.add_argument("--max-cap", type=float, default=HOT_MAX_MARKET_CAP / 1e8, help="市值上限(亿元)")
+    p.add_argument("--max-percent", type=float, default=HOT_MAX_PERCENT, help="涨幅上限(%%)")
+    p.add_argument("--enrich", type=int, default=HOT_ENRICH_LIMIT, help="补全候选上限")
+    p.add_argument("--json", action="store_true", help="额外输出 JSON")
+    p.add_argument("--offline-demo", action="store_true", help="离线自检：内置样本，不联网")
+    p.add_argument("--verbose", action="store_true", help="调试日志")
+    args = p.parse_args(argv)
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.WARNING,
+        format="[%(levelname)s] %(message)s",
+    )
+
+    # 覆盖阈值（全局名已在函数开头声明）
+    HOT_MAX_PERCENT = args.max_percent
+    HOT_MAX_MARKET_CAP = args.max_cap * 1e8
+    HOT_ENRICH_LIMIT = args.enrich
+
+    if args.offline_demo:
+        return run_offline_demo(args.top, args.json)
+
+    from scanner.data_source import get_adapter
+
+    adapter = get_adapter()
+    board = adapter.fetch_biaosheng(100)
+    if not board:
+        print("  [!] 飙升榜为空（熔断中/网络异常），无法运行")
+        return 1
+    print(f"  榜单 {len(board)} 条 | 数据源 {adapter.name}")
+
+    rows = run_hot_watch(adapter, _cli_conn(), board, top_n=args.top)
+    if not rows:
+        print("  本轮无标的通过筛选（可能全被硬排除）")
+        return 0
+
+    if args.json:
+        print(_rows_to_json(rows))
+    else:
+        from scanner.display import render_hot_watch_standalone
+
+        render_hot_watch_standalone(rows)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
