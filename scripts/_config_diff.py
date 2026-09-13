@@ -1,6 +1,5 @@
 import ast
 import subprocess
-import importlib
 
 # 1) 原始 config.py（git HEAD 版本）中定义的名字 + 其 re-export 的名字
 old_src = subprocess.check_output(
@@ -26,7 +25,7 @@ for node in old_tree.body:
             old_reexports.add(a.asname or a.name)
 
 # 2) 新版 scanner.config 实际暴露的名字
-import scanner.config as c
+import scanner.config as c  # noqa: E402
 
 old_api = old_names | old_reexports
 missing = sorted(n for n in old_api if not hasattr(c, n))

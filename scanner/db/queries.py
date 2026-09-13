@@ -1,7 +1,7 @@
 """queries 层：只读查询（P1-6 拆分，2026-08-21）。
 
 只 SELECT、不写库不 commit。写入逻辑在 dal.py，DDL/连接在 schema.py。
-私有 helper（_count_consecutive_days / _assign_rank_scores 等）仅包内消费，
+私有 helper（_count_consecutive_days 等）仅包内消费，
 经 scanner/database.py 门面 re-export 供测试使用。
 
 异常捕获口径（2026-09-13 明确化）：只读路径的降级捕获一律收窄为
@@ -392,7 +392,6 @@ def get_today_recommendations(conn: sqlite3.Connection, as_of=None) -> list[Reco
     返回列表未排序，每项包含：
       symbol, name, category, score, trend, first_time,
       live_percent (from appearances),
-      rank_score（类内百分位，综合排序跨类别可比用）,
       score_breakdown（2026-08-17 新增：解析为 dict，供掉榜/重启行的 🎯 分型
       （short_term 弱转强）与板块普涨避雷标记判定，见 ranking.entry_dims）
     """
@@ -472,38 +471,7 @@ def get_today_recommendations(conn: sqlite3.Connection, as_of=None) -> list[Reco
         # 名次直接渲染（掉榜票显示旧排名）。综合排序排名列的真实时链路在 display：
         # 当前轮 rank_map（在榜）→ 未过期的候选快照 → 掉榜行恒为 —。
 
-    result = cast(list[RecommendationRow], list(seen.values()))
-    _assign_rank_scores(result)
-    return result
-
-
-def _assign_rank_scores(records: list) -> None:
-    """为 records 计算 within-(date,category) 百分位 rank_score（0-100），就地修改。
-
-    用于综合排序跨类别可比：同类别同日的票按 score 分位排序，消除各类别自身标尺差异
-    （new_face 均值~45 与 comeback~122 不可直接比）。records 需含 'date'/'category'/'score'，
-    缺 'date' 时退化为仅按 category 分组（get_today_recommendations 全为当日，等价）。
-
-    ⚠ 2026-09-13 复核：**本函数与 `portfolio_backtest.assign_rank_scores` 同名但语义不同**
-    —— 本版一律按 score 升序赋 `pos/(n-1)*100`（低分→0、高分→100），**不区分
-    `SCORE_DESCENDING_BY_CAT` 方向**；回测版按类别翻转（known_new_face 低分优先），
-    修复见其 docstring 的 2026-09-02 记录。若哪天有人开始读本函数写出的 `rank_score`，
-    kNF 类别的方向会与线上 `ranking.score_sort_key` 相反 —— 即回测版已修的那个 bug。
-    另注：截至 2026-09-13，本函数写出的 `rank_score` **无任何生产消费方**（唯一消费方
-    `portfolio_backtest` 用的是回测版）；它目前只被 `tests/test_portfolio_backtest.py`
-    的 dict 分支覆盖。删除前请确认展示层确无读取。
-    """
-    groups: dict[tuple, list[dict]] = {}
-    for r in records:
-        key = (r.get("date"), r.get("category"))
-        groups.setdefault(key, []).append(r)
-    for recs in groups.values():
-        n = len(recs)
-        if n == 0:
-            continue
-        ordered = sorted(recs, key=lambda r: r.get("score", 0.0))
-        for pos, r in enumerate(ordered):
-            r["rank_score"] = 100.0 if n == 1 else round(pos / (n - 1) * 100, 2)
+    return cast(list[RecommendationRow], list(seen.values()))
 
 
 def get_concepts_cache(conn: sqlite3.Connection, symbols: list[str], ttl_days: int = 7) -> dict[str, list[str]]:

@@ -41,7 +41,7 @@ def test_rescan_produces_signals():
             # hold_days 在数据中段应为 3；临近数据末尾会被 clamp 到最后一个交易日，
             # 故只断言成交（持仓 >=1 日）而非恒等于 3。
             assert s.hold_days >= 1, "成交交易应有正持仓天数"
-        # rank_score 由 historical_rescan._assign_rank_scores 计算，应在 [0,100]
+        # rank_score 由 portfolio_backtest.assign_rank_scores 计算，应在 [0,100]
         # （间接验证：回测未因 rank_score 异常崩溃）
     finally:
         conn.close()

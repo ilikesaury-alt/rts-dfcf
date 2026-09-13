@@ -319,23 +319,6 @@ def test_assign_rank_scores_signal_percentile():
     assert by["A2"].rank_score > by["B1"].rank_score
 
 
-def test_assign_rank_scores_dict_percentile():
-    """database._assign_rank_scores 对 dict 记录的百分位归一化（综合排序展示用）。"""
-    from scanner.database import _assign_rank_scores
-
-    recs = [
-        {"date": "2026-07-01", "category": "new_face", "score": 20},
-        {"date": "2026-07-01", "category": "new_face", "score": 45},
-        {"date": "2026-07-01", "category": "comeback", "score": 122},
-    ]
-    _assign_rank_scores(recs)
-    by = {r["category"]: r for r in recs}
-    assert by["new_face"]["rank_score"] == 100.0  # 同类内最高
-    assert by["comeback"]["rank_score"] == 100.0  # 同类内唯一 -> 100
-    # 两者类内均居首，故综合排序并列优先，不再被 comeback 的标尺(122)压过 new_face(45)
-    assert by["new_face"]["rank_score"] == by["comeback"]["rank_score"]
-
-
 def test_deheat_score_unit():
     """_deheat_score 从含热度 final_score 重建去热度分（验证 Step 1 可历史回测）。"""
     import json

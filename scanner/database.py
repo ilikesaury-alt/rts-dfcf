@@ -2,7 +2,6 @@
 
 实现已按职责拆到 scanner/db/ 包（schema=连接+DDL / queries=只读 / dal=写入），
 本模块保留为纯 re-export：既有调用方 `from scanner.database import X` 一行不改。
-私有名（`_assign_rank_scores`）也被 tests 直接 import，一并导出。
 （`n_trading_days_ago` 已于 2026-09-13 升为公共名——它跨包被 dal/queries 消费。）
 
 注意：monkeypatch 打点应指向实现所在模块（scanner.db.dal / scanner.db.queries），
@@ -11,7 +10,6 @@ patch scanner.database 命名空间不再影响实现行为。
 
 from scanner.db import (  # noqa: F401
     SCHEMA_VERSION,
-    _assign_rank_scores,
     count_recent_appearances,
     ensure_observation_schema,
     get_cached_kline,

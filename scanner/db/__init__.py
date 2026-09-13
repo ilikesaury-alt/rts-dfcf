@@ -32,7 +32,6 @@ from scanner.db.dal import (
     upsert_watch_symbols,
 )
 from scanner.db.queries import (
-    _assign_rank_scores,
     count_recent_appearances,
     get_cached_kline,
     get_cached_klines,
@@ -95,7 +94,5 @@ __all__ = [
     "get_today_recommendations",
     "get_watch_symbols",
     "is_prominent",
-    # 包内私有名，tests 直接 import（re-export 供兼容）
-    "_assign_rank_scores",
     "n_trading_days_ago",
 ]
