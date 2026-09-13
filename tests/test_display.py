@@ -1249,3 +1249,71 @@ def test_entry_row_suffix_renders_beauty_tag():
     out_ok = _entry_row_suffix(e, {}, beauty="美")
     assert "美" in out_ok and ANSI["GREEN"] in out_ok
     assert _entry_row_suffix(e, {}) == ""
+
+
+# ── 视图层零写库副作用（2026-09-13，测评 A2）──
+
+
+def test_build_scan_view_does_not_write_decision_picks(capsys):
+    """★ `build_scan_view` 自称"只算不画"，就不该写 decision_picks。
+
+    原实现在内部调 decision.decision_lines，而后者会落库 → 一个视图函数带写库
+    副作用：既不能当纯函数单测，将来出 HTML 报告也会顺带落一次库。
+    落库现由主循环 build_and_persist_decision 显式负责，并把行注入本函数。
+    """
+    import scanner.display as dm
+
+    conn = _rec_db()
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS decision_picks ("
+        " date TEXT NOT NULL, symbol TEXT NOT NULL, name TEXT, category TEXT,"
+        " score REAL, percent REAL, reason TEXT, created TEXT,"
+        " PRIMARY KEY (date, symbol))"
+    )
+    for sym in ("SZ300001", "SZ300002"):
+        _insert_rec_cat(conn, sym, f"股{sym[-1]}", "core_dip", 70)
+    # 决策层需要市场门数据（缺则门关 → 仍会渲染"空仓"行，但不该落库）
+    conn.execute(
+        "INSERT INTO market_index_log (date, time, index_pct, bar_date, source) "
+        "VALUES ('2026-09-04', '10:00:00', 1.0, '2026-09-04', 'xueqiu')"
+    )
+    before = conn.execute("SELECT COUNT(*) FROM decision_picks").fetchone()[0]
+
+    view = dm.build_scan_view(conn, today_pool={})
+
+    after = conn.execute("SELECT COUNT(*) FROM decision_picks").fetchone()[0]
+    assert before == after == 0, f"视图层不得写 decision_picks（{before} → {after}）"
+    assert view is not None
+    # 防"空跑通过"：必须证明决策层这一轮**真的算过了**（否则没落库只是因为没跑到）。
+    assert view.decision_lines, (
+        f"决策层应当已计算并渲染；实际 {view.decision_lines!r}，"
+        f"警告 {view.warnings}（若为空说明决策层根本没被执行，本测试无意义）"
+    )
+
+
+def test_build_scan_view_accepts_injected_decision_lines(capsys):
+    """主循环注入已算好的决策行 → 视图原样采用，不再自己重算（同源不重复读库）。"""
+    import scanner.display as dm
+
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "股1", "momentum", 70)
+    injected = ["◆ 今日决策层（注入）", "  1. SZ300999 注入票 [core_dip] 分:99 现价+9.9%"]
+
+    view = dm.build_scan_view(conn, today_pool={}, decision_lines=injected)
+
+    assert view is not None
+    assert view.decision_lines == injected, "注入的行必须原样进 view，不得被重算覆盖"
+
+
+def test_display_entry_passes_decision_lines_through(capsys):
+    """便捷入口 display() 也必须透传 decision_lines（否则主循环注入会被静默丢弃）。"""
+    import scanner.display as dm
+
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "股1", "momentum", 70)
+    injected = ["◆ 穿透检查"]
+
+    view = dm.display(100, 60, conn=conn, today_pool={}, decision_lines=injected)
+
+    assert view is not None
+    assert view.decision_lines == injected

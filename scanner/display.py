@@ -399,6 +399,7 @@ def display(
     today_pool: dict[str, Candidate] | None = None,
     last_ranks: dict[str, int] | None = None,
     hot_rows: list | None = None,
+    decision_lines: list[str] | None = None,
 ) -> "ScanView | None":
     """扫描主屏：头部摘要 + 展示视图（构建/渲染委托 display_priority）。
 
@@ -411,6 +412,7 @@ def display(
     today_pool：本轮候选池快照（symbol → Candidate），由调用方（scan_with_raw 的
     ScanResult）传入，display 不直接访问 orchestrator 内部状态。
     last_ranks: 上一轮扫描的榜单排名 {symbol: rank}，供「排名」列显示变化（+N 升 / -N 降）。
+    decision_lines：主循环已落库算好的决策层文本行（2026-09-13，落库移出视图层）。
     """
     clear_screen()
     now = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
@@ -429,6 +431,7 @@ def display(
         last_ranks=last_ranks,
         weak=weak,
         hot_rows=hot_rows,
+        decision_lines=decision_lines,
     )
 
 
@@ -742,8 +745,13 @@ def build_scan_view(
     last_ranks: dict[str, int] | None = None,
     weak: bool | None = None,
     hot_rows: list | None = None,
+    decision_lines: list[str] | None = None,
 ):
-    """构建一次扫描的展示视图（纯计算，不 print）：读今日推荐并算出档位/标记/排序。
+    """构建一次扫描的展示视图（纯计算，不 print、不写库）：读今日推荐并算出档位/标记/排序。
+
+    decision_lines: 主循环已落库并算好的决策层文本行（2026-09-13）。传入则不重算；
+    **不传时本函数只算不落库**（`scanner.decision.decision_lines` 是纯的）。
+    这样"看一屏终端"就不再有写库副作用，将来出 HTML 报告也不会顺带落一次库。
 
     返回值供 render_terminal / 飞书卡片共用，保证各出口看到同一份选择。
     无 conn 或今日无推荐时返回 None（由调用方决定是否渲染）。
@@ -1065,10 +1073,12 @@ def build_scan_view(
     _rule_result = scan_rule(conn)
 
     # 决策层（2026-09-04）：≤3 只短名单/空仓判定，fail-open 不阻断展示主流程。
-    # 注意：此处有落库副作用（decision_picks 表），与「纯计算」的约定冲突，
-    # 但决策层需要与展示同源（同一轮的推荐快照），独立出来会造成两次读取竞态。
-    _decision_lines: list[str] | None = None
-    if DECISION_LAYER_ENABLED:
+    # 2026-09-13（测评 A2）：落库副作用已**移出视图层**——本函数不再写
+    # decision_picks。落库由主循环调 decision.build_and_persist_decision 显式完成，
+    # 并把算好的行经 `decision_lines` 参数注入（同源同一次计算，不重复读库）。
+    # 未注入时才自己算一份**纯的**（不落库），供 feishu / 测试 / 回放安全调用。
+    _decision_lines = decision_lines
+    if DECISION_LAYER_ENABLED and _decision_lines is None:
         try:
             from scanner.decision import decision_lines as _build_decision
 
@@ -1323,6 +1333,7 @@ def display_priority(
     last_ranks: dict[str, int] | None = None,
     weak: bool | None = None,
     hot_rows: list | None = None,
+    decision_lines: list[str] | None = None,
 ) -> "ScanView | None":
     """构建展示视图并渲染到终端（build_scan_view + render_terminal 的便捷入口）。
 
@@ -1330,6 +1341,9 @@ def display_priority(
     传入则复用（display 主屏已在打印头部前算过一次，避免重复查询）。
     返回 ScanView 供复用（display 主屏回传飞书 / 测试捕获输出后取数据两用）；
     无 conn 或今日无推荐时返回 None。
+
+    decision_lines：主循环已落库算好的决策层文本行，透传给 build_scan_view
+    （2026-09-13：不传时 build_scan_view 会自己算一份纯的，不落库）。
     """
     view = build_scan_view(
         conn=conn,
@@ -1339,6 +1353,7 @@ def display_priority(
         last_ranks=last_ranks,
         weak=weak,
         hot_rows=hot_rows,
+        decision_lines=decision_lines,
     )
     if view is None:
         return None

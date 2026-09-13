@@ -215,14 +215,12 @@ def save_decision_picks(conn: sqlite3.Connection, result: dict[str, Any], today:
             pass
 
 
-def decision_lines(conn: sqlite3.Connection, today: str | None = None) -> list[str]:
-    """渲染决策层为文本行（进 ScanView，终端/飞书共用）。含落库副作用。"""
-    try:
-        result = build_decision_picks(conn, today)
-    except EXTERNAL_FAILURES as e:
-        logger.warning("决策层构建失败: %s: %s", type(e).__name__, e)
-        return ["决策层：不可用（构建失败）"]
-    save_decision_picks(conn, result, today)
+def render_decision_lines(result: dict[str, Any]) -> list[str]:
+    """把 `build_decision_picks` 的结果渲染为文本行（**纯函数，无 IO**）。
+
+    2026-09-13 抽出：原渲染逻辑内联在 `decision_lines` 里，与"构建 + 落库"耦合，
+    导致渲染格式无法单独单测（要测就得连着 DB 一起搭）。
+    """
     lines = [f"◆ 今日决策层（≤{DECISION_MAX_PICKS} 只 · 大盘门+类别先验+分时门+配额）"]
     if result.get("beauty_blocked"):
         lines.append(f"  · 分时门拦{result['beauty_blocked']}只（分时走弱·不接回落刀）")
@@ -233,6 +231,43 @@ def decision_lines(conn: sqlite3.Connection, today: str | None = None) -> list[s
         pct_s = f"{p['percent']:+.1f}%" if p.get("percent") is not None else "—"
         lines.append(f"  {i}. {p['symbol']} {p['name']} [{p['category']}] 分:{p['score']:.0f} 现价{pct_s}")
     return lines
+
+
+def decision_lines(conn: sqlite3.Connection, today: str | None = None) -> list[str]:
+    """渲染决策层为文本行（进 ScanView，终端/飞书共用）。**纯构建 + 渲染，不落库。**
+
+    2026-09-13 变更（测评 A2）：本函数**原先会写 `decision_picks` 表**，而它的唯一
+    生产调用方是 `display.build_scan_view`——一个自称"只算不画"的视图函数。后果：
+    视图层带写库副作用，既不能当纯函数单测，将来出 HTML 报告时也会连带触发一次
+    决策落库。落库现由主循环显式负责，见 `build_and_persist_decision`。
+
+    **保留本函数的无副作用语义是刻意的**：调用方（display / feishu / 测试）可以
+    安全地多次调用它来"看看决策层现在是什么样"而不产生任何持久化影响。
+    """
+    try:
+        result = build_decision_picks(conn, today)
+    except EXTERNAL_FAILURES as e:
+        logger.warning("决策层构建失败: %s: %s", type(e).__name__, e)
+        return ["决策层：不可用（构建失败）"]
+    return render_decision_lines(result)
+
+
+def build_and_persist_decision(conn: sqlite3.Connection, today: str | None = None) -> list[str]:
+    """构建决策层 + **落库** + 渲染。**副作用写在函数名里**，勿在视图层调用。
+
+    这是主循环（`unified_scanner`）每轮应当调用的那个：决策层要落 `decision_picks`
+    供 `prevday_perf` 做「决策层 vs 全池」次日对比，该写必须由主循环显式触发，
+    而不是藏在"要不要渲染一屏终端"里——否则关掉终端输出就悄悄不再落库了。
+
+    落库失败已由 `save_decision_picks` 内部 fail-open（仅告警），不影响展示。
+    """
+    try:
+        result = build_decision_picks(conn, today)
+    except EXTERNAL_FAILURES as e:
+        logger.warning("决策层构建失败: %s: %s", type(e).__name__, e)
+        return ["决策层：不可用（构建失败）"]
+    save_decision_picks(conn, result, today)
+    return render_decision_lines(result)
 
 
 def main() -> None:  # pragma: no cover - 手动查询入口

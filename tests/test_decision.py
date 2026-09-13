@@ -6,6 +6,7 @@ import pytest
 
 from scanner.decision import (
     DECISION_MAX_PICKS,
+    build_and_persist_decision,
     build_decision_picks,
     decision_lines,
     market_gate,
@@ -315,3 +316,120 @@ def test_decision_lines_mention_intraday_block(monkeypatch):
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ── 落库与渲染的职责分离（2026-09-13，测评 A2）──
+
+
+def _decision_db() -> sqlite3.Connection:
+    conn = _db()
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS decision_picks ("
+        " date TEXT NOT NULL, symbol TEXT NOT NULL, name TEXT, category TEXT,"
+        " score REAL, percent REAL, reason TEXT, created TEXT,"
+        " PRIMARY KEY (date, symbol))"
+    )
+    return conn
+
+
+def _picks_count(conn) -> int:
+    return conn.execute("SELECT COUNT(*) FROM decision_picks").fetchone()[0]
+
+
+def test_decision_lines_does_not_persist():
+    """★ 视图层零副作用：`decision_lines` 只算不写。
+
+    原实现内部调 save_decision_picks，而唯一生产调用方是 display.build_scan_view
+    ——一个自称"只算不画"的视图函数。后果：看一屏终端就写一次库，将来出 HTML
+    报告也会顺带落库。落库现由主循环 build_and_persist_decision 显式负责。
+    """
+    from scanner.decision import decision_lines as _pure_lines
+
+    conn = _decision_db()
+    _seed_strong_day(conn)
+    _seed_rec(conn, TODAY, "SZ300001", "core_dip", 80, name="低吸甲")
+    before = _picks_count(conn)
+
+    lines = _pure_lines(conn, today=TODAY)
+
+    assert _picks_count(conn) == before, "decision_lines 不得写库"
+    assert any("SZ300001" in ln for ln in lines), "不落库也要正常渲染"
+
+
+def test_decision_lines_works_without_picks_table():
+    """纯渲染路径不应依赖 decision_picks 表存在（建表前调用也不炸）。"""
+    conn = _db()  # 无 decision_picks 表
+    _seed_strong_day(conn)
+    _seed_rec(conn, TODAY, "SZ300001", "core_dip", 80)
+    lines = decision_lines(conn, today=TODAY)
+    assert any("SZ300001" in ln for ln in lines)
+
+
+def test_build_and_persist_decision_writes_db():
+    """主循环用的那个：构建 + 落库 + 渲染，三者都要发生。"""
+    conn = _decision_db()
+    _seed_strong_day(conn)
+    _seed_rec(conn, TODAY, "SZ300001", "core_dip", 80, name="低吸甲")
+
+    lines = build_and_persist_decision(conn, today=TODAY)
+
+    assert _picks_count(conn) > 0, "build_and_persist_decision 必须落库"
+    syms = {r[0] for r in conn.execute("SELECT symbol FROM decision_picks")}
+    assert "__gate__" in syms and "SZ300001" in syms
+    assert any("SZ300001" in ln for ln in lines)
+
+
+def test_build_and_persist_decision_is_idempotent():
+    """连调两次不产生重复行（INSERT OR REPLACE 语义）。"""
+    conn = _decision_db()
+    _seed_strong_day(conn)
+    _seed_rec(conn, TODAY, "SZ300001", "core_dip", 80)
+    build_and_persist_decision(conn, today=TODAY)
+    n1 = _picks_count(conn)
+    build_and_persist_decision(conn, today=TODAY)
+    assert _picks_count(conn) == n1
+
+
+def test_persist_failure_still_renders():
+    """落库失败不影响展示（fail-open）：save_decision_picks 捕获 EXTERNAL_FAILURES 仅告警。
+
+    构造真实失败而非打桩替换函数——不建 decision_picks 表，executemany 抛
+    `no such table`（sqlite3.OperationalError ∈ EXTERNAL_FAILURES）。
+    打桩替换整个 save_decision_picks 会绕过它内部的 try，测不到真实路径。
+    """
+    conn = _db()  # 故意没有 decision_picks 表
+    _seed_strong_day(conn)
+    _seed_rec(conn, TODAY, "SZ300001", "core_dip", 80)
+    lines = build_and_persist_decision(conn, today=TODAY)
+    assert any("SZ300001" in ln for ln in lines), "落库失败也要正常渲染"
+
+
+def test_render_decision_lines_is_pure():
+    """渲染是纯函数：输入 dict → 输出行，不碰 conn（可单测、可复用）。"""
+    from scanner.decision import render_decision_lines
+
+    lines = render_decision_lines(
+        {"allowed": True, "gate_reason": "大盘门开", "beauty_blocked": 2,
+         "picks": [{"symbol": "SZ300001", "name": "甲", "category": "core_dip",
+                    "score": 80.0, "percent": 3.0}]}
+    )
+    assert any("分时门拦2只" in ln for ln in lines)
+    assert any("1. SZ300001" in ln and "+3.0%" in ln for ln in lines)
+
+    empty = render_decision_lines(
+        {"allowed": False, "gate_reason": "大盘门未开", "beauty_blocked": 0, "picks": []}
+    )
+    assert any("空仓" in ln for ln in empty)
+    assert not any("SZ" in ln for ln in empty)
+
+
+def test_render_handles_missing_percent():
+    """percent 为 None（缺行情）渲染成 —，不是崩溃或 0.0%。"""
+    from scanner.decision import render_decision_lines
+
+    lines = render_decision_lines(
+        {"allowed": True, "gate_reason": "", "beauty_blocked": 0,
+         "picks": [{"symbol": "SZ300001", "name": "甲", "category": "core_dip",
+                    "score": 80.0, "percent": None}]}
+    )
+    assert any("—" in ln for ln in lines)

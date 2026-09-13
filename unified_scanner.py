@@ -25,6 +25,7 @@ from scanner.backtest import backfill_outcomes
 from scanner.config import (
     AFTERNOON_END,
     DB_PATH,
+    DECISION_LAYER_ENABLED,
     HOT_DISPLAY_TOP,
     HOT_WATCH_ENABLED,
     KLINE_FETCH_DAYS,
@@ -44,6 +45,7 @@ from scanner.database import (
     save_kline_to_db,
     save_recommendations,
 )
+from scanner.decision import build_and_persist_decision
 from scanner.display import display
 from scanner.feishu import push_feishu
 from scanner.hot_watch import run_hot_watch
@@ -462,6 +464,19 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                         _log_exception("hot_watch 独立区异常", e)
                         hot_rows = None
 
+                # 决策层落库（2026-09-13 移出视图层，测评 A2）：原先藏在
+                # display.build_scan_view 内部——一个"只算不画"的视图函数会写
+                # decision_picks。后果是该写依赖"这一轮要不要渲染一屏终端"，
+                # 且让 build_scan_view 无法当纯函数复用（将来出 HTML 报告会顺带
+                # 落一次库）。现在由主循环显式落库，副作用可见、不依赖渲染。
+                # 落库与展示同源：算好的行直接注入 view，不重复读库。
+                _decision_lines: list[str] | None = None
+                if DECISION_LAYER_ENABLED:
+                    try:
+                        _decision_lines = build_and_persist_decision(conn)
+                    except EXTERNAL_FAILURES as e:
+                        print(f"  [!] 决策层落库失败: {e}")
+
                 # 历史推荐跟踪已并入回马枪（2026-08-07）：tracker 模块删除，不再单独查询
                 # display() 返回本轮 ScanView，飞书复用同一份（避免两端选择分叉）。
                 view = display(
@@ -474,6 +489,7 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     today_pool=res.today_pool,
                     last_ranks=last_ranks,
                     hot_rows=hot_rows,
+                    decision_lines=_decision_lines,
                 )
                 # 快照本轮榜单排名供下一轮展示排名变化（上一轮为 None 时显示纯名次）。
                 last_ranks = dict(current_rank_map)
