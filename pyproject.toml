@@ -58,6 +58,10 @@ ignore = [
 "unified_scanner.py" = ["E402"]  # load_dotenv/win32 reconfigure 必须先于 config 导入（有意为之）
 "tests/*" = ["S105", "S106", "S311", "S608"]
 "scripts/*" = ["S603", "S607", "S608"]
+# view 包是刻意把 scanner.view.model 作为「格式化/视图模型」单一来源的层；
+# assemble/render 通过 `from scanner.view.model import *` 复用其全部叶子辅助与常量，
+# 该 star 导入名由 model 的 __all__ 显式约束，故在此忽略 F405（star 导入名「可能未定义」误报）。
+"scanner/view/*" = ["F405"]
 
 [tool.ruff.format]
 quote-style = "double"

@@ -8,6 +8,12 @@ import pytest
 import wcwidth
 
 import scanner.display as disp_mod
+import scanner.view.assemble as va  # noqa: E402
+
+# display 已拆分为 scanner/view/{model,assemble,render}；下列全局原由 display 模块持有，
+# 现分别由子模块定义/捕获绑定。monkeypatch 须打到真正持有该全局的命名空间才生效。
+import scanner.view.model as vm  # noqa: E402
+import scanner.view.render as vr  # noqa: E402
 from scanner.config import now_beijing
 from scanner.models import Candidate, KlineSummary, StockInfo
 
@@ -474,21 +480,23 @@ def test_display_priority_rank_delta_absent_by_default(monkeypatch, capsys):
 
 # ── 榜单 TOP40 排名高亮（2026-08-12）：名次 ≤ TOP40_THRESHOLD 加粗+红色提示 ──
 def _force_ansi(monkeypatch):
-    """强制 ANSI 着色开启（测试环境控制台通常无 ANSI，ANSI 码为空串会误断言）。"""
-    monkeypatch.setattr(disp_mod, "_supports_ansi", True)
-    monkeypatch.setattr(
-        disp_mod,
-        "ANSI",
-        {
-            "RED": "\033[91m",
-            "YELLOW": "\033[93m",
-            "GREEN": "\033[92m",
-            "CYAN": "\033[96m",
-            "MAGENTA": "\033[95m",
-            "BOLD": "\033[1m",
-            "RESET": "\033[0m",
-        },
-    )
+    """强制 ANSI 着色开启（测试环境控制台通常无 ANSI，ANSI 码为空串会误断言）。
+
+    ANSI/_supports_ansi 由 scanner.view.model 定义、scanner.view.render 经 `import *`
+    捕获绑定，故须同时打到两个子模块命名空间才对渲染链路整体生效。
+    """
+    _ansi = {
+        "RED": "\033[91m",
+        "YELLOW": "\033[93m",
+        "GREEN": "\033[92m",
+        "CYAN": "\033[96m",
+        "MAGENTA": "\033[95m",
+        "BOLD": "\033[1m",
+        "RESET": "\033[0m",
+    }
+    for _m in (disp_mod, vm, vr):
+        monkeypatch.setattr(_m, "_supports_ansi", True)
+        monkeypatch.setattr(_m, "ANSI", _ansi)
 
 
 def test_display_priority_rank_top40_highlight(monkeypatch, capsys):
@@ -535,7 +543,8 @@ def test_display_priority_core_stock_name_highlight(monkeypatch, capsys):
     """
     _force_ansi(monkeypatch)
     # 模拟 core_stock_symbols：SZ300001（主表）与 SZ300003（低吸区）今日为核心股
-    monkeypatch.setattr(disp_mod, "core_stock_symbols", lambda conn, today=None: {"SZ300001", "SZ300003"})
+    # build_scan_view（assemble）用其判定 _core_stock → row.core，故须打到 va。
+    monkeypatch.setattr(va, "core_stock_symbols", lambda conn, today=None: {"SZ300001", "SZ300003"})
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300001", "核心动量", "momentum", 70)
     _insert_rec_cat(conn, "SZ300002", "普通动量", "momentum", 65)
@@ -558,7 +567,7 @@ def test_display_priority_core_stock_name_highlight(monkeypatch, capsys):
 def test_display_priority_no_core_stock_no_highlight(monkeypatch, capsys):
     """今日无核心股（core_stock_symbols 空集）时，主表/低吸区均无高亮（空集判定不误伤）。"""
     _force_ansi(monkeypatch)
-    monkeypatch.setattr(disp_mod, "core_stock_symbols", lambda conn, today=None: set())
+    monkeypatch.setattr(va, "core_stock_symbols", lambda conn, today=None: set())
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300001", "动量票", "momentum", 70)
     _insert_rec_cat(conn, "SZ300002", "低吸票", "core_dip", 70)
@@ -593,11 +602,11 @@ def test_display_header_env_tag_matches_regime(monkeypatch, capsys):
     此前头部走 market_env_bonus、动态推荐走 _regime_weak，两套信号可能同屏矛盾。
     """
     conn = _rec_db()
-    monkeypatch.setattr(disp_mod, "_regime_weak", lambda c, lookback=10: True)
+    monkeypatch.setattr(vr, "_regime_weak", lambda c, lookback=10: True)
     disp_mod.display(100, 60, conn=conn, today_pool={})
     out = capsys.readouterr().out
     assert "大盘弱势·谨慎" in out
-    monkeypatch.setattr(disp_mod, "_regime_weak", lambda c, lookback=10: False)
+    monkeypatch.setattr(vr, "_regime_weak", lambda c, lookback=10: False)
     disp_mod.display(100, 60, conn=conn, today_pool={})
     out = capsys.readouterr().out
     assert "大盘强势" in out
@@ -644,7 +653,10 @@ def test_entry_display_quote_fallback_chain():
 def test_display_priority_recommended_region_shown_when_main_dense(monkeypatch, capsys):
     """弱市 regime 下主区密集也强制展示核心低吸区（修复「推荐了却看不到标的」割裂）。
     （动态推荐/回马枪区已移除，2026-09-03；核心低吸区保留弱市强制展示门）"""
-    monkeypatch.setattr(disp_mod, "_regime_weak", lambda conn, lookback=10: True)
+    # display_priority 内部经 build_scan_view 用 assemble._regime_weak 自算弱市信号，
+    # 故须打到 va（render._regime_weak 只被 display() 主屏用，此处不生效）。
+    monkeypatch.setattr(va, "_regime_weak", lambda conn, lookback=10: True)
+    monkeypatch.setattr(vr, "_regime_weak", lambda conn, lookback=10: True)
     conn = _rec_db()
     for i in range(1, 7):
         _insert_rec_cat(conn, f"SZ3000{i}", f"反弹{i}", "rebound", 50 + i)
@@ -1233,10 +1245,14 @@ def test_beauty_mark_for_verdicts():
 
 
 def test_beauty_mark_disabled_when_gate_off(monkeypatch):
-    """RTS_TREND_MARK=0：展示标记整体关闭（与硬拦开关独立）。"""
+    """RTS_TREND_MARK=0：展示标记整体关闭（与硬拦开关独立）。
+
+    TREND_MARK_ENABLED 由 scanner.view.model 定义并持有（_beauty_mark_for 在其命名空间内读取），
+    故 monkeypatch 须打到 vm 而非 scanner.display。
+    """
     import scanner.display as disp
 
-    monkeypatch.setattr(disp, "TREND_MARK_ENABLED", False)
+    monkeypatch.setattr(vm, "TREND_MARK_ENABLED", False)
     entry = {"symbol": "SZ300001", "category": "pool_pick"}
     assert disp._beauty_mark_for(entry, None) == ""
 
