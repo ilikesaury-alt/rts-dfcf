@@ -1,15 +1,12 @@
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace as dataclass_replace
 
 from scanner.api import compute_surge_sentiment
 from scanner.candidate_pool import ScanSession
 from scanner.candidates import (
-    candidate_excluded_by_risk,
     compute_rps,
     enrich_candidate_market_cap,
     filter_gem_stocks,
-    new_face_sort_key,
     score_stock,
 )
 from scanner.comeback import evaluate_comeback
@@ -22,12 +19,9 @@ from scanner.config import (
     ENABLE_POOL_PIPELINE,
     ENABLE_SHORT_TERM,
     KLINE_FETCH_DEADLINE,
-    MAX_MARKET_CAP,
-    MAX_STOCK_PRICE,
     MCAP_CACHE_MAX_AGE_DAYS,
     SHORT_TERM_MAX_TODAY_PCT,
     WATCH_OFFLIST_KEEP_DAYS,
-    YI,
     now_beijing,
 )
 from scanner.database import (
@@ -43,16 +37,25 @@ from scanner.database import (
     upsert_watch_symbols,
 )
 from scanner.enhancer import (
-    accumulate_final_score,
     apply_all_bonuses,
     compute_time_bonus,
 )
 from scanner.intraday_fetch import parallel_fetch
-from scanner.intraday_tactics import stock_actions
 from scanner.kline_fetch import fetch_all_klines
-from scanner.models import Candidate, KlineSummary, ScanResult, StockInfo
+from scanner.models import Candidate, KlineSummary, ScanResult
+from scanner.pipeline import (
+    accumulate_final_scores,
+    attach_minute_trends,
+    attach_tactic_tags,
+    build_current_quotes,
+    build_rps_inputs,
+    filter_by_market_cap,
+    filter_excluded_by_risk,
+    rebuild_pool_picks,
+    report_market_cap_availability,
+    split_and_sort_categories,
+)
 from scanner.rank_trend import update_rank_history
-from scanner.ranking import comeback_sort_key
 from scanner.sector import get_sector_clusters
 from scanner.trading_session import is_trading_time
 from scanner.utils import EXTERNAL_FAILURES, today_kline_bar
@@ -95,7 +98,7 @@ def _update_excluded_marks(conn: sqlite3.Connection, today: str, excluded_by_ris
     conn.commit()
 
 
-def _v2_kline_summary(row, kl: list | None, today: str) -> KlineSummary:
+def v2_kline_summary(row, kl: list | None, today: str) -> KlineSummary:
     """v2 池选候选的轻量 KlineSummary。
 
     此前池选候选 kline=None，导致：matcher 语义标签全跳过（label_all_candidates
@@ -173,32 +176,10 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         if market_caps:
             used_stale_mc = True
 
-    gem_stocks_filtered: list[StockInfo] = []
-    filtered_large_cap = 0
-    for s in gem_stocks:
-        cap_data = market_caps.get(s.symbol, {})
-        cap_current = cap_data.get("current", 0)
-        if cap_current and s.current == 0:
-            s.current = cap_current
-        cmc = cap_data.get("circ_market_cap") or cap_data.get("market_cap", 0)
-        if cmc > 0:
-            s.market_cap = cmc / YI  # 转亿元（流通市值优先）
-        if s.current > 0 and s.current > MAX_STOCK_PRICE:
-            continue
-        mc = cap_data.get("market_cap", 0)
-        if mc > 0 and mc > MAX_MARKET_CAP:
-            filtered_large_cap += 1
-            continue
-        gem_stocks_filtered.append(s)
-
-    # 市值数据可用性最终判定（2026-08-20）：
-    # - 实时取到 → 正常（已落库）。
-    # - 全失败但陈旧缓存兜底命中 → 降级提示（非 [!]），小叶美规则仍生效（基于旧值）。
-    # - 全失败且无任何陈旧缓存 → 真正 [!] 告警"小叶美规则暂不生效"。
-    if used_stale_mc:
-        print(f"  [~] 市值实时查询失败，已回退陈旧缓存({len(market_caps)}只)——小叶美规则基于旧市值生效")
-    elif not market_caps and mc_syms:
-        print("  [!] 警告: 市值数据全失败且无陈旧缓存，小而美规则暂不生效")
+    gem_stocks_filtered, filtered_large_cap = filter_by_market_cap(gem_stocks, market_caps)
+    # 市值数据可用性三态判定（2026-08-20）：实时取到→静默；陈旧缓存兜底→[~] 降级提示
+    # （小而美规则仍基于旧值生效）；全失败且无缓存→[!] 真正告警。详见 pipeline.pool。
+    report_market_cap_availability(market_caps, mc_syms, used_stale_mc)
 
     # 回马枪掉榜跟踪池维护（2026-08-07）：
     # 1) 在榜 GEM 票保活（刷新 last_list_date，掉榜后保留 WATCH_OFFLIST_KEEP_DAYS 个交易日）
@@ -276,7 +257,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
                 category=V2_CATEGORY,
                 score=0,
                 reason="池选",
-                kline=_v2_kline_summary(row, klines.get(row.symbol), today),
+                kline=v2_kline_summary(row, klines.get(row.symbol), today),
                 first_seen=now_beijing().strftime("%H:%M"),
                 history_pct=[],
             )
@@ -421,32 +402,12 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         except EXTERNAL_FAILURES as e:
             print(f"  [!] v2 二次排雷/pool_log 落库失败: {e}")
 
-    rps_scores: dict[str, int] = {}
     # RPS 基准：全 GEM 监控集（过滤后、含未入选候选）的 5 日累计涨幅列表，
     # 使 RPS 表达「相对全市场强弱」而非仅在已涨票中比谁涨得多。
-    # 口径统一为"历史5日累计"（排除今日），与 new_face/momentum/rebound
-    # 的 c.kline.accumulated_pct 一致。short_term 的 accumulated 包含今日
-    # （策略语义），需通过 accum_map 覆盖为历史口径，避免百分位偏高。
-    rps_baseline: list[float] = []
-    accum_map: dict[str, float] = {}  # symbol → 历史5日累计涨幅（排除今日）
-    for s in gem_stocks_filtered:
-        kl = klines.get(s.symbol)
-        if not kl:
-            continue
-        hist = [k for k in kl if k["date"] != today]
-        closes = [k["close"] for k in hist]
-        if len(closes) >= 6:
-            acc = (closes[-1] - closes[-6]) / closes[-6] * 100
-            rps_baseline.append(acc)
-    # 为所有候选构建历史口径 accumulated（与 baseline 一致）
-    for c in all_candidates:
-        kl = klines.get(c.stock.symbol)
-        if not kl:
-            continue
-        hist = [k for k in kl if k["date"] != today]
-        closes = [k["close"] for k in hist]
-        if len(closes) >= 6:
-            accum_map[c.stock.symbol] = (closes[-1] - closes[-6]) / closes[-6] * 100
+    # 口径统一为"历史5日累计"（排除今日）—— short_term 的 accumulated 含今日
+    # （策略语义），由 accum_map 覆盖为历史口径，避免百分位偏高。见 pipeline.features。
+    rps_baseline, accum_map = build_rps_inputs(gem_stocks_filtered, all_candidates, klines, today)
+    rps_scores: dict[str, int] = {}
     rps_scores.update(compute_rps(all_candidates, baseline=rps_baseline, accum_map=accum_map))
 
     intraday_scores: dict[str, float | None] = {}
@@ -475,17 +436,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
             pool.shutdown(wait=False, cancel_futures=True)
 
     # 分时趋势摘要写入候选维度（盘中操作纪律 rule 3/5/7 数据源，纯展示不参与评分）
-    for c in all_candidates:
-        trend = minute_trends.get(c.stock.symbol)
-        if c.kline and trend:
-            c.kline.dimensions.update(
-                {
-                    "minute_steady_rise": trend.get("steady_rise_ratio", 0.0),
-                    "minute_day_high": trend.get("day_high_pct", 0.0),
-                    "minute_am_high": trend.get("am_high_pct", 0.0),
-                    "minute_vol_trend": trend.get("vol_trend", 1.0),
-                }
-            )
+    attach_minute_trends(all_candidates, minute_trends)
 
     market_idx_pct = adapter.fetch_market_index()
     time_bonus = compute_time_bonus()
@@ -523,12 +474,10 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
 
     # 双挂候选（首板票同时挂 new_face + short_term）需各自独立计算 extra：
     # accumulate_final_score 依赖 c.gap_up_bonus / c.list_momentum_bonus 等，
-    # 这些 bonus 在 apply_all_bonuses 中按 candidate 独立计算（如 _apply_gap_up_bonus
+    # 这些 bonus 在 apply_all_bonuses 中按 candidate 独立计算（如 apply_gap_up_bonus
     # 依据 c.category 选 key，_apply_list_momentum_bonus 依据 c.category 判 is_reversal）。
     # 若复用同一 extra，short_term 桶会拿到 new_face 桶的 bonus，排名错位。
-    for i, c in enumerate(all_candidates):
-        extra = accumulate_final_score(c, opening_scores)
-        all_candidates[i] = dataclass_replace(c, score=c.score + extra)
+    accumulate_final_scores(all_candidates, opening_scores)
 
     update_rank_history({s.symbol: s.rank for s in gem_stocks_filtered})
 
@@ -538,13 +487,8 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
     # 此步在 update_pool/update_stale 之后执行，不影响候选池掉榜与排名历史，
     # 仅作用于最终对外展示的推荐列表，确保推荐输出只含可买票。
     # 2026-09-11：判定结果复用（原两处 list comprehension 对同一批候选各调一次判定函数）。
-    excluded_by_risk = [c for c in all_candidates if candidate_excluded_by_risk(c)]
-    if excluded_by_risk:
-        _names = "、".join(f"{c.stock.name}({c.stock.symbol})" for c in excluded_by_risk[:8])
-        _more = f" 等{len(excluded_by_risk)}只" if len(excluded_by_risk) > 8 else ""
-        print(f"  [风险过滤] {len(excluded_by_risk)} 只命中硬排除标签，已移出推荐：{_names}{_more}")
-        _excluded_ids = {id(c) for c in excluded_by_risk}
-        all_candidates = [c for c in all_candidates if id(c) not in _excluded_ids]
+    # 实现见 pipeline.scoring.filter_excluded_by_risk（含 8 只上限的打印口径）。
+    all_candidates, excluded_by_risk = filter_excluded_by_risk(all_candidates)
 
     # P1-7 (2026-08-10): 硬过滤落标——被过滤的今日推荐标记 excluded=1（综合排序不再展示），
     # 通过硬过滤的候选置 0（同日风险标签可能随时间变化，以最新轮次为准）。
@@ -562,19 +506,12 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
     # 分类列表必须从 all_candidates 重建，而非沿用旧对象引用——
     # dataclass_replace 已创建新对象（含最终 score），
     # 旧列表持有的仍是未累加 extra 的过期对象。
-    new_faces = [c for c in all_candidates if c.category in ("new_face", "known_new_face")]
-    momentum = [c for c in all_candidates if c.category == "momentum"]
-    rebound_list = [c for c in all_candidates if c.category == "rebound"]
-    short_term_list = [c for c in all_candidates if c.category == "short_term"]
-    comeback_list = [c for c in all_candidates if c.category == "comeback"]
-    new_faces.sort(key=lambda c: new_face_sort_key(c))
-    momentum.sort(key=lambda c: -c.score)
-    rebound_list.sort(key=lambda c: -c.score)
-    short_term_list.sort(key=lambda c: -c.score)
-    # 回马枪区内排序与 display/today_report 单源（ranking.comeback_sort_key，资金流
-    # 优先）——此前按 score 降序，飞书卡片与终端两种顺序（2026-08-24 审查）。
-    # 候选行经 _candidate 读 kline.dimensions，无需 flow_map 回退。
-    comeback_list.sort(key=lambda c: comeback_sort_key({"symbol": c.stock.symbol, "score": c.score, "_candidate": c}))
+    _buckets = split_and_sort_categories(all_candidates)
+    new_faces = _buckets["new_faces"]
+    momentum = _buckets["momentum"]
+    rebound_list = _buckets["rebound"]
+    short_term_list = _buckets["short_term"]
+    comeback_list = _buckets["comeback"]
 
     # 综合排序「板块」列：计算当前推动概念（东财 F10 概念归属 + 今日飙升池聚合）。
     # 仅影响展示，不参与任何打分。首次拉取缺失缓存，之后 DB/进程缓存零网络开销。
@@ -591,25 +528,13 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
 
     # 行情降级条目（current<=0，如停牌/字段缺失被强转 0）不入实时行情——
     # 与主循环补拉路径同口径（2026-08-14 fail-open 修复只堵了补拉路径，此处
-    # 此前仍会把 0.00% 当真实涨幅喂给 display/mark_reversed）。
-    current_quotes = {
-        sym: {"percent": d.get("percent", 0.0), "current": d.get("current", 0.0), "high_pct": d.get("high_pct")}
-        for sym, d in market_caps.items()
-        if d.get("current")
-    }
+    # 此前仍会把 0.00% 当真实涨幅喂给 display/mark_reversed）。见 pipeline.pool。
+    current_quotes = build_current_quotes(market_caps)
 
     # 盘中操作纪律（2026-08-31）：12 条操盘纪律的个股标签。逐票 try/except——
     # 一只票的脏数据只跳过该票，不再静默放弃全部票的标签（审查修复）。
     # fail-open：单票异常不阻塞扫描，不影响评分/排序/落库。
-    for c in all_candidates:
-        try:
-            _quote = current_quotes.get(c.stock.symbol, {})
-            # high_pct 由 quote 的 high/昨收计算（api._quote_high_pct），是真实日内
-            # 最高涨幅；None = 无数据 → 纪律内部 fail-open 跳过依赖项。
-            _high_pct = _quote.get("high_pct") if _quote else None
-            c.tactic_tags = stock_actions(c, now=None, kline_bars=klines.get(c.stock.symbol), high_pct=_high_pct)
-        except EXTERNAL_FAILURES as e:
-            print(f"  [!] 盘中操作纪律计算失败 {c.stock.symbol}（跳过）: {type(e).__name__}: {e}")
+    attach_tactic_tags(all_candidates, current_quotes, klines)
 
     # 数据血缘日志（2026-08-14）：本轮数据质量快照落库——补拉失败/缺今日bar/兜底构造/
     # stale 推荐数。跨函数静默降级是本项目最难发现的 bug 类别（网宿案例），常态计数器
@@ -633,8 +558,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
     # 双跑：pool_picks 从 all_candidates 重建并按涨幅排序——加分循环的
     # dataclass_replace 已创建新对象，旧列表持有的是未累加 extra 的过期对象
     # （与下方 v1 分类列表重建同理）。
-    pool_picks = [c for c in all_candidates if c.category == V2_CATEGORY]
-    pool_picks.sort(key=lambda c: -(c.stock.percent or 0))
+    pool_picks = rebuild_pool_picks(all_candidates)
 
     return ScanResult(
         new_faces=new_faces,
