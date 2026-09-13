@@ -138,7 +138,7 @@ def _xq_to_ak(symbol: str) -> str:
     return symbol[2:] if symbol[:2] in ("SZ", "SH", "BJ") else symbol
 
 
-def _ak_to_xq(code: str) -> str:
+def ak_to_xq(code: str) -> str:
     """AKShare 符号 → 雪球符号（加市场前缀）。300001 → SZ300001"""
     if code.startswith(("SH", "SZ", "BJ", "sh", "sz", "bj")):
         return code.upper()
@@ -238,7 +238,7 @@ class ThsAdapter:
                 # 只保留请求的票（防御接口返回额外行）
                 if code not in unique:
                     continue
-                result[_ak_to_xq(code)] = {
+                result[ak_to_xq(code)] = {
                     "market_cap": _as_float(row.get("f20")) or 0,
                     "circ_market_cap": _as_float(row.get("f21")) or 0,
                     "turnover_rate": _as_float(row.get("f8")) or 0,

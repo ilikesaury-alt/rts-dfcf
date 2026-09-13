@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 import scanner.fundamentals as fb
-from scanner.enhancer import _set_risk_flags
+from scanner.enhancer import set_risk_flags
 from scanner.models import Candidate, KlineSummary, StockInfo
 
 
@@ -152,8 +152,8 @@ class TestFetchFundRiskMap:
         # 注意：reset 会重置 _logged_missing，故仅验证首次触发（非二次重复刷屏）由上层语义保证
 
     def test_bounded_timeout_returns_empty(self, monkeypatch):
-        # 超时路径：_bounded_call 抛 TimeoutError → fetch fail-open 返回 {}
-        monkeypatch.setattr(fb, "_bounded_call",
+        # 超时路径：bounded_call 抛 TimeoutError → fetch fail-open 返回 {}
+        monkeypatch.setattr(fb, "bounded_call",
                             lambda fn, timeout: (_ for _ in ()).throw(TimeoutError("timeout")))
         assert fb.fetch_fund_risk_map() == {}
 
@@ -165,7 +165,7 @@ class TestFetchFundRiskMap:
             calls["n"] += 1
             raise TimeoutError("timeout")
 
-        monkeypatch.setattr(fb, "_bounded_call", _raise)
+        monkeypatch.setattr(fb, "bounded_call", _raise)
         assert fb.fetch_fund_risk_map() == {}
         assert calls["n"] == 1
         assert fb.fetch_fund_risk_map() == {}
@@ -180,7 +180,7 @@ class TestFetchFundRiskMap:
             calls["n"] += 1
             return fake.get("")
 
-        monkeypatch.setattr(fb, "_bounded_call", _bounded)
+        monkeypatch.setattr(fb, "bounded_call", _bounded)
         assert fb.fetch_fund_risk_map() == {}
         assert calls["n"] == 1
         assert fb.fetch_fund_risk_map() == {}
@@ -386,18 +386,18 @@ class TestEnhancerIntegration:
     def test_hit_appends_tag(self):
         from scanner.config import FUND_RISK_TAG, RISK_FLAGS_HARD_FILTER
         c = self._candidate("SZ300027")
-        _set_risk_flags(c, fund_risk={"SZ300027": "资不抵债"})
+        set_risk_flags(c, fund_risk={"SZ300027": "资不抵债"})
         assert FUND_RISK_TAG in c.risk_flags
         assert FUND_RISK_TAG in RISK_FLAGS_HARD_FILTER, "财务风险必须是硬过滤标签"
 
     def test_miss_no_tag(self):
         c = self._candidate("SZ300750")
-        _set_risk_flags(c, fund_risk={"SZ300027": "资不抵债"})
+        set_risk_flags(c, fund_risk={"SZ300027": "资不抵债"})
         assert "财务风险" not in c.risk_flags
 
     def test_none_fund_risk_ok(self):
         c = self._candidate("SZ300027")
-        _set_risk_flags(c, fund_risk=None)
+        set_risk_flags(c, fund_risk=None)
         assert "财务风险" not in c.risk_flags
-        _set_risk_flags(c)
+        set_risk_flags(c)
         assert "财务风险" not in c.risk_flags

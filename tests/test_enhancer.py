@@ -10,7 +10,6 @@ from scanner.config import (
 )
 from scanner.enhancer import (
     _apply_fund_flow_bonus,
-    _apply_gap_up_bonus,
     _apply_list_momentum_bonus,
     _apply_live_vol_bonus,
     _apply_rps_bonus,
@@ -20,10 +19,11 @@ from scanner.enhancer import (
     _apply_zt_bonus,
     _detect_main_force_distribution,
     _record_dimensions,
-    _set_risk_flags,
     accumulate_final_score,
+    apply_gap_up_bonus,
     compute_market_env_bonus,
     compute_time_bonus,
+    set_risk_flags,
 )
 from scanner.models import Candidate, KlineSummary, StockInfo
 
@@ -245,7 +245,7 @@ class TestApplyLiveVolBonus:
 
 
 # ============================================================
-# _apply_sentiment_bonus / _apply_rps_bonus / _apply_gap_up_bonus
+# _apply_sentiment_bonus / _apply_rps_bonus / apply_gap_up_bonus
 # ============================================================
 
 
@@ -287,24 +287,24 @@ class TestApplyGapUpBonus:
     def test_new_face_gap(self):
         c = _make_candidate(category="new_face")
         _kdims(c)["new_face_gap_up"] = 8
-        _apply_gap_up_bonus(c)
+        apply_gap_up_bonus(c)
         assert c.gap_up_bonus == 8
 
     def test_momentum_gap(self):
         c = _make_candidate(category="momentum")
         _kdims(c)["momentum_gap_up"] = 5
-        _apply_gap_up_bonus(c)
+        apply_gap_up_bonus(c)
         assert c.gap_up_bonus == 5
 
     def test_no_gap(self):
         c = _make_candidate(category="momentum")
-        _apply_gap_up_bonus(c)
+        apply_gap_up_bonus(c)
         assert c.gap_up_bonus == 0
 
     def test_no_kline(self):
         c = _make_candidate()
         c.kline = None
-        _apply_gap_up_bonus(c)
+        apply_gap_up_bonus(c)
         assert c.gap_up_bonus == 0
 
 
@@ -460,7 +460,7 @@ class TestApplyListMomentumBonus:
     def test_accelerating_writes_separate_fatigue_accelerate_key(self, mock_traj):
         """回归（2026-08-17 审查修复）：加速奖励写独立键 fatigue_accelerate（正值），
         fatigue 键保持「疲劳惩罚」语义。此前同名覆写后 dims["fatigue"] 为 +6——
-        _set_risk_flags 判 <0 才打「疲劳」标签不受影响，但 backtest dimension_ic 按整列
+        set_risk_flags 判 <0 才打「疲劳」标签不受影响，但 backtest dimension_ic 按整列
         归因会把加速奖励解析进「疲劳」因子（正负混用，归因失真）。"""
         c = _make_candidate(percent=5.0, volume_ratio=1.5)
         c.category = "momentum"
@@ -572,7 +572,7 @@ class TestMainForceDistributionFlicker:
         """端到端：intraday 在 0 附近震荡时 risk_flags 不含"主力出货"。"""
         for intra in [-0.4, 0.0, 0.4]:
             c = self._make_dist_candidate(intraday_score=intra, today_pct=0.0)
-            _set_risk_flags(c)
+            set_risk_flags(c)
             assert "主力出货" not in c.risk_flags, f"intraday={intra} 时不应闪烁出'主力出货'标签"
 
 
@@ -591,7 +591,7 @@ class TestRiskFlagTightening:
         c = _make_candidate(category="momentum", percent=8.0, accumulated_pct=12.0, volume_ratio=1.5)
         c.turnover_bonus = 3  # 换手 5~10%，活跃但非过热（>0 且非 <0）
         # 无 st/mo overbought 旗、无其它风险维度
-        _set_risk_flags(c)
+        set_risk_flags(c)
         assert "超买" not in c.risk_flags, f"正常强势票不应标超买, flags={c.risk_flags}"
         assert "主力出货" not in c.risk_flags, f"正常强势票不应标主力出货, flags={c.risk_flags}"
 
@@ -615,7 +615,7 @@ class TestRiskFlagTightening:
             dimensions={"v_st_ma": V_ST_MA_SUPPORT},
         )
         assert not _detect_trend_breakage(_kdims(c)), "今日站上 MA5（SUPPORT）不应判趋势破位"
-        _set_risk_flags(c)
+        set_risk_flags(c)
         assert "趋势破位" not in c.risk_flags, f"不应误打趋势破位, flags={c.risk_flags}"
 
         # 对照：今日仍在 MA5 下方 → v_st_ma=BROKEN → 仍应判趋势破位（真破位止损）
@@ -702,9 +702,9 @@ class TestDistributionRule5BackrowIntradayWeak:
         assert not _detect_main_force_distribution(c, _kdims(c)), "momentum（无 v_st_rank）不应触发 Rule 5"
 
     def test_end_to_end_risk_flag_hard_filter(self):
-        """端到端：_set_risk_flags 应打上'主力出货'标签（RISK_FLAGS_HARD_FILTER）。"""
+        """端到端：set_risk_flags 应打上'主力出货'标签（RISK_FLAGS_HARD_FILTER）。"""
         c = self._rule5_candidate(intraday=-1.5)
-        _set_risk_flags(c)
+        set_risk_flags(c)
         assert "主力出货" in c.risk_flags, f"应打主力出货标签, flags={c.risk_flags}"
 
 
@@ -729,25 +729,25 @@ class TestWtsFailureHardFilter:
     def test_wts_intraday_weak_triggers(self):
         """弱转强 + intraday=-1.0（明确走弱）→ 打弱转强失效标签。"""
         c = self._wts_candidate(intraday=-1.0)
-        _set_risk_flags(c)
+        set_risk_flags(c)
         assert WTS_FAIL_TAG in c.risk_flags, f"应打弱转强失效, flags={c.risk_flags}"
 
     def test_wts_intraday_borderline_no_trigger(self):
         """intraday=-0.9（-1.0 之上）不触发：带宽阈值防闪烁。"""
         c = self._wts_candidate(intraday=-0.9)
-        _set_risk_flags(c)
+        set_risk_flags(c)
         assert WTS_FAIL_TAG not in c.risk_flags, f"intraday=-0.9 不应触发, flags={c.risk_flags}"
 
     def test_wts_intraday_positive_no_trigger(self):
         """弱转强 + 盘中走强（intraday>0）不触发：转强成功。"""
         c = self._wts_candidate(intraday=1.0)
-        _set_risk_flags(c)
+        set_risk_flags(c)
         assert WTS_FAIL_TAG not in c.risk_flags, f"盘中走强不应判失效, flags={c.risk_flags}"
 
     def test_non_wts_intraday_weak_no_trigger(self):
         """非弱转强（v_st_weak=0）即使盘中弱也不触发：仅针对弱转强直通。"""
         c = self._wts_candidate(intraday=-2.0, wts=0)
-        _set_risk_flags(c)
+        set_risk_flags(c)
         assert WTS_FAIL_TAG not in c.risk_flags, f"非弱转强不应判失效, flags={c.risk_flags}"
 
     def test_hard_filter_membership(self):
@@ -761,10 +761,10 @@ class TestWtsFailureHardFilter:
         from scanner.candidates import candidate_excluded_by_risk
 
         c = self._wts_candidate(intraday=-1.5)
-        _set_risk_flags(c)
+        set_risk_flags(c)
         assert candidate_excluded_by_risk(c), "弱转强失效候选应被硬过滤"
         c2 = self._wts_candidate(intraday=1.0)
-        _set_risk_flags(c2)
+        set_risk_flags(c2)
         assert not candidate_excluded_by_risk(c2), "转强成功的弱转强候选不应被硬过滤"
 
 
@@ -872,7 +872,7 @@ class TestMarketExtraRiskFlags:
         _apply_fund_flow_bonus(
             c, {c.stock.symbol: {"fund_flow": {"main_pct": -9.0, "main_net": -2e8, "super_net": -5e7}}}
         )
-        _set_risk_flags(c)
+        set_risk_flags(c)
         assert "资金流出" in c.risk_flags
 
     def test_no_outflow_flag_on_moderate(self):
@@ -880,13 +880,13 @@ class TestMarketExtraRiskFlags:
         _apply_fund_flow_bonus(
             c, {c.stock.symbol: {"fund_flow": {"main_pct": -4.0, "main_net": -5e7, "super_net": -1e7}}}
         )
-        _set_risk_flags(c)
+        set_risk_flags(c)
         assert "资金流出" not in c.risk_flags
 
     def test_zhaban_flag(self):
         c = _make_candidate()
         _apply_zt_bonus(c, {c.stock.symbol: {"zt": {"lianban": 1, "zhaban": 2, "industry": "软件"}}})
-        _set_risk_flags(c)
+        set_risk_flags(c)
         assert "炸板" in c.risk_flags
         assert "资金流出" not in c.risk_flags
 
@@ -904,7 +904,7 @@ class TestAccumulateWithMarketExtra:
 
 
 class TestApplyAllBonusesFundRisk:
-    """apply_all_bonuses 全链路：fund_risk 参数 → _set_risk_flags 打财务风险标签。"""
+    """apply_all_bonuses 全链路：fund_risk 参数 → set_risk_flags 打财务风险标签。"""
 
     def _run(self, fund_risk):
         c = _make_candidate(symbol="SZ300027")
@@ -968,7 +968,7 @@ class TestTurnedRedGapTodayBarGuard:
         from scanner.candidates import candidate_excluded_by_risk
 
         c = _make_candidate(symbol="SZ300999")
-        _set_risk_flags(c, klines=self._klines_ending_yesterday(c.stock.symbol), today=self.TODAY)
+        set_risk_flags(c, klines=self._klines_ending_yesterday(c.stock.symbol), today=self.TODAY)
         assert "当日翻绿+高开回落" not in c.risk_flags, "昨日 bar 不得冒充今日形态打硬过滤"
         assert not candidate_excluded_by_risk(c), "stale K 线不应触发硬过滤"
 
@@ -976,10 +976,10 @@ class TestTurnedRedGapTodayBarGuard:
         c = _make_candidate(symbol="SZ300999")
         kls = self._klines_ending_yesterday(c.stock.symbol)
         kls[c.stock.symbol][-1]["date"] = self.TODAY  # 同一形态，date 换成今日 → 应触发
-        _set_risk_flags(c, klines=kls, today=self.TODAY)
+        set_risk_flags(c, klines=kls, today=self.TODAY)
         assert "当日翻绿+高开回落" in c.risk_flags
 
     def test_missing_today_bar_no_flag(self):
         c = _make_candidate(symbol="SZ300999")
-        _set_risk_flags(c, klines={c.stock.symbol: []}, today=self.TODAY)
+        set_risk_flags(c, klines={c.stock.symbol: []}, today=self.TODAY)
         assert "当日翻绿+高开回落" not in c.risk_flags

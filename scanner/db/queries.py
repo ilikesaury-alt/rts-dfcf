@@ -3,6 +3,12 @@
 只 SELECT、不写库不 commit。写入逻辑在 dal.py，DDL/连接在 schema.py。
 私有 helper（_count_consecutive_days / _assign_rank_scores 等）仅包内消费，
 经 scanner/database.py 门面 re-export 供测试使用。
+
+异常捕获口径（2026-09-13 明确化）：只读路径的降级捕获一律收窄为
+`except sqlite3.Error`（try 体内只有 execute/fetchall，唯一可能的运行期故障就是
+sqlite3.Error，收窄是等价行为）。仅 get_cached_klines 保留宽捕获——其 try 内含
+make_kline_bar 契约校验，收窄会把脏 bar 的防御路径暴露给主循环。
+判据与 dal.py 模块 docstring 同源：try 体内除 DB 调用还有别的逻辑，才考虑宽捕获。
 """
 
 import json
@@ -18,7 +24,7 @@ from scanner.config import (
     PROMINENCE_REPEAT_THRESHOLD,
     now_beijing,
 )
-from scanner.db._common import _n_trading_days_ago
+from scanner.db._common import n_trading_days_ago
 from scanner.models import KlineBar, RecommendationRow, make_kline_bar, parse_score_breakdown
 from scanner.trading_session import is_trading_day
 
@@ -32,7 +38,7 @@ def get_symbol_appearances(conn: sqlite3.Connection, symbol: str, days: int, as_
     orchestrator 看到的 is_new / first_date，避免用「有史以来首次」之类的近似口径。
     """
     today = as_of or now_beijing().date().isoformat()
-    lookback = _n_trading_days_ago(days, as_of=as_of)
+    lookback = n_trading_days_ago(days, as_of=as_of)
     cur = conn.execute(
         "SELECT date, rank, percent, value FROM appearances WHERE symbol = ? AND date >= ? AND date < ? ORDER BY date",
         (symbol, lookback, today),
@@ -166,7 +172,7 @@ def get_consecutive_appearance_days_batch(
             f"AND date >= ? AND date < ? ORDER BY symbol, date",
             (*uniq, cutoff, today),
         ).fetchall()
-    except Exception as e:
+    except sqlite3.Error as e:
         logger.warning(f"get_consecutive_appearance_days_batch failed: {e}")
         return {}
     for sym, d in rows:
@@ -196,7 +202,7 @@ def count_recent_appearances(conn: sqlite3.Connection, symbol: str, lookback_day
     """Count distinct appearance days for a symbol in the last N trading days (including today)."""
     from scanner.config import now_beijing as _now
 
-    lookback = _n_trading_days_ago(lookback_days - 1)
+    lookback = n_trading_days_ago(lookback_days - 1)
     today = _now().date().isoformat()
     cur = conn.execute(
         "SELECT COUNT(DISTINCT date) FROM appearances WHERE symbol = ? AND date >= ? AND date <= ?",
@@ -218,8 +224,8 @@ def get_prominence_map(conn: sqlite3.Connection, symbols: list[str], as_of_date:
     """
     if not symbols:
         return {}
-    lookback_rank = _n_trading_days_ago(PROMINENCE_LOOKBACK_DAYS - 1, as_of=as_of_date)
-    lookback_count = _n_trading_days_ago(PROMINENCE_LOOKBACK_DAYS - 1, as_of=as_of_date)
+    lookback_rank = n_trading_days_ago(PROMINENCE_LOOKBACK_DAYS - 1, as_of=as_of_date)
+    lookback_count = n_trading_days_ago(PROMINENCE_LOOKBACK_DAYS - 1, as_of=as_of_date)
     today = as_of_date or now_beijing().date().isoformat()
     placeholders = ",".join("?" * len(symbols))
     try:
@@ -227,7 +233,7 @@ def get_prominence_map(conn: sqlite3.Connection, symbols: list[str], as_of_date:
             f"SELECT symbol, date, rank FROM appearances WHERE symbol IN ({placeholders}) AND date >= ? AND date <= ?",  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
             (*symbols, lookback_rank, today),
         ).fetchall()
-    except Exception as e:
+    except sqlite3.Error as e:
         logger.warning(f"get_prominence_map failed: {e}")
         return {}
 
@@ -318,7 +324,7 @@ def get_recent_recommendations(
     用于回马枪回踩变体（回调到买点二次上车）的候选域。
     """
     today = now_beijing().date().isoformat()
-    lookback = _n_trading_days_ago(lookback_days)
+    lookback = n_trading_days_ago(lookback_days)
     query = "SELECT symbol, name, category, score, percent, date FROM recommendations WHERE date >= ? "
     params: list = [lookback]
     if exclude_today:
@@ -328,7 +334,7 @@ def get_recent_recommendations(
     try:
         cur = conn.execute(query, params)
         rows = cur.fetchall()
-    except Exception as e:
+    except sqlite3.Error as e:
         logger.warning(f"get_recent_recommendations failed: {e}")
         return []
     # 去重：同 symbol 取首条（最新日期+最高分）
@@ -358,7 +364,7 @@ def get_watch_symbols(conn: sqlite3.Connection) -> list[dict]:
         rows = conn.execute(
             "SELECT symbol, name, last_list_date, over_limit, last_eval_date FROM watch_pool"
         ).fetchall()
-    except Exception as e:
+    except sqlite3.Error as e:
         logger.warning(f"get_watch_symbols failed: {e}")
         return []
     return [
@@ -388,7 +394,7 @@ def get_today_recommendations(conn: sqlite3.Connection, as_of=None) -> list[Reco
       live_percent (from appearances),
       rank_score（类内百分位，综合排序跨类别可比用）,
       score_breakdown（2026-08-17 新增：解析为 dict，供掉榜/重启行的 🎯 分型
-      （short_term 弱转强）与板块普涨避雷标记判定，见 ranking._entry_dims）
+      （short_term 弱转强）与板块普涨避雷标记判定，见 ranking.entry_dims）
     """
     if as_of is None:
         as_of = now_beijing().date()
@@ -405,7 +411,7 @@ def get_today_recommendations(conn: sqlite3.Connection, as_of=None) -> list[Reco
             "score DESC",
             (today, CORE_DIP_CATEGORY),
         ).fetchall()
-    except Exception as e:
+    except sqlite3.Error as e:
         logger.warning(f"get_today_recommendations failed: {e}")
         return []
 
@@ -438,7 +444,7 @@ def get_today_recommendations(conn: sqlite3.Connection, as_of=None) -> list[Reco
             (today,),
         ).fetchall()
         first_time_map = {r[0]: r[1] for r in ft_rows}
-    except Exception as e:
+    except sqlite3.Error as e:
         logger.warning(f"get_today_recommendations MIN(time) failed: {e}")
         first_time_map = {}
     for sym in seen:
@@ -449,7 +455,7 @@ def get_today_recommendations(conn: sqlite3.Connection, as_of=None) -> list[Reco
             "SELECT symbol, percent, rank FROM appearances WHERE date = ?",
             (today,),
         ).fetchall()
-    except Exception as e:
+    except sqlite3.Error as e:
         logger.warning(f"get_today_recommendations appearances query failed: {e}")
         app_rows = []
     app_map = {r[0]: {"percent": r[1], "rank": r[2]} for r in app_rows}
@@ -477,6 +483,15 @@ def _assign_rank_scores(records: list) -> None:
     用于综合排序跨类别可比：同类别同日的票按 score 分位排序，消除各类别自身标尺差异
     （new_face 均值~45 与 comeback~122 不可直接比）。records 需含 'date'/'category'/'score'，
     缺 'date' 时退化为仅按 category 分组（get_today_recommendations 全为当日，等价）。
+
+    ⚠ 2026-09-13 复核：**本函数与 `portfolio_backtest.assign_rank_scores` 同名但语义不同**
+    —— 本版一律按 score 升序赋 `pos/(n-1)*100`（低分→0、高分→100），**不区分
+    `SCORE_DESCENDING_BY_CAT` 方向**；回测版按类别翻转（known_new_face 低分优先），
+    修复见其 docstring 的 2026-09-02 记录。若哪天有人开始读本函数写出的 `rank_score`，
+    kNF 类别的方向会与线上 `ranking.score_sort_key` 相反 —— 即回测版已修的那个 bug。
+    另注：截至 2026-09-13，本函数写出的 `rank_score` **无任何生产消费方**（唯一消费方
+    `portfolio_backtest` 用的是回测版）；它目前只被 `tests/test_portfolio_backtest.py`
+    的 dict 分支覆盖。删除前请确认展示层确无读取。
     """
     groups: dict[tuple, list[dict]] = {}
     for r in records:
@@ -505,7 +520,7 @@ def get_concepts_cache(conn: sqlite3.Connection, symbols: list[str], ttl_days: i
             f"SELECT symbol, concepts FROM concept_cache WHERE symbol IN ({placeholders}) AND updated >= ?",  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
             (*symbols, cutoff),
         ).fetchall()
-    except Exception as e:
+    except sqlite3.Error as e:
         logger.warning(f"get_concepts_cache failed: {e}")
         return {}
     result: dict[str, list[str]] = {}
@@ -552,7 +567,7 @@ def get_market_extra_cache(
         params = (*params, cutoff)
     try:
         rows = conn.execute(sql, params).fetchall()
-    except Exception as e:
+    except sqlite3.Error as e:
         logger.warning(f"get_market_extra_cache failed: {e}")
         return {}
     result: dict[str, dict] = {}
@@ -577,11 +592,10 @@ def get_fund_flow_pct_map(conn: sqlite3.Connection, symbols: list[str],
     """
     if not symbols:
         return {}
-    try:
-        ff_db = get_market_extra_cache(conn, list(dict.fromkeys(symbols)),
-                                       "fund_flow", as_of=as_of)
-    except Exception:
-        return {}
+    # 不在此再包一层 try/except（2026-09-13）：被调用的 get_market_extra_cache 已把
+    # sqlite3.Error 兜成 {}，外层再捕获只能吞到「我们自己的 bug」（TypeError/AttributeError），
+    # 且原实现是静默 return {}——故障与本函数自身逻辑错误无法区分。DB 故障仍由内层 fail-open。
+    ff_db = get_market_extra_cache(conn, list(dict.fromkeys(symbols)), "fund_flow", as_of=as_of)
     return {
         sym: pct
         for sym, payload in ff_db.items()

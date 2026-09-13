@@ -38,7 +38,7 @@ from scanner.config import (
 )
 from scanner.decision import market_gate
 from scanner.nextday_prob import BASE_RATE_DEFAULT, next_day_hit_probability
-from scanner.ranking import _is_nextday_marked
+from scanner.ranking import is_nextday_marked
 from scanner.utils import to_float
 
 # 相对导入：pyright 会话早期缓存未含新建模块时，相对路径走目录直查可绕开绝对名解析。
@@ -213,7 +213,7 @@ def build_final_picks(
     if fn is None:
         return result
     # display 单源行情/候选链（懒导入：display 反向懒导入本模块，避免循环导入）
-    from scanner.display import _entry_display_quote, _fresh_candidate
+    from scanner.display import entry_display_quote, fresh_candidate
 
     nextday_mark = nextday_mark or {}
     deduped = dedup_candidates(entries)
@@ -227,12 +227,12 @@ def build_final_picks(
     all_v: list[dict] = []
     for e in deduped:
         sym = e["symbol"]
-        pct = _entry_display_quote(e)[0]
+        pct = entry_display_quote(e)[0]
         # 追涨门（与 v1 主表/v2 池选区同源 DISPLAY_MAX_TODAY_PCT）
         if pct is not None and pct > DISPLAY_MAX_TODAY_PCT:
             continue
         # 减仓类纪律标签（卖出信号）
-        fc = _fresh_candidate(e)
+        fc = fresh_candidate(e)
         if fc and fc.tactic_tags and any(t in _SELL_TAGS for t in fc.tactic_tags):
             continue
         if "_accum" not in e:
@@ -240,10 +240,10 @@ def build_final_picks(
         v = fn(e, flow_pct_map)
         v["_display_pct"] = pct
         # 🎯 判定：display 预计算 map 优先（全 today_recs 覆盖）；缺项按同源口径现算
-        # （_is_nextday_marked 内部 accum 缺失 fail-open，与 🎯 展示标记语义一致）。
+        # （is_nextday_marked 内部 accum 缺失 fail-open，与 🎯 展示标记语义一致）。
         mk = nextday_mark.get((sym, e["category"]))
         if mk is None:
-            mk = _is_nextday_marked(e, conn, accum=e.get("_accum"))
+            mk = is_nextday_marked(e, conn, accum=e.get("_accum"))
         v["_marked"] = bool(mk)
         v["_horizon"] = horizon_label(e["category"])
         v["_p"] = next_day_hit_probability(e, marked=v["_marked"], prominence=prom_map.get(sym), flow=v.get("flow"))

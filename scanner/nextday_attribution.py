@@ -89,7 +89,7 @@ FACTOR_CONDITIONS: list[tuple[str, Callable[[dict], bool]]] = [
 ]
 
 
-def _load_dedup(conn: sqlite3.Connection, days: int = 0) -> list[dict]:
+def load_dedup(conn: sqlite3.Connection, days: int = 0) -> list[dict]:
     """加载现役类别推荐，同 (date, symbol) 去重（口径统一：excluded=0 + 取最后一轮）。
 
     2026-09-02 修复（样本口径统一，本模块是档位/画像阈值的校准数据源，影响面最大）：
@@ -102,7 +102,8 @@ def _load_dedup(conn: sqlite3.Connection, days: int = 0) -> list[dict]:
     3. **去重前样本虚高 2.19x**（3882 行 → 1774 个 (date, symbol)），且重复次数与
        停留榜上时长正相关，属有偏加权：momentum hit 16.5%(n=508) → 10.0%(n=290)。
 
-    注：函数名保留 _load_dedup（去重语义不变），仅口径改为统一标准。
+    2026-09-13 升公共名（原 `_load_dedup`，别名保留）：本函数是「校准样本口径」的
+    唯一实现，scanner.nextday_calib 等分析模块必须复用而非复制（复制即口径漂移）。
     """
     rows = load_attribution_rows(
         conn, "next_day_pct", cols="name, percent, score_breakdown", days=days
@@ -118,16 +119,22 @@ def _load_dedup(conn: sqlite3.Connection, days: int = 0) -> list[dict]:
     ]
 
 
+# 向后兼容别名（2026-09-13 升公共名，见 load_dedup docstring）
+_load_dedup = load_dedup
+
+
 def _parse(d: dict) -> dict:
     return parse_score_breakdown(d.get("breakdown"))
 
 
-def _attach_prominence(conn: sqlite3.Connection, recs: list[dict]) -> list[dict]:
+def attach_prominence(conn: sqlite3.Connection, recs: list[dict]) -> list[dict]:
     """按推荐日视角给每条记录附加辨识度（↻）标记 r["_prominent"]。
 
     复用 database.get_prominence_map（与 enhancer/display 同一实现，防口径漂移），
     按 as_of_date 回放：判定「推荐当天」的辨识度窗口，而非真实今日。
     无 appearances 表（如单测库）时置 None = 未知，避免把「不可算」误标为「非辨识度」。
+
+    2026-09-13 升公共名（原 `_attach_prominence`，别名保留）。
     """
     try:
         conn.execute("SELECT 1 FROM appearances LIMIT 1").fetchone()
@@ -144,6 +151,10 @@ def _attach_prominence(conn: sqlite3.Connection, recs: list[dict]) -> list[dict]
         for r in group:
             r["_prominent"] = pmap.get(r["symbol"], False)
     return recs
+
+
+# 向后兼容别名（2026-09-13 升公共名，见 attach_prominence docstring）
+_attach_prominence = attach_prominence
 
 
 def _load_index_series(conn: sqlite3.Connection) -> dict[str, float]:
@@ -190,7 +201,7 @@ def _attach_excess(conn: sqlite3.Connection, recs: list[dict]) -> tuple[list[dic
     return kept, dropped
 
 
-def _hit_stats(recs: list[dict], threshold: float,
+def hit_stats(recs: list[dict], threshold: float,
                metric: str = METRIC_RAW) -> tuple[int, float, float]:
     """返回 (hit 数, hit 率, 平均收益)。metric 决定用原始还是超额口径。"""
     n = len(recs)
@@ -211,7 +222,7 @@ def strategy_table(recs: list[dict], threshold: float,
     out: list[dict[str, Any]] = []
     for cat in sorted(by_cat):
         g = by_cat[cat]
-        hits, hr, avg = _hit_stats(g, threshold, metric)
+        hits, hr, avg = hit_stats(g, threshold, metric)
         scores = [r["score"] for r in g]
         ic = spearman(scores, [r[metric] for r in g]) or 0.0
         out.append({"category": cat, "n": len(g), "hits": hits, "hit_rate": hr,
@@ -244,7 +255,7 @@ def gain_band_matrix(recs: list[dict], threshold: float,
         g = groups[lab]
         if not g:
             continue
-        hits, hr, avg = _hit_stats(g, threshold, metric)
+        hits, hr, avg = hit_stats(g, threshold, metric)
         out.append({"band": lab, "n": len(g), "hits": hits, "hit_rate": hr, "avg_next": avg,
                     "warn": len(g) < MIN_SAMPLE})
     return out
@@ -271,7 +282,7 @@ def score_bucket_table(recs: list[dict], threshold: float,
         g = groups[lab]
         if not g:
             continue
-        hits, hr, avg = _hit_stats(g, threshold, metric)
+        hits, hr, avg = hit_stats(g, threshold, metric)
         out.append({"bucket": lab, "n": len(g), "hits": hits, "hit_rate": hr, "avg_next": avg,
                     "warn": len(g) < MIN_SAMPLE})
     return out
@@ -313,7 +324,7 @@ def conditional_hit_table(recs: list[dict], threshold: float,
         g = [r for r in recs if fn(r)]
         if not g:
             continue
-        hits, hr, avg = _hit_stats(g, threshold, metric)
+        hits, hr, avg = hit_stats(g, threshold, metric)
         out.append({"factor": label, "n": len(g), "hits": hits,
                     "hit_rate": hr, "avg_next": avg, "warn": len(g) < MIN_SAMPLE})
     return out
@@ -333,7 +344,7 @@ def _print_table(header: list[str], rows: list[list], widths: list[int] | None =
 def print_report(recs: list[dict], threshold: float,
                  metric: str = METRIC_RAW) -> None:
     n = len(recs)
-    hits, hr, avg = _hit_stats(recs, threshold, metric)
+    hits, hr, avg = hit_stats(recs, threshold, metric)
     print("=" * 78)
     avg_label = METRIC_LABEL.get(metric, "平均")
     tag = "（超额口径：已剔除 T+1 创业板指涨幅）" if metric == METRIC_EXCESS else ""
@@ -407,8 +418,8 @@ def main() -> None:
     args = build_parser().parse_args()
     clear_screen()
     conn = sqlite3.connect(DB_PATH)
-    recs = _load_dedup(conn, days=args.days)
-    _attach_prominence(conn, recs)
+    recs = load_dedup(conn, days=args.days)
+    attach_prominence(conn, recs)
     # 数据真实性前置检查（2026-08-18 拓斯达脏数据事故）：daily_kline 盘中残留未定稿
     # bar 会静默污染 next_day_pct → 全口径失真；出报告前抽样与独立源（新浪 qfq）交叉
     # 验证，不符比例超阈值即中止，防止「回测验证的是脏数据」再次发生。

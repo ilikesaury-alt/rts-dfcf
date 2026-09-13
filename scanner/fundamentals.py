@@ -38,7 +38,7 @@ from scanner.config import (
     now_beijing,
 )
 from scanner.database import get_market_extra_cache, save_market_extra_cache
-from scanner.net import _bounded_call
+from scanner.net import bounded_call
 from scanner.utils import EXTERNAL_FAILURES
 
 logger = logging.getLogger(__name__)
@@ -263,7 +263,7 @@ def fetch_fund_risk_map() -> dict[str, str]:
         _warn_missing_pywencai()
         return wc_result
     try:
-        df = _bounded_call(lambda: pywencai.get(query=FUND_RISK_QUERY, loop=True), FUND_RISK_FETCH_TIMEOUT)
+        df = bounded_call(lambda: pywencai.get(query=FUND_RISK_QUERY, loop=True), FUND_RISK_FETCH_TIMEOUT)
         for sym in _extract_xq_symbols(df):
             wc_result[sym] = FUND_RISK_REASON
     except Exception as e:  # noqa: BLE001  第三方库边界（pywencai/pandas），异常类型不可枚举
@@ -311,7 +311,16 @@ def collect_fund_risk(conn, symbols: list[str]) -> dict[str, str]:
 
 
 def get_fund_risk_from_db(conn, symbol: str) -> str | None:
-    """从 DB 读当日某符号的财务风险 reason（stock_report 展示用）。无则 None。"""
+    """从 DB 读当日某符号的财务风险 reason（stock_report 展示用）。无则 None。
+
+    conn 不可用（None）时同样返回 None——展示路径不得因数据源故障中断。
+    2026-09-13 显式判空：此前该契约由 get_market_extra_cache 的宽捕获隐式兜住
+    （None 连接抛 AttributeError 被吞），查询层收窄为 sqlite3.Error 后该隐式依赖
+    暴露。契约声明在定义它的地方，而不是依赖下层的宽捕获。
+    （已关闭/损坏的连接仍由 sqlite3.Error 路径兜住，无需在此处理。）
+    """
+    if conn is None:
+        return None
     try:
         db = get_market_extra_cache(conn, [symbol], _DATA_TYPE)
         payload = db.get(symbol)

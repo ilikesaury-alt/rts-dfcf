@@ -13,7 +13,7 @@
 - 进程内 TTL 缓存（按交易日键、线程安全、带上限淘汰）→ DB 缓存（当日 +
   盘中新鲜度）→ 拉取落库
 - 拉取带限时/分页 deadline，失败缓存空结果短退避，绝不阻塞扫描循环
-- 符号格式转换复用 data_source 的 _ak_to_xq（300001 → SZ300001）
+- 符号格式转换复用 data_source 的 ak_to_xq（300001 → SZ300001）
 """
 import logging
 import os
@@ -34,9 +34,9 @@ from scanner.config import (
     ZT_POOL_TTL_SEC,
     now_beijing,
 )
-from scanner.data_source import _ak_to_xq
+from scanner.data_source import ak_to_xq
 from scanner.database import get_market_extra_cache, save_market_extra_cache
-from scanner.net import EASTMONEY_HEADERS, EASTMONEY_UT_TOKEN, _bounded_call
+from scanner.net import EASTMONEY_HEADERS, EASTMONEY_UT_TOKEN, bounded_call
 from scanner.utils import EXTERNAL_FAILURES, to_float
 from scanner.utils import cache_put as _cache_put
 
@@ -122,7 +122,7 @@ def fetch_zt_pool(today: str | None = None) -> dict[str, dict]:
     """拉取今日涨停池，返回 {6位代码: {lianban, zt_stat, fengban_amt, zhaban, industry}}。
 
     主源：同花顺官方 API（字段更富：封单额/涨停原因/开板次数；免 AKShare 的
-    _bounded_call 兜底）。THS 未配置 Key / 接口失败 → AKShare 兜底（原路径）。
+    bounded_call 兜底）。THS 未配置 Key / 接口失败 → AKShare 兜底（原路径）。
     非交易日接口返回空表 → 空 dict。失败打印告警、缓存空结果短退避并返回 {}（软降级）。
     """
     key = today or _today_key()
@@ -141,7 +141,7 @@ def fetch_zt_pool(today: str | None = None) -> dict[str, dict]:
     if ak is None:
         return {}
     try:
-        df = _bounded_call(lambda: ak.stock_zt_pool_em(date=key), ZT_POOL_FETCH_TIMEOUT)
+        df = bounded_call(lambda: ak.stock_zt_pool_em(date=key), ZT_POOL_FETCH_TIMEOUT)
         result: dict[str, dict] = {}
         if df is not None and not df.empty:
             for _, row in df.iterrows():
@@ -358,7 +358,7 @@ def collect_market_extra(conn, symbols: list[str],
             fetched = fetch_zt_pool()
             if fetched:
                 # 全市场涨停池映射回 xq 符号；未涨停票无数据，不写库（None 语义）
-                mapped = {_ak_to_xq(code): payload for code, payload in fetched.items()}
+                mapped = {ak_to_xq(code): payload for code, payload in fetched.items()}
                 save_map = {sym: mapped[sym] for sym in missing_zt if sym in mapped}
                 if save_map:
                     save_market_extra_cache(conn, save_map, _ZT_POOL)
@@ -374,7 +374,7 @@ def collect_market_extra(conn, symbols: list[str],
         if miss_flow:
             fetched = fetch_fund_flow_rank()
             if fetched:
-                mapped = {_ak_to_xq(code): payload for code, payload in fetched.items()}
+                mapped = {ak_to_xq(code): payload for code, payload in fetched.items()}
                 # _last_ff_partial（超时部分结果）时只存当前缺失候选，避免把不完整数据
                 # 当快照冻结；否则是完整全市场快照，全部落库——这样当日任一 symbol
                 # （含已掉榜/重启前推荐过的票）都能在展示层读到资金流数据，

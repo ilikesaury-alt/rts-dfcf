@@ -4,6 +4,26 @@ requires = ["setuptools>=64.0"]
 # （importlib 验证失败），任何 pip install / 构建入口都会直接报错。
 build-backend = "setuptools.build_meta"
 
+# 2026-09-13 补 [project]：此前 pyproject 只有 build-system + 工具配置，没有包元数据
+# ——`pip install .` 能跑但装出来的 dist 名是 UNKNOWN/0.0.0，且 setuptools 走
+# **自动发现**，在「顶层有多个包 + 多个散装 .py 脚本」的扁平布局下直接报
+# "Multiple top-level packages discovered"。故显式声明 packages（含子包）。
+# 本项目当前以源码直跑为主（`python unified_scanner.py`），不依赖安装；
+# 加元数据是为后续 console_scripts / 可复现构建留口子。
+[project]
+name = "rts-dfcf-max"
+version = "0.1.0"
+description = "A股创业板飙升榜扫描器：多策略候选池 → 统一评分 → next_day 口径推荐"
+requires-python = ">=3.12"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools]
+# 只打包 scanner 及其子包；顶层脚本（unified_scanner.py 等）与 tests/scripts 不进 wheel。
+packages = ["scanner", "scanner.db", "scanner.pipeline"]
+
 [tool.ruff]
 line-length = 120
 target-version = "py312"

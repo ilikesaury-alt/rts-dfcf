@@ -86,7 +86,7 @@ from scanner.patterns import (
 )
 from scanner.trading_session import trading_minutes_elapsed
 from scanner.utils import today_close_from_kline, today_pct_from_kline
-from scanner.validator import _mo_divergence
+from scanner.validator import mo_divergence
 
 # 盘中把今日部分量能投影为全天量能的最大倍数（9:31 开盘瞬间量能爆表时封顶）。
 # 保持 10：A股量能呈 U 型（开盘聚集），普通票前5分钟约占全天 5%，投影 5%×10=0.5
@@ -602,7 +602,7 @@ def analyze_momentum(
             and ma_boost >= 0
         )
         if is_launch:
-            div_bonus, div_detail = _mo_divergence(closes, historical_kline, feats)
+            div_bonus, div_detail = mo_divergence(closes, historical_kline, feats)
             if div_bonus < 0:  # 有顶背离：放弃首日启动（动能衰竭）
                 return None
             # 使用首次启动专用权重（launch_today_pct/launch_accum），语义与值域对齐

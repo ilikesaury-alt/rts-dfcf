@@ -8,27 +8,44 @@ verdict 是粗粒度整数、score 跨类别尺度不可比。在 ≤2 只的真
   P = σ( logit(base) + SHRINK × Σ log(OR_i) )
 base 按类别取当日口径命中率；OR 为因子条件命中率对参照组的 odds ratio。
 
-校准来源（2026-09-05，1786 去重样本，threshold≥7%，load_attribution_rows 统一口径
-= excluded=0 + (date,symbol) 去重取最后一轮）：
-  - 类别 base / 辨识度 / 超买 / 弱转强 / 涨幅带：`python -m scanner.nextday_attribution`
-  - 🎯 复合画像：marked 13.6% (n=543) vs unmarked 5.8% (n=794) → OR≈2.6。
-    注意 docstring/旧注释里的「甜蜜带+累计≥6 hit 20%」是更小样本期的读数，已失效。
-  - 主力流出≤-8%：1.5% (n=66) vs 资金流可得子集 4.6% → OR≈0.32
-  - 小板块共振（cnt<15）：5.4% (n=558) vs 无共振 9.0% → OR≈0.58
-不引入任何未在该口径下验证的因子；样本 <MIN_SAMPLE(20) 或字段存在率混杂的候选因子
-一律不纳入（过热 n=6 / am_high 存在率仅 5% 且方向与维度归因矛盾 / rank_trend_bonus
-n=26 贴门槛且与辨识度相关）。
-
 防重复计费：🎯 复合画像本身 = 甜蜜带 + 非超买（short_term 为弱转强∩非超买），
 **marked 时不再叠加 band / 超买 / 弱转强单因子**（它们的 lift 已含在复合 OR 内）；
 仅 unmarked 行使用单因子。
 
-⚠ 概率是排序量不是预测值：因子间相关使朴素乘积系统性高估，已用 SHRINK<1 收缩 +
-区间截断抑制；数字只用于「谁排前面」，不可当作胜率承诺。
+不引入任何未在统一口径下验证的因子；样本 <MIN_SAMPLE(20) 或字段存在率混杂的候选
+因子一律不纳入（过热 n=6 / am_high 存在率仅 5% 且方向与维度归因矛盾 /
+rank_trend_bonus n=26 贴门槛且与辨识度相关）。
 
-校准会漂移：因子命中率随市场 regime 变化（本项目文档注释数字已两次过期）。重算：
-  python -m scanner.nextday_attribution
-并复核本文件常数（见 tests/test_nextday_prob.py 文档注释的补算口径）。
+校准来源与复核纪律（2026-09-13 重写，audit §B2）：
+  常数**不再靠人眼读数手抄**。重算与漂移巡检单源：
+      python -m scanner.nextday_calib            # 逐因子口径 + 实测 + 漂移（退出码 1 = 有漂移）
+      python -m scanner.nextday_calib --write    # 重写 scanner/nextday_calib.json
+      python -m pytest tests/test_nextday_calib.py -q   # 离线守护（代码常数 vs 快照）
+  每个因子的口径（适用行集合 + 参照组）声明在 scanner/nextday_calib.py 的 FACTOR_SPECS；
+  快照 scanner/nextday_calib.json 记录常数、实测值、样本量与口径，可审计。
+
+  ⚠ 2026-09-13 修正的两处口径错误（详见 nextday_calib 模块 docstring）：
+  1. **OR_MARKED 2.6 → 1.56**。原 2.6 记的读数（marked 13.6% n=543 / unmarked 5.8%
+     n=794）是按「甜蜜带 ∩ 非超买」拟合的，**漏了线上 is_nextday_marked 自 2026-08-14
+     起含的「5 日累计 ≥ NEXTDAY_ACCUM_MIN」门槛**；按线上真实口径重算为 1.56
+     （marked 10.8% n=344 / unmarked 7.2% n=1213，2185 去重样本）。
+     原 docstring 反把正确口径标为「已失效」，是口径取错。
+  2. **OR_OVERBOUGHT 0.68 → 0.84**。原值按**全体样本**补集拟合（含 marked 行），
+     而该因子只在 unmarked 行生效；按适用集合重算为 0.84。
+  两处修正经排序 A/B 验证（逐日 top-1 12.2%→14.9%、top-2 23.0%→24.3%，见
+  audit-2026-09-13 §B2），属口径纠错而非调参。
+
+  ⚠ 已知未处理项（已量化、待 §B1 样本外验证）：涨幅带 4 个 OR 仍是「按全样本 vs 全体」
+  拟合，而模型只对「未标记且非 short_term」行生效——参照组不是适用集合的补集。
+  按适用集合重算为 0.690 / 0.806 / 2.040 / 1.091（MID 漂移 51%）。A/B 显示单独改
+  涨幅带不改善 top-2 且 rank-IC 由 0.0516 降到 0.0474，故**暂不改动**，已在
+  nextday_calib.ACKNOWLEDGED_DRIFT 登记为已知项。
+
+  ⚠ 概率是排序量不是预测值：因子间相关使朴素乘积系统性高估，已用 SHRINK<1 收缩 +
+  区间截断抑制；数字只用于「谁排前面」，不可当作胜率承诺。
+
+  ⚠ 常数会随市场 regime 漂移（本项目文档注释数字已多次过期）。任何常数改动都属
+  **行为变更**，须先过样本外验证（audit §B1），再同步更新 nextday_calib.json 快照。
 """
 
 from __future__ import annotations
@@ -49,30 +66,37 @@ from scanner.ranking import (
     _nextday_entry_percent,
 )
 
-# ── 类别 base rate（nextday_attribution [1] 分策略，2026-09-05）──
+# ── 类别 base rate（口径：全体样本分策略 hit 率；2026-09-13 刷新）──
 BASE_RATE_BY_CAT: dict[str, float] = {
     "rebound": 0.179,
     "known_new_face": 0.127,
     "momentum": 0.100,
     "new_face": 0.097,
-    "core_dip": 0.089,
+    "core_dip": 0.065,  # 2026-09-13: 0.089 → 0.065（实测 6.5%，原值高估 37%）
     "short_term": 0.062,
     "pullback": 0.056,
-    "pool_pick": 0.028,
+    "pool_pick": 0.021,  # 2026-09-13: 0.028 → 0.021（实测 2.1%，原值高估 33%）
     "comeback": 0.028,
 }
-BASE_RATE_DEFAULT = 0.078  # 全体 hit 率（未知类别兜底）
+BASE_RATE_DEFAULT = 0.078  # 全体 hit 率（未知类别兜底；实测 6.8%，差 13% 未超容差，暂留）
 
-# ── 因子 odds ratio（条件命中率 OR，推导见模块 docstring）──
-OR_MARKED = 2.6  # 🎯 复合画像 13.6% vs unmarked 5.8%（n=543/794；含甜蜜带+非超买/弱转强效应）
-OR_PROMINENCE = 2.0  # 辨识度↻ 12.4% vs 非辨识度 6.5%（n=411/1375）
-OR_OVERBOUGHT = 0.68  # 超买 5.6% vs 非超买 8.0%（n=108/1678；仅 unmarked 行）
-OR_BAND_SWEET_LOW = 0.88  # 0-2% 低吸带 6.9%（含 <0：最近可得分桶 <1% 6.6%，n=605）
-OR_BAND_MID = 1.35  # 4-8% 甜蜜中段 10.3% vs 全体 7.8%（n=556）
-OR_BAND_DEAD = 0.70  # 2-4% 死区 5.6%（n=411）
-OR_BAND_TRAP = 1.07  # ≥8% 8.3%（8-10% n=108 与 ≥10% n=106 合并：hit 不差但平均 -1.37%）
-OR_OUTFLOW = 0.32  # 主力净流出≤-8% 1.5% vs 资金流可得子集 4.6%（n=66）
-OR_SMALL_SECTOR = 0.58  # 小板块共振 5.4% vs 无共振 9.0%（n=558/1228）
+# ── 因子 odds ratio（条件命中率 OR；口径逐项声明见 nextday_calib.FACTOR_SPECS）──
+OR_MARKED = 1.56  # 🎯 复合画像：marked 10.8%(n=344) vs unmarked 7.2%(n=1213)，按线上判据口径
+OR_PROMINENCE = 2.0  # 辨识度↻ 11.5% vs 非辨识度 5.6%（n=454/1731）
+OR_OVERBOUGHT = 0.84  # 超买 5.2% vs 非超买 6.2%（unmarked 内，n=153/1688）
+# ⚠ 以下 4 个涨幅带常数**不是 OR 的无偏估计，也不应被「修正」成实测值**：
+#   它们的遗留口径按「全样本条件组 vs 全体」拟合（正确口径应按适用集合重算，
+#   实测 0.690 / 2.040 / 0.806 / 1.091），但 2026-09-13 §B1 样本外验证显示
+#   换成实测值后**终选 top-3 hit 反而下降**（OR_BAND_MID：test Δ −1.7pp，
+#   train Δ −3.3pp 且 CI [−6.7,−0.6] 不含 0）。即：这些数是**按终选目标校准**
+#   的，与「OR 估计」不是同一个量。漂移豁免与完整证据见 nextday_calib.ACKNOWLEDGED_DRIFT。
+#   复核入口：python -m scanner.rule_validate --set scanner.nextday_prob.OR_BAND_MID=2.04
+OR_BAND_SWEET_LOW = 0.88  # 0-2% 低吸带（见上方警告）
+OR_BAND_MID = 1.35  # 4-8% 甜蜜中段（见上方警告）
+OR_BAND_DEAD = 0.70  # 2-4% 死区（见上方警告）
+OR_BAND_TRAP = 1.07  # ≥8%（hit 不差但平均次日为负；见上方警告）
+OR_OUTFLOW = 0.32  # 主力净流出≤-8%：1.1%(n=92) vs 资金流可得子集非流出 3.8%(n=917)
+OR_SMALL_SECTOR = 0.58  # 小板块共振 5.0% vs 无共振 7.5%（n=635/1550）
 
 # 朴素乘积高估抑制：因子间相关（🎯~band、辨识度~rank 趋势），log-odds 收缩系数。
 LOG_ODDS_SHRINK = 0.7
@@ -115,7 +139,7 @@ def next_day_hit_probability(
 
     entry：综合排序行 dict（需 category；band/超买/板块共振经 ranking 单源助手从
     _candidate dims 或 score_breakdown 读取）。
-    marked：🎯 次日大涨画像判定结果（调用方经 ranking._is_nextday_marked 预计算；
+    marked：🎯 次日大涨画像判定结果（调用方经 ranking.is_nextday_marked 预计算；
     必传——该因子与 band/超买存在复合关系，由调用方保证口径单一）。
     prominence：辨识度（scanner.database.get_prominence_map 批量预计算）；None=无数据跳过。
     flow：主力净占比（%）；None 时读 entry dims（_entry_fund_flow_pct 同口径）。
@@ -130,7 +154,7 @@ def next_day_hit_probability(
         if _entry_overbought(entry):
             ors.append(OR_OVERBOUGHT)
         if cat != "short_term":
-            # short_term 豁免涨幅带（其规律在弱转强，与 ranking._entry_tier 同口径）；
+            # short_term 豁免涨幅带（其规律在弱转强，与 ranking.entry_tier 同口径）；
             # marked 行已含带效应，也在此豁免（marked 时上面分支已 return 前置）。
             ors.append(_band_or(_nextday_entry_percent(entry)))
     if prominence:
@@ -147,4 +171,4 @@ def next_day_hit_probability(
     return min(max(p, P_MIN), P_MAX)
 
 
-# 校准漂移巡检入口：python -m scanner.nextday_attribution（对比本文件常数）
+# 校准漂移巡检入口：python -m scanner.nextday_calib（重算 + 对比本文件常数 + 快照）

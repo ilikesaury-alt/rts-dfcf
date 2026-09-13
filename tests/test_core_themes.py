@@ -132,7 +132,7 @@ class TestDipMetrics:
 
 class TestIdentifyCoreThemes:
     def test_picks_persistent_strong_theme(self, db, monkeypatch):
-        monkeypatch.setattr("scanner.core_themes._n_trading_days_ago", lambda *a, **k: "2026-08-01")
+        monkeypatch.setattr("scanner.core_themes.n_trading_days_ago", lambda *a, **k: "2026-08-01")
         # 华为概念：多日持续且成员涨幅高
         _insert_rec(db, "SZ300001", "a", "华为概念", "2026-08-12")
         _insert_rec(db, "SZ300002", "b", "华为概念", "2026-08-14")
@@ -150,7 +150,7 @@ class TestFindCoreThemeDips:
         assert find_core_theme_dips(None, "2026-08-19") == []
 
     def test_returns_dip_candidates(self, db, monkeypatch):
-        monkeypatch.setattr("scanner.core_themes._n_trading_days_ago", lambda *a, **k: LOOKBACK_START)
+        monkeypatch.setattr("scanner.core_themes.n_trading_days_ago", lambda *a, **k: LOOKBACK_START)
         # 核心主题：华为概念持续上榜
         for d in REC_DATES:
             _insert_rec(db, "SZ300001", "龙头", "华为概念", d)
@@ -171,7 +171,7 @@ class TestFindCoreThemeDips:
         assert dips[0]["run"] > 0
 
     def test_crash_day_filtered(self, db, monkeypatch):
-        monkeypatch.setattr("scanner.core_themes._n_trading_days_ago", lambda *a, **k: LOOKBACK_START)
+        monkeypatch.setattr("scanner.core_themes.n_trading_days_ago", lambda *a, **k: LOOKBACK_START)
         for d in REC_DATES:
             _insert_rec(db, "SZ300001", "龙头", "华为概念", d)
         # 成员今日崩盘 -8% → 被 CORE_TODAY_FLOOR 过滤
@@ -187,7 +187,7 @@ class TestFindCoreThemeDips:
 
     def test_theme_member_even_if_not_recently_rec(self, db, monkeypatch):
         """核心主题成员可来自 concept_cache（未被近 N 日推荐也纳入，扩大核心股来源）。"""
-        monkeypatch.setattr("scanner.core_themes._n_trading_days_ago", lambda *a, **k: LOOKBACK_START)
+        monkeypatch.setattr("scanner.core_themes.n_trading_days_ago", lambda *a, **k: LOOKBACK_START)
         for d in REC_DATES:
             _insert_rec(db, "SZ300001", "龙头", "华为概念", d)
         # 成员2 只存在于 concept_cache，不在近期推荐，但属于华为概念且回调 → 应纳入
@@ -218,7 +218,7 @@ class TestCoreStockSymbols:
     @staticmethod
     def _seed_theme(db, monkeypatch, member_syms):
         """造一个核心主题（华为概念，3 个推荐日）+ concept_cache 成员。"""
-        monkeypatch.setattr("scanner.core_themes._n_trading_days_ago", lambda *a, **k: LOOKBACK_START)
+        monkeypatch.setattr("scanner.core_themes.n_trading_days_ago", lambda *a, **k: LOOKBACK_START)
         for d in REC_DATES:
             _insert_rec(db, "SZ300099", "主题日", "华为概念", d)
         for sym, concepts in member_syms:
@@ -267,63 +267,63 @@ class TestCoreStockSymbols:
 class TestLowBuyQualitySort:
     def test_negative_flow_before_positive(self):
         """数据驱动：负流入（预期差）优先于正流入。"""
-        from scanner.core_themes import _low_buy_quality
+        from scanner.core_themes import low_buy_quality
 
         neg = {"flow_pct": -3.0, "pullback": -0.05, "run": 0.2, "today_pct": 0.0}
         pos = {"flow_pct": 3.0, "pullback": -0.05, "run": 0.2, "today_pct": 0.0}
         # 升序键：neg 更小 → 排前
-        assert _low_buy_quality(neg) < _low_buy_quality(pos)
+        assert low_buy_quality(neg) < low_buy_quality(pos)
 
     def test_high_flow_penalized(self):
         """数据驱动：高流入 >10% 降权。"""
-        from scanner.core_themes import _low_buy_quality
+        from scanner.core_themes import low_buy_quality
 
         high = {"flow_pct": 15.0, "pullback": -0.05, "run": 0.2, "today_pct": 0.0}
         low = {"flow_pct": 5.0, "pullback": -0.05, "run": 0.2, "today_pct": 0.0}
-        assert _low_buy_quality(low) < _low_buy_quality(high)
+        assert low_buy_quality(low) < low_buy_quality(high)
 
     def test_shallow_pullback_optimal(self):
         """数据驱动：浅回调 -3%~-6% 最优。"""
-        from scanner.core_themes import _low_buy_quality
+        from scanner.core_themes import low_buy_quality
 
         shallow = {"flow_pct": None, "pullback": -0.04, "run": 0.2, "today_pct": None}
         medium = {"flow_pct": None, "pullback": -0.08, "run": 0.2, "today_pct": None}
         deep = {"flow_pct": None, "pullback": -0.12, "run": 0.2, "today_pct": None}
         # 浅回调 < 中回调（最优），深回调介于两者之间
-        assert _low_buy_quality(shallow) < _low_buy_quality(medium)
-        assert _low_buy_quality(deep) < _low_buy_quality(medium)
+        assert low_buy_quality(shallow) < low_buy_quality(medium)
+        assert low_buy_quality(deep) < low_buy_quality(medium)
 
     def test_run_sweet_spot(self):
         """数据驱动：run 15-25% 甜点区最优。"""
-        from scanner.core_themes import _low_buy_quality
+        from scanner.core_themes import low_buy_quality
 
         sweet = {"flow_pct": None, "pullback": -0.05, "run": 0.20, "today_pct": None}
         hot = {"flow_pct": None, "pullback": -0.05, "run": 0.35, "today_pct": None}
         weak = {"flow_pct": None, "pullback": -0.05, "run": 0.10, "today_pct": None}
         # 甜点区 < 弱 run < 强 run（过热）
-        assert _low_buy_quality(sweet) < _low_buy_quality(weak)
-        assert _low_buy_quality(weak) < _low_buy_quality(hot)
+        assert low_buy_quality(sweet) < low_buy_quality(weak)
+        assert low_buy_quality(weak) < low_buy_quality(hot)
 
     def test_concept_weight(self):
         """数据驱动：趋势股/电子板块优先，医药降权。"""
-        from scanner.core_themes import _low_buy_quality
+        from scanner.core_themes import low_buy_quality
 
         trend = {"concept": "趋势股", "flow_pct": None, "pullback": -0.05, "run": 0.2, "today_pct": None}
         med = {"concept": "医药生物", "flow_pct": None, "pullback": -0.05, "run": 0.2, "today_pct": None}
-        assert _low_buy_quality(trend) < _low_buy_quality(med)
+        assert low_buy_quality(trend) < low_buy_quality(med)
 
     def test_today_volatility_auxiliary(self):
         """今日波动为辅助维度，|today| 越大分越高（升序排后面）。"""
-        from scanner.core_themes import _low_buy_quality
+        from scanner.core_themes import low_buy_quality
 
         flat = {"flow_pct": None, "pullback": -0.05, "run": 0.2, "today_pct": 0.0}
         big_up = {"flow_pct": None, "pullback": -0.05, "run": 0.2, "today_pct": 0.09}
         big_down = {"flow_pct": None, "pullback": -0.05, "run": 0.2, "today_pct": -0.09}
         # 波动大的排后面
-        assert _low_buy_quality(flat) < _low_buy_quality(big_up)
-        assert _low_buy_quality(flat) < _low_buy_quality(big_down)
+        assert low_buy_quality(flat) < low_buy_quality(big_up)
+        assert low_buy_quality(flat) < low_buy_quality(big_down)
         # 涨多与跌狠同幅并列
-        assert _low_buy_quality(big_up) == _low_buy_quality(big_down)
+        assert low_buy_quality(big_up) == low_buy_quality(big_down)
 
 
 class TestSaveCoreDips:

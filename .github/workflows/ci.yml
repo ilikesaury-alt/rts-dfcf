@@ -16,17 +16,27 @@ jobs:
         run: |
           pip install -r requirements-dev.txt
       - name: Ruff lint (必须全绿)
+        # 2026-09-13：原为显式文件清单，漏检 today_report.py / prevday_perf.py /
+        # leaderboard_obs.py / repair_kline.py / backfill_market_index.py / diag_*.py
+        # 共 7 个顶层脚本（其中 today_report 含 CC=35、prevday_perf 含 CC=53 的函数）。
+        # 改为全仓扫描：新增文件默认受管，不再需要维护清单。
         run: |
-          ruff check scanner/ scripts/ unified_scanner.py stock_report.py \
-            backfill_kline.py query_summary.py query_today.py
+          ruff check .
       - name: 规则变更报告（只报告，不阻断；冻结已于 2026-09-11 解除）
         run: |
           python scripts/rule_change_tracker.py
         continue-on-error: true
       - name: Mypy (类型债 backlog，暂不阻断，见 AGENTS.md)
+        # 2026-09-13：去掉 `|| true`。该步骤本就有 continue-on-error，加 `|| true`
+        # 是双保险里的多余那一层——它把失败**连同错误信息一起**吞成 exit 0，
+        # 注解里什么都看不到。去掉后：失败仍不阻断（continue-on-error），
+        # 但真实错误会显示在步骤输出与 PR 注解里。
+        # 2026-09-13 实测 mypy scanner/ 全绿（70 files），故去掉不影响现状。
         run: |
-          mypy scanner/ --ignore-missing-imports || true
+          mypy scanner/ --ignore-missing-imports
         continue-on-error: true
-      - name: pytest（默认跳过真实库/外网集成测试）
+      - name: pytest（默认跳过真实库/外网集成测试）+ 覆盖率报告
+        # 覆盖率只报告不设门禁（无 --cov-fail-under）：先积累基线，再决定阈值。
+        # 测试失败仍然阻断（--cov 不改变 pytest 退出码语义）。
         run: |
-          python -m pytest tests/ -q
+          python -m pytest tests/ -q --cov=scanner --cov-report=term-missing:skip-covered

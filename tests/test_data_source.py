@@ -1,7 +1,7 @@
 """数据源适配层测试。
 
 覆盖：
-- 符号格式转换（_xq_to_ak / _ak_to_xq）
+- 符号格式转换（_xq_to_ak / ak_to_xq）
 - XueqiuAdapter 委托 api.py
 - ThsAdapter（2026-08-23 替代 AkshareAdapter：K线走 THS 官方源，
   市值保留东财 push2delay 直连，指数保留 akshare 可选路径）
@@ -21,8 +21,8 @@ from scanner.data_source import (
     FallbackAdapter,
     ThsAdapter,
     XueqiuAdapter,
-    _ak_to_xq,
     _xq_to_ak,
+    ak_to_xq,
     get_adapter,
     reset_adapter,
 )
@@ -36,10 +36,10 @@ class TestSymbolConversion:
         assert _xq_to_ak("300001") == "300001"  # 无前缀不变
 
     def test_ak_to_xq(self):
-        assert _ak_to_xq("300001") == "SZ300001"
-        assert _ak_to_xq("600000") == "SH600000"
-        assert _ak_to_xq("399006") == "SZ399006"
-        assert _ak_to_xq("430047") == "BJ430047"
+        assert ak_to_xq("300001") == "SZ300001"
+        assert ak_to_xq("600000") == "SH600000"
+        assert ak_to_xq("399006") == "SZ399006"
+        assert ak_to_xq("430047") == "BJ430047"
 
 
 class TestXueqiuAdapter:

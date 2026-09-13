@@ -339,9 +339,9 @@ def _downtrend_bars():
 
 
 def _cand(category="pool_pick", intraday_score=0.0, percent=1.5):
-    """实时候选替身（_fresh_candidate 信任契约：is_stale=False + 类别匹配）。
+    """实时候选替身（fresh_candidate 信任契约：is_stale=False + 类别匹配）。
 
-    需带 stock（_entry_display_quote 读 stock.percent/current 兆底）。"""
+    需带 stock（entry_display_quote 读 stock.percent/current 兆底）。"""
     from types import SimpleNamespace
 
     return SimpleNamespace(
@@ -350,7 +350,7 @@ def _cand(category="pool_pick", intraday_score=0.0, percent=1.5):
         intraday_score=intraday_score,
         tactic_tags=[],
         stock=SimpleNamespace(percent=percent, current=10.0),
-        kline=None,  # _entry_dims 读 c.kline.dimensions：None → 回退 score_breakdown
+        kline=None,  # entry_dims 读 c.kline.dimensions：None → 回退 score_breakdown
     )
 
 

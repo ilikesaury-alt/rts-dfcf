@@ -57,7 +57,7 @@ CAT_DISPLAY_PRIORITY: dict[str, int] = {name: info.display_priority for name, in
 # 操作建议映射（含 ANSI）。
 SUGGEST_BY_CAT: dict[str, str] = {name: info.suggest for name, info in CATEGORY_REGISTRY.items()}
 
-# 🎯 次日大涨画像可标记类别集合（= 主表五类，ranking._is_nextday_marked 用其做成员判定）。
+# 🎯 次日大涨画像可标记类别集合（= 主表五类，ranking.is_nextday_marked 用其做成员判定）。
 NEXTDAY_CAT_PRIORITY: set[str] = {name for name, info in CATEGORY_REGISTRY.items() if info.nextday_markable}
 
 # 综合排序短标签。

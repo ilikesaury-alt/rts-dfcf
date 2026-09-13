@@ -118,7 +118,7 @@ def evaluate_pool(
     只认 date == today 的 bar——补拉失败导致序列缺今日 bar 时按无法度量 fail-open
     跳过，不得拿昨日 bar 冒充当日（2026-09-04 审查修复：此前 kl[-1] 无日期校验，
     stale K 线会消费昨日形态误杀/漏杀；口径与 utils.today_kline_bar、
-    orchestrator._v2_kline_summary 统一）。
+    orchestrator.v2_kline_summary 统一）。
     """
     out: dict[str, list[str]] = {}
     for row in pool_rows:

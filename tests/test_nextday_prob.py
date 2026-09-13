@@ -1,17 +1,17 @@
 """scanner.nextday_prob 单元测试：base rate / 因子方向 / 防重复计费 / 截断。
 
-模型是朴素贝叶斯式 odds 乘积（log-odds 可加 + 收缩），所有常数校准于
-2026-09-05 当期 1786 去重样本。校准漂移时重算口径（与 nextday_attribution 一致）：
+本文件**只断言因子的方向与大小关系，不断言具体数值**——常数的数值正确性由
+`tests/test_nextday_calib.py` + `scanner/nextday_calib.json` 快照守护（2026-09-13 起）。
+原因：2026-09-13 复核发现 OR_MARKED 被高估 67%（拟合口径漏了线上 is_nextday_marked
+的 5 日累计门槛），而当时本文件全绿 —— 只测方向的测试发现不了常数漂移。
 
-    python -m scanner.nextday_attribution
-    # 因子条件命中率补算：load_attribution_rows(conn, "next_day_pct",
-    #   cols="name, percent, score_breakdown, accumulated_pct")
-    # 按 scanner/nextday_prob.py docstring 的因子定义重算，复核本模块常数。
+重算 / 巡检 / 同步常数：
+    python -m scanner.nextday_calib            # 逐因子口径 + 实测 + 漂移（退出码 1 = 有漂移）
+    python -m scanner.nextday_calib --write    # 重算并重写快照
+    python -m pytest tests/test_nextday_calib.py -q
 
-纪律：样本 <20 的因子不纳入（见模块 docstring 的排除清单）。
+纪律：样本 <20 的因子不纳入（见 nextday_calib.FACTOR_SPECS 与模块 docstring 的排除清单）。
 """
-
-import math
 
 from scanner.nextday_prob import (
     BASE_RATE_BY_CAT,
@@ -39,7 +39,11 @@ def _entry(cat="pool_pick", percent=3.0, dims=None):
 
 
 def test_base_rates_cover_known_categories():
-    """活跃类别 base rate 全覆盖且为合法概率。"""
+    """活跃类别 base rate 全覆盖且为合法概率。
+
+    数值本身不在此断言——由 tests/test_nextday_calib.py 对照快照守护（单一真源），
+    避免同一数字散落在两处、改一处漏一处。
+    """
     for cat in (
         "rebound",
         "known_new_face",
@@ -52,7 +56,7 @@ def test_base_rates_cover_known_categories():
     ):
         assert cat in BASE_RATE_BY_CAT
         assert 0.0 < BASE_RATE_BY_CAT[cat] < 1.0
-    assert math.isclose(BASE_RATE_DEFAULT, 0.078)
+    assert 0.0 < BASE_RATE_DEFAULT < 1.0
 
 
 def test_unknown_category_uses_default_base():
@@ -67,13 +71,13 @@ def test_unknown_category_uses_default_base():
 
 
 def test_marked_raises_probability():
-    """🎯 复合画像（OR 2.6）提升概率。"""
+    """🎯 复合画像（OR 1.56，2026-09-13 口径修正后）提升概率。"""
     e = _entry("new_face", percent=5.0)  # 甜蜜中段
     assert next_day_hit_probability(e, marked=True) > next_day_hit_probability(e, marked=False)
 
 
 def test_overbought_lowers_probability():
-    """超买（OR 0.68）降低概率（unmarked 行）。"""
+    """超买（OR 0.84，2026-09-13 口径修正后）降低概率（unmarked 行）。"""
     ob = next_day_hit_probability(_entry("short_term", dims={"v_st_overbought": 1}), marked=False)
     clean = next_day_hit_probability(_entry("short_term"), marked=False)
     assert ob < clean
@@ -87,7 +91,7 @@ def test_band_dead_below_sweet_mid():
 
 
 def test_short_term_exempt_from_band():
-    """short_term 豁免涨幅带（与 ranking._entry_tier 同口径）：带不同概率相同。"""
+    """short_term 豁免涨幅带（与 ranking.entry_tier 同口径）：带不同概率相同。"""
     a = next_day_hit_probability(_entry("short_term", percent=3.0), marked=False)
     b = next_day_hit_probability(_entry("short_term", percent=5.0), marked=False)
     assert a == b

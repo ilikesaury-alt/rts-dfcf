@@ -2,6 +2,22 @@
 
 所有 INSERT/UPDATE/DELETE + commit/rollback。只读查询在 queries.py。
 失败语义保持原样：批量失败逐行回退 / fail-open 返回空，不向上抛。
+
+异常捕获口径（2026-09-13 明确化，此前只有隐式惯例）：
+  本模块有**两类**捕获，判据是「try 体内除了 DB 调用还有没有别的东西」——
+
+  ① 收窄 `except sqlite3.Error`：try 体内只有 execute/executemany/commit/rollback。
+     此时唯一可能的运行期故障就是 sqlite3.Error，收窄是**等价行为**，
+     同时保证将来往 try 里加计算逻辑时，我们自己的 bug 不会被静默吞掉。
+  ② 保留 `except Exception`（均带注释说明理由）：
+     - **批量→逐行回退**（record_appearances / save_kline_to_db）：批量失败时不管
+       失败原因是什么都要退回逐行重试，收窄会让非 DB 异常直接中断整轮写入。
+     - **单行错误隔离**（save_recommendations 循环内）：单只票的异常不应拖垮整批，
+       这是刻意的隔离语义，不是遗漏。
+     - **try 体内含计算**（record_leaderboard_log）：统计清洗（to_float/isfinite/
+       json.dumps）在 try 内，收窄会把脏数据的防御路径一并暴露给主循环。
+
+  新增宽捕获前请先判断属于哪一类；不属于 ② 的一律收窄。
 """
 
 import json
@@ -15,7 +31,7 @@ from scanner.config import (
     WATCH_POOL_MAX,
     now_beijing,
 )
-from scanner.db._common import _n_trading_days_ago
+from scanner.db._common import n_trading_days_ago
 from scanner.models import V2_CATEGORY, KlineBar, RecommendationRow
 from scanner.trading_session import is_trading_time
 from scanner.utils import is_gem, to_float
@@ -51,7 +67,8 @@ def record_appearances(conn: sqlite3.Connection, symbols: list[dict]):
             rows,
         )
         conn.commit()
-    except Exception as e:
+    except Exception as e:  # 刻意宽捕获：批量失败原因不限于 sqlite3.Error（行结构异常等），
+        # 但无论何种原因都要退回逐行重试，收窄会中断整轮写入。见模块 docstring ②
         print(f"  [!] 批量写入appearances失败: {e}, 逐行回退写入")
         try:
             conn.rollback()  # 事务失败后必须回滚，否则后续 execute 会报
@@ -102,7 +119,7 @@ def save_kline_to_db(conn: sqlite3.Connection, symbol: str, kline: list[KlineBar
             rows,
         )
         conn.commit()
-    except Exception as e:
+    except Exception as e:  # 刻意宽捕获：同 record_appearances 的批量→逐行回退，见模块 docstring ②
         # 回滚残留在打开事务里的部分行，再逐行重写（与 record_appearances 同模式）
         try:
             conn.rollback()
@@ -159,7 +176,7 @@ def save_market_caps(conn: sqlite3.Connection, caps: dict[str, dict], source: st
         )
         conn.commit()
         return len(rows)
-    except Exception as e:
+    except sqlite3.Error as e:
         logger.warning(f"save_market_caps failed: {e}")
         return 0
 
@@ -204,7 +221,7 @@ def save_scan_quality(conn: sqlite3.Connection, stats: dict) -> None:
             ),
         )
         conn.commit()
-    except Exception as e:
+    except sqlite3.Error as e:
         logger.warning(f"save_scan_quality failed: {e}")
 
 
@@ -236,7 +253,7 @@ def save_market_index_log(
             (today, now, index_pct if index_pct is not None else None, bar_date, source, now),
         )
         conn.commit()
-    except Exception as e:
+    except sqlite3.Error as e:
         logger.warning(f"save_market_index_log failed: {e}")
 
 
@@ -343,7 +360,8 @@ def record_leaderboard_log(
         )
         conn.commit()
         return cur_syms
-    except Exception as e:
+    except Exception as e:  # 刻意宽捕获：try 内含统计清洗（to_float/isfinite/json.dumps），
+        # 收窄会把脏数据防御路径暴露给主循环。见模块 docstring ②
         logger.warning(f"record_leaderboard_log failed: {e}")
         # fail-open：落库失败不影响扫描主流程，返回空集（不污染后续重叠率）
         return prev_symbols
@@ -455,7 +473,7 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, 
             # 记录真实 rowid：同批后续重复项走高分 UPDATE 时需要定位到本行
             existing_map[key] = [cur.lastrowid, c.score]
             conn.execute("RELEASE sp_rec")
-        except Exception as e:
+        except Exception as e:  # 刻意宽捕获：单行错误隔离——单只票异常不拖垮整批。见模块 docstring ②
             # 2026-08-30：注释原写「用 savepoint 隔离失败行」，实际执行的是
             # conn.rollback() —— 整批已写入行一并丢弃（注释自己也承认这点）。
             # 改用真 savepoint：单行失败只回滚该行，已成功的行保留，与注释语义一致。
@@ -467,7 +485,7 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, 
             print(f"  [!] 保存推荐记录失败 {c.stock.symbol}: {e}")
     try:
         conn.commit()
-    except Exception as e:
+    except sqlite3.Error as e:
         try:
             conn.rollback()
         except sqlite3.Error:
@@ -520,7 +538,7 @@ def save_rejections(conn: sqlite3.Connection, rejected: list, today: str | None 
         )
         conn.commit()
         return len(rows)
-    except Exception as e:
+    except sqlite3.Error as e:
         logger.warning(f"save_rejections 落库失败（硬过滤审计缺失，不影响扫描）: {e}")
         try:
             conn.rollback()
@@ -698,7 +716,7 @@ def upsert_watch_symbols(conn: sqlite3.Connection, entries: list[dict]) -> None:
             (WATCH_POOL_MAX,),
         )
         conn.commit()
-    except Exception as e:
+    except sqlite3.Error as e:
         print(f"  [!] 批量写入watch_pool失败: {e}")
         try:
             conn.rollback()
@@ -730,7 +748,7 @@ def mark_watch_evaluated(conn: sqlite3.Connection, symbols: list[str], today: st
         print(f"  [!] 回马枪已评估标记失败 {len(failed)}/{len(symbols)} 只（下轮可能重复评估）")
     try:
         conn.commit()
-    except Exception as e:
+    except sqlite3.Error as e:
         print(f"  [!] mark_watch_evaluated 提交失败: {e}")
         try:
             conn.rollback()
@@ -744,12 +762,12 @@ def prune_watch_pool(conn: sqlite3.Connection, keep_trading_days: int = 15) -> i
     over_limit 票的 last_list_date 在其超限上榜日写入，同样按此剪枝，
     不额外豁免——避免超限队列无限期驻留。
     """
-    cutoff = _n_trading_days_ago(keep_trading_days)
+    cutoff = n_trading_days_ago(keep_trading_days)
     try:
         cur = conn.execute("DELETE FROM watch_pool WHERE last_list_date < ?", (cutoff,))
         conn.commit()
         return cur.rowcount
-    except Exception as e:
+    except sqlite3.Error as e:
         logger.warning(f"prune_watch_pool failed: {e}")
         return 0
 
@@ -821,7 +839,7 @@ def mark_reversed_recommendations(
             [(today, sym) for sym in reversed_syms],
         )
         conn.commit()
-    except Exception as e:
+    except sqlite3.Error as e:
         logger.warning(f"mark_reversed_recommendations failed: {e}")
         return []
     return reversed_syms
@@ -838,7 +856,7 @@ def save_concepts_cache(conn: sqlite3.Connection, concepts_map: dict[str, list[s
             [(sym, json.dumps(concepts, ensure_ascii=False), now) for sym, concepts in concepts_map.items()],
         )
         conn.commit()
-    except Exception as e:
+    except sqlite3.Error as e:
         logger.warning(f"save_concepts_cache failed: {e}")
         try:
             conn.rollback()
@@ -862,7 +880,7 @@ def save_market_extra_cache(conn: sqlite3.Connection, data_map: dict[str, dict],
             ],
         )
         conn.commit()
-    except Exception as e:
+    except sqlite3.Error as e:
         logger.warning(f"save_market_extra_cache failed: {e}")
         try:
             conn.rollback()

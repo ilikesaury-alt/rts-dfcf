@@ -53,11 +53,59 @@ python -m scanner.portfolio_backtest --compare-horizons "1,3" --buy-delay 0 --bu
 `--compare-horizons "1,3"` 逐持有期跑全套对比（学术依据：涨停类信号次日高开随后反转，
 next_day 靶点不应与 3 日 P&L 混算）。
 
+### 样本外验证门（rule_validate）—— 改权重/常数**必须**先跑这个
+
+```
+python -m scanner.rule_validate                      # 基线自检：MDE 有多大？（不改任何东西）
+python -m scanner.rule_validate --set scanner.nextday_prob.OR_MARKED=1.56
+python -m scanner.rule_validate --evaluator rescore --set scanner.config.MIN_SCORE=60
+python -m scanner.rule_validate --list-evaluators     # 各评估器能"看见"哪些模块
+```
+
+**退出码：0 = 样本外支持 / 1 = 证据不足（默认拒绝）/ 2 = 样本外显著变差 / 3 = 用法或可见性错误。**
+
+主指标 = test 窗**按日等权 top-N 次日 hit 率**（N = `FINAL_PICK_MAX`，即真实终选宽度），
+显著性 = 按日配对 bootstrap 的 95% CI。**判定只看 test 窗**；train 窗 Δ 用于暴露过拟合。
+报告里的 **MDE** 正面回答"以当前样本量，多小的改善才可能被检出"——若 MDE 远大于你观察到的 Δ，
+那"指标变好"不构成上生产的理由。
+
+**可见性硬校验（最重要的一道防线）**：`--set` 改的模块若不在所选评估器的可见集合内，
+直接退出码 3 —— 防止"验证了一个根本没生效的改动"。可见集合：
+`stored-score`=无（冻结分，仅对照）/ `nextday-prob`=`scanner.nextday_prob`（默认，快）/
+`rescore`=config/weights/analysis/enhancer/validator/ranking/categories（覆盖评分链，约 29s）。
+
+> 陷阱：项目用**快照式导入**（`from scanner.config import X` 把值绑进导入方命名空间），
+> 只改 `scanner.config.X` 对消费方无效。工具会自动传播 override 并打印传播到的模块数，
+> 跑完自动回滚。若报告显示"传播改写 0 个模块"且改动未产生输出差异，先怀疑改错了模块。
+
+### 主通路黄金样本（拆 scan_with_raw 前必跑）
+
+```
+python scripts/golden_scan.py                    # 跑最新交易日并与基线对比（离线·确定性）
+python scripts/golden_scan.py --date 2026-09-09  # 指定日期（各日期桶覆盖不同）
+python scripts/golden_scan.py --write            # （重新）生成基线
+python scripts/golden_scan.py --diff             # 打印首个不一致字段的上下文
+```
+
+`orchestrator.scan_with_raw`（507 行 / CC 95）是**主数据通路**，但 `tests/test_orchestrator.py`
+对它**本身零覆盖**（只测辅助函数）。要把它拆成 `scanner/pipeline/` 纯函数，必须能证明
+「拆完输出逐字段一致」——本工具就是那把尺子：从 `scanner.db` 重建某天的真实榜单输入，
+用**离线桩 adapter + 断网**跑一遍，把 `ScanResult` 规范化成 JSON 快照后逐字段对比。
+
+- **退出码：0 一致 / 1 不一致（等价变换被破坏）/ 2 运行失败。**
+- 确定性靠三根钉子：钉死时间（覆盖**所有已加载 `scanner.*` 模块**的 `now_beijing`——
+  只改 `scanner.config.now_beijing` 对快照式导入的消费方无效）、断网（装 requests 总闸，
+  `EXTERNAL_FAILURES` 含 `RequestException` 所以 fail-open 分支照常跑）、复制 DB 到临时文件。
+- ⚠ **覆盖有缺口**：工具会打印空桶告警。`comeback` 在离线模式下恒为 0（依赖 adapter 实时
+  行情）；`new_face` / `momentum` 多数日期 0~1。**空桶对应的路径本基线保护不到**，
+  拆它们时必须另补针对性单测。
+
 ### Offline label / data-quality tooling
 
 ```
 python -m scanner.triple_barrier --report   # 三重屏障标签重建 + 新旧标签一致性（M2）
 python -m scanner.model_bucket              # v3 模型桶离线可行性（M3，walkforward LightGBM）
+python -m scanner.nextday_calib             # 概率模型校准漂移巡检（常数 vs 数据，漂移即退出码 1）
 ```
 
 ### 沪深飙升独立区（hot_watch）—— 自检入口
@@ -93,6 +141,16 @@ This rebuilds scores via `scanner/historical_rescan.py --rescore` (faithful to t
 
 After code changes: `ruff check` → `mypy` → `pytest tests/` (unit) → optionally `--run-smoke`.
 
+After **weight/threshold/constant** changes, additionally: `python -m scanner.rule_validate`
+(样本外验证门，见上)。改 `nextday_prob` 常数还要重写校准快照：
+`python -m scanner.nextday_calib --write`，否则 `tests/test_nextday_calib.py` 会 fail。
+
+After touching **`scanner/pipeline/`** (or anything in `scan_with_raw`): run the golden
+sample for all four dates — `python scripts/golden_scan.py --date 2026-09-08` … `09-11`.
+All four must exit 0 (逐字段一致). See 主通路黄金样本 below.
+
+After touching **`scanner/db/`**: `pytest tests/test_migrations.py tests/test_schema_migration.py`.
+
 ## Architecture
 
 ```
@@ -116,6 +174,8 @@ scanner/
   portfolio_backtest.py     # Portfolio-level backtest with --rescore support
   historical_rescan.py      # Re-run live pipeline on historical data (--rescore)
   nextday_attribution.py    # Next-day return attribution
+  nextday_calib.py          # 概率模型校准重算 + 漂移巡检单源（配 nextday_calib.json 快照）
+  rule_validate.py          # 规则/常数改动的样本外验证门（B1；改权重前必跑）
   prevday_perf.py           # (top-level) Multi-day performance summary
   hot_watch.py              # 沪深飙升·极可能大涨独立区（2026-09-11 合入，与主线口径解耦）
   core_themes.py            # Core theme dip-buying opportunities
@@ -142,6 +202,14 @@ scanner/
   ranking_snapshot.py       # Ranking snapshot persistence
   patterns.py               # Candlestick patterns
   fundamentals.py           # Fundamentals filtering (pywencai)
+  pipeline/                 # 主扫描通路的阶段纯函数（等价变换产物，改前必读包 docstring）
+    pool.py                 #   市值过滤 / 现价行情组装
+    features.py             #   RPS 基准 / 分时趋势挂载
+    buckets.py              #   分类分桶与排序
+    scoring.py              #   加分累加 / 风险硬过滤 / v2 池选重建
+    tactics.py              #   盘中操作纪律标签
+  db/
+    migrations.py           # 版本化 schema 迁移清单 + schema_migrations 账本
 scripts/                    # Analysis/verification scripts (not production)
 tests/                      # pytest suite
 ```
@@ -152,6 +220,20 @@ tests/                      # pytest suite
 - **Config is the single source for all thresholds** (`scanner/config.py`). Do not hardcode magic numbers elsewhere. If you need a new threshold, add it to config.py and import it.
 - **`scanner/config.py` re-exports** from `scanner/weights.py`, `scanner/holidays.py`, and `scanner/categories.py`. The public import path `from scanner.config import X` is used throughout the codebase — maintain backward compatibility.
 - **DB file** is `scanner.db` at repo root (gitignored). Created automatically by `init_db()`.
+- **⚠ 备份 WAL 库不能 `cp`**（2026-09-13 实测踩坑）：`scanner.db` 是 WAL 模式，
+  数据可能全部还在 `scanner.db-wal`（当时 12.9 MB）里。只 `cp scanner.db` 拿到的是
+  checkpoint 前的旧页——副本 `recommendations` 是 **0 行**而真库 5070 行，**等于没备份**。
+  必须用 `src.backup(dst)`（`sqlite3` 的 Online Backup API，支持热备），或先
+  `PRAGMA wal_checkpoint(TRUNCATE)` 再 cp。**备份后必须校验行数。**
+  现行完整备份：`scanner.db.bak-20260913`（5070 行已校验）。
+- **schema 迁移走版本化清单**（`scanner/db/migrations.py`，2026-09-13）：
+  新增迁移在 `MIGRATIONS` **末尾追加** `Migration(id, desc, check, up)`，id 用
+  `mXXX_简述` 且递增——**id 发布后不得改名/删除**（老库会当新迁移重跑）。
+  `check()` 判断是否已满足（存量库靠它回填账本，`up()` 不会被重跑）；
+  `up()` 失败 → 回滚 + **原样上抛** + **不写账本** → 下轮重试（绝不能静默跳过，
+  这是 2026-09-11 `market_extra_cache` v4 事故的根因）。
+  查迁移状态：`python -c "from scanner.db.migrations import migration_state; ..."`。
+  不要再往 `init_db()` 里加 `PRAGMA table_info` 探测块。
 - **Data source env vars**: `RTS_DATA_SOURCE` (auto/xueqiu/ths), `HITHINK_FINANCE_API_KEY` (for THS fallback), `RTS_FEISHU_WEBHOOK`.
 - **Beijing timezone** (`BEIJING_TZ`, UTC+8) is used everywhere for time logic. Never use naive local time.
 - **Fail-open design**: External data fetches degrade gracefully. Catch only `scanner.utils.EXTERNAL_FAILURES` (OSError / timeout / requests / sqlite3.Error / ValueError / KeyError). Never bare `except Exception`. Programming errors must bubble to main loop.

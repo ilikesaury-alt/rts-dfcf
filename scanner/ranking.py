@@ -31,12 +31,12 @@ from scanner.config import (
 from scanner.utils import to_float
 
 
-def _fresh_candidate(entry: Any) -> Any:
+def fresh_candidate(entry: Any) -> Any:
     """返回 entry 可信的候选对象；不可信时返回 None（视同无候选走 DB 回退链）。
 
     两类快照不得参与展示与判定（2026-08-24 第二轮审查，同根因一次性收口）：
     - **stale 掉榜候选**：池内快照冻结在掉榜时刻 ≠ 推荐时刻落库口径——6f92be0/
-      2f9179a 只堵了 rank/current/percent 三个消费点，🎯 累计门槛、_entry_dims
+      2f9179a 只堵了 rank/current/percent 三个消费点，🎯 累计门槛、entry_dims
       维度、五日累计列等同族泄漏由本助手统一拦截；
     - **双挂票类别错位**：today_pool 按 symbol 只保留一个候选对象（新股 nf∩st
       双挂恒存 short_term），以 new_face 行展示时吃 st 口径 dims 会错走弱转强
@@ -66,10 +66,10 @@ def _nextday_entry_percent(entry: Any) -> float:
 
     2026-08-24 审查补：is_stale 候选（掉榜后池内快照冻结在掉榜时刻）不作为第一
     优先级——冻结 percent 会让 🎯 甜蜜带 / _entry_band 涨幅带判定偏离推荐时刻落库
-    口径，stale 视同无候选直接落 DB percent 回退链。同批升级走 _fresh_candidate
+    口径，stale 视同无候选直接落 DB percent 回退链。同批升级走 fresh_candidate
     单源助手（叠加双挂票类别错位拦截）。
     """
-    c = _fresh_candidate(entry)
+    c = fresh_candidate(entry)
     if c and c.stock:
         return to_float(c.stock.percent, default=0.0)
     db_pct = entry.get("percent")
@@ -144,7 +144,7 @@ def _nextday_entry_accum(entry: Any, conn=None) -> float | None:
     现候选行优先用 accumulated_incl_today 维度；掉榜行优先回放（含推荐日），
     DB 落库的历史口径值不再优先于回放。
     """
-    c = _fresh_candidate(entry)
+    c = fresh_candidate(entry)
     if c and c.kline:
         incl = (c.kline.dimensions or {}).get("accumulated_incl_today")
         if incl is not None:
@@ -223,16 +223,16 @@ def build_accum_map(conn, entries: list[Any]) -> dict[str, float | None]:
     return result
 
 
-def _entry_dims(entry: Any) -> dict:
+def entry_dims(entry: Any) -> dict:
     """统一维度访问：候选行读 kline.dimensions（最新扫描），掉榜/重启行读 DB score_breakdown。
 
     2026-08-17 新增（配合 get_today_recommendations 返回 score_breakdown）：
     拿不到（entry 无 _candidate），现在统一经此函数读取，候选行优先（最新数据）。
-    2026-08-24 第二轮审查：候选可信性走 _fresh_candidate——stale 掉榜候选的冻结
+    2026-08-24 第二轮审查：候选可信性走 fresh_candidate——stale 掉榜候选的冻结
     dims 与双挂票错位类别的 dims 都不得抢在 DB score_breakdown 之前（超买/弱转强
     分型/🎯 判定口径与展示类别对齐）。
     """
-    c = _fresh_candidate(entry)
+    c = fresh_candidate(entry)
     if c and c.kline and c.kline.dimensions:
         return c.kline.dimensions
     sb = entry.get("score_breakdown")
@@ -250,7 +250,7 @@ def _entry_today_pct(entry: Any) -> float:
         p = entry.get("live_percent")
         if p is not None:
             return to_float(p, default=0.0)
-    c = _fresh_candidate(entry)
+    c = fresh_candidate(entry)
     if c:
         return to_float(getattr(c.stock, "percent", None), default=0.0)
     p = entry.get("live_percent")
@@ -265,16 +265,16 @@ def _entry_weak_to_strong(entry: Any) -> bool:
     组合信号分析（2026-08-17，去重 1224 样本）：弱转强∩非超买 hit 15.8%（全类
     基准 10.0%）——short_term 次日大涨的最强单信号。
     """
-    d = _entry_dims(entry)
+    d = entry_dims(entry)
     return bool(d.get("st_weak_to_strong") or d.get("v_st_weak"))
 
 
 def _entry_overbought(entry: Any) -> bool:
-    """超买死亡信号：候选 dims / 掉榜 score_breakdown 统一判定（_entry_dims）。
+    """超买死亡信号：候选 dims / 掉榜 score_breakdown 统一判定（entry_dims）。
 
     数据（nextday_attribution）：short_term/动量超买 hit 5-8%（非超买 10.5%）。
     """
-    d = _entry_dims(entry)
+    d = entry_dims(entry)
     return bool(
         d.get("st_overbought_flag")
         or d.get("mo_overbought_flag")
@@ -288,7 +288,7 @@ def _entry_band(entry: Any) -> str:
 
     sweet(0-2%/4-8% 甜蜜带) / down(<0) / dead(2-4% 死区，next_day hit 7.0%) /
     trap(8-10%：全量 9.0% 不差但被 short_term 拉高，momentum/new_face 分类别 hit 0%，
-    由 _entry_tier 仅对非 short_term 生效)。
+    由 entry_tier 仅对非 short_term 生效)。
     """
     p = _nextday_entry_percent(entry)
     if p < 0:
@@ -302,7 +302,7 @@ def _entry_band(entry: Any) -> str:
 
 def _entry_fund_flow_pct(entry: Any) -> float | None:
     """主力净占比（%），候选行读 dims、掉榜行读 score_breakdown；无数据返回 None。"""
-    v = _entry_dims(entry).get("fund_flow_main_pct")
+    v = entry_dims(entry).get("fund_flow_main_pct")
     return to_float(v, default=None) if v is not None else None
 
 
@@ -313,9 +313,9 @@ def _entry_sector_resonance(entry: Any) -> bool:
     但按规模分档差异大——cnt<5 hit 5.3%、cnt 5-14 hit 6.3%、cnt>=15 hit 12.9%（接近
     无共振 11.9%，大板块有持续资金）——只对小板块（cnt<15，局部抱团次日兑现）档位劣后。
     count 缺失按 0（小板块，保守）。2026-08-17 行尾 ⚠板块普涨 文本下线后，本函数
-    仅服务 _entry_tier 档位劣后（排序），不渲染任何文本。
+    仅服务 entry_tier 档位劣后（排序），不渲染任何文本。
     """
-    d = _entry_dims(entry)
+    d = entry_dims(entry)
     if not (d.get("v_st_sector") or d.get("v_pb_sector") or d.get("v_nf_sector")):
         return False
     cnt = d.get("v_st_sector_count") or d.get("v_pb_sector_count") or d.get("v_nf_sector_count") or 0
@@ -323,10 +323,10 @@ def _entry_sector_resonance(entry: Any) -> bool:
 
 
 # ── 档3 劣后原因单源（2026-08-26 收敛）──
-# 此前原因归因有三处副本：ranking._entry_tier（判定）、today_report._build_report
+# 此前原因归因有三处副本：ranking.entry_tier（判定）、today_report._build_report
 # （档3 避雷汇总统计）、scripts/tier3_reason_perf._entry_reasons（归因回放），
 # 且脚本侧小板块共振判定漏了 v_*_sector 成员门（与档位判定口径漂移）。
-# 现统一为 entry_tier_reasons 单源，_entry_tier 内部消费同一结果。
+# 现统一为 entry_tier_reasons 单源，entry_tier 内部消费同一结果。
 TIER_REASON_OVERHEAT = "累计过热≥50"
 TIER_REASON_OVERBOUGHT = "超买"
 TIER_REASON_FUND_OUTFLOW = "主力净流出≤-8%"
@@ -344,7 +344,7 @@ TIER3_REASONS: tuple[str, ...] = (
 def _warning_tier3_reasons(entry: Any, flow: float | None = None) -> list[str]:
     """四项警示因子命中集合（不含过热——过热优先于一切档位，由调用方先行短路）。
 
-    flow：None 时读 dims（_entry_fund_flow_pct 同口径，与 _entry_tier 判定一致）；
+    flow：None 时读 dims（_entry_fund_flow_pct 同口径，与 entry_tier 判定一致）；
     显式传值供调用方用 market_extra_cache 回退链补值（掉榜行 dims 缺失场景）。
     band 劣后仅对非 short_term 生效（short_term 豁免，规律在弱转强）。
     """
@@ -376,7 +376,7 @@ def entry_tier_reasons(
     accum_map: dict | None = None,
     flow: float | None = None,
 ) -> list[str]:
-    """单票命中的档位劣后原因（与 _entry_tier 级联判定完全同源，单源防漂移）。
+    """单票命中的档位劣后原因（与 entry_tier 级联判定完全同源，单源防漂移）。
 
     只返回实际导致/将导致档3 的因子：
     - 过热（accum ≥ OVERHEAT_ACCUM_MAX）优先于一切档位（含 🎯），恒最先判定；
@@ -391,7 +391,7 @@ def entry_tier_reasons(
     if accum is not None and accum >= OVERHEAT_ACCUM_MAX:
         return [TIER_REASON_OVERHEAT]
     if marked is None:
-        marked = _is_nextday_marked(entry, conn, accum=accum, accum_map=accum_map)
+        marked = is_nextday_marked(entry, conn, accum=accum, accum_map=accum_map)
     if marked:
         return []
     cat = entry["category"]
@@ -400,7 +400,7 @@ def entry_tier_reasons(
     return _warning_tier3_reasons(entry, flow=flow)
 
 
-def _entry_tier(
+def entry_tier(
     entry: Any,
     conn=None,
     accum: float | None = None,
@@ -410,7 +410,7 @@ def _entry_tier(
 ) -> int:
     """综合排序档位（2026-08-17 二值 → 4 级；2026-08-18 统一口径为「次日大涨」）。
 
-    档0 = 🎯 次日大涨画像（数据最强，见 _is_nextday_marked，short_term 弱转强分型）
+    档0 = 🎯 次日大涨画像（数据最强，见 is_nextday_marked，short_term 弱转强分型）
     档1 = 强信号：rebound（next_day 口径全场最强类别）
           ⚠️ 注释里的具体数字会随样本变化而失效——2026-08-29 实测为 hit 17.9%/+1.30%
           （旧注释写的 28.6%/+2.78% 是更小样本期的读数）。以
@@ -440,7 +440,7 @@ def _entry_tier(
     if accum is not None and accum >= OVERHEAT_ACCUM_MAX:
         return 3
     if marked is None:
-        marked = _is_nextday_marked(entry, conn, accum=accum, accum_map=accum_map)
+        marked = is_nextday_marked(entry, conn, accum=accum, accum_map=accum_map)
     if marked:
         return 0
     cat = entry["category"]
@@ -456,7 +456,7 @@ def _entry_tier(
 
 
 # ── 🎯 次日大涨画像：类别规格表（2026-08-26 收口）──
-# 每类别一行：(入场分型, 累计门槛是否生效)。此前分支散在 _is_nextday_marked 的
+# 每类别一行：(入场分型, 累计门槛是否生效)。此前分支散在 is_nextday_marked 的
 # if/elif 里（short_term 特判两处、豁免类别硬编码元组），新增/调整类别画像需改
 # 函数体；现数据驱动，键集合必须与 categories.NEXTDAY_CAT_PRIORITY 一致
 # （一致性由 tests/test_profile_registry.py 守护）。
@@ -475,7 +475,7 @@ NEXTDAY_CAT_SPECS: dict[str, tuple[str, bool]] = {
 }
 
 
-def _is_nextday_marked(entry: Any, conn=None, accum: float | None = None, accum_map: dict | None = None) -> bool:
+def is_nextday_marked(entry: Any, conn=None, accum: float | None = None, accum_map: dict | None = None) -> bool:
     """次日大涨画像标记（🎯）：推荐时刻涨幅在甜蜜带 + 非超买死亡信号 + 5日累计门槛。
 
     类别差异走 NEXTDAY_CAT_SPECS 规格表（2026-08-26 数据驱动收口，判定语义不变）。
@@ -513,10 +513,10 @@ def _is_nextday_marked(entry: Any, conn=None, accum: float | None = None, accum_
             accum = _nextday_entry_accum(entry, conn)
         if accum is not None and accum < NEXTDAY_ACCUM_MIN:
             return False  # 有累计数据且不达门槛 → 不标；缺数据 fail-open 放行
-    # 超买 = 次日大涨死亡信号：候选行读 dims，掉榜/重启行读 score_breakdown（统一 _entry_dims）。
+    # 超买 = 次日大涨死亡信号：候选行读 dims，掉榜/重启行读 score_breakdown（统一 entry_dims）。
     # 2026-08-17 修复：此前只查候选行，掉榜行（无 _candidate）直接放行——兆日科技
     # 案例（超买+累计74.7%妖股被误标 🎯）。掉榜行 score_breakdown 含 v_st_overbought 等字段。
-    d = _entry_dims(entry)
+    d = entry_dims(entry)
     return not (
         d.get("st_overbought_flag")
         or d.get("mo_overbought_flag")
@@ -651,7 +651,7 @@ def _breakout_profile_key(entry: Any) -> str | None:
         涨停组 65% 为新面孔、首推占 61%——首推 short_term 也归此变体）；
       - relist（⚡R）：short_term 且非首推（2026-08-21 肯特股份案例）。
     """
-    d = _entry_dims(entry)
+    d = entry_dims(entry)
     first_push = bool(d.get("first_today_bonus"))
     cat = entry["category"]
     if cat in ("new_face", "known_new_face") or first_push:
@@ -744,7 +744,7 @@ def _dip_label_bonus(entry: Any) -> float:
     标签由 matcher._detect_dip_labels 产出，写入 kline.dimensions["dip_labels"]。
     取最高命中标签的加成（不叠加），避免多标签票分数膨胀。
     """
-    labels = _entry_dims(entry).get("dip_labels")
+    labels = entry_dims(entry).get("dip_labels")
     if not isinstance(labels, list) or not labels:
         return 0.0
     bonus = 0.0
@@ -790,7 +790,7 @@ def composite_tier(
 ) -> int:
     """复合评分推导档位：过热硬门 → composite 分档。
 
-    取代原 _entry_tier 的 if/elif 级联（类别硬编码 rebound→1, comeback→2 等）。
+    取代原 entry_tier 的 if/elif 级联（类别硬编码 rebound→1, comeback→2 等）。
     过热（accum >= 50%）仍为最优先硬门——妖股累计过高时无论 composite 多高都劣后。
     🎯 次日大涨画像（marked）降级为展示标记：composite 的 cat_base + rank_norm +
     fund_norm 已捕获相同底层信号（甜蜜带→cat_base 间接、非超买→tech_norm 间接）。
@@ -799,7 +799,7 @@ def composite_tier(
         accum = accum_map.get(entry.get("symbol"))
     elif accum is None:
         accum = _nextday_entry_accum(entry, conn)
-    # 过热妖股优先于一切（与原 _entry_tier 同口径）
+    # 过热妖股优先于一切（与原 entry_tier 同口径）
     if accum is not None and accum >= OVERHEAT_ACCUM_MAX:
         return 3
     cs = composite_score(entry, conn, accum_map=accum_map)
@@ -858,7 +858,7 @@ def comeback_sort_key(entry: Any, flow_map: dict[str, float] | None = None) -> t
     display 回马枪区与 today_report 回马枪小节共用本函数，防两处口径漂移。
     """
     today = _entry_today_pct(entry)
-    flow = to_float(_entry_dims(entry).get("fund_flow_main_pct"), default=None)
+    flow = to_float(entry_dims(entry).get("fund_flow_main_pct"), default=None)
     if flow is None and flow_map:
         flow = to_float(flow_map.get(entry["symbol"]), default=None)
     # 今日波动幅度 |today| 越大越靠前（取负升序=降序）；同幅度下主力净占比、评分降序。

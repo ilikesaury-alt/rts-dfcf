@@ -13,7 +13,6 @@ from scanner.models import KlineSummary, StockInfo
 from scanner.validator import (
     _has_macd_bull_divergence,
     _is_overbought,
-    _mo_divergence,
     _mo_is_overbought,
     _mo_ma_alignment,
     _mo_volume_uniformity,
@@ -21,6 +20,7 @@ from scanner.validator import (
     _nf_higher_low,
     _nf_sector,
     _st_is_overbought,
+    mo_divergence,
     validate,
     validate_momentum,
     validate_nf,
@@ -173,7 +173,7 @@ class TestValidateMomentumHelpers:
         pcts = [0.5]*5 + [1.0]*5 + [1.5]*5 + [2.0, 2.0, 2.5, 3.0, 3.0]
         k = _kline(pcts, volumes=[1.0]*20)
         closes = [c["close"] for c in k[:-1]]
-        bonus, detail = _mo_divergence(closes, k[:-1])
+        bonus, detail = mo_divergence(closes, k[:-1])
         assert bonus == 0, f"expected neutral (no divergence => 0), got {bonus} ({detail})"
 
     def test_volume_uniformity_good(self):
@@ -298,7 +298,7 @@ class TestValidateMomentum:
         closes = [c["close"] for c in k[:-1]]
 
         # 背离 + MA 多头 + 量能均匀 → 仍通过
-        monkeypatch.setattr("scanner.validator._mo_divergence",
+        monkeypatch.setattr("scanner.validator.mo_divergence",
                             lambda c, h, f=None: (-10, "bear_divergence"))
         monkeypatch.setattr("scanner.validator._mo_ma_alignment",
                             lambda c, f=None: (V_MO_MA_FULL, "full"))

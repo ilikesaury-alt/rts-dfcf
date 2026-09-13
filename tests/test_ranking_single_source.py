@@ -43,16 +43,16 @@ class _StubCandidate:
 
 RANKING_FUNCS = [
     "_entry_band",
-    "_entry_dims",
+    "entry_dims",
     "_entry_fund_flow_pct",
     "_entry_overbought",
     "_entry_sector_resonance",
-    "_entry_tier",
+    "entry_tier",
     "_entry_weak_to_strong",
-    "_fresh_candidate",
+    "fresh_candidate",
     "_in_nextday_sweet_band",
     "_is_breakout_setup",
-    "_is_nextday_marked",
+    "is_nextday_marked",
     "_is_relist_breakout_setup",
     "_nextday_entry_accum",
     "_nextday_entry_percent",
@@ -268,7 +268,7 @@ class TestComebackSortKeyTodayExtremity:
 
 
 class TestFreshCandidate:
-    """_fresh_candidate 单源收口（2026-08-24 第二轮审查）。
+    """fresh_candidate 单源收口（2026-08-24 第二轮审查）。
 
     两类快照不得参与展示/判定：stale 掉榜候选（冻结在掉榜时刻）+ 双挂票
     类别错位候选（today_pool 按 symbol 只存一个对象，恒 short_term）。
@@ -293,7 +293,7 @@ class TestFreshCandidate:
             "_candidate": cand,
             "score_breakdown": {"v_st_overbought": False},
         }
-        assert R._entry_dims(e) == {"v_st_overbought": False}
+        assert R.entry_dims(e) == {"v_st_overbought": False}
 
     def test_dual_listed_category_mismatch_falls_to_breakdown(self):
         """双挂票：池内恒存 short_term 候选，new_face 行不得吃 st 口径维度。"""
@@ -305,7 +305,7 @@ class TestFreshCandidate:
             "_candidate": st_cand,
             "score_breakdown": {"accumulated_incl_today": 7.0},
         }
-        assert R._entry_dims(e) == {"accumulated_incl_today": 7.0}
+        assert R.entry_dims(e) == {"accumulated_incl_today": 7.0}
         # 🎯 累计门槛走 DB 口径而非 st 候选冻结 kline
         conn = _mk_db()
         _insert_kline(conn, "SZ300031", [(f"2026-08-{d:02d}", 10.0 + d, 1.0) for d in range(11, 17)])
@@ -317,7 +317,7 @@ class TestFreshCandidate:
         """类别匹配且非 stale 的候选行为不变（回归保护）。"""
         cand = self._mk_cat_cand(category="new_face", dims={"a": 1})
         e = {"symbol": "SZ300032", "category": "new_face", "score": 50, "_candidate": cand}
-        assert R._entry_dims(e) == {"a": 1}
+        assert R.entry_dims(e) == {"a": 1}
         assert R._nextday_entry_percent(e) == 9.5
 
     @staticmethod

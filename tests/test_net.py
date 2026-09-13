@@ -1,21 +1,21 @@
 """scanner.net 共享网络层单源测试（设计审查 P2-10）。
 
-验证 _bounded_call（daemon 线程 + join 限时）的超时/成功/异常传播语义，
+验证 bounded_call（daemon 线程 + join 限时）的超时/成功/异常传播语义，
 以及 EASTMONEY_HEADERS 单源常量。该模块替代原 market_extra / fundamentals 各一份
-同构 _bounded_call，与 concept / data_source 各自的 _EM_HEADERS 子集。
+同构 bounded_call，与 concept / data_source 各自的 _EM_HEADERS 子集。
 """
 import time
 
-from scanner.net import EASTMONEY_HEADERS, _bounded_call
+from scanner.net import EASTMONEY_HEADERS, bounded_call
 
 
 def test_bounded_call_returns_value():
-    assert _bounded_call(lambda: 42, 1.0) == 42
+    assert bounded_call(lambda: 42, 1.0) == 42
 
 
 def test_bounded_call_timeout_raises():
     try:
-        _bounded_call(lambda: time.sleep(2), 0.1, label="AKShare 涨停池")
+        bounded_call(lambda: time.sleep(2), 0.1, label="AKShare 涨停池")
     except TimeoutError as e:
         assert "AKShare 涨停池" in str(e)
     else:
@@ -25,7 +25,7 @@ def test_bounded_call_timeout_raises():
 def test_bounded_call_propagates_exception():
     # 子线程异常应透传到主线程（而非被吞掉）
     try:
-        _bounded_call(lambda: 1 / 0, 1.0)
+        bounded_call(lambda: 1 / 0, 1.0)
     except ZeroDivisionError:
         pass
     else:

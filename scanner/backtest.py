@@ -42,7 +42,7 @@ from datetime import date, timedelta
 
 from scanner.config import BACKFILL_OUTCOMES_WINDOW_DAYS, DB_PATH, now_beijing
 from scanner.models import parse_score_breakdown
-from scanner.trading_session import _nth_trading_day_after
+from scanner.trading_session import nth_trading_day_after
 from scanner.utils import clear_screen
 
 # Windows GBK 控制台无法编码 ‱ 等字符，统一走 UTF-8（项目其它入口同款处理）。
@@ -115,25 +115,25 @@ def compute_outcome(
     out = Outcome()
 
     # 单日涨幅（旧口径）
-    nxt = _nth_trading_day_after(rec_dt, 1)
+    nxt = nth_trading_day_after(rec_dt, 1)
     if nxt and nxt.isoformat() in sym_kl:
         out.next_day = sym_kl[nxt.isoformat()].get("percent")
 
-    d3 = _nth_trading_day_after(rec_dt, 3)
+    d3 = nth_trading_day_after(rec_dt, 3)
     if d3 and d3.isoformat() in sym_kl:
         out.fwd_3d = sym_kl[d3.isoformat()].get("percent")
-    d5 = _nth_trading_day_after(rec_dt, 5)
+    d5 = nth_trading_day_after(rec_dt, 5)
     if d5 and d5.isoformat() in sym_kl:
         out.fwd_5d = sym_kl[d5.isoformat()].get("percent")
 
     # 累计收益（新口径）：需推荐日 close + T+N close
     if rec_close is not None and rec_close > 0:
-        d2 = _nth_trading_day_after(rec_dt, 2)
+        d2 = nth_trading_day_after(rec_dt, 2)
         if d2 and d2.isoformat() in sym_kl:
             close_n = sym_kl[d2.isoformat()].get("close")
             if close_n is not None:
                 out.cum_2d = (close_n - rec_close) / rec_close * 100
-        d3 = _nth_trading_day_after(rec_dt, 3)
+        d3 = nth_trading_day_after(rec_dt, 3)
         if d3 and d3.isoformat() in sym_kl:
             close_n = sym_kl[d3.isoformat()].get("close")
             if close_n is not None:
@@ -231,13 +231,13 @@ def backfill_rejection_outcomes(
         new_ndp, new_f3, new_nd10 = ndp, f3, nd10
         if sym_kl and dt in sym_kl:
             rec_dt = date.fromisoformat(dt)
-            nxt = _nth_trading_day_after(rec_dt, 1)
+            nxt = nth_trading_day_after(rec_dt, 1)
             if nxt and (nk := nxt.isoformat()) in sym_kl and sym_kl[nk].get("percent") is not None:
                 new_ndp = sym_kl[nk]["percent"]
-            d3 = _nth_trading_day_after(rec_dt, 3)
+            d3 = nth_trading_day_after(rec_dt, 3)
             if d3 and (dk := d3.isoformat()) in sym_kl and sym_kl[dk].get("percent") is not None:
                 new_f3 = sym_kl[dk]["percent"]
-            d10 = _nth_trading_day_after(rec_dt, 10)
+            d10 = nth_trading_day_after(rec_dt, 10)
             if d10 and (d10k := d10.isoformat()) in sym_kl and sym_kl[d10k].get("percent") is not None:
                 new_nd10 = sym_kl[d10k]["percent"]
         if (new_ndp != ndp) or (new_f3 != f3) or (new_nd10 != nd10):

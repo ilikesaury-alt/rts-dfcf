@@ -1,7 +1,7 @@
 """共享网络层单源（设计审查 P2-10，2026-08-20）。
 
 收敛此前散落在 market_extra / fundamentals / concept / data_source 的重复实现：
-- _bounded_call：daemon 线程 + join(timeout) 的限时网络调用包装（超时抛 TimeoutError，
+- bounded_call：daemon 线程 + join(timeout) 的限时网络调用包装（超时抛 TimeoutError，
   调用方按失败降级）。原 market_extra / fundamentals 各一份同构实现，仅超时文案不同，
   易漂移。
 - EASTMONEY_HEADERS：直连东财 push2delay API 的请求头（UA + Referer + Accept），
@@ -35,7 +35,7 @@ EASTMONEY_PUSH2DELAY_HOST = "push2delay.eastmoney.com"
 EASTMONEY_UT_TOKEN = "b2884a393a59ad64002292a3e90d46a5"  # noqa: S105 - 非密钥：东财网页端公开的固定参数
 
 
-def _bounded_call(fn: Callable[[], Any], timeout: float, label: str = "网络调用") -> Any:
+def bounded_call(fn: Callable[[], Any], timeout: float, label: str = "网络调用") -> Any:
     """带限时执行网络调用：超时抛 TimeoutError，调用方按失败降级。
 
     用 daemon 线程 + join(timeout) 而非 ThreadPoolExecutor，超时后线程在后台

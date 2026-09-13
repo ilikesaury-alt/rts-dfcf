@@ -12,7 +12,7 @@
   - 档位/🎯 判定逐日重建，与 today_report.py / display_priority 同源（_build_report，
     纯展示规则回放历史 = 「若今日规则应用在历史日」视角）。
   - 表现 = next_day_pct（daily_kline 收盘回填，与 nextday_attribution 一致）；
-    hit 率/均值统计复用 nextday_attribution._hit_stats（主决策口径，防漂移）。
+    hit 率/均值统计复用 nextday_attribution.hit_stats（主决策口径，防漂移）。
   - 市场环境 = 推荐日全 GEM 样本均值（daily_kline percent 代理）。
   - ⚠️ 08-04 前落库 score_breakdown 缺超买/弱转强维度：档0 的超买排除与 short_term
     弱转强分型不生效（fail-open），档0 判定退化——近端窗口（默认最近 30 日）可信，
@@ -48,10 +48,10 @@ if callable(_reconfigure):
 
 from scanner.config import DB_PATH  # noqa: E402  (reconfigure 后导入避免编码异常)
 from scanner.data_health import check_kline_health, health_banner  # noqa: E402
-from scanner.nextday_attribution import DEFAULT_THRESHOLD, _hit_stats  # noqa: E402  (复用主决策口径统计，防口径漂移)
+from scanner.nextday_attribution import DEFAULT_THRESHOLD, hit_stats  # noqa: E402  (复用主决策口径统计，防口径漂移)
 from today_report import _build_report  # noqa: E402
 
-# 档位组标签（与 today_report/_entry_tier 对应）
+# 档位组标签（与 today_report/entry_tier 对应）
 GROUPS = ("tier0", "tier1", "tier2", "tier3", "comeback", "core_dip", "excluded")
 GROUP_LABEL = {
     "tier0": "档0 🎯 次日大涨画像",
@@ -95,13 +95,13 @@ def _stats(pcts):
     """(n, 均值, hit≥7%率, 胜率>0, 中位)；空样本返回 n=0。
 
     2026-08-18 方案A（用户确认：本工具本质是回测，应与既有回测口径一致）：
-    hit 数/率与均值复用 nextday_attribution._hit_stats（主决策口径，避免两套统计
-    逻辑漂移）；胜率/中位为本工具补充展示（_hit_stats 不含）。"""
+    hit 数/率与均值复用 nextday_attribution.hit_stats（主决策口径，避免两套统计
+    逻辑漂移）；胜率/中位为本工具补充展示（hit_stats 不含）。"""
     ps = [p for p in pcts if p is not None]
     n = len(ps)
     if not n:
         return (0, None, None, None, None)
-    _hits, hr, avg = _hit_stats([{"next_day": p} for p in ps], HIT_THRESHOLD)
+    _hits, hr, avg = hit_stats([{"next_day": p} for p in ps], HIT_THRESHOLD)
     win = sum(1 for p in ps if p > 0) / n * 100
     return (n, avg, hr * 100, win, statistics.median(ps))
 

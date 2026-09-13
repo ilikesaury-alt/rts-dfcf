@@ -888,10 +888,10 @@ TB_HORIZON_DAYS = 3  # 时间屏障：最多持有的交易日数（对齐 cum_3
 # 小板块共振劣后的板块规模门槛（2026-08-17，档位4级）：板块共振整体 cum_3d -2.22 全场最差，
 # 但按规模分档差异大——cnt<5 hit 5.9%/均次日 -2.14%（最差，局部抱团次日兑现）、
 # cnt 5-14 hit 6.7%/-0.74、cnt>=15 hit 11.0%/+0.18（接近无共振 11.2%，大板块有持续资金）。
-# 只对 cnt<15 的小板块共振档位劣后（ranking._entry_tier 档3）；⚠板块普涨 文本已按用户
+# 只对 cnt<15 的小板块共振档位劣后（ranking.entry_tier 档3）；⚠板块普涨 文本已按用户
 # 反馈下线（太扎眼），此配置仅用于排序，不渲染任何行尾文本。
 SECTOR_RESONANCE_WARN_MAX = 15
-# 过热妖股档位阈值（ranking._entry_tier 第一优先级）：5日累计（含推荐日口径，
+# 过热妖股档位阈值（ranking.entry_tier 第一优先级）：5日累计（含推荐日口径，
 # _nextday_entry_accum 回退链）≥50% 即使命中 🎯 也劣后档3（精选区校准 hit 最低区）。
 # 资金流出档位阈值复用上方 FUND_OUTFLOW_NET_PCT（与「资金流出」标签同源防漂移）。
 OVERHEAT_ACCUM_MAX = 50.0
@@ -911,7 +911,7 @@ COMPOSITE_CAT_BASE: dict[str, float] = {
     "comeback": -4.6,  # hit 3.0% → -4.6
     "pool_pick": -5.0,  # hit 2.6% → -5.0
 }
-# 档位阈值：composite_score 推导，取代原 _entry_tier 的 if/elif 级联。
+# 档位阈值：composite_score 推导，取代原 entry_tier 的 if/elif 级联。
 COMPOSITE_TIER_THRESHOLDS: dict[int, float] = {
     0: 6.0,  # 档0：次日大涨画像区
     1: 4.0,  # 档1：强信号
@@ -925,7 +925,7 @@ COMPOSITE_TIER_THRESHOLDS: dict[int, float] = {
 # 推论：next_day 靶点类 1 日持有最优（次日兑现）；回测默认 hold 3 会把「次日兑现 +
 # 后续回吐」混进同一 P&L，与 next_day 校准的排序结论系统性背离。
 # 映射只收「信号校准于 cum_3d 语义」的类别：comeback（回踩买点是 3 日修复语义，
-# 见 ranking._entry_tier 注释）、core_dip（低吸，非次日靶点）。next_day 靶点类
+# 见 ranking.entry_tier 注释）、core_dip（低吸，非次日靶点）。next_day 靶点类
 # （new_face/known_new_face/momentum/short_term/rebound/pool_pick）不在映射中，
 # 沿用 base。portfolio_backtest --hold-days-auto 消费；不开该开关时回测行为
 # 与历史完全一致（回归安全）。

@@ -17,11 +17,11 @@ import pytest
 from scanner.nextday_attribution import (
     MIN_SAMPLE,
     _attach_prominence,
-    _hit_stats,
     _load_dedup,
     conditional_hit_table,
     dim_compare,
     gain_band_matrix,
+    hit_stats,
     score_bucket_table,
     strategy_table,
 )
@@ -71,7 +71,7 @@ def test_dedup_keeps_last_round_not_highest_score():
 
 def test_hit_stats_threshold():
     recs = [_mk_rec(next_day=x) for x in [8.0, 7.0, 6.0, 9.0]]
-    hits, hr, avg = _hit_stats(recs, threshold=7.0)
+    hits, hr, avg = hit_stats(recs, threshold=7.0)
     assert hits == 3, ">=7 算 hit（含 7.0）"
     assert hr == 0.75
     assert abs(avg - 7.5) < 1e-9

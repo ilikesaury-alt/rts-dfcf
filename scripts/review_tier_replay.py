@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""忠实回放：用生产 scanner/ranking.py 的 _entry_tier/_is_nextday_marked 对历史推荐分档，
+"""忠实回放：用生产 scanner/ranking.py 的 entry_tier/is_nextday_marked 对历史推荐分档，
 验证综合排序档位规则的区分度（next_day hit ≥7% / 平均次日 / cum_3d）。"""
 
 import json
@@ -66,7 +66,7 @@ def main():
 
     by_tier = {0: [], 1: [], 2: [], 3: []}
     for r in recs:
-        tier = ranking._entry_tier(r, conn)
+        tier = ranking.entry_tier(r, conn)
         by_tier[tier].append(r)
     print("\n== 档位区分度 ==")
     for t in (0, 1, 2, 3):
@@ -76,7 +76,7 @@ def main():
     main_recs = [r for r in recs if r["category"] != "comeback"]
     by_tier_main = {0: [], 1: [], 2: [], 3: []}
     for r in main_recs:
-        by_tier_main[ranking._entry_tier(r, conn)].append(r)
+        by_tier_main[ranking.entry_tier(r, conn)].append(r)
     print("\n== 主区（榜上五类）档位区分度 ==")
     for t in (0, 1, 2, 3):
         stat(by_tier_main[t], f"档{t}")
@@ -146,8 +146,8 @@ def main():
 
     # 🎯 判定单独验证
     print("\n== 🎯 标记 ==")
-    marked = [r for r in recs if ranking._is_nextday_marked(r, conn)]
-    not_marked = [r for r in recs if r["category"] in NEXTDAY_CAT_PRIORITY and not ranking._is_nextday_marked(r, conn)]
+    marked = [r for r in recs if ranking.is_nextday_marked(r, conn)]
+    not_marked = [r for r in recs if r["category"] in NEXTDAY_CAT_PRIORITY and not ranking.is_nextday_marked(r, conn)]
     stat(marked, "🎯 标记")
     stat(not_marked, "非🎯(可标记类别)")
 

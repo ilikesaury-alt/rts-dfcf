@@ -172,14 +172,14 @@ class TestIsRelistBreakoutSetup:
 
     def test_not_in_sort_tier(self):
         """⚡R 是观察标记：不得影响档位排序。"""
-        from scanner.ranking import _entry_tier
+        from scanner.ranking import entry_tier
         conn = _mk_db()
         _insert(conn, "SZ300001", _bars())
         e = _entry(category="short_term")
         e["_candidate"] = None
         assert _is_relist_breakout_setup(e, conn, accum=2.0) is True
         # short_term 无警示无 🎯 → 档2，不被 ⚡R 提升
-        assert _entry_tier(e, conn, accum=2.0) == 2
+        assert entry_tier(e, conn, accum=2.0) == 2
 
 
 class TestBuildBreakoutKlineMap:
@@ -215,7 +215,7 @@ class TestBreakoutNotInSortTier:
     """⚡ 是观察标记：不得影响档位排序（用户决策：先观察，不改排序位置）。"""
 
     def test_tier_ignores_breakout_profile(self):
-        from scanner.ranking import _entry_tier
+        from scanner.ranking import entry_tier
         conn = _mk_db()
         _insert(conn, "SZ300001", _bars())
         e = _entry()
@@ -225,4 +225,4 @@ class TestBreakoutNotInSortTier:
                                     klines=kmap["SZ300001"])
         assert marked is True  # 命中画像……
         # ……但档位仍按既有规则（new_face 无警示 → 档2），不被 ⚡ 提升
-        assert _entry_tier(e, conn, accum=2.0) == 2
+        assert entry_tier(e, conn, accum=2.0) == 2

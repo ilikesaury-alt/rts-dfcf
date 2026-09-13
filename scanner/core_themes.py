@@ -49,9 +49,9 @@ from scanner.config import (
     now_beijing,
 )
 from scanner.database import (
-    _n_trading_days_ago,
     get_cached_klines,
     get_fund_flow_pct_map,
+    n_trading_days_ago,
 )
 from scanner.utils import EXTERNAL_FAILURES, to_float
 
@@ -165,7 +165,7 @@ def identify_core_themes(
     返回 [{name, days, strength}]，strength 为相对市场强度。
     """
     try:
-        lookback = _n_trading_days_ago(lookback_days, as_of=today)
+        lookback = n_trading_days_ago(lookback_days, as_of=today)
         cur = conn.execute(
             "SELECT symbol, name, date, concept FROM recommendations "
             "WHERE date >= ? AND date < ? AND concept IS NOT NULL AND concept != '' "
@@ -246,10 +246,10 @@ def _theme_members(conn: sqlite3.Connection, theme_names: list[str]) -> dict[str
 
 
 def _dip_score(c: dict) -> int:
-    """核心方向低吸候选的展示/去重分数（0-100，与 _low_buy_quality 单调一致）。
+    """核心方向低吸候选的展示/去重分数（0-100，与 low_buy_quality 单调一致）。
 
-    2026-09-08 与 _low_buy_quality 排序逻辑对齐（板块+非线性回调+run甜点+资金流反转）。
-    仅用于存储排序与「同票跨扫描取最高分」去重，展示区排序仍按 _low_buy_quality 解析
+    2026-09-08 与 low_buy_quality 排序逻辑对齐（板块+非线性回调+run甜点+资金流反转）。
+    仅用于存储排序与「同票跨扫描取最高分」去重，展示区排序仍按 low_buy_quality 解析
     breakdown 重算，中间不带分数口径分歧。dict 值经 to_float 统一强转（脏值按 0 兑底，
     调用方为 DB 回读场景不可信）。
     """
@@ -376,7 +376,7 @@ def save_core_dips(conn: sqlite3.Connection | None, dips: list[dict], today: str
         logger.warning(f"save_core_dips failed: {e}")
 
 
-def _low_buy_quality(c: dict) -> tuple:
+def low_buy_quality(c: dict) -> tuple:
     """低吸质量排序键（升序，越小越优）。
 
     2026-09-08 数据驱动优化（基于 8/1~9/7 core_dip 历史归因）：
@@ -542,7 +542,7 @@ def find_core_theme_dips(conn: sqlite3.Connection | None, today: str | None = No
         # 不按主题序：低吸区语义是「全场最优低吸位置顶」，主题列已标识归属，无需分组。
         # 同 symbol 跨多个核心主题（如激智科技∈华为概念∩电子）只保留质量最高的一次，
         # 避免重复行浪费展示名额。
-        cands.sort(key=_low_buy_quality)
+        cands.sort(key=low_buy_quality)
         out: list[dict] = []
         per_theme: dict[str, int] = {}
         seen_syms: set[str] = set()

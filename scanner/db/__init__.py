@@ -10,7 +10,7 @@
 不变。新代码建议直接从 scanner.db 取。
 """
 
-from scanner.db._common import _n_trading_days_ago
+from scanner.db._common import n_trading_days_ago
 from scanner.db.dal import (
     ensure_observation_schema,
     get_prev_ranks,
@@ -97,5 +97,5 @@ __all__ = [
     "is_prominent",
     # 包内私有名，tests 直接 import（re-export 供兼容）
     "_assign_rank_scores",
-    "_n_trading_days_ago",
+    "n_trading_days_ago",
 ]

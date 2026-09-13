@@ -625,18 +625,18 @@ def test_entry_display_quote_fallback_chain():
         "percent": 5.0,
         "_candidate": None,
     }
-    pct, cur = disp_mod._entry_display_quote(live0)
+    pct, cur = disp_mod.entry_display_quote(live0)
     assert pct == 0.0
     assert cur == 10.0
     # ② 掉榜行（无候选无 live）：落库 percent，现价无数据
     dropped = {"percent": 5.0, "live_percent": None, "_candidate": None}
-    pct, cur = disp_mod._entry_display_quote(dropped)
+    pct, cur = disp_mod.entry_display_quote(dropped)
     assert pct == 5.0
     assert cur == 0.0
     # ③ 可信候选快照：候选 percent/current 生效
     cand = _cand_tier("SZ300099", 70, "momentum", percent=2.5)
     cand_entry = {"percent": 1.0, "_candidate": cand}
-    pct, cur = disp_mod._entry_display_quote(cand_entry)
+    pct, cur = disp_mod.entry_display_quote(cand_entry)
     assert pct == pytest.approx(2.5)
     assert cur == pytest.approx(10.0)
 

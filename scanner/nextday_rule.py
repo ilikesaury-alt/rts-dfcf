@@ -49,7 +49,7 @@ class RuleResult:
     today: str
 
 
-def _compute_features(
+def compute_features(
     klines: list[KlineBar],
     today_idx: int,
 ) -> tuple[float, float, float] | None:
@@ -163,7 +163,7 @@ def scan_rule(conn: sqlite3.Connection, today: str | None = None) -> RuleResult 
         if today_idx < NEXTDAY_RULE_BARS + 1:
             continue
 
-        feat = _compute_features(klines, today_idx)
+        feat = compute_features(klines, today_idx)
         if feat is None:
             continue
 

@@ -57,7 +57,7 @@ def _get_features(closes: list[float], historical_kline: list[KlineBar], feats: 
     """构建特征（调用方已预计算则复用，否则从 historical_kline 抽取 high/low 现算）。
 
     与 analysis._get_features 的唯一差异：validator 各维度不需要 volumes/OBV
-    （momentum 的 OBV 背离由 _mo_divergence 独立计算），故不传 volumes。
+    （momentum 的 OBV 背离由 mo_divergence 独立计算），故不传 volumes。
     """
     if feats is not None:
         return feats
@@ -268,12 +268,12 @@ def _mo_ma_alignment(closes: list[float], feats: dict | None = None) -> tuple[in
 def _rsi_seq(closes: list[float], period: int = 6) -> list[float]:
     """计算 RSI 完整序列（委托 indicators.compute_rsi_sequence 统一实现）。
 
-    rsi_list[i] 对应 closes[period+i]，用于 _mo_divergence 背离检测。
+    rsi_list[i] 对应 closes[period+i]，用于 mo_divergence 背离检测。
     """
     return compute_rsi_sequence(closes, period)
 
 
-def _mo_divergence(closes: list[float], historical_kline: list[KlineBar], feats: dict | None = None) -> tuple[int, str]:
+def mo_divergence(closes: list[float], historical_kline: list[KlineBar], feats: dict | None = None) -> tuple[int, str]:
     """RSI 顶背离：价格创新高，但 RSI 未创新高（动能衰竭）。
 
     标准顶背离两条件：
@@ -375,7 +375,7 @@ def validate_momentum(
 ) -> tuple[bool, int, dict]:
     feats = _get_features(closes, historical_kline, feats)
     ma_bonus, ma_detail = _mo_ma_alignment(closes, feats)
-    div_bonus, div_detail = _mo_divergence(closes, historical_kline, feats)
+    div_bonus, div_detail = mo_divergence(closes, historical_kline, feats)
     vol_bonus, vol_detail = _mo_volume_uniformity(historical_kline)
 
     details: dict[str, int | float | str] = {
@@ -394,7 +394,7 @@ def validate_momentum(
     overbought = _mo_is_overbought(closes, historical_kline, stock, kline, today_str=today)
     details["v_mo_overbought"] = overbought
 
-    # 中等处置：_mo_divergence 仅返回 0（无背离）或 -10（顶背离），从不计入正维度。
+    # 中等处置：mo_divergence 仅返回 0（无背离）或 -10（顶背离），从不计入正维度。
     # 因此出现顶背离时，候选必须通过「MA 多头 + 量能均匀」两个其它正维度（pos_dims>=2）才放行，
     # 背离本身不会单独否决候选，但会强制其它维度补偿（STRATEGY.md 动量「中等」策略）。
     pos_dims = sum(1 for b in (ma_bonus, div_bonus, vol_bonus) if b > 0)

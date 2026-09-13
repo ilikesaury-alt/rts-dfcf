@@ -11,12 +11,12 @@ import sqlite3
 import pytest
 
 from scanner.models import KlineBar
-from scanner.nextday_rule import _compute_features, scan_rule
+from scanner.nextday_rule import compute_features, scan_rule
 
 TODAY = "2026-08-30"
 
 
-# ── _compute_features 单元测试 ──
+# ── compute_features 单元测试 ──
 
 
 def _make_bar(date: str, close: float, high: float = 0.0, low: float = 0.0, **kw) -> KlineBar:
@@ -40,14 +40,14 @@ def _seq_dates(n: int, start_day: int = 1):
 def test_compute_features_insufficient_data():
     """数据不足时返回 None。"""
     bars = [_make_bar(d, 10.0) for d in _seq_dates(5)]
-    assert _compute_features(bars, 5) is None  # 需要 22+ 根
-    assert _compute_features(bars, 3) is None
+    assert compute_features(bars, 5) is None  # 需要 22+ 根
+    assert compute_features(bars, 3) is None
 
 
 def test_compute_features_basic():
     """基本特征计算：平稳序列 ma5r=0、ret20=0、atrpct>0。"""
     bars = [_make_bar(d, 10.0) for d in _seq_dates(25)]
-    feat = _compute_features(bars, today_idx=24)
+    feat = compute_features(bars, today_idx=24)
     assert feat is not None
     ma5r, atrpct, ret20 = feat
     assert ma5r == pytest.approx(0.0, abs=1e-9)
@@ -65,7 +65,7 @@ def test_compute_features_ma5r_positive():
     bars[19] = _make_bar(bars[19]["date"], 8.0)
     for i in range(20, 24):
         bars[i] = _make_bar(bars[i]["date"], 12.0)
-    feat = _compute_features(bars, today_idx=24)
+    feat = compute_features(bars, today_idx=24)
     assert feat is not None
     ma5r, _, _ = feat
     assert ma5r == pytest.approx((12.0 / 11.2 - 1) * 100, abs=1e-6)
@@ -77,7 +77,7 @@ def test_compute_features_ret20_positive():
     bars = [_make_bar(d, 10.0) for d in _seq_dates(25)]
     for i in range(20, 24):
         bars[i] = _make_bar(bars[i]["date"], 15.0)
-    feat = _compute_features(bars, today_idx=24)
+    feat = compute_features(bars, today_idx=24)
     assert feat is not None
     _, _, ret20 = feat
     assert ret20 == pytest.approx(50.0, abs=1e-6)
@@ -87,8 +87,8 @@ def test_compute_features_atrpct_scales_with_volatility():
     """波动大 → atrpct 高。"""
     bars_low = [_make_bar(d, 10.0, high=10.1, low=9.9) for d in _seq_dates(25)]
     bars_high = [_make_bar(d, 10.0, high=11.0, low=9.0) for d in _seq_dates(25)]
-    feat_low = _compute_features(bars_low, today_idx=24)
-    feat_high = _compute_features(bars_high, today_idx=24)
+    feat_low = compute_features(bars_low, today_idx=24)
+    feat_high = compute_features(bars_high, today_idx=24)
     assert feat_low is not None and feat_high is not None
     assert feat_high[1] > feat_low[1]
 
@@ -96,9 +96,9 @@ def test_compute_features_atrpct_scales_with_volatility():
 def test_compute_features_today_bar_ignored():
     """今日 bar（today_idx）不参与特征计算——已完成 bar 才算。"""
     bars = [_make_bar(d, 10.0) for d in _seq_dates(25)]
-    feat_before = _compute_features(bars, today_idx=24)
+    feat_before = compute_features(bars, today_idx=24)
     bars[24]["close"] = 100.0
-    feat_after = _compute_features(bars, today_idx=24)
+    feat_after = compute_features(bars, today_idx=24)
     assert feat_before == feat_after
 
 
@@ -140,7 +140,7 @@ def _setup_db(bars_map: dict[str, list], today: str, board: list[tuple[str, str]
 
 
 def _qualifying_bars(today: str) -> list:
-    """构造命中规则的 K 线（与 _compute_features 单测同参数）。
+    """构造命中规则的 K 线（与 compute_features 单测同参数）。
 
     completed = 前 24 根：bars[19]=8.0, bars[20..23]=12.0，其余 10.0，
     高低 ±10%（atrpct=20%）。
@@ -185,7 +185,7 @@ def test_scan_rule_excludes_high_ret20():
     bars.append(_make_bar(TODAY, 15.0, high=16.0, low=14.0))
 
     # 自证机制：特征层面 ma5r/atrpct 都过线，仅 ret20 超限
-    feat = _compute_features(bars, today_idx=24)
+    feat = compute_features(bars, today_idx=24)
     assert feat is not None
     ma5r, atrpct, ret20 = feat
     assert ma5r >= 5.0

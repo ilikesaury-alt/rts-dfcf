@@ -10,7 +10,7 @@ REST + X-api-key 鉴权）。接入前探测结论（scripts/ths_api_probe.py，
 
 当前用途：
 1. 涨停池/炸板池主源（market_extra.fetch_zt_pool，AKShare 降为兜底）——
-   官方接口免 _bounded_call 兜底且字段更富（封单额/涨停原因/开板次数）
+   官方接口免 bounded_call 兜底且字段更富（封单额/涨停原因/开板次数）
 2. data_health 第一交叉验证源（新浪 qfq 降为回退参照）
 3. 财务风险过滤主源（fundamentals，估值快照 pb_mrq<0 ⟺ 净资产为负，
    替代 pywencai 问财；问财降为兜底）

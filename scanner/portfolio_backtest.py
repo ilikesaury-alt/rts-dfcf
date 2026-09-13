@@ -62,8 +62,8 @@ from scanner.config import (
     hold_days_for,
 )
 from scanner.models import KlineBar, parse_score_breakdown
-from scanner.nextday_rule import _compute_features
-from scanner.trading_session import _nth_trading_day_after, is_trading_day
+from scanner.nextday_rule import compute_features
+from scanner.trading_session import is_trading_day, nth_trading_day_after
 from scanner.utils import clear_screen
 
 logger = logging.getLogger(__name__)
@@ -223,7 +223,7 @@ def _load_prices(conn: sqlite3.Connection, symbols: set[str]) -> dict[str, dict[
 # ── 信号加载 ────────────────────────────────────────────────────────────────
 
 
-def _dedup_signals(signals: list[Signal]) -> list[Signal]:
+def dedup_signals(signals: list[Signal]) -> list[Signal]:
     """同一交易日的同一只票只保留一条信号。
 
     为什么必须去重：`recommendations` 是**盘中每轮扫描各写一行**的流水，同一
@@ -280,7 +280,7 @@ def _load_signals(
     使得综合排序真正反映 Step 1「热度移出排序键」后的排序，而非仅对旧热度分做百分位归一。
     无 breakdown 的早期行（旧 schema）无法重建，回退为原始 score（不报错）。
     """
-    # 按 (date, time) 升序：_dedup_signals 保留每天每票最早的那一条，
+    # 按 (date, time) 升序：dedup_signals 保留每天每票最早的那一条，
     # 对应「盘中进入推荐榜的那一刻就买」。
     rows = conn.execute(
         "SELECT date, symbol, name, category, score, score_breakdown, source FROM recommendations ORDER BY date, time"
@@ -315,7 +315,7 @@ def _load_signals(
             eff_score = _deheat_score(score, breakdown_json, src)
         sig = Signal(rec_date=rec_date, symbol=sym, name=name, category=cat, score=eff_score)
         # 计算买入日
-        buy_d = _nth_trading_day_after(date.fromisoformat(rec_date), cfg.buy_delay)
+        buy_d = nth_trading_day_after(date.fromisoformat(rec_date), cfg.buy_delay)
         if buy_d is None or buy_d.isoformat() > cal_end:
             continue  # 买入日超过行情范围，无法执行
         buy_str = buy_d.isoformat()
@@ -336,8 +336,8 @@ def _load_signals(
         sig.exit_index = exit_idx
         signals.append(sig)
 
-    # 盘中重复快照去重：每天每票只留最早一条（详见 _dedup_signals）
-    signals = _dedup_signals(signals)
+    # 盘中重复快照去重：每天每票只留最早一条（详见 dedup_signals）
+    signals = dedup_signals(signals)
 
     # 次日大涨规则过滤：仅保留通过 ma5r≥5% & atrpct≥8% & ret20≤40% 的信号
     if cfg.use_nextday_rule:
@@ -346,11 +346,11 @@ def _load_signals(
     # 综合排序跨类别可比：在 (推荐日, 类别) 组内对 score 做百分位归一化。
     # 单类别时组内排序与 raw score 一致；综合(all) 时消除各类别自身标尺差异
     # （new_face 均值~45 与 comeback~122 不可直接比），避免综合排序沦为「按标尺大小而非好坏」排。
-    _assign_rank_scores(signals)
+    assign_rank_scores(signals)
     return signals
 
 
-def _assign_rank_scores(signals: list[Signal]) -> None:
+def assign_rank_scores(signals: list[Signal]) -> None:
     """对 signals 计算 within-(rec_date, category) 百分位 rank_score（0-100），就地修改。
 
     rank_score 恒为「越大越优先」（run_backtest 按 -rank_score 降序选前 N），
@@ -415,7 +415,7 @@ def _filter_nextday_rule(conn: sqlite3.Connection, signals: list[Signal]) -> lis
             today_idx = kline_dates.index(rec_date)
         except ValueError:
             continue
-        features = _compute_features(klines, today_idx)
+        features = compute_features(klines, today_idx)
         if features is None:
             continue
         ma5r, atrpct, ret20 = features
@@ -479,9 +479,9 @@ def run_backtest(conn: sqlite3.Connection, cfg: PBConfig) -> BacktestResult:
             frozen = _load_signals(conn, replace(cfg, rescore=False), calendar, cal_index, cal_end)
             frozen_others = [s for s in frozen if s.category not in RESCANABLE_CATEGORIES]
             # 重扫结果优先：同一 (日期, 标的) 若在冻结的 comeback 里也出现，
-            # 以重扫标签为准（rescanned 在前，_dedup_signals 保留先出现的）。
-            signals = _dedup_signals(rescanned + frozen_others)
-            # 注意：不重跑 _assign_rank_scores —— 各信号各自的 rank_score 已是
+            # 以重扫标签为准（rescanned 在前，dedup_signals 保留先出现的）。
+            signals = dedup_signals(rescanned + frozen_others)
+            # 注意：不重跑 assign_rank_scores —— 各信号各自的 rank_score 已是
             # within-(date,category) 百分位，跨类别可比，合并后保持各自分组不变。
     else:
         signals = _load_signals(conn, cfg, calendar, cal_index, cal_end)

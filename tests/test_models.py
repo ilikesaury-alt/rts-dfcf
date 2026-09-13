@@ -1,7 +1,7 @@
 """KlineBar 数据契约测试（重构 P0-1，2026-08-11）。
 
 make_kline_bar 是所有 K 线生产端（api.fetch_kline / database.get_cached_kline /
-historical_rescan._load_all_klines / ic_attribution.load_kline_by_symbol /
+historical_rescan.load_all_klines / ic_attribution.load_kline_by_symbol /
 data_source AKShare adapter）的**唯一入口**，其校验行为必须稳定——
 任何生产端输出改变都会先在这里暴露，防止「同一缺陷多处爆」复发。
 """

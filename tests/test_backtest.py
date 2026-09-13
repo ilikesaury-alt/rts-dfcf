@@ -7,10 +7,10 @@ from scanner.backtest import (
     ALLOWED_METRICS,
     RankCategoryStat,
     _check_metric,
-    _nth_trading_day_after,
     _rank,
     compute_outcome,
     dimension_ic,
+    nth_trading_day_after,
     print_ranking_report,
     rank_category_stats,
     spearman,
@@ -55,7 +55,7 @@ def test_ic_perfect_negative():
 def test_nth_trading_day_after_skips_weekend():
     # 2026-05-29 是周五，次一交易日应为 2026-06-01（周一）
     d = date.fromisoformat("2026-05-29")
-    nxt = _nth_trading_day_after(d, 1)
+    nxt = nth_trading_day_after(d, 1)
     assert nxt.isoformat() == "2026-06-01"
 
 

@@ -1,8 +1,9 @@
 # rts-dfcf-max 核心流程梳理
 
-> 更新：2026-09-09（HEAD `339963f`，2026-09-08）。上一版 2026-09-04。
-> 本次补齐 09-05~09-08 的变更：决策层与终选区合并展示、统一复合评分排序（v1+v2 合一）、
-> M1–M3 离线工具链（持有期分化 / 复权指纹 / 三屏障标签 / 模型桶）、`scanner/db/` 包拆分。
+> 更新：2026-09-13（HEAD `b351ac0`）。上一版 2026-09-09（`339963f`）。
+> 本次补齐 09-09~09-11 的变更：**走势美感门**（`trend_beauty.py`，终选准入 + 行尾「美」标记）、
+> **沪深飙升独立区**（`hot_watch.py`，见 §11）、**schema v7**（hot_watch 连击表 + 迁移原子化）、
+> 收益账本 / 规则变更追踪器两个离线脚本、`_SELL_TAGS` 收敛为单一真源（`TACTICS_SELL_TAGS`）。
 > 与代码不符之处见 §10。
 
 ## 一、项目定位
@@ -239,6 +240,13 @@ CLI：`python -m scanner.decision [--date]`。
 2. 过滤：不追涨门（>8.0%）、减仓类纪律标签；
 3. 逐票 `today_report._tier0_verdict`（评级/风险单源）+ `_is_nextday_marked`（🎯）+
    `horizon_label`（comeback/core_dip → "3日修复"，其余 → "次日靶点"）；
+   **走势美感门**（2026-09-09 `scanner/trend_beauty.py`，判定单源）：日线 6 硬门
+   （MA 多头 / 趋势向上 / 无暴跌日 / 回调可控 / 无长上影 / 未破位）+ 分时
+   `intraday_score ≥ INTRADAY_BEAUTY_MIN`(2.5)；**任一可判定的丑即出局**（落选理由
+   「日线不漂亮 / 分时不漂亮」），数据缺失 fail-open 放行。⚠ **硬拦默认关闭**
+   （`RTS_FINAL_PICK_BEAUTY`，2026-09-09 数据裁决：放行组 hit 8.4%/0.0% 反低于基线
+   9.8%/5.5%，「漂亮=稳但不爆」）；默认只保留行尾「美」展示标记
+   （`beauty_mark`，只标美不标丑，`RTS_TREND_MARK` 默认开，纯展示）；
 4. **概率排序**：`next_day_hit_probability` = `σ(logit(cat_base_rate) + 0.7 × Σ log(OR_i))`，
    截断 [0.01, 0.50]。类别 base rate 见 `BASE_RATE_BY_CAT`（rebound 0.179 … comeback 0.028，
    兜底 0.078）；OR 因子：🎯 2.6 / 辨识度 2.0 / 超买 0.68 / 涨幅带 0.88~1.35 / 主力流出 0.32 /
@@ -254,6 +262,8 @@ CLI：`python -m scanner.decision [--date]`。
 `render_terminal(view)` 区块顺序：
 `warnings` → **◆ 今日决策**（市场门 + 决策推荐 + 终选参考，2026-09-08 合并为一块）→
 **◆ v1 池选**表 → **◆ v2 池选**表（前 N/共 M）→ ⚡ 蓄势突破观察提示 → **◆ 核心方向低吸**表。
+v1/v2 池选行尾带**走势美感标记**（`view.beauty_mark`，2026-09-09）：满足日线+分时美感标
+「美」，否则留空（不标丑）；终端与飞书卡片同源（`feishu` 读同一 `ScanView`）。
 
 `feishu.push_feishu(view, gem_total, filtered_large_cap)`：
 `should_push`（webhook 缺失=disabled / 无票=empty / 票集未变且未过 `FEISHU_MIN_INTERVAL`=300s=cooldown）
@@ -341,14 +351,20 @@ Retry-After（≤30s），全局 `_throttle` 0.15s 串行；cookie 失效（401/
 | `ranking_snapshot`(date,symbol,category) | 当日档位/🎯/原因存证 | `ranking_snapshot.persist_ranking_snapshot` | `load_ranking_snapshot` |
 | `kline_fingerprint`(anchor_date) | 复权漂移 SHA256 指纹 | `data_health.check_kline_fingerprint` | 同函数比对 |
 | `triple_barrier_labels`(date,symbol,category) | M2 三屏障标签 | `scanner.triple_barrier` | `scanner.model_bucket` |
+| `hot_watch_hits`(symbol) | 沪深飙升独立区连击跟踪（streak / last_round / last_seen / 最近价量分） | `hot_watch.run_hot_watch` | 同函数（终端连击列） |
+| `hot_watch_meta`(key) | 独立区元信息（仅 `round_no`，避免为读轮次扫全表） | `hot_watch.run_hot_watch` | 同函数 |
 | `schema_version` | schema 演进 | `init_db` | — |
 
 ### 7.2 版本与迁移
 
-`SCHEMA_VERSION=4`（v4：`market_extra_cache` PK 增加 `date`）。`init_db` 每轮做全套幂等迁移：
+`SCHEMA_VERSION=7`（2026-09-11：v4 = `market_extra_cache` PK 增加 `date`；v5/v6 为
+2026-09-01 写入的中间版本；v7 = hot_watch 连击表）。**版本号必须大于库中已有最大值**——
+生产库实测已含 `1,2,4,5,6`，沿用 5 会让 `MAX(version) < 5` 判定为假、本版迁移静默失效，
+故跳到 7（取号前先 `SELECT MAX(version) FROM schema_version`）。`init_db` 每轮做全套幂等迁移：
 建表 → 版本推进（只前进）→ `ensure_observation_schema`（补 `scan_rejections` 的 outcome 列 +
-建 `pool_log`/`decision_picks`）→ v4 PK 重建（RENAME→重建→INSERT SELECT→DROP）→
-列迁移（`PRAGMA table_info` 内省 + `ALTER TABLE ADD COLUMN`）→ `_purge_foreign_excluded_marks`。
+建 `pool_log`/`decision_picks`）→ v4 PK 重建（RENAME→重建→INSERT SELECT→DROP，**单事务 +
+失败上抛**）→ 列迁移（`PRAGMA table_info` 内省 + `ALTER TABLE ADD COLUMN`）→
+`_purge_foreign_excluded_marks`。
 
 ### 7.3 关键写/读语义
 
@@ -385,6 +401,8 @@ Retry-After（≤30s），全局 `_throttle` 0.15s 串行；cookie 失效（401/
 | `python backfill_market_index.py [--days 200] [--dry-run] [--overwrite-live] [--db]` | 大盘基准回填 `market_index_log`（默认跳过已有行保审计证据；线上/收盘差值 >0.3pp fail-loud） |
 | `scanner/data_health.py`（无 CLI） | 出报告前的**门禁**：`check_kline_health`（固定种子抽 10 条与 THS/新浪独立源交叉验证，不符比例 ≥30% 则 blocked → 先跑 `repair_kline`）、`check_market_index_health`（对账东财，容差 0.5pp）、`check_kline_fingerprint`（M1.2 复权漂移）。`prevday_perf` / `nextday_attribution` 前置调用（`--force` 跳过） |
 | `python leaderboard_obs.py` / `query_today.py` / `query_summary.py` | 榜单可观测性 / 快速查询 |
+| `python scripts/profit_ledger.py [--min-n 30]` | **收益账本**（2026-09-11）：扣真实成本（佣金万2.5+印花税0.05%+双边滑点各0.1%）后穷举全部选股规则的**净收益**核算；只读、给 95% CI/t 值、做前后半分段防样本内挑选、与同期池全量均值对齐。按「单位风险收益」排序 |
+| `python scripts/rule_change_tracker.py [--update\|--since <commit>]` | **规则变更追踪器**（原「规则冻结校验器」，2026-09-11 解冻后转型）：退出码恒 0、**不阻断**构建，只报告哪些规则文件/关键阈值变了（可追溯性，非约束）。基线见 `docs/rule-baseline-2026-09-11.md` |
 | `scripts/*.py` | 各类规则挖掘与验证脚本（非生产路径） |
 
 **回测口径纪律**（务必区分）：
@@ -404,7 +422,8 @@ Retry-After（≤30s），全局 `_throttle` 0.15s 串行；cookie 失效（401/
 
 1. **单一真源**：`config.py` 集中全部阈值/权重；`categories.py` 的 `CATEGORY_REGISTRY` 是策略桶唯一注册表
    （label/color/priority/suggest/in_main_table/nextday_markable/live_produced/score_descending），
-   其余模块派生。新增类别只改注册表。
+   其余模块派生。新增类别只改注册表。**操盘标签**同理收敛为 `config.TACTICS_SELL_TAGS`
+   （2026-09-11，P2）：`intraday_tactics` 生产、`display` / `final_pick` 消费，禁止再散落字面量集合。
 2. **fail-open**：外部依赖失败软降级，只捕 `scanner.utils.EXTERNAL_FAILURES`
    （OSError / socket.timeout / sqlite3.Error / ValueError / KeyError / RequestException）；
    编程错误必须冒泡到主循环记录完整 traceback。唯一例外：决策层 `market_gate` 基准缺失时 **fail-closed**。
@@ -426,7 +445,8 @@ Retry-After（≤30s），全局 `_throttle` 0.15s 串行；cookie 失效（401/
    **飞书去重集合** `_view_symbols`、**today_report 的"六、回马枪"小节**。
    终端区块实际只有：今日决策 / v1 池选 / v2 池选 / ⚡提示 / 核心方向低吸。
 2. **`scanner/kline_drift.py` 不存在**：M1.2 的复权指纹监控已并入 `scanner/data_health.py`
-   （`check_kline_fingerprint`），但 `config.py:910` 与 `unified_scanner.py:331` 注释仍指向旧文件名。
+   （`check_kline_fingerprint`），但 `config.py:943`、`unified_scanner.py:345`、`AGENTS.md:83`
+   的注释/文档仍指向旧文件名。
 3. **`AGENTS.md` 两处与代码不符**：
    - "`--buy-at open` 被拒绝"——实际只拒绝 `--buy-delay 0 + --buy-at open`（见 §8）；
    - "回测默认 `--hold-days 3`"——实际默认 `--hold-days 1`（2026-08-18 统一为 next_day 口径）。
@@ -438,6 +458,14 @@ Retry-After（≤30s），全局 `_throttle` 0.15s 串行；cookie 失效（401/
 6. **`recommendations` 无唯一约束**：去重完全依赖 `save_recommendations` 的内存 map；
    预载失败会 fail-loud 上抛（防重复行污染样本）。
 7. **`sector_cache` 无写入方**：`stock_report.py` 直查该表，属历史遗留。
+8. **美感门是「双开关」**：硬拦 `RTS_FINAL_PICK_BEAUTY` **默认关**、展示标记
+   `RTS_TREND_MARK` 默认开。2026-09-09 数据裁决（2307 样本双窗口）：放行组 hit 反低于基线
+   （「漂亮=稳但不爆」），故硬拦降级为可选纪律。**勿据 `trend_beauty.py` 的判定函数存在
+   就认为它在拦票**——默认它只打「美」标记，不淘汰任何候选。决策层另有同源分时门
+   `RTS_DECISION_BEAUTY_INTRADAY`（同样默认关，走弱桶 hit 反而最高）。
+9. **schema 版本号已跳到 7**：生产库 `schema_version` 含 `1,2,4,5,6`（5/6 由 2026-09-01 代码写入，
+   后代码常量一度回退到 4）。**加新迁移时必须先 `SELECT MAX(version) FROM schema_version`，
+   新号必须严格大于最大值**，否则迁移会静默失效（这正是 09-11 修掉的高危缺陷类型）。
 
 ## 十一、沪深飙升独立区（`scanner/hot_watch.py`，2026-09-11 合入）
 
@@ -517,6 +545,9 @@ scanner/
   comeback.py / core_themes.py       # 回马枪 / 核心方向低吸
   ranking.py                  # composite_score/composite_tier + 档位 + 🎯 + 排序键
   nextday_prob.py / final_pick.py / decision.py / nextday_rule.py  # 概率 / 终选 / 决策 / 规则
+  trend_beauty.py             # 走势美感门（日线 6 硬门 + 分时）+「美」标记单源
+  intraday_tactics.py         # 12 条盘中操盘纪律标签 + 时段建议（标签真源 TACTICS_SELL_TAGS）
+  hot_watch.py                # 沪深飙升「极可能大涨」独立区（与主线解耦，见 §11）
   display.py / feishu.py      # ScanView 构建 + 终端渲染 / 卡片推送
   kline_fetch.py / intraday_fetch.py / minute_bar.py / market_extra.py / fundamentals.py / concept.py
   data_health.py              # 跨源交叉验证 + 复权指纹（原 kline_drift）

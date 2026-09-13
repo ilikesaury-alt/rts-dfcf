@@ -31,7 +31,7 @@ class Dimensions(TypedDict, total=False):
     本 TypedDict 仅作文档化契约，实际取值按需用 dict.get() 读取（值类型 int/float/
     str/bool 混合，故未逐键标注类型）。
 
-    🎯 分型判定的关键维度（ranking._entry_dims 统一消费）:
+    🎯 分型判定的关键维度（ranking.entry_dims 统一消费）:
       - st_weak_to_strong / v_st_weak: short_term 弱转强（非超买时次日最强单信号）
       - st_overbought_flag / mo_overbought_flag / v_st_overbought / v_mo_overbought /
         v_nf_overbought: 超买死亡信号

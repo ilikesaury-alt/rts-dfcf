@@ -47,10 +47,10 @@ retrospective 生效。所以 `portfolio_backtest` replay 的永远是旧权重�
 
 3b. **已复现的可离线子集（2026-08-30 补）**：
    - `gap_up_bonus`：分析侧已把结果写进 `kline.dimensions`（momentum_gap_up 等），
-     重扫直接复用线上同一个 `_apply_gap_up_bonus`，零重复实现；
+     重扫直接复用线上同一个 `apply_gap_up_bonus`，零重复实现；
    - `first_today_bonus` / `first_breakout_bonus`：重扫每天每票只评一次，
      对应线上「当日首轮」语义，直接取 Candidate 字段（后者因缺口 1 恒为 0）；
-   - 硬过滤的可离线子集：调用线上同一个 `_set_risk_flags(cand)`——重扫的
+   - 硬过滤的可离线子集：调用线上同一个 `set_risk_flags(cand)`——重扫的
      `intraday_score` 恒为 None、`turnover_bonus` 恒为 0，依赖它们的规则
      （主力出货 Rule 2/3/5、弱转强失效）自动短路，剩下的恰好是纯 K 线可
      判定的主力出货 Rule 1/4 与趋势破位，与线上同函数同阈值。
@@ -77,14 +77,14 @@ from scanner.candidates import candidate_excluded_by_risk, filter_gem_stocks, sc
 # 2026-08-20 收敛：单一事实来源见 scanner/categories.RESCANABLE_CATEGORIES。
 from scanner.categories import RESCANABLE_CATEGORIES  # noqa: E402
 from scanner.config import MAX_STOCK_PRICE, hold_days_for
-from scanner.enhancer import _apply_gap_up_bonus, _set_risk_flags
+from scanner.enhancer import apply_gap_up_bonus, set_risk_flags
 from scanner.models import Candidate, KlineBar, make_kline_bar
-from scanner.portfolio_backtest import Signal, _assign_rank_scores, _dedup_signals
+from scanner.portfolio_backtest import Signal, assign_rank_scores, dedup_signals
 from scanner.sector import get_sector_clusters
-from scanner.trading_session import _nth_trading_day_after
+from scanner.trading_session import nth_trading_day_after
 
 # K 线最少根数：低于此值所有 analyze_* 直接返回 None，提前跳过省掉切片开销
-_MIN_KLINE_BARS = 5
+MIN_KLINE_BARS = 5
 
 
 def _post_close(d: str) -> datetime:
@@ -103,7 +103,7 @@ def _post_close(d: str) -> datetime:
     return datetime(y, m, dd, 15, 30)
 
 
-def _load_all_klines(conn: sqlite3.Connection) -> dict[str, tuple[list[str], list[KlineBar]]]:
+def load_all_klines(conn: sqlite3.Connection) -> dict[str, tuple[list[str], list[KlineBar]]]:
     """一次性预载全部日线，返回 {symbol: (已排序日期列表, bar 列表)}。
 
     早期版本对每个 (date, symbol) 发一次 SQL 且每次都取全量历史，
@@ -194,7 +194,7 @@ def rescan_all_signals(
         seen_on_date[d].add(sym)
         by_date[d].append((sym, name, rank, pct, val))
 
-    kline_store = _load_all_klines(conn)
+    kline_store = load_all_klines(conn)
 
     signals: list[Signal] = []
     for d in sorted(by_date):
@@ -225,7 +225,7 @@ def rescan_all_signals(
                 continue
             dates, bars = entry
             cut = bisect_right(dates, d)
-            if cut < _MIN_KLINE_BARS:
+            if cut < MIN_KLINE_BARS:
                 continue
             sliced = bars[:cut]
             if sliced[-1]["date"] != d:
@@ -255,10 +255,10 @@ def rescan_all_signals(
                 continue
             # 3) 可离线复现的线上加分 + 硬过滤（见模块 docstring 缺口 3b）：
             #    - gap_up：分析侧已写入 kline.dimensions，复用线上同一函数；
-            #    - _set_risk_flags：重扫 intraday_score=None / turnover_bonus=0，
+            #    - set_risk_flags：重扫 intraday_score=None / turnover_bonus=0，
             #      依赖实时行情的规则自动短路，剩下纯 K 线可判定的子集。
-            _apply_gap_up_bonus(cand)
-            _set_risk_flags(cand)
+            apply_gap_up_bonus(cand)
+            set_risk_flags(cand)
             if candidate_excluded_by_risk(cand):
                 continue  # 与线上同阈值：命中硬过滤的票不进重扫宇宙
             sig = Signal(
@@ -268,7 +268,7 @@ def rescan_all_signals(
                 category=cand.category,
                 score=_rescore_score(cand),
             )
-            buy_d = _nth_trading_day_after(date.fromisoformat(d), cfg.buy_delay)
+            buy_d = nth_trading_day_after(date.fromisoformat(d), cfg.buy_delay)
             if buy_d is None or buy_d.isoformat() > cal_end:
                 continue
             buy_str = buy_d.isoformat()
@@ -301,6 +301,6 @@ def rescan_all_signals(
             start_date = cfg.start or min_rec
         signals = [s for s in signals if start_date <= s.rec_date <= end_date]
 
-    signals = _dedup_signals(signals)
-    _assign_rank_scores(signals)
+    signals = dedup_signals(signals)
+    assign_rank_scores(signals)
     return signals

@@ -6,13 +6,13 @@ import pytest
 
 from scanner.config import now_beijing
 from scanner.database import (
-    _n_trading_days_ago,
     get_cached_kline,
     get_consecutive_appearance_days,
     get_market_index_log,
     get_symbol_appearances,
     get_today_recommendations,
     mark_reversed_recommendations,
+    n_trading_days_ago,
     record_appearances,
     save_kline_to_db,
     save_market_index_log,
@@ -226,7 +226,7 @@ class TestRecordAppearances:
         assert app == []
 
     def test_n_trading_days_ago_returns_trading_day(self, memory_db):
-        result = _n_trading_days_ago(3)
+        result = n_trading_days_ago(3)
         result_date = date.fromisoformat(result)
         assert is_trading_day(result_date), f"{result} should be a trading day"
 
@@ -1041,7 +1041,7 @@ class TestProminenceWindow:
         # 构造：计数窗口内恰好重复阈值天，排名窗口若多算一天（旧 bug）会把一天
         # 极差排名的历史日拉低平均，导致误判。这里验证两个窗口取同一 lookback。
         # 计算 lookback 日期（与实现同口径）
-        lookback = _n_trading_days_ago(PROMINENCE_LOOKBACK_DAYS - 1)
+        lookback = n_trading_days_ago(PROMINENCE_LOOKBACK_DAYS - 1)
         # 在 [lookback, today] 内放 PROMINENCE_REPEAT_THRESHOLD 天的记录，
         # 全部 rank=50（优良），且其中有一天恰好是 lookback 前一天（应被排除在外）
         # 用较差排名 999 验证"排名窗口不比计数窗口多一天"。

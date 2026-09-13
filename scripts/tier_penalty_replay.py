@@ -2,12 +2,12 @@
 # -*- coding: utf-8 -*-
 """档位「级联一票否决」vs「扣分制」对照回放（2026-08-26）。
 
-背景：现行 _entry_tier 是警示因子短路链——命中任意一个警示因子直接落档3，
+背景：现行 entry_tier 是警示因子短路链——命中任意一个警示因子直接落档3，
 多个警示因子与单个警示因子结果相同。扣分制假设：多因子叠加的票应比单因子
 边缘票更劣后。本脚本用同一批历史样本测量两种方案的分离度，回答「是否值得切换」。
 
 方法：
-  - 逐日重建推荐（today_report 同源管线），对每票取现行档位（_entry_tier）+
+  - 逐日重建推荐（today_report 同源管线），对每票取现行档位（entry_tier）+
     警示因子命中（entry_tier_reasons 单源），按扣分权重求和：
     过热 3 / 超买 2 / 涨幅带死区·陷阱 2 / 小板块共振 1 / 主力净流出 1。
   - 对照三组口径：
@@ -17,7 +17,7 @@
   - 表现 = 落库 next_day_pct；统计复用 prevday_perf._stats（主决策口径）。
 
 判读标准（切换门槛）：扣分桶单调（0 > 1 > 2 > ≥3 的 hit 依次下降或持平）
-且 ≥3 桶显著差于现行档3 整体 → 才值得改 _entry_tier 实现；否则维持现状。定位：离线测量工具，不调参不落库不进扫描路径。
+且 ≥3 桶显著差于现行档3 整体 → 才值得改 entry_tier 实现；否则维持现状。定位：离线测量工具，不调参不落库不进扫描路径。
 """
 
 import argparse
@@ -42,15 +42,15 @@ from scanner.ranking import (  # noqa: E402
     TIER_REASON_OVERBOUGHT,
     TIER_REASON_OVERHEAT,
     TIER_REASON_SECTOR,
-    _entry_dims,
-    _entry_tier,
-    _is_nextday_marked,
     build_accum_map,
+    entry_dims,
+    entry_tier,
     entry_tier_reasons,
+    is_nextday_marked,
 )
 
 # 扣分权重（脚本本地常量：本工具只测量不调参，权重若经数据支持升级为正式实现，
-# 届时才迁入 config 并改 _entry_tier——见模块 docstring 判读标准）
+# 届时才迁入 config 并改 entry_tier——见模块 docstring 判读标准）
 PENALTY_WEIGHTS = {
     TIER_REASON_OVERHEAT: 3,
     TIER_REASON_OVERBOUGHT: 2,
@@ -115,9 +115,9 @@ def collect(conn, dates):
             p = nd_map.get(e["symbol"])
             if p is None:
                 continue
-            marked = _is_nextday_marked(e, conn, accum_map=accum_map)
-            tier = _entry_tier(e, conn, accum_map=accum_map, marked=marked)
-            d = _entry_dims(e)
+            marked = is_nextday_marked(e, conn, accum_map=accum_map)
+            tier = entry_tier(e, conn, accum_map=accum_map, marked=marked)
+            d = entry_dims(e)
             flow = _flow_of(e, d, flow_map)
             reasons = entry_tier_reasons(e, accum=accum_map.get(e["symbol"]), marked=marked, flow=flow)
             rows.append(
@@ -206,7 +206,7 @@ def render(rows, n_days):
         out.append(f"  样本不足（min桶 n={min_n}），暂无法判定——积累样本后重跑本脚本")
     elif mono:
         out.append(
-            "  ✅ 单调成立：扣分越深次日越差——扣分制分离度优于现行二值级联，样本复核达标后可评估切换 _entry_tier 实现"
+            "  ✅ 单调成立：扣分越深次日越差——扣分制分离度优于现行二值级联，样本复核达标后可评估切换 entry_tier 实现"
         )
     else:
         out.append(

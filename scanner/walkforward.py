@@ -23,7 +23,7 @@ import json
 import sys
 
 from scanner.config import NEXTDAY_HIT_THRESHOLD, WF_EMBARGO_DAYS
-from scanner.ranking import _entry_dims, _entry_tier, _is_nextday_marked
+from scanner.ranking import entry_dims, entry_tier, is_nextday_marked
 
 # 方向翻转判定的最小样本：因子行数与基线行数各自达标才比较 delta，
 # 否则视为噪声（跨窗口对比同哲学）。
@@ -131,10 +131,10 @@ def _entry(row: dict) -> dict:
     """recommendations 行 → ranking 层 entry 形状（掉榜行路径，无 _candidate）。
 
     幂等（2026-09-02 修复）：DB 行里 score_breakdown 是 **JSON 字符串**，而
-    ranking._entry_dims 只在 isinstance(sb, dict) 时才返回它，否则返回 {}。
+    ranking.entry_dims 只在 isinstance(sb, dict) 时才返回它，否则返回 {}。
     本函数此前无条件执行 json.loads——对已解析过的 dict 再 loads 会抛 TypeError
     并被下方 except 吞掉，反把已有维度**清空**；调用方因此不敢重复包裹，间接导致
-    _dim / sweet_non_overbought 等谓词直接拿原始行调 _entry_dims（见 build_factors
+    _dim / sweet_non_overbought 等谓词直接拿原始行调 entry_dims（见 build_factors
     注释）。现先判 dict 直接返回，使 _entry(_entry(e)) == _entry(e)。
     """
     e = dict(row)
@@ -153,7 +153,7 @@ def build_factors() -> list[tuple[str, object]]:
 
     2026-09-02 修复（4 因子静默失效）：`_dim` / `sweet_non_overbought` /
     `small_sector` / `fund_outflow` /「超买」五个谓词此前**直接对原始行**调
-    `_entry_dims(e)`。而 DB 行里 score_breakdown 是 JSON 字符串，`_entry_dims`
+    `entry_dims(e)`。而 DB 行里 score_breakdown 是 JSON 字符串，`entry_dims`
     只在 isinstance(sb, dict) 时返回它、否则返回 {} —— 五个谓词恒读到空维度，
     输出「样本不足」或恒定 False，只有走 `_entry(e)` 的「🎯 完整画像」能解析。
     滚动检验最核心的 4 条结论（弱转强/超买/小板块共振/资金流出）等于从未被测过。
@@ -162,7 +162,7 @@ def build_factors() -> list[tuple[str, object]]:
 
     # 统一入口：谓词一律先转 _entry（解析 score_breakdown），再取维度。
     def dims_of(e):
-        return _entry_dims(_entry(e))
+        return entry_dims(_entry(e))
 
     def _dim(e, key):
         return (dims_of(e).get(key) or 0) > 0
@@ -203,7 +203,7 @@ def build_factors() -> list[tuple[str, object]]:
     return [
         ("rebound 类别", lambda e: e["category"] == "rebound"),
         ("甜蜜带+非超买", sweet_non_overbought),
-        ("🎯 完整画像", lambda e: _is_nextday_marked(_entry(e))),
+        ("🎯 完整画像", lambda e: is_nextday_marked(_entry(e))),
         ("弱转强", lambda e: _dim(e, "st_weak_to_strong") or _dim(e, "v_st_weak")),
         ("超买", overbought),
         ("累计≥50 过热", overheated),
@@ -231,7 +231,7 @@ def run(conn, train_days: int = 30, test_days: int = 10, threshold: float | None
         te_rows = [r for r in rows if r["date"] in te_set]
         tier_hits = {}
         for t in range(4):
-            sub = [r for r in te_rows if _entry_tier(_entry(r), accum=r.get("accumulated_pct")) == t]
+            sub = [r for r in te_rows if entry_tier(_entry(r), accum=r.get("accumulated_pct")) == t]
             n = len(sub)
             tier_hits[t] = (
                 n,

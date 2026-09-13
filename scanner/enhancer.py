@@ -107,11 +107,11 @@ def apply_all_bonuses(
         _apply_market_cap_bonus(c)
         _apply_list_momentum_bonus(c, list_streaks, cross_days=cross_days_map.get(c.stock.symbol, 0))
         c.time_bonus = time_bonus
-        _apply_gap_up_bonus(c)
+        apply_gap_up_bonus(c)
         _apply_fund_flow_bonus(c, market_extra)
         _apply_zt_bonus(c, market_extra)
         _record_dimensions(c, market_idx_pct, opening_scores)
-        _set_risk_flags(c, fund_risk=fund_risk, klines=klines, today=today)
+        set_risk_flags(c, fund_risk=fund_risk, klines=klines, today=today)
         _compute_prominence_labels(c, prominence_map)
 
 
@@ -126,7 +126,7 @@ def _compute_prominence_labels(c: Candidate, prominence_map: dict):
         pass  # 外部依赖降级，非代码错误
 
 
-def _set_risk_flags(
+def set_risk_flags(
     c: Candidate, fund_risk: dict[str, str] | None = None, klines: dict | None = None, today: str | None = None
 ):
     """设置复合风险标签，供 UI 显示⚠️标记。
@@ -419,7 +419,7 @@ def _apply_market_cap_bonus(c: Candidate):
         c.market_cap_bonus = MCAP_BONUS_MID
 
 
-def _apply_gap_up_bonus(c: Candidate):
+def apply_gap_up_bonus(c: Candidate):
     if c.kline and c.kline.dimensions:
         gap_key = "new_face_gap_up" if c.category in ("new_face", "known_new_face") else "momentum_gap_up"
         c.gap_up_bonus = to_int(c.kline.dimensions.get(gap_key), 0)
@@ -531,7 +531,7 @@ def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] | None
             streak_bonus = min(streak * FATIGUE_ACCELERATE_BONUS_PER_DAY, FATIGUE_ACCELERATE_BONUS_CAP)
             if c.kline:
                 # 2026-08-17 审查修复：加速分支此前把正值写进 dims["fatigue"]——
-                # 该键语义是「疲劳惩罚」（_set_risk_flags 判 <0、backtest dimension_ic
+                # 该键语义是「疲劳惩罚」（set_risk_flags 判 <0、backtest dimension_ic
                 # 按整列归因），正值混入会污染"疲劳"维度 IC（加速奖励被解析进疲劳因子）。
                 # 改写入独立键 fatigue_accelerate，与惩罚键分离，正负语义不再混用。
                 c.kline.dimensions["fatigue_accelerate"] = streak_bonus

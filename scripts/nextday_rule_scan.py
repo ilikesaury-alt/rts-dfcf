@@ -7,7 +7,7 @@
     python scripts/nextday_rule_scan.py --today       # 仅扫描最新一天
     python scripts/nextday_rule_scan.py --ma5r 6 --atrpct 8 --ret20 40  # 自定义阈值
 
-特征计算复用 scanner/nextday_rule._compute_features（单实现，杜绝双份口径漂移），
+特征计算复用 scanner/nextday_rule.compute_features（单实现，杜绝双份口径漂移），
 阈值默认取 config（NEXTDAY_RULE_*）。bars 窗口固定为模块常量 NEXTDAY_RULE_BARS。
 """
 
@@ -28,7 +28,7 @@ from scanner.config import (  # noqa: E402
     NEXTDAY_RULE_MA5R_MIN,
     NEXTDAY_RULE_RET20_MAX,
 )
-from scanner.nextday_rule import _compute_features  # noqa: E402
+from scanner.nextday_rule import compute_features  # noqa: E402
 
 
 def _load_data(conn: sqlite3.Connection):
@@ -82,7 +82,7 @@ def _feat(kline_lists: dict, hist: dict, sym: str, dt: str):
         return None
     if i + 1 >= len(dd):
         return None
-    return _compute_features(kline_lists[sym], i)
+    return compute_features(kline_lists[sym], i)
 
 
 def _next_day_yield(rows: dict, hist: dict, sym: str, dt: str) -> float | None:

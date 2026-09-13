@@ -1,7 +1,7 @@
 """档3 劣后原因单源 + 排序组合层回归测试（2026-08-26 重构）。
 
 覆盖三件事：
-1. entry_tier_reasons 与 _entry_tier 判定严格同源：原因非空 ⇔ 档3（对会评估
+1. entry_tier_reasons 与 entry_tier 判定严格同源：原因非空 ⇔ 档3（对会评估
    警示因子的票），防两套逻辑再次漂移；
 2. sort_main_entries 复合键 (symbol, category)：nf∩st 双挂票不再按 symbol 键控；
 3. score_sort_key 分数方向由类别注册表驱动（kNF 升序、其余降序）。
@@ -26,14 +26,14 @@ class TestEntryTierReasons:
         e = _entry("SZ300001", "momentum", percent=5.0)
         rs = R.entry_tier_reasons(e, accum=60.0)
         assert rs == [R.TIER_REASON_OVERHEAT]
-        assert R._entry_tier(e, accum=60.0, marked=True) == 3
+        assert R.entry_tier(e, accum=60.0, marked=True) == 3
 
     def test_marked_entry_has_no_reasons(self):
         """🎯 档0 票不评估警示因子（与级联短路一致）→ 空原因。"""
         e = _entry("SZ300002", "momentum", breakdown={"v_st_overbought": True})
         # percent=5.0 在甜蜜带；显式 marked=True 模拟画像命中
         assert R.entry_tier_reasons(e, accum=10.0, marked=True) == []
-        assert R._entry_tier(e, accum=10.0, marked=True) == 0
+        assert R.entry_tier(e, accum=10.0, marked=True) == 0
 
     def test_rebound_comeback_exempt_from_warnings(self):
         """rebound（档1）/comeback（豁免）不看警示因子 → 空原因。"""
@@ -41,8 +41,8 @@ class TestEntryTierReasons:
         cb = _entry("SZ300004", "comeback", breakdown={"v_st_overbought": True})
         assert R.entry_tier_reasons(rb, accum=10.0) == []
         assert R.entry_tier_reasons(cb, accum=10.0) == []
-        assert R._entry_tier(rb, accum=10.0) == 1
-        assert R._entry_tier(cb, accum=10.0) == 2
+        assert R.entry_tier(rb, accum=10.0) == 1
+        assert R.entry_tier(cb, accum=10.0) == 2
 
     def test_warning_reason_matches_tier3(self):
         """超买命中 → 原因非空且档3；无警示 → 空原因且档2。同源不变量。
@@ -54,7 +54,7 @@ class TestEntryTierReasons:
         clean = _entry("SZ300006", "momentum", percent=-1.0, breakdown={})
         for e, expect_tier in ((overbought, 3), (clean, 2)):
             rs = R.entry_tier_reasons(e, accum=10.0)
-            tier = R._entry_tier(e, accum=10.0)
+            tier = R.entry_tier(e, accum=10.0)
             assert tier == expect_tier
             assert bool(rs) == (tier == 3)
 
@@ -63,13 +63,13 @@ class TestEntryTierReasons:
         e = _entry("SZ300007", "momentum", percent=3.0)
         rs = R.entry_tier_reasons(e, accum=10.0)
         assert R.TIER_REASON_BAND in rs
-        assert R._entry_tier(e, accum=10.0) == 3
+        assert R.entry_tier(e, accum=10.0) == 3
 
     def test_short_term_band_exempt_but_weak_to_strong_markable(self):
         """short_term 豁免涨幅带：死区涨幅无弱转强不标 🎯 → 落档2 无原因。"""
         e = _entry("SZ300008", "short_term", percent=3.0)
         assert R.entry_tier_reasons(e, accum=10.0) == []
-        assert R._entry_tier(e, accum=10.0) == 2
+        assert R.entry_tier(e, accum=10.0) == 2
 
     def test_flow_param_overrides_dims(self):
         """显式 flow 覆盖 dims 缺失（掉榜行 market_extra_cache 补值路径）。"""
@@ -94,8 +94,8 @@ class TestSortMainEntriesCompositeKey:
         nf = _entry("SZ300020", "new_face", score=70, percent=3.0)   # 死区 → 档3
         st = _entry("SZ300020", "short_term", score=70, percent=3.0)  # 豁免 → 档2
         tier_map = {
-            ("SZ300020", "new_face"): R._entry_tier(nf, accum=10.0),
-            ("SZ300020", "short_term"): R._entry_tier(st, accum=10.0),
+            ("SZ300020", "new_face"): R.entry_tier(nf, accum=10.0),
+            ("SZ300020", "short_term"): R.entry_tier(st, accum=10.0),
         }
         assert tier_map[("SZ300020", "new_face")] == 3
         assert tier_map[("SZ300020", "short_term")] == 2

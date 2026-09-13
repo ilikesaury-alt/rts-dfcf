@@ -1,9 +1,9 @@
 from datetime import date, datetime
 
 from scanner.trading_session import (
-    _nth_trading_day_after,
     is_trading_day,
     is_trading_time,
+    nth_trading_day_after,
     trading_minutes_elapsed,
 )
 
@@ -105,19 +105,19 @@ class TestNthTradingDayAfter:
     def test_skips_weekend(self):
         # 2026-05-29 周五 → 次一交易日 2026-06-01 周一
         d = date.fromisoformat("2026-05-29")
-        assert _nth_trading_day_after(d, 1).isoformat() == "2026-06-01"
+        assert nth_trading_day_after(d, 1).isoformat() == "2026-06-01"
 
     def test_skips_holiday(self):
         # 2026-02-17 春节前（假期）→ 次一交易日应跳过整段假期到 2026-02-18 之后
         d = date.fromisoformat("2026-02-17")
-        nxt = _nth_trading_day_after(d, 1)
+        nxt = nth_trading_day_after(d, 1)
         assert nxt is not None and is_trading_day(nxt)
 
     def test_returns_none_on_exhaustion(self, monkeypatch):
         # 节假日数据异常（is_trading_day 永远 False）→ 耗尽安全上限后返回 None，
         # 而非静默返回非交易日（旧 backtest 版 bug）。
         monkeypatch.setattr("scanner.trading_session.is_trading_day", lambda _d: False)
-        assert _nth_trading_day_after(date.fromisoformat("2026-06-18"), 1) is None
+        assert nth_trading_day_after(date.fromisoformat("2026-06-18"), 1) is None
 
     def test_is_single_source_for_consumers(self):
         # 三处消费方（backtest / portfolio_backtest / historical_rescan）应复用同一函数对象，
@@ -126,6 +126,6 @@ class TestNthTradingDayAfter:
         import scanner.historical_rescan as historical_rescan
         import scanner.portfolio_backtest as portfolio_backtest
 
-        assert backtest._nth_trading_day_after is _nth_trading_day_after
-        assert historical_rescan._nth_trading_day_after is _nth_trading_day_after
-        assert portfolio_backtest._nth_trading_day_after is _nth_trading_day_after
+        assert backtest.nth_trading_day_after is nth_trading_day_after
+        assert historical_rescan.nth_trading_day_after is nth_trading_day_after
+        assert portfolio_backtest.nth_trading_day_after is nth_trading_day_after

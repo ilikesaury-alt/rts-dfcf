@@ -1,6 +1,6 @@
 """综合排序档位快照落库（2026-08-26）。
 
-目的：ranking 判定代码（_entry_tier / entry_tier_reasons / 🎯 画像）日后演进时，
+目的：ranking 判定代码（entry_tier / entry_tier_reasons / 🎯 画像）日后演进时，
 历史归因不被「用最新代码重放历史」静默篡改——收盘定稿后把当日全部推荐的
 档位/🎯/劣后原因/主表展示序号一次性落库，作为当日规则下的权威存证。
 
@@ -18,10 +18,10 @@ from typing import Any
 from scanner.config import CORE_DIP_CATEGORY, now_beijing
 from scanner.database import get_today_recommendations
 from scanner.ranking import (
-    _entry_tier,
-    _is_nextday_marked,
     build_accum_map,
+    entry_tier,
     entry_tier_reasons,
+    is_nextday_marked,
     sort_main_entries,
 )
 from scanner.utils import EXTERNAL_FAILURES
@@ -42,13 +42,13 @@ def persist_ranking_snapshot(conn, target_date: str | None = None) -> int:
 
     accum_map = build_accum_map(conn, recs)
     # list[Any]：e 是 RecommendationRow（sqlite Row 子类），统一按 Any 处理与
-    # sort_main_entries/_entry_tier 的 Any 形参对齐（2026-09-05 类型收敛）
+    # sort_main_entries/entry_tier 的 Any 形参对齐（2026-09-05 类型收敛）
     main: list[Any] = []
     rows: list[tuple] = []
     for e in recs:
-        marked = _is_nextday_marked(e, conn, accum_map=accum_map)
-        tier = _entry_tier(e, conn, accum_map=accum_map, marked=marked)
-        # marked 传实际判定值（非 🎯 票才评估警示因子——与 _entry_tier 级联一致）
+        marked = is_nextday_marked(e, conn, accum_map=accum_map)
+        tier = entry_tier(e, conn, accum_map=accum_map, marked=marked)
+        # marked 传实际判定值（非 🎯 票才评估警示因子——与 entry_tier 级联一致）
         reasons = entry_tier_reasons(e, accum=accum_map.get(e["symbol"]), marked=marked)
         rows.append((e, tier, marked, reasons))
         if e["category"] not in ("comeback", CORE_DIP_CATEGORY):

@@ -36,10 +36,10 @@ from scanner.candidates import filter_gem_stocks
 from scanner.config import MAX_STOCK_PRICE
 from scanner.danger import KLINE_DANGER_SIGNALS, evaluate_pool, hard_flags
 from scanner.db.dal import get_prev_ranks
-from scanner.historical_rescan import _MIN_KLINE_BARS, _load_all_klines
+from scanner.historical_rescan import MIN_KLINE_BARS, load_all_klines
 from scanner.matcher import label_all_candidates
 from scanner.models import V2_CATEGORY, Candidate
-from scanner.orchestrator import _v2_kline_summary
+from scanner.orchestrator import v2_kline_summary
 from scanner.pool import build_pool
 
 V1_CATEGORIES = ("new_face", "known_new_face", "momentum", "rebound", "short_term")
@@ -150,7 +150,7 @@ def main() -> None:
         by_date[d].append((sym, name, rank, pct, val))
 
     close_map, open_map = _load_price_maps(conn)
-    kline_store = _load_all_klines(conn)
+    kline_store = load_all_klines(conn)
     calendar = sorted({d for (_s, d) in close_map})
 
     # 时间窗口（信号日口径，循环前算好）
@@ -205,7 +205,7 @@ def main() -> None:
                 continue
             dates, bars = entry
             cut = bisect_right(dates, d)
-            if cut < _MIN_KLINE_BARS:
+            if cut < MIN_KLINE_BARS:
                 continue
             sliced = bars[:cut]
             if sliced[-1]["date"] != d:
@@ -242,7 +242,7 @@ def main() -> None:
                     category=V2_CATEGORY,
                     score=0,
                     reason="池选",
-                    kline=_v2_kline_summary(row, klines.get(row.symbol), d),
+                    kline=v2_kline_summary(row, klines.get(row.symbol), d),
                     first_seen="",
                 )
             )

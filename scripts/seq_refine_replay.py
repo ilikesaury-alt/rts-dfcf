@@ -8,7 +8,7 @@
 回答哪些子键有真实边际、值得作为排序细化依据。
 
 方法：
-  - 逐日重建推荐（get_today_recommendations + ranking._entry_tier/_is_nextday_marked，
+  - 逐日重建推荐（get_today_recommendations + ranking.entry_tier/is_nextday_marked，
     与 today_report/display 同源），仅主力五类；nf∩st 双挂票按类别优先级去重。
   - 「推荐时刻榜排名」由 leaderboard_log(symbol_snapshot) 回放：取推荐时间之前
     最近一次快照中该票的排名，无则回退当日最早出现该票的快照。快照只存近几日，
@@ -40,7 +40,7 @@ from scanner.core_themes import core_stock_symbols  # noqa: E402
 from scanner.data_health import check_kline_health, health_banner  # noqa: E402
 from scanner.database import get_fund_flow_pct_map, get_today_recommendations  # noqa: E402
 from scanner.db.queries import get_cached_klines  # noqa: E402
-from scanner.ranking import _entry_tier, _is_nextday_marked, build_accum_map  # noqa: E402
+from scanner.ranking import build_accum_map, entry_tier, is_nextday_marked  # noqa: E402
 from scanner.utils import to_float  # noqa: E402
 
 MAIN_CATS = ("rebound", "momentum", "new_face", "known_new_face", "short_term")
@@ -141,7 +141,7 @@ def collect(conn: sqlite3.Connection, dates: list[str]) -> tuple[list[dict[str, 
         if scans:
             lb_dates.append(dt)
         flow_map = get_fund_flow_pct_map(conn, sorted({e["symbol"] for e in main}), as_of=dt)
-        marked_map = {e["symbol"]: _is_nextday_marked(e, conn, accum_map=accum_map) for e in main}
+        marked_map = {e["symbol"]: is_nextday_marked(e, conn, accum_map=accum_map) for e in main}
         # nf∩st 双挂：同类多行取分数最高一行的载体，符号级再按类别优先级去重在 render 前
         for e in main:
             p = nd_map.get(e["symbol"])
@@ -160,7 +160,7 @@ def collect(conn: sqlite3.Connection, dates: list[str]) -> tuple[list[dict[str, 
                     "accum": accum_map.get(e["symbol"]),
                     "flow": flow,
                     "marked": bool(marked_map[e["symbol"]]),
-                    "tier": _entry_tier(e, conn, accum_map=accum_map, marked=marked_map[e["symbol"]]),
+                    "tier": entry_tier(e, conn, accum_map=accum_map, marked=marked_map[e["symbol"]]),
                     "score": to_float(e.get("score"), default=0.0),
                     "rank": _rec_rank(scans, e["symbol"], e.get("time") or ""),
                 }

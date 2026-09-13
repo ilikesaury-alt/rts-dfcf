@@ -58,15 +58,15 @@ from scanner.display import (  # noqa: E402
 )
 from scanner.ranking import (  # noqa: E402  (纯排序逻辑单源，与 display 解耦)
     _entry_band,
-    _entry_dims,
     _entry_overbought,
-    _entry_tier,
     _entry_weak_to_strong,
-    _is_nextday_marked,
     _nextday_entry_percent,
     build_accum_map,
     comeback_sort_key,
+    entry_dims,
+    entry_tier,
     entry_tier_reasons,
+    is_nextday_marked,
     sort_main_entries,
 )
 from scanner.utils import to_float, to_int  # noqa: E402
@@ -106,7 +106,7 @@ def _tier0_verdict(entry: Any, flow_pct_map: dict) -> dict:
     """
     sym = entry["symbol"]
     cat = entry["category"]
-    dims = _entry_dims(entry)
+    dims = entry_dims(entry)
     rec_pct = _nextday_entry_percent(entry)
     accum = entry.get("_accum")
     if accum is None:
@@ -248,8 +248,8 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int | None)
     for e in recs:
         acc = accum_map.get(e["symbol"])
         e["_accum"] = acc
-        e["_marked"] = _is_nextday_marked(e, conn, accum_map=accum_map)
-        e["_tier"] = _entry_tier(e, conn, accum_map=accum_map, marked=e["_marked"])
+        e["_marked"] = is_nextday_marked(e, conn, accum_map=accum_map)
+        e["_tier"] = entry_tier(e, conn, accum_map=accum_map, marked=e["_marked"])
 
     main = [e for e in recs if e["category"] not in ("comeback", CORE_DIP_CATEGORY)]
     comeback = [e for e in recs if e["category"] == "comeback"]
@@ -274,11 +274,11 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int | None)
     analyzed.sort(key=lambda a: (-a["verdict"], -a["score"]))
 
     # 档3 避雷汇总（统计劣后原因）——2026-08-26 收敛到 ranking.entry_tier_reasons 单源
-    # （与 _entry_tier 判定、scripts/tier3_reason_perf 归因同源；原内联副本的小板块共振
+    # （与 entry_tier 判定、scripts/tier3_reason_perf 归因同源；原内联副本的小板块共振
     # 判定漏 v_*_sector 成员门，已随收口对齐档位判定口径）
     tier3_reasons: dict[str, int] = {}
     for e in tier3:
-        flow = _entry_dims(e).get("fund_flow_main_pct")
+        flow = entry_dims(e).get("fund_flow_main_pct")
         if flow is None:
             flow = flow_map.get(e["symbol"])
         for r in entry_tier_reasons(e, accum=e.get("_accum"), marked=e["_marked"], flow=flow):
@@ -288,7 +288,7 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int | None)
     cb_flow = []
     # 2026-08-24：与 display 回马枪区同源排序（ranking.comeback_sort_key，资金流优先）
     for e in sorted(comeback, key=lambda x: comeback_sort_key(x, flow_map)):
-        d = _entry_dims(e)
+        d = entry_dims(e)
         flow = d.get("fund_flow_main_pct")
         if flow is None:
             flow = flow_map.get(e["symbol"])

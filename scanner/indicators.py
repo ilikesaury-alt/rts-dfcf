@@ -29,7 +29,7 @@ def compute_rsi(closes: list[float], period: int = 14) -> float | None:
 def compute_rsi_sequence(closes: list[float], period: int = 6) -> list[float]:
     """计算 RSI 完整序列（Wilder 平滑），rsi_list[i] 对应 closes[period+i]。
 
-    用于背离检测（validator._mo_divergence）等需要比较不同时间点 RSI 值的场景。
+    用于背离检测（validator.mo_divergence）等需要比较不同时间点 RSI 值的场景。
     与 compute_rsi 使用相同算法，区别在于返回完整序列而非仅最终值。
     """
     if len(closes) < period + 1:

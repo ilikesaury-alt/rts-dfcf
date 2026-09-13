@@ -8,10 +8,10 @@
 （today_report 同源管线），按命中原因拆桶统计次日表现，验证用户直觉对应哪个子集。
 
 口径：
-  - 档位/原因判定复用 ranking/today_report 同源函数（_entry_tier/_entry_overbought/
-    _entry_band/_entry_dims），与今日报告防漂移；一票多原因时计入每桶。
+  - 档位/原因判定复用 ranking/today_report 同源函数（entry_tier/_entry_overbought/
+    _entry_band/entry_dims），与今日报告防漂移；一票多原因时计入每桶。
   - 表现 = 落库 next_day_pct；统计复用 prevday_perf._stats（内部走主决策口径
-    nextday_attribution._hit_stats）。
+    nextday_attribution.hit_stats）。
   - 定位：离线测量工具，不调参不落库不进扫描路径；样本 <30 的桶只看方向不下结论。
 """
 
@@ -31,11 +31,11 @@ from scanner.data_health import check_kline_health, health_banner  # noqa: E402
 from scanner.database import get_today_recommendations  # noqa: E402
 from scanner.ranking import (  # noqa: E402
     TIER3_REASONS,
-    _entry_dims,
-    _entry_tier,
-    _is_nextday_marked,
     build_accum_map,
+    entry_dims,
+    entry_tier,
     entry_tier_reasons,
+    is_nextday_marked,
 )
 from scanner.ranking_snapshot import load_ranking_snapshot  # noqa: E402
 
@@ -94,9 +94,9 @@ def collect(conn, dates):
                 tier = snap["tier"]
                 reasons = list(snap["reasons"])
             else:
-                marked = _is_nextday_marked(e, conn, accum_map=accum_map)
-                tier = _entry_tier(e, conn, accum_map=accum_map, marked=marked)
-                d = _entry_dims(e)
+                marked = is_nextday_marked(e, conn, accum_map=accum_map)
+                tier = entry_tier(e, conn, accum_map=accum_map, marked=marked)
+                d = entry_dims(e)
                 flow = _flow_of(e, d, flow_map)
                 reasons = entry_tier_reasons(e, accum=accum_map.get(e["symbol"]), marked=marked, flow=flow)
             if tier != 3:

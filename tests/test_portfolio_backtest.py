@@ -295,7 +295,7 @@ def test_accumulate_final_score_excludes_heat_bonuses():
 
 def test_assign_rank_scores_signal_percentile():
     """within-(date,category) 百分位：同类内 score 越高 percentile 越高；跨类各自归一。"""
-    from scanner.portfolio_backtest import Signal, _assign_rank_scores
+    from scanner.portfolio_backtest import Signal, assign_rank_scores
 
     # 类别 A：低分标尺（新面孔风格，score 17~45）
     # 类别 B：高分标尺（comeback 风格，score 114~129）
@@ -306,7 +306,7 @@ def test_assign_rank_scores_signal_percentile():
         Signal(rec_date="2026-07-01", symbol="B1", name="b", category="comeback", score=114),
         Signal(rec_date="2026-07-01", symbol="B2", name="b", category="comeback", score=129),
     ]
-    _assign_rank_scores(sigs)
+    assign_rank_scores(sigs)
     by = {s.symbol: s for s in sigs}
     # 类别 A：3 只，分位 0/50/100
     assert by["A1"].rank_score == 0.0

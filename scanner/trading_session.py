@@ -9,7 +9,7 @@ def is_trading_day(d: date) -> bool:
     return d.isoformat() not in HOLIDAYS
 
 
-def _nth_trading_day_after(d: date, n: int) -> date | None:
+def nth_trading_day_after(d: date, n: int) -> date | None:
     """返回 d 之后第 n 个交易日（不含 d）。
 
     2026-08-20 收敛单源：此前 backtest / portfolio_backtest / historical_rescan 各抄一份，

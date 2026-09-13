@@ -1,7 +1,7 @@
 """v2 管道 2026-09-01 审查修复的回归测试：
 
 1. pool_pick 平分刷新（dal.save_recommendations 类别例外）；
-2. _v2_kline_summary 构造轻量 KlineSummary（kline=None 曾让语义标签/维度全失效）；
+2. v2_kline_summary 构造轻量 KlineSummary（kline=None 曾让语义标签/维度全失效）；
 3. label_all_candidates 对带 kline 的候选真正写入 dip_labels。
 """
 
@@ -12,7 +12,7 @@ import pytest
 from scanner.database import save_recommendations
 from scanner.matcher import label_all_candidates
 from scanner.models import Candidate, KlineSummary, StockInfo
-from scanner.orchestrator import _v2_kline_summary
+from scanner.orchestrator import v2_kline_summary
 
 
 @pytest.fixture
@@ -118,7 +118,7 @@ def _bars(dates: list[str], closes: list[float], volumes: list[float], percents:
 
 
 def test_v2_kline_summary_builds_dims():
-    """_v2_kline_summary 必须产出非 None 的 KlineSummary，且带 rank_trend /
+    """v2_kline_summary 必须产出非 None 的 KlineSummary，且带 rank_trend /
     accumulated_incl_today 维度（matcher 放量突破与 🎯 累计口径消费）。"""
     dates = [f"2026-08-{d:02d}" for d in range(10, 22)]
     today = dates[-1]
@@ -127,7 +127,7 @@ def test_v2_kline_summary_builds_dims():
     percents = [0.5] * 11 + [3.0]
     row = _FakePoolRow(rank_trend=3, acc5=6.0, bias20=5.0)
 
-    ks = _v2_kline_summary(row, _bars(dates, closes, volumes, percents), today)
+    ks = v2_kline_summary(row, _bars(dates, closes, volumes, percents), today)
 
     assert ks is not None
     assert ks.dimensions.get("rank_trend") == 3
