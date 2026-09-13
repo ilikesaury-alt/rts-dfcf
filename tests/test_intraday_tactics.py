@@ -340,7 +340,7 @@ class TestFailOpenAndSwitch:
 # ── 标签字面量单源（2026-09-11 收敛回归）──
 
 class TestTagSingleSource:
-    """防回归：标签字面量必须只在 config.py 定义一份。
+    """防回归：标签字面量必须只在 config_tactics.py 定义一份（config.py 仅 re-export）。
 
     收敛前有 7 份拷贝——产生端 4 处（本模块规则 1/2/3/5/6/7/12 的 append）+
     消费端 3 处（display 主表 / display v2 池选区 / final_pick 终选）。
@@ -405,7 +405,7 @@ class TestTagSingleSource:
         assert set(stock_actions(_cand(pct=10.0), _now(14, 10))) <= known
 
     def test_no_hardcoded_tag_literals_in_source(self):
-        """源码中除 config.py 外不得出现标签字面量（docstring 说明除外）。"""
+        """源码中除 config_tactics.py 外不得出现标签字面量（docstring 说明除外）。"""
         import pathlib
         import re
 
@@ -413,8 +413,8 @@ class TestTagSingleSource:
         tags = ["⬇减仓", "⬇减半", "🔻勿接", "💰落袋", "⬆加仓"]
         offenders: list[str] = []
         for py in sorted(root.glob("*.py")):
-            if py.name == "config.py":
-                continue  # 定义处，豁免
+            if py.name == "config_tactics.py":
+                continue  # 定义处（config_tactics.py；config.py 仅 re-export），豁免
             for i, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1):
                 stripped = line.strip()
                 # 跳过 docstring / 注释——这些是给人看的说明，不是代码里的真源
