@@ -291,28 +291,9 @@ def init_db() -> sqlite3.Connection:
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rej_date ON scan_rejections(date)")
     # ── hot_watch 独立区（沪深飙升·极可能大涨）连击跟踪（2026-09-11 合入）──
-    # rts-xueqiu 原用 history.json 文件态存连击；本项目统一走 SQLite（跨轮/跨进程
-    # 可查、与 recommendations 同库可 join 复盘）。轮次计数器单独放元表，
-    # 避免为读一个 round_no 扫整张命中表。
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS hot_watch_hits (
-            symbol TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            streak INTEGER NOT NULL DEFAULT 0,      -- 连续命中轮数（本轮未命中即归零）
-            last_round INTEGER NOT NULL DEFAULT 0,  -- 最近命中的轮次号
-            last_seen TEXT,                         -- 最近命中时间
-            last_percent REAL,
-            last_price REAL,
-            last_score REAL
-        )
-    """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_hwh_streak ON hot_watch_hits(streak)")
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS hot_watch_meta (
-            key TEXT PRIMARY KEY,   -- 目前仅 'round_no'
-            value TEXT NOT NULL
-        )
-    """)
+    # 已迁出：建表 DDL 现由版本化迁移 `m013_hot_watch_tables` 持有（db/migrations.py）。
+    # 原因：生产库实测**这两张表从未被创建**（2026-09-13），而探测式迁移无法回答
+    # "到底跑到哪一版"。迁出后存量库会被补建并记账。
     # schema 版本记录（P1-6）：幂等——首次初始化写入当前版本，之后仅在版本前进时追加。
     conn.execute("""
         CREATE TABLE IF NOT EXISTS schema_version (
@@ -325,64 +306,18 @@ def init_db() -> sqlite3.Connection:
         conn.execute(
             "INSERT INTO schema_version (version, updated) VALUES (?, ?)", (SCHEMA_VERSION, now_beijing().isoformat())
         )
-    # 观测表迁移（Phase 1/2）：补齐 scan_rejections outcome 列 + 建 pool_log。
-    # 独立函数，幂等；每次扫描亦由 orchestrator 调用兜底（干净 init_db 起库也能回填）。
-    from scanner.db.dal import ensure_observation_schema
+    # ── 版本化迁移（2026-09-13，测评 A5 落地）──
+    # 原先散落在下方的 13 个 `PRAGMA table_info` 探测块 + 观测表 + v4 PK 迁移 +
+    # hot_watch 建表，全部收编进 `db/migrations.py` 的 MIGRATIONS 列表。
+    # 关键差别不是"整理代码"，而是**失败语义**：探测式迁移一旦中途失败留下半迁移
+    # 现场，下一轮的探测条件会判定为"已完成"→ **永不重试**（2026-09-11 的
+    # market_extra_cache v4 事故）。版本化后：失败 → 回滚 + 上抛 + **不写账本**
+    # → 下轮重新尝试；且 `schema_migrations` 让"这个库跑到哪一版"可查询。
+    # 各迁移的语义说明见 migrations.py（此处不再重复注释）。
+    from scanner.db.migrations import run_migrations
 
-    ensure_observation_schema(conn)
-    # market_extra_cache PK 迁移（v4，2026-09-11 抽出为独立函数并改为原子化）：
-    # 旧 PK(symbol, data_type) 的每日 INSERT OR REPLACE 会覆盖历史日期数据，
-    # 导致 today_report --date 历史回放的资金流永远为空；重建表使 PK 含 date。
-    # 详见 _migrate_market_extra_cache_pk 文档字符串（原子性 + fail-loud）。
-    _migrate_market_extra_cache_pk(conn)
-    # 收盘定稿标记（2026-08-18 拓斯达脏数据事故后新增）：盘中扫描把未收盘的今日 bar
-    # （盘中价+部分量能）写入 daily_kline 属预期（today_report 盘中读），但收盘后无
-    # 定稿覆盖会残留污染 next_day_pct → 回测/归因/复盘全口径。finalized=0 表示
-    # 「盘中快照，可能非最终收盘价」；收盘定稿/收盘后写入的 bar 置 1。
-    cur = conn.execute("PRAGMA table_info(daily_kline)")
-    kline_cols = {r[1] for r in cur.fetchall()}
-    if "finalized" not in kline_cols:
-        conn.execute("ALTER TABLE daily_kline ADD COLUMN finalized INTEGER DEFAULT 1")
-    cur = conn.execute("PRAGMA table_info(recommendations)")
-    cols = {r[1] for r in cur.fetchall()}
-    if "source" not in cols:
-        conn.execute("ALTER TABLE recommendations ADD COLUMN source TEXT DEFAULT 'xueqiu'")
-    # 累计收益字段：匹配用户「持有 2-3 天卖出」的真实操作
-    # next_day_pct 是单日涨幅，cum_2d/cum_3d 是 T+0 close 到 T+N close 的累计涨幅
-    if "cum_2d" not in cols:
-        conn.execute("ALTER TABLE recommendations ADD COLUMN cum_2d REAL")
-    if "cum_3d" not in cols:
-        conn.execute("ALTER TABLE recommendations ADD COLUMN cum_3d REAL")
-    # 推动概念：综合排序「板块」列展示用（保存时由 orchestrator 写入），
-    # 避免掉榜/重启后因 today_pool 缺失回退成"其他"
-    if "concept" not in cols:
-        conn.execute("ALTER TABLE recommendations ADD COLUMN concept TEXT")
-    # 5日累计涨幅：综合排序「5日累计」列展示用（保存时写入），
-    # 避免掉榜/重启后因 today_pool 缺失无法显示
-    if "accumulated_pct" not in cols:
-        conn.execute("ALTER TABLE recommendations ADD COLUMN accumulated_pct REAL")
-    # 硬过滤落标：当日曾命中 RISK_FLAGS_HARD_FILTER（主力出货/趋势破位）的票置 1，
-    # 综合排序读取时排除——防止"早先轮次落库、后续轮次被过滤"的票仍展示。
-    # orchestrator 每轮扫描按最新轮次状态更新（过滤→1，通过→0），
-    # 一旦当日被硬过滤即当日不再展示（止损级信号，保守语义）。
-    if "excluded" not in cols:
-        conn.execute("ALTER TABLE recommendations ADD COLUMN excluded INTEGER DEFAULT 0")
-    # 评分数据审计（2026-08-14）：该条推荐评分所用 K 线是否缺今日 bar（补拉失败旧缓存兜底）。
-    # 1 = 旧缓存评分（量比基于昨日量，可能失真/误杀/误推）；0 = 含今日 bar 正常评分。
-    # 供事后审计"该推荐基于什么数据评分"，识别静默降级导致的历史误判（网宿案例同类）。
-    if "stale_kline" not in cols:
-        conn.execute("ALTER TABLE recommendations ADD COLUMN stale_kline INTEGER DEFAULT 0")
-    # 硬过滤原因审计（2026-08-20）：excluded=1 只存布尔位，被砍票从 DB 无法反推
-    # "命中哪个硬过滤标签"。补 excluded_reason 存 enhancer 打标的命中标签串
-    # （如"主力出货" / "趋势破位,弱转强失效" / "财务风险:资不抵债"），
-    # 消除"无审计依据的误杀"盲点（08-19 复盘 6 只被砍票复算 0 命中任何硬过滤规则
-    # 却 excluded=1，因 risk_flags 从未落库）。
-    if "excluded_reason" not in cols:
-        conn.execute("ALTER TABLE recommendations ADD COLUMN excluded_reason TEXT")
-    try:
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_source ON recommendations(source)")
-    except sqlite3.Error:
-        pass  # 回滚/清理失败无补救手段，外层已记录原始错误；仅捕获 sqlite3.Error，避免吞掉代码 bug
+    run_migrations(conn)
+    # 跨分支自愈（非迁移：每轮都要跑，见函数文档）
     _purge_foreign_excluded_marks(conn)
     conn.commit()
     return conn
