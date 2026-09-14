@@ -89,7 +89,12 @@ COMEBACK_REENTRY_FILTER_TODAY_HIGH = 5.0  # 今日涨幅≥此值 → 过滤（�
 COMEBACK_REENTRY_FILTER_TODAY_LOW = -5.0  # 今日跌幅≤此值 → 过滤（可能破位）
 COMEBACK_REENTRY_FILTER_CUM_HIGH = 10.0  # 累计收益≥此值 → 过滤（已错过）
 COMEBACK_REENTRY_FILTER_CUM_LOW = -10.0  # 累计收益≤此值 → 过滤（信号失效）
-# 资金流硬过滤：主力净占比 ≤ -5% → 剔除（回调可能是出货）；无当日数据 → 保留（视同中性）
+# 回马枪**扫描期**前置门：主力净占比 ≤ -5% → 候选直接丢弃（回调可能是出货）；
+# 无当日数据 → 保留（视同中性，fail-open）。
+# ⚠ 这不是「资金流出」档（那档单源在 config_sources.FUND_OUTFLOW_NET_PCT = -8.0%，
+# 由 ranking.is_fund_outflow 判定、在展示层执行）。本处刻意更严：它是候选生成门
+# （决定 recommendations 落库内容），一旦放宽到 -8% 会让 (-8%, -5%] 区间的票重新
+# 进入落库与展示——那是放宽，不是"统一"。故保留 -5%，与展示门构成子集关系。
 COMEBACK_REENTRY_FUND_FLOW_LOW = FUND_FLOW_MAIN_PCT_WEAK  # 与评分扣分档同源，避免阈值漂移
 # 买点信号阈值（满足条件计 1 分，信号数决定状态分类）
 COMEBACK_REENTRY_MA20_SUPPORT_PCT = 3.0  # |close-MA20|/MA20 < 此值 且 MA20 上行 → MA20 支撑

@@ -27,6 +27,7 @@ from scanner.config import (
     FEISHU_MIN_INTERVAL,
     FEISHU_TOP_N,
     FEISHU_WEBHOOK,
+    FUND_OUTFLOW_NET_PCT,
     now_beijing,
 )
 from scanner.display import ScanView
@@ -340,8 +341,16 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
         elements.append({"tag": "hr"})
 
     # 降级告警（regime 判定失败 / 优选池构建中断等）与终端同源可见，避免静默降级。
-    if view.warnings:
-        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "⚠ " + "；".join(view.warnings)}})
+    # 展示层资金流出硬门（2026-09-14）同理：卡片少了几只，必须说明为什么（与终端同源，
+    # 过滤本身在 build_scan_view 一处完成，本处只做告知）。
+    _notes = list(view.warnings)
+    # getattr 兜底：与上方 decision_lines/final_pick_lines 同款——轻量 view 桩（测试/回放）
+    # 可能只实现部分字段，缺 flow_filtered 时按「未过滤」处理，不因此抛错。
+    _flow_filtered = getattr(view, "flow_filtered", 0)
+    if _flow_filtered:
+        _notes.append(f"资金流出已剔除 {_flow_filtered} 只（主力净占比 ≤ {FUND_OUTFLOW_NET_PCT:.0f}%）")
+    if _notes:
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "⚠ " + "；".join(_notes)}})
 
     elements.append(
         {

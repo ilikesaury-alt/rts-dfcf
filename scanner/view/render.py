@@ -2,6 +2,7 @@ import os
 import re
 
 from scanner.config import (
+    FUND_OUTFLOW_NET_PCT,
     HOT_HIGHLIGHT_STREAK,
     HOT_MAX_MARKET_CAP,
     HOT_MAX_PERCENT,
@@ -326,6 +327,14 @@ def render_terminal(view: ScanView) -> None:
     """
     for _w in view.warnings:
         print(f"  [!] {_w}")
+
+    # 展示层资金流出硬门（2026-09-14）：跨区域生效，故提示放在所有区块之前——
+    # 否则用户只会看到"某些票不见了"却不知道为什么（过滤在 build_scan_view 一处完成）。
+    if view.flow_filtered:
+        print(
+            f"  {ANSI['YELLOW']}▸ 资金流出已剔除 {view.flow_filtered} 只"
+            f"（主力净占比 ≤ {FUND_OUTFLOW_NET_PCT:.0f}% · 全区域统一口径）{ANSI['RESET']}"
+        )
 
     # 今日决策 + 终选参考合并展示（2026-09-08）：一个区块用子标题区分
     # 「该不该买」+「必须持仓时买谁」——避免用户混淆两个区块的用途。

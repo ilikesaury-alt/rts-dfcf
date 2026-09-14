@@ -306,6 +306,35 @@ def _entry_fund_flow_pct(entry: Any) -> float | None:
     return to_float(v, default=None) if v is not None else None
 
 
+def entry_fund_flow_pct(entry: Any, flow_map: dict[str, float] | None = None) -> float | None:
+    """主力净占比（%）**单源回退链**：dims（实时候选 / 落库 score_breakdown）→ flow_map → None。
+
+    flow_map = `get_fund_flow_pct_map`（market_extra_cache 当日全市场快照），专门补
+    「行内没有 fund_flow_main_pct」的场景——掉榜/重启行、以及 core_dip/new_face 等
+    类别在写库时未记录该维度的行（实测 dims 覆盖率 core_dip/new_face 仅 0~2%）。
+    展示层资金流出硬门与 comeback_sort_key 共用本函数：**排序看到的资金流**与
+    **过滤看到的资金流**必须是同一条回退链，否则会出现「排前却被过滤」的怪象。
+
+    无任何来源 → None（缺失，不是 0，调用方自行决定 fail-open 方向）。
+    """
+    flow = _entry_fund_flow_pct(entry)
+    if flow is None and flow_map:
+        flow = to_float(flow_map.get(entry.get("symbol")), default=None)
+    return flow
+
+
+def is_fund_outflow(entry: Any, flow_map: dict[str, float] | None = None) -> bool:
+    """「资金流出」判定单源：主力净占比 ≤ FUND_OUTFLOW_NET_PCT(-8.0%) → True。
+
+    阈值唯一来源 `config_sources.FUND_OUTFLOW_NET_PCT`（与 enhancer 标签、档3劣后、
+    nextday_prob、final_pick 终选门、hot_watch 独立区门同源）。
+    数据缺失（None）→ False：缺失不等于流出，与回马枪回踩门同语义（fail-open），
+    避免资金流接口故障时把整屏推荐清空。
+    """
+    flow = entry_fund_flow_pct(entry, flow_map)
+    return flow is not None and flow <= FUND_OUTFLOW_NET_PCT
+
+
 def _entry_sector_resonance(entry: Any) -> bool:
     """小板块共振：v_st_sector / v_pb_sector / v_nf_sector >0 且板块规模 count<SECTOR_RESONANCE_WARN_MAX。
 
@@ -870,8 +899,8 @@ def comeback_sort_key(entry: Any, flow_map: dict[str, float] | None = None) -> t
     display 回马枪区与 today_report 回马枪小节共用本函数，防两处口径漂移。
     """
     today = _entry_today_pct(entry)
-    flow = to_float(entry_dims(entry).get("fund_flow_main_pct"), default=None)
-    if flow is None and flow_map:
-        flow = to_float(flow_map.get(entry["symbol"]), default=None)
+    # 资金流走 entry_fund_flow_pct 单源回退链（2026-09-14 收敛）：此前本函数自己内联
+    # 「dims → flow_map」两步，与展示层资金流出硬门各写一份，两处口径可各自漂移。
+    flow = entry_fund_flow_pct(entry, flow_map)
     # 今日波动幅度 |today| 越大越靠前（取负升序=降序）；同幅度下主力净占比、评分降序。
     return (-abs(today), -(flow if flow is not None else 0.0), -entry["score"])

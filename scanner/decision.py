@@ -23,6 +23,9 @@
      空仓是合法输出，且是高频输出。
      ⚠ 低 hit 率类别（core_dip 6.5% / short_term 6.2% / comeback / pool_pick）不在准入内，
      但仍会在终选区与观察区展示——本门只约束「替你下单的那 3 只」。
+  4. 资金流出门（2026-09-14，口径统一）：主力净占比 ≤ FUND_OUTFLOW_NET_PCT(-8%) → 出局。
+     本层直连 DB 取数、不经 ScanView，故独立施加一次；判定单源 `ranking.is_fund_outflow`，
+     与展示层过滤同阈值同回退链（market_extra_cache 当日快照）。fail-open：取数失败不过滤。
 
 闭环：决策层落库 decision_picks（含市场门状态），后续 prevday_perf 对比
 「决策层 vs 全池」——决策层有没有 alpha 变成每日可验证，避免拍脑袋。
@@ -42,8 +45,10 @@ from scanner.config import (
     CATEGORY_HIT_RATE_DEFAULT,
     DECISION_INTRADAY_BEAUTY_ENABLED,
     DISPLAY_MAX_TODAY_PCT,
+    FUND_OUTFLOW_NET_PCT,
     now_beijing,
 )
+from scanner.ranking import is_fund_outflow
 from scanner.utils import EXTERNAL_FAILURES
 
 # 分时门判定单源（与终选美感门同源；相对导入绕开 pyright 会话冻结快照的绝对名解析）
@@ -135,6 +140,7 @@ def build_decision_picks(conn: sqlite3.Connection, today: str | None = None) -> 
         "allowed": allowed,
         "gate_reason": gate_reason,
         "beauty_blocked": 0,
+        "flow_blocked": 0,
         "picks": [],
         "ts": now_beijing().strftime("%H:%M:%S"),
     }
@@ -174,11 +180,27 @@ def build_decision_picks(conn: sqlite3.Connection, today: str | None = None) -> 
         result["gate_reason"] += "（取数失败，决策层不可用）"
         return result
     by_cat: dict[str, list[dict]] = {cat: [] for cat, _, _ in DECISION_CATEGORY_SPECS}
+    # 资金流出门（2026-09-14 统一口径）：判定单源与展示层同一个 ranking.is_fund_outflow
+    # （阈值 config_sources.FUND_OUTFLOW_NET_PCT = -8.0%）。本层**直连 DB 取数**、不经
+    # ScanView，因此必须独立施加一次，否则会出现「终端主表已剔掉、决策推荐里还在」——
+    # 决策层是用户真正照着下单的那 3 只，漏一只的代价最大。
+    # 数据源用 market_extra_cache 当日全市场快照（get_fund_flow_pct_map），与展示层
+    # 回退链的兜底源同源；取数失败 fail-open（空 map → 不过滤，不因接口故障清空决策）。
+    flow_map: dict[str, float] = {}
+    flow_blocked = 0
+    try:
+        from scanner.database import get_fund_flow_pct_map
+
+        flow_map = get_fund_flow_pct_map(conn, [r[0] for r in rows], as_of=rec_date)
+    except EXTERNAL_FAILURES as e:
+        logger.warning("决策层资金流出过滤取数失败（门跳过）: %s: %s", type(e).__name__, e)
     for sym, name, cat, score, pct in rows:
-        if cat in by_cat:
-            by_cat[cat].append(
-                {"symbol": sym, "name": name or "", "category": cat, "score": score or 0, "percent": pct}
-            )
+        if cat not in by_cat:
+            continue
+        if is_fund_outflow({"symbol": sym}, flow_map):
+            flow_blocked += 1
+            continue
+        by_cat[cat].append({"symbol": sym, "name": name or "", "category": cat, "score": score or 0, "percent": pct})
     picks: list[dict] = []
     beauty_blocked = 0
     for cat, cap, direction in DECISION_CATEGORY_SPECS:
@@ -201,10 +223,13 @@ def build_decision_picks(conn: sqlite3.Connection, today: str | None = None) -> 
     # 全局配额：按类别先验顺序（specs 顺序）截断，先验最强类别优先占位
     result["picks"] = picks[:DECISION_MAX_PICKS]
     result["beauty_blocked"] = beauty_blocked
+    result["flow_blocked"] = flow_blocked
     if not result["picks"]:
         result["gate_reason"] += " · 门开但无高把握标的 → 空仓"
         if beauty_blocked:
             result["gate_reason"] += f"（分时门拦{beauty_blocked}只）"
+        if flow_blocked:
+            result["gate_reason"] += f"（资金流出门拦{flow_blocked}只）"
     return result
 
 
@@ -266,6 +291,10 @@ def render_decision_lines(result: dict[str, Any]) -> list[str]:
     lines = [f"◆ 今日决策层（≤{DECISION_MAX_PICKS} 只 · 大盘门+类别先验+分时门+配额）"]
     if result.get("beauty_blocked"):
         lines.append(f"  · 分时门拦{result['beauty_blocked']}只（分时走弱·不接回落刀）")
+    if result.get("flow_blocked"):
+        lines.append(
+            f"  · 资金流出门拦{result['flow_blocked']}只（主力净占比≤{FUND_OUTFLOW_NET_PCT:.0f}%·与展示层同口径）"
+        )
     if not result["allowed"] or not result["picks"]:
         lines.append(f"  ✗ 空仓 — {result['gate_reason']}")
         return lines

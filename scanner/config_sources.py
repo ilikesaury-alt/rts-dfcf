@@ -57,7 +57,16 @@ FUND_FLOW_MAIN_PCT_WEAK = -5.0  # 主力净占比 ≤-5% → 扣分
 # 裁定：不是反指（不该给负分），但也没有证据支持「强流入 > 流入」⇒ 展示层
 # ranking._fund_flow_norm 取消 strong_in 独享的 +0.5，与 in 同权 +0.3（第三处口径收口）。
 FUND_FLOW_BONUS_WEAK = -3
-# 风险标签阈值
+# ── 风险标签阈值 ──
+# 「资金流出」的**唯一阈值**（2026-09-14 收敛为单源）：全系统凡判定「主力净流出 →
+# 剔除 / 劣后 / 过滤」之处一律引用本常量，禁止再写字面量或另立同义常量。消费方：
+#   enhancer「资金流出」标签 / ranking 档3劣后 / nextday_prob / nextday_calib 校准桶 /
+#   final_pick 终选门 / hot_watch 独立区门（派生）/ view 展示层硬门（terminal+飞书）。
+# 反例（已收口）：hot_watch 曾手抄 -8.0 字面量（现已派生）。
+# 注意区分**不同语义**、刻意保留的相邻阈值，不要一并"统一"：
+#   - FUND_FLOW_MAIN_PCT_WEAK(-5%)：**评分扣分档**（弱流出告警），不是「流出」档；
+#   - COMEBACK_REENTRY_FUND_FLOW_LOW：回马枪**扫描期前置门**，借 -5% 扣分档实现，
+#     比本档更严（子集关系）——它不是展示门，见 config_categories 注释。
 FUND_OUTFLOW_NET_PCT = -8.0  # 主力净流出占比 ≤-8% → 「资金流出」标签
 # 资金流图标强档阈值：与「资金流出」标签同源（负值取绝对值），避免两处分别改造成漂移
 FUND_FLOW_MAIN_PCT_EXTREME = -FUND_OUTFLOW_NET_PCT

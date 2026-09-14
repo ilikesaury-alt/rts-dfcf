@@ -494,3 +494,7 @@ class ScanView:
     # 「当日 momentum + 榜单热度跃升」，不参与主线评分/档位/🎯，也不进飞书主卡片。
     # None = 本轮未启用或无结果（渲染时整区跳过，不留空表）。
     hot_rows: list | None = None
+    # 展示层资金流出硬门（2026-09-14）剔除的行数：主力净占比 ≤ FUND_OUTFLOW_NET_PCT
+    # 的票不进任何展示区（v1/v2 池选 / 核心低吸 / 回马枪 / 终选输入），终端与飞书同源。
+    # 纯展示层过滤——不改 excluded、不落库，回测/归因样本口径不受影响。
+    flow_filtered: int = 0

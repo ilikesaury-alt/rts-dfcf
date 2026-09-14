@@ -95,8 +95,16 @@ RISK_FLAGS_HARD_FILTER: set[str] = {
     "当日翻绿+高开回落",
 }
 
-# 资金流硬过滤开关（2026-09-14）：主力净流出占比 ≤ 阈值 → 从推荐列表移除
-# 默认开启，与 hot_watch/comeback/final_pick 同源阈值（FUND_OUTFLOW_NET_PCT = -8.0%）
+# ── 资金流出硬过滤（2026-09-14 统一口径，落在**展示层**）──
+# 命中判定：主力净占比 ≤ config_sources.FUND_OUTFLOW_NET_PCT(-8.0%)，判定单源
+# `ranking.is_fund_outflow`（回退链：候选/落库 dims → market_extra_cache 当日快照）。
+# 实现位置 = 展示层一处入口（`view.build_scan_view` 过滤 today_recs），因此：
+#   - 不改 `excluded` 标记、不动 `recommendations` 落库 →
+#     回测 / nextday_attribution / prevday_perf 的样本口径与历史基线**不受影响**；
+#   - 终端与飞书共用同一份过滤后的 ScanView（`build_feishu_card` 只读 view）。
+# 2026-09-14 前本开关**是死的**：switch 开了、enhancer 也打了「资金流出」标签，
+# 但 `RISK_FLAGS_HARD_FILTER` 不含该标签 → 没有任何一只票被排除（实测 130 行漏网）。
+# 现刻意不并入 RISK_FLAGS_HARD_FILTER（那会改 excluded，污染回测样本）。
 # 关闭：RTS_FUND_FLOW_HARD_FILTER=0
 FUND_FLOW_HARD_FILTER_ENABLED = _env_flag("RTS_FUND_FLOW_HARD_FILTER", True)
 

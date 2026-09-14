@@ -13,6 +13,7 @@ from scanner.config import (
     DECISION_LAYER_ENABLED,
     DISPLAY_MAX_TODAY_PCT,
     FINAL_PICK_ENABLED,
+    FUND_FLOW_HARD_FILTER_ENABLED,
     TACTICS_SELL_TAGS,
     TREND_MARK_ENABLED,
     V2_POOL_DISPLAY_TOP,
@@ -39,6 +40,7 @@ from scanner.ranking import (
     composite_tier,
     entry_dims,
     fresh_candidate,
+    is_fund_outflow,
     is_nextday_marked,
 )
 
@@ -255,6 +257,28 @@ def build_scan_view(
     # 候选存在时优先用其扫描时的最新维度，否则（重启/掉榜/扫描时拉取失败）回退到 DB
     # 保存的全市场快照——避免综合排序大量行因进程重启丢失资金流图标。
     flow_pct_map = get_fund_flow_pct_map(conn, [e["symbol"] for e in today_recs])
+
+    # ── 展示层资金流出硬门（2026-09-14 统一口径，**单一入口**）──
+    # 判定单源 ranking.is_fund_outflow（阈值 config_sources.FUND_OUTFLOW_NET_PCT = -8.0%，
+    # 回退链：行内 dims/score_breakdown → flow_pct_map 当日全市场快照）。
+    # 在此处过滤 `today_recs` 一次，下游全部派生集合（main_recs / pool_pick_recs /
+    # comeback_recs / core_dip_recs / adj_picks / 终选输入）自动继承——终端与飞书同源
+    # （feishu 只读 build_scan_view 产出的同一份 ScanView），不会再出现「终选区剔了、
+    # 上方池选区还在」的同屏口径分叉。
+    # ⚠ 刻意**不改 excluded 标记、不写库**：excluded=1 会改回测 / nextday_attribution /
+    # prevday_perf 的样本口径（load_attribution_rows 取 excluded=0），把展示层语义泄漏
+    # 进历史基线。RTS_FUND_FLOW_HARD_FILTER=0 关闭本门。
+    flow_filtered = 0
+    if FUND_FLOW_HARD_FILTER_ENABLED:
+        _kept_recs: list[RecommendationRow] = []
+        for _e in today_recs:
+            if is_fund_outflow(_e, flow_pct_map):
+                flow_filtered += 1
+                continue
+            _kept_recs.append(_e)
+        today_recs = _kept_recs
+        # 全被剔时不提前返回：继续走完决策层/终选区（它们可能给出「空仓 + 原因」，
+        # 比直接少一整块输出更可诊断），只是各展示区天然为空。
 
     # 🎯 标记预计算（2026-08-14 起 map 化：排序+渲染各调一次 is_nextday_marked 会触发
     # 两次 daily_kline 回放全表扫描；预计算后只查一次，判定与行尾渲染共用同一结果）。
@@ -559,4 +583,5 @@ def build_scan_view(
         final_pick_lines=_final_pick_lines,
         beauty_mark=beauty_mark,
         hot_rows=hot_rows,
+        flow_filtered=flow_filtered,
     )

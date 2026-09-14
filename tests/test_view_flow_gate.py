@@ -1,0 +1,203 @@
+"""展示层「资金流出」硬门（2026-09-14 统一口径）单测。
+
+被测语义（三句话）：
+  1. 判定单源 = `ranking.is_fund_outflow`，阈值 = `config_sources.FUND_OUTFLOW_NET_PCT`(-8.0)，
+     回退链 = 行内 dims/score_breakdown → `market_extra_cache` 当日全市场快照，缺失 fail-open。
+  2. 过滤发生在 `view.build_scan_view` **一处**，故 v1 池选 / v2 池选 / 核心低吸 / 回马枪
+     全区一致（终端与飞书共用同一份 ScanView）。
+  3. 过滤**只影响展示**：`recommendations.excluded` 必须保持 0，回测/归因样本口径不受污染。
+"""
+
+import sqlite3
+
+from scanner.config import FUND_OUTFLOW_NET_PCT, now_beijing
+from scanner.decision import build_decision_picks
+from scanner.ranking import entry_fund_flow_pct, is_fund_outflow
+from scanner.view.assemble import build_scan_view
+
+# ── 判定语义（纯函数）──
+
+
+def test_threshold_is_single_source_minus_8():
+    """阈值单源 -8.0：hot_watch 派生、comeback 保持 -5.0 是刻意的更严前置门。"""
+    from scanner.config import COMEBACK_REENTRY_FUND_FLOW_LOW, HOT_FUND_FLOW_FILTER_THRESHOLD
+
+    assert FUND_OUTFLOW_NET_PCT == -8.0
+    assert HOT_FUND_FLOW_FILTER_THRESHOLD == FUND_OUTFLOW_NET_PCT
+    assert COMEBACK_REENTRY_FUND_FLOW_LOW == -5.0, "回马枪扫描期前置门应比展示门更严（子集关系）"
+
+
+def test_is_fund_outflow_boundaries():
+    assert is_fund_outflow({"symbol": "SZ1"}, {"SZ1": -8.0}) is True  # 闭区间（≤）
+    assert is_fund_outflow({"symbol": "SZ1"}, {"SZ1": -7.99}) is False
+    assert is_fund_outflow({"symbol": "SZ1"}, {"SZ1": -20.0}) is True
+    assert is_fund_outflow({"symbol": "SZ1"}, {"SZ1": 6.0}) is False
+
+
+def test_is_fund_outflow_fail_open_without_data():
+    """无数据 ≠ 流出：资金流接口故障时不得清空整屏推荐。"""
+    assert is_fund_outflow({"symbol": "SZ1"}, {}) is False
+    assert is_fund_outflow({"symbol": "SZ1"}, None) is False
+
+
+def test_entry_fund_flow_pct_fallback_chain():
+    """行内 dims 优先于 market_extra_cache 快照（与 comeback_sort_key 同链）。"""
+    entry = {"symbol": "SZ1", "score_breakdown": {"fund_flow_main_pct": -1.0}}
+    assert entry_fund_flow_pct(entry, {"SZ1": -9.0}) == -1.0
+    assert entry_fund_flow_pct({"symbol": "SZ1"}, {"SZ1": -9.0}) == -9.0
+    assert entry_fund_flow_pct({"symbol": "SZ1"}, {}) is None
+    # dims 优先 → 快照里的流出值不得反超行内真值
+    assert is_fund_outflow(entry, {"SZ1": -9.0}) is False
+
+
+# ── 展示层：单一入口过滤各区域 ──
+
+
+def _rec_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:")
+    conn.execute("""CREATE TABLE appearances (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, name TEXT NOT NULL,
+        date TEXT NOT NULL, rank INTEGER, percent REAL, value REAL, UNIQUE(symbol, date))""")
+    conn.execute("""CREATE TABLE recommendations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, time TEXT NOT NULL,
+        symbol TEXT NOT NULL, name TEXT NOT NULL, category TEXT NOT NULL, score INTEGER NOT NULL,
+        percent REAL, trend TEXT, next_day_pct REAL, fwd_3d REAL, fwd_5d REAL,
+        score_breakdown TEXT, source TEXT DEFAULT 'xueqiu', concept TEXT, accumulated_pct REAL,
+        excluded INTEGER DEFAULT 0)""")
+    conn.execute("""CREATE TABLE market_extra_cache (
+        symbol TEXT NOT NULL, date TEXT NOT NULL, data_type TEXT NOT NULL,
+        payload_json TEXT NOT NULL, updated TEXT NOT NULL, PRIMARY KEY(symbol, data_type))""")
+    conn.execute("""CREATE TABLE market_index_log (
+        date TEXT PRIMARY KEY, time TEXT, index_pct REAL, bar_date TEXT,
+        source TEXT, updated TEXT DEFAULT '')""")
+    return conn
+
+
+def _seed_five(conn: sqlite3.Connection, today: str) -> None:
+    """五只票覆盖三条判定路径 + 一个 fail-open 反例。"""
+    rows = [
+        # (symbol, name, category, score, score_breakdown, 快照 flow)
+        ("SZ300001", "行内流出", "rebound", 60, '{"fund_flow_main_pct": -12.0}', None),
+        ("SZ300002", "正常票", "rebound", 55, '{"fund_flow_main_pct": -1.0}', None),
+        ("SZ300003", "快照流出", "pool_pick", 50, None, -9.0),
+        ("SZ300004", "无数据", "core_dip", 45, None, None),
+        ("SZ300005", "回马枪流出", "comeback", 40, None, -20.0),
+    ]
+    for sym, name, cat, score, sb, snapshot in rows:
+        conn.execute(
+            "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, score_breakdown)"
+            " VALUES (?, '13:00', ?, ?, ?, ?, 2.0, ?)",
+            (today, sym, name, cat, score, sb),
+        )
+        if snapshot is not None:
+            conn.execute(
+                "INSERT INTO market_extra_cache (symbol, date, data_type, payload_json, updated)"
+                " VALUES (?, ?, 'fund_flow', ?, ?)",
+                (sym, today, f'{{"main_pct": {snapshot}}}', now_beijing().isoformat()),
+            )
+    conn.commit()
+
+
+def _sym_set(rows) -> set:
+    """main_rows/pool_rows 是 MainRow（.entry），core_dip/comeback 是裸 RecommendationRow。"""
+    return {r.entry["symbol"] if hasattr(r, "entry") else r["symbol"] for r in rows}
+
+
+def test_build_scan_view_filters_every_region():
+    """v1 / v2 / 核心低吸 / 回马枪四个区域同时生效（不是只剔某一处）。"""
+    conn = _rec_db()
+    today = now_beijing().date().isoformat()
+    _seed_five(conn, today)
+
+    view = build_scan_view(conn)
+
+    assert view is not None
+    assert view.flow_filtered == 3, "行内流出 + 快照流出 + 回马枪流出 应各剔一只"
+    assert _sym_set(view.main_rows) == {"SZ300002"}
+    assert _sym_set(view.pool_rows or []) == set(), "v2 池选只靠快照判定的票也必须被剔"
+    assert _sym_set(view.core_dip_rows) == {"SZ300004"}, "无数据 fail-open：不得误剔"
+    assert _sym_set(view.comeback_rows) == set()
+
+
+def test_build_scan_view_does_not_touch_excluded_column():
+    """展示层过滤不得写库：excluded 保持 0（否则回测/归因样本口径被污染）。"""
+    conn = _rec_db()
+    today = now_beijing().date().isoformat()
+    _seed_five(conn, today)
+
+    build_scan_view(conn)
+
+    leaked = conn.execute("SELECT symbol FROM recommendations WHERE COALESCE(excluded, 0) <> 0").fetchall()
+    assert leaked == [], f"展示层不得改 excluded，实际: {leaked}"
+
+
+def test_flow_gate_disabled_by_switch(monkeypatch):
+    """RTS_FUND_FLOW_HARD_FILTER=0 → 关闸。注意项目是快照式导入，
+    必须 patch 消费方模块（scanner.view.assemble）而不是 scanner.config。"""
+    import scanner.view.assemble as asm
+
+    conn = _rec_db()
+    today = now_beijing().date().isoformat()
+    _seed_five(conn, today)
+
+    monkeypatch.setattr(asm, "FUND_FLOW_HARD_FILTER_ENABLED", False)
+    view = asm.build_scan_view(conn)
+
+    assert view.flow_filtered == 0
+    assert _sym_set(view.main_rows) == {"SZ300001", "SZ300002"}
+
+
+# ── 决策层：直连 DB 取数，必须独立施加同一门 ──
+
+
+def _decision_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE recommendations ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, time TEXT,"
+        " symbol TEXT, name TEXT, category TEXT, score REAL, percent REAL,"
+        " excluded INTEGER DEFAULT 0)"
+    )
+    conn.execute("CREATE TABLE market_index_log (date TEXT PRIMARY KEY, index_pct REAL)")
+    conn.execute(
+        "CREATE TABLE market_extra_cache ("
+        " symbol TEXT NOT NULL, date TEXT NOT NULL, data_type TEXT NOT NULL,"
+        " payload_json TEXT NOT NULL, updated TEXT NOT NULL, PRIMARY KEY(symbol, data_type))"
+    )
+    return conn
+
+
+DECISION_DAY = "2026-09-04"
+
+
+def test_decision_flow_gate_blocks_pick():
+    """闸门开 + 类别可准入，但头名资金流出 → 被剔且计数可见。"""
+    conn = _decision_db()
+    conn.executemany(
+        "INSERT OR REPLACE INTO market_index_log (date, index_pct) VALUES (?, ?)",
+        [("2026-08-28", 0.5), ("2026-08-31", -0.2), ("2026-09-01", 0.3), ("2026-09-03", 0.6), (DECISION_DAY, 1.0)],
+    )
+    conn.execute(
+        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, excluded)"
+        " VALUES (?, '10:00', 'SZ300001', '头名流出', 'rebound', 90, 3.0, 0)",
+        (DECISION_DAY,),
+    )
+    conn.execute(
+        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, excluded)"
+        " VALUES (?, '10:00', 'SZ300002', '次名正常', 'rebound', 80, 3.0, 0)",
+        (DECISION_DAY,),
+    )
+    conn.execute(
+        "INSERT INTO market_extra_cache (symbol, date, data_type, payload_json, updated)"
+        " VALUES ('SZ300001', ?, 'fund_flow', '{\"main_pct\": -9.5}', ?)",
+        (DECISION_DAY, now_beijing().isoformat()),
+    )
+    conn.commit()
+
+    result = build_decision_picks(conn, today=DECISION_DAY)
+
+    assert result["allowed"] is True
+    assert result["flow_blocked"] == 1
+    picked = {p["symbol"] for p in result["picks"]}
+    assert "SZ300001" not in picked, "决策层漏剔 = 用户照单下单，代价最大"
+    assert "SZ300002" in picked
