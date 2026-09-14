@@ -115,10 +115,17 @@ EVALUATORS: dict[str, dict[str, Any]] = {
     },
     "rescore": {
         "desc": "用 historical_rescan 以当前（含 override）config 重算 score 排序",
-        "sees": frozenset({
-            "scanner.config", "scanner.weights", "scanner.analysis", "scanner.enhancer",
-            "scanner.validator", "scanner.ranking", "scanner.categories",
-        }),
+        "sees": frozenset(
+            {
+                "scanner.config",
+                "scanner.weights",
+                "scanner.analysis",
+                "scanner.enhancer",
+                "scanner.validator",
+                "scanner.ranking",
+                "scanner.categories",
+            }
+        ),
         "note": "覆盖评分/门禁/权重改动；代价是每次评估都要重跑历史重扫（数十秒）。",
     },
 }
@@ -150,7 +157,9 @@ def pooled_rate(hits: int, n: int) -> float:
 
 
 def bootstrap_mean_ci(
-    deltas: list[float], n_boot: int = DEFAULT_BOOT, alpha: float = DEFAULT_ALPHA,
+    deltas: list[float],
+    n_boot: int = DEFAULT_BOOT,
+    alpha: float = DEFAULT_ALPHA,
     seed: int = DEFAULT_SEED,
 ) -> dict[str, float]:
     """按日配对 bootstrap：对 deltas 重采样交易日，返回 CI 与单边 p。
@@ -164,8 +173,15 @@ def bootstrap_mean_ci(
     """
     n = len(deltas)
     if n == 0:
-        return {"mean": 0.0, "lo": 0.0, "hi": 0.0, "p_le_zero": 1.0, "se": float("inf"),
-                "mde": float("inf"), "n_days": 0}
+        return {
+            "mean": 0.0,
+            "lo": 0.0,
+            "hi": 0.0,
+            "p_le_zero": 1.0,
+            "se": float("inf"),
+            "mde": float("inf"),
+            "n_days": 0,
+        }
     obs = sum(deltas) / n
     rng = random.Random(seed)  # noqa: S311 - 仅用于可复现的 bootstrap 重采样，无安全用途
     means: list[float] = []
@@ -181,8 +197,13 @@ def bootstrap_mean_ci(
     var = sum((m - obs) ** 2 for m in means) / max(1, n_boot - 1)
     se = math.sqrt(var)
     return {
-        "mean": obs, "lo": lo, "hi": hi, "p_le_zero": p_le_zero,
-        "se": se, "mde": 1.96 * se, "n_days": n,
+        "mean": obs,
+        "lo": lo,
+        "hi": hi,
+        "p_le_zero": p_le_zero,
+        "se": se,
+        "mde": 1.96 * se,
+        "n_days": n,
     }
 
 
@@ -332,11 +353,16 @@ def apply_overrides(overrides: list[Override]) -> list[dict[str, Any]]:
             raise AttributeError(f"{ov.module}.{ov.attr} 不存在——检查拼写")
         old = getattr(mod, ov.attr)
         setattr(mod, ov.attr, ov.value)
-        journal.append({
-            "spec": ov.raw, "module": ov.module, "attr": ov.attr,
-            "old": old, "new": ov.value,
-            "patched": _patch_consumers(ov.module, ov.attr, old, ov.value),
-        })
+        journal.append(
+            {
+                "spec": ov.raw,
+                "module": ov.module,
+                "attr": ov.attr,
+                "old": old,
+                "new": ov.value,
+                "patched": _patch_consumers(ov.module, ov.attr, old, ov.value),
+            }
+        )
     return journal
 
 
@@ -406,9 +432,7 @@ def _score_nextday_prob(sample: list[Sample], conn) -> dict[str, list[tuple[floa
     by_day: dict[str, list[tuple[float, float]]] = defaultdict(list)
     for s in sample:
         marked = is_nextday_marked(s.entry, conn, accum_map=accum_map)
-        p = next_day_hit_probability(
-            s.entry, marked=marked, prominence=s.entry.get("_prominent"), flow=None
-        )
+        p = next_day_hit_probability(s.entry, marked=marked, prominence=s.entry.get("_prominent"), flow=None)
         by_day[s.date].append((p, s.next_day))
     return by_day
 
@@ -430,8 +454,7 @@ def _score_rescore(sample: list[Sample], conn) -> dict[str, list[tuple[float, fl
 
     label: dict[tuple[str, str], float] = {}
     for row in conn.execute(
-        "SELECT date, symbol, next_day_pct FROM recommendations "
-        "WHERE next_day_pct IS NOT NULL ORDER BY date, time"
+        "SELECT date, symbol, next_day_pct FROM recommendations WHERE next_day_pct IS NOT NULL ORDER BY date, time"
     ).fetchall():
         label[(row[0], row[1])] = float(row[2])
 
@@ -441,8 +464,13 @@ def _score_rescore(sample: list[Sample], conn) -> dict[str, list[tuple[float, fl
     # hold_days=1：本项目评分体系校准于「次日大涨」，故主指标为 1 日口径；
     # buy_at/buy_delay 对「排序评估」无影响（只影响 P&L），此处仅保持与线上一致。
     cfg = PBConfig(
-        start=cal[0], end=cal[-1], days=0, hold_days=1, buy_delay=0,
-        buy_at="close", rescore=True,
+        start=cal[0],
+        end=cal[-1],
+        days=0,
+        hold_days=1,
+        buy_delay=0,
+        buy_at="close",
+        rescore=True,
     )
     signals = rescan_all_signals(conn, cfg, cal, {d: i for i, d in enumerate(cal)}, cal[-1])
     by_day: dict[str, list[tuple[float, float]]] = defaultdict(list)
@@ -465,8 +493,10 @@ SCORERS: dict[str, Callable[[list[Sample], sqlite3.Connection], dict[str, list[t
 
 
 def _evaluate_windows(
-    by_day: dict[str, list[tuple[float, float]]], windows: list[tuple[list[str], list[str]]],
-    top_n: int, threshold: float,
+    by_day: dict[str, list[tuple[float, float]]],
+    windows: list[tuple[list[str], list[str]]],
+    top_n: int,
+    threshold: float,
 ) -> dict[str, dict[str, Any]]:
     """在 train / test 窗上分别算日等权 top-N hit 与日等权 IC。"""
     out: dict[str, dict[str, Any]] = {}
@@ -533,9 +563,7 @@ def run(
         "evaluator_desc": EVALUATORS[evaluator]["desc"],
         "evaluator_note": EVALUATORS[evaluator]["note"],
         "overrides": [ov.raw for ov in overrides],
-        "override_journal": [
-            {"spec": r["spec"], "patched_modules": r["patched"]} for r in journal
-        ],
+        "override_journal": [{"spec": r["spec"], "patched_modules": r["patched"]} for r in journal],
         "identical_output_warning": identical,
         "top_n": top_n,
         "threshold": threshold,
@@ -598,18 +626,26 @@ def render(r: dict[str, Any]) -> str:
     L.append(f"改动：{r['overrides'] or '（无——这是基线可检测性自检）'}")
     for j in r.get("override_journal", []):
         patched = j["patched_modules"]
-        L.append(f"      {j['spec']}  →  传播改写 {len(patched)} 个模块"
-                 + (f"：{', '.join(patched[:4])}{' …' if len(patched) > 4 else ''}" if patched
-                    else "（无同名副本，仅目标模块本身）"))
+        L.append(
+            f"      {j['spec']}  →  传播改写 {len(patched)} 个模块"
+            + (
+                f"：{', '.join(patched[:4])}{' …' if len(patched) > 4 else ''}"
+                if patched
+                else "（无同名副本，仅目标模块本身）"
+            )
+        )
     if r.get("identical_output_warning"):
-        L.append("      ⚠ 改动未产生任何输出差异：可能该参数在本口径下无影响，"
-                 "也可能没生效（检查是否改错了模块）——此时的 Δ 恒为 0，判定无意义。")
-    L.append(f"样本：{r['sample_n']} 条；窗口 {r['n_windows']} 个"
-             f"（train {r['train_days']} → embargo {r['embargo_days']} → test {r['test_days']}）；"
-             f"主指标 = 日等权 top-{r['top_n']} 次日 hit≥{r['threshold']:.0f}%")
+        L.append(
+            "      ⚠ 改动未产生任何输出差异：可能该参数在本口径下无影响，"
+            "也可能没生效（检查是否改错了模块）——此时的 Δ 恒为 0，判定无意义。"
+        )
+    L.append(
+        f"样本：{r['sample_n']} 条；窗口 {r['n_windows']} 个"
+        f"（train {r['train_days']} → embargo {r['embargo_days']} → test {r['test_days']}）；"
+        f"主指标 = 日等权 top-{r['top_n']} 次日 hit≥{r['threshold']:.0f}%"
+    )
     L.append("")
-    L.append(f"  {'窗口':<7}{'日数':>6}{'基线':>9}{'改动后':>9}{'Δ':>9}"
-             f"{'Δ 95%CI':>20}{'单边p':>9}{'MDE':>8}")
+    L.append(f"  {'窗口':<7}{'日数':>6}{'基线':>9}{'改动后':>9}{'Δ':>9}{'Δ 95%CI':>20}{'单边p':>9}{'MDE':>8}")
     L.append("  " + "-" * 86)
     for scope, label in (("train", "train"), ("test", "test")):
         m = r["metrics"][scope]
@@ -624,17 +660,22 @@ def render(r: dict[str, Any]) -> str:
     L.append("")
     mt = r["metrics"]["test"]
     L.append("  诊断 · 按日等权 vs 按行汇总（B1 §2 的扭曲量）：")
-    L.append(f"    基线  日等权 {mt['base_day_equal_hit'] * 100:.1f}%  vs  行汇总 "
-             f"{mt['base_pooled_hit'] * 100:.1f}%   差 "
-             f"{mt['day_equal_vs_pooled_gap_base'] * 100:+.1f}pp")
-    L.append(f"  诊断 · 日等权 rank-IC：基线 {mt['base_day_equal_ic']:+.4f} → "
-             f"改动后 {mt['new_day_equal_ic']:+.4f}（Δ {mt['delta_day_equal_ic']:+.4f}）")
+    L.append(
+        f"    基线  日等权 {mt['base_day_equal_hit'] * 100:.1f}%  vs  行汇总 "
+        f"{mt['base_pooled_hit'] * 100:.1f}%   差 "
+        f"{mt['day_equal_vs_pooled_gap_base'] * 100:+.1f}pp"
+    )
+    L.append(
+        f"  诊断 · 日等权 rank-IC：基线 {mt['base_day_equal_ic']:+.4f} → "
+        f"改动后 {mt['new_day_equal_ic']:+.4f}（Δ {mt['delta_day_equal_ic']:+.4f}）"
+    )
     L.append("")
     v = r["verdict"]
     L.append(f"  判定：{v['text']}   （退出码 {v['code']}）")
     if v["bonferroni_k"] > 1:
-        L.append(f"  多重比较：同时改 {v['bonferroni_k']} 个参数 → 校正后 α = "
-                 f"{v['alpha_adjusted']:.4f}（单参数门槛应变严）")
+        L.append(
+            f"  多重比较：同时改 {v['bonferroni_k']} 个参数 → 校正后 α = {v['alpha_adjusted']:.4f}（单参数门槛应变严）"
+        )
     L.append(f"  {v['note']}")
     L.append("")
     L.append("  读法：MDE = 以当前样本量「能被检出」的最小改善。若 MDE 远大于你观察到的 Δ，")
@@ -647,8 +688,14 @@ def build_parser() -> argparse.ArgumentParser:
         description="规则/常数改动的样本外验证门（B1）",
         epilog="退出码：0 样本外支持 / 1 证据不足 / 2 样本外显著变差 / 3 用法或可见性错误",
     )
-    p.add_argument("--set", dest="sets", action="append", default=[], metavar="MODULE.ATTR=VALUE",
-                   help="声明一个改动（可重复），如 scanner.nextday_prob.OR_MARKED=1.56")
+    p.add_argument(
+        "--set",
+        dest="sets",
+        action="append",
+        default=[],
+        metavar="MODULE.ATTR=VALUE",
+        help="声明一个改动（可重复），如 scanner.nextday_prob.OR_MARKED=1.56",
+    )
     p.add_argument("--evaluator", default=DEFAULT_EVALUATOR, choices=sorted(EVALUATORS))
     p.add_argument("--top-n", type=int, default=DEFAULT_TOP_N, help=f"每日取前 N（默认 {DEFAULT_TOP_N}）")
     p.add_argument("--train", type=int, default=DEFAULT_TRAIN_DAYS)
@@ -700,9 +747,17 @@ def main() -> int:
     conn.row_factory = sqlite3.Row
     try:
         result = run(
-            conn, overrides, evaluator=args.evaluator, top_n=args.top_n,
-            train_days=args.train, test_days=args.test, threshold=args.threshold,
-            n_boot=args.boot, alpha=args.alpha, seed=args.seed, days=args.days,
+            conn,
+            overrides,
+            evaluator=args.evaluator,
+            top_n=args.top_n,
+            train_days=args.train,
+            test_days=args.test,
+            threshold=args.threshold,
+            n_boot=args.boot,
+            alpha=args.alpha,
+            seed=args.seed,
+            days=args.days,
         )
     finally:
         conn.close()

@@ -425,10 +425,12 @@ class TestApplyAndRestore:
         import scanner.config as cfg
 
         o1, o2 = cfg.WF_EMBARGO_DAYS, cfg.NEXTDAY_HIT_THRESHOLD
-        journal = rv.apply_overrides([
-            rv.parse_override("scanner.config.WF_EMBARGO_DAYS=7"),
-            rv.parse_override("scanner.config.NEXTDAY_HIT_THRESHOLD=9"),
-        ])
+        journal = rv.apply_overrides(
+            [
+                rv.parse_override("scanner.config.WF_EMBARGO_DAYS=7"),
+                rv.parse_override("scanner.config.NEXTDAY_HIT_THRESHOLD=9"),
+            ]
+        )
         try:
             assert cfg.WF_EMBARGO_DAYS == 7 and cfg.NEXTDAY_HIT_THRESHOLD == 9
         finally:
