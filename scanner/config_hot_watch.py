@@ -41,6 +41,11 @@ HOT_VOLUME_NO_DATA = 0.15  # 量比/换手全缺失时的中性低分
 HOT_HIGHLIGHT_STREAK = 3  # 连续出现 ≥ 该轮数 → 终端标记「★重点关注」
 HOT_STREAK_RESET_DAYS = 7  # 超过该天数未再命中的记录清理（防表无限增长）
 
+# 美感门（2026-09-14）：日线走势「漂亮」判定，过滤掉走势不佳的候选
+# 与终选参考区（final_pick）的美感门同源，但独立开关控制
+# 1=开启（默认，过滤掉日线不漂亮的候选），0=关闭
+HOT_BEAUTY_GATE_ENABLED = int(os.environ.get("RTS_HOT_BEAUTY_GATE", "1"))
+
 # 单轮工作量上限（保护主循环刷新节拍：主线 60s 一轮，本区不得显著拖长）
 HOT_ENRICH_LIMIT = 60  # 每轮最多补全行情的候选数（预筛后按 rank_change 取前 N）
 HOT_BATCH_SIZE = 50  # 批量行情单批 symbol 数（雪球 batch/quote 上限附近）
@@ -75,4 +80,5 @@ __all__ = [
     "HOT_BATCH_SIZE",
     "HOT_DETAIL_TOP",
     "HOT_DISPLAY_TOP",
+    "HOT_BEAUTY_GATE_ENABLED",
 ]

@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from scanner.config import (
+    HOT_BEAUTY_GATE_ENABLED,
     HOT_DETAIL_TOP,
     HOT_DISPLAY_TOP,
     HOT_ENRICH_LIMIT,
@@ -63,6 +64,7 @@ from scanner.config import (
     HOT_W_VOLUME,
     now_beijing,
 )
+from scanner.trend_beauty import evaluate_daily_trend
 from scanner.utils import EXTERNAL_FAILURES, is_gem, is_st, to_float
 
 logger = logging.getLogger(__name__)
@@ -327,13 +329,23 @@ def prefilter_board(raw_items: Sequence[dict]) -> list[dict]:
 def build_candidates(
     board_items: Sequence[dict],
     quotes: dict[str, dict],
+    conn=None,
 ) -> tuple[list[HotCandidate], list[HotCandidate]]:
     """合并榜单 + 补全行情 → 通过硬排除的候选（已按评分降序）。
 
     返回 (通过候选, 被排除候选)。被排除者仅用于调试/日志，不落库。
+    conn: 数据库连接，用于美感门获取 K 线数据（可选，None 时跳过美感门）。
     """
+    from scanner.db.queries import get_cached_klines
+
     passed: list[HotCandidate] = []
     rejected: list[HotCandidate] = []
+
+    # 预批量获取 K 线数据（美感门开启时）
+    klines_map: dict = {}
+    if HOT_BEAUTY_GATE_ENABLED and conn is not None:
+        symbols = [str(it.get("symbol") or "") for it in board_items if it.get("symbol")]
+        klines_map = get_cached_klines(conn, symbols)
 
     for idx, it in enumerate(board_items, 1):
         symbol = str(it.get("symbol") or "")
@@ -365,6 +377,16 @@ def build_candidates(
         if reason:
             rejected.append(c)
             continue
+
+        # 美感门过滤（2026-09-14）：日线走势不漂亮 → 排除
+        if HOT_BEAUTY_GATE_ENABLED and conn is not None:
+            kline = klines_map.get(symbol)
+            daily_fail, _score, daily_detail = evaluate_daily_trend(kline)
+            if daily_fail:
+                c.reasons = [f"美感门: {daily_detail}"]
+                rejected.append(c)
+                continue
+
         c.score = compute_score(c)
         c.reasons = build_reasons(c)
         passed.append(c)
@@ -492,7 +514,7 @@ def run_hot_watch(
     if not quotes:
         return []
 
-    passed, _rejected = build_candidates(targets, quotes)
+    passed, _rejected = build_candidates(targets, quotes, conn)
     if not passed:
         # 仍推进轮次并清零连击：否则「全员被排除」的一轮不会打断上一轮的连击链，
         # 停牌/急跌导致的空榜会被误读为「持续重点」。
