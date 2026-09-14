@@ -46,6 +46,13 @@ HOT_STREAK_RESET_DAYS = 7  # 超过该天数未再命中的记录清理（防表
 # 1=开启（默认，过滤掉日线不漂亮的候选），0=关闭
 HOT_BEAUTY_GATE_ENABLED = int(os.environ.get("RTS_HOT_BEAUTY_GATE", "1"))
 
+# 资金流过滤（2026-09-14）：主力净流出占比 ≤ 阈值 → 过滤
+# 与 enhancer「资金流出」标签同源（FUND_OUTFLOW_NET_PCT = -8.0%）
+# 1=开启（默认，过滤资金流出的候选），0=关闭
+HOT_FUND_FLOW_FILTER_ENABLED = int(os.environ.get("RTS_HOT_FUND_FLOW_FILTER", "1"))
+# 资金流过滤阈值（主力净占比 %），低于此值视为资金流出
+HOT_FUND_FLOW_FILTER_THRESHOLD = -8.0
+
 # 单轮工作量上限（保护主循环刷新节拍：主线 60s 一轮，本区不得显著拖长）
 HOT_ENRICH_LIMIT = 60  # 每轮最多补全行情的候选数（预筛后按 rank_change 取前 N）
 HOT_BATCH_SIZE = 50  # 批量行情单批 symbol 数（雪球 batch/quote 上限附近）
@@ -81,4 +88,6 @@ __all__ = [
     "HOT_DETAIL_TOP",
     "HOT_DISPLAY_TOP",
     "HOT_BEAUTY_GATE_ENABLED",
+    "HOT_FUND_FLOW_FILTER_ENABLED",
+    "HOT_FUND_FLOW_FILTER_THRESHOLD",
 ]

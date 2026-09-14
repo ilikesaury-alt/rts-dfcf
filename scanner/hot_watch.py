@@ -41,6 +41,8 @@ from scanner.config import (
     HOT_DETAIL_TOP,
     HOT_DISPLAY_TOP,
     HOT_ENRICH_LIMIT,
+    HOT_FUND_FLOW_FILTER_ENABLED,
+    HOT_FUND_FLOW_FILTER_THRESHOLD,
     HOT_LIMIT_DOWN_TOLERANCE,
     HOT_LIMIT_PCT_GEM,
     HOT_LIMIT_PCT_MAIN,
@@ -334,18 +336,21 @@ def build_candidates(
     """合并榜单 + 补全行情 → 通过硬排除的候选（已按评分降序）。
 
     返回 (通过候选, 被排除候选)。被排除者仅用于调试/日志，不落库。
-    conn: 数据库连接，用于美感门获取 K 线数据（可选，None 时跳过美感门）。
+    conn: 数据库连接，用于美感门/资金流过滤获取数据（可选，None 时跳过）。
     """
-    from scanner.db.queries import get_cached_klines
+    from scanner.db.queries import get_cached_klines, get_fund_flow_pct_map
 
     passed: list[HotCandidate] = []
     rejected: list[HotCandidate] = []
 
-    # 预批量获取 K 线数据（美感门开启时）
+    # 预批量获取 K 线数据（美感门开启时）和资金流数据（资金流过滤开启时）
     klines_map: dict = {}
+    flow_pct_map: dict[str, float] = {}
+    symbols = [str(it.get("symbol") or "") for it in board_items if it.get("symbol")]
     if HOT_BEAUTY_GATE_ENABLED and conn is not None:
-        symbols = [str(it.get("symbol") or "") for it in board_items if it.get("symbol")]
         klines_map = get_cached_klines(conn, symbols)
+    if HOT_FUND_FLOW_FILTER_ENABLED and conn is not None:
+        flow_pct_map = get_fund_flow_pct_map(conn, symbols)
 
     for idx, it in enumerate(board_items, 1):
         symbol = str(it.get("symbol") or "")
@@ -384,6 +389,14 @@ def build_candidates(
             daily_fail, _score, daily_detail = evaluate_daily_trend(kline)
             if daily_fail:
                 c.reasons = [f"美感门: {daily_detail}"]
+                rejected.append(c)
+                continue
+
+        # 资金流过滤（2026-09-14）：主力净流出占比 ≤ 阈值 → 排除
+        if HOT_FUND_FLOW_FILTER_ENABLED:
+            ff_pct = flow_pct_map.get(symbol)
+            if ff_pct is not None and ff_pct <= HOT_FUND_FLOW_FILTER_THRESHOLD:
+                c.reasons = [f"资金流出: 主力净占比{ff_pct:.1f}%"]
                 rejected.append(c)
                 continue
 
