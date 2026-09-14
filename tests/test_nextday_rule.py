@@ -257,7 +257,6 @@ def test_scanview_rule_result_default():
     sv = ScanView(
         main_rows=[],
         comeback_rows=[],
-        core_dip_rows=[],
         nextday_mark={},
         breakout_mark={},
         flow_pct_map={},
@@ -265,7 +264,6 @@ def test_scanview_rule_result_default():
         adj_picks=None,
         weak=False,
         show_comeback=False,
-        show_core_dip=False,
         warnings=[],
     )
     assert sv.rule_result is None

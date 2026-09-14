@@ -1,8 +1,12 @@
-"""v2 池选区排序与展示截断单测（2026-09-04）。
+"""v2 池选区排序口径单测（2026-09-04）。
 
 覆盖 _v2_pool_sort_key 三级排序键（排名升序 → 低吸标签优先 → 涨幅降序，
-2026-09-04 修改）、_entry_dip_labels 单源回退链与 ScanView.pool_total
-全量计数字段。纯函数测试，不依赖 DB/网络。
+2026-09-04 修改）与 _entry_dip_labels 单源回退链。纯函数测试，不依赖 DB/网络。
+
+2026-09-14：v2 池选**展示区**已隐藏（渲染块与 ScanView.pool_rows/pool_total 字段
+一并移除），但这两个纯函数被**有意保留**以便恢复该区时零成本复原 —— 因此本文件的
+纯函数断言全部继续有效。原先的 `test_scanview_pool_total_default`（断言
+ScanView.pool_total 默认 0 / pool_rows 默认 None）已随字段移除而删除。
 """
 
 import pytest
@@ -39,16 +43,19 @@ class TestV2PoolSortKey:
         assert _v2_pool_sort_key(False, 20.0, 1) < _v2_pool_sort_key(True, -20.0, None)
 
     def test_pool_display_top_configured(self):
-        """展示截断常量存在且为正（config 单一阈值源）。"""
+        """展示截断常量存在且为正（config 单一阈值源；展示区隐藏后仍保留备用）。"""
         assert isinstance(V2_POOL_DISPLAY_TOP, int)
         assert V2_POOL_DISPLAY_TOP > 0
 
-    def test_scanview_pool_total_default(self):
-        """ScanView.pool_total 默认 0，pool_rows 默认 None（向后兼容旧构造方）。"""
+    def test_scanview_constructs_without_removed_display_fields(self):
+        """ScanView 现状可构造且不再接受已移除字段（防有人把死字段加回来）。
+
+        2026-09-14 移除：core_dip_rows / show_core_dip（低吸区隐藏）、pool_rows /
+        pool_total（v2 隐藏）、decision_lines（决策层删除）。
+        """
         view = ScanView(
             main_rows=[],
             comeback_rows=[],
-            core_dip_rows=[],
             nextday_mark={},
             breakout_mark={},
             flow_pct_map={},
@@ -56,11 +63,10 @@ class TestV2PoolSortKey:
             adj_picks=None,
             weak=False,
             show_comeback=False,
-            show_core_dip=False,
             warnings=[],
         )
-        assert view.pool_total == 0
-        assert view.pool_rows is None
+        for gone in ("pool_total", "pool_rows", "core_dip_rows", "show_core_dip", "decision_lines"):
+            assert not hasattr(view, gone), f"{gone} 已随展示区移除，不应再是 ScanView 字段"
 
 
 class TestEntryDipLabels:

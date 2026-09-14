@@ -277,6 +277,10 @@ def _v2_pool_sort_key(has_label: bool, pct: float, rank: float | None) -> tuple:
     - 主键：榜上排名升序（rank 缺失即掉榜票 10**9 沉底）
     - 次键：命中任一低吸标签（超跌反转/缩量回调/均线支撑/放量突破/弱转强）的票进前段
     - 三键：涨幅降序消除平局洗牌
+
+    2026-09-14：v2 池选**展示区**已隐藏，故本函数当前**无生产调用方**（保留以便
+    恢复该区时零成本复原，纯函数无依赖；单测仍在 tests/test_v2_pool_display.py）。
+    隐藏的是渲染与 ScanView 字段，不是这套排序口径本身。
     """
     return (rank if rank is not None else 10**9, 0 if has_label else 1, -pct)
 
@@ -286,6 +290,9 @@ def _entry_dip_labels(entry: RecommendationRow | dict) -> list[str]:
 
     统一走 entry_dims（ranking.py）：实时候选 dims → DB score_breakdown → 空。
     排序与行尾渲染共用，杜绝两处口径漂移。
+
+    2026-09-14：唯一调用方 `_v2_pool_sort_key` 随 v2 展示区隐藏而失去生产消费，
+    故本函数现状同样只在单测中被调用（行尾渲染自 2026-09-03 起已不再画 💡 标签）。
     """
     labels = entry_dims(entry).get("dip_labels")
     return labels if isinstance(labels, list) and labels else []
@@ -309,11 +316,12 @@ def _entry_sector(entry: RecommendationRow | dict) -> str:
 
 
 def _beauty_mark_for(entry: RecommendationRow | dict, kline: list | None) -> str:
-    """v1/v2 行尾走势标记：满足美感 → "美"；否则空（不标丑，2026-09-09 用户口径）。
+    """v1 池选行尾走势标记：满足美感 → "美"；否则空（不标丑，2026-09-09 用户口径）。
 
     判定单源在 trend_beauty.beauty_mark（与美感门同源、fail-open 一致：数据缺失
     不标，避免误导）。纯展示，不改过滤/排序/落库。2026-09-09 数据裁决后硬拦
     默认关，本标记保留作买入体验参考（"稳而不爆"）。开关 RTS_TREND_MARK。
+    2026-09-14：v2 池选展示区隐藏后，本标记现状只落在 v1 池选行。
     """
     if not TREND_MARK_ENABLED:
         return ""
@@ -328,10 +336,11 @@ def _entry_row_suffix(
 ) -> str:
     """行尾可变区统一渲染：风险标记 → 资金流/连板 extra → ⚡ → 走势标记。
 
-    优选池行与核心低吸区行共用（2026-08-30 收口）——此前仅补充区渲染这些
+    优选池行与低吸区行共用（2026-08-30 收口）——此前仅补充区渲染这些
     标记，主视图优选池行丢失 ⚡/资金流信息。顺序与原 _print_priority_row 一致。
     （💡低吸标签行尾渲染已按需求移除——只用于排序不展示，2026-09-03）
-    beauty: 走势美感标记（_beauty_mark_for 产出；仅 v1/v2 池选行传入）。
+    beauty: 走势美感标记（_beauty_mark_for 产出；仅 v1 池选行传入——v2 池选展示区
+    已于 2026-09-14 隐藏）。
 
     2026-09-14：原 `marked`（🎯 次日大涨画像）入参已删除 —— 🎯 的行尾渲染自
     2026-09-04 停用（见下方注释），该参数遂成哑参（调用方一直在传、函数体不读）。
@@ -425,6 +434,10 @@ COLS_POOL: tuple = (
     ("评分", 4, "r"),
     ("策略", 5, "l"),
 )
+# 详情列规格：渲染实现是 render._print_priority_row。
+# 2026-09-14 现状：其两个消费方（核心方向低吸区 / 回马枪区）都无展示区 ——
+# 故本 spec 与 _print_priority_row 一样当前无生产调用方，**有意保留**（恢复低吸区
+# 只需复原渲染块，不必重写列口径与对齐逻辑）。
 COLS_DETAIL: tuple = (
     ("#", 3, "r"),
     ("代码", 12, "l"),
@@ -483,7 +496,6 @@ class ScanView:
 
     main_rows: list[MainRow]
     comeback_rows: list[RecommendationRow]
-    core_dip_rows: list[RecommendationRow]
     nextday_mark: dict[tuple[str, str], bool]
     breakout_mark: dict[tuple[str, str], bool]
     flow_pct_map: dict[str, float]
@@ -491,22 +503,19 @@ class ScanView:
     adj_picks: list[tuple[str, str, bool]] | None
     weak: bool
     show_comeback: bool
-    show_core_dip: bool
     warnings: list[str]
     rule_result: RuleResult | None = None
-    # v2 池选区行（双跑同屏，2026-09-02）：独立于主表（两套排序口径不同），None = 今日无 pool_pick。
-    pool_rows: list[MainRow] | None = None
-    # 池选全量票数（2026-09-03）：pool_rows 只展示前 V2_POOL_DISPLAY_TOP 行，
-    # 终端尾部注明与飞书头部「池选 N 只」计数用全量值，避免截断后失真。
-    pool_total: int = 0
-    # 决策层文本行（2026-09-04）：≤3 只短名单或空仓原因，渲染在所有区块之前。
-    # 由 build_scan_view 计算并落库 decision_picks（终端/飞书共用同一份）。
-    decision_lines: list[str] | None = None
+    # 2026-09-14 按用户决策移除的字段（需复原见 git 历史）：
+    #   core_dip_rows / show_core_dip —— 核心方向低吸展示区已隐藏；
+    #   pool_rows / pool_total        —— v2 池选展示区已隐藏；
+    #   decision_lines                —— 决策层已整体删除。
+    # 上述区域的数据（pool_pick_recs / core_dip_recs）仍参与终选参考区合池，
+    # 只是不再单独成区渲染。
     # 终选参考区文本行（2026-09-04）：v1+v2 合池 → 档0画像评级 ≤3 只 + 落选理由。
-    # 与决策层互补（决策层答「该不该买」，终选区答「必须持仓时买谁」），渲染在决策层之后。
     final_pick_lines: list[str] | None = None
-    # 走势美感标记（2026-09-09）：{(symbol, category): "✓走势"|"⚠走势"}，v1/v2 池选行
-    # 行尾渲染（_entry_row_suffix beauty 参数）。与终选美感门同源判定，纯展示预判。
+    # 走势美感标记（2026-09-09）：{(symbol, category): "美"|""}，v1 池选行行尾渲染
+    # （_entry_row_suffix beauty 参数）。与终选美感门同源判定，纯展示预判。
+    # 2026-09-14：v2 池选展示区已隐藏，故现状只服务 v1 池选行。
     beauty_mark: dict[tuple[str, str], str] | None = None
     # 沪深飙升·极有可能大涨独立区（2026-09-11 自 rts-xueqiu 合入）：HotCandidate 列表。
     # 与主线（创业板/next_day 口径）完全解耦——样本面更宽（沪深主板+创业板）、口径为
@@ -514,6 +523,6 @@ class ScanView:
     # None = 本轮未启用或无结果（渲染时整区跳过，不留空表）。
     hot_rows: list | None = None
     # 展示层资金流出硬门（2026-09-14）剔除的行数：主力净占比 ≤ FUND_OUTFLOW_NET_PCT
-    # 的票不进任何展示区（v1/v2 池选 / 核心低吸 / 回马枪 / 终选输入），终端与飞书同源。
+    # 的票不进任何展示区（v1 池选 / 回马枪 / 终选输入），终端与飞书同源。
     # 纯展示层过滤——不改 excluded、不落库，回测/归因样本口径不受影响。
     flow_filtered: int = 0

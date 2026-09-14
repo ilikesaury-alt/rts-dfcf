@@ -3,15 +3,18 @@
 被测语义（三句话）：
   1. 判定单源 = `ranking.is_fund_outflow`，阈值 = `config_sources.FUND_OUTFLOW_NET_PCT`(-8.0)，
      回退链 = 行内 dims/score_breakdown → `market_extra_cache` 当日全市场快照，缺失 fail-open。
-  2. 过滤发生在 `view.build_scan_view` **一处**，故 v1 池选 / v2 池选 / 核心低吸 / 回马枪
-     全区一致（终端与飞书共用同一份 ScanView）。
+  2. 过滤发生在 `view.build_scan_view` **一处**，压在 `today_recs` 上，故所有下游集合
+     （v1 池选 / 回马枪 / 终选输入）自动继承（终端与飞书共用同一份 ScanView）。
   3. 过滤**只影响展示**：`recommendations.excluded` 必须保持 0，回测/归因样本口径不受污染。
+
+2026-09-14 更新：v2 池选与核心方向低吸的展示区已隐藏，故原先针对
+`view.pool_rows` / `view.core_dip_rows` 的两条断言改为断言「过滤计数不受展示区减少影响」
+与 `comeback_rows` 口径 —— 门本身仍在 `today_recs` 层生效，只是少了两个可见出口。
 """
 
 import sqlite3
 
 from scanner.config import FUND_OUTFLOW_NET_PCT, now_beijing
-from scanner.decision import build_decision_picks
 from scanner.ranking import entry_fund_flow_pct, is_fund_outflow
 from scanner.view.assemble import build_scan_view
 
@@ -99,12 +102,17 @@ def _seed_five(conn: sqlite3.Connection, today: str) -> None:
 
 
 def _sym_set(rows) -> set:
-    """main_rows/pool_rows 是 MainRow（.entry），core_dip/comeback 是裸 RecommendationRow。"""
+    """main_rows 是 MainRow（.entry），comeback 是裸 RecommendationRow。"""
     return {r.entry["symbol"] if hasattr(r, "entry") else r["symbol"] for r in rows}
 
 
 def test_build_scan_view_filters_every_region():
-    """v1 / v2 / 核心低吸 / 回马枪四个区域同时生效（不是只剔某一处）。"""
+    """过滤在 today_recs 单一入口生效，所有展示区一致继承（不是只剔某一处）。
+
+    2026-09-14：v2 池选与核心低吸展示区隐藏后，可见出口只剩 v1 主表与回马枪；
+    三条判定路径（行内流出 / 快照流出 / 回马枪流出）仍各剔一只，计数不变——
+    这正是「展示区减少不应影响门本身」的守护。
+    """
     conn = _rec_db()
     today = now_beijing().date().isoformat()
     _seed_five(conn, today)
@@ -114,8 +122,6 @@ def test_build_scan_view_filters_every_region():
     assert view is not None
     assert view.flow_filtered == 3, "行内流出 + 快照流出 + 回马枪流出 应各剔一只"
     assert _sym_set(view.main_rows) == {"SZ300002"}
-    assert _sym_set(view.pool_rows or []) == set(), "v2 池选只靠快照判定的票也必须被剔"
-    assert _sym_set(view.core_dip_rows) == {"SZ300004"}, "无数据 fail-open：不得误剔"
     assert _sym_set(view.comeback_rows) == set()
 
 
@@ -147,57 +153,8 @@ def test_flow_gate_disabled_by_switch(monkeypatch):
     assert _sym_set(view.main_rows) == {"SZ300001", "SZ300002"}
 
 
-# ── 决策层：直连 DB 取数，必须独立施加同一门 ──
-
-
-def _decision_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.execute(
-        "CREATE TABLE recommendations ("
-        " id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, time TEXT,"
-        " symbol TEXT, name TEXT, category TEXT, score REAL, percent REAL,"
-        " excluded INTEGER DEFAULT 0)"
-    )
-    conn.execute("CREATE TABLE market_index_log (date TEXT PRIMARY KEY, index_pct REAL)")
-    conn.execute(
-        "CREATE TABLE market_extra_cache ("
-        " symbol TEXT NOT NULL, date TEXT NOT NULL, data_type TEXT NOT NULL,"
-        " payload_json TEXT NOT NULL, updated TEXT NOT NULL, PRIMARY KEY(symbol, data_type))"
-    )
-    return conn
-
-
-DECISION_DAY = "2026-09-04"
-
-
-def test_decision_flow_gate_blocks_pick():
-    """闸门开 + 类别可准入，但头名资金流出 → 被剔且计数可见。"""
-    conn = _decision_db()
-    conn.executemany(
-        "INSERT OR REPLACE INTO market_index_log (date, index_pct) VALUES (?, ?)",
-        [("2026-08-28", 0.5), ("2026-08-31", -0.2), ("2026-09-01", 0.3), ("2026-09-03", 0.6), (DECISION_DAY, 1.0)],
-    )
-    conn.execute(
-        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, excluded)"
-        " VALUES (?, '10:00', 'SZ300001', '头名流出', 'rebound', 90, 3.0, 0)",
-        (DECISION_DAY,),
-    )
-    conn.execute(
-        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, excluded)"
-        " VALUES (?, '10:00', 'SZ300002', '次名正常', 'rebound', 80, 3.0, 0)",
-        (DECISION_DAY,),
-    )
-    conn.execute(
-        "INSERT INTO market_extra_cache (symbol, date, data_type, payload_json, updated)"
-        " VALUES ('SZ300001', ?, 'fund_flow', '{\"main_pct\": -9.5}', ?)",
-        (DECISION_DAY, now_beijing().isoformat()),
-    )
-    conn.commit()
-
-    result = build_decision_picks(conn, today=DECISION_DAY)
-
-    assert result["allowed"] is True
-    assert result["flow_blocked"] == 1
-    picked = {p["symbol"] for p in result["picks"]}
-    assert "SZ300001" not in picked, "决策层漏剔 = 用户照单下单，代价最大"
-    assert "SZ300002" in picked
+# ── 决策层资金流门（2026-09-14 随决策层删除）──
+# 原先这里还有 `test_decision_flow_gate_blocks_pick`：决策层直连 DB 取数、不经
+# ScanView，故必须独立施加一次资金流出门，否则会出现「终端主表已剔掉、决策推荐里
+# 还在」。决策层删除后该函数（build_decision_picks）已不存在，测试一并移除。
+# ⚠ 若日后重建决策层，必须恢复这条断言：头名流出必须被剔（漏剔 = 用户照单下单）。

@@ -138,10 +138,11 @@ def create_index(name: str, ddl: str, desc: str, mid: str) -> Migration:
 
 
 def _up_observation_schema(conn: sqlite3.Connection) -> None:
-    """观测表（scan_rejections outcome 列 + pool_log + decision_picks）。
+    """观测表（scan_rejections outcome 列 + pool_log）。
 
     实现仍在 `db.dal.ensure_observation_schema`（orchestrator 每轮也会直接调它兜底），
     此处只是把它纳入版本编排——两处指向同一实现，不存在第二份 DDL。
+    2026-09-14：decision_picks 随决策层删除，不再是本迁移的目标表之一。
     """
     from scanner.db.dal import ensure_observation_schema
 
@@ -149,11 +150,9 @@ def _up_observation_schema(conn: sqlite3.Connection) -> None:
 
 
 def _check_observation_schema(conn: sqlite3.Connection) -> bool:
-    return (
-        _has_column(conn, "scan_rejections", "nd10_pct")
-        and _has_table(conn, "pool_log")
-        and _has_table(conn, "decision_picks")
-    )
+    # 2026-09-14：`decision_picks` 已从建成目标中移除，故校验条件同步去掉它 ——
+    # 否则全新库永远校验不通过，本迁移每轮重复执行（幂等但白跑）。
+    return _has_column(conn, "scan_rejections", "nd10_pct") and _has_table(conn, "pool_log")
 
 
 def _up_market_extra_cache_pk(conn: sqlite3.Connection) -> None:
@@ -259,7 +258,7 @@ MIGRATIONS: list[Migration] = [
     ),
     Migration(
         id="m011_observation_schema",
-        desc="观测表：scan_rejections outcome 列 + pool_log + decision_picks",
+        desc="观测表：scan_rejections outcome 列 + pool_log（2026-09-14 起 decision_picks 不再建表）",
         check=_check_observation_schema,
         up=_up_observation_schema,
     ),

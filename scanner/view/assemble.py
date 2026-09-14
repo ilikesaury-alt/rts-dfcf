@@ -5,16 +5,13 @@ from scanner.config import (
     COMEBACK_DISPLAY_MAX,
     COMEBACK_DISPLAY_MIN_MAIN,
     CORE_DIP_CATEGORY,
-    CORE_DIP_DISPLAY_MAX,
     CORE_PULLBACK_MAX,
     CORE_PULLBACK_MIN,
-    DECISION_LAYER_ENABLED,
     DISPLAY_MAX_TODAY_PCT,
     FINAL_PICK_ENABLED,
     FUND_FLOW_HARD_FILTER_ENABLED,
     TACTICS_SELL_TAGS,
     TREND_MARK_ENABLED,
-    V2_POOL_DISPLAY_TOP,
 )
 from scanner.core_themes import core_stock_symbols
 from scanner.database import (
@@ -151,13 +148,8 @@ def build_scan_view(
     last_ranks: dict[str, int] | None = None,
     weak: bool | None = None,
     hot_rows: list | None = None,
-    decision_lines: list[str] | None = None,
 ):
     """构建一次扫描的展示视图（纯计算，不 print、不写库）：读今日推荐并算出档位/标记/排序。
-
-    decision_lines: 主循环已落库并算好的决策层文本行（2026-09-13）。传入则不重算；
-    **不传时本函数只算不落库**（`scanner.decision.decision_lines` 是纯的）。
-    这样"看一屏终端"就不再有写库副作用，将来出 HTML 报告也不会顺带落一次库。
 
     返回值供 render_terminal / 飞书卡片共用，保证各出口看到同一份选择。
     无 conn 或今日无推荐时返回 None（由调用方决定是否渲染）。
@@ -246,7 +238,8 @@ def build_scan_view(
                 continue
             _kept_recs.append(_e)
         today_recs = _kept_recs
-        # 全被剔时不提前返回：继续走完决策层/终选区（它们可能给出「空仓 + 原因」，
+        # 全被剔时不提前返回：继续走完终选区（它可能给出「门关 + 原因」，
+        # 比直接少一整块输出更可诊断），只是各展示区天然为空。
         # 比直接少一整块输出更可诊断），只是各展示区天然为空。
 
     # 🎯 标记预计算（2026-08-14 起 map 化：排序+渲染各调一次 is_nextday_marked 会触发
@@ -272,9 +265,11 @@ def build_scan_view(
     # momentum/short_term，不含 comeback/pullback）。
     comeback_recs = [e for e in today_recs if e["category"] == "comeback"]
     core_dip_recs = [e for e in today_recs if e["category"] == CORE_DIP_CATEGORY]
-    # 双跑同屏（2026-09-02 用户确认）：主表显 v1 五桶；v2 pool_pick 独立成区
-    # （view.pool_rows）——两套排序口径不同（v1 档位序 / v2 涨幅降序），合并单表
-    # 会破坏各自语义。RTS_PIPELINE 不再影响显示层。
+    # 双跑同屏（2026-09-02 用户确认）：主表显 v1 五桶；v2 pool_pick 原独立成区
+    # （两套排序口径不同：v1 档位序 / v2 涨幅降序，合并单表会破坏各自语义）。
+    # 2026-09-14：v2 池选展示区已隐藏，但 pool_pick_recs 仍单独取出——它是终选参考区
+    # 合池输入之一，混进 main_recs 会同时改变 v1 主表内容与终选结果。
+    # RTS_PIPELINE 不再影响显示层。
     main_recs = [e for e in today_recs if e["category"] not in ("comeback", CORE_DIP_CATEGORY, V2_CATEGORY)]
     pool_pick_recs = [e for e in today_recs if e["category"] == V2_CATEGORY]
 
@@ -403,63 +398,12 @@ def build_scan_view(
         # 并显式告警（代码 bug 则冒泡到主循环记录完整 traceback）。
         warnings.append(f"v1 池选构建中断（数据缺失）: {type(_e).__name__}: {_e}")
 
-    # v1 主表 symbol 集合（用于 v2 池选去重：已在主表展示的票不重复展示）
-    _v1_symbols = {row.entry["symbol"] for row in main_rows}
-
-    # v2 池选区（双跑同屏）：排名升序 → 低吸标签优先 → 涨幅降序（_v2_pool_sort_key，2026-09-04 修改），
-    # 行结构与主表同源（复用 MainRow，终端/飞书共用同一份排序结果）。只展示前
-    # V2_POOL_DISPLAY_TOP 行（全量快照仍在 pool_log/落库），pool_total 保留全量计数。
-    pool_rows: list[MainRow] = []
-    pool_total = 0
-    # 减仓类纪律标签（卖出信号）：有这些标签的票从 v2 池选区过滤掉
-    try:
-        # 预计算行情/排名各一次（排序与行构建复用同一份，消除原每行两次 entry_display_quote）。
-        # 过滤掉已在 v1 主表展示的票（避免重复展示）和有减仓类纪律标签的票。
-        _pool_scored: list[tuple[int, float, RecommendationRow, float, float, float | None, Candidate | None]] = []
-        for _pe in pool_pick_recs:
-            if _pe["symbol"] in _v1_symbols:
-                continue  # 已在 v1 主表，跳过
-            # 检查减仓类纪律标签
-            _fc = fresh_candidate(_pe)
-            if _fc and _fc.tactic_tags and any(t in TACTICS_SELL_TAGS for t in _fc.tactic_tags):
-                continue  # 有减仓类标签，跳过
-            _pct_row, _cur_row = entry_display_quote(_pe)
-            # 不追涨过滤（2026-09-04 用户决策）：今日实时涨幅超过阈值的票不进 v2 池选区
-            # （过滤在 pool_total 计数前，终端「池选 N 只」与飞书头部计数同源不含被滤票）。
-            if _pct_row > DISPLAY_MAX_TODAY_PCT:
-                continue
-            _rk_disp = _pe.get("live_rank") or _pe.get("rank")
-            if _rk_disp is None and _fc:
-                _rk_disp = _fc.stock.rank
-            _rk_val = _rk_disp if isinstance(_rk_disp, (int, float)) and _rk_disp > 0 else None
-            # 统一复合评分（2026-09-08）：v2 池选与 v1 主表使用同一排序口径
-            _cs = composite_score(_pe, conn, accum_map=accum_map)
-            _tier = composite_tier(_pe, conn, accum_map=accum_map)
-            _pool_scored.append((_tier, _cs, _pe, _pct_row, _cur_row, _rk_val, _fc))
-        _pool_scored.sort(key=lambda t: (t[0], -t[1], CAT_DISPLAY_PRIORITY.get(t[2].get("category", ""), 99)))
-        pool_total = len(_pool_scored)
-        for _tier, _cs, _pe, _pct_row, _cur_row, _rk_val, _fresh_c in _pool_scored[:V2_POOL_DISPLAY_TOP]:
-            _av = None
-            if _fresh_c and _fresh_c.kline:
-                _av = _fresh_c.kline.accumulated_pct
-            if _av is None:
-                _av = accum_map.get(_pe["symbol"])
-            pool_rows.append(
-                MainRow(
-                    entry=_pe,
-                    rank=_rk_val,
-                    accum=_av,
-                    score=_pe.get("score", 0) or 0,
-                    composite_score=_cs,
-                    core=bool(_pe.get("_core_stock")),
-                    cat_label=_stg_map.get(_pe["category"], "?"),
-                    pct=_pct_row,
-                    current=_cur_row,
-                    sector=_entry_sector(_pe),
-                )
-            )
-    except EXTERNAL_FAILURES as _pex:
-        warnings.append(f"v2 池选区构建中断（数据缺失）: {type(_pex).__name__}: {_pex}")
+    # v2 池选区（双跑同屏，2026-09-02）已于 2026-09-14 按用户决策**隐藏**：终端与
+    # 飞书两处展示区均已移除，故这里也不再构建 pool_rows / pool_total。
+    # ⚠ 注意：pool_pick_recs 本身**仍要保留** —— 它是终选参考区合池输入之一
+    # （见下方 final_pick 调用），删掉它会改变终选结果。此处只去掉展示结构。
+    # （沿革：原实现按「排名升序 → 低吸标签优先 → 涨幅降序」排序后截前
+    #  V2_POOL_DISPLAY_TOP 行。需复原见 git 历史。）
 
     # 动态推荐（2026-08-27）：根据近端主表档次日表现自动判断 regime，弱市下把
     # momentum/known_new_face/new_face 类🎯 从推荐序列剔除、优先 核心低吸/回马枪/
@@ -484,35 +428,27 @@ def build_scan_view(
         warnings.append(f"动态推荐计算中断（数据缺失）: {type(_e).__name__}: {_e}")
         _adj = None
 
-    # 显示门（回马枪 / 核心低吸）：主区条数 ≤ COMEBACK_DISPLAY_MIN_MAIN 或弱市 regime 时展示。
-    # 弱市时动态推荐把这两类排到前列，需强制展示对应区（覆盖主区密集隐藏门），修复
-    # 「推荐了却看不到标的」割裂；强市下它们排在末尾，保持原隐藏门（主区密集即藏）。
-    _show_lowbuy = len(main_recs) <= COMEBACK_DISPLAY_MIN_MAIN
-    _show_comeback = bool(comeback_recs) and (_show_lowbuy or _weak)
+    # 显示门（核心低吸）：原为「主区条数 ≤ COMEBACK_DISPLAY_MIN_MAIN 或弱市 regime 时
+    # 展示核心方向低吸区」。2026-09-14 按用户决策**隐藏该展示区**，故 show_core_dip 门
+    # 与对应字段一并移除。
+    # ⚠ core_dips 本身仍在算：它是终选参考区合池输入之一（见下方 final_pick 调用），
+    # 且 core_dips 排序仍按 _core_dip_entry_quality 保持原口径，只是不再单独成区渲染。
+    # 回马枪区（comeback）虽无展示区，其排序结果同样进入终选合池，故一并保留。
+    _show_comeback = bool(comeback_recs) and (len(main_recs) <= COMEBACK_DISPLAY_MIN_MAIN or bool(_weak))
     # 2026-08-24：回马枪区内按资金流优先（ranking.comeback_sort_key 单源，与 today_report
     # 回马枪小节同源防漂移）——▲▲回流可取在前、▼▼背离回避劣后，次键评分。
     _comeback_sorted = sorted(comeback_recs, key=lambda x: comeback_sort_key(x, flow_pct_map))
     core_dips: list[RecommendationRow] = list(core_dip_recs)
     core_dips.sort(key=_core_dip_entry_quality)
-    _show_core_dip = bool(core_dips) and (_show_lowbuy or _weak)
 
     # 次日大涨高概率规则（纯 DB-only 计算，不改 score / 不进综合排序）
     # conn 此时已非 None（函数入口对 conn is None 提前返回 None）
     _rule_result = scan_rule(conn)
 
-    # 决策层（2026-09-04）：≤3 只短名单/空仓判定，fail-open 不阻断展示主流程。
-    # 2026-09-13（测评 A2）：落库副作用已**移出视图层**——本函数不再写
-    # decision_picks。落库由主循环调 decision.build_and_persist_decision 显式完成，
-    # 并把算好的行经 `decision_lines` 参数注入（同源同一次计算，不重复读库）。
-    # 未注入时才自己算一份**纯的**（不落库），供 feishu / 测试 / 回放安全调用。
-    _decision_lines = decision_lines
-    if DECISION_LAYER_ENABLED and _decision_lines is None:
-        try:
-            from scanner.decision import decision_lines as _build_decision
-
-            _decision_lines = _build_decision(conn)
-        except EXTERNAL_FAILURES as _de:
-            warnings.append(f"决策层构建失败: {type(_de).__name__}: {_de}")
+    # 决策层（2026-09-04 ~ 2026-09-14）已按用户决策**整体删除**：短名单/空仓判定、
+    # decision_picks 落库、终端与飞书「今日决策」区块、decision_lines 注入参数全部移除。
+    # 仅保留 scanner.decision.market_gate（择时门），由终选参考区用于标注
+    # 「门开」/「门关·仅观察参考」。需复原见 git 历史。
 
     # 终选参考区（2026-09-05 升级）：v1+v2+回马/低吸 合池 → 次日大涨概率终选 ≤2 只
     # + 落选理由 + 周期标签（概率排序单源 scanner.nextday_prob，去相关在 final_pick）。
@@ -535,7 +471,6 @@ def build_scan_view(
     return ScanView(
         main_rows=main_rows,
         comeback_rows=_comeback_sorted[:COMEBACK_DISPLAY_MAX],
-        core_dip_rows=core_dips[:CORE_DIP_DISPLAY_MAX],
         nextday_mark=nextday_mark,
         breakout_mark=breakout_mark,
         flow_pct_map=flow_pct_map,
@@ -543,12 +478,8 @@ def build_scan_view(
         adj_picks=_adj,
         weak=_weak,
         show_comeback=_show_comeback,
-        show_core_dip=_show_core_dip,
         warnings=warnings,
         rule_result=_rule_result,
-        pool_rows=pool_rows,
-        pool_total=pool_total,
-        decision_lines=_decision_lines,
         final_pick_lines=_final_pick_lines,
         beauty_mark=beauty_mark,
         hot_rows=hot_rows,

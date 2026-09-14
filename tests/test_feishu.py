@@ -68,8 +68,10 @@ def _fake_view(symbols):
     """构造最小 ScanView 替身，只含 _view_symbols / build_feishu_card 读取的字段。
 
     main_rows 项需有 .entry(dict) / .rank / .accum / .score；
-    flow_pct_map / show_comeback / comeback_rows / show_core_dip / core_dip_rows /
-    pool_rows / weak / warnings 为渲染所需最小集合。
+    flow_pct_map / show_comeback / comeback_rows / weak / warnings 为渲染所需最小集合。
+
+    2026-09-14：`show_core_dip` / `core_dip_rows` / `pool_rows` / `pool_total` 四个桩字段
+    已移除 —— 卡片不再画 v2 池选与核心低吸两节，头部也不再读池选计数。
     """
 
     class _Row:
@@ -85,10 +87,6 @@ def _fake_view(symbols):
             self.flow_pct_map = {}
             self.show_comeback = False
             self.comeback_rows = []
-            self.show_core_dip = False
-            self.core_dip_rows = []
-            self.pool_rows = None
-            self.pool_total = 0  # 池选全量计数（2026-09-03 feishu 头部/标题读取）
             self.weak = False
             self.warnings = []
 

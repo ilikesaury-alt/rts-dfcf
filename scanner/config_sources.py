@@ -164,6 +164,8 @@ CONCEPT_NOISE_BOARD_SUFFIXES: tuple[str, ...] = ("板块",)
 
 # v2 池选区展示条数（2026-09-03）：池为「榜上全量快照」（matcher 只标注不淘汰），
 # 终端/飞书只渲染涨幅降序前 N 行，尾部注明总数——过滤属消费层，落库/pool_log/回测不受影响。
+# 2026-09-14：v2 池选**展示区已隐藏**（用户决策），本常量当前无生产消费方（保留以便
+# 恢复该区时零成本复原；`_v2_pool_sort_key` 同理保留）。
 V2_POOL_DISPLAY_TOP = 10
 
 # 显示层「不追涨」过滤（2026-09-04 用户决策）：主表+v2 池选区里今日实时涨幅超过该值
@@ -176,22 +178,17 @@ V2_POOL_DISPLAY_TOP = 10
 # 8-12% 才是真陷阱（n=211），旧值 14 只砍掉了陷阱上方的噪音/好区。
 DISPLAY_MAX_TODAY_PCT = _env_float("RTS_DISPLAY_MAX_TODAY_PCT", 8.0)
 
-# ── 决策层（2026-09-04）：≤3 只「现在值得买什么」短名单，置顶渲染 ──
-# 三道门：市场门（创业板指>0 且 5日>-3%，实测唯一正期望状态）→ 类别先验门
-# （仅 core_dip/kNF/rebound 等正超额类别）→ 稀缺配额（全局 ≤3）。
-# 空仓是合法输出。详见 scanner/decision.py 模块 docstring 与 docs/review-2026-09-04.md。
-# 回滚杠杆：RTS_DECISION_LAYER=0 关闭。
-DECISION_LAYER_ENABLED = _env_flag("RTS_DECISION_LAYER", True)
-
-# 决策层分时门（2026-09-09 上线，当日双窗口实测后降级）：数据结论（
-# beauty_gate_eval.py，2307 样本）——分时走弱桶（≤-3）hit 反而全场最高（11.1%/11.2%），
-# 「低吸不接回落刀」对次日大涨口径被证伪，故默认关闭（仅作可选纪律）。
-# 重开：RTS_DECISION_BEAUTY_INTRADAY=1。判定单源 scanner.trend_beauty。
-DECISION_INTRADAY_BEAUTY_ENABLED = _env_flag("RTS_DECISION_BEAUTY_INTRADAY", False)
+# ── 决策层已于 2026-09-14 整体删除（用户决策）──
+# 删除内容：≤3 只短名单/空仓判定、类别先验门、配额截断、decision_picks 落库采集、
+# 终端与飞书的「今日决策」区块，以及 DECISION_LAYER_ENABLED /
+# DECISION_INTRADAY_BEAUTY_ENABLED 两个开关。
+# 仅保留 scanner.decision.market_gate（择时门）——终选参考区靠它标注「门关·仅观察参考」。
+# 复原见 git 历史。
 
 # ── 终选参考区（2026-09-04；2026-09-05 升级为概率+周期感知终选）──
-# 与决策层互补：决策层答「现在该不该买」（门关→空仓），终选区答「若必须持仓买谁」
-# （无论门开关都给结论）。评级单源复用 today_report._tier0_verdict（已回测口径），
+# 定位：回答「若必须持仓买谁」（无论市况门开关都给结论）。市场门状态由
+# scanner.decision.market_gate 提供，用于标题区分「门开」/「门关·仅观察参考」。
+# 评级单源复用 today_report._tier0_verdict（已回测口径），
 # 排序单源用 scanner.nextday_prob（当日口径次日大涨概率，朴素贝叶斯式 odds 模型）；
 # 买满 ≥2 只时按驱动概念去相关（同主题第 2 只劣后）。
 # 2026-09-14：删除「momentum 负先验永禁」——那是平均超额口径，与终选排序的 hit 率
@@ -268,8 +265,6 @@ __all__ = [
     "CONCEPT_NOISE_BOARD_SUFFIXES",
     "V2_POOL_DISPLAY_TOP",
     "DISPLAY_MAX_TODAY_PCT",
-    "DECISION_LAYER_ENABLED",
-    "DECISION_INTRADAY_BEAUTY_ENABLED",
     "FINAL_PICK_ENABLED",
     "FINAL_PICK_MAX",
     "FINAL_PICK_REJECT_TOP",

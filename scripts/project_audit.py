@@ -61,7 +61,6 @@ SAMPLE_TABLES = (
     "leaderboard_log",
     "scan_quality_log",
     "watch_pool",
-    "decision_picks",
     "triple_barrier_labels",
     "market_index_log",
 )

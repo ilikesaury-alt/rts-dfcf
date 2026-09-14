@@ -269,43 +269,32 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
 
     2026-08-29：此前 _build_card 读「本轮候选桶」（new_faces/momentum/...），终端
     display_priority 读「DB 当日累计推荐」——同一只票可能一边排第 1、另一边不出现。
-    现统一由 build_scan_view 供数；核心低吸区是否出现也跟随终端门控
-    （view.show_core_dip），保证「终端看得到什么，卡片就推什么」。
+    现统一由 build_scan_view 供数，保证「终端看得到什么，卡片就推什么」。
 
-    分节口径（2026-09-14 核对）：卡片只画 今日决策/终选参考 → v1 池选 → v2 池选 →
-    核心方向低吸，与终端渲染的区块一一对应。**回马枪（comeback）两处都没有展示区**
-    （ca91d21 起移除，见 docs/CORE-FLOW.md §十-1），故它既不是分节门控、也不再进入
-    `_view_symbols` 去重集合（2026-09-14 对齐）。
+    分节口径（2026-09-14 二次核对）：卡片只画 终选参考 → v1 池选，与终端渲染的区块
+    一一对应。同期按用户决策移除三个区块：**决策层**（整体删除）、**v2 池选** 与
+    **核心方向低吸**（隐藏）。**回马枪（comeback）两处都没有展示区**（ca91d21 起移除，
+    见 docs/CORE-FLOW.md §十-1），故它既不是分节门控、也不进 `_view_symbols` 去重集合。
 
     top_n 默认 FEISHU_TOP_N，与 _view_symbols 共用同一常量，去重集合与展示条数永不同源漂移。
     """
     now = now_beijing().strftime("%H:%M")
     main = view.main_rows[:top_n]
-    pool_rows = (view.pool_rows or [])[:top_n]
-    # 池选计数用全量值（view.pool_total，2026-09-03）：view.pool_rows 已被展示层截到
-    # 前 V2_POOL_DISPLAY_TOP 行，头部「池选 N 只」若用 len(pool_rows) 会失真。
-    pool_count = view.pool_total if view.pool_total else len(pool_rows)
 
     env_tag = " | 🔴大盘弱势·谨慎" if view.weak else ""
-    pool_n = f" + 池选 {pool_count}" if pool_count else ""
-    header_text = f"**{now}** | 优选 {len(main)}{pool_n} 只{env_tag}"
+    header_text = f"**{now}** | 优选 {len(main)} 只{env_tag}"
     elements: list[dict] = [{"tag": "div", "text": {"tag": "lark_md", "content": header_text}}]
 
     sections: list[tuple[str, list[str]]] = []
-    # 决策层置顶（2026-09-04）：≤3 只短名单或空仓原因，卡片第一区块——
-    # 今日决策 + 终选参考合并展示（与终端 display 同源）：一个区块用子标题区分。
-    decision_lines = getattr(view, "decision_lines", None)
+    # 终选参考置顶（2026-09-04 上线；2026-09-14 决策层删除后本区独占首区块）。
+    # 市况门状态由 final_pick 标题携带（「⚠大盘门关·仅观察参考」）——决策层行已不存在，
+    # 标题是门状态的唯一可见来源。
     final_pick_lines = getattr(view, "final_pick_lines", None)
-    if decision_lines or final_pick_lines:
-        merged = ["**◆ 今日决策 — 该不该买 + 买谁（空仓是合法输出）**"]
-        if decision_lines:
-            merged.append("── 市场门 ──")
-            merged.extend(decision_lines[1:])
-            merged.append("── 决策推荐 ──")
-        if final_pick_lines:
-            _gate_open = any("允许开仓" in dl for dl in (decision_lines or []))
-            merged.append("── 终选参考（合池·次日概率排序）──" if _gate_open else "── 终选参考（门关·仅观察参考）──")
-            merged.extend(final_pick_lines[1:])
+    if final_pick_lines:
+        _gate_open = "大盘门关" not in (final_pick_lines[0] if final_pick_lines else "")
+        merged = ["**◆ 终选参考 — 若必须持仓买谁（空仓是合法输出）**"]
+        merged.append("── 终选参考（合池·次日概率排序）──" if _gate_open else "── 终选参考（门关·仅观察参考）──")
+        merged.extend(final_pick_lines[1:])
         elements.append(
             {
                 "tag": "div",
@@ -320,20 +309,8 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
     ]
     if pool_lines:
         sections.append(("◆ v1 池选", pool_lines))
-    if pool_rows:
-        _pool_top = len(pool_rows)
-        _pool_cnt = f"（前{_pool_top}/共{pool_count}只）" if pool_count > _pool_top else ""
-        sections.append(
-            (
-                f"◆ v2 池选{_pool_cnt}",
-                [
-                    _row_line(row.entry, view, rank=row.rank, accum=row.accum, score=_to_score(row.score))
-                    for row in pool_rows
-                ],
-            )
-        )
-    if view.show_core_dip:
-        sections.append(("◆ 核心方向低吸", [_row_line(e, view) for e in view.core_dip_rows]))
+    # 「◆ v2 池选」与「◆ 核心方向低吸」两个分节已于 2026-09-14 按用户决策隐藏
+    # （与终端 render_terminal 同步移除）。需复原见 git 历史。
 
     rendered = False
     for title, lines in sections:
@@ -345,11 +322,11 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
     if rendered:
         elements.append({"tag": "hr"})
 
-    # 降级告警（regime 判定失败 / 优选池构建中断等）与终端同源可见，避免静默降级。
+    # 降级告警（regime 判定失败等）与终端同源可见，避免静默降级。
     # 展示层资金流出硬门（2026-09-14）同理：卡片少了几只，必须说明为什么（与终端同源，
     # 过滤本身在 build_scan_view 一处完成，本处只做告知）。
     _notes = list(view.warnings)
-    # getattr 兜底：与上方 decision_lines/final_pick_lines 同款——轻量 view 桩（测试/回放）
+    # getattr 兜底：与上方 final_pick_lines 同款——轻量 view 桩（测试/回放）
     # 可能只实现部分字段，缺 flow_filtered 时按「未过滤」处理，不因此抛错。
     _flow_filtered = getattr(view, "flow_filtered", 0)
     if _flow_filtered:
@@ -383,21 +360,23 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
 def _view_symbols(view: ScanView) -> set[str]:
     """推送去重用的票集合 == 卡片实际展示的票（严格对齐 build_feishu_card 的分节门控）。
 
-    取自 main_rows[:FEISHU_TOP_N] / pool_rows[:FEISHU_TOP_N] / core_dip（与
-    build_feishu_card 的分节门控同源），避免此前「卡片推了但去重没算到」的
-    双处硬编码 drift；两者共用 FEISHU_TOP_N，改一处即两处同时生效。
+    取自 main_rows[:FEISHU_TOP_N]（与 build_feishu_card 的分节门控同源），避免
+    「卡片推了但去重没算到」的双处硬编码 drift；两者共用 FEISHU_TOP_N，改一处即两处同时生效。
+
+    ⚠ 去重集合的语义是「卡片推了什么」，就该只含卡片画得出的票。故本函数必须与
+    build_feishu_card 同步收缩：
 
     2026-09-14：**移除 comeback 分支**（原先按 view.show_comeback 并入
     view.comeback_rows）。回马枪自 ca91d21（2026-09-02）起终端与卡片两处展示区均已
-    移除（见 docs/CORE-FLOW.md §十-1），把它算进去重集合会让「仅回马枪票变化」被
+    移除（见 docs/CORE-FLOW.md §十-1），把它算进去会让「仅回马枪票变化」被
     should_push 判成票集变化而触发一次内容毫无回马枪的推送（受 FEISHU_MIN_INTERVAL
-    节流）。去重集合的语义是「卡片推了什么」，就该只含卡片画得出的票。
+    节流）。
+
+    2026-09-14（同日第二批）：**移除 pool_rows 与 core_dip 两分支** —— v2 池选与
+    核心方向低吸两个展示区按用户决策隐藏，卡片不再画这两节。若仍把它们计入，
+    同样会因「卡片画不出的票变了」而多发一张内容不变的卡片（纯噪音推送）。
     """
-    syms = {row.entry["symbol"] for row in view.main_rows[:FEISHU_TOP_N]}
-    syms |= {row.entry["symbol"] for row in (view.pool_rows or [])[:FEISHU_TOP_N]}
-    if view.show_core_dip:
-        syms |= {e["symbol"] for e in view.core_dip_rows}
-    return syms
+    return {row.entry["symbol"] for row in view.main_rows[:FEISHU_TOP_N]}
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -12,8 +12,12 @@
 `category != "momentum"` 硬编码剔除）而 hit 率 10.0%（高于基准）。系统会把 hit 率高的
 票排在前面，再用硬编码整体删掉。
 
-现在规定：**`config_scoring.CATEGORY_HIT_RATE` 是唯一手抄源**，其余两处由它派生。
+现在规定：**`config_scoring.CATEGORY_HIT_RATE` 是唯一手抄源**，其余由它派生。
 本文件把这条约束钉死——任何"再长出一份手抄副本"或"派生公式被改歪"的改动都会 fail。
+
+2026-09-14 后续（决策层删除）：第三张表随 `scanner/decision.py` 的决策层一起消失，
+本文件相应删掉「决策层准入/顺序」那两节守护（原 §3/§4）。**口径约束本身不变**——
+现在只剩两位派生消费方（nextday_prob 别名、COMPOSITE_CAT_BASE），守护照旧逐项复算。
 
 （数值漂移由 tests/test_nextday_calib.py 的代码常数↔快照守护负责，与本文件的
 「结构/派生关系」守护互补。）
@@ -25,8 +29,6 @@ import math
 
 import pytest
 
-from scanner import decision as dm
-from scanner.categories import MAIN_TABLE_CATEGORIES, SCORE_DESCENDING_BY_CAT
 from scanner.config import (
     CATEGORY_HIT_RATE,
     CATEGORY_HIT_RATE_DEFAULT,
@@ -100,65 +102,13 @@ def test_cat_base_sign_follows_hit_rate_vs_baseline():
             assert base < 0, f"{cat}: hit {rate:.3f} 低于基准，cat_base 应为负，实为 {base}"
 
 
-# ── 3. 决策层准入/顺序必须由单源派生 ──
-
-
-def test_decision_gate_is_hit_rate_above_baseline_over_main_table():
-    """决策层准入 = 主表类别 ∩ hit 率 > 全体基准（唯一口径，2026-09-14）。"""
-    expected = {cat for cat in MAIN_TABLE_CATEGORIES if CATEGORY_HIT_RATE.get(cat, 0.0) > CATEGORY_HIT_RATE_DEFAULT}
-    assert frozenset(expected) == dm.DECISION_GATED_CATEGORIES
-    assert expected, "准入集合不应为空（基准可能取错）"
-
-
-def test_decision_caps_keys_match_gate_exactly():
-    """配额表的键集合必须与准入集合**逐项相等**。
-
-    配对失效时：多一个键 = 某个已被 hit 率淘汰的类别仍在决策层取数（口径回退）；
-    少一个键 = 新达标的类别被静默忽略。两种都该在这里 fail，逼一次显式决策。
-    """
-    assert set(dm.DECISION_CAT_CAPS) == set(dm.DECISION_GATED_CATEGORIES)
-
-
-def test_decision_specs_ordered_by_hit_rate_desc():
-    """输出顺序 = hit 率降序（配额截断时先验强者优先占位）。"""
-    ordered = [cat for cat, _, _ in dm.DECISION_CATEGORY_SPECS]
-    rates = [CATEGORY_HIT_RATE[c] for c in ordered]
-    assert rates == sorted(rates, reverse=True), f"决策层类别顺序未按 hit 率降序: {ordered}"
-    assert set(ordered) == set(dm.DECISION_CAT_CAPS)
-
-
-def test_decision_direction_from_registry_single_source():
-    """分数排序方向必须取自 categories.SCORE_DESCENDING_BY_CAT（不得在 decision 手写）。
-
-    kNF 是分数反指（低分档 hit 更高）→ 升序；其余降序。
-    """
-    for cat, _cap, direction in dm.DECISION_CATEGORY_SPECS:
-        expected = "desc" if SCORE_DESCENDING_BY_CAT.get(cat, True) else "asc"
-        assert direction == expected, f"{cat}: 方向 {direction} ≠ 注册表单源 {expected}"
-
-
-# ── 4. 方向性：momentum 由低于基准升为高于基准这件事必须显式钉住 ──
-
-
-def test_momentum_is_admitted_because_hit_rate_beats_baseline():
-    """★ 回归哨兵：momentum 准入的依据是 hit 率，不是「曾经被永禁」。
-
-    2026-09-14 前 momentum 被平均超额（−0.70%）口径无条件剔除；改为 hit 率口径后
-    hit 10.0% > 基准 7.8% → 进入决策层准入。若有人重新按均值口径把它踢出去，
-    本断言会 fail —— 届时必须回到口径决策，而不是单方面改代码。
-    """
-    assert CATEGORY_HIT_RATE["momentum"] > CATEGORY_HIT_RATE_DEFAULT
-    assert "momentum" in dm.DECISION_GATED_CATEGORIES
-    assert "momentum" in {cat for cat, _, _ in dm.DECISION_CATEGORY_SPECS}
-
-
-def test_core_dip_excluded_by_gate_not_by_hardcode():
-    """core_dip 因 hit 率低于基准而不在准入内（而非被某处硬编码删除）。
-
-    它在终选区与观察区照常展示，只是不参与「替你下单的那 3 只」。
-    """
-    assert CATEGORY_HIT_RATE["core_dip"] < CATEGORY_HIT_RATE_DEFAULT
-    assert "core_dip" not in dm.DECISION_GATED_CATEGORIES
+# ── 3. 已删除的守护（2026-09-14 决策层删除）──
+# 原 §3「决策层准入/顺序必须由单源派生」（4 个测试）与 §4「momentum 准入 / core_dip
+# 不入准入」（2 个测试）守护的是 decision.DECISION_GATED_CATEGORIES /
+# DECISION_CAT_CAPS / DECISION_CATEGORY_SPECS。这些常量随决策层整体删除，故守护一并移除。
+# ⚠ 若日后重建「决策层」，必须同时恢复这几条断言：准入 = 主表类别 ∩ hit 率 > 基准，
+# 顺序 = hit 率降序，方向取 categories.SCORE_DESCENDING_BY_CAT 单源。
+# 需复原见 git 历史（删除决策层的那个提交）。
 
 
 if __name__ == "__main__":  # pragma: no cover

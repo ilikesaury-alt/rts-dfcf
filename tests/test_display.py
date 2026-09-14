@@ -150,22 +150,24 @@ def test_market_extra_str_zt_kept():
 
 
 def _main_lines(out: str) -> list[str]:
-    """v1 池选+v2 池选区行（核心低吸区之前），用于测试断言。
-    （动态推荐/回马枪/次日大涨规则区已移除，2026-09-03）
-    今日决策+终选参考合并区（2026-09-08）位于 v1 之前且含个股行，剥离该区块保留 v1/v2 部分。"""
-    main_part = out.split("◆ 核心方向低吸")[0]
-    head, sep, rest = main_part.partition("◆ 今日决策")
+    """v1 池选区行，用于测试断言。
+
+    终选参考区（含个股行）渲染在 v1 之前，剥离该区块保留 v1 部分。
+    （2026-09-14：决策层区块已删除，v2 池选与核心低吸区块已隐藏 —— 原先用来切分的
+    「◆ 今日决策」「◆ v2 池选」「◆ 核心方向低吸」三个锚点都不再出现。）"""
+    main_part = out
+    head, sep, rest = main_part.partition("◆ 终选参考")
     if sep:
-        _, sep2, v12 = rest.partition("◆ v1 池选")
-        main_part = head + ("◆ v1 池选" + v12 if sep2 else "")
+        _, sep2, v1 = rest.partition("◆ v1 池选")
+        main_part = head + ("◆ v1 池选" + v1 if sep2 else "")
     return [ln for ln in main_part.splitlines() if "SZ30000" in ln]
 
 
 def _main_line(out: str, sym: str) -> str:
-    """首个含 sym 的主表/分区行：剥掉今日决策区后再取首匹配。
+    """首个含 sym 的主表行：剥掉终选参考区后再取首匹配。
 
-    2026-09-08 终选参考合并为今日决策区，渲染在 v1 之前——直接对全输出取首个含
-    sym 的行会命中终选行而非主表行。今日决策区结束于下一个「◆」标题行。
+    终选参考区渲染在 v1 之前且含个股行——直接对全输出取首个含 sym 的行会命中终选行
+    而非主表行。该区块结束于下一个「◆」标题行。
     """
     lines: list[str] = []
     in_decision = False
@@ -176,7 +178,7 @@ def _main_line(out: str, sym: str) -> str:
                 in_decision = False
             else:
                 continue
-        if plain.startswith("◆ 今日决策"):
+        if plain.startswith("◆ 终选参考"):
             in_decision = True
             continue
         lines.append(ln)  # 保留原始行（含 ANSI），供测试断言高亮码
@@ -210,8 +212,8 @@ def test_display_priority_fund_flow_icon_from_db(capsys):
     conn.executemany(
         "INSERT INTO recommendations (date, time, symbol, name, category, score, percent) VALUES (?, ?, ?, ?, ?, ?, ?)",
         [
-            (today, "13:00", "SZ300001", "有数据", "core_dip", 60, 2.0),
-            (today, "13:00", "SZ300002", "无数据", "core_dip", 55, 1.0),
+            (today, "13:00", "SZ300001", "有数据", "rebound", 60, 2.0),
+            (today, "13:00", "SZ300002", "无数据", "rebound", 55, 1.0),
         ],
     )
     conn.execute(
@@ -239,61 +241,31 @@ def _set_market_index(conn, index_pct: float):
     conn.commit()
 
 
-def test_display_priority_core_dip_shown_when_main_sparse(monkeypatch, capsys):
-    """核心方向低吸显示门控（阈值 COMEBACK_DISPLAY_MIN_MAIN=5，与回马枪同款）：
-    显示条件 = 主区稀少（≤5）；主表 >5 条一律隐藏，无论大盘强弱。"""
-    import json as _json
-
-    def _run(main_n, idx):
-        conn = _rec_db()
-        for i in range(1, main_n + 1):
-            _insert_rec_cat(conn, f"SZ3000{i}", f"反弹{i}", "rebound", 50)
-        conn.execute(
-            "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, score_breakdown) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                now_beijing().date().isoformat(),
-                "13:00",
-                "SZ300099",
-                "低吸",
-                "core_dip",
-                70,
-                3.0,
-                _json.dumps({"run": 0.2, "pullback": -0.1, "flow_pct": 5.0}),
-            ),
-        )
-        _set_market_index(conn, idx)
-        conn.commit()
-        disp_mod.display_priority(conn, today_pool={})
-        return capsys.readouterr().out
-
-    # 主区 1 条（≤ 阈值 5）→ 显示 + 标准行渲染
-    out = _run(1, -2.5)
-    assert "◆ 核心方向低吸" in out
-    dip_line = next(ln for ln in out.split("◆ 核心方向低吸", 1)[1].splitlines() if "SZ300099" in ln)
-    assert "DIP" in dip_line
-    # 核心低吸行尾不再附加 20日累计/回撤/主力 后缀（展示精简）
-    assert "20日" not in dip_line
-    assert "回撤" not in dip_line
-    assert "主力" not in dip_line
-    # 主区 1 条 + 强市 → 显示（只看主表数量）
-    assert "◆ 核心方向低吸" in _run(1, 1.5)
-    # 主区 5 条（= 阈值）→ 显示（弱市/强市一致）
-    assert "◆ 核心方向低吸" in _run(5, 1.5)
-    assert "◆ 核心方向低吸" in _run(5, -2.5)
-    # 主区充足（6 条）> 阈值 5 → 隐藏（无论弱市/强市）
-    assert "◆ 核心方向低吸" not in _run(6, 1.5)
-    assert "◆ 核心方向低吸" not in _run(6, -2.5)
+# ── 核心方向低吸区的显示门控（2026-09-14 展示区已隐藏）──
+# 原 `test_display_priority_core_dip_shown_when_main_sparse` 断言「主区条数 ≤
+# COMEBACK_DISPLAY_MIN_MAIN(5) 或弱市 → 展示低吸区，否则隐藏」这一整套门控，
+# 以及 `test_display_priority_recommended_region_shown_when_main_dense`（弱市下主区
+# 密集仍强制展示，修复「推荐了却看不到标的」割裂）。两个展示区均已按用户决策隐藏，
+# 故断言一并移除。
+# ⚠ 注意：`assemble` 里 core_dips 的排序（_core_dip_entry_quality）仍在跑——它是终选
+# 参考区合池输入。被删的只是「这个区要不要画出来」的门控。
+# 需复原见 git 历史。
 
 
 # ── 综合排序实时行情覆盖：live_quotes 对所有行优先（候选/非候选一致）──
 def _cand_in_pool(symbol: str, pct: float, cur: float, rank: int) -> Candidate:
+    """构造池内候选快照。
+
+    2026-09-14：category 由 `core_dip` 改为 `rebound` —— 这些用例原先借核心方向低吸区
+    渲染，该区已隐藏；且 `ranking.fresh_candidate` 要求候选 category 与推荐行一致
+    （不一致视同无候选），故必须与 `_insert_rec` 的 rebound 同步。
+    """
     k = KlineSummary(trend="", accumulated_pct=0.0, volume_ratio=1.0, bottom_confirmed=False, score=50, dimensions={})
     return Candidate(
         stock=StockInfo(
             symbol=symbol, name="测试", code=symbol[-6:], percent=pct, current=cur, value=1e8, rank_change=0, rank=rank
         ),
-        category="core_dip",
+        category="rebound",
         score=60,
         reason="",
         kline=k,
@@ -301,10 +273,17 @@ def _cand_in_pool(symbol: str, pct: float, cur: float, rank: int) -> Candidate:
 
 
 def _insert_rec(conn, symbol: str, name: str, percent: float):
+    """插入一条主表类别（rebound）的推荐行，用于「掉榜/重启行」类渲染断言。
+
+    2026-09-14 类别由 `core_dip` 改为 `rebound`：原先这些用例借核心方向低吸区作为
+    渲染载体（注释「回马枪区已移除 → 低吸行改走低吸区验证同一渲染规则」），该展示区
+    已按用户决策隐藏，而 core_dip 不进 v1 主表，故改走 v1 主表验证同一套行渲染规则。
+    类别与这些断言无关（live 行情覆盖 / 排名回填 / 每行现价列），故不影响被测语义。
+    """
     today = now_beijing().date().isoformat()
     conn.execute(
         "INSERT INTO recommendations (date, time, symbol, name, category, score, percent) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (today, "13:00", symbol, name, "core_dip", 60, percent),
+        (today, "13:00", symbol, name, "rebound", 60, percent),
     )
     conn.commit()
 
@@ -446,36 +425,63 @@ def test_rank_delta_str():
     assert "-5" in down5 and disp_mod.ANSI["GREEN"] in down5
 
 
-def test_display_priority_rank_delta_from_last_ranks(monkeypatch, capsys):
-    """综合排序「排名」列显示较上一轮扫描的雪球榜单排名变化（+N 升 / -N 降）。"""
-    conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "升名", "core_dip", 60)
-    _insert_rec_cat(conn, "SZ300002", "降名", "core_dip", 55)
-    _insert_rec_cat(conn, "SZ300003", "稳名", "core_dip", 50)
-    pool = {
-        "SZ300001": _cand_in_pool("SZ300001", 2.0, 10.0, 5),
-        "SZ300002": _cand_in_pool("SZ300002", 2.0, 10.0, 8),
-        "SZ300003": _cand_in_pool("SZ300003", 2.0, 10.0, 6),
+# 2026-09-14：本组用例原**借「核心方向低吸区」间接覆盖** `_print_priority_row` 的排名列
+# （低吸区渲染用的就是 COLS_DETAIL + 该函数）。该展示区已按用户决策隐藏，而 v1 主表走
+# `_emit_pool_table_row`/COLS_POOL（排名列是裸数字，既不高亮也不显示 +N/-N）——
+# `_main_line` 如今只会命中主表行，原断言随之失真（不再是"通过"），故改为直调被测函数。
+# `_print_priority_row` 现无生产调用方但**有意保留**（见其 docstring：COLS_DETAIL 的唯一
+# 渲染实现，删了会让"恢复低吸区"变成重写）。
+def _priority_entry(sym: str, name: str, *, live_rank: int | None, category: str = "rebound") -> dict:
+    """构造 `_print_priority_row` 的最小 entry（键名与生产 RecommendationRow 一致）。"""
+    return {
+        "symbol": sym,
+        "name": name,
+        "category": category,
+        "score": 60,
+        "percent": 2.0,
+        "accumulated_pct": 0.0,
+        "time": "10:30",
+        "first_time": "10:30",
+        "live_rank": live_rank,
+        "_candidate": None,
     }
-    # 上一轮排名：SZ300001 8→5 升 3 名；SZ300002 5→8 降 3 名；SZ300003 不变
-    last_ranks = {"SZ300001": 8, "SZ300002": 5, "SZ300003": 6}
-    disp_mod.display_priority(conn, today_pool=pool, last_ranks=last_ranks)
-    out = capsys.readouterr().out
-    lines = {sym: _main_line(out, sym) for sym in ["SZ300001", "SZ300002", "SZ300003"]}
-    assert "5+3" in lines["SZ300001"]
-    assert "8-3" in lines["SZ300002"]
-    assert "6" in lines["SZ300003"] and "6+" not in lines["SZ300003"] and "6-" not in lines["SZ300003"]
 
 
-def test_display_priority_rank_delta_absent_by_default(monkeypatch, capsys):
+def _priority_rows(out: str) -> dict[str, str]:
+    """直调 `_print_priority_row` 后的输出 → {symbol: 该行文本（含 ANSI）}。"""
+    rows: dict[str, str] = {}
+    for ln in out.splitlines():
+        for sym in ("SZ300001", "SZ300002", "SZ300003"):
+            if sym in ln:
+                rows[sym] = ln
+    return rows
+
+
+def test_priority_row_rank_delta_from_last_ranks(capsys):
+    """「排名」列显示较上一轮扫描的雪球榜单排名变化（+N 升 / -N 降）。
+
+    名次刻意取 > TOP40_THRESHOLD：避免 TOP40 高亮色码插进「名次」与「变化」之间
+    （高亮行为另由下方 test_priority_row_rank_top40_* 覆盖）。
+    """
+    # 上一轮排名：SZ300001 48→45 升 3 名；SZ300002 45→48 降 3 名；SZ300003 不变
+    last_ranks = {"SZ300001": 48, "SZ300002": 45, "SZ300003": 46}
+    for i, (sym, name, rank) in enumerate(
+        [("SZ300001", "升名", 45), ("SZ300002", "降名", 48), ("SZ300003", "稳名", 46)], 1
+    ):
+        disp_mod._print_priority_row(
+            _priority_entry(sym, name, live_rank=rank), i, {}, last_ranks=last_ranks
+        )
+    lines = _priority_rows(capsys.readouterr().out)
+    assert "45+3" in lines["SZ300001"]
+    assert "48-3" in lines["SZ300002"]
+    assert "46" in lines["SZ300003"] and "46+" not in lines["SZ300003"] and "46-" not in lines["SZ300003"]
+
+
+def test_priority_row_rank_delta_absent_by_default(capsys):
     """未传 last_ranks（缺省 None）时排名列仅显示名次，不带 +N/-N（回归旧显示）。"""
-    conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "仅名次", "core_dip", 60)
-    pool = {"SZ300001": _cand_in_pool("SZ300001", 2.0, 10.0, 5)}
-    disp_mod.display_priority(conn, today_pool=pool)
-    out = capsys.readouterr().out
-    line = _main_line(out, "SZ300001")
-    assert "5" in line and "5+" not in line and "5-" not in line
+    disp_mod._print_priority_row(_priority_entry("SZ300001", "仅名次", live_rank=45), 1, {})
+    line = _priority_rows(capsys.readouterr().out)["SZ300001"]
+    assert "45" in line and "45+" not in line and "45-" not in line
 
 
 # ── 榜单 TOP40 排名高亮（2026-08-12）：名次 ≤ TOP40_THRESHOLD 加粗+红色提示 ──
@@ -499,36 +505,29 @@ def _force_ansi(monkeypatch):
         monkeypatch.setattr(_m, "ANSI", _ansi)
 
 
-def test_display_priority_rank_top40_highlight(monkeypatch, capsys):
+def test_priority_row_rank_top40_highlight(monkeypatch, capsys):
     """名次在雪球榜单前 TOP40 内时排名数字加粗+红色高亮；40 名之外不高亮。"""
     _force_ansi(monkeypatch)
-    conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "榜内40", "core_dip", 60)
-    _insert_rec_cat(conn, "SZ300002", "榜外41", "core_dip", 55)
-    pool = {
-        "SZ300001": _cand_in_pool("SZ300001", 2.0, 10.0, 40),
-        "SZ300002": _cand_in_pool("SZ300002", 2.0, 10.0, 41),
-    }
-    disp_mod.display_priority(conn, today_pool=pool)
-    out = capsys.readouterr().out
-    line_in = _main_line(out, "SZ300001")
-    line_out = _main_line(out, "SZ300002")
+    disp_mod._print_priority_row(_priority_entry("SZ300001", "榜内40", live_rank=40), 1, {})
+    disp_mod._print_priority_row(_priority_entry("SZ300002", "榜外41", live_rank=41), 2, {})
+    lines = _priority_rows(capsys.readouterr().out)
+    line_in, line_out = lines["SZ300001"], lines["SZ300002"]
     assert disp_mod.ANSI["BOLD"] in line_in and disp_mod.ANSI["RED"] in line_in
-    assert "40" in line_in
+    assert "40" in _ANSI_RE.sub("", line_in)
     assert disp_mod.ANSI["BOLD"] not in line_out and disp_mod.ANSI["RED"] not in line_out
     assert "41" in line_out
 
 
-def test_display_priority_rank_top40_highlight_with_delta(monkeypatch, capsys):
+def test_priority_row_rank_top40_highlight_with_delta(monkeypatch, capsys):
     """高亮只作用于名次数字，不吞掉排名变化（+N/-N 保持原样跟在后面）。"""
     _force_ansi(monkeypatch)
-    conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "榜内升名", "core_dip", 60)
-    pool = {"SZ300001": _cand_in_pool("SZ300001", 2.0, 10.0, 5)}
-    disp_mod.display_priority(conn, today_pool=pool, last_ranks={"SZ300001": 8})
-    out = capsys.readouterr().out
-    line = _main_line(out, "SZ300001")
+    disp_mod._print_priority_row(
+        _priority_entry("SZ300001", "榜内升名", live_rank=5), 1, {}, last_ranks={"SZ300001": 8}
+    )
+    line = _priority_rows(capsys.readouterr().out)["SZ300001"]
     assert disp_mod.ANSI["BOLD"] in line and "+3" in line
+    # 高亮在名次后闭合，delta 落在 RESET 之后（未被吞进色码区间）
+    assert f"{disp_mod.ANSI['RESET']}+3" in line
 
 
 # ── 核心股名称高亮（2026-08-19）：判定 = core_themes.core_stock_symbols ──
@@ -536,36 +535,29 @@ def test_display_priority_rank_top40_highlight_with_delta(monkeypatch, capsys):
 # {core_dip} ⊆ 核心股集——高亮比低吸区更宽：可覆盖「创新高走强中的主线龙头」（江天化学
 # 08-19 案例：央国企改革成员、20日+22.3%，回撤0%落不进低吸窗口）。
 def test_display_priority_core_stock_name_highlight(monkeypatch, capsys):
-    """综合排序/核心低吸区里属于核心股（core_stock_symbols 判定）的票名称加粗品红高亮；
-    非核心股不亮。两区共用 _print_priority_row 同规则。
+    """综合排序里属于核心股（core_stock_symbols 判定）的票名称加粗品红高亮；
+    非核心股不亮。
 
-    回马枪区已移除（2026-09-03），低吸行改走核心方向低吸区验证同一渲染规则。
+    2026-09-14：核心方向低吸展示区已隐藏，故本测试只保留 v1 主表这一条验证路径
+    （原先还额外验证低吸区行——那部分随展示区一起移除）。
     """
     _force_ansi(monkeypatch)
-    # 模拟 core_stock_symbols：SZ300001（主表）与 SZ300003（低吸区）今日为核心股
+    # 模拟 core_stock_symbols：SZ300001 今日为核心股
     # build_scan_view（assemble）用其判定 _core_stock → row.core，故须打到 va。
-    monkeypatch.setattr(va, "core_stock_symbols", lambda conn, today=None: {"SZ300001", "SZ300003"})
+    monkeypatch.setattr(va, "core_stock_symbols", lambda conn, today=None: {"SZ300001"})
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300001", "核心动量", "momentum", 70)
     _insert_rec_cat(conn, "SZ300002", "普通动量", "momentum", 65)
-    _insert_rec_cat(conn, "SZ300003", "低吸核心", "core_dip", 80)
-    _insert_rec_cat(conn, "SZ300004", "低吸普通", "core_dip", 70)
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
-    # 主表行先于低吸区渲染，next() 取到的是主表/低吸区行
-    lines = {sym: _main_line(out, sym) for sym in ["SZ300001", "SZ300002", "SZ300003", "SZ300004"]}
-    # 主表：核心动量名称高亮，普通动量不亮
+    lines = {sym: _main_line(out, sym) for sym in ["SZ300001", "SZ300002"]}
     assert disp_mod.ANSI["MAGENTA"] in lines["SZ300001"]
     assert disp_mod.ANSI["BOLD"] in lines["SZ300001"]
     assert disp_mod.ANSI["MAGENTA"] not in lines["SZ300002"]
-    # 低吸区：低吸核心高亮，低吸普通不亮
-    assert "◆ 核心方向低吸" in out
-    assert disp_mod.ANSI["MAGENTA"] in lines["SZ300003"]
-    assert disp_mod.ANSI["MAGENTA"] not in lines["SZ300004"]
 
 
 def test_display_priority_no_core_stock_no_highlight(monkeypatch, capsys):
-    """今日无核心股（core_stock_symbols 空集）时，主表/低吸区均无高亮（空集判定不误伤）。"""
+    """今日无核心股（core_stock_symbols 空集）时，主表无高亮（空集判定不误伤）。"""
     _force_ansi(monkeypatch)
     monkeypatch.setattr(va, "core_stock_symbols", lambda conn, today=None: set())
     conn = _rec_db()
@@ -650,36 +642,11 @@ def test_entry_display_quote_fallback_chain():
     assert cur == pytest.approx(10.0)
 
 
-def test_display_priority_recommended_region_shown_when_main_dense(monkeypatch, capsys):
-    """弱市 regime 下主区密集也强制展示核心低吸区（修复「推荐了却看不到标的」割裂）。
-    （动态推荐/回马枪区已移除，2026-09-03；核心低吸区保留弱市强制展示门）"""
-    # display_priority 内部经 build_scan_view 用 assemble._regime_weak 自算弱市信号，
-    # 故须打到 va（render._regime_weak 只被 display() 主屏用，此处不生效）。
-    monkeypatch.setattr(va, "_regime_weak", lambda conn, lookback=10: True)
-    monkeypatch.setattr(vr, "_regime_weak", lambda conn, lookback=10: True)
-    conn = _rec_db()
-    for i in range(1, 7):
-        _insert_rec_cat(conn, f"SZ3000{i}", f"反弹{i}", "rebound", 50 + i)
-    import json as _json
-
-    conn.execute(
-        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, score_breakdown) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            now_beijing().date().isoformat(),
-            "13:00",
-            "SZ300099",
-            "低吸",
-            "core_dip",
-            70,
-            3.0,
-            _json.dumps({"run": 0.2, "pullback": -0.1, "flow_pct": 5.0}),
-        ),
-    )
-    conn.commit()
-    disp_mod.display_priority(conn, today_pool={})
-    out = capsys.readouterr().out
-    assert "◆ 核心方向低吸" in out, "弱市 regime 下主区密集也应展示核心低吸区"
+# ── 弱市 regime 下核心低吸强制展示（2026-09-14 展示区已隐藏）──
+# 原 `test_display_priority_recommended_region_shown_when_main_dense` 断言「弱市下
+# 主区密集也强制展示核心低吸区」（修复「推荐了却看不到标的」割裂）。展示区已隐藏，
+# 断言移除。⚠ `_regime_weak` 本身仍在产线使用（头部标签 / 动态推荐 / 飞书 env_tag
+# 同源），只是不再驱动该区的可见性。
 
 
 # ── 综合排序分组顺序（2026-08-07 复核：rebound > short_term > momentum > known_new_face > new_face > pullback）──
@@ -775,82 +742,48 @@ def test_display_priority_tier_banner_separates_groups(capsys):
     assert _idx("SZ300002") == 2, f"momentum应排最后: {lines}"
 
 
-def test_display_priority_pool_pick_independent_section_sorted(capsys):
-    """双跑同屏（2026-09-02）：pool_pick 独立成 v2 池选区、按今日涨幅降序；
-    主表只含 v1 五桶（pool_pick 不混入主表），两区同屏输出，RTS_PIPELINE 不再影响显示。"""
+def test_pool_pick_kept_out_of_v1_main_table(capsys):
+    """pool_pick 不混入 v1 主表（双跑同屏时期的隔离语义，2026-09-02 建立）。
+
+    2026-09-14：v2 池选展示区已隐藏，故这里不再断言「存在 ◆ v2 池选 区块」，
+    只守住仍然重要的隔离不变量 —— pool_pick 类别不得出现在 v1 主表里。
+    该隔离至今必需：pool_pick 仍是终选参考区合池输入之一，混进 main_recs 会同时
+    改变 v1 主表内容与终选结果。
+    """
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "v1票", "rebound", 50, 1.0)
-    _insert_rec_pct(conn, "SZ300002", "池高", "pool_pick", 70, 3.0)
+    _insert_rec_pct(conn, "SZ300002", "池高", "pool_pick", 70, 7.9)  # 帽下最高带，仍不得进主表
     _insert_rec_pct(conn, "SZ300003", "池中", "pool_pick", 90, 2.0)
-    _insert_rec_pct(conn, "SZ300004", "池低", "pool_pick", 40, 0.5)
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
-    assert "◆ v2 池选" in out, "双跑同屏：pool_pick 必须有独立 v2 池选区"
 
-    # 终选参考区（2026-09-04）位于 v1 之前，主表取「◆ v1 池选 → ◆ v2 池选」之间。
-    main_part = out.split("◆ v1 池选")[1].split("◆ v2 池选")[0]
-    pool_part = out.split("◆ v2 池选")[1]
-    main_syms = [ln for ln in main_part.splitlines() if "SZ30000" in ln]
-    pool_syms = [ln for ln in pool_part.splitlines() if "SZ30000" in ln]
-
-    assert any("SZ300001" in ln for ln in main_syms), f"v1 行应留在主表: {main_syms}"
-    assert not any("SZ300002" in ln or "SZ300003" in ln or "SZ300004" in ln for ln in main_syms), (
-        f"pool_pick 不应混入主表: {main_syms}"
+    main_syms = _main_lines(out)
+    assert any("SZ300001" in ln for ln in main_syms), f"v1 rebound 应留在主表: {main_syms}"
+    assert not any("SZ300002" in ln or "SZ300003" in ln for ln in main_syms), (
+        f"pool_pick 不应混入 v1 主表（涨幅再高也不进）: {main_syms}"
     )
-    assert len(pool_syms) == 3, f"池选区应显示 3 只 pool_pick: {pool_syms}"
-
-    def _idx(sym: str) -> int:
-        return next(i for i, ln in enumerate(pool_syms) if sym in ln)
-
-    # 复合评分排序（2026-09-08）：composite_score = cat_base(-5) + tech_norm + rank + fund + dip
-    # SZ300003 score=90 → tech=0.9 → composite ≈ -4.0（最高）
-    # SZ300002 score=70 → tech=0.7 → composite ≈ -4.2
-    # SZ300004 score=40 → tech=0.4 → composite ≈ -4.5（最低）
-    assert _idx("SZ300003") < _idx("SZ300002") < _idx("SZ300004"), f"池选区按composite_score降序(90→70→40): {pool_syms}"
 
 
-def test_display_priority_pool_pick_kept_out_of_main_even_higher_pct(capsys):
-    """双跑同屏：pool_pick 涨幅再高（7.9%，帽下最高带）也不进 v1 池选主表，只在 v2 池选区展示。"""
+def test_core_dip_kept_out_of_v1_main_table(capsys):
+    """core_dip 同样不进 v1 主表（低吸区展示区隐藏后，隔离语义仍需守住）。"""
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "v1票", "rebound", 50, 1.0)
-    _insert_rec_pct(conn, "SZ300002", "池选票", "pool_pick", 70, 7.9)
+    _insert_rec_pct(conn, "SZ300002", "低吸票", "core_dip", 90, 1.0)
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
-    # 终选参考区（2026-09-04）位于 v1 之前，主表取「◆ v1 池选 → ◆ v2 池选」之间。
-    main_part = out.split("◆ v1 池选")[1].split("◆ v2 池选")[0]
-    main_syms = [ln for ln in main_part.splitlines() if "SZ30000" in ln]
-    assert len(main_syms) == 1 and "SZ300001" in main_syms[0], f"主表只应显示 v1 rebound: {main_syms}"
-    assert "SZ300002" in out and "◆ v2 池选" in out, "pool_pick 应在 v2 池选区展示"
+
+    main_syms = _main_lines(out)
+    assert any("SZ300001" in ln for ln in main_syms)
+    assert not any("SZ300002" in ln for ln in main_syms), f"core_dip 不应混入 v1 主表: {main_syms}"
 
 
-def test_display_priority_pool_pick_dip_label_segment_sorted(capsys):
-    """方案B（2026-09-03）：v2 池选两段式排序——命中低吸标签的票排前段
-    （段内榜上排名/涨幅）。💡 标签不渲染（太杂乱），仅作排序依据。"""
-    conn = _rec_db()
-    _insert_rec_sb(conn, "SZ300001", "无标签", "pool_pick", 70, 7.9, "{}")  # 帽下高涨幅无标签
-    _insert_rec_sb(conn, "SZ300002", "有标签", "pool_pick", 70, 1.0, '{"dip_labels": ["弱转强"]}')  # 低涨幅有标签
-    disp_mod.display_priority(conn, today_pool={})
-    out = capsys.readouterr().out
-    assert "◆ v2 池选" in out
-    assert "💡" not in out, "低吸标签不渲染（仅排序依据，避免杂乱）"
-    pool_part = out.split("v2 池选")[1]
-    pool_syms = [ln for ln in pool_part.splitlines() if "SZ30000" in ln]
-    assert "SZ300002" in pool_syms[0], f"有标签票应排前段（与涨幅无关）: {pool_syms}"
-    assert "SZ300001" in pool_syms[1], f"无标签票应沉后段: {pool_syms}"
-
-
-def test_display_priority_core_dip_capped(monkeypatch, capsys):
-    """核心低吸区最多显示 CORE_DIP_DISPLAY_MAX 条（超量截断，避免刷屏）。
-    （2026-09-08 由 COMEBACK_DISPLAY_MAX=3 拆分放宽为 6，用户要求多显示几条）"""
-    conn = _rec_db()
-    for i in range(12):
-        _insert_rec_cat(conn, f"SZ3003{i:02d}", f"低吸{i}", "core_dip", 50 + i)
-    disp_mod.display_priority(conn, today_pool={})
-    out = capsys.readouterr().out
-    assert "◆ 核心方向低吸" in out
-    dip_part = out.split("◆ 核心方向低吸", 1)[1]
-    dip_lines = [ln for ln in dip_part.splitlines() if "SZ3003" in ln]
-    assert len(dip_lines) == disp_mod.CORE_DIP_DISPLAY_MAX
+# ── v2 池选区 / 核心方向低吸区（2026-09-14 按用户决策隐藏）──
+# 原 test_display_priority_pool_pick_independent_section_sorted /
+# _kept_out_of_main_even_higher_pct / _dip_label_segment_sorted（v2 池选区排序与两段式
+# 低吸标签分段）、test_display_priority_core_dip_capped（低吸区截断到
+# CORE_DIP_DISPLAY_MAX 条）五个测试已移除 —— 它们断言的两个展示区不再渲染。
+# 上面两条 *_kept_out_of_v1_main_table 保留了其中仍然有效的隔离不变量（不变量比区块长寿）。
+# ⚠ 若恢复这两个展示区，需一并恢复上述截断/分段/排序断言（见 git 历史）。
 
 
 # ── 次日大涨画像标记（2026-08-11 起并入主表行尾 🎯；2026-08-12 起成为排序档0唯一因子）──
@@ -860,9 +793,10 @@ def test_display_priority_core_dip_capped(monkeypatch, capsys):
 # 2026-08-12：🎯 从纯视觉标记升级为排序档0唯一因子——辨识度退出排序（次日大涨本身即
 # 辨识度属性），↻ 仅保留行内展示。
 def test_display_max_today_pct_hides_trap_band(capsys):
-    """不追涨帽（2026-09-04 修正默认 8.0）：主表与 v2 池选区均隐藏今日涨幅 >8% 的票
+    """不追涨帽（2026-09-04 修正默认 8.0）：v1 主表隐藏今日涨幅 >8% 的票
     （8-12% 是实测陷阱带：超额 -0.70 / 大跌率 13%）；帽下票正常展示。
-    纯显示层过滤——落库/评分/回测不受影响。"""
+    纯显示层过滤——落库/评分/回测不受影响。
+    （2026-09-14：v2 池选区已隐藏，本测试只剩 v1 主表这一条验证路径。）"""
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "帽下票", "momentum", 70, 7.9)
     _insert_rec_pct(conn, "SZ300002", "陷阱票", "momentum", 70, 9.5)  # 8-12% 陷阱带
@@ -1267,70 +1201,16 @@ def test_entry_row_suffix_renders_beauty_tag():
     assert _entry_row_suffix(e, {}) == ""
 
 
-# ── 视图层零写库副作用（2026-09-13，测评 A2）──
-
-
-def test_build_scan_view_does_not_write_decision_picks(capsys):
-    """★ `build_scan_view` 自称"只算不画"，就不该写 decision_picks。
-
-    原实现在内部调 decision.decision_lines，而后者会落库 → 一个视图函数带写库
-    副作用：既不能当纯函数单测，将来出 HTML 报告也会顺带落一次库。
-    落库现由主循环 build_and_persist_decision 显式负责，并把行注入本函数。
-    """
-    import scanner.display as dm
-
-    conn = _rec_db()
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS decision_picks ("
-        " date TEXT NOT NULL, symbol TEXT NOT NULL, name TEXT, category TEXT,"
-        " score REAL, percent REAL, reason TEXT, created TEXT,"
-        " PRIMARY KEY (date, symbol))"
-    )
-    for sym in ("SZ300001", "SZ300002"):
-        # rebound = 决策层准入类别（hit 率口径，2026-09-14）；core_dip 已不在准入内。
-        _insert_rec_cat(conn, sym, f"股{sym[-1]}", "rebound", 70)
-    # 决策层需要市场门数据（缺则门关 → 仍会渲染"空仓"行，但不该落库）
-    conn.execute(
-        "INSERT INTO market_index_log (date, time, index_pct, bar_date, source) "
-        "VALUES ('2026-09-04', '10:00:00', 1.0, '2026-09-04', 'xueqiu')"
-    )
-    before = conn.execute("SELECT COUNT(*) FROM decision_picks").fetchone()[0]
-
-    view = dm.build_scan_view(conn, today_pool={})
-
-    after = conn.execute("SELECT COUNT(*) FROM decision_picks").fetchone()[0]
-    assert before == after == 0, f"视图层不得写 decision_picks（{before} → {after}）"
-    assert view is not None
-    # 防"空跑通过"：必须证明决策层这一轮**真的算过了**（否则没落库只是因为没跑到）。
-    assert view.decision_lines, (
-        f"决策层应当已计算并渲染；实际 {view.decision_lines!r}，"
-        f"警告 {view.warnings}（若为空说明决策层根本没被执行，本测试无意义）"
-    )
-
-
-def test_build_scan_view_accepts_injected_decision_lines(capsys):
-    """主循环注入已算好的决策行 → 视图原样采用，不再自己重算（同源不重复读库）。"""
-    import scanner.display as dm
-
-    conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "股1", "momentum", 70)
-    injected = ["◆ 今日决策层（注入）", "  1. SZ300999 注入票 [core_dip] 分:99 现价+9.9%"]
-
-    view = dm.build_scan_view(conn, today_pool={}, decision_lines=injected)
-
-    assert view is not None
-    assert view.decision_lines == injected, "注入的行必须原样进 view，不得被重算覆盖"
-
-
-def test_display_entry_passes_decision_lines_through(capsys):
-    """便捷入口 display() 也必须透传 decision_lines（否则主循环注入会被静默丢弃）。"""
-    import scanner.display as dm
-
-    conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "股1", "momentum", 70)
-    injected = ["◆ 穿透检查"]
-
-    view = dm.display(100, 60, conn=conn, today_pool={}, decision_lines=injected)
-
-    assert view is not None
-    assert view.decision_lines == injected
+# ── 视图层零写库副作用（2026-09-13 测评 A2；决策层删除后的现状）──
+# 原三条测试已随决策层删除移除：
+#   test_build_scan_view_does_not_write_decision_picks —— 断言 build_scan_view 不写
+#     decision_picks 表（该表已不再创建）；
+#   test_build_scan_view_accepts_injected_decision_lines /
+#   test_display_entry_passes_decision_lines_through —— 断言 decision_lines 注入与透传
+#     （该参数已从 build_scan_view / display / display_priority 签名移除）。
+#
+# ⚠ A2 的**不变量本身仍然有效且仍被守护**：`build_scan_view` 是"只算不画、不写库"的
+# 纯计算函数。当前由 tests/test_view_flow_gate.py::test_build_scan_view_does_not_touch_excluded_column
+# 承担（展示层过滤不得改 recommendations.excluded）。
+# 决策层删除后视图层已无任何写库路径，故这条不变量目前是"空集为真"——
+# 若日后重新引入带副作用的视图逻辑，必须同时补一条直接断言（勿只靠这条注释）。

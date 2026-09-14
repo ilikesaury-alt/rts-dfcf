@@ -122,13 +122,22 @@ EXPECTED_SURFACE_REDUCTION = {
 # 每条都必须写明改了什么、归属哪次改动，避免这张表变成「把红灯涂绿」的垃圾桶。
 # 双向校验：登记了却已不再与基线分歧 = 表过期，同样报错。
 EXPECTED_BODY_DIVERGENCE = {
-    # 2026-09-14 资金流出口径统一（commit 02ae8af）：展示层新增「资金流出」过滤
-    "ScanView": "新增 flow_filtered 字段（本轮被资金流出门剔除的只数）",
-    "build_scan_view": "flow_pct_map 建好后对 today_recs 做一次资金流出过滤，下游区域自动继承",
-    "render_terminal": "顶部输出「▸ 资金流出已剔除 N 只（≤ -8% · 全区域统一口径）」",
+    # 2026-09-14 资金流出口径统一（commit 02ae8af）：展示层新增「资金流出」过滤。
+    # 同日第二批（决策层删除 + v2/核心低吸展示区隐藏）又改了同一批函数，两条理由合并记录。
+    "ScanView": "新增 flow_filtered 字段；随后移除 core_dip_rows/show_core_dip（低吸区隐藏）、pool_rows/pool_total（v2 隐藏）、decision_lines（决策层删除）四组字段",
+    "build_scan_view": "新增资金流出过滤（today_recs 单点过滤，下游区域自动继承）；随后不再构建 v2 pool_rows/pool_total、不再算 _show_core_dip/decision_lines",
+    "render_terminal": "顶部输出「▸ 资金流出已剔除 N 只」；随后移除「今日决策」区块（决策层删除、终选参考改独立区块）、v2 池选区、核心方向低吸区",
     # 2026-09-14 哑参清理：🎯 行尾渲染自 2026-09-04 停用后遗留的两个入参
     "_entry_row_suffix": "删除从未被读取的 marked 入参（🎯 行尾渲染已停用）",
     "_print_priority_row": "删除无任何调用方传入的 nextday_mark 入参",
+    # 2026-09-14 第二批：决策层删除 + v2/核心低吸展示区隐藏（用户决策）
+    "display": "移除 decision_lines 入参（决策层删除后无处可注入）",
+    "display_priority": "同上：移除 decision_lines 入参与其透传",
+    "_beauty_mark_for": "docstring 口径更新（v2 池选展示区已隐藏，标记现状只落 v1 池选行）",
+    # 这两个纯函数**函数体未改**，只是补了 docstring（docstring 属于函数体 AST，故须登记）：
+    # 隐藏的是渲染与 ScanView 字段，排序/标签口径本身完整保留，供恢复 v2 区时零成本复原。
+    "_v2_pool_sort_key": "docstring 补注：v2 展示区隐藏后本函数无生产调用方（有意保留）",
+    "_entry_dip_labels": "docstring 补注：唯一调用方 _v2_pool_sort_key 失去生产消费（有意保留）",
 }
 
 SKIP_MODULES = {
@@ -206,6 +215,34 @@ def collect_defs(tree: ast.Module) -> tuple[dict[str, str], dict[str, str]]:
     return defs, consts
 
 
+def _config_shim_for_legacy() -> types.ModuleType:
+    """镜像 `scanner.config`，但对**已被删除的常量**返回哨兵而非抛 ImportError。
+
+    为什么需要：`load_legacy` 是**真实执行**历史快照（基线 rev 的 display.py），而快照里
+    写着当时存在的 `from scanner.config import ...`。之后 config 一旦删名（2026-09-14
+    删除决策层时移除了 `DECISION_LAYER_ENABLED` / `DECISION_INTRADAY_BEAUTY_ENABLED`），
+    本工具就会自己先 ImportError 挂掉 —— 那是**与「拆分是否等价」无关的假失败**，
+    且会随 config 正常演进反复出现，不能靠"别删常量"来回避。
+
+    故仅在执行快照期间替换 `sys.modules["scanner.config"]`：属性取值照搬真实模块，
+    未知名回退哨兵并打印告警。判定不受影响 —— 检查 3 比对的是**属性名集合**（旧快照
+    暴露了哪些名字），不是取值；这些名字本就该出现在 `EXPECTED_SURFACE_REDUCTION` 里。
+    """
+    import scanner.config as _cfg  # noqa: PLC0415
+
+    shim = types.ModuleType(_cfg.__name__)
+    shim.__dict__.update(_cfg.__dict__)
+
+    def _missing(name: str) -> object:
+        if name.startswith("__"):
+            raise AttributeError(name)
+        print(f"    [warn] 历史快照引用了已删除的 scanner.config.{name} → 哨兵顶替（非等价性差异）")
+        return None
+
+    shim.__getattr__ = _missing
+    return shim
+
+
 def load_legacy(rev: str) -> types.ModuleType:
     """把旧 display.py 作为独立模块导入（改写相对导入后）。"""
     src = git_show(rev, "scanner/display.py")
@@ -219,7 +256,14 @@ def load_legacy(rev: str) -> types.ModuleType:
     mod = importlib.util.module_from_spec(spec)
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
-    spec.loader.exec_module(mod)
+    # 快照执行期间换入宽容 shim，跑完立刻还原（否则会污染其后 `import scanner.display`）。
+    saved = sys.modules.get("scanner.config")
+    sys.modules["scanner.config"] = _config_shim_for_legacy()
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        if saved is not None:
+            sys.modules["scanner.config"] = saved
     return mod
 
 

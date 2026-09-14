@@ -60,7 +60,6 @@ def display(
     today_pool: dict[str, Candidate] | None = None,
     last_ranks: dict[str, int] | None = None,
     hot_rows: list | None = None,
-    decision_lines: list[str] | None = None,
 ) -> "ScanView | None":
     """扫描主屏：头部摘要 + 展示视图（构建/渲染委托 display_priority）。
 
@@ -73,7 +72,6 @@ def display(
     today_pool：本轮候选池快照（symbol → Candidate），由调用方（scan_with_raw 的
     ScanResult）传入，display 不直接访问 orchestrator 内部状态。
     last_ranks: 上一轮扫描的榜单排名 {symbol: rank}，供「排名」列显示变化（+N 升 / -N 降）。
-    decision_lines：主循环已落库算好的决策层文本行（2026-09-13，落库移出视图层）。
     """
     clear_screen()
     now = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
@@ -92,7 +90,6 @@ def display(
         last_ranks=last_ranks,
         weak=weak,
         hot_rows=hot_rows,
-        decision_lines=decision_lines,
     )
 
 
@@ -104,6 +101,12 @@ def _print_priority_row(
     last_ranks: dict[str, int] | None = None,
 ) -> None:
     """综合排序单行的统一渲染（主表与回马枪独立区共用），避免两处复制大段渲染逻辑。
+
+    ⚠ 2026-09-14 现状：本函数的两个展示消费方（核心方向低吸区、回马枪区）都已不再
+    渲染 —— 低吸区按用户决策隐藏、回马枪区自 2026-09-03 起就无展示区。故当前**无生产
+    调用方**（仅单测覆盖）。**有意保留**：它是 COLS_DETAIL 列规格的唯一渲染实现，
+    删除会让「恢复低吸区」变成重写而非复原；且 `scripts/_verify_view_split.py` 把
+    拆分时的函数清单当契约（缺一个 top-level def 即报错）。要彻底清掉请连带处理该脚本。
 
     flow_pct_map: {symbol: 主力净占比} DB 快照回退（候选缺失/扫描失败时仍显示资金流图标）。
     breakout_mark: 蓄势突破观察画像（⚡）——新面孔/首推或重上榜 short_term + 横盘缩量回调位
@@ -250,7 +253,7 @@ def _render_hot_watch_region(rows) -> None:
 
     print(
         f"\n{ANSI['BOLD']}{ANSI['CYAN']}◆ 沪深飙升 · 极有可能大涨{ANSI['RESET']}"
-        f"（沪深主板+创业板 · 当日动能+热度跃升 · 与上方主线口径独立）"
+        f"（创业板 · 当日动能+热度跃升 · 与上方主线口径独立）"
     )
     print(_table_header(COLS_HOT))
     for _hi, c in enumerate(rows, 1):
@@ -282,7 +285,7 @@ def _render_hot_watch_region(rows) -> None:
     print(f"  {'-' * 92}")
     print(
         f"  排序=评分(排名上升35/涨幅25/价格15/量能25) | 已剔除涨停·涨幅>{HOT_MAX_PERCENT:.0f}%·"
-        f"市值>{HOT_MAX_MARKET_CAP / 1e8:.0f}亿·ST·科创板/北交所/ETF | "
+        f"市值>{HOT_MAX_MARKET_CAP / 1e8:.0f}亿·ST·非创业板 | "
         f"连击≥{HOT_HIGHLIGHT_STREAK}轮标★"
     )
 
@@ -313,26 +316,21 @@ def render_terminal(view: ScanView) -> None:
             f"（主力净占比 ≤ {FUND_OUTFLOW_NET_PCT:.0f}% · 全区域统一口径）{ANSI['RESET']}"
         )
 
-    # 今日决策 + 终选参考合并展示（2026-09-08）：一个区块用子标题区分
-    # 「该不该买」+「必须持仓时买谁」——避免用户混淆两个区块的用途。
-    if view.decision_lines or view.final_pick_lines:
+    # 终选参考区（2026-09-08 起与决策层合并渲染；2026-09-14 决策层删除后本区独立）。
+    # 市况门状态（scanner.decision.market_gate）决定标题措辞：门关时标注「仅观察参考」。
+    if view.final_pick_lines:
         print("=" * 78)
-        print("◆ 今日决策 — 该不该买 + 买谁（空仓是合法输出）")
-        if view.decision_lines:
-            print("  ── 市场门 ──")
-            # decision_lines[0] 是原 header，跳过；从 gate_reason 行开始
-            for _dl in view.decision_lines[1:]:
-                print(f"  {_dl}")
-            print("  ── 决策推荐 ──")
-        if view.final_pick_lines:
-            _fp_header = view.final_pick_lines[0] if view.final_pick_lines else ""
-            _gate_open = any("允许开仓" in dl for dl in (view.decision_lines or []))
-            if _gate_open:
-                print("  ── 终选参考（合池·次日概率排序）──")
-            else:
-                print("  ── 终选参考（门关·仅观察参考）──")
-            for _fpl in view.final_pick_lines[1:]:
-                print(f"  {_fpl}")
+        print("◆ 终选参考 — 若必须持仓买谁（空仓是合法输出）")
+        _fp_header = view.final_pick_lines[0] if view.final_pick_lines else ""
+        # 市况门状态由 final_pick 标题携带（「⚠大盘门关·仅观察参考」），不再从决策层行推断
+        # ——决策层已于 2026-09-14 删除，标题是门状态的唯一可见来源。
+        _gate_open = "大盘门关" not in _fp_header
+        if _gate_open:
+            print("  ── 终选参考（合池·次日概率排序）──")
+        else:
+            print("  ── 终选参考（门关·仅观察参考）──")
+        for _fpl in view.final_pick_lines[1:]:
+            print(f"  {_fpl}")
         print("=" * 78)
 
     # ── 主表 / v2 池选区共用行渲染（同列 spec，行尾标记与回马枪/低吸区同源）──
@@ -379,18 +377,6 @@ def render_terminal(view: ScanView) -> None:
     for _si, row in enumerate(view.main_rows, 1):
         _emit_pool_table_row(view, row, _si)
 
-    # ── v2 池选独立区（双跑同屏，2026-09-02）：pool→danger→低吸匹配输出 ──
-    if view.pool_rows:
-        _pool_top = len(view.pool_rows)
-        _pool_cnt = f"（前{_pool_top}/共{view.pool_total}只）" if view.pool_total > _pool_top else ""
-        print(
-            f"\n{ANSI['BOLD']}◆ v2 池选 — 池→排雷→低吸匹配（排名升序→低吸标签优先→涨幅降序）{_pool_cnt}{ANSI['RESET']}"
-        )
-        print(_table_header(COLS_POOL))
-        for _vi, row in enumerate(view.pool_rows, 1):
-            _emit_pool_table_row(view, row, _vi)
-        print(f"  {'-' * 92}")
-
     # ── ⚡ 蓄势突破观察（动态推荐区已按需求移除，2026-09-03；adj_picks 仍在 ScanView 保留供复用）──
     if any(view.breakout_mark.values()):
         print(
@@ -398,16 +384,10 @@ def render_terminal(view: ScanView) -> None:
             f"·样本收集中·非排序因子）"
         )
 
-    # ── 核心方向低吸独立区（2026-08-19，scanner/core_themes.py）──
-    # 大跌市中找「当前主线方向核心股低吸」参考。2026-08-19 起随扫描落库
-    # category=core_dip（同 comeback 族），本区从今日 recommendations 读取。
-    if view.show_core_dip:
-        print(f"\n{ANSI['GREEN']}◆ 核心方向低吸 — 主线方向核心股回调参考（主区稀少·补充参考）{ANSI['RESET']}")
-        print(_table_header(COLS_DETAIL))
-        for di, entry in enumerate(view.core_dip_rows, 1):
-            _print_priority_row(entry, di, view.flow_pct_map, last_ranks=view.last_ranks)
-        print("  排序=今日波动（涨多/跌狠优先）→主力回流→回撤深→龙头强。")
-        print(f"  {'-' * 92}")
+    # 2026-09-14 按用户决策隐藏的两个展示区（需复原见 git 历史）：
+    #   ◆ v2 池选（2026-09-02 上线，双跑同屏）—— 池→排雷→低吸匹配。
+    #   ◆ 核心方向低吸（2026-08-19 上线）—— 主线方向核心股回调参考。
+    # 两者的数据仍参与终选参考区合池（见 assemble.build_scan_view），只是不再单独成区。
 
     # ── 沪深飙升·极有可能大涨 独立区（2026-09-11 自 rts-xueqiu 合入）──
     # 与上方所有区块口径不同且互不干扰：样本面为沪深主板+创业板（主线只做创业板），
@@ -425,7 +405,6 @@ def display_priority(
     last_ranks: dict[str, int] | None = None,
     weak: bool | None = None,
     hot_rows: list | None = None,
-    decision_lines: list[str] | None = None,
 ) -> "ScanView | None":
     """构建展示视图并渲染到终端（build_scan_view + render_terminal 的便捷入口）。
 
@@ -433,9 +412,6 @@ def display_priority(
     传入则复用（display 主屏已在打印头部前算过一次，避免重复查询）。
     返回 ScanView 供复用（display 主屏回传飞书 / 测试捕获输出后取数据两用）；
     无 conn 或今日无推荐时返回 None。
-
-    decision_lines：主循环已落库算好的决策层文本行，透传给 build_scan_view
-    （2026-09-13：不传时 build_scan_view 会自己算一份纯的，不落库）。
     """
     view = build_scan_view(
         conn=conn,
@@ -445,7 +421,6 @@ def display_priority(
         last_ranks=last_ranks,
         weak=weak,
         hot_rows=hot_rows,
-        decision_lines=decision_lines,
     )
     if view is None:
         return None

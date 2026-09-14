@@ -25,7 +25,6 @@ from scanner.backtest import backfill_outcomes
 from scanner.config import (
     AFTERNOON_END,
     DB_PATH,
-    DECISION_LAYER_ENABLED,
     HOT_DISPLAY_TOP,
     HOT_WATCH_ENABLED,
     KLINE_FETCH_DAYS,
@@ -45,7 +44,6 @@ from scanner.database import (
     save_kline_to_db,
     save_recommendations,
 )
-from scanner.decision import build_and_persist_decision
 from scanner.display import display
 from scanner.feishu import push_feishu
 from scanner.hot_watch import run_hot_watch
@@ -464,18 +462,12 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                         _log_exception("hot_watch 独立区异常", e)
                         hot_rows = None
 
-                # 决策层落库（2026-09-13 移出视图层，测评 A2）：原先藏在
-                # display.build_scan_view 内部——一个"只算不画"的视图函数会写
-                # decision_picks。后果是该写依赖"这一轮要不要渲染一屏终端"，
-                # 且让 build_scan_view 无法当纯函数复用（将来出 HTML 报告会顺带
-                # 落一次库）。现在由主循环显式落库，副作用可见、不依赖渲染。
-                # 落库与展示同源：算好的行直接注入 view，不重复读库。
-                _decision_lines: list[str] | None = None
-                if DECISION_LAYER_ENABLED:
-                    try:
-                        _decision_lines = build_and_persist_decision(conn)
-                    except EXTERNAL_FAILURES as e:
-                        print(f"  [!] 决策层落库失败: {e}")
+                # 决策层已于 2026-09-14 按用户决策整体删除：主循环不再构建/落库
+                # decision_picks，也不再向 display 注入决策层文本行。仅保留
+                # scanner.decision.market_gate（择时门）供终选参考区标注门状态。
+                # 历史沿革（2026-09-13 测评 A2）：决策层的落库副作用曾从视图层
+                # build_scan_view 移出到此处显式执行，理由是一个"只算不画"的视图函数
+                # 不该写库；该教训在删除后依然成立——视图层至今保持零写库副作用。
 
                 # 历史推荐跟踪已并入回马枪（2026-08-07）：tracker 模块删除，不再单独查询
                 # display() 返回本轮 ScanView，飞书复用同一份（避免两端选择分叉）。
@@ -489,16 +481,16 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     today_pool=res.today_pool,
                     last_ranks=last_ranks,
                     hot_rows=hot_rows,
-                    decision_lines=_decision_lines,
                 )
                 # 快照本轮榜单排名供下一轮展示排名变化（上一轮为 None 时显示纯名次）。
                 last_ranks = dict(current_rank_map)
                 log_results(new_faces + pool_picks, momentum + rebound_list + short_term_list + comeback_list)
                 if not no_feishu:
                     pushed = push_feishu(view, len(all_gem), filtered_large_cap=filtered_large_cap)
-                    has_rows = view is not None and bool(
-                        view.main_rows or view.pool_rows or view.comeback_rows or view.core_dip_rows
-                    )
+                    # has_rows：仅统计**仍在展示**的区块。2026-09-14 移除 pool_rows /
+                    # core_dip_rows（v2 与核心低吸展示区已隐藏）——若继续计入，会出现
+                    # 「卡片其实什么都没画却判定有内容」的误判（与 _view_symbols 同源口径）。
+                    has_rows = view is not None and bool(view.main_rows)
                     if not pushed and has_rows:
                         print("\r  📤 飞书推送跳过（冷却中/无变化）", end="", flush=True)
 
