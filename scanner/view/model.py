@@ -46,8 +46,10 @@ else:
 
 # ⚠ _kernel32 / _handle / _mode 是**仅 Windows 分支存在**的中间量，**不得**列入下方 __all__：
 # `from scanner.view.model import *` 会按 __all__ 逐名 getattr，Linux/macOS 下这三个名字
-# 不存在 → AttributeError（2026-09-14 修）。旧 __all__ 由 scripts/_split_display.py 按
-# 「AST 模块级名 ∩ dir()」推导，在 Windows 上生成时就把它们写进了导出表。
+# 不存在 → AttributeError（2026-09-14 修）。旧 __all__ 由一次性拆分脚本
+# `scripts/_split_display.py` 按「AST 模块级名 ∩ dir()」推导，在 Windows 上生成时就
+# 把它们写进了导出表；该脚本已于 2026-09-14 删除（拆分已完成，留着是颗按硬编码行号
+# 覆写 view/ 的地雷）。改动前先跑 `scripts/_verify_view_split.py`（等价性证明）。
 # ANSI / CAT_COLOR / _ANSI_ESCAPE / _is_console / _supports_ansi 才是对外契约（本模块为单源）。
 
 if _supports_ansi:
@@ -180,6 +182,9 @@ def _trunc(s: str, width: int) -> str:
 
 
 def pct_colored(pct: float | None, width: int = 8) -> str:
+    # ⚠ 这里**不是**标准红涨绿跌，是刻意分级，2026-09-14 用户确认保留，勿「顺手改正」：
+    #   ≥ +9% 红（过热预警）／ +5%~+9% 绿（温和上涨）／ < 0 黄（下跌）／ 0~+5% 无色（中性）。
+    # 语义是「风险温度」而非「涨跌方向」：涨幅越大越可能是情绪顶（红），温和区间才给「舒服」的绿。
     f = to_float(pct) or 0.0
     s = f"{f:+.2f}%"
     if f >= 9:
