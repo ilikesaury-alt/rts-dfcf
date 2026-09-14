@@ -184,6 +184,10 @@ DECISION_INTRADAY_BEAUTY_ENABLED = _env_flag("RTS_DECISION_BEAUTY_INTRADAY", Fal
 FINAL_PICK_ENABLED = _env_flag("RTS_FINAL_PICK", True)
 FINAL_PICK_MAX = 3  # 终选最多 N 只（用户买入预算 1-3 只，2026-09-08 由 2 放宽为 3）
 FINAL_PICK_REJECT_TOP = 4  # 落选理由最多展示条数（按概率降序取头部）
+# 终选资金流过滤（2026-09-14）：主力净流出占比 ≤ 阈值 → 不进终选
+# 与 hot_watch/comeback 同源阈值（FUND_OUTFLOW_NET_PCT = -8.0%）
+# 1=开启（默认），0=关闭
+FINAL_PICK_FUND_FLOW_FILTER = _env_flag("RTS_FINAL_PICK_FUND_FLOW_FILTER", True)
 
 # ── 终选走势美感门（2026-09-09）：分时/日线走势「漂亮」是终选准入条件 ──
 # 日线漂亮（scanner/trend_beauty.evaluate_daily_trend）= 干净上升趋势 6 硬门：
@@ -254,6 +258,7 @@ __all__ = [
     "FINAL_PICK_MAX",
     "FINAL_PICK_REJECT_TOP",
     "FINAL_PICK_BEAUTY_ENABLED",
+    "FINAL_PICK_FUND_FLOW_FILTER",
     "TREND_MARK_ENABLED",
     "INTRADAY_BEAUTY_MIN",
     "DAILY_BEAUTY_MIN_BARS",

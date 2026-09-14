@@ -21,6 +21,7 @@ from scanner.config import (
     FATIGUE_STREAK_MIN,
     FATIGUE_VOL_WARN_RATIO,
     FUND_FLOW_BONUS_WEAK,
+    FUND_FLOW_HARD_FILTER_ENABLED,
     FUND_FLOW_MAIN_PCT_WEAK,
     FUND_OUTFLOW_NET_PCT,
     FUND_RISK_TAG,
@@ -212,9 +213,12 @@ def set_risk_flags(
     # 量价背离：量价不匹配（含顶背离）
     if _detect_volume_price_divergence(c, dims):
         c.risk_flags.append("量价背离")
-    # 资金流出：主力净流出占比超阈值（展示型警告，非硬过滤）
+    # 资金流出：主力净流出占比超阈值
+    # 2026-09-14：FUND_FLOW_HARD_FILTER_ENABLED 开启时升级为硬过滤（移出推荐列表）
     if to_float(dims.get("fund_flow_main_pct"), 0.0) <= FUND_OUTFLOW_NET_PCT:
         c.risk_flags.append("资金流出")
+        if FUND_FLOW_HARD_FILTER_ENABLED:
+            hard_hits.append("资金流出")
     # 炸板：今日曾涨停但盘中炸板（封板未稳，追高/筹码松动风险，展示型警告）
     if to_int(dims.get("zt_zhaban"), 0) >= ZT_ZHA_BAN_MIN:
         c.risk_flags.append("炸板")

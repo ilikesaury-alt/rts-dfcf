@@ -29,8 +29,10 @@ from typing import Any
 from scanner.config import (
     DISPLAY_MAX_TODAY_PCT,
     FINAL_PICK_BEAUTY_ENABLED,
+    FINAL_PICK_FUND_FLOW_FILTER,
     FINAL_PICK_MAX,
     FINAL_PICK_REJECT_TOP,
+    FUND_OUTFLOW_NET_PCT,
     HOLD_DAYS_BY_CATEGORY,
     TACTICS_SELL_TAGS,
     TREND_MARK_ENABLED,
@@ -235,6 +237,11 @@ def build_final_picks(
         fc = fresh_candidate(e)
         if fc and fc.tactic_tags and any(t in _SELL_TAGS for t in fc.tactic_tags):
             continue
+        # 资金流过滤（2026-09-14）：主力净流出占比 ≤ 阈值 → 不进终选
+        if FINAL_PICK_FUND_FLOW_FILTER:
+            ff_pct = flow_pct_map.get(sym)
+            if ff_pct is not None and ff_pct <= FUND_OUTFLOW_NET_PCT:
+                continue
         if "_accum" not in e:
             e["_accum"] = accum_map.get(sym)
         v = fn(e, flow_pct_map)

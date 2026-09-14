@@ -95,6 +95,11 @@ RISK_FLAGS_HARD_FILTER: set[str] = {
     "当日翻绿+高开回落",
 }
 
+# 资金流硬过滤开关（2026-09-14）：主力净流出占比 ≤ 阈值 → 从推荐列表移除
+# 默认开启，与 hot_watch/comeback/final_pick 同源阈值（FUND_OUTFLOW_NET_PCT = -8.0%）
+# 关闭：RTS_FUND_FLOW_HARD_FILTER=0
+FUND_FLOW_HARD_FILTER_ENABLED = _env_flag("RTS_FUND_FLOW_HARD_FILTER", True)
+
 # ── 排雷器（池→排雷→低吸 重构 Phase 2）实证危险信号阈值 ──
 # 阈值集中此处（config 单一阈值源），categories 不加新类别。
 # 信号含义与 enhancer 主力出货 / validator 冲高回落口径对齐，避免双套语义漂移。
@@ -152,6 +157,7 @@ __all__ = [
     "FUND_RISK_TAG",
     "FUND_RISK_REASON",
     "RISK_FLAGS_HARD_FILTER",
+    "FUND_FLOW_HARD_FILTER_ENABLED",
     "DANGER_BIAS20_MAX",
     "DANGER_MAIN_OUTFLOW_PCT",
     "DANGER_KLINE_SOFT",
