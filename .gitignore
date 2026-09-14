@@ -42,5 +42,8 @@ node_modules/
 .pytest_cache/
 .ruff_cache/
 
+# pytest --basetemp 产物（内含真实 DB 副本，~50 个 .db；注意 /*.db 只匹配根目录，二层路径不受其保护）
+/.pytest_tmp/
+
 # 输出产物
 graphify-out/
