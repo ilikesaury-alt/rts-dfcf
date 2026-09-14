@@ -274,8 +274,8 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
 
     分节口径（2026-09-14 核对）：卡片只画 今日决策/终选参考 → v1 池选 → v2 池选 →
     核心方向低吸，与终端渲染的区块一一对应。**回马枪（comeback）两处都没有展示区**
-    （ca91d21 起移除，见 docs/CORE-FLOW.md §十-1），故它不是分节门控——`_view_symbols`
-    里仍并入 comeback 只影响推送去重集合，不影响卡片内容。
+    （ca91d21 起移除，见 docs/CORE-FLOW.md §十-1），故它既不是分节门控、也不再进入
+    `_view_symbols` 去重集合（2026-09-14 对齐）。
 
     top_n 默认 FEISHU_TOP_N，与 _view_symbols 共用同一常量，去重集合与展示条数永不同源漂移。
     """
@@ -381,21 +381,20 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
 
 
 def _view_symbols(view: ScanView) -> set[str]:
-    """推送去重用的票集合（≈ 卡片实际展示的票，另并入 comeback 跟踪票）。
+    """推送去重用的票集合 == 卡片实际展示的票（严格对齐 build_feishu_card 的分节门控）。
 
     取自 main_rows[:FEISHU_TOP_N] / pool_rows[:FEISHU_TOP_N] / core_dip（与
     build_feishu_card 的分节门控同源），避免此前「卡片推了但去重没算到」的
-    双处硬编码 drift。
+    双处硬编码 drift；两者共用 FEISHU_TOP_N，改一处即两处同时生效。
 
-    ⚠ 回马枪（comeback）**终端与卡片都不展示**（ca91d21 起两处展示区均已移除，
-    见 docs/CORE-FLOW.md §十-1），此处却仍并入 view.comeback_rows —— 这是历史遗留：
-    效果是「仅 comeback 票变化」也会被 should_push 判为票集变化而触发一次推送
-    （受 FEISHU_MIN_INTERVAL 节流）。是否保留待定，勿据本条以为卡片会画回马枪区。
+    2026-09-14：**移除 comeback 分支**（原先按 view.show_comeback 并入
+    view.comeback_rows）。回马枪自 ca91d21（2026-09-02）起终端与卡片两处展示区均已
+    移除（见 docs/CORE-FLOW.md §十-1），把它算进去重集合会让「仅回马枪票变化」被
+    should_push 判成票集变化而触发一次内容毫无回马枪的推送（受 FEISHU_MIN_INTERVAL
+    节流）。去重集合的语义是「卡片推了什么」，就该只含卡片画得出的票。
     """
     syms = {row.entry["symbol"] for row in view.main_rows[:FEISHU_TOP_N]}
     syms |= {row.entry["symbol"] for row in (view.pool_rows or [])[:FEISHU_TOP_N]}
-    if view.show_comeback:
-        syms |= {e["symbol"] for e in view.comeback_rows}
     if view.show_core_dip:
         syms |= {e["symbol"] for e in view.core_dip_rows}
     return syms
