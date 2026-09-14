@@ -45,12 +45,17 @@ KLINE_REFRESH_TTL = 120  # orchestrator K 线补拉节流间隔（刷新时机�
 ZT_POOL_FETCH_TIMEOUT = 20  # 涨停池单次拉取上限（秒）
 FUND_FLOW_FETCH_TIMEOUT = 30  # 资金流全市场分页拉取上限（秒，超时返回已收集部分）
 # 资金流评分阈值（主力净流入净占比 %）
-FUND_FLOW_MAIN_PCT_STRONG = 5.0  # 强流入分界（图标 ▲；正向加分 2026-08-10 归零下线：强流入组次日 -1.13% 反指）
+FUND_FLOW_MAIN_PCT_STRONG = 5.0  # 强流入分界（图标 ▲；仅作展示分级，不单独加分——见下方 2026-09-14 复核）
 FUND_FLOW_MAIN_PCT_WEAK = -5.0  # 主力净占比 ≤-5% → 扣分
 # FUND_FLOW_MAIN_PCT_EXTREME 定义见下方「风险标签阈值」——与 FUND_OUTFLOW_NET_PCT 同源，避免档位漂移
 # 2026-08-10: 正向加分（原 FUND_FLOW_BONUS_STRONG）回测证实反指已删除——强流入(≥5%)组 next_day 均
 # -1.13%（n=22）差于无数据基线 -0.85%：今日主力净流入与当日涨幅正相关，是追涨资金次日兑现。
 # 仅保留 FUND_FLOW_BONUS_WEAK=-3 流出扣分、「资金流出」标签（规避语义）。字段仍写入 dims 供展示/归因。
+#
+# 2026-09-14 复核（n=22 → n=382）：上面那条「反指」结论已不成立——strong_in 次日 -0.774%，
+# 好于有资金流数据的全样本 -0.880%；in 组(n=229) -1.178% 反而更差。
+# 裁定：不是反指（不该给负分），但也没有证据支持「强流入 > 流入」⇒ 展示层
+# ranking._fund_flow_norm 取消 strong_in 独享的 +0.5，与 in 同权 +0.3（第三处口径收口）。
 FUND_FLOW_BONUS_WEAK = -3
 # 风险标签阈值
 FUND_OUTFLOW_NET_PCT = -8.0  # 主力净流出占比 ≤-8% → 「资金流出」标签

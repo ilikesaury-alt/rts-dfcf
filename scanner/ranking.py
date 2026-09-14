@@ -717,11 +717,23 @@ def _rank_norm(entry: Any) -> float:
 
 
 def _fund_flow_norm(entry: Any) -> float:
-    """资金流归一化 [-0.5, +0.5]：强流出 −0.5，弱流出 −0.2，中性 +0.1，流入 +0.3，强流入 +0.5。
+    """资金流归一化 [-0.5, +0.3]：强流出 −0.5，弱流出 −0.2，中性 +0.1，流入/强流入 +0.3。
 
-    校准依据：资金流出 ≤-8% 是档3劣后因子（nextday_attribution 口径）；强流入正向加分
-    已于 2026-08-10 下线（强流入组次日 -1.13% 反指），此处保留弱正向 +0.3 作为
-    「有资金关注」信号（非强流入反指）。
+    校准依据：资金流出 ≤-8% 是档3劣后因子（nextday_attribution 口径）。
+
+    2026-09-14 收口（此前代码 / 本 docstring / config_sources 三处口径互相矛盾）：
+    - 旧实现给强流入 **+0.5（五档最大值）**，而 docstring 同段却写「强流入正向加分已于
+      2026-08-10 下线（反指）」——自相矛盾。
+    - 2026-08-10 的「反指」结论基于 n=22（strong_in 次日 −1.13%）。n=382 样本上已翻案：
+      strong_in 次日 **−0.774%**，反而好于有资金流数据的全样本 **−0.880%** ⇒ 它不是反指，
+      不该给负分。
+    - 但同期 `in` 组（n=229）−1.178% 差于全样本，且 strong_in 与 in 之差仅 0.4pp
+      （未做显著性检验，n 不对称）——**没有任何证据支持「强流入 > 流入」**。
+      故取消 strong_in 独享的最高权，与 in 同权 +0.3。
+
+    ⚠ 五档量级整体**未过样本外验证**：本函数只进展示层 composite_score / 档位
+    （`composite_tier` 的 6.0/4.0/2.0 阈值），**不进最终排序键**。若要重估五档，
+    属权重变更，须走 `python -m scanner.rule_validate`（rescore 评估器可见 ranking）。
     """
     flow = _entry_fund_flow_pct(entry)
     if flow is None:
@@ -734,7 +746,7 @@ def _fund_flow_norm(entry: Any) -> float:
         "out": -0.2,
         "neutral": 0.1,
         "in": 0.3,
-        "strong_in": 0.5,
+        "strong_in": 0.3,  # 2026-09-14: +0.5 → +0.3（与 in 同权，见 docstring）
     }.get(sig, 0.1)
 
 

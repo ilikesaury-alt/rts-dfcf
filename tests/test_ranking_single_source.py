@@ -323,3 +323,43 @@ class TestFreshCandidate:
     @staticmethod
     def _mk_cat_cand(category="short_term", dims=None, stale=False):
         return TestFreshCandidate._mk_cand(category=category, dims=dims, stale=stale)
+
+
+class TestFundFlowNormDirection:
+    """`_fund_flow_norm` 五档的方向与量级守护（2026-09-14 收口）。
+
+    修复前 `strong_in` 拿 **+0.5（五档最大值）**，而同函数 docstring 声称「强流入正向
+    加分已于 2026-08-10 因反指下线」——代码 / docstring / config_sources 三处口径互相
+    矛盾。实测（n=382）：strong_in 次日 −0.774%，好于有资金流数据的全样本 −0.880%，
+    不是反指；但也没有任何证据支持「强流入 > 流入」（in 组 −1.178%，n=229，两者差
+    0.4pp 且未做显著性检验）⇒ 与 in 同权 +0.3。本组用例锁住「强流入不享有最高权」。
+    """
+
+    @staticmethod
+    def _flow(pct: float) -> dict:
+        return {"score_breakdown": {"fund_flow_main_pct": pct}}
+
+    def test_strong_inflow_not_above_inflow(self):
+        """★ 强流入不得比流入更高分（此前 +0.5 > +0.3，独占五档最大值）。"""
+        assert R._fund_flow_norm(self._flow(12.0)) <= R._fund_flow_norm(self._flow(6.0))
+
+    def test_strong_outflow_stays_lowest(self):
+        """流出档的相对次序不得被本次收口打乱。"""
+        vals = {
+            "strong_out": R._fund_flow_norm(self._flow(-9.0)),
+            "out": R._fund_flow_norm(self._flow(-6.0)),
+            "neutral": R._fund_flow_norm(self._flow(0.0)),
+            "in": R._fund_flow_norm(self._flow(6.0)),
+            "strong_in": R._fund_flow_norm(self._flow(12.0)),
+        }
+        assert vals["strong_out"] == min(vals.values())
+        assert vals["strong_out"] < vals["out"] < vals["neutral"]
+
+    def test_no_data_is_neutral(self):
+        """无资金流数据按中性 +0.1（fail-open，不惩罚无数据票）。"""
+        assert R._fund_flow_norm({}) == 0.1
+
+    def test_range_capped_at_inflow_weight(self):
+        """值域上界 = 流入档 +0.3（旧实现的 +0.5 不再可达）。"""
+        for pct in (-20.0, -9.0, -6.0, 0.0, 6.0, 12.0, 50.0):
+            assert -0.5 <= R._fund_flow_norm(self._flow(pct)) <= 0.3
