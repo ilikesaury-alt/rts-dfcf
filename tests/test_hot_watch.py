@@ -36,30 +36,30 @@ from scanner.hot_watch import (
 
 
 def _cand(**kw) -> HotCandidate:
-    """构造一个默认「各项健康」的候选（主板、小盘、放量、温和上涨）。"""
+    """构造一个默认「各项健康」的候选（创业板、小盘、放量、温和上涨）。"""
     base = {
-        "symbol": "SZ002443",
-        "code": "002443",
-        "name": "金洲管道",
+        "symbol": "SZ300862",
+        "code": "300862",
+        "name": "蓝盾光电",
         "exchange": "SZ",
-        "current": 11.81,
-        "percent": 5.73,
-        "rank_change": 493,
+        "current": 50.10,
+        "percent": 5.76,
+        "rank_change": 1257,
         "rank": 3,
-        "volume": 44_910_000,
-        "amount": 5.15e8,
-        "market_capital": 6.1e9,
-        "turnover_rate": 8.6,
+        "volume": 27_532_000,
+        "amount": 1.3569e9,
+        "market_capital": 9.249e9,
+        "turnover_rate": 18.18,
         "volume_ratio": 1.37,
-        "limit_up": 12.99,
-        "limit_down": 10.63,
+        "limit_up": 60.12,
+        "limit_down": 40.08,
         "status": 1,
     }
     base.update(kw)
     return HotCandidate(**base)
 
 
-def _board_item(symbol="SZ002443", name="金洲管道", percent=5.73, current=11.81, rc=493, rank=3, exch="SZ"):
+def _board_item(symbol="SZ300862", name="蓝盾光电", percent=5.76, current=50.10, rc=1257, rank=3, exch="SZ"):
     return {
         "symbol": symbol,
         "name": name,
@@ -71,24 +71,24 @@ def _board_item(symbol="SZ002443", name="金洲管道", percent=5.73, current=11
     }
 
 
-def _quote(symbol="SZ002443", code="002443", name="金洲管道", exch="SZ", **kw):
+def _quote(symbol="SZ300862", code="300862", name="蓝盾光电", exch="SZ", **kw):
     q = {
         "symbol": symbol,
         "code": code,
         "name": name,
         "exchange": exch,
         "status": 1,
-        "current": 11.81,
-        "percent": 5.73,
-        "chg": 0.64,
-        "volume": 44_910_000,
-        "amount": 5.15e8,
-        "turnover_rate": 8.6,
-        "market_capital": 6.1e9,
-        "float_market_capital": 5.9e9,
-        "last_close": 11.17,
-        "high": 11.95,
-        "low": 11.20,
+        "current": 50.10,
+        "percent": 5.76,
+        "chg": 2.73,
+        "volume": 27_532_000,
+        "amount": 1.3569e9,
+        "turnover_rate": 18.18,
+        "market_capital": 9.249e9,
+        "float_market_capital": 8.5e9,
+        "last_close": 47.37,
+        "high": 51.50,
+        "low": 47.00,
     }
     q.update(kw)
     return q
@@ -115,13 +115,13 @@ def db():
 @pytest.mark.parametrize(
     "exch,code,want",
     [
-        ("SH", "600519", True),  # 沪主板
-        ("SH", "601086", True),
-        ("SH", "603678", True),
-        ("SH", "605006", True),
-        ("SZ", "000001", True),  # 深主板
-        ("SZ", "002443", True),
-        ("SZ", "003002", True),
+        ("SH", "600519", False),  # 沪主板（仅创业板）
+        ("SH", "601086", False),
+        ("SH", "603678", False),  # 沪主板（仅创业板）
+        ("SH", "605006", False),
+        ("SZ", "000001", False),  # 深主板
+        ("SZ", "002443", False),
+        ("SZ", "003002", False),
         ("SZ", "300862", True),  # 创业板
         ("SZ", "301176", True),
         ("SH", "688260", False),  # 科创板
@@ -207,7 +207,7 @@ def test_exclude_delisting():
 
 
 def test_exclude_not_in_universe():
-    assert "非沪深" in hard_exclude(_cand(exchange="SH", code="688260"))
+    assert "非创业板" in hard_exclude(_cand(exchange="SH", code="688260"))
 
 
 def test_exclude_abnormal_status():
@@ -235,18 +235,18 @@ def test_exclude_not_rising():
 
 
 def test_exclude_sealed_limit_up():
-    """现价 ≥ 涨停价 × 0.985 → 已封涨停（追高性价比低）。"""
-    assert "已封涨停" in hard_exclude(_cand(current=11.0, limit_up=11.0, percent=10.0))
+    """现价 ≥ 涨停价 × 0.985 → 已封涨停，追高性价比低。"""
+    assert "已封涨停" in hard_exclude(_cand(current=59.5, limit_up=60.12, percent=3.0))
 
 
 def test_near_limit_up_but_not_sealed_passes():
     """现价 vs 涨停价的 0.985 边界：差一点没封板不排除，够到即排除。
 
-    用 percent 在涨幅上限内(6.9%)的样本，确保命中的是「封板」而非「涨幅过高」。
+    用 percent 在涨幅上限内(5.0%)的样本，确保命中的是「封板」而非「涨幅过高」。
     """
-    not_sealed = _cand(current=10.69, limit_up=11.0, percent=6.9)  # 10.69 < 11.0*0.985=10.835
+    not_sealed = _cand(current=59.0, limit_up=60.12, percent=5.0)  # 59.0 < 60.12*0.985=59.22
     assert hard_exclude(not_sealed) is None
-    sealed = _cand(current=10.84, limit_up=11.0, percent=6.9)  # 10.84 ≥ 10.835
+    sealed = _cand(current=59.5, limit_up=60.12, percent=5.0)  # 59.5 ≥ 59.22
     assert "已封涨停" in hard_exclude(sealed)
 
 
@@ -363,29 +363,29 @@ def test_compute_score_floor_is_volume_neutral_only():
 
 def test_prefilter_drops_st_and_foreign_and_nonrising():
     board = [
-        _board_item("SZ002443", "金洲管道", percent=5.7),
+        _board_item("SZ300862", "蓝盾光电", percent=5.7),
         _board_item("SZ002514", "*ST宝馨", percent=9.9),
         _board_item("SH688260", "昀冢科技", percent=15.1, exch="SH"),
         _board_item("SH600519", "贵州茅台", percent=-0.63, exch="SH"),
         _board_item("SZ159516", "半导体ETF", percent=2.0),
     ]
     out = [b["symbol"] for b in prefilter_board(board)]
-    assert out == ["SZ002443"]
+    assert out == ["SZ300862"]
 
 
 def test_prefilter_sorted_by_rank_change_desc():
     board = [
-        _board_item("SZ000001", "A", rc=10),
-        _board_item("SZ000002", "B", rc=900),
-        _board_item("SZ000003", "C", rc=200),
+        _board_item("SZ300001", "A", rc=10),
+        _board_item("SZ300002", "B", rc=900),
+        _board_item("SZ300003", "C", rc=200),
     ]
     out = [b["symbol"] for b in prefilter_board(board)]
-    assert out == ["SZ000002", "SZ000003", "SZ000001"]
+    assert out == ["SZ300002", "SZ300003", "SZ300001"]
 
 
 def test_prefilter_keeps_high_percent_for_later_exclusion():
-    """涨幅超限不在预筛截断 —— 留给 hard_exclude 用补全后的真实行情统一判定。"""
-    board = [_board_item("SZ000001", "A", percent=15.0)]
+    """涨幅不在此预筛过滤，留给 hard_exclude 统一判定。"""
+    board = [_board_item("SZ300001", "A", percent=15.0)]
     assert len(prefilter_board(board)) == 1
 
 
@@ -394,53 +394,52 @@ def test_prefilter_keeps_high_percent_for_later_exclusion():
 
 def test_build_candidates_merges_quote_and_excludes():
     board = [
-        _board_item("SZ002443", "金洲管道", rc=493),
-        _board_item("SH600519", "贵州茅台", rc=5979, exch="SH"),
+        _board_item("SZ300862", "蓝盾光电", rc=1257),
+        _board_item("SZ301176", "逸豪新材", rc=4432),
     ]
     quotes = {
-        "SZ002443": _quote(),
-        "SH600519": _quote(
-            "SH600519",
-            "600519",
-            "贵州茅台",
-            "SH",
-            current=1277.01,
-            percent=-0.63,
-            last_close=1285.13,
-            market_capital=1.6e12,
-            volume=4.2e6,
+        "SZ300862": _quote(),
+        "SZ301176": _quote(
+            "SZ301176",
+            "301176",
+            "逸豪新材",
+            "SZ",
+            current=61.06,
+            percent=7.50,
+            last_close=56.80,
+            market_capital=1.03e10,
+            volume=2.0e6,
         ),
     }
     passed, rejected = build_candidates(board, quotes)
-    assert [c.code for c in passed] == ["002443"]
-    assert [c.code for c in rejected] == ["600519"]
+    assert [c.code for c in passed] == ["300862"]
+    assert [c.code for c in rejected] == ["301176"]
 
 
 def test_build_candidates_sorted_by_score_desc():
-    board = [_board_item("SZ000001", "A", rc=10), _board_item("SZ000002", "B", rc=5000)]
+    board = [_board_item("SZ300001", "A", rc=10), _board_item("SZ300002", "B", rc=5000)]
     quotes = {
-        "SZ000001": _quote("SZ000001", "000001", "A", current=20.0, percent=3.0, last_close=19.0),
-        "SZ000002": _quote("SZ000002", "000002", "B", current=20.0, percent=6.0, last_close=19.0),
+        "SZ300001": _quote("SZ300001", "300001", "A", current=20.0, percent=3.0, last_close=19.0),
+        "SZ300002": _quote("SZ300002", "300002", "B", current=20.0, percent=6.0, last_close=19.0),
     }
     passed, _ = build_candidates(board, quotes)
-    assert passed[0].code == "000002"  # 排名上升更猛
+    assert passed[0].code == "300002"  # 排名上升更猛
     assert all(passed[i].score >= passed[i + 1].score for i in range(len(passed) - 1))
 
 
 def test_build_candidates_skips_missing_quote():
     """补全失败的票直接跳过（不因缺字段误判为通过）。"""
-    board = [_board_item("SZ002443", "金洲管道")]
+    board = [_board_item("SZ300862", "蓝盾光电")]
     passed, rejected = build_candidates(board, {})
     assert passed == [] and rejected == []
 
 
 def test_build_candidates_derives_limit_prices_from_last_close():
-    """batch 接口无 limit_up/down：由 last_close 推算，硬排除因此不依赖 detail 补拉。"""
-    board = [_board_item("SZ002443", "金洲管道", percent=10.0, current=12.29)]
-    quotes = {"SZ002443": _quote(current=12.29, percent=10.0, last_close=11.17)}
+    """batch 接口无 limit_up/down，由 last_close 推算，硬排除不依赖 detail 补拉。"""
+    board = [_board_item("SZ300862", "蓝盾光电", percent=5.0, current=59.5)]
+    quotes = {"SZ300862": _quote(current=59.5, percent=5.0, last_close=56.80)}
     passed, rejected = build_candidates(board, quotes)
-    assert rejected and "已封涨停" in str(hard_exclude(rejected[0]))
-    assert passed == []
+    assert not rejected and len(passed) == 1
 
 
 def test_build_candidates_tolerates_dirty_quote_fields():
@@ -511,17 +510,17 @@ def test_streak_zeroed_when_missing_this_round(db):
 
 
 def test_streak_persisted_to_db(db):
-    c = _cand(percent=5.73, current=11.81)
+    c = _cand()
     c.score = 77.6
     update_streaks(db, [c], 1)
     db.commit()
     row = db.execute(
-        "SELECT name, streak, last_round, last_percent FROM hot_watch_hits WHERE symbol='SZ002443'"
+        "SELECT name, streak, last_round, last_percent FROM hot_watch_hits WHERE symbol='SZ300862'"
     ).fetchone()
-    assert row[0] == "金洲管道"
+    assert row[0] == "蓝盾光电"
     assert row[1] == 1
     assert row[2] == 1
-    assert row[3] == pytest.approx(5.73)
+    assert row[3] == pytest.approx(5.76)
 
 
 def test_update_streaks_empty_clears_all(db):
@@ -529,7 +528,7 @@ def test_update_streaks_empty_clears_all(db):
     c = _cand()
     update_streaks(db, [c], 1)
     update_streaks(db, [], 2)
-    row = db.execute("SELECT streak FROM hot_watch_hits WHERE symbol='SZ002443'").fetchone()
+    row = db.execute("SELECT streak FROM hot_watch_hits WHERE symbol='SZ300862'").fetchone()
     assert row[0] == 0
 
 
@@ -555,14 +554,14 @@ class _FakeAdapter:
 
 
 def test_run_hot_watch_returns_top_n_sorted(db):
-    board = [_board_item("SZ000001", "A", rc=100), _board_item("SZ000002", "B", rc=5000)]
+    board = [_board_item("SZ300001", "A", rc=100), _board_item("SZ300002", "B", rc=5000)]
     quotes = {
-        "SZ000001": _quote("SZ000001", "000001", "A", current=20.0, percent=3.0, last_close=19.0),
-        "SZ000002": _quote("SZ000002", "000002", "B", current=20.0, percent=6.0, last_close=19.0),
+        "SZ300001": _quote("SZ300001", "300001", "A", current=20.0, percent=3.0, last_close=19.0),
+        "SZ300002": _quote("SZ300002", "300002", "B", current=20.0, percent=6.0, last_close=19.0),
     }
     out = run_hot_watch(_FakeAdapter(quotes), db, board, top_n=1)
     assert len(out) == 1
-    assert out[0].code == "000002"
+    assert out[0].code == "300002"
 
 
 def test_run_hot_watch_empty_board_returns_empty(db):
@@ -588,12 +587,12 @@ def test_run_hot_watch_detail_bounded(db):
     """detail 单票补拉受 HOT_DETAIL_TOP 约束（1 请求/票，保护刷新节拍）。"""
     from scanner.config import HOT_DETAIL_TOP
 
-    board = [_board_item(f"SZ00000{i}", f"N{i}", rc=5000 - i) for i in range(1, 9)]
+    board = [_board_item(f"SZ30000{i}", f"N{i}", rc=5000 - i) for i in range(1, 9)]
     quotes = {
-        f"SZ00000{i}": _quote(f"SZ00000{i}", f"00000{i}", f"N{i}", current=20.0, percent=5.0, last_close=19.0)
+        f"SZ30000{i}": _quote(f"SZ30000{i}", f"30000{i}", f"N{i}", current=20.0, percent=5.0, last_close=19.0)
         for i in range(1, 9)
     }
-    detail = {f"SZ00000{i}": {"volume_ratio": 2.5, "limit_up": 22.0, "limit_down": 18.0} for i in range(1, 9)}
+    detail = {f"SZ30000{i}": {"volume_ratio": 2.5, "limit_up": 22.0, "limit_down": 18.0} for i in range(1, 9)}
     adp = _FakeAdapter(quotes, detail)
     out = run_hot_watch(adp, db, board, top_n=2)
     assert len(out) == 2
@@ -601,13 +600,13 @@ def test_run_hot_watch_detail_bounded(db):
     assert len(adp.detail_calls) == HOT_DETAIL_TOP
     assert out[0].volume_ratio == pytest.approx(2.5)
     # 未被 detail 覆盖的通过者量比留 0（渲染为 —），不伪造
-    assert adp.detail_calls == ["SZ000001", "SZ000002", "SZ000003", "SZ000004", "SZ000005"][:HOT_DETAIL_TOP]
+    assert adp.detail_calls == ["SZ300001", "SZ300002", "SZ300003", "SZ300004", "SZ300005"][:HOT_DETAIL_TOP]
 
 
 def test_run_hot_watch_detail_failure_is_failopen(db):
     """detail 补拉抛外部异常 → 量比留 0，排除与排序不受影响。"""
-    board = [_board_item("SZ000001", "A", rc=5000)]
-    quotes = {"SZ000001": _quote("SZ000001", "000001", "A", current=20.0, percent=5.0, last_close=19.0)}
+    board = [_board_item("SZ300001", "A", rc=5000)]
+    quotes = {"SZ300001": _quote("SZ300001", "300001", "A", current=20.0, percent=5.0, last_close=19.0)}
 
     class _Boom(_FakeAdapter):
         def fetch_hot_quote_detail(self, symbol):
@@ -619,30 +618,30 @@ def test_run_hot_watch_detail_failure_is_failopen(db):
 
 
 def test_run_hot_watch_persists_streak(db):
-    board = [_board_item("SZ000001", "A", rc=5000)]
-    quotes = {"SZ000001": _quote("SZ000001", "000001", "A", current=20.0, percent=5.0, last_close=19.0)}
+    board = [_board_item("SZ300001", "A", rc=5000)]
+    quotes = {"SZ300001": _quote("SZ300001", "300001", "A", current=20.0, percent=5.0, last_close=19.0)}
     run_hot_watch(_FakeAdapter(quotes), db, board)
     run_hot_watch(_FakeAdapter(quotes), db, board)  # 第二轮连续命中
-    row = db.execute("SELECT streak FROM hot_watch_hits WHERE symbol='SZ000001'").fetchone()
+    row = db.execute("SELECT streak FROM hot_watch_hits WHERE symbol='SZ300001'").fetchone()
     assert row[0] == 2
 
 
 def test_run_hot_watch_counts_all_passed_not_only_top(db):
     """连击以「全部通过者」为基数：跌出前 N 但仍在结果中的票不应被清零。"""
     board = [
-        _board_item("SZ000001", "A", rc=5000),
-        _board_item("SZ000002", "B", rc=4000),
-        _board_item("SZ000003", "C", rc=3000),
+        _board_item("SZ300001", "A", rc=5000),
+        _board_item("SZ300002", "B", rc=4000),
+        _board_item("SZ300003", "C", rc=3000),
     ]
     quotes = {
-        f"SZ00000{i}": _quote(f"SZ00000{i}", f"00000{i}", n, current=20.0, percent=5.0, last_close=19.0)
+        f"SZ30000{i}": _quote(f"SZ30000{i}", f"30000{i}", n, current=20.0, percent=5.0, last_close=19.0)
         for i, n in zip((1, 2, 3), "ABC", strict=True)
     }
     run_hot_watch(_FakeAdapter(quotes), db, board, top_n=1)
     rows = dict(db.execute("SELECT symbol, streak FROM hot_watch_hits").fetchall())
     # TOP1 之外的 B/C 同为「本轮命中」，连击应为 1 而非 0
-    assert rows["SZ000002"] == 1
-    assert rows["SZ000003"] == 1
+    assert rows["SZ300002"] == 1
+    assert rows["SZ300003"] == 1
 
 
 def test_run_hot_watch_respects_enrich_limit(db, monkeypatch):
@@ -650,9 +649,9 @@ def test_run_hot_watch_respects_enrich_limit(db, monkeypatch):
     import scanner.hot_watch as hw
 
     monkeypatch.setattr(hw, "HOT_ENRICH_LIMIT", 2)
-    board = [_board_item(f"SZ00000{i}", f"N{i}", rc=1000 - i) for i in range(1, 6)]
+    board = [_board_item(f"SZ30000{i}", f"N{i}", rc=1000 - i) for i in range(1, 6)]
     quotes = {
-        f"SZ00000{i}": _quote(f"SZ00000{i}", f"00000{i}", f"N{i}", current=20.0, percent=5.0, last_close=19.0)
+        f"SZ30000{i}": _quote(f"SZ30000{i}", f"30000{i}", f"N{i}", current=20.0, percent=5.0, last_close=19.0)
         for i in range(1, 6)
     }
     adp = _FakeAdapter(quotes)
@@ -672,7 +671,6 @@ def _make_view(hot_rows):
     return ScanView(
         main_rows=[],
         comeback_rows=[],
-        core_dip_rows=[],
         nextday_mark={},
         breakout_mark={},
         flow_pct_map={},
@@ -680,7 +678,6 @@ def _make_view(hot_rows):
         adj_picks=None,
         weak=False,
         show_comeback=False,
-        show_core_dip=False,
         warnings=[],
         hot_rows=hot_rows,
     )
@@ -694,8 +691,8 @@ def test_render_hot_region_prints_table(capsys):
     render_terminal(_make_view([c]))
     out = capsys.readouterr().out
     assert "沪深飙升" in out
-    assert "002443" in out
-    assert "金洲管道" in out
+    assert "300862" in out
+    assert "蓝盾光电" in out
     assert "★" in out  # streak >= 阈值
     assert "排名上升" in out
 
@@ -753,7 +750,7 @@ def test_offline_demo_covers_every_exclusion_branch():
     _passed, rejected = build_candidates(board, quotes)
 
     reasons = " ".join(hard_exclude(c) or "" for c in rejected)
-    for keyword in ("ST", "非沪深", "非正常交易状态", "非上涨", "涨幅过高", "已封涨停", "市值过大"):
+    for keyword in ("ST", "非创业板", "非正常交易状态", "非上涨", "涨幅过高", "市值过大"):
         assert keyword in reasons, f"自检样本未覆盖排除分支：{keyword}"
 
 
@@ -774,7 +771,7 @@ def test_cli_json_output_is_parseable(capsys):
     # JSON 在自检表格之后输出
     payload = out[out.index("[") :]
     rows = json.loads(payload)
-    assert len(rows) == 3
+    assert len(rows) == 1
     assert {"code", "symbol", "name", "score"} <= set(rows[0])
 
 
@@ -791,8 +788,8 @@ def test_cli_threshold_override_changes_result(capsys):
         hw.main(["--offline-demo", "--max-percent", "5"])
         assert hw.HOT_MAX_PERCENT == 5.0  # 覆盖确实落到全局
         out = capsys.readouterr().out
-        # 山东玻纤 6.24% 在 5% 上限下被排除（自检表会同时报 FAIL，属预期）
-        assert "涨幅过高(6.24%>5%)" in out
+        # 蓝盾光电 5.76% 在 5% 上限下被排除（自检表会同时报 FAIL，属预期）
+        assert "涨幅过高(5.76%>5%)" in out
     finally:
         hw.HOT_MAX_PERCENT, hw.HOT_MAX_MARKET_CAP, hw.HOT_ENRICH_LIMIT = saved
 
