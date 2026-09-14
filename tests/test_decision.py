@@ -108,25 +108,43 @@ def _seed_strong_day(conn: sqlite3.Connection, date: str = "2026-09-04") -> None
 
 
 def test_picks_category_prior_order_and_cap():
-    """门开时：按先验顺序（core_dip → kNF → rebound）输出，全局 ≤3。"""
+    """门开时：按 hit 率降序先验（rebound → kNF → momentum → new_face）输出，全局 ≤3。
+
+    2026-09-14 口径统一：本表由 config_scoring.CATEGORY_HIT_RATE 派生。此前按
+    **平均超额**排（core_dip 第一、momentum 永禁）。本用例同时锁住三件事：
+    ① 顺序 = hit 率降序；② 每类配额生效；③ core_dip（hit 6.5% < 基准 7.8%）不在准入内——
+    即便它被落库也不会进入决策层。
+    """
     conn = _db()
     _seed_strong_day(conn)
-    _seed_rec(conn, "2026-09-04", "SZ300001", "core_dip", 80, name="低吸甲")
-    _seed_rec(conn, "2026-09-04", "SZ300002", "core_dip", 70, name="低吸乙")
-    _seed_rec(conn, "2026-09-04", "SZ300003", "rebound", 90, name="反弹甲")
-    _seed_rec(conn, "2026-09-04", "SZ300004", "rebound", 60, name="反弹乙")
-    _seed_rec(conn, "2026-09-04", "SZ300005", "known_new_face", 50, name="老面孔")
-    _seed_rec(conn, "2026-09-04", "SZ300006", "momentum", 99, name="动量禁入")
+    _seed_rec(conn, "2026-09-04", "SZ300001", "rebound", 80, name="反弹甲")
+    _seed_rec(conn, "2026-09-04", "SZ300002", "rebound", 70, name="反弹乙")
+    _seed_rec(conn, "2026-09-04", "SZ300003", "known_new_face", 50, name="老面孔")
+    _seed_rec(conn, "2026-09-04", "SZ300004", "momentum", 99, name="动量票")
+    _seed_rec(conn, "2026-09-04", "SZ300005", "new_face", 88, name="新面孔")
+    _seed_rec(conn, "2026-09-04", "SZ300006", "core_dip", 77, name="低吸票")
     result = build_decision_picks(conn, today=TODAY)
     assert result["allowed"]
     syms = [p["symbol"] for p in result["picks"]]
-    # 先验顺序：core_dip 配额 2（甲80/乙70）→ kNF(50)，rebound 被全局配额截掉
-    assert syms == ["SZ300001", "SZ300002", "SZ300005"]
+    # rebound 配额 2（80/70）→ kNF 配额 1（50）占满全局配额 3；
+    # momentum / new_face 在准入内但被配额截断（非被禁）；core_dip 不在准入集合。
+    assert syms == ["SZ300001", "SZ300002", "SZ300003"]
     assert len(result["picks"]) <= DECISION_MAX_PICKS
 
 
+def test_picks_momentum_admissible_not_banned():
+    """★ momentum 不再「永禁」（2026-09-14 口径统一）：它 hit 10.0% > 基准 7.8%，
+    单类别在场时应照常入选。此前用平均超额（-0.70%）把它整体剔除。"""
+    conn = _db()
+    _seed_strong_day(conn)
+    _seed_rec(conn, "2026-09-04", "SZ300001", "momentum", 90, name="动量票")
+    result = build_decision_picks(conn, today=TODAY)
+    assert [p["symbol"] for p in result["picks"]] == ["SZ300001"]
+
+
 def test_picks_known_new_face_score_ascending():
-    """kNF 是分数反指（IC -0.167）：同类内按分数升序取头部。"""
+    """kNF 是分数反指（IC -0.167）：同类内按分数升序取头部（方向取
+    categories.SCORE_DESCENDING_BY_CAT 单源，不再在此手写 "asc"）。"""
     conn = _db()
     _seed_strong_day(conn)
     _seed_rec(conn, "2026-09-04", "SZ300001", "known_new_face", 90)
@@ -139,9 +157,9 @@ def test_picks_excluded_and_chase_filtered():
     """excluded=1 与超帽（>8% 不追涨）的票不进决策层。"""
     conn = _db()
     _seed_strong_day(conn)
-    _seed_rec(conn, "2026-09-04", "SZ300001", "core_dip", 90, excluded=1)
-    _seed_rec(conn, "2026-09-04", "SZ300002", "core_dip", 80, percent=9.9)
-    _seed_rec(conn, "2026-09-04", "SZ300003", "core_dip", 70, percent=5.0)
+    _seed_rec(conn, "2026-09-04", "SZ300001", "rebound", 90, excluded=1)
+    _seed_rec(conn, "2026-09-04", "SZ300002", "rebound", 80, percent=9.9)
+    _seed_rec(conn, "2026-09-04", "SZ300003", "rebound", 70, percent=5.0)
     result = build_decision_picks(conn, today=TODAY)
     assert [p["symbol"] for p in result["picks"]] == ["SZ300003"]
 
@@ -150,7 +168,7 @@ def test_picks_empty_when_gate_closed():
     """门关时 picks 为空且给出空仓原因——空仓是合法输出。"""
     conn = _db()
     _seed_index(conn, [("2026-09-03", 0.5), ("2026-09-04", -2.0)])
-    _seed_rec(conn, "2026-09-04", "SZ300001", "core_dip", 90)
+    _seed_rec(conn, "2026-09-04", "SZ300001", "rebound", 90)
     result = build_decision_picks(conn)
     assert not result["allowed"] and not result["picks"]
     assert "空仓" in result["gate_reason"]
@@ -169,7 +187,7 @@ def test_save_decision_picks_persists_gate_and_rows():
         " PRIMARY KEY (date, symbol))"
     )
     _seed_strong_day(conn)
-    _seed_rec(conn, "2026-09-04", "SZ300001", "core_dip", 80, name="低吸甲")
+    _seed_rec(conn, "2026-09-04", "SZ300001", "rebound", 80, name="反弹甲")
     result = build_decision_picks(conn, today=TODAY)
     save_decision_picks(conn, result, today=TODAY)
     save_decision_picks(conn, result, today=TODAY)  # 幂等
@@ -204,7 +222,7 @@ def test_decision_lines_with_picks():
         " PRIMARY KEY (date, symbol))"
     )
     _seed_strong_day(conn)
-    _seed_rec(conn, "2026-09-04", "SZ300001", "core_dip", 80, name="低吸甲")
+    _seed_rec(conn, "2026-09-04", "SZ300001", "rebound", 80, name="反弹甲")
     lines = decision_lines(conn, today=TODAY)
     assert any("1. SZ300001" in ln for ln in lines)
 
@@ -238,8 +256,8 @@ def test_decision_intraday_gate_blocks_weak_intraday(monkeypatch):
     monkeypatch.setattr(dm, "DECISION_INTRADAY_BEAUTY_ENABLED", True)
     conn = _db_sb()
     _seed_strong_day(conn)
-    _seed_rec_sb(conn, "SZ300001", "core_dip", 90, -3.0)  # 高分但分时走弱 → 拦
-    _seed_rec_sb(conn, "SZ300002", "core_dip", 70, 5.0)  # 分时漂亮 → 入选
+    _seed_rec_sb(conn, "SZ300001", "rebound", 90, -3.0)  # 高分但分时走弱 → 拦
+    _seed_rec_sb(conn, "SZ300002", "rebound", 70, 5.0)  # 分时漂亮 → 入选
     result = build_decision_picks(conn, today=TODAY)
     assert [p["symbol"] for p in result["picks"]] == ["SZ300002"]
     assert result["beauty_blocked"] == 1
@@ -249,7 +267,7 @@ def test_decision_intraday_gate_zero_score_fail_open():
     """intraday_score=0.0（未评分默认值歧义）→ 按缺失 fail-open 不拦。"""
     conn = _db_sb()
     _seed_strong_day(conn)
-    _seed_rec_sb(conn, "SZ300001", "core_dip", 80, 0.0)
+    _seed_rec_sb(conn, "SZ300001", "rebound", 80, 0.0)
     result = build_decision_picks(conn, today=TODAY)
     assert [p["symbol"] for p in result["picks"]] == ["SZ300001"]
     assert result["beauty_blocked"] == 0
@@ -262,8 +280,8 @@ def test_decision_intraday_gate_blocks_all_reports_in_reason(monkeypatch):
     monkeypatch.setattr(dm, "DECISION_INTRADAY_BEAUTY_ENABLED", True)
     conn = _db_sb()
     _seed_strong_day(conn)
-    _seed_rec_sb(conn, "SZ300001", "core_dip", 90, -2.0)
-    _seed_rec_sb(conn, "SZ300002", "core_dip", 80, -1.5)
+    _seed_rec_sb(conn, "SZ300001", "rebound", 90, -2.0)
+    _seed_rec_sb(conn, "SZ300002", "rebound", 80, -1.5)
     result = build_decision_picks(conn, today=TODAY)
     assert result["picks"] == []
     assert result["beauty_blocked"] == 2
@@ -278,7 +296,7 @@ def test_decision_intraday_gate_kill_switch():
     """
     conn = _db_sb()
     _seed_strong_day(conn)
-    _seed_rec_sb(conn, "SZ300001", "core_dip", 90, -3.0)
+    _seed_rec_sb(conn, "SZ300001", "rebound", 90, -3.0)
     result = build_decision_picks(conn, today=TODAY)
     assert [p["symbol"] for p in result["picks"]] == ["SZ300001"]
     assert result["beauty_blocked"] == 0
@@ -288,7 +306,7 @@ def test_decision_intraday_gate_no_sb_column_fail_open():
     """旧库无 score_breakdown 列：分时门整体跳过，决策行为不变（fail-open）。"""
     conn = _db()  # 无 score_breakdown 列
     _seed_strong_day(conn)
-    _seed_rec(conn, TODAY, "SZ300001", "core_dip", 80, name="低吸甲")
+    _seed_rec(conn, TODAY, "SZ300001", "rebound", 80, name="反弹甲")
     result = build_decision_picks(conn, today=TODAY)
     assert [p["symbol"] for p in result["picks"]] == ["SZ300001"]
     assert result["beauty_blocked"] == 0
@@ -307,8 +325,8 @@ def test_decision_lines_mention_intraday_block(monkeypatch):
         " PRIMARY KEY (date, symbol))"
     )
     _seed_strong_day(conn)
-    _seed_rec_sb(conn, "SZ300001", "core_dip", 90, -3.0)  # 拦
-    _seed_rec_sb(conn, "SZ300002", "core_dip", 70, 5.0)  # 入选
+    _seed_rec_sb(conn, "SZ300001", "rebound", 90, -3.0)  # 拦
+    _seed_rec_sb(conn, "SZ300002", "rebound", 70, 5.0)  # 入选
     lines = decision_lines(conn, today=TODAY)
     assert any("分时门拦1只" in ln for ln in lines)
     assert any("1. SZ300002" in ln for ln in lines)
@@ -347,7 +365,7 @@ def test_decision_lines_does_not_persist():
 
     conn = _decision_db()
     _seed_strong_day(conn)
-    _seed_rec(conn, TODAY, "SZ300001", "core_dip", 80, name="低吸甲")
+    _seed_rec(conn, TODAY, "SZ300001", "rebound", 80, name="反弹甲")
     before = _picks_count(conn)
 
     lines = _pure_lines(conn, today=TODAY)
@@ -360,7 +378,7 @@ def test_decision_lines_works_without_picks_table():
     """纯渲染路径不应依赖 decision_picks 表存在（建表前调用也不炸）。"""
     conn = _db()  # 无 decision_picks 表
     _seed_strong_day(conn)
-    _seed_rec(conn, TODAY, "SZ300001", "core_dip", 80)
+    _seed_rec(conn, TODAY, "SZ300001", "rebound", 80)
     lines = decision_lines(conn, today=TODAY)
     assert any("SZ300001" in ln for ln in lines)
 
@@ -369,7 +387,7 @@ def test_build_and_persist_decision_writes_db():
     """主循环用的那个：构建 + 落库 + 渲染，三者都要发生。"""
     conn = _decision_db()
     _seed_strong_day(conn)
-    _seed_rec(conn, TODAY, "SZ300001", "core_dip", 80, name="低吸甲")
+    _seed_rec(conn, TODAY, "SZ300001", "rebound", 80, name="反弹甲")
 
     lines = build_and_persist_decision(conn, today=TODAY)
 
@@ -383,7 +401,7 @@ def test_build_and_persist_decision_is_idempotent():
     """连调两次不产生重复行（INSERT OR REPLACE 语义）。"""
     conn = _decision_db()
     _seed_strong_day(conn)
-    _seed_rec(conn, TODAY, "SZ300001", "core_dip", 80)
+    _seed_rec(conn, TODAY, "SZ300001", "rebound", 80)
     build_and_persist_decision(conn, today=TODAY)
     n1 = _picks_count(conn)
     build_and_persist_decision(conn, today=TODAY)
@@ -399,7 +417,7 @@ def test_persist_failure_still_renders():
     """
     conn = _db()  # 故意没有 decision_picks 表
     _seed_strong_day(conn)
-    _seed_rec(conn, TODAY, "SZ300001", "core_dip", 80)
+    _seed_rec(conn, TODAY, "SZ300001", "rebound", 80)
     lines = build_and_persist_decision(conn, today=TODAY)
     assert any("SZ300001" in ln for ln in lines), "落库失败也要正常渲染"
 
@@ -410,7 +428,7 @@ def test_render_decision_lines_is_pure():
 
     lines = render_decision_lines(
         {"allowed": True, "gate_reason": "大盘门开", "beauty_blocked": 2,
-         "picks": [{"symbol": "SZ300001", "name": "甲", "category": "core_dip",
+         "picks": [{"symbol": "SZ300001", "name": "甲", "category": "rebound",
                     "score": 80.0, "percent": 3.0}]}
     )
     assert any("分时门拦2只" in ln for ln in lines)
@@ -429,7 +447,7 @@ def test_render_handles_missing_percent():
 
     lines = render_decision_lines(
         {"allowed": True, "gate_reason": "", "beauty_blocked": 0,
-         "picks": [{"symbol": "SZ300001", "name": "甲", "category": "core_dip",
+         "picks": [{"symbol": "SZ300001", "name": "甲", "category": "rebound",
                     "score": 80.0, "percent": None}]}
     )
     assert any("—" in ln for ln in lines)

@@ -11,10 +11,18 @@
      实测（71 天 / 1233 样本，超额口径）：唯一正期望状态是「强势日」+0.36%（t=1.77）；
      大跌日 -0.91%（t=-2.49 显著负）、小跌日 -0.28%、反弹但 5 日弱 -0.51%。
      这一道门把系统从负期望整体翻正——比调任何个股阈值杠杆都大。
-  2. 类别先验门：只允许实测超额为正的类别进入（core_dip +1.69% / known_new_face
-     +1.03% / rebound +0.74%）；momentum 永禁（-0.70%）。先验随 prevday_perf 复算更新。
+     ⚠ 本门仍按**平均超额**校准（回答「今天开仓的期望是否为负」），与 2 的 hit 率口径
+     不同轴；这是刻意保留的（择时 vs 择股），不是口径漏改。
+  2. 类别先验门：只允许「综合排序主表类别 ∩ hit 率高于全体基准」进入，按 hit 率降序。
+     2026-09-14 统一口径：此前本门按**实测平均超额**准入并排序（core_dip +1.69% 第一、
+     momentum −0.70% 永禁），与排序口径（nextday_prob 的 hit 率）方向相反，导致系统
+     把 hit 率高的票排前面、再用硬编码整体删掉。现准入与顺序均由
+     config_scoring.CATEGORY_HIT_RATE 派生（当前：rebound 17.9% / known_new_face 12.7%
+     / momentum 10.0% / new_face 9.7%，基准 7.8%）。
   3. 稀缺配额：全局 ≤DECISION_MAX_PICKS 只。决策的价值 = 替用户放弃 95% 的机会；
      空仓是合法输出，且是高频输出。
+     ⚠ 低 hit 率类别（core_dip 6.5% / short_term 6.2% / comeback / pool_pick）不在准入内，
+     但仍会在终选区与观察区展示——本门只约束「替你下单的那 3 只」。
 
 闭环：决策层落库 decision_picks（含市场门状态），后续 prevday_perf 对比
 「决策层 vs 全池」——决策层有没有 alpha 变成每日可验证，避免拍脑袋。
@@ -28,7 +36,14 @@ import logging
 import sqlite3
 from typing import Any
 
-from scanner.config import DECISION_INTRADAY_BEAUTY_ENABLED, DISPLAY_MAX_TODAY_PCT, now_beijing
+from scanner.categories import MAIN_TABLE_CATEGORIES, SCORE_DESCENDING_BY_CAT
+from scanner.config import (
+    CATEGORY_HIT_RATE,
+    CATEGORY_HIT_RATE_DEFAULT,
+    DECISION_INTRADAY_BEAUTY_ENABLED,
+    DISPLAY_MAX_TODAY_PCT,
+    now_beijing,
+)
 from scanner.utils import EXTERNAL_FAILURES
 
 # 分时门判定单源（与终选美感门同源；相对导入绕开 pyright 会话冻结快照的绝对名解析）
@@ -36,14 +51,32 @@ from .trend_beauty import evaluate_intraday_beauty
 
 logger = logging.getLogger(__name__)
 
-# ── 决策层配置（config 单一事实源原则的例外：先验/配额与检测逻辑强耦合，
-#    且消费方仅本模块，暂放此处；如需外部复算再上移）──
-# (类别, 该类最多几只, 分数排序方向)。顺序即输出顺序（按实测超额先验降序）。
-# kNF 是分数反指（IC -0.167，低分档 hit 更高），用升序。
+# ── 决策层配置（先验/配额与检测逻辑强耦合，消费方仅本模块，故留在此处）──
+# 类别准入与顺序**由 hit 率唯一口径派生**（2026-09-14 目标函数统一）：
+#   准入 = 综合排序主表类别 ∩ hit 率 > 全体基准；
+#   顺序 = hit 率降序（全局配额截断时，先验强的类别优先占位）。
+# 这张表此前是**手抄的「按实测平均超额」表**（core_dip 第一优先级、momentum 永禁），
+# 与排序口径（nextday_prob 的 hit 率 base rate）方向相反 —— 同一类别在系统内
+# 既是最好又是最差。口径说明见 config_scoring.CATEGORY_HIT_RATE。
+# ⚠ 改 hit 率表即改本表（自动跟随）；改级联成员需同时改配额，守护测试会拦。
+DECISION_GATED_CATEGORIES: frozenset[str] = frozenset(
+    cat for cat in MAIN_TABLE_CATEGORIES if CATEGORY_HIT_RATE.get(cat, 0.0) > CATEGORY_HIT_RATE_DEFAULT
+)
+# 每类配额 = **分散化策略**（不是口径产物）：防止全局配额被单一类别吃满。
+# ⚠ 键集合必须与 DECISION_GATED_CATEGORIES 一致（单测守护）。hit 率刷新致某类跌出
+# 准入时，守护测试会 fail —— 逼一次显式的「准入/配额」决策，而不是行为静默改变。
+DECISION_CAT_CAPS: dict[str, int] = {
+    "rebound": 2,
+    "known_new_face": 1,
+    "momentum": 1,
+    "new_face": 1,
+}
+# (类别, 该类最多几只, 分数排序方向)。顺序即输出顺序（hit 率降序）。
+# 方向不在此手写，取 categories.SCORE_DESCENDING_BY_CAT 单源：kNF 是分数反指
+# （IC -0.167，低分档 hit 更高）→ 升序；其余降序。
 DECISION_CATEGORY_SPECS: list[tuple[str, int, str]] = [
-    ("core_dip", 2, "desc"),
-    ("known_new_face", 1, "asc"),
-    ("rebound", 2, "desc"),
+    (cat, DECISION_CAT_CAPS[cat], "desc" if SCORE_DESCENDING_BY_CAT.get(cat, True) else "asc")
+    for cat in sorted(DECISION_CAT_CAPS, key=lambda c: -CATEGORY_HIT_RATE.get(c, 0.0))
 ]
 DECISION_MAX_PICKS = 3
 
@@ -82,10 +115,15 @@ def market_gate(conn: sqlite3.Connection) -> tuple[bool, str]:
 def build_decision_picks(conn: sqlite3.Connection, today: str | None = None) -> dict[str, Any]:
     """构建今日决策层：市场门 → 类别先验内取每类头部 → 分时门过滤 → 全局配额截断。
 
+    类别先验（2026-09-14）：准入集合与顺序由 config_scoring.CATEGORY_HIT_RATE 派生，
+    见 DECISION_CATEGORY_SPECS。类别集合同时决定 SQL 的 `category IN (...)`。
+
     分时门（2026-09-09）：决策推荐票要求分时不走弱（intraday_score ≥
-    INTRADAY_BEAUTY_MIN，与终选美感门同源判定）——「低吸不接正在回落的刀」
-    对超跌低位类同样成立。只加分时门不加日线门：决策层类别先验恰是
-    core_dip/kNF/rebound 低位类，日线 MA 多头硬门会全灭它们（语义冲突）。
+    INTRADAY_BEAUTY_MIN，与终选美感门同源判定）——「低吸不接正在回落的刀」。
+    只加分时门不加日线门：决策层准入既含 kNF/rebound 这类低位类，也含 momentum/
+    new_face 这类动量类，日线 MA 多头硬门会把前者整类灭掉（语义冲突），
+    故不用日线门。
+    分时门硬拦默认关（DECISION_INTRADAY_BEAUTY_ENABLED=False，2026-09-09 数据裁决）。
     分时数据取当日最新一轮落库 score_breakdown；无维度 fail-open 不判否。
 
     返回 {"allowed": bool, "gate_reason": str, "beauty_blocked": int,
@@ -118,14 +156,18 @@ def build_decision_picks(conn: sqlite3.Connection, today: str | None = None) -> 
                 intraday_sb[sym] = sb
         except EXTERNAL_FAILURES as e:
             logger.warning("决策层分时门取数失败（门跳过）: %s: %s", type(e).__name__, e)
+    # 类别集合由 specs 动态生成（不再硬编码 SQL 里的类别名——硬编码会让 hit 率表
+    # 刷新后「准入变了但取数没变」，静默失效）。
+    cats = [cat for cat, _, _ in DECISION_CATEGORY_SPECS]
+    placeholders = ",".join("?" * len(cats))
     try:
         rows = conn.execute(
-            "SELECT symbol, MAX(name) name, category, MAX(score) score, MAX(percent) percent "
+            "SELECT symbol, MAX(name) name, category, MAX(score) score, MAX(percent) percent "  # noqa: S608
             "FROM recommendations "
-            "WHERE date=? AND excluded=0 AND category IN ('core_dip','known_new_face','rebound') "
+            f"WHERE date=? AND excluded=0 AND category IN ({placeholders}) "
             "AND (percent IS NULL OR percent <= ?) "
             "GROUP BY symbol, category",
-            (rec_date, DISPLAY_MAX_TODAY_PCT),
+            (rec_date, *cats, DISPLAY_MAX_TODAY_PCT),
         ).fetchall()
     except EXTERNAL_FAILURES as e:
         logger.warning("决策层取数失败: %s: %s", type(e).__name__, e)

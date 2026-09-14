@@ -179,7 +179,9 @@ DECISION_INTRADAY_BEAUTY_ENABLED = _env_flag("RTS_DECISION_BEAUTY_INTRADAY", Fal
 # 与决策层互补：决策层答「现在该不该买」（门关→空仓），终选区答「若必须持仓买谁」
 # （无论门开关都给结论）。评级单源复用 today_report._tier0_verdict（已回测口径），
 # 排序单源用 scanner.nextday_prob（当日口径次日大涨概率，朴素贝叶斯式 odds 模型）；
-# 买满 ≥2 只时按驱动概念去相关（同主题第 2 只劣后），momentum 负先验永禁。
+# 买满 ≥2 只时按驱动概念去相关（同主题第 2 只劣后）。
+# 2026-09-14：删除「momentum 负先验永禁」——那是平均超额口径，与终选排序的 hit 率
+# 口径方向相反（momentum hit 10.0% > 基准 7.8%）。类别优劣一律由 base rate 如实反映。
 # 纯展示层，不改评分/排序/落库。回滚杠杆：RTS_FINAL_PICK=0 关闭。
 FINAL_PICK_ENABLED = _env_flag("RTS_FINAL_PICK", True)
 FINAL_PICK_MAX = 3  # 终选最多 N 只（用户买入预算 1-3 只，2026-09-08 由 2 放宽为 3）

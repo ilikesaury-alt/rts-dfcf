@@ -264,20 +264,44 @@ SECTOR_RESONANCE_WARN_MAX = 15
 # 资金流出档位阈值复用上方 FUND_OUTFLOW_NET_PCT（与「资金流出」标签同源防漂移）。
 OVERHEAT_ACCUM_MAX = 50.0
 
+# ── 类别先验单一事实源（2026-09-14：目标函数统一为「次日≥7% hit 率」）──
+# 为什么要有这张表：此前「类别先验」在系统里存在三份手抄副本，且**口径不一**——
+#   nextday_prob.BASE_RATE_BY_CAT       → hit 率（排序列）
+#   config_scoring.COMPOSITE_CAT_BASE   → hit 率线性映射（但取自更早的快照）
+#   decision.DECISION_CATEGORY_SPECS    → **平均超额收益**（准入 + 顺序）
+# 第三张与另两张方向相反，导致同一类别在系统内既是最好又是最差：
+#   core_dip  平均超额 +1.69%（旧表第一优先级） vs hit 率 6.5%（**低于**全体基准）
+#   momentum  平均超额 −0.70%（旧表「永禁」）   vs hit 率 10.0%（**高于**全体基准）
+# 2026-09-14 用户拍板：**hit 率是唯一类别先验口径**。本表即唯一手抄源，
+# 下游（nextday_prob / ranking / decision）一律从它派生，不得再抄第二份。
+#
+# 数据来源与复核纪律：nextday_calib 按统一去重口径重算并做漂移巡检——
+#   python -m scanner.nextday_calib            # 巡检（漂移即退出码 1）
+#   python -m scanner.nextday_calib --write    # 重算后同步 nextday_calib.json
+# ⚠ 改本表属**行为变更**：必须重跑 nextday_calib --write（否则
+#   tests/test_nextday_calib.py 会 fail），并按 AGENTS.md 过样本外验证门。
+CATEGORY_HIT_RATE: dict[str, float] = {
+    "rebound": 0.179,
+    "known_new_face": 0.127,
+    "momentum": 0.100,
+    "new_face": 0.097,
+    "core_dip": 0.065,
+    "short_term": 0.062,
+    "pullback": 0.056,  # 已下线，保留供回测
+    "comeback": 0.028,
+    "pool_pick": 0.021,
+}
+# 全体兜底 hit 率（未知类别；亦作 composite 线性映射的基准点）
+CATEGORY_HIT_RATE_DEFAULT = 0.078
+
 # ── 统一复合评分（2026-09-08，v1+v2 合一）──
 # composite_score = cat_base + tech_norm + rank_norm + fund_norm + dip_bonus
-# 所有分量校准于 nextday_attribution 1949 去重样本（7.5% baseline hit rate）。
-# 类别基值：(hit_rate - 7.5) / (17.2 - 7.5) * 10，负值表示低于基准。
+# 类别基值由 CATEGORY_HIT_RATE **派生**（不再手抄）：
+#   cat_base = (hit − 基准) / (最高 hit − 基准) × 10，负值表示低于基准。
+_CAT_BASE_SPREAD = max(CATEGORY_HIT_RATE.values()) - CATEGORY_HIT_RATE_DEFAULT
 COMPOSITE_CAT_BASE: dict[str, float] = {
-    "rebound": 10.0,  # hit 17.2% → +10.0
-    "known_new_face": 5.4,  # hit 12.7% → +5.4
-    "momentum": 2.6,  # hit 10.0% → +2.6
-    "new_face": 2.3,  # hit 9.7% → +2.3
-    "core_dip": 0.7,  # hit 8.2% → +0.7
-    "short_term": -1.4,  # hit 6.1% → -1.4
-    "pullback": -2.0,  # hit 5.6% → -2.0（已下线，保留供回测）
-    "comeback": -4.6,  # hit 3.0% → -4.6
-    "pool_pick": -5.0,  # hit 2.6% → -5.0
+    cat: round((rate - CATEGORY_HIT_RATE_DEFAULT) / _CAT_BASE_SPREAD * 10.0, 1)
+    for cat, rate in CATEGORY_HIT_RATE.items()
 }
 # 档位阈值：composite_score 推导，取代原 entry_tier 的 if/elif 级联。
 COMPOSITE_TIER_THRESHOLDS: dict[int, float] = {
@@ -491,6 +515,8 @@ __all__ = [
     "SECTOR_RESONANCE_WARN_MAX",
     "OVERHEAT_ACCUM_MAX",
     "COMPOSITE_CAT_BASE",
+    "CATEGORY_HIT_RATE",
+    "CATEGORY_HIT_RATE_DEFAULT",
     "COMPOSITE_TIER_THRESHOLDS",
     "HOLD_DAYS_BY_CATEGORY",
     "hold_days_for",

@@ -16,6 +16,12 @@ base 按类别取当日口径命中率；OR 为因子条件命中率对参照组
 因子一律不纳入（过热 n=6 / am_high 存在率仅 5% 且方向与维度归因矛盾 /
 rank_trend_bonus n=26 贴门槛且与辨识度相关）。
 
+**类别先验单源（2026-09-14）**：类别 base rate 的定义已上移到
+`config_scoring.CATEGORY_HIT_RATE`——它是全系统「类别先验」的唯一手抄源，本模块的
+`BASE_RATE_BY_CAT` 只是它的别名。同源派生出 `COMPOSITE_CAT_BASE`（综合评分）与
+`decision.DECISION_CATEGORY_SPECS`（决策层准入/顺序）。此前这三处各抄一份且口径
+互相矛盾（本模块用 hit 率、决策层用平均超额），已统一为 **hit 率**。
+
 校准来源与复核纪律（2026-09-13 重写，audit §B2）：
   常数**不再靠人眼读数手抄**。重算与漂移巡检单源：
       python -m scanner.nextday_calib            # 逐因子口径 + 实测 + 漂移（退出码 1 = 有漂移）
@@ -54,6 +60,8 @@ import math
 from typing import Any
 
 from scanner.config import (
+    CATEGORY_HIT_RATE,
+    CATEGORY_HIT_RATE_DEFAULT,
     FUND_OUTFLOW_NET_PCT,
     NEXTDAY_SPIKE_MID_MAX,
     NEXTDAY_SPIKE_MID_MIN,
@@ -66,19 +74,16 @@ from scanner.ranking import (
     _nextday_entry_percent,
 )
 
-# ── 类别 base rate（口径：全体样本分策略 hit 率；2026-09-13 刷新）──
-BASE_RATE_BY_CAT: dict[str, float] = {
-    "rebound": 0.179,
-    "known_new_face": 0.127,
-    "momentum": 0.100,
-    "new_face": 0.097,
-    "core_dip": 0.065,  # 2026-09-13: 0.089 → 0.065（实测 6.5%，原值高估 37%）
-    "short_term": 0.062,
-    "pullback": 0.056,
-    "pool_pick": 0.021,  # 2026-09-13: 0.028 → 0.021（实测 2.1%，原值高估 33%）
-    "comeback": 0.028,
-}
-BASE_RATE_DEFAULT = 0.078  # 全体 hit 率（未知类别兜底；实测 6.8%，差 13% 未超容差，暂留）
+# ── 类别 base rate（口径：全体样本分策略 hit 率）──
+# 2026-09-14：唯一手抄源上移到 config_scoring.CATEGORY_HIT_RATE（config 是叶子层，
+# 而本模块反向依赖 config，故表不能留在本模块——否则 ranking 无法从同源派生
+# COMPOSITE_CAT_BASE，就会再长出第二份手抄副本）。此处仅做**别名**，不复制，
+# 保证「改一处、全系统一致」。维护入口仍是：
+#     python -m scanner.nextday_calib [--write]
+# 快照守护 tests/test_nextday_calib.py 经本别名照常生效（BASE_RATE_BY_CAT 名字保留，
+# 既有消费方与 scripts/nextday_calib_ab.py 的 clear/update 语义不变）。
+BASE_RATE_BY_CAT: dict[str, float] = CATEGORY_HIT_RATE
+BASE_RATE_DEFAULT = CATEGORY_HIT_RATE_DEFAULT  # 全体 hit 率（未知类别兜底）
 
 # ── 因子 odds ratio（条件命中率 OR；口径逐项声明见 nextday_calib.FACTOR_SPECS）──
 OR_MARKED = 1.56  # 🎯 复合画像：marked 10.8%(n=344) vs unmarked 7.2%(n=1213)，按线上判据口径

@@ -1,10 +1,11 @@
-"""终选参考区（scanner.final_pick）单元测试：双挂归一 / 过滤门 / momentum 先验 /
+"""终选参考区（scanner.final_pick）单元测试：双挂归一 / 过滤门 / 类别先验（hit 率口径）/
 概率排序 / 周期标签 / 去相关 / 渲染。
 
 终选区 = v1+v2+回马/低吸 合池 → 次日大涨概率终选（nextday_prob 单源）→ ≤N 只
 + 落选理由。与决策层互补：决策层答「该不该买」，终选区答「必须持仓时买谁」。
 2026-09-05 升级：排序键由「verdict→🎯→score」改为「概率→verdict→score」，
 FINAL_PICK_MAX 3→2，新增驱动概念去相关与周期标签。
+2026-09-14：删除 momentum 无条件剔除（目标函数统一为 hit 率，见 scanner/final_pick.py）。
 """
 
 import sqlite3
@@ -90,8 +91,15 @@ def test_dedup_keeps_comeback_core_dip_low_priority():
 # ── 过滤门与排序 ──
 
 
-def test_momentum_excluded_and_marked_in_rejects():
-    """momentum 负先验（唯一负超额类别）：永不入选，落选理由标注先验。"""
+def test_momentum_no_longer_hard_excluded():
+    """★ momentum 不再被无条件剔除（2026-09-14：目标函数统一为 hit 率）。
+
+    旧实现：`category != "momentum"` 直接出局，落选理由写「momentum负先验」，
+    依据是**平均超额**（-0.70%）——与终选排序键（nextday_prob，hit 率）方向相反。
+    新实现：momentum（base 10.0%）由 base rate 如实参与排序。本用例用
+    「🎯甜蜜带 momentum」 vs 「2-4% 死区 pool_pick（base 2.1%）」这一对，
+    锁定 base rate 确实进了排序，而非只是把顺序碰巧换了。
+    """
     mom = _entry(
         symbol="SZ300009",
         name="动量票",
@@ -99,14 +107,18 @@ def test_momentum_excluded_and_marked_in_rejects():
         score=99,
         percent=6.0,
         accum=10.0,
-        concept="算力",  # 与入选票不同板块，避免同板块理由抢先
+        concept="算力",  # 与另一票不同板块，避免同板块理由抢先
     )
     pool = _entry(symbol="SZ300001", name="池选票", category="pool_pick", score=10, percent=3.0, accum=5.0)
     result = _build(_conn(), [mom, pool])
-    assert [p["symbol"] for p in result["picks"]] == ["SZ300001"]
-    assert any(r["symbol"] == "SZ300009" for r in result["rejects"])
+    syms = [p["symbol"] for p in result["picks"]]
+    assert syms == ["SZ300009", "SZ300001"], f"momentum<{{base 10.0%}} 应压过死区 pool_pick<{{2.1%}}>: {syms}"
+    assert result["rejects"] == [], "池子未满时不应有人落选（旧实现会把 momentum 踢进落选）"
+    p_mom = next(p["_p"] for p in result["picks"] if p["symbol"] == "SZ300009")
+    p_pool = next(p["_p"] for p in result["picks"] if p["symbol"] == "SZ300001")
+    assert p_mom > p_pool, "概率差必须来自 base rate（hit 率口径）"
     lines = render_final_pick_lines(result)
-    assert any("momentum负先验" in ln for ln in lines)
+    assert not any("momentum负先验" in ln for ln in lines), "已废弃的均值口径理由不得再出现"
 
 
 def test_chase_gate_filters_overcap():
@@ -222,6 +234,20 @@ def _reject_reason_text(result, v):
 
 
 def test_render_pick_and_reject_lines():
+    """渲染：入选行含代码/名称/概率/周期，落选行含名称与理由。
+
+    2026-09-14 更新：momentum 不再是「必落选」的固定角色（旧实现拿它当落选样本），
+    落选样本改用概率更低的第二只 pool_pick 票，momentum 票作为入选样本。
+    """
+    reb = _entry(
+        symbol="SZ300011",
+        name="反弹票",
+        category="rebound",
+        score=50,
+        percent=1.5,
+        accum=-8.0,
+        concept="AI",
+    )
     mom = _entry(
         symbol="SZ300009",
         name="动量票",
@@ -231,21 +257,16 @@ def test_render_pick_and_reject_lines():
         accum=10.0,
         concept="算力",
     )
-    pool = _entry(
-        symbol="SZ300001",
-        name="池选票",
-        score=13,
-        percent=3.0,
-        accum=5.0,
-        dims={"fund_flow_main_pct": 8.5},
-        live_percent=4.8,
-    )
-    result = _build(_conn(), [mom, pool])
+    pool_hi = _entry(symbol="SZ300001", name="池选票", score=13, percent=3.0, accum=5.0)
+    pool_lo = _entry(symbol="SZ300002", name="池选低票", score=5, percent=3.0, accum=5.0, concept="医药")
+    result = _build(_conn(), [reb, mom, pool_hi, pool_lo])
     lines = render_final_pick_lines(result)
     assert any("终选参考" in ln for ln in lines)
     assert any("合格池" in ln and "排序估计非保证" in ln for ln in lines)  # 基准率诚实提示
     assert any("SZ300001" in ln and "池选票" in ln and "P=" in ln and "次日靶点" in ln for ln in lines)
-    assert any("落选" in ln and "动量票" in ln for ln in lines)
+    assert any("SZ300009" in ln and "动量票" in ln and "P=" in ln for ln in lines), "momentum 应能入选"
+    assert any("落选" in ln and "池选低票" in ln for ln in lines)
+    assert not any("momentum负先验" in ln for ln in lines)
 
 
 def test_render_theme_notes_for_second_pick():

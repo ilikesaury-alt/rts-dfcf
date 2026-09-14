@@ -145,6 +145,27 @@ This rebuilds scores via `scanner/historical_rescan.py --rescore` (faithful to t
 
 > ⚠️ 排序/档位/🎯 画像校准于 `next_day`（次日≥7% hit），但回测默认 `--hold-days 3`。改权重/阈值前先确认优化哪个口径。
 
+## 目标函数（2026-09-14 定稿，唯一口径）
+
+**次日≥7% hit 率**是系统唯一的类别先验口径 —— 排序、档位、🎯 画像、决策层准入**全部**用它。
+（平均超额收益只保留一处：`decision.market_gate` 的择时门，回答「今天开仓期望是否为负」，
+是择时问题不是择股问题；见 `scanner/decision.py` 模块 docstring 的显式豁免说明。）
+
+**唯一手抄源 = `config_scoring.CATEGORY_HIT_RATE`**（+ `_DEFAULT`）。下游一律派生，不得复制：
+
+| 消费方 | 派生方式 |
+|---|---|
+| `nextday_prob.BASE_RATE_BY_CAT` | **别名**（`is` 同一对象，非 copy） |
+| `config_scoring.COMPOSITE_CAT_BASE` | `(hit − 基准) / (最高 hit − 基准) × 10` |
+| `decision.DECISION_GATED_CATEGORIES` | 主表类别 ∩ hit > 基准 |
+| `decision.DECISION_CATEGORY_SPECS` | 顺序 = hit 降序；方向 = `categories.SCORE_DESCENDING_BY_CAT` |
+
+守护：`tests/test_category_priors.py`（结构/派生关系；数值漂移另有 `test_nextday_calib.py`）。
+改动这类**结构性**口径别只跑 `rule_validate` —— 它的三个评估器
+（`stored-score` / `nextday-prob` / `rescore`）**都看不见决策层准入与 `COMPOSITE_CAT_BASE`**，
+纯搬迁（取值未变）必然报「证据不足 / 翻转 0 天」。对**等价变换**要另证
+（比较改造前后的常量取值 + 生产函数体是否逐字节相同），对**行为变更**要列出受影响的类别集合差异。
+
 ## Verification order
 
 After code changes: `ruff check` → `mypy` → `pytest tests/` (unit) → optionally `--run-smoke`.
@@ -156,6 +177,12 @@ After **weight/threshold/constant** changes, additionally: `python -m scanner.ru
 After touching **`scanner/pipeline/`** (or anything in `scan_with_raw`): run the golden
 sample for all four dates — `python scripts/golden_scan.py --date 2026-09-08` … `09-11`.
 All four must exit 0 (逐字段一致). See 主通路黄金样本 below.
+
+> ⚠️ **黄金基线会随 `scanner.db` 生长而腐烂**（2026-09-14 实测）：输入是从**当前 DB** 重建的，
+> 脚本自己会打印 `输入指纹与基线不同（DB 或重建逻辑变了）—— 此时对比结果不可信`。
+> 该情形下 exit=1 **不代表等价性被破坏**；先确认自己没碰 `scripts/golden_scan.py` /
+> `scanner/pipeline/` / `scanner/orchestrator.py`（`git diff --quiet HEAD -- <这些>`），
+> 再决定是否 `--write` 重建基线。**别把「输入指纹变了」当成「重构改坏了输出」。**
 
 After touching **`scanner/db/`**: `pytest tests/test_migrations.py tests/test_schema_migration.py`.
 

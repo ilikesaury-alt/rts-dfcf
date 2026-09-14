@@ -7,9 +7,12 @@
 
 指标口径（代理终选）：
   - rank-IC      ：全体样本 Spearman(_p, next_day_pct)（排序量整体单调性）
-  - top-1 / top-2：逐日「排除 momentum 后按 _p 取前 1 / 前 2」的次日 hit≥7% 命中率
+  - top-1 / top-2：逐日按 _p 取前 1 / 前 2 的次日 hit≥7% 命中率
   - picks_avg_nd ：上述 top-2 的平均次日涨幅
   - 改选日        ：终选（类别序列）相对基线发生变化的交易日数
+
+⚠ 代理口径须与生产一致：2026-09-14 起 `final_pick` 已删除 `category != "momentum"`
+的无条件剔除（目标函数统一为 hit 率），本台的 pool 过滤同步删除，否则测的不是线上。
 
 ⚠ 这是**样本内**验证：候选常数的值本身是从同一批样本算出来的，因此对「按实测值
 重算」的变体天然有利，不能当作样本外证据。它的正确用法是**证伪**——若某个改动
@@ -95,7 +98,7 @@ def _evaluate(recs: list[dict]) -> dict:
     nd_sum = 0.0
     picks: dict[str, tuple] = {}
     for d, lst in by_day.items():
-        pool = sorted([x for x in lst if x[2] != "momentum"], key=lambda x: -x[0])
+        pool = sorted(lst, key=lambda x: -x[0])
         if pool:
             t1n += 1
             t1h += pool[0][1] >= TH
@@ -177,7 +180,7 @@ def main() -> int:
         ))
         return 0
 
-    print(f"样本 {len(recs)}（threshold≥{TH:.0f}%，代理终选=排除 momentum 后按 _p 取前 2）\n")
+    print(f"样本 {len(recs)}（threshold≥{TH:.0f}%，代理终选=按 _p 取前 2）\n")
     print(f"{'变体':<22}{'rank-IC':>9}{'top1':>8}{'top2':>8}{'picks_nd':>10}{'改选日':>9}")
     print("-" * 68)
     for name, res in results.items():

@@ -1287,7 +1287,8 @@ def test_build_scan_view_does_not_write_decision_picks(capsys):
         " PRIMARY KEY (date, symbol))"
     )
     for sym in ("SZ300001", "SZ300002"):
-        _insert_rec_cat(conn, sym, f"股{sym[-1]}", "core_dip", 70)
+        # rebound = 决策层准入类别（hit 率口径，2026-09-14）；core_dip 已不在准入内。
+        _insert_rec_cat(conn, sym, f"股{sym[-1]}", "rebound", 70)
     # 决策层需要市场门数据（缺则门关 → 仍会渲染"空仓"行，但不该落库）
     conn.execute(
         "INSERT INTO market_index_log (date, time, index_pct, bar_date, source) "

@@ -13,10 +13,15 @@
       3. 头部基准率诚实提示（P 是排序估计非胜率承诺，全池历史基准 ~7.8%）。
 
 评级/风险依据全部为已回测结论（today_report._tier0_verdict 单源复用），概率
-校准依据见 scanner/nextday_prob.py 模块 docstring（2026-09-05 当期 1786 样本）：
-  正向：🎯复合画像 OR2.6 / 辨识度 OR2.0；风险：主力流出 OR0.32 / 小板块共振
-  OR0.58 / 超买 OR0.68 / 2-4%死区 / 8-10%陷阱带。
-  类别先验：momentum 永禁（唯一负超额类别，决策层实测 -0.70%）。
+校准依据见 scanner/nextday_prob.py 模块 docstring：
+  正向：🎯复合画像 OR1.56 / 辨识度 OR2.0；风险：主力流出 OR0.32 / 小板块共振
+  OR0.58 / 超买 OR0.84 / 2-4%死区 / ≥8% 陷阱带。
+  类别先验：**一律用 hit 率**（config_scoring.CATEGORY_HIT_RATE，2026-09-14 统一口径）。
+  ⚠ 本模块原有 `category != "momentum"` 的**无条件剔除**，理由是「唯一负超额类别
+  （-0.70%）」——那是**平均超额**口径，与终选排序用的 hit 率口径方向相反
+  （momentum hit 10.0% 高于全体基准 7.8%）。2026-09-14 目标函数定为 hit 率后已删除，
+  改由 nextday_prob 按各类别 base rate 如实打分排序；`_reject_reason` 里的
+  「momentum负先验」也随之移除。
 
 纯展示层：不改评分/排序/落库，fail-open 不阻断扫描主流程。
 """
@@ -119,15 +124,17 @@ def _same_theme(a: dict, b: dict) -> bool:
 
 
 def _reject_reason(v: dict, picks: list[dict]) -> str:
-    """落选理由（单条，取最强缺陷）：走势美感 > 同板块 > momentum 先验 > 首个风险 > 涨幅带 > 评级不足。"""
+    """落选理由（单条，取最强缺陷）：走势美感 > 同板块 > 首个风险 > 涨幅带 > 评级不足。
+
+    2026-09-14：删除「momentum负先验」分支——类别层已统一为 hit 率口径，
+    momentum 不再被无条件剔除，落选理由应当落在**具体缺陷**上而不是类别名。
+    """
     beauty = v.get("_beauty_fail")
     if beauty:
         return str(beauty)
     for i, p in enumerate(picks, 1):
         if _same_theme(v, p):
             return f"同板块#{i}{p['name']}"
-    if v["category"] == "momentum":
-        return "momentum负先验"
     if v["risks"]:
         return str(v["risks"][0])
     band = v.get("band")
@@ -196,7 +203,11 @@ def build_final_picks(
 
     2026-09-09 新增走势美感门（FINAL_PICK_BEAUTY_ENABLED）：分时/日线走势「漂亮」
     是终选准入条件（scanner/trend_beauty 单源），不过 → 落选理由「日线不漂亮/分时
-    不漂亮」。momentum 本就永禁不再评。返回增加 beauty_blocked（美感门拦截数）。
+    不漂亮」。返回增加 beauty_blocked（美感门拦截数）。
+
+    2026-09-14 移除 momentum 无条件剔除（口径统一为 hit 率，见模块 docstring）；
+    momentum 现与其它类别走同一条「追涨门 → 减仓标签 → 资金流 → 美感门 → 概率排序」
+    路径，不再享有美感门豁免。
 
     返回 {"available", "gate_allowed", "pool_size", "beauty_blocked", "picks",
     "rejects", "ts"}；picks/rejects 元素为 _tier0_verdict dict + 注入键
@@ -254,19 +265,19 @@ def build_final_picks(
         v["_marked"] = bool(mk)
         v["_horizon"] = horizon_label(e["category"])
         v["_p"] = next_day_hit_probability(e, marked=v["_marked"], prominence=prom_map.get(sym), flow=v.get("flow"))
-        # 走势美感门（2026-09-09）：硬拦默认关（数据裁决，见 config）；momentum 本就
-        # 永禁不再评。None = 漂亮或数据缺失（fail-open 放行，见 trend_beauty）。
-        v["_beauty_fail"] = (
-            _beauty_gate(kline_map, sym, e, fc) if FINAL_PICK_BEAUTY_ENABLED and e["category"] != "momentum" else None
-        )
+        # 走势美感门（2026-09-09）：硬拦默认关（数据裁决，见 config）。类别一律评——
+        # 2026-09-14 前 momentum 因「永禁」被豁免，现无类别豁免规则。
+        # None = 漂亮或数据缺失（fail-open 放行，见 trend_beauty）。
+        v["_beauty_fail"] = _beauty_gate(kline_map, sym, e, fc) if FINAL_PICK_BEAUTY_ENABLED else None
         # 「美」标记（纯展示，与硬拦独立）：满足美感才标，不标丑（trend_beauty 单源）
-        v["_beauty_mark"] = (
-            beauty_mark(e, kline_map.get(sym), fc) if TREND_MARK_ENABLED and e["category"] != "momentum" else ""
-        )
+        v["_beauty_mark"] = beauty_mark(e, kline_map.get(sym), fc) if TREND_MARK_ENABLED else ""
         all_v.append(v)
     result["pool_size"] = len(all_v)
     result["beauty_blocked"] = sum(1 for v in all_v if v.get("_beauty_fail"))
-    pool = [v for v in all_v if v["category"] != "momentum" and not v.get("_beauty_fail")]
+    # 2026-09-14：不再按类别做无条件剔除。类别优劣已由 nextday_prob 的 base rate
+    # （hit 率）如实反映在 _p 里——用一句硬编码再整体删掉某一类，等于把两个口径
+    # 混在一条流水线里互相抵消（旧 `category != "momentum"` 即此）。
+    pool = [v for v in all_v if not v.get("_beauty_fail")]
     pool.sort(key=lambda v: (-v["_p"], -v["verdict"], -to_float(v.get("score"), default=0.0)))
 
     # 贪心去相关：同驱动概念的第 2 只跳过；名额不满再按概率回填（render 标注同板块）。
