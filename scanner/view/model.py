@@ -44,6 +44,12 @@ else:
     _is_console = False
     _supports_ansi = True
 
+# ⚠ _kernel32 / _handle / _mode 是**仅 Windows 分支存在**的中间量，**不得**列入下方 __all__：
+# `from scanner.view.model import *` 会按 __all__ 逐名 getattr，Linux/macOS 下这三个名字
+# 不存在 → AttributeError（2026-09-14 修）。旧 __all__ 由 scripts/_split_display.py 按
+# 「AST 模块级名 ∩ dir()」推导，在 Windows 上生成时就把它们写进了导出表。
+# ANSI / CAT_COLOR / _ANSI_ESCAPE / _is_console / _supports_ansi 才是对外契约（本模块为单源）。
+
 if _supports_ansi:
     ANSI = {
         "RED": "\033[91m",
@@ -82,12 +88,9 @@ __all__ = (
     "_entry_row_suffix",
     "_entry_sector",
     "_fund_flow_icon_str",
-    "_handle",
     "_is_console",
-    "_kernel32",
     "_market_env_tag",
     "_market_extra_str",
-    "_mode",
     "_pad",
     "_rank_delta_str",
     "_supports_ansi",
@@ -97,6 +100,7 @@ __all__ = (
     "entry_display_quote",
     "pct_colored",
 )
+
 
 def _rank_delta_str(symbol: str, current_rank: int, last_ranks: dict[str, int]) -> str:
     """雪球榜单排名较上一轮扫描的变化：+N 上升 / -N 下降 / "" 无变化或无上轮。
@@ -314,16 +318,21 @@ def _beauty_mark_for(entry: RecommendationRow | dict, kline: list | None) -> str
 def _entry_row_suffix(
     entry: RecommendationRow | dict,
     flow_pct_map: dict[str, float],
-    marked: bool = False,
     breakout_marked: bool = False,
     beauty: str = "",
 ) -> str:
-    """行尾可变区统一渲染：风险标记 → 资金流/连板 extra → 🎯 → ⚡ → 走势标记。
+    """行尾可变区统一渲染：风险标记 → 资金流/连板 extra → ⚡ → 走势标记。
 
     优选池行与核心低吸区行共用（2026-08-30 收口）——此前仅补充区渲染这些
-    标记，主视图优选池行丢失 🎯/⚡/资金流信息。顺序与原 _print_priority_row 一致。
+    标记，主视图优选池行丢失 ⚡/资金流信息。顺序与原 _print_priority_row 一致。
     （💡低吸标签行尾渲染已按需求移除——只用于排序不展示，2026-09-03）
     beauty: 走势美感标记（_beauty_mark_for 产出；仅 v1/v2 池选行传入）。
+
+    2026-09-14：原 `marked`（🎯 次日大涨画像）入参已删除 —— 🎯 的行尾渲染自
+    2026-09-04 停用（见下方注释），该参数遂成哑参（调用方一直在传、函数体不读）。
+    注意 🎯 的**判定**（ranking.is_nextday_marked）仍在生产链上（终选概率排序、
+    回测档位），停用的只是"行尾打个 🎯"这一展示动作。要恢复展示：放开下方注释
+    的 if，并把 `marked` 入参加回签名与本函数的两个调用点。
     """
     c = fresh_candidate(entry)
     parts: list[str] = []
@@ -345,7 +354,8 @@ def _entry_row_suffix(
             extra = f"{extra} {icon}".strip() if extra else icon
     if extra:
         parts.append(f" {extra}")
-    # 2026-09-04: 🎯 命中率过低，暂时不渲染（档位判定逻辑保留）
+    # 🎯（次日大涨画像）行尾标记自 2026-09-04 起停用：命中率过低。判定逻辑仍保留，
+    # 但消费方是终选概率排序与回测档位，不是这里 —— 故本函数不再收 `marked` 入参。
     # if marked:
     #     parts.append(f" {ANSI['GREEN']}🎯{ANSI['RESET']}")
     if breakout_marked:
@@ -388,6 +398,8 @@ def _core_dip_entry_quality(entry: RecommendationRow | dict) -> tuple:
             "pullback": to_float(sb.get("pullback"), default=0.0),
         }
     )
+
+
 # ── 展示视图模型（2026-08-29）──
 # 此前终端「读 DB 当日累计推荐」、飞书「读本轮候选桶」，两个出口各渲染各的——
 # 同一只票可能一边排第 1、另一边不出现。ScanView 收口为唯一展示数据源：
@@ -438,6 +450,8 @@ COLS_HOT: tuple = (
     ("评分", 6, "r"),
     ("连击", 5, "r"),
 )
+
+
 @dataclass
 class MainRow:
     """v1 池选一行（已排好序，字段均为渲染所需的最终值）。"""

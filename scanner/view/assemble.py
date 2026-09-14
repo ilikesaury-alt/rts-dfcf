@@ -1,5 +1,3 @@
-import os
-import re
 import statistics
 
 from scanner.config import (
@@ -48,44 +46,13 @@ from scanner.ranking import (
 from scanner.utils import EXTERNAL_FAILURES, to_float
 from scanner.view.model import *  # noqa: F401,F403
 
-# ANSI SGR 转义序列（\x1b[...m：颜色/加粗/复位）。_vis_len 必须先剥离它们再量宽度，
-# 否则 `[`、数字、`;`、`m` 等可打印字符各被 wcwidth 计 1 列，彩色文本被高估宽度，
-# _pad 少补空格 → 实际渲染更窄 → 后续固定列整体错位。
-_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
-
-if os.name == "nt":
-    import ctypes
-
-    _kernel32 = ctypes.windll.kernel32
-    _handle = _kernel32.GetStdHandle(-11)
-    _mode = ctypes.c_uint32()
-    # 是否「真实 Windows conhost」：GetConsoleMode 仅对真实控制台成功；
-    # pty/终端模拟器/重定向管道均失败（返回 0），但它们通常讲 ANSI/VT 协议。
-    _is_console = _kernel32.GetConsoleMode(_handle, ctypes.byref(_mode)) != 0
-    _supports_ansi = _is_console and _kernel32.SetConsoleMode(_handle, _mode.value | 0x0004) != 0
-else:
-    _is_console = False
-    _supports_ansi = True
-
-if _supports_ansi:
-    ANSI = {
-        "RED": "\033[91m",
-        "YELLOW": "\033[93m",
-        "GREEN": "\033[92m",
-        "CYAN": "\033[96m",
-        "MAGENTA": "\033[95m",
-        "BOLD": "\033[1m",
-        "RESET": "\033[0m",
-    }
-else:
-    ANSI = {"RED": "", "YELLOW": "", "GREEN": "", "CYAN": "", "MAGENTA": "", "BOLD": "", "RESET": ""}
-
-# 类别展示标签/颜色：综合排序与回马枪独立区共用（提出模块级供 _print_priority_row 复用）。
-# 2026-08-20 收敛：CAT_LABEL / 颜色键统一来自 scanner/categories 注册表（单一事实来源），
-# 颜色键经本模块 ANSI 字典解析为色码，避免与 config 循环依赖。
-from scanner.categories import CATEGORY_COLOR_KEYS  # noqa: E402
-
-CAT_COLOR = {name: ANSI[key] for name, key in CATEGORY_COLOR_KEYS.items()}
+# ANSI 探测（_is_console / _supports_ansi）/ ANSI / CAT_COLOR / _ANSI_ESCAPE 的单源在
+# scanner.view.model —— 上方 `from scanner.view.model import *` 已带入，本模块不再重复定义。
+# 2026-09-14 去重：拆分脚本曾把这段 Windows 终端探测头原样复制进三个文件，后果有二：
+#   ① SetConsoleMode 被重复调用三次（无害但无谓）；
+#   ② `__all__` 由「AST 模块级名 ∩ dir()」推导，把仅 Windows 分支存在的
+#      _kernel32/_handle/_mode 也写进了导出表 —— Linux/macOS 下
+#      `from scanner.view.model import *` 会因 __all__ 缺名直接 AttributeError。
 
 
 __all__ = (
@@ -93,14 +60,12 @@ __all__ = (
     "CAT_COLOR",
     "_ANSI_ESCAPE",
     "_adjusted_picks",
-    "_handle",
     "_is_console",
-    "_kernel32",
-    "_mode",
     "_regime_weak",
     "_supports_ansi",
     "build_scan_view",
 )
+
 
 def _regime_weak(conn, lookback=10):
     """近端主表档(非 comeback/core_dip)次日表现均值 < 0 → 弱市(regime 退潮)。
@@ -136,6 +101,8 @@ def _regime_weak(conn, lookback=10):
         # fail-open 由上方 `if not row` / `if not daily_means` 显式分支承担，不靠捕获。
         # sqlite3.Error 属 EXTERNAL_FAILURES；编程错误冒泡到主循环记录 traceback。
         return False
+
+
 def _adjusted_picks(today_recs, nextday_mark, conn, flow_pct_map, top_n=10, weak=None):
     """regime 自适应推荐序列（纯展示，不改落库/评分/排序）。
 
@@ -174,6 +141,8 @@ def _adjusted_picks(today_recs, nextday_mark, conn, flow_pct_map, top_n=10, weak
     else:
         ordered = yt[:3] + other[:3] + core_dip[:2] + comeback[:2]
     return [(e["name"], e["category"], nextday_mark.get((e["symbol"], e["category"]), False)) for e in ordered[:top_n]]
+
+
 def build_scan_view(
     conn=None,
     live_quotes: dict[str, dict] | None = None,

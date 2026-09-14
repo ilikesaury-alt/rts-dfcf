@@ -18,10 +18,11 @@
 退出码：0 = 等价；1 = 发现差异；2 = 运行失败。
 
 用法：
-    python scripts/_verify_view_split.py            # 对比 HEAD 的 display.py
+    python scripts/_verify_view_split.py            # 对比拆分前的单体外快照（默认）
     python scripts/_verify_view_split.py --rev X    # 指定别的 git rev
     python scripts/_verify_view_split.py --verbose
 """
+
 from __future__ import annotations
 
 import argparse
@@ -40,11 +41,16 @@ ROOT = Path(__file__).resolve().parent.parent
 VIEW = ROOT / "scanner" / "view"
 VIEW_MODULES = ("model", "assemble", "render")
 
+# 拆分提交：b68c044「第N步完成: display 物理拆 scanner/view/{model,assemble,render}（等价变换）」。
+# 比对基线必须是它的**父提交** —— 那才是 display.py 还是单体（monolith）的最后状态。
+# ⚠ 不能用默认的 HEAD：拆分后的 display.py 只是 re-export 聚合器（0 个顶层 def），
+# 拿它当基线会得到「旧：0 定义 / 0 常量」，白名单双向校验必然误报「表已过期」。
+SPLIT_COMMIT = "b68c044"
+DEFAULT_BASELINE_REV = f"{SPLIT_COMMIT}~1"
+
 # 旧 display.py 的相对导入在"独立模块"语境下会失效，导入时等价替换为绝对导入。
 # 这只影响模块级 import 语句，不影响任何函数/类体的 AST。
-RELATIVE_FIXES = (
-    ("from .trend_beauty import beauty_mark", "from scanner.trend_beauty import beauty_mark"),
-)
+RELATIVE_FIXES = (("from .trend_beauty import beauty_mark", "from scanner.trend_beauty import beauty_mark"),)
 
 # ── 有意缩掉的"泄漏名"白名单 ──
 # 这些是旧 display.py 在模块顶层 `from x import y` 顺带暴露成 `scanner.display.y`
@@ -103,9 +109,38 @@ EXPECTED_SURFACE_REDUCTION = {
     "split_risk_flags",
     "to_float",
     "to_int",
+    # Windows 分支专有的终端探测中间量（2026-09-14）：它们**只在 `if os.name=="nt"` 分支
+    # 存在**，却被拆分脚本推导出的 __all__ 意外导出。已从 model/assemble/render 的 __all__
+    # 全部移除 —— 既不是契约，Linux/macOS 下 `import *` 还会因缺名直接 AttributeError。
+    "_handle",
+    "_kernel32",
+    "_mode",
 }
 
-SKIP_MODULES = {"__builtins__", "__cached__", "__file__", "__loader__", "__spec__", "__name__", "__doc__", "__package__"}
+# ── 拆分后**有意**改动的定义体白名单 ──
+# 拆分本身是等价变换；此后的功能迭代会合法地改动 view/ 里的函数体，那不属于「拆分走样」。
+# 每条都必须写明改了什么、归属哪次改动，避免这张表变成「把红灯涂绿」的垃圾桶。
+# 双向校验：登记了却已不再与基线分歧 = 表过期，同样报错。
+EXPECTED_BODY_DIVERGENCE = {
+    # 2026-09-14 资金流出口径统一（commit 02ae8af）：展示层新增「资金流出」过滤
+    "ScanView": "新增 flow_filtered 字段（本轮被资金流出门剔除的只数）",
+    "build_scan_view": "flow_pct_map 建好后对 today_recs 做一次资金流出过滤，下游区域自动继承",
+    "render_terminal": "顶部输出「▸ 资金流出已剔除 N 只（≤ -8% · 全区域统一口径）」",
+    # 2026-09-14 哑参清理：🎯 行尾渲染自 2026-09-04 停用后遗留的两个入参
+    "_entry_row_suffix": "删除从未被读取的 marked 入参（🎯 行尾渲染已停用）",
+    "_print_priority_row": "删除无任何调用方传入的 nextday_mark 入参",
+}
+
+SKIP_MODULES = {
+    "__builtins__",
+    "__cached__",
+    "__file__",
+    "__loader__",
+    "__spec__",
+    "__name__",
+    "__doc__",
+    "__package__",
+}
 
 
 def git_show(rev: str, rel: str) -> str:
@@ -232,7 +267,7 @@ def consumed_names() -> set[str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="视图层物理拆分等价性证明")
-    ap.add_argument("--rev", default="HEAD", help="对比的 git rev（默认 HEAD）")
+    ap.add_argument("--rev", default=DEFAULT_BASELINE_REV, help=f"对比的 git rev（默认 {DEFAULT_BASELINE_REV}）")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -243,6 +278,12 @@ def main() -> int:
         return 2
 
     legacy_defs, legacy_consts = collect_defs(ast.parse(legacy_src))
+
+    if not legacy_defs:
+        print(f"[FAIL] {args.rev}:scanner/display.py 里没有任何顶层 def —— 这几乎肯定是**拆分之后**")
+        print("       的 re-export 聚合器，拿它当基线只会得到「旧：0 定义」，比对无意义。")
+        print(f"       请指向拆分前的单体快照，默认基线 = {DEFAULT_BASELINE_REV}（拆分提交 {SPLIT_COMMIT} 的父提交）。")
+        return 2
 
     new_defs: dict[str, str] = {}
     new_consts: dict[str, str] = {}
@@ -259,13 +300,18 @@ def main() -> int:
 
     failures: list[str] = []
 
-    # ── 检查 1：每个旧的顶层 def/class 必须存在且 AST 一致 ──
+    # ── 检查 1：每个旧的顶层 def/class 必须存在且 AST 一致（已登记的有意分歧除外） ──
     missing = sorted(set(legacy_defs) - set(new_defs))
-    changed = sorted(n for n in set(legacy_defs) & set(new_defs) if legacy_defs[n] != new_defs[n])
+    diverged = sorted(n for n in set(legacy_defs) & set(new_defs) if legacy_defs[n] != new_defs[n])
+    changed = sorted(n for n in diverged if n not in EXPECTED_BODY_DIVERGENCE)
+    declared_div = sorted(n for n in diverged if n in EXPECTED_BODY_DIVERGENCE)
+    stale_div = sorted(set(EXPECTED_BODY_DIVERGENCE) - set(declared_div))
     if missing:
         failures.append(f"定义缺失 {len(missing)} 个：{missing}")
     if changed:
-        failures.append(f"定义体被改动 {len(changed)} 个：{changed}")
+        failures.append(f"定义体被改动 {len(changed)} 个（未登记为有意分歧）：{changed}")
+    if stale_div:
+        failures.append(f"EXPECTED_BODY_DIVERGENCE 有 {len(stale_div)} 项其实已不再与基线分歧（表已过期）：{stale_div}")
 
     # ── 检查 2：每个旧的模块级常量必须存在且值一致 ──
     c_missing = sorted(set(legacy_consts) - set(new_consts))
@@ -293,17 +339,14 @@ def main() -> int:
     used_missing = sorted(n for n in used if n not in new_attrs)
     if used_missing:
         failures.append(
-            f"被消费的名字缺失 {len(used_missing)} 个（`from scanner.display import` 会 ImportError）："
-            f"{used_missing}"
+            f"被消费的名字缺失 {len(used_missing)} 个（`from scanner.display import` 会 ImportError）：{used_missing}"
         )
 
     # 3b. 缩掉的面必须与白名单**精确**一致（双向）
     undeclared = sorted(dropped - EXPECTED_SURFACE_REDUCTION)
     over_declared = sorted(EXPECTED_SURFACE_REDUCTION - dropped)
     if undeclared:
-        failures.append(
-            f"有 {len(undeclared)} 个属性被缩掉但未登记进 EXPECTED_SURFACE_REDUCTION：{undeclared}"
-        )
+        failures.append(f"有 {len(undeclared)} 个属性被缩掉但未登记进 EXPECTED_SURFACE_REDUCTION：{undeclared}")
     if over_declared:
         failures.append(
             f"EXPECTED_SURFACE_REDUCTION 有 {len(over_declared)} 项其实没被缩掉（表已过期）：{over_declared}"
@@ -315,6 +358,10 @@ def main() -> int:
     print(f"  新：{len(new_defs)} 定义 / {len(new_consts)} 常量 / {len(new_attrs)} 运行时属性")
     print(f"  被消费名字：{len(used)} 个，全部可取到 = {not used_missing}")
     print(f"  有意缩掉的泄漏名：{len(dropped)} 个（已登记 {len(EXPECTED_SURFACE_REDUCTION)}）")
+    print(
+        f"  已登记的有意分歧（拆分后功能迭代，不算走样）：{len(declared_div)} 个"
+        + (f" {declared_div}" if declared_div else "")
+    )
     if args.verbose and extra:
         print(f"  新增属性（无害）：{sorted(extra)}")
 

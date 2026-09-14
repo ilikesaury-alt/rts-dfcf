@@ -1,6 +1,4 @@
-import os
-import re
-
+from scanner.categories import CAT_LABEL
 from scanner.config import (
     FUND_OUTFLOW_NET_PCT,
     HOT_HIGHLIGHT_STREAK,
@@ -23,44 +21,14 @@ from scanner.utils import clear_screen, to_int
 from scanner.view.assemble import *  # noqa: F401,F403
 from scanner.view.model import *  # noqa: F401,F403
 
-# ANSI SGR 转义序列（\x1b[...m：颜色/加粗/复位）。_vis_len 必须先剥离它们再量宽度，
-# 否则 `[`、数字、`;`、`m` 等可打印字符各被 wcwidth 计 1 列，彩色文本被高估宽度，
-# _pad 少补空格 → 实际渲染更窄 → 后续固定列整体错位。
-_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
-
-if os.name == "nt":
-    import ctypes
-
-    _kernel32 = ctypes.windll.kernel32
-    _handle = _kernel32.GetStdHandle(-11)
-    _mode = ctypes.c_uint32()
-    # 是否「真实 Windows conhost」：GetConsoleMode 仅对真实控制台成功；
-    # pty/终端模拟器/重定向管道均失败（返回 0），但它们通常讲 ANSI/VT 协议。
-    _is_console = _kernel32.GetConsoleMode(_handle, ctypes.byref(_mode)) != 0
-    _supports_ansi = _is_console and _kernel32.SetConsoleMode(_handle, _mode.value | 0x0004) != 0
-else:
-    _is_console = False
-    _supports_ansi = True
-
-if _supports_ansi:
-    ANSI = {
-        "RED": "\033[91m",
-        "YELLOW": "\033[93m",
-        "GREEN": "\033[92m",
-        "CYAN": "\033[96m",
-        "MAGENTA": "\033[95m",
-        "BOLD": "\033[1m",
-        "RESET": "\033[0m",
-    }
-else:
-    ANSI = {"RED": "", "YELLOW": "", "GREEN": "", "CYAN": "", "MAGENTA": "", "BOLD": "", "RESET": ""}
-
-# 类别展示标签/颜色：综合排序与回马枪独立区共用（提出模块级供 _print_priority_row 复用）。
-# 2026-08-20 收敛：CAT_LABEL / 颜色键统一来自 scanner/categories 注册表（单一事实来源），
-# 颜色键经本模块 ANSI 字典解析为色码，避免与 config 循环依赖。
-from scanner.categories import CAT_LABEL, CATEGORY_COLOR_KEYS  # noqa: E402
-
-CAT_COLOR = {name: ANSI[key] for name, key in CATEGORY_COLOR_KEYS.items()}
+# ANSI 探测（_is_console / _supports_ansi）/ ANSI / CAT_COLOR / _ANSI_ESCAPE 的单源在
+# scanner.view.model —— 上方两个 `import *` 已带入，本模块不再重复定义。
+# 2026-09-14 去重：拆分脚本曾把这段 Windows 终端探测头原样复制进三个文件，后果有二：
+#   ① SetConsoleMode 被重复调用三次（无害但无谓）；
+#   ② `__all__` 由「AST 模块级名 ∩ dir()」推导，把仅 Windows 分支存在的
+#      _kernel32/_handle/_mode 也写进了导出表 —— Linux/macOS 下
+#      `from scanner.view.model import *` 会因 __all__ 缺名直接 AttributeError。
+# CAT_LABEL 本模块在用（类别标签显示），故在上方显式 import；CAT_COLOR 仍取自 model。
 
 
 __all__ = (
@@ -69,10 +37,7 @@ __all__ = (
     "_ANSI_ESCAPE",
     "_fmt_hot_amount",
     "_fmt_hot_volume_hand",
-    "_handle",
     "_is_console",
-    "_kernel32",
-    "_mode",
     "_print_priority_row",
     "_render_hot_watch_region",
     "_supports_ansi",
@@ -83,6 +48,7 @@ __all__ = (
     "render_hot_watch_standalone",
     "render_terminal",
 )
+
 
 def display(
     gem_total: int,
@@ -128,24 +94,27 @@ def display(
         hot_rows=hot_rows,
         decision_lines=decision_lines,
     )
+
+
 def _print_priority_row(
     entry: RecommendationRow | dict,
     i: int,
     flow_pct_map: dict,
-    nextday_mark: bool = False,
     breakout_mark: bool = False,
     last_ranks: dict[str, int] | None = None,
 ) -> None:
     """综合排序单行的统一渲染（主表与回马枪独立区共用），避免两处复制大段渲染逻辑。
 
     flow_pct_map: {symbol: 主力净占比} DB 快照回退（候选缺失/扫描失败时仍显示资金流图标）。
-    nextday_mark: 次日大涨画像（🎯）——推荐时刻涨幅甜蜜带 + 非超买（见 is_nextday_marked）。
     breakout_mark: 蓄势突破观察画像（⚡）——新面孔/首推或重上榜 short_term + 横盘缩量回调位
     （见 _is_breakout_setup / _is_relist_breakout_setup；2026-08-22 渲染合并为单一 ⚡，
     变体区分保留在判定函数供样本统计）。纯观察标记，不参与排序/评分/落库。
     视觉标记，不参与排序/评分/落库；行尾标记统一走 _entry_row_suffix（与优选池行同口径）。
     last_ranks: 上一轮扫描的榜单排名 {symbol: rank}，用于「排名」列展示雪球榜单排名变化
     （+N 升 / -N 降），与已下线策略桶的 _rank_delta_str 同口径；缺省 None 不显示变化。
+
+    （原 `nextday_mark`（🎯）入参 2026-09-14 删除：全仓无任何调用方传入，且 🎯 行尾
+    渲染自 2026-09-04 已停用 —— 纯哑参。🎯 的判定仍在 ranking.is_nextday_marked。）
     """
     c = entry.get("_candidate")
     # 标签/优先级列统一用 entry["category"]（与排序口径一致），
@@ -196,8 +165,8 @@ def _print_priority_row(
     # 5日累计涨幅：优先用候选池可信快照（fresh_candidate），否则用 DB 落库值
     accum_val = _fresh_c.kline.accumulated_pct if _fresh_c and _fresh_c.kline else entry.get("accumulated_pct")
     accum_str = "—" if accum_val is None else f"{accum_val:+.2f}%"
-    # 行尾标记（风险/资金流/连板/🎯/⚡）走 _entry_row_suffix 单源，与优选池行同口径。
-    tail = _entry_row_suffix(entry, flow_pct_map, marked=nextday_mark, breakout_marked=breakout_mark)
+    # 行尾标记（风险/资金流/连板/⚡）走 _entry_row_suffix 单源，与优选池行同口径。
+    tail = _entry_row_suffix(entry, flow_pct_map, breakout_marked=breakout_mark)
     # 板块普涨避雷行尾标记已下线（2026-08-17 用户反馈「太扎眼」）：小板块共振避雷
     # 结论保留于回测（cnt<15 票 hit 5.9-6.7%/cum_3d -2.2~-2.6 最差），但黄色长文本
     # 移除，避免干扰 🎯 档0 等主信号。
@@ -228,6 +197,8 @@ def _print_priority_row(
         )
         + tail
     )
+
+
 def _table_header(spec: tuple) -> str:
     """按列 spec 生成表头（与 _table_row 同源，杜绝表头/行宽漂移）。"""
     return "  " + " ".join(_pad(title, width, align) for title, width, align in spec)
@@ -240,6 +211,8 @@ def _table_row(cells, spec: tuple) -> str:
     """
     parts = [_pad(str(cell), width, align) for cell, (_, width, align) in zip(cells, spec, strict=True)]
     return "  " + " ".join(parts)
+
+
 def _fmt_hot_volume_hand(volume: float) -> str:
     """成交量（股）→ 手（1 手 = 100 股），带中文单位。"""
     if volume <= 0:
@@ -261,6 +234,8 @@ def _fmt_hot_amount(amount: float) -> str:
     if amount >= 1e4:
         return f"{amount / 1e4:.1f}万"
     return f"{amount:.0f}"
+
+
 def _render_hot_watch_region(rows) -> None:
     """渲染「沪深飙升·极有可能大涨」独立区（无结果时整区跳过，不留空表）。
 
@@ -319,6 +294,8 @@ def render_hot_watch_standalone(rows) -> None:
     逻辑分叉（独立区行宽/配色/脚注只此一份）。
     """
     _render_hot_watch_region(rows)
+
+
 def render_terminal(view: ScanView) -> None:
     """把 ScanView 渲染到终端（纯渲染：不读库、不重算标记）。
 
@@ -368,14 +345,12 @@ def render_terminal(view: ScanView) -> None:
         _sc_str = f"{row.score:.0f}" if row.score else "—"
         _cur_str = f"{row.current:.2f}" if row.current else "—"
         _sec = _trunc(row.sector, COLS_POOL[7][1])
-        # 行尾标记与低吸区同源（_entry_row_suffix）：风险/资金流/🎯/⚡。
+        # 行尾标记与低吸区同源（_entry_row_suffix）：风险/资金流/⚡。
         # 💡低吸标签不再行尾展示（太杂乱，2026-09-03），仅作两段式排序依据（_v2_pool_sort_key）。
-        _marked = view.nextday_mark.get((_e["symbol"], _e["category"]), False)
         _bolt = view.breakout_mark.get((_e["symbol"], _e["category"]), False)
         _suffix = _entry_row_suffix(
             _e,
             view.flow_pct_map,
-            marked=_marked,
             breakout_marked=_bolt,
             beauty=(view.beauty_mark or {}).get((_e["symbol"], _e["category"]), ""),
         )
@@ -440,6 +415,8 @@ def render_terminal(view: ScanView) -> None:
     # 独立成区而非并入主线表：两者排序键、评分体系、样本面都不同，混排会让
     # 「为什么这只创业板票排在一只主板票后面」无法解释。
     _render_hot_watch_region(view.hot_rows)
+
+
 def display_priority(
     conn=None,
     live_quotes: dict[str, dict] | None = None,

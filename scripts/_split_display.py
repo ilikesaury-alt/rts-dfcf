@@ -9,6 +9,7 @@
 
 依赖方向（无环）：model ← assemble；model ← render；render ← assemble。
 """
+
 from __future__ import annotations
 
 import ast
@@ -26,6 +27,19 @@ VIEW.mkdir(exist_ok=True)
 (VIEW / "__init__.py").write_text("", encoding="utf-8")
 
 lines = SRC.read_text(encoding="utf-8").splitlines(keepends=True)
+
+# ⚠ 硬闸门（2026-09-14 补）：本脚本按**行号区间**切分「拆分前的 display.py 单体」。
+# 拆分完成后 SRC 已经只是 24 行的 re-export 聚合器，再跑一次会把 view/*.py 写成垃圾、
+# 并把 display.py 覆盖掉（不可逆的静默破坏）。所以先确认 SRC 仍是单体再动手。
+_MONOLITH_MARKERS = ("def render_terminal(", "def build_scan_view(", "class ScanView")
+_SRC_TEXT = "".join(lines)
+if not all(m in _SRC_TEXT for m in _MONOLITH_MARKERS):
+    raise SystemExit(
+        "scanner/display.py 已不是拆分前的单体（缺少 "
+        + " / ".join(m for m in _MONOLITH_MARKERS if m not in _SRC_TEXT)
+        + "）。本脚本是一次性切分工具，重复运行会破坏 scanner/view/*.py 与 display.py。\n"
+        "如需再拆：先从拆分提交 b68c044~1 取回单体快照另存，再改本脚本的行号区间。"
+    )
 
 
 def slice_(ranges: list[tuple[int, int]]) -> str:
@@ -73,29 +87,20 @@ HEADER = slice_([(1, 97)]).replace(
 )
 
 # ── model.py ──
-model_imports = (
-    HEADER
-    + "\n# 叶子辅助 + 视图模型（model 层，不依赖 assemble/render）\n"
-)
+model_imports = HEADER + "\n# 叶子辅助 + 视图模型（model 层，不依赖 assemble/render）\n"
 model_body = slice_([(100, 389), (616, 665), (682, 737)])
 
 # ── assemble.py ──
 # 依赖 model 的全部定义（含 if/else 内赋值的 ANSI 等），用 * 导入最稳，避免漏名。
 # 必须置顶：下面 HEADER 中的 `CAT_COLOR = {...}` 依赖 model 的 ANSI，需在它之前完成导入。
-assemble_imports = (
-    "from scanner.view.model import *  # noqa: F401,F403\n"
-    + HEADER
-    + "\n"
-)
+assemble_imports = "from scanner.view.model import *  # noqa: F401,F403\n" + HEADER + "\n"
 assemble_body = slice_([(540, 573), (576, 613), (740, 1127)])
 
 # ── render.py ──
 # 同样把 * 导入置顶（render 也用到 model 的 ANSI / 常量）。
 render_imports = (
     "from scanner.view.model import *  # noqa: F401,F403\n"
-    "from scanner.view.assemble import *  # noqa: F401,F403\n"
-    + HEADER
-    + "\n"
+    "from scanner.view.assemble import *  # noqa: F401,F403\n" + HEADER + "\n"
 )
 render_body = slice_([(392, 435), (438, 537), (668, 679), (1130, 1150), (1153, 1210), (1213, 1325), (1328, 1361)])
 
@@ -124,7 +129,15 @@ shim = (
 
 
 def write_with_all(path: pathlib.Path, imports: str, body: str) -> None:
-    """写文件，并在顶部插入 AST 推导 + 运行时校验的 __all__。"""
+    """写文件，并在顶部插入 AST 推导 + 运行时校验的 __all__。
+
+    ⚠ `all_names` 取「AST 模块级名 ∩ dir(mod)」，结果**随平台变化**：只在
+    `if os.name == "nt"` 分支定义的 Windows 终端探测中间量（_kernel32 / _handle /
+    _mode）在 Windows 上会被写进 __all__，换到 Linux/macOS 就成 __all__ 缺名 →
+    `from scanner.view.model import *` 直接 AttributeError（2026-09-14 已修，
+    详见 scanner/view/model.py 中该分支上方的注释）。再动本脚本时务必让派生出的
+    __all__ 只含平台无关的名字，或让这些名字在 else 分支也定义。
+    """
     text = imports + "\n" + body
     path.write_text(text, encoding="utf-8")
     mod = ast.parse(text)

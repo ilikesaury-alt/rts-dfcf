@@ -270,7 +270,12 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
     2026-08-29：此前 _build_card 读「本轮候选桶」（new_faces/momentum/...），终端
     display_priority 读「DB 当日累计推荐」——同一只票可能一边排第 1、另一边不出现。
     现统一由 build_scan_view 供数；核心低吸区是否出现也跟随终端门控
-    （view.show_comeback / show_core_dip），保证「终端看得到什么，卡片就推什么」。
+    （view.show_core_dip），保证「终端看得到什么，卡片就推什么」。
+
+    分节口径（2026-09-14 核对）：卡片只画 今日决策/终选参考 → v1 池选 → v2 池选 →
+    核心方向低吸，与终端渲染的区块一一对应。**回马枪（comeback）两处都没有展示区**
+    （ca91d21 起移除，见 docs/CORE-FLOW.md §十-1），故它不是分节门控——`_view_symbols`
+    里仍并入 comeback 只影响推送去重集合，不影响卡片内容。
 
     top_n 默认 FEISHU_TOP_N，与 _view_symbols 共用同一常量，去重集合与展示条数永不同源漂移。
     """
@@ -376,10 +381,16 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
 
 
 def _view_symbols(view: ScanView) -> set[str]:
-    """卡片实际会展示的票（与 build_feishu_card 的分节门控一致）。
+    """推送去重用的票集合（≈ 卡片实际展示的票，另并入 comeback 跟踪票）。
 
-    取自 main_rows[:FEISHU_TOP_N]（与卡片展示条数同源），避免此前「卡片推了
-    但去重没算到」的双处硬编码 drift。
+    取自 main_rows[:FEISHU_TOP_N] / pool_rows[:FEISHU_TOP_N] / core_dip（与
+    build_feishu_card 的分节门控同源），避免此前「卡片推了但去重没算到」的
+    双处硬编码 drift。
+
+    ⚠ 回马枪（comeback）**终端与卡片都不展示**（ca91d21 起两处展示区均已移除，
+    见 docs/CORE-FLOW.md §十-1），此处却仍并入 view.comeback_rows —— 这是历史遗留：
+    效果是「仅 comeback 票变化」也会被 should_push 判为票集变化而触发一次推送
+    （受 FEISHU_MIN_INTERVAL 节流）。是否保留待定，勿据本条以为卡片会画回马枪区。
     """
     syms = {row.entry["symbol"] for row in view.main_rows[:FEISHU_TOP_N]}
     syms |= {row.entry["symbol"] for row in (view.pool_rows or [])[:FEISHU_TOP_N]}
