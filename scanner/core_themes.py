@@ -246,14 +246,30 @@ def _theme_members(conn: sqlite3.Connection, theme_names: list[str]) -> dict[str
 
 
 def _dip_score(c: dict) -> int:
-    """核心方向低吸候选的展示/去重分数（0-100，与 low_buy_quality 单调一致）。
+    """核心方向低吸候选的落库分数（0-100，**越大越优**，与 low_buy_quality 严格反序）。
 
     2026-09-08 与 low_buy_quality 排序逻辑对齐（板块+非线性回调+run甜点+资金流反转）。
+
+    2026-09-14 修正方向（P0）：此前本函数与 low_buy_quality **同向**（各项都按
+    「越小越优」书写），但消费方 save_core_dips 用 `score > existing` 保留当日快照，
+    docstring 承诺记录「当日最佳低吸时刻」⇒ 实际保留的是**最差**时刻。
+    实测：最佳候选（趋势股+浅回调+run甜点+负流入）得 0 分、最差候选（医药+中回调
+    +run过热+强流入）得 100 分，max 取到的正是后者。连带后果：prevday_perf /
+    nextday_attribution 的 core_dip 归因样本被反向挑选（这可能是 core_dip 在 hit 率
+    口径下看着最差的原因之一）。
+
+    修法：各项保持与 low_buy_quality 同号的书写（便于逐项对照），出口统一取
+    `100 - s` 翻转为「越大越优」。于是 score 列语义与全表（越大越好）一致，
+    且与 low_buy_quality 成严格反序（clamp 关于 50 对称，翻转不破坏单调性）。
+
     仅用于存储排序与「同票跨扫描取最高分」去重，展示区排序仍按 low_buy_quality 解析
     breakdown 重算，中间不带分数口径分歧。dict 值经 to_float 统一强转（脏值按 0 兑底，
     调用方为 DB 回读场景不可信）。
     """
-    # 板块权重
+    # 以下①~⑤各项一律按 low_buy_quality 的「越小越优」口径书写（局部变量名沿用
+    # *_bonus，含义是「对 low_buy_quality 排序键的贡献」），由函数末尾的 100-s
+    # 统一翻转成「越大越优」。改任一项符号前先看那个翻转。
+    # ① 板块权重（越负 = 该板块越优先）
     concept = c.get("concept", "")
     concept_bonus = 0
     if concept in ("趋势股", "专精特新"):
@@ -271,7 +287,7 @@ def _dip_score(c: dict) -> int:
     run = to_float(c.get("run"), default=0.0) or 0.0
     today = to_float(c.get("today_pct")) or 0.0
 
-    # 回调非线性
+    # ② 回调非线性
     pb_bonus = 0
     if -0.06 <= pullback <= -0.03:
         pb_bonus = -10
@@ -280,14 +296,14 @@ def _dip_score(c: dict) -> int:
     elif pullback < -0.10:
         pb_bonus = -3
 
-    # run 甜点区
+    # ③ run 甜点区
     run_bonus = 0
     if 0.15 <= run <= 0.25:
         run_bonus = -10
     elif run > 0.25:
         run_bonus = 10
 
-    # 资金流反转
+    # ④ 资金流反转
     ff = c.get("flow_pct")
     flow_bonus = 0
     if ff is not None:
@@ -298,12 +314,14 @@ def _dip_score(c: dict) -> int:
         else:
             flow_bonus = 5
 
-    # 今日波动
+    # ⑤ 今日波动（辅助维度，波动越大越劣后）
     today_bonus = abs(today) * 50
 
     s = 50 + concept_bonus + pb_bonus + run_bonus + flow_bonus + today_bonus
     try:
-        return int(max(0, min(100, round(s))))
+        # 出口翻转：s 越大 = low_buy_quality 语义下越劣后 ⇒ 取 100-s 后越大越优。
+        # clamp(100-s, 0, 100) ≡ 100 - clamp(s, 0, 100)（区间关于 50 对称），单调性保持。
+        return int(max(0, min(100, round(100 - s))))
     except (TypeError, ValueError):
         return 50
 
@@ -314,6 +332,11 @@ def save_core_dips(conn: sqlite3.Connection | None, dips: list[dict], today: str
     同日在榜主列表外单独成 category（与 comeback 同族）：供 display 的独立低吸区读取，
     并进 prevday_perf/nextday_attribution 复盘验证。同日同 symbol 取最高分（记录当日
     "最佳低吸时刻"）；percent 存今日涨幅（推荐时刻涨幅，供次日归因）。
+
+    ⚠ 这里的 `max` 依赖 _dip_score 是「越大越优」——2026-09-14 之前两者同向，导致
+    保留的其实是**最差**时刻（详见 _dip_score docstring）。改 _dip_score 方向前先看
+    tests/test_core_themes.py::TestDipScoreDirection 里的集成守护。
+
     全程 fail-open：落库失败不阻塞扫描主流程。
     """
     if conn is None or not dips:

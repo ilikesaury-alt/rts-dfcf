@@ -326,6 +326,98 @@ class TestLowBuyQualitySort:
         assert low_buy_quality(big_up) == low_buy_quality(big_down)
 
 
+class TestDipScoreDirection:
+    """`_dip_score` 的**方向**守护（2026-09-14 修复 P0）。
+
+    消费方 `save_core_dips` 用 `score > existing` 保留当日快照，docstring 承诺记录
+    「当日最佳低吸时刻」⇒ 本函数必须「越大越优」。2026-09-08 起各项按 low_buy_quality
+    的「越小越优」口径书写、出口漏了翻转，导致两者**同向**：max 实际保留的是**最差**
+    时刻（极端样例：最佳候选得 0 分、最差候选得 100 分），并连带把 prevday_perf /
+    nextday_attribution 的 core_dip 归因样本按反方向挑选。本组用例锁住方向。
+    """
+
+    @staticmethod
+    def _best() -> dict:
+        """定义上的「最佳低吸」：趋势股 + 浅回调 + run 甜点 + 负流入（预期差）。"""
+        return {"concept": "趋势股", "pullback": -0.045, "run": 0.20, "flow_pct": -1.0, "today_pct": 0.01}
+
+    @staticmethod
+    def _worst() -> dict:
+        """定义上的「最差低吸」：医药生物 + 中回调 + run 过热 + 强流入。"""
+        return {"concept": "医药生物", "pullback": -0.08, "run": 0.30, "flow_pct": 12.0, "today_pct": 0.01}
+
+    def test_best_dip_scores_higher_than_worst(self):
+        """方向不变量：low_buy_quality 认定的更优者，_dip_score 必须给更高分。"""
+        from scanner.core_themes import _dip_score, low_buy_quality
+
+        best, worst = self._best(), self._worst()
+        # 前置事实（low_buy_quality 的语义）：best 更优
+        assert low_buy_quality(best) < low_buy_quality(worst)
+        # 被守护的：_dip_score 与它反序。写成同向即回退到修复前的 bug。
+        assert _dip_score(best) > _dip_score(worst)
+
+    def test_strictly_inverse_of_low_buy_quality(self):
+        """随机候选集上不得出现违序对（同向 ⇒ 每个违序对都是被保留错的时刻）。"""
+        import itertools
+        import random
+
+        from scanner.core_themes import _dip_score, low_buy_quality
+
+        random.seed(0)
+        concepts = ["", "趋势股", "电子", "医药生物", "央国企改革", "专精特新"]
+        cands = [
+            {
+                "concept": random.choice(concepts),
+                "pullback": random.uniform(-0.15, 0.0),
+                "run": random.uniform(0.0, 0.4),
+                "flow_pct": random.choice([None, -6.0, -1.0, 3.0, 12.0]),
+                "today_pct": random.uniform(-0.05, 0.05),
+            }
+            for _ in range(120)
+        ]
+        pairs = [(low_buy_quality(c)[0], _dip_score(c)) for c in cands]
+        violations = [
+            (qi, si, qj, sj)
+            for (qi, si), (qj, sj) in itertools.combinations(pairs, 2)
+            if (qi < qj and si < sj) or (qi > qj and si > sj)
+        ]
+        assert not violations, f"_dip_score 与 low_buy_quality 同向（方向写反），违序对样例：{violations[:3]}"
+
+    def test_score_within_range_for_dirty_input(self):
+        """脏输入（缺键 / None）不得越界或抛错（调用方为 DB 回读场景）。"""
+        from scanner.core_themes import _dip_score
+
+        for c in (self._best(), self._worst(), {}, {"pullback": None, "run": None, "today_pct": None}):
+            assert 0 <= _dip_score(c) <= 100
+
+    def test_save_keeps_best_snapshot_of_day(self, db, monkeypatch):
+        """集成守护：同日同票两次落库，保留的必须是**更优**的低吸时刻。
+
+        旧方向下收盘前那次（更差）会覆盖最优的那次，与 `save_core_dips` 的
+        「记录当日最佳低吸时刻」承诺相反 —— 这个用例直接测那条业务不变量。
+        """
+        import json
+
+        from scanner.core_themes import save_core_dips
+
+        monkeypatch.setattr(
+            "scanner.core_themes.now_beijing", lambda: __import__("datetime").datetime(2026, 8, 19, 10, 0, 0)
+        )
+        for c in (self._best(), self._worst()):  # 先优后劣
+            save_core_dips(
+                db,
+                [{**c, "symbol": "SZ300001", "name": "龙头", "below_ma20_ratio": 0.0}],
+                "2026-08-19",
+            )
+        row = db.execute("SELECT score, score_breakdown FROM recommendations WHERE symbol='SZ300001'").fetchone()
+        sb = json.loads(row[1])
+        assert db.execute("SELECT COUNT(*) FROM recommendations").fetchone()[0] == 1
+        # 保留 best（趋势股 / 浅回调 / 负流入），而非后写的 worst（医药 / 强流入）
+        assert sb["concept"] == "趋势股"
+        assert sb["pullback"] == -0.045
+        assert sb["flow_pct"] == -1.0
+
+
 class TestSaveCoreDips:
     def test_saves_core_dip_category(self, db, monkeypatch):
         from scanner.core_themes import save_core_dips
@@ -445,6 +537,12 @@ class TestSaveCoreDips:
 
         原实现只更新 time/percent/trend/breakdown——breakdown 已是更优低吸时刻，
         score 却留首次插入旧值，两字段互相矛盾且 ORDER BY score DESC 失真。
+
+        2026-09-14 修正用例本身：原用例第二次落库的是 run 0.4 过热 + pullback -0.15
+        深回调 + 强流入的形态，按低吸语义那是**更差**的时刻，却因为当时 `_dip_score`
+        方向写反（越小越优）而拿到更高分、误触发 UPDATE —— 这个用例因此"通过"，
+        把方向 bug 掩盖了。现在第二次必须是**真正更优**的时刻（run 甜点 + 浅回调 +
+        负流入），否则 UPDATE 分支不该触发。
         """
         import json
 
@@ -453,17 +551,7 @@ class TestSaveCoreDips:
         monkeypatch.setattr(
             "scanner.core_themes.now_beijing", lambda: __import__("datetime").datetime(2026, 8, 19, 10, 0, 0)
         )
-        low = {
-            "symbol": "SZ300001",
-            "name": "龙头",
-            "concept": "华为概念",
-            "run": 0.1,
-            "pullback": -0.04,
-            "today_pct": 0.0,
-            "below_ma20_ratio": 0.0,
-            "flow_pct": -3.0,
-        }
-        high = {
+        worse = {  # 较差的低吸时刻：run 过热 + 深回调 + 强流入
             "symbol": "SZ300001",
             "name": "龙头",
             "concept": "华为概念",
@@ -473,12 +561,23 @@ class TestSaveCoreDips:
             "below_ma20_ratio": 0.0,
             "flow_pct": 6.0,
         }
-        save_core_dips(db, [low], "2026-08-19")
+        better = {  # 更优的低吸时刻：run 甜点 + 浅回调 + 负流入
+            "symbol": "SZ300001",
+            "name": "龙头",
+            "concept": "华为概念",
+            "run": 0.20,
+            "pullback": -0.045,
+            "today_pct": 0.0,
+            "below_ma20_ratio": 0.0,
+            "flow_pct": -3.0,
+        }
+        save_core_dips(db, [worse], "2026-08-19")
         first_score = db.execute("SELECT score FROM recommendations").fetchone()[0]
-        save_core_dips(db, [high], "2026-08-19")
+        save_core_dips(db, [better], "2026-08-19")
         score, sb = db.execute("SELECT score, score_breakdown FROM recommendations").fetchone()
         assert score > first_score, "score 列必须随更优时刻更新"
-        assert json.loads(sb)["pullback"] == -0.15
+        assert json.loads(sb)["pullback"] == -0.045
+        assert json.loads(sb)["run"] == 0.2
 
     def test_empty_or_none_is_fail_open(self, db):
         from scanner.core_themes import save_core_dips
