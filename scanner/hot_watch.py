@@ -516,6 +516,16 @@ def run_hot_watch(
         return []
 
     symbols = [str(t.get("symbol") or "") for t in targets if t.get("symbol")]
+
+    # 预收集资金流数据（2026-09-14）：hot_watch 候选不在 orchestrator all_candidates 中，
+    # 需要显式调用 collect_market_extra 确保资金流数据落库，供 build_candidates 过滤使用。
+    if HOT_FUND_FLOW_FILTER_ENABLED and conn is not None:
+        try:
+            from scanner.market_extra import collect_market_extra
+            collect_market_extra(conn, symbols, include_zt=False, include_flow=True)
+        except EXTERNAL_FAILURES as e:
+            logger.warning("hot_watch 资金流预收集失败（过滤跳过）: %s", e)
+
     fetch_batch = getattr(adapter, "fetch_hot_quotes_batch", None)
     if fetch_batch is None:
         return []
