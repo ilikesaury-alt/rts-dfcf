@@ -123,6 +123,28 @@ class TestBootstrapMeanCI:
         large = rv.bootstrap_mean_ci([0.3, -0.3] * 100, n_boot=300, seed=1)
         assert large["mde"] < small["mde"]
 
+    def test_mde_estimable_flag_tracks_dispersion(self):
+        """2026-09-14 修复：配对差值零离散度时 MDE 退化为 0，必须标记为「不可估」。
+
+        背景：MDE 由「观测到的配对差值」的 bootstrap 标准误得来。改动无效果时
+        （或本就是空操作的基线自检）差值恒为常数 → se = 0 → mde = 0.0。
+        原实现把 0.0pp 原样打印，会被读成「灵敏度无穷大」，与本工具核心判据
+        「MDE 远大于 Δ 时 Δ 无法与噪声区分」直接冲突（MDE=0 时该判据永不触发）。
+        故补 mde_estimable 标记，由 render 在不可估时打印 n/a。
+        """
+        no_op = rv.bootstrap_mean_ci([0.0] * 10)
+        assert no_op["mde"] == pytest.approx(0.0, abs=1e-12)
+        assert no_op["mde_estimable"] is False
+
+        # 常数差值同样估不出噪声：CI 会退化成单点（判定仍可用），但 MDE 不可估
+        constant = rv.bootstrap_mean_ci([0.1] * 10)
+        assert constant["mde_estimable"] is False
+
+        noisy = rv.bootstrap_mean_ci([0.3, -0.3] * 10, n_boot=300, seed=1)
+        assert noisy["mde_estimable"] is True
+
+        assert rv.bootstrap_mean_ci([])["mde_estimable"] is False
+
     def test_p_le_zero_is_fraction_of_nonpositive_bootstraps(self):
         ci = rv.bootstrap_mean_ci([0.5] * 10, n_boot=200)
         assert ci["p_le_zero"] == 0.0  # 全部重采样均值都 > 0
@@ -472,6 +494,92 @@ def test_parser_defaults_match_module_constants():
 def test_parser_rejects_unknown_evaluator():
     with pytest.raises(SystemExit):
         rv.build_parser().parse_args(["--evaluator", "nope"])
+
+
+def _minimal_result(mde_estimable: bool, flip_days: int, mde: float = 0.0) -> dict:
+    """构造 render 所需的最小 result（只含渲染路径实际读取的键）。"""
+    ci = {
+        "mean": 0.0,
+        "lo": 0.0,
+        "hi": 0.0,
+        "p_le_zero": 1.0,
+        "se": 0.0,
+        "mde": mde,
+        "mde_estimable": mde_estimable,
+        "n_days": 40,
+    }
+    metric = {
+        "days": 40,
+        "flip_days": flip_days,
+        "base_day_equal_hit": 0.133,
+        "new_day_equal_hit": 0.133,
+        "delta_day_equal": 0.0,
+        "base_pooled_hit": 0.136,
+        "new_pooled_hit": 0.136,
+        "delta_pooled": 0.0,
+        "day_equal_vs_pooled_gap_base": -0.003,
+        "base_day_equal_ic": 0.013,
+        "new_day_equal_ic": 0.013,
+        "delta_day_equal_ic": 0.0,
+        "paired_days": 40,
+        "ic_paired_days": 40,
+        "ci": ci,
+    }
+    return {
+        "evaluator": "nextday-prob",
+        "evaluator_desc": "d",
+        "evaluator_note": "n",
+        "overrides": ["x=1"],
+        "override_journal": [],
+        "identical_output_warning": False,
+        "sample_n": 2267,
+        "n_windows": 4,
+        "train_days": 30,
+        "embargo_days": 1,
+        "test_days": 10,
+        "top_n": 3,
+        "threshold": 7.0,
+        "alpha": 0.05,
+        "n_boot": 2000,
+        "metrics": {"train": metric, "test": metric},
+        "verdict": {
+            "code": rv.EXIT_INSUFFICIENT,
+            "text": "证据不足（CI 跨 0，默认拒绝）",
+            "bonferroni_k": 1,
+            "alpha_adjusted": 0.05,
+            "note": "note",
+        },
+    }
+
+
+class TestRenderMdeGuard:
+    """2026-09-14 修复：MDE 不可估时必须打印 n/a，不得打印会被误读为 0 的数字。"""
+
+    def test_not_estimable_prints_na_not_zero(self):
+        out = rv.render(_minimal_result(mde_estimable=False, flip_days=0))
+        assert "n/a" in out
+        # 只对「MDE 列」断言。两种错误写法都实测过：
+        #   ① `"0.0pp" not in out`      → 误伤：Δ 列本身就打 `+0.0pp`、CI 打 `[+0.0, +0.0]pp`
+        #   ② `out.split("MDE")[-1]`    → 假守护：切到的是**文末说明段**（最后一个 "MDE"
+        #      出现在"⚠ 本轮 MDE 显示 n/a"），不含表格行；把表格改回 0.0pp 仍为真
+        # 正解：表格里 MDE 是最后一个字段、其后紧跟判定标记 → 用该组合特征串精确锁定。
+        assert "n/a  ← 判定依据" in out
+        assert "0.0pp  ← 判定依据" not in out
+
+    def test_not_estimable_explains_why(self):
+        out = rv.render(_minimal_result(mde_estimable=False, flip_days=0))
+        assert "不可估" in out
+        assert "翻转了 0/40" in out
+        assert "翻转 0 天" in out
+
+    def test_estimable_prints_numeric_mde(self):
+        out = rv.render(_minimal_result(mde_estimable=True, flip_days=2, mde=0.023))
+        assert "2.3pp" in out
+        assert "n/a" not in out
+
+    def test_flip_days_reported_for_estimable_case(self):
+        out = rv.render(_minimal_result(mde_estimable=True, flip_days=2, mde=0.023))
+        assert "翻转了 2/40" in out
 
 
 def test_exit_codes_are_distinct_and_documented():

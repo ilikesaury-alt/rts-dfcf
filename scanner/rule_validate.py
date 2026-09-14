@@ -43,10 +43,28 @@
 另报告 **MDE（最小可检测效应）** = 1.96 × bootstrap 标准误 —— 它正面回答
 「以当前样本量，多小的改善才可能被检出」，这是本项目最该先看的一个数。
 
+**⚠ MDE 的重要限制（2026-09-14 修正）**：MDE 由「观测到的配对差值」的 bootstrap
+标准误得来，因此**在改动无效果时必然退化为 0**。这不是实现 bug，而是该估计量的
+固有性质——但把 `0.0pp` 原样打印出来会被读成「灵敏度无穷大」，与本工具的核心判据
+「MDE 远大于 Δ 时 Δ 无法与噪声区分」直接冲突（MDE=0 时该判据永不触发）。
+
+故 `se ≈ 0` 时 `mde_estimable=False`，报告打印 **n/a** 而非 0.0，并同时给出
+**「改动实际翻转了 X/N 个交易日的 top-N 结果」**——这才是可检测性的真正来源：
+翻转天数为 0 时，无论样本量多大，检出概率都是 0。
+
+> 推论：**不要指望「基线自检」能告诉你 MDE**。空操作自检的翻转天数恒为 0，
+> MDE 恒不可估。要估计真实可检测下限，须用能实际翻转 top-N 的扰动量级再跑一次
+> （实测本项目：能翻转 top-N 的扰动下 MDE ≈ 2.3pp，而基线自检报 n/a）。
+
 ## 用法
 
-    # 1) 先看基线可检测性（不改任何东西）：MDE 有多大？
+    # 1) 基线自检（不改任何东西）：确认样本量/窗口/基线指标正常。
+    #    注意：本步的 MDE 恒为 n/a（改动零翻转），不能用来判断可检测性。
     python -m scanner.rule_validate
+
+    # 1b) 想看真实可检测下限：用一个能翻转 top-N 的大扰动跑一次，
+    #     观察其 MDE 与「翻转了 X/N 个交易日」。
+    python -m scanner.rule_validate --set scanner.nextday_prob.OR_MARKED=5.0
 
     # 2) 验证一个改动（改 nextday_prob 的常数，用概率排序评估器）
     python -m scanner.rule_validate --set scanner.nextday_prob.OR_MARKED=1.56
@@ -156,6 +174,13 @@ def pooled_rate(hits: int, n: int) -> float:
     return hits / n if n else 0.0
 
 
+# 判定「配对差值无离散度」的绝对容差。不能用 `se == 0.0` 或 `se > 0.0`：
+# 常数差值（如每天都恰好 +0.1）经浮点累加后 se 会落在 ~1e-17 量级，
+# 既不为 0 又远小于任何真实噪声，会把「不可估」误判为「可估」。
+# 日 hit 率以 1/top_n 为步长，真实 se 的量级远大于 1e-9，该容差是安全的。
+SE_ZERO_EPS = 1e-9
+
+
 def bootstrap_mean_ci(
     deltas: list[float],
     n_boot: int = DEFAULT_BOOT,
@@ -167,9 +192,18 @@ def bootstrap_mean_ci(
     配对 = 同一天同时算「改动前」「改动后」，差值只含该天内部的对比，
     因此天然吸收市场 regime 的日间波动（这是本工具能做样本外检验的前提）。
 
-    返回 {mean, lo, hi, p_le_zero, se, mde}
-      p_le_zero：bootstrap 分布中 mean(Δ) ≤ 0 的比例（单边 p，越小越支持改动）
-      mde      ：最小可检测效应 = 1.96 × se —— 「以当前样本量能检出多大的改善」
+    返回 {mean, lo, hi, p_le_zero, se, mde, mde_estimable}
+      p_le_zero   ：bootstrap 分布中 mean(Δ) ≤ 0 的比例（单边 p，越小越支持改动）
+      mde         ：最小可检测效应 = 1.96 × se —— 「以当前样本量能检出多大的改善」
+      mde_estimable：MDE 是否可估。se == 0 时为 False —— 此时「配对差值」无离散度
+                    （典型场景：改动是空操作，或改动弱到没翻转任何一天的 top-N），
+                    mde 会退化成 0.0，**绝不能当作「任何改善都能检出」来读**。
+
+    2026-09-14 修复（MDE 退化）：mde 由「观测到的配对差值」的 bootstrap 标准误得来，
+    因此**在改动无效果时必然退化为 0**。这不是 bug 而是该估计量的固有性质，
+    但把 0.0pp 原样打印出来会被读成「灵敏度无穷大」，与本工具的核心判据
+    「MDE 远大于 Δ 时 Δ 无法与噪声区分」直接冲突（MDE=0 时该判据永不触发）。
+    现补 mde_estimable 标记，由 render 在不可估时打印 n/a 并说明原因。
     """
     n = len(deltas)
     if n == 0:
@@ -180,6 +214,7 @@ def bootstrap_mean_ci(
             "p_le_zero": 1.0,
             "se": float("inf"),
             "mde": float("inf"),
+            "mde_estimable": False,
             "n_days": 0,
         }
     obs = sum(deltas) / n
@@ -203,6 +238,7 @@ def bootstrap_mean_ci(
         "p_le_zero": p_le_zero,
         "se": se,
         "mde": 1.96 * se,
+        "mde_estimable": se > SE_ZERO_EPS,
         "n_days": n,
     }
 
@@ -583,8 +619,12 @@ def run(
         common = sorted(set(b["per_day_hit"]) & set(nw["per_day_hit"]))
         deltas = [nw["per_day_hit"][d] - b["per_day_hit"][d] for d in common]
         ci = bootstrap_mean_ci(deltas, n_boot=n_boot, alpha=alpha, seed=seed)
+        # 翻转天数：真正被改动改变了当日 top-N 结果的交易日数。这是可检测性的
+        # 实际来源——翻转天数为 0 时，无论样本量多大，检出概率都是 0（Δ 恒为 0）。
+        flip_days = sum(1 for d in deltas if d != 0)
         result["metrics"][scope] = {
             "days": b["days"],
+            "flip_days": flip_days,
             "base_day_equal_hit": b["day_equal_hit"],
             "new_day_equal_hit": nw["day_equal_hit"],
             "delta_day_equal": nw["day_equal_hit"] - b["day_equal_hit"],
@@ -652,10 +692,13 @@ def render(r: dict[str, Any]) -> str:
         ci = m["ci"]
         mark = "  ← 判定依据" if scope == "test" else "  （仅看过拟合）"
         ci_str = f"[{ci['lo'] * 100:+.1f}, {ci['hi'] * 100:+.1f}]pp"
+        # MDE 不可估（配对差值零离散度）时打印 n/a —— 原实现会打印 0.0pp，
+        # 会被读成「灵敏度无穷大」，与本工具的核心判据直接冲突。
+        mde_str = f"{ci['mde'] * 100:>7.1f}pp" if ci.get("mde_estimable", True) else f"{'n/a':>9}"
         L.append(
             f"  {label:<7}{m['days']:>6}{m['base_day_equal_hit'] * 100:>8.1f}%"
             f"{m['new_day_equal_hit'] * 100:>8.1f}%{m['delta_day_equal'] * 100:>+8.1f}pp"
-            f"{ci_str:>20}{ci['p_le_zero']:>9.3f}{ci['mde'] * 100:>7.1f}pp{mark}"
+            f"{ci_str:>20}{ci['p_le_zero']:>9.3f}{mde_str}{mark}"
         )
     L.append("")
     mt = r["metrics"]["test"]
@@ -669,6 +712,13 @@ def render(r: dict[str, Any]) -> str:
         f"  诊断 · 日等权 rank-IC：基线 {mt['base_day_equal_ic']:+.4f} → "
         f"改动后 {mt['new_day_equal_ic']:+.4f}（Δ {mt['delta_day_equal_ic']:+.4f}）"
     )
+    # 翻转天数：可检测性的真正来源。为 0 时样本量再大也检不出任何东西。
+    fp = mt.get("flip_days", 0)
+    pd_ = mt.get("paired_days", 0)
+    L.append(
+        f"  诊断 · 改动实际翻转了 {fp}/{pd_} 个交易日的 top-{r['top_n']} 结果"
+        + ("  ← 翻转 0 天：本改动在本口径下未产生任何可测差异（判定必然「证据不足」）" if fp == 0 and pd_ else "")
+    )
     L.append("")
     v = r["verdict"]
     L.append(f"  判定：{v['text']}   （退出码 {v['code']}）")
@@ -680,6 +730,11 @@ def render(r: dict[str, Any]) -> str:
     L.append("")
     L.append("  读法：MDE = 以当前样本量「能被检出」的最小改善。若 MDE 远大于你观察到的 Δ，")
     L.append("        那 Δ 无法与噪声区分 —— 此时「指标变好」不构成上生产的理由。")
+    if not mt["ci"].get("mde_estimable", True):
+        L.append("  ⚠ 本轮 MDE 显示 n/a：配对差值零离散度（改动未翻转任何交易日的 top-N，")
+        L.append("    或本就是空操作的基线自检），MDE 在此情形下**不可估，绝不能读作 0**。")
+        L.append("    请看上面的「翻转了 X/N 个交易日」——为 0 时样本量再大也检不出任何东西。")
+        L.append("    要估计真实可检测下限，请用能实际翻转 top-N 的扰动量级再跑一次。")
     return "\n".join(L)
 
 

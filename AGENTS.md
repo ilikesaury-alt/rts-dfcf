@@ -56,7 +56,8 @@ next_day 靶点不应与 3 日 P&L 混算）。
 ### 样本外验证门（rule_validate）—— 改权重/常数**必须**先跑这个
 
 ```
-python -m scanner.rule_validate                      # 基线自检：MDE 有多大？（不改任何东西）
+python -m scanner.rule_validate                      # 基线自检：样本量/窗口/基线指标（不改任何东西）
+python -m scanner.rule_validate --set scanner.nextday_prob.OR_MARKED=5.0   # 看真实可检测下限（MDE）
 python -m scanner.rule_validate --set scanner.nextday_prob.OR_MARKED=1.56
 python -m scanner.rule_validate --evaluator rescore --set scanner.config.MIN_SCORE=60
 python -m scanner.rule_validate --list-evaluators     # 各评估器能"看见"哪些模块
@@ -68,6 +69,13 @@ python -m scanner.rule_validate --list-evaluators     # 各评估器能"看见"�
 显著性 = 按日配对 bootstrap 的 95% CI。**判定只看 test 窗**；train 窗 Δ 用于暴露过拟合。
 报告里的 **MDE** 正面回答"以当前样本量，多小的改善才可能被检出"——若 MDE 远大于你观察到的 Δ，
 那"指标变好"不构成上生产的理由。
+
+> ⚠ **MDE 不可从「基线自检」获得**（2026-09-14 修正）：MDE 由「观测到的配对差值」的
+> bootstrap 标准误得来，**改动无效果时必然退化为 0**。基线自检是空操作，MDE 恒打印
+> **n/a**——这不代表灵敏度无穷大，恰恰相反，代表不可估。
+> 报告同时给出**「改动实际翻转了 X/N 个交易日的 top-N 结果」**：这是可检测性的真正来源，
+> **翻转天数为 0 时样本量再大也检不出任何东西**（此时判定必然是"证据不足"）。
+> 要估计真实可检测下限，用能实际翻转 top-N 的扰动量级跑一次（实测 ≈ 2.3pp）。
 
 **可见性硬校验（最重要的一道防线）**：`--set` 改的模块若不在所选评估器的可见集合内，
 直接退出码 3 —— 防止"验证了一个根本没生效的改动"。可见集合：
