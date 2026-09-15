@@ -1,9 +1,11 @@
 """飞书推送测试。
 
 覆盖：
-  1. 推送决策 should_push（空池 / 冷却 / ok-change / ok-timeout / disabled）
+  1. 推送决策 should_push（空池 / 冷却 / ok-change / ok-timeout / disabled / has_content）
   2. push_feishu 编排（view=None 短路、成功回写状态、失败不回写、_post_card 重试语义）
   3. FEISHU_TOP_N 门控与去重同源（_view_symbols 与 build_feishu_card 同常量）
+  4. 飙升区（hot_rows）：去重键**不含**飙升票、但参与「有内容」判据（2026-09-15 P1）
+  5. 飙升行定宽：_COLS_HOT_FEISHU 每列宽度 ≥ 格式化输出上界，行宽不随数据参差（2026-09-15 P2）
 
 注意：should_push 是纯函数，依赖模块级 FEISHU_WEBHOOK / FEISHU_MIN_INTERVAL；
 PushState 可注入，避免原 _last_push_time/_last_push_symbols 散落 global 的 monkeypatch。
@@ -64,14 +66,16 @@ def test_should_push_ok_after_timeout(monkeypatch):
 # ── push_feishu 编排 ──
 
 
-def _fake_view(symbols):
-    """构造最小 ScanView 替身，只含 _view_symbols / build_feishu_card 读取的字段。
+def _fake_view(symbols, *, hot_rows=None, final_pick_lines=None):
+    """构造最小 ScanView 替身，只含 _view_symbols / view_has_content / build_feishu_card 读取的字段。
 
     main_rows 项需有 .entry(dict) / .rank / .accum / .score；
-    flow_pct_map / show_comeback / comeback_rows / weak / warnings 为渲染所需最小集合。
+    flow_pct_map / weak / warnings 为渲染所需最小集合。
 
     2026-09-14：`show_core_dip` / `core_dip_rows` / `pool_rows` / `pool_total` 四个桩字段
     已移除 —— 卡片不再画 v2 池选与核心低吸两节，头部也不再读池选计数。
+    2026-09-15：新增 `hot_rows` / `final_pick_lines`（默认 None = 该区块为空），
+    供飙升区门控与「有内容」判据的用例使用。
     """
 
     class _Row:
@@ -85,14 +89,48 @@ def _fake_view(symbols):
         def __init__(self, syms):
             self.main_rows = [_Row(s) for s in syms]
             self.flow_pct_map = {}
-            self.show_comeback = False
-            self.comeback_rows = []
             self.weak = False
             self.warnings = []
+            self.hot_rows = hot_rows
+            self.final_pick_lines = final_pick_lines
 
     # duck-typed 替身：结构上满足 push_feishu/_view_symbols/build_feishu_card 的读取面，
     # cast 仅为通过类型检查（测试桩不继承 ScanView）。
     return cast(Any, _View(symbols))
+
+
+def _fake_hot(**over):
+    """构造一条 HotCandidate（飙升区行），默认值为「正常交易中的创业板票」。"""
+    from scanner.hot_watch import HotCandidate
+
+    fields = {
+        "symbol": "SZ300001",
+        "code": "300001",
+        "name": "特锐德",
+        "exchange": "SZ",
+        "current": 23.45,
+        "percent": 5.6,
+        "rank_change": 1234,
+        "rank": 8,
+        "volume": 1.2e7,
+        "amount": 2.9e8,
+        "market_capital": 1.2e10,
+        "turnover_rate": 3.4,
+        "volume_ratio": 1.23,
+        "score": 78.5,
+        "streak": 3,
+    }
+    fields.update(over)
+    return HotCandidate(**fields)
+
+
+def _section_titles(card) -> list[str]:
+    """卡片中所有分节标题（**◆ xxx** 开头的 div）——用于「画了哪些节」的断言。"""
+    return [
+        e["text"]["content"].splitlines()[0]
+        for e in card["elements"]
+        if e.get("tag") == "div" and e.get("text", {}).get("content", "").startswith("**◆")
+    ]
 
 
 def test_push_feishu_none_view_returns_false(monkeypatch):
@@ -156,3 +194,127 @@ def test_view_symbols_uses_feishu_top_n(monkeypatch):
     assert len(shown_lines) == FEISHU_TOP_N
     # 去重集合也应恰好覆盖被展示的 TOP_N 只
     assert view_syms == set(syms[:FEISHU_TOP_N])
+
+
+# ── 飙升区（hot_rows）：参与「有内容」判据、不参与去重键（2026-09-15 P1）──
+
+
+def test_hot_only_view_is_pushable_but_hot_is_not_a_dedup_key(monkeypatch):
+    """P1 回归：主线空池、飙升区有行 → 卡片仍有区块可画，必须能推。
+
+    修复前 should_push 只按 symbols 判空 ⇒ 整卡不推，而终端 render_terminal 照画飙升区，
+    与 build_feishu_card 声明的「与终端分节一一对应」直接矛盾。
+    同时钉死：**飙升票不进去重键**（分钟级变动，计入会让 has_change 每轮为真、击穿节流）。
+    """
+    from scanner.feishu import _view_symbols, view_has_content
+
+    monkeypatch.setattr("scanner.feishu.FEISHU_WEBHOOK", "https://example.com/hook")
+    view = _fake_view([], hot_rows=[_fake_hot()])
+
+    assert _view_symbols(view) == set(), "飙升票不是去重键"
+    assert view_has_content(view) is True, "仅飙升区有内容时也必须可推"
+
+    card = build_feishu_card(view, gem_total=100)
+    assert any("沪深飙升" in t for t in _section_titles(card)), "卡片应画出飙升区"
+
+    ok = should_push(PushState(), _view_symbols(view), 1000.0, has_content=view_has_content(view))
+    assert ok.push is True and ok.reason == "ok"
+    # 缺省 has_content（= 旧口径「按票集判空」）会退化成 empty —— 写死以防回退
+    assert should_push(PushState(), _view_symbols(view), 1000.0).reason == "empty"
+
+
+def test_should_push_empty_only_when_card_has_no_section(monkeypatch):
+    """只有三个来源（终选参考 / v1 池选 / 飙升区）全空才算空卡片 → empty。"""
+    from scanner.feishu import view_has_content
+
+    monkeypatch.setattr("scanner.feishu.FEISHU_WEBHOOK", "https://example.com/hook")
+    empty = _fake_view([])
+    assert view_has_content(empty) is False
+    assert should_push(PushState(), set(), 1000.0, has_content=view_has_content(empty)).reason == "empty"
+
+    # 仅终选参考有内容（main_rows 仍为空）→ 也必须推
+    fp_only = _fake_view([], final_pick_lines=["终选参考 # 1 只", "  300001 股1 70分"])
+    assert view_has_content(fp_only) is True
+    assert should_push(PushState(), set(), 1000.0, has_content=view_has_content(fp_only)).push is True
+
+
+def test_hot_only_push_keeps_min_interval(monkeypatch):
+    """仅飙升区有内容时按 FEISHU_MIN_INTERVAL 节流，而不是每轮（60s）一张卡。
+
+    这是「不并入去重键」的量化理由：symbols 恒空 ⇒ has_change 恒 False ⇒ 走冷却分支；
+    若把飙升票并进去，has_change 几乎每轮为真，should_push 会绕过冷却直接推。
+    """
+    from scanner.feishu import _view_symbols, view_has_content
+
+    monkeypatch.setattr("scanner.feishu.FEISHU_WEBHOOK", "https://example.com/hook")
+    view = _fake_view([], hot_rows=[_fake_hot()])
+    syms, content = _view_symbols(view), view_has_content(view)
+    now = 1000.0
+
+    inner = should_push(PushState(last_time=now - 1, last_symbols=set()), syms, now, has_content=content)
+    assert inner.reason == "cooldown"
+    timed_out = should_push(
+        PushState(last_time=now - FEISHU_MIN_INTERVAL, last_symbols=set()), syms, now, has_content=content
+    )
+    assert timed_out.push is True
+
+
+def test_push_feishu_posts_hot_only_card(monkeypatch):
+    """端到端：仅飙升区的日子确实会 POST 出卡片（修复前 push_feishu 直接 return False）。"""
+    monkeypatch.setattr("scanner.feishu.FEISHU_WEBHOOK", "https://example.com/hook")
+    posted: list = []
+    monkeypatch.setattr("scanner.feishu._post_card", lambda card: posted.append(card) or (True, None))
+
+    state = PushState()
+    assert push_feishu(_fake_view([], hot_rows=[_fake_hot()]), gem_total=10, state=state) is True
+    assert posted, "应有卡片被推送"
+    assert any("沪深飙升" in t for t in _section_titles(posted[0]))
+    assert state.last_symbols == set()  # 去重键仍为空（飙升区不参与）
+
+
+# ── 飙升行定宽（2026-09-15 P2）──
+
+
+def test_hot_row_width_is_uniform():
+    """P2 回归：飙升行可见宽度必须恒定（含双宽「万手/亿手/★」与各列上界值）。
+
+    修复前用 f-string 的 `{x:>10}` 按**字符数**补位，双宽单元把行撑宽 —— 实测同批 93/97/97。
+    用例刻意取到 _COLS_HOT_FEISHU 各列的宽度上界（见其逐列注释），
+    任何一列宽度定小了，本用例都会红。
+    """
+    from scanner.display import _vis_len
+    from scanner.feishu import _COLS_HOT_FEISHU, _fmt_hot_row_feishu
+
+    expected = sum(w for w, _ in _COLS_HOT_FEISHU) + (len(_COLS_HOT_FEISHU) - 1) + 2  # 分隔空格 + 反引号
+    cases = [
+        {},  # 常规
+        # 全字段缺失 → 全部渲染为「—」（宽字符，最易触发字符数/可见宽度混用）
+        {"volume": 0, "amount": 0, "market_capital": 0, "turnover_rate": 0, "volume_ratio": 0},
+        # 各列上界
+        {
+            "volume": 9.99999e9,
+            "amount": 9.99999e11,
+            "market_capital": 9.999e11,
+            "current": 9999.99,
+            "percent": -9.9,
+            "rank_change": 9999,
+            "volume_ratio": 99.99,
+            "turnover_rate": 99.9,
+            "streak": 999,
+        },
+        {"name": "超长名字啊"},  # 自由文本列超宽 → 必须截断而不是撑宽
+    ]
+    widths = {_vis_len(_fmt_hot_row_feishu(_fake_hot(**c), i)) for i, c in enumerate(cases, 1)}
+    assert widths == {expected}, f"行宽参差：{sorted(widths)}（应恒为 {expected}）"
+
+    # 数值列宽度不足会走「截断」——比错列更糟（显示错值），故单独钉住上界不被截断
+    extreme = _fmt_hot_row_feishu(_fake_hot(volume=9.99999e9, amount=9.99999e11), 1)
+    assert "9999.99万手" in extreme and "9999.99亿" in extreme
+
+
+def test_hot_row_columns_match_terminal():
+    """列数必须与终端 COLS_HOT 一致（列序/含义由 _COLS_HOT_FEISHU 的逐列注释对齐）。"""
+    from scanner.display import COLS_HOT
+    from scanner.feishu import _COLS_HOT_FEISHU
+
+    assert len(_COLS_HOT_FEISHU) == len(COLS_HOT), "终端加/删了列，卡片压缩列规格没跟着改"

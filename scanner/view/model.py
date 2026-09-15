@@ -21,7 +21,7 @@ from scanner.ranking import (
 from scanner.sector import classify_sector
 from scanner.signals import fund_flow_signal, split_risk_flags
 
-# 走势美感标记判定单源（与美感门同源；相对导入绕开 pyright 会话冻结快照的绝对名解析）
+# 走势美感标记判定单源（日线定准入、分时定级别；相对导入绕开 pyright 会话冻结快照的绝对名解析）
 from scanner.trend_beauty import beauty_mark
 from scanner.utils import to_float
 
@@ -316,11 +316,17 @@ def _entry_sector(entry: RecommendationRow | dict) -> str:
 
 
 def _beauty_mark_for(entry: RecommendationRow | dict, kline: list | None) -> str:
-    """v1 池选行尾走势标记：满足美感 → "美"；否则空（不标丑，2026-09-09 用户口径）。
+    """v1 池选行尾走势标记（分档）："" / "美" / "美★"（不标丑，2026-09-09 用户口径）。
 
-    判定单源在 trend_beauty.beauty_mark（与美感门同源、fail-open 一致：数据缺失
-    不标，避免误导）。纯展示，不改过滤/排序/落库。2026-09-09 数据裁决后硬拦
-    默认关，本标记保留作买入体验参考（"稳而不爆"）。开关 RTS_TREND_MARK。
+    判定单源在 trend_beauty.beauty_mark——**日线定准入、分时定级别**：日线不漂亮或
+    不足 → 不标；日线漂亮而分时未确认（走弱/缺失）→ "美"；日线漂亮且分时亦漂亮 → "美★"。
+    fail-open 一致：数据缺失只降档、不判否。纯展示，不改过滤/排序/落库。
+    2026-09-09 数据裁决后硬拦默认关（RTS_FINAL_PICK_BEAUTY），本标记保留作买入体验
+    参考（"稳而不爆"）；开关 RTS_TREND_MARK。
+    ⚠ ★ 的语义是**尾部回撤更小**，不是「更可能大涨」（美★/美 的 hit 无正向区分度）——
+    分档依据与复现脚本见 trend_beauty 模块 docstring / scripts/beauty_mark_eval.py。
+    注意本标记**比终选美感门宽**（门是「日线 ∧ 分时」双维度硬拦，默认关）：门一旦打开，
+    标「美」的票可能被门按「分时不漂亮」拦掉，标「美★」的才与门一致。
     2026-09-14：v2 池选展示区隐藏后，本标记现状只落在 v1 池选行。
     """
     if not TREND_MARK_ENABLED:
@@ -378,7 +384,8 @@ def _entry_row_suffix(
     if c and getattr(c, "tactic_tags", None):
         for tag in c.tactic_tags:
             parts.append(f" {ANSI['YELLOW']}{tag}{ANSI['RESET']}")
-    # 走势美感标记（2026-09-09，仅 v1/v2 池选行传入）：满足美感标「美」绿，不标丑
+    # 走势美感标记（2026-09-09 上线 / 2026-09-15 分档，仅 v1/v2 池选行传入）：
+    # 分档标「美」/「美★」绿，不标丑。★ 的图例由 render_terminal / build_feishu_card 就地解释。
     if beauty:
         parts.append(f" {ANSI['GREEN']}{beauty}{ANSI['RESET']}")
     return "".join(parts)
@@ -513,8 +520,9 @@ class ScanView:
     # 只是不再单独成区渲染。
     # 终选参考区文本行（2026-09-04）：v1+v2 合池 → 档0画像评级 ≤3 只 + 落选理由。
     final_pick_lines: list[str] | None = None
-    # 走势美感标记（2026-09-09）：{(symbol, category): "美"|""}，v1 池选行行尾渲染
-    # （_entry_row_suffix beauty 参数）。与终选美感门同源判定，纯展示预判。
+    # 走势美感标记（2026-09-09 上线 / 2026-09-15 分档）：{(symbol, category): ""|"美"|"美★"}，
+    # v1 池选行行尾渲染（_entry_row_suffix beauty 参数）。与终选美感门同判定单源但**不同口径**
+    # （标记：日线准入+分时分级；门：日线∧分时硬拦，默认关），纯展示预判。
     # 2026-09-14：v2 池选展示区已隐藏，故现状只服务 v1 池选行。
     beauty_mark: dict[tuple[str, str], str] | None = None
     # 沪深飙升·极有可能大涨独立区（2026-09-11 自 rts-xueqiu 合入）：HotCandidate 列表。

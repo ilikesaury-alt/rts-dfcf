@@ -16,7 +16,8 @@ from scanner.ranking import (
     fresh_candidate,
 )
 
-# 走势美感标记判定单源（与美感门同源；相对导入绕开 pyright 会话冻结快照的绝对名解析）
+# 走势美感标记（日线定准入、分时定级别）的判定单源在 scanner.trend_beauty，
+# 经下方 `import *` 带入 _beauty_mark_for / beauty_mark，本模块不重复持有判定逻辑。
 from scanner.utils import clear_screen, to_int
 from scanner.view.assemble import *  # noqa: F401,F403
 from scanner.view.model import *  # noqa: F401,F403
@@ -373,6 +374,15 @@ def render_terminal(view: ScanView) -> None:
 
     # ── v1 池选 ──
     print(f"  {ANSI['BOLD']}◆ v1 池选 — 榜上优先·涨幅升序·回调核心{ANSI['RESET']}")
+    # 美感标记分档图例（2026-09-15）：仅在确有标记时打一行，避免常年占位。
+    # ★ 必须就地解释成「回撤更小」——否则最自然的误读是「更可能大涨」，而数据不支持
+    # （美★ 与 美 的 next_day hit 无正向区分度，只有尾部回撤有差别，见 trend_beauty docstring）。
+    # 飞书卡片 build_feishu_card 有一份同义图例，两处须同步改（守卫见 test_display）。
+    if any((view.beauty_mark or {}).values()):
+        print(
+            f"  {ANSI['GREEN']}美{ANSI['RESET']}=日线趋势漂亮　"
+            f"{ANSI['GREEN']}美★{ANSI['RESET']}=分时亦漂亮（尾部回撤更小·非更易大涨）"
+        )
     print(_table_header(COLS_POOL))
     for _si, row in enumerate(view.main_rows, 1):
         _emit_pool_table_row(view, row, _si)
@@ -390,10 +400,11 @@ def render_terminal(view: ScanView) -> None:
     # 两者的数据仍参与终选参考区合池（见 assemble.build_scan_view），只是不再单独成区。
 
     # ── 沪深飙升·极有可能大涨 独立区（2026-09-11 自 rts-xueqiu 合入）──
-    # 与上方所有区块口径不同且互不干扰：样本面为沪深主板+创业板（主线只做创业板），
+    # 与上方所有区块口径不同且互不干扰：样本面为**创业板**（300/301，与主线一致；
+    # 2026-09-11 合入时曾为沪深主板+创业板，后收窄到创业板，见 hot_watch.hard_exclude），
     # 口径为「当日 momentum + 榜单热度跃升」（主线为 next_day 次日大涨）。
     # 独立成区而非并入主线表：两者排序键、评分体系、样本面都不同，混排会让
-    # 「为什么这只创业板票排在一只主板票后面」无法解释。
+    # 「为什么这两只票排在同一个榜里」无法解释。
     _render_hot_watch_region(view.hot_rows)
 
 

@@ -70,8 +70,10 @@ from scanner.utils import EXTERNAL_FAILURES, is_gem, is_st, to_float
 
 logger = logging.getLogger(__name__)
 
-# 本区样本面白名单（代码 6 位前缀）。与主线 is_gem 不同：这里要的是「沪深主板+创业板」，
-# 且必须显式排除科创板/北交所/ETF —— 白名单而非黑名单，新板块默认不入选。
+# 本区样本面白名单（代码 6 位前缀）。is_hot_universe 现状**只用 GEM 前缀**——
+# 样本面已从合入时的「沪深主板+创业板」收窄为「仅创业板」（与主线 filter_gem_stocks 对齐）。
+# `_HOT_MAIN_PREFIXES` 随之失去消费方，但**有意保留**：它是把样本面放宽回沪深主板时
+# 唯一需要改动的常量（宽回即 `c.startswith(_HOT_MAIN_PREFIXES + _HOT_GEM_PREFIXES)`）。
 _HOT_MAIN_PREFIXES = ("600", "601", "603", "605", "000", "001", "002", "003")
 _HOT_GEM_PREFIXES = ("300", "301")
 

@@ -376,7 +376,10 @@ def _cand(category="pool_pick", intraday_score=0.0, percent=1.5):
 
 
 def test_beauty_gate_passes_beautiful_stock(monkeypatch):
-    """门开（硬拦默认已关，2026-09-09 数据裁决）：日线漂亮+分时强 → 入选+「美」标记。"""
+    """门开（硬拦默认已关，2026-09-09 数据裁决）：日线漂亮+分时强 → 入选+「美★」标记
+
+    （2026-09-15 分档：分时确认漂亮 → 强档「美★」；分时走弱/缺失只降档到「美」）。
+    """
     import scanner.final_pick as fp
 
     monkeypatch.setattr(fp, "FINAL_PICK_BEAUTY_ENABLED", True)
@@ -388,7 +391,7 @@ def test_beauty_gate_passes_beautiful_stock(monkeypatch):
     assert [p["symbol"] for p in result["picks"]] == ["SZ300001"]
     assert result["beauty_blocked"] == 0
     lines = render_final_pick_lines(result)
-    assert any(" 美" in ln for ln in lines)
+    assert any(" 美★" in ln for ln in lines), lines
 
 
 def test_beauty_gate_blocks_ugly_stock(monkeypatch):

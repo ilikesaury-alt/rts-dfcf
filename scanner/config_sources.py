@@ -210,18 +210,34 @@ FINAL_PICK_FUND_FLOW_FILTER = _env_flag("RTS_FINAL_PICK_FUND_FLOW_FILTER", True)
 #   评分，-10~10；>0 平稳走高/高位不回落，<0 冲高回落/走弱）。
 # 数据缺失（日线不足/intraday_score 缺失即 0.0 默认值）fail-open 不判否——
 #   终选是展示层，只拦「可判定的丑」，不因数据缺口误杀。
-# 【2026-09-09 数据裁决：硬拦默认关】双窗口实测（beauty_gate_eval.py，2307 样本，
+# 【2026-09-09 数据裁决：硬拦默认关】双窗口实测（原 beauty_gate_eval.py，2307 样本，
 #   日线 T-1 前防前视）：放行组 hit 8.4%/0.0% vs 基线 9.8%/5.5%，双窗口同向低于
 #   基线；且样本内放行仅 21/1346（1.6%）。「漂亮=稳但不爆」：放行组 avg/med 两窗
 #   均高于基线（滤掉大亏）但 hit 反而低（滤掉爆发票）。对「次日大涨」目标负贡献，
-#   硬拦降级；「美」展示标记保留（TREND_MARK_ENABLED）作为买入体验参考。
+#   硬拦降级；展示标记保留（TREND_MARK_ENABLED）作为买入体验参考。
+#   ⚠ 该脚本**不在仓库里**（docs/refactor-recommendation-2026-09-11.md 已指出），
+#     上述数字不可复现，仅作历史决策记录。2026-09-15 的复核见下方分级说明，
+#     复现入口 `python scripts/beauty_mark_eval.py`（离线·确定性·读 scanner.db）。
 #   重开硬拦：RTS_FINAL_PICK_BEAUTY=1。
 FINAL_PICK_BEAUTY_ENABLED = _env_flag("RTS_FINAL_PICK_BEAUTY", False)
-# 走势展示标记（「美」，2026-09-09）：v1/v2 行尾 + 终选个股行尾，纯展示。
-# 独立于硬拦开关——硬拦关了标记仍在（买入体验/回撤控制参考：放行组 avg 更高、
-# 尾部风险更小）。关：RTS_TREND_MARK=0。
+# 走势展示标记（2026-09-09 上线 / 2026-09-15 分档）：v1 池选行 + 终选个股行尾，纯展示。
+# 分档口径 = **日线定准入、分时定级别**（trend_beauty.beauty_mark）："" / "美" / "美★"。
+# 独立于硬拦开关——硬拦关了标记仍在（买入体验/回撤控制参考）。关：RTS_TREND_MARK=0。
+# ⚠ 与硬拦**有意不同口径**：门是「日线 ∧ 分时」双维度硬拦（默认关）；标记比门宽
+#   （分时走弱/缺失只降档到「美」）。门一旦打开，标「美」的票可能被门按分时拦掉。
+# 【2026-09-15 分级裁决】旧标记（日线∧分时）标记率仅 1.8% ≈ 常年空白，归因**对半**：
+#   取消 AND 结构回收约一半，INTRADAY_BEAUTY_MIN=2.5 恰压在 intraday_score 的 p90
+#   （可判定样本通过率 12%）再砍掉约 2/3 —— 只调阈值上限仅 4.0%，故改分级而非调阈值。
+#   旧口径另有语义缺陷：determined 是 OR，44 只旧标记里 14 只（32%）是「日线不足 +
+#   分时美」（日线无法判定却标美），分级后要求日线可判定，缺陷消失。
+#   分档实测（n=(date,symbol) 去重 2429 / hit=次日≥7%）：
+#     美★ 0.7%(17)  hit 5.9%  尾部≤-5%/≤-7% = 5.9%/0.0%
+#     美  6.3%(154) hit 5.2%  尾部 = 9.7%/7.8%
+#     未标记 93.0%(2258) hit 7.1%  尾部 = 14.2%/7.4%
+#   ⇒ **★ = 回撤更小，不是更易大涨**：两档 hit 均低于基线，差别只在尾部；且 ★ 的
+#     n=17 是极小样本（脚本告警）。复现：python scripts/beauty_mark_eval.py。
 TREND_MARK_ENABLED = _env_flag("RTS_TREND_MARK", True)
-INTRADAY_BEAUTY_MIN = 2.5  # intraday_score ≥ 此值判分时漂亮（-10~10）
+INTRADAY_BEAUTY_MIN = 2.5  # intraday_score ≥ 此值判分时漂亮（-10~10）；同时是「美★」的分档线
 DAILY_BEAUTY_MIN_BARS = 20  # 缓存日线少于此根数 → 无法判定（fail-open 放行）
 DAILY_BEAUTY_MAX_CRASH_PCT = -5.0  # 近5日无单日跌幅 ≤ 此值的暴跌日
 DAILY_BEAUTY_MAX_PULLBACK_PCT = 3.0  # 近5日单日跌幅超过此值 = 回调失控（丑）

@@ -20,7 +20,6 @@ import time
 from dataclasses import dataclass, field
 
 import requests
-import wcwidth
 
 from scanner.config import (
     FEISHU_KEYWORD,
@@ -28,9 +27,21 @@ from scanner.config import (
     FEISHU_TOP_N,
     FEISHU_WEBHOOK,
     FUND_OUTFLOW_NET_PCT,
+    HOT_HIGHLIGHT_STREAK,
+    HOT_MAX_MARKET_CAP,
+    HOT_MAX_PERCENT,
     now_beijing,
 )
-from scanner.display import ScanView
+
+# 文本宽度与单位格式化的单源在 scanner.view.model（由 display 聚合器透传）：
+#   _pad   —— 按**可见宽度**补位（CJK、★ 双宽按 2 列）；本模块此前自持一份只支持左对齐的
+#            _pad_vis，并在飙升行里与 f-string 的**字符数**补位（`{x:>10}`）混用，导致
+#            "亿手/万手/★"这类双宽单元把行撑宽 —— 实测同批三行可见宽 93/97/97（2026-09-15 修复）。
+#   _trunc —— 可见宽度感知截断，保证超长名称不撑破定宽列（同样只在补位/截断这一层做一次）。
+#   _fmt_hot_amount / _fmt_hot_volume_hand —— 飙升区单位格式化；此前 render 与本模块各持一份，
+#            本模块那份的 docstring 自承「与 render._fmt_hot_amount 同口径」= 本仓禁忌的复制，
+#            现改为单源引用（两处口径不可能再漂移）。
+from scanner.display import ScanView, _fmt_hot_amount, _fmt_hot_volume_hand, _pad, _trunc
 from scanner.log_utils import log_event
 from scanner.signals import fund_flow_signal, split_risk_flags
 from scanner.utils import EXTERNAL_FAILURES, to_float
@@ -59,7 +70,7 @@ class Decision:
 
     reason ∈ {disabled, empty, cooldown, ok}：
       disabled — 未配置 webhook，整体不推
-      empty    — 本轮无任何可展示票（不推空卡片）
+      empty    — 卡片无任何区块可画（不推空卡片）
       cooldown — 内容无变化且距上次推送不足 FEISHU_MIN_INTERVAL
       ok       — 允许推送（内容有变化，或超时后重新推送）
     """
@@ -72,19 +83,34 @@ class Decision:
 _DEFAULT_STATE = PushState()
 
 
-def should_push(state: PushState, symbols: set[str], now: float) -> Decision:
+def should_push(state: PushState, symbols: set[str], now: float, *, has_content: bool | None = None) -> Decision:
     """纯函数决策：此刻是否应推送。
 
     不触碰 I/O、不读模块级 global，便于单元测试（见 tests/test_feishu.py）。
-    与原 push_feishu 的节流/去重/空池语义完全等价：
-      - webhook 缺失 → disabled
-      - 无票         → empty
+    与原 push_feishu 的节流/去重/空池语义等价：
+      - webhook 缺失     → disabled
+      - 无内容可画       → empty
       - 票集未变且冷却中 → cooldown
       - 其余（票集变化 / 超时后重推）→ ok
+
+    两个入参回答**两个不同的问题**，不可混为一谈：
+      symbols     —— 去重键（「内容变了没」），只含**主线**票集（`_view_symbols`）。
+      has_content —— 卡片**是否有任何区块可画**（`view_has_content`）。
+    默认 None = `bool(symbols)`，即「以票集判空」的旧行为，供不关心第三区的调用点沿用。
+
+    2026-09-15 修：此前只有 symbols 一个判据，于是「有推荐但被展示层门全剔 ⇒ main_rows 空，
+    而终选参考/飙升区仍有内容」会落到 empty，**整张卡片不推** —— 而终端在**同一份 view** 上
+    照画那两个区块（与 build_feishu_card 声明的「与终端分节一一对应」矛盾）。
+    现改为按**内容**判空（`view_has_content`，含该场景的实测证据与边界说明）。
+    注意飙升区**不进** symbols（成因见 _view_symbols）：该情形下票集恒为空 ⇒ has_change
+    恒为 False ⇒ 命中「票集未变且冷却中」，按 FEISHU_MIN_INTERVAL 节流重推，
+    与主线非空时的既有推送节奏完全一致（而非每轮一张）。
     """
     if not FEISHU_WEBHOOK:
         return Decision(False, "disabled")
-    if not symbols:
+    if has_content is None:
+        has_content = bool(symbols)
+    if not has_content:
         # 全空推荐时不推空卡片（无推荐时段会每 5 分钟刷一张空卡，2026-08-17 审查修复）。
         return Decision(False, "empty")
     has_change = symbols != state.last_symbols
@@ -119,15 +145,6 @@ class RowSnapshot:
     ff_pct: float | None = None
     zt_lb: int | None = None
     tactic_tags: list[str] = field(default_factory=list)
-
-
-def _pad_vis(s: str, width: int) -> str:
-    """按显示宽度补空格（中文全角按 2 列，与 display._pad 同口径）。
-
-    2026-08-20 修复：原 `{s.name:<8}` 按字符数补位，3 字中文名（6 列）与 4 字名（8 列）
-    在飞书等宽字体下错位。"""
-    pad = max(0, width - sum(max(0, wcwidth.wcwidth(ch)) for ch in s))
-    return f"{s}{' ' * pad}"
 
 
 def _row_percent(entry) -> float:
@@ -242,9 +259,9 @@ def _fmt_row(s: RowSnapshot) -> str:
     if s.zt_lb:
         extra_parts.append(f"📈{s.zt_lb}板")
     extra_str = (" " + " ".join(extra_parts)) if extra_parts else ""
-    # 操作纪律标签在反引号定宽块之外追加——不破坏 _pad_vis 列对齐（审查修复）
+    # 操作纪律标签在反引号定宽块之外追加——不破坏 _pad 列对齐（审查修复）
     tactic_str = (" " + " ".join(s.tactic_tags)) if s.tactic_tags else ""
-    return f"`{rs} {_pad_vis(s.name, 8)} {s.symbol} {pct_str:>7} {acc_str:>7}  {s.score:>2}分{risk_str}{extra_str}`{tactic_str}"
+    return f"`{rs} {_pad(s.name, 8)} {s.symbol} {pct_str:>7} {acc_str:>7}  {s.score:>2}分{risk_str}{extra_str}`{tactic_str}"
 
 
 def _row_line(entry, view, rank=None, accum=None, score=None) -> str:
@@ -257,11 +274,69 @@ def _row_line(entry, view, rank=None, accum=None, score=None) -> str:
     if score is not None:
         snap.score = score
     line = _fmt_row(snap)
-    # 走势美感标记（2026-09-09）：v1/v2 池选行尾 ✓/⚠，与终端同源（view.beauty_mark）
+    # 走势美感标记（2026-09-09 上线 / 2026-09-15 分档）：v1 池选行尾 ""/"美"/"美★"，
+    # 与终端同源（view.beauty_mark，判定单源 trend_beauty.beauty_mark）。
     bm = (getattr(view, "beauty_mark", None) or {}).get((entry.get("symbol"), entry.get("category")), "")
     if bm:
         line += f" {bm}"
     return line
+
+
+# 飞书飙升行 = 终端 COLS_HOT 的**压缩版**列规格：卡片在手机端渲染，整体宽度收窄；
+# 但**列序与列含义与终端一一对应**（改 COLS_HOT 的列集/顺序必须同改本表，守卫见
+# tests/test_feishu.py::test_hot_row_columns_match_terminal）。
+#
+# 宽度规则 —— 每列宽度必须 ≥ 该列**格式化输出的可见宽度上界**，否则单元格溢出、
+# 该行比同表其它行宽（行与行之间列才对得齐）。2026-09-15 修复的正是这条被违反：
+# 旧实现把宽度写进 f-string（`{x:>10}`），补的是**字符数**，而"万手/亿手/★"是双宽单元，
+# 于是同批输出行宽 93/97/97 参差。
+# 数值列的预算沿用 COLS_HOT 的同名列（那里已按输出上界定过），只在自由文本/低熵列上收窄：
+#   代码 12→8、名称 10→8、现价 8→7、涨幅 8→7、换手 7→6、市值 9→7、评分 6→5。
+# 成交量/成交额/连击**不收窄**（11/9/5 就是格式化上界，收窄即溢出）。
+# 数值列溢出时**不截断**：宁可该行错列也不显示错值；宽度已按上界定，溢出即说明
+# 上界假设被改坏，tests/test_feishu.py::test_hot_row_width_is_uniform 会先红。
+_COLS_HOT_FEISHU: tuple[tuple[int, str], ...] = (
+    (2, "r"),  # #        展示条数 ≤ 99
+    (8, "l"),  # 代码      6 位数字（终端留 12 是为旧 SZ/SH 前缀展示，卡片不需要）
+    (8, "l"),  # 名称      4 个汉字；超出先 _trunc（自由文本，不保证上界）
+    (7, "r"),  # 现价      "9999.99"
+    (7, "r"),  # 涨幅      "+10.0%"（涨停已剔除，6 列足够）
+    (5, "r"),  # 排名上升  "+" + 榜内跃升位数（榜长 ≤ 4 位）
+    (11, "r"),  # 成交量   "9999.99万手"（万手分支上界）
+    (9, "r"),  # 成交额    "9999.99亿"
+    (5, "r"),  # 量比      "99.99"
+    (6, "r"),  # 换手%     "999.9%"
+    (7, "r"),  # 市值(亿)  "9999亿"（HOT_MAX_MARKET_CAP 已在筛选层过滤）
+    (5, "r"),  # 评分      "100.0"
+    (5, "r"),  # 连击      "★" + streak（与 COLS_HOT 同宽）
+)
+
+
+def _fmt_hot_row_feishu(c, idx: int) -> str:
+    """飞书卡片单行：沪深飙升·极有可能大涨候选（lark_md 定宽块，无 ANSI）。
+
+    单元格一律经 _pad 按**可见宽度**补位（成因见 _COLS_HOT_FEISHU 的宽度规则），
+    故每行可见宽度恒为 sum(宽度)+12 个分隔空格 = 97 列（含两侧反引号共 99）。
+    名称是唯一自由文本列，先 _trunc 再补位——否则 5 字名（10 列）会撑破 8 列的列宽。
+    """
+    pct_str = f"+{c.percent:.1f}%" if c.percent >= 0 else f"{c.percent:.1f}%"
+    cells = (
+        str(idx),
+        c.code,
+        _trunc(c.name, _COLS_HOT_FEISHU[2][0]),
+        f"{c.current:.2f}" if c.current else "—",
+        pct_str,
+        f"+{c.rank_change}",
+        _fmt_hot_volume_hand(c.volume),
+        _fmt_hot_amount(c.amount),
+        f"{c.volume_ratio:.2f}" if c.volume_ratio > 0 else "—",
+        f"{c.turnover_rate:.1f}%" if c.turnover_rate > 0 else "—",
+        f"{c.market_capital / 1e8:.0f}亿" if c.market_capital > 0 else "—",
+        f"{c.score:.1f}",
+        f"★{c.streak}" if c.streak >= HOT_HIGHLIGHT_STREAK else f"{c.streak}",
+    )
+    body = " ".join(_pad(str(cell), width, align) for cell, (width, align) in zip(cells, _COLS_HOT_FEISHU, strict=True))
+    return f"`{body}`"
 
 
 def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 0, top_n: int = FEISHU_TOP_N) -> dict:
@@ -271,10 +346,15 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
     display_priority 读「DB 当日累计推荐」——同一只票可能一边排第 1、另一边不出现。
     现统一由 build_scan_view 供数，保证「终端看得到什么，卡片就推什么」。
 
-    分节口径（2026-09-14 二次核对）：卡片只画 终选参考 → v1 池选，与终端渲染的区块
-    一一对应。同期按用户决策移除三个区块：**决策层**（整体删除）、**v2 池选** 与
-    **核心方向低吸**（隐藏）。**回马枪（comeback）两处都没有展示区**（ca91d21 起移除，
-    见 docs/CORE-FLOW.md §十-1），故它既不是分节门控、也不进 `_view_symbols` 去重集合。
+    分节口径（2026-09-15 同步）：卡片画 终选参考 → v1 池选 → 沪深飙升·极有可能大涨，
+    与终端 render_terminal 的区块一一对应。同期按用户决策移除三个区块：**决策层**（整体删除）、
+    **v2 池选** 与 **核心方向低吸**（隐藏）。**回马枪（comeback）两处都没有展示区**
+    （ca91d21 起移除，见 docs/CORE-FLOW.md §十-1），故它既不是分节门控、也不进
+    `_view_symbols` 去重集合。
+
+    ⚠ 本函数的**区块条件**（哪些节画得出来）是 `view_has_content` 的对齐基准：
+    两边必须逐条等价，否则会出现「有内容却不推」或「推一张空卡」。
+    注意不要把「画得出」与「参与去重」混为一谈 —— 飙升区画得出但不参与去重（见 `_view_symbols`）。
 
     top_n 默认 FEISHU_TOP_N，与 _view_symbols 共用同一常量，去重集合与展示条数永不同源漂移。
     """
@@ -308,9 +388,25 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
         _row_line(row.entry, view, rank=row.rank, accum=row.accum, score=_to_score(row.score)) for row in main
     ]
     if pool_lines:
-        sections.append(("◆ v1 池选", pool_lines))
+        # 美感标记分档图例（2026-09-15，与终端 render_terminal 同源）：仅在确有标记时追加
+        # 一行 —— ★ 必须就地解释成「回撤更小」，否则最自然的误读是「更可能大涨」，
+        # 而数据不支持（美★ 与 美 的 next_day hit 无区分度）。
+        _marks = getattr(view, "beauty_mark", None) or {}
+        _legend = ["", ""] if any(_marks.values()) else []
+        sections.append(("◆ v1 池选", pool_lines + _legend))
     # 「◆ v2 池选」与「◆ 核心方向低吸」两个分节已于 2026-09-14 按用户决策隐藏
     # （与终端 render_terminal 同步移除）。需复原见 git 历史。
+
+    # ── 沪深飙升·极有可能大涨 独立区（与终端 _render_hot_watch_region 同源）──
+    hot_rows = getattr(view, "hot_rows", None)
+    if hot_rows:
+        hot_lines = [_fmt_hot_row_feishu(c, i) for i, c in enumerate(hot_rows, 1)]
+        hot_footer = (
+            f"排序=评分(排名上升35/涨幅25/价格15/量能25) | "
+            f"已剔除涨停·涨幅>{HOT_MAX_PERCENT:.0f}%·市值>{HOT_MAX_MARKET_CAP / 1e8:.0f}亿·ST·非创业板 | "
+            f"连击≥{HOT_HIGHLIGHT_STREAK}轮标★"
+        )
+        sections.append(("◆ 沪深飙升 · 极有可能大涨", hot_lines + ["", hot_footer]))
 
     rendered = False
     for title, lines in sections:
@@ -358,25 +454,66 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
 
 
 def _view_symbols(view: ScanView) -> set[str]:
-    """推送去重用的票集合 == 卡片实际展示的票（严格对齐 build_feishu_card 的分节门控）。
+    """推送**去重键**：卡片里「内容稳定」的那部分票集 == main_rows[:FEISHU_TOP_N]。
 
     取自 main_rows[:FEISHU_TOP_N]（与 build_feishu_card 的分节门控同源），避免
     「卡片推了但去重没算到」的双处硬编码 drift；两者共用 FEISHU_TOP_N，改一处即两处同时生效。
 
-    ⚠ 去重集合的语义是「卡片推了什么」，就该只含卡片画得出的票。故本函数必须与
-    build_feishu_card 同步收缩：
+    ⚠ 本函数只回答「内容变没变」，**不回答「有没有内容」** —— 后者是 view_has_content。
+    故凡是「卡片画得出、但变动频率与主线不同量级」的区块，必须与 build_feishu_card
+    同步**排除**；否则 should_push 会把「卡片画不出的票变了」判成票集变化，
+    每轮都返回 ok，把 FEISHU_MIN_INTERVAL 直接击穿（should_push 只在「票集未变」时查冷却）。
 
     2026-09-14：**移除 comeback 分支**（原先按 view.show_comeback 并入
     view.comeback_rows）。回马枪自 ca91d21（2026-09-02）起终端与卡片两处展示区均已
-    移除（见 docs/CORE-FLOW.md §十-1），把它算进去会让「仅回马枪票变化」被
-    should_push 判成票集变化而触发一次内容毫无回马枪的推送（受 FEISHU_MIN_INTERVAL
-    节流）。
+    移除（见 docs/CORE-FLOW.md §十-1），把它算进去会让「仅回马枪票变化」触发一次
+    内容毫无回马枪的推送。
 
     2026-09-14（同日第二批）：**移除 pool_rows 与 core_dip 两分支** —— v2 池选与
-    核心方向低吸两个展示区按用户决策隐藏，卡片不再画这两节。若仍把它们计入，
-    同样会因「卡片画不出的票变了」而多发一张内容不变的卡片（纯噪音推送）。
+    核心方向低吸两个展示区按用户决策隐藏，卡片不再画这两节。
+
+    2026-09-15：**刻意不并入 hot_rows（飙升区）**。飙升区的涨幅/排名/量比是**分钟级**
+    刷新，且榜单本身每轮都可能换人 ⇒ 若计入，`symbols != state.last_symbols` 几乎每轮
+    成立 ⇒ should_push 绕过冷却、每轮（60s）推一张，把节流打回 5min 的 1/5。
+    飙升区因此只参与 view_has_content（决定「空池要不要推」），不参与去重（决定
+    「多久推一次」）—— 二者是两件事，见 should_push 的入参说明。
     """
     return {row.entry["symbol"] for row in view.main_rows[:FEISHU_TOP_N]}
+
+
+def view_has_content(view: ScanView) -> bool:
+    """卡片此刻**是否画得出任何区块**（判「空卡片」的唯一判据）。
+
+    必须与 build_feishu_card 的区块条件逐条对齐，否则会出现「明明有内容却不推」
+    （本函数漏判）或「推了一张空卡」（本函数多判）。当前三个来源：
+      1. view.final_pick_lines        —— 终选参考节（最先渲染，独立于 main_rows）；
+      2. view.main_rows[:FEISHU_TOP_N] —— v1 池选节；
+      3. view.hot_rows                —— 沪深飙升独立区。
+    公开（非 `_` 前缀）是刻意的：它是「有没有内容」的**跨模块单源**，
+    除 should_push 外还被 unified_scanner 的「推送跳过」提示复用（此前那里自持
+    一份 `bool(view.main_rows)`，不认第 1、3 条）。
+
+    2026-09-15 修：此前只等价于第 2 条 —— 于 `should_push` 里表现为「票集空 ⇒ empty ⇒
+    整卡不推」，而终端在**同一份 view 上**照画。实测（真实 scanner.db，把展示层资金流出
+    硬门置为全剔）该场景可复现且非假设：
+        main_rows=0 / final_pick_lines=3 / hot_rows=1 / flow_filtered=70
+        终端画出「终选参考 + 飙升区」，卡片分节同样是这两节；
+        `_view_symbols`=∅ 但本函数=True；旧门判 empty（整卡不推），新门判 ok。
+    ⚠ 边界（别把结论说满）：`build_scan_view` 在 `today_recs` 为空时**先返回 None**，
+    此时 `display_priority` 直接返回、终端也不画飙升区 —— 两出口是**一致**的（都没输出）。
+    所以本函数的修复针对的是「有推荐但被展示层门剔除（资金流出硬门 / 减仓标签 / 不追涨）」
+    这一类空池，不是「今日完全无推荐」。
+    遗留（未动，需另行决策）：`view is None` 时 `run_hot_watch` 已算出的飙升区被静默丢弃
+    （每轮白算 3~5s，两出口都看不到）—— 属 `display_priority` 的提前返回语义，改动会变更
+    终端与推送行为，故留作独立议题。
+
+    getattr 兜底：轻量 view 桩（测试/回放）可能只实现部分字段，缺字段按「该区块为空」处理。
+    """
+    if getattr(view, "final_pick_lines", None):
+        return True
+    if view.main_rows[:FEISHU_TOP_N]:
+        return True
+    return bool(getattr(view, "hot_rows", None))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -426,7 +563,9 @@ def push_feishu(
 
     now = time.time()
     current_symbols = _view_symbols(view)
-    decision = should_push(state, current_symbols, now)
+    # has_content 与 symbols 是两个问题：前者「卡片有没有东西可画」（决定空卡片是否推），
+    # 后者「内容变了没」（决定多久推一次）。飙升区只参与前者，见 _view_symbols 的成因说明。
+    decision = should_push(state, current_symbols, now, has_content=view_has_content(view))
     if not decision.push:
         return False
 

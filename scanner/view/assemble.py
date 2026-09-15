@@ -39,7 +39,8 @@ from scanner.ranking import (
     is_nextday_marked,
 )
 
-# 走势美感标记判定单源（与美感门同源；相对导入绕开 pyright 会话冻结快照的绝对名解析）
+# 走势美感标记判定单源在 scanner.trend_beauty（日线定准入、分时定级别）——经下方
+# `from scanner.view.model import *` 带入 _beauty_mark_for，本模块不重复持有判定逻辑。
 from scanner.utils import EXTERNAL_FAILURES, to_float
 from scanner.view.model import *  # noqa: F401,F403
 
@@ -303,11 +304,11 @@ def build_scan_view(
         for e in main_recs
     }
 
-    # 走势美感标记（2026-09-09，✓/⚠）：与美感门同一判定单源（trend_beauty），
+    # 走势美感标记（2026-09-09 上线 / 2026-09-15 分档）：判定单源 trend_beauty.beauty_mark，
     # 纯展示预判「这票的走势口径」（硬拦降级后仅作买入体验参考），不改过滤/排序/落库。
     # 仅 v1/v2 池选行渲染；回马枪/核心低吸区不标（日线门与低位类语义冲突）。
     # 批量取 K 线防 N+1；RTS_TREND_MARK=0 时标记整体为空。
-    beauty_mark: dict[tuple[str, str], str] = {}  # (symbol, category) → "✓走势"/"⚠走势"
+    beauty_mark: dict[tuple[str, str], str] = {}  # (symbol, category) → "" / "美" / "美★"
     if TREND_MARK_ENABLED:
         _beauty_entries = main_recs + pool_pick_recs
         _beauty_klines = get_cached_klines(conn, sorted({e["symbol"] for e in _beauty_entries}))

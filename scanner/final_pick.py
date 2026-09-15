@@ -233,7 +233,7 @@ def build_final_picks(
     # 辨识度批量预计算（pool 级一次，fail-open 空 map = 因子跳过）
     prom_map = _prominence_map_safe(conn, [e["symbol"] for e in deduped])
     # 走势美感门日线数据批量预取（pool 级一次，daily_kline DB 缓存离线无网络；
-    # 表缺失/查询失败 → 空 map，按缺失放行。硬拦关但展示标记开时仍需预取供「美」标记）
+    # 表缺失/查询失败 → 空 map，按缺失放行。硬拦关但展示标记开时仍需预取供「美」/「美★」标记）
     kline_map: dict[str, list[Any] | None] = {}
     if FINAL_PICK_BEAUTY_ENABLED or TREND_MARK_ENABLED:
         kline_map = _daily_klines_safe(conn, [e["symbol"] for e in deduped])
@@ -269,7 +269,8 @@ def build_final_picks(
         # 2026-09-14 前 momentum 因「永禁」被豁免，现无类别豁免规则。
         # None = 漂亮或数据缺失（fail-open 放行，见 trend_beauty）。
         v["_beauty_fail"] = _beauty_gate(kline_map, sym, e, fc) if FINAL_PICK_BEAUTY_ENABLED else None
-        # 「美」标记（纯展示，与硬拦独立）：满足美感才标，不标丑（trend_beauty 单源）
+        # 「美」标记（纯展示，与硬拦独立，2026-09-15 分档）：日线漂亮才标，分时定级别
+        # （分时走弱/缺失 → "美"，分时亦漂亮 → "美★"），不标丑（trend_beauty 单源）
         v["_beauty_mark"] = beauty_mark(e, kline_map.get(sym), fc) if TREND_MARK_ENABLED else ""
         all_v.append(v)
     result["pool_size"] = len(all_v)
@@ -332,8 +333,8 @@ def render_final_pick_lines(result: dict[str, Any]) -> list[str]:
         blocked = result.get("beauty_blocked", 0)
         gate_s = f" · 走势美感门拦{blocked}只" if blocked else " · 走势美感门:开"
     else:
-        # 2026-09-09 数据裁决后硬拦默认关；美感词表降级为展示（v1/v2 行尾「美」标记）
-        gate_s = " · 走势美感门:关（「美」仅为展示参考）" if TREND_MARK_ENABLED else ""
+        # 2026-09-09 数据裁决后硬拦默认关；美感词表降级为展示（池选行尾「美」/「美★」标记）
+        gate_s = " · 走势美感门:关（「美/美★」仅为展示参考）" if TREND_MARK_ENABLED else ""
     lines.append(f"  合格池 {pool_size} 只 · P=排序估计非保证（全池基准 {BASE_RATE_DEFAULT:.1%}）{gate_s}")
     if not picks:
         lines.append("  — 合池无合格标的（全部被追涨门/减仓标签/走势美感门/评级过滤）")

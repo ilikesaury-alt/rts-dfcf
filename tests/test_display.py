@@ -1126,11 +1126,11 @@ def test_feishu_card_matches_terminal_selection(capsys):
     )
 
 
-# ── 走势美感标记（2026-09-09，满足美感标「美」，不标丑）──
+# ── 走势美感标记（2026-09-15 分档：日线定准入、分时定级别 → ""/"美"/"美★"）──
 
 
 def test_beauty_mark_for_verdicts():
-    """日线漂亮+分时强 → 美；丑 → 不标；双缺失 → 不标（避免误导）。"""
+    """日线漂亮+分时确认漂亮 → 美★；分时走弱/缺失 → 只降档到「美」；日线缺失 → 不标。"""
     from datetime import timedelta
     from types import SimpleNamespace
 
@@ -1168,14 +1168,41 @@ def test_beauty_mark_for_verdicts():
 
     entry: dict = {"symbol": "SZ300001", "category": "pool_pick"}
     entry["_candidate"] = cand(5.0)
-    assert _beauty_mark_for(entry, bars) == "美"
-    assert _beauty_mark_for(entry, None) == "美"  # 日线缺失但分时可判且过
+    assert _beauty_mark_for(entry, bars) == "美★"  # 日线+分时双维度确认
+    assert _beauty_mark_for(entry, None) == ""  # 日线是准入：日线缺失不标
 
     entry_bad = {"symbol": "SZ300001", "category": "pool_pick", "_candidate": cand(-2.0)}
-    assert _beauty_mark_for(entry_bad, bars) == ""  # 只标美不标丑
+    assert _beauty_mark_for(entry_bad, bars) == "美"  # 日线好、分时差 → 降档不淘汰
 
-    naked = {"symbol": "SZ300001", "category": "pool_pick"}  # 无候选无分时维度
-    assert _beauty_mark_for(naked, None) == ""
+    bare = {"symbol": "SZ300001", "category": "pool_pick"}  # 无候选无分时维度 = 缺失
+    assert _beauty_mark_for(bare, bars) == "美"  # fail-open 只降档
+    assert _beauty_mark_for(bare, None) == ""  # 日线也缺 → 不标
+
+
+def test_beauty_tier_legend_printed_on_both_surfaces(capsys):
+    """★ 必须在终端与飞书**两端**就地解释为「回撤更小」——否则最自然的误读是「更易大涨」。
+
+    两端各写一份图例，是「同源」契约的已知薄弱点，故对两个出口同时断言；
+    且仅在确有标记时打印（无标记不留空白行）。
+    """
+    from scanner.feishu import build_feishu_card
+
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "股1", "momentum", 70)
+    view = disp_mod.build_scan_view(conn, today_pool={})
+    assert view is not None
+
+    disp_mod.render_terminal(view)
+    assert "回撤" not in capsys.readouterr().out  # 无标记 → 不打图例
+    assert "回撤" not in str(build_feishu_card(view, gem_total=100))
+
+    view.beauty_mark = {("SZ300001", "momentum"): "美★"}
+    disp_mod.render_terminal(view)
+    terminal_out = capsys.readouterr().out
+    card_text = str(build_feishu_card(view, gem_total=100))
+    for surface in (terminal_out, card_text):
+        assert "美★" in surface, f"标记缺失：{surface[:200]}"
+        assert "回撤" in surface, f"图例未解释 ★ 的语义（应为「回撤更小」）：{surface[:200]}"
 
 
 def test_beauty_mark_disabled_when_gate_off(monkeypatch):

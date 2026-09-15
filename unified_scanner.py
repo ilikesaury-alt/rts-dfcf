@@ -45,7 +45,7 @@ from scanner.database import (
     save_recommendations,
 )
 from scanner.display import display
-from scanner.feishu import push_feishu
+from scanner.feishu import push_feishu, view_has_content
 from scanner.hot_watch import run_hot_watch
 from scanner.log_utils import log_results
 from scanner.models import RecommendationRow
@@ -487,10 +487,12 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 log_results(new_faces + pool_picks, momentum + rebound_list + short_term_list + comeback_list)
                 if not no_feishu:
                     pushed = push_feishu(view, len(all_gem), filtered_large_cap=filtered_large_cap)
-                    # has_rows：仅统计**仍在展示**的区块。2026-09-14 移除 pool_rows /
-                    # core_dip_rows（v2 与核心低吸展示区已隐藏）——若继续计入，会出现
-                    # 「卡片其实什么都没画却判定有内容」的误判（与 _view_symbols 同源口径）。
-                    has_rows = view is not None and bool(view.main_rows)
+                    # 「有没有内容」的唯一判据 = feishu.view_has_content（与 build_feishu_card 的
+                    # 区块条件同源）。2026-09-15 收口：此前本处自持一份 `bool(view.main_rows)`，
+                    # 既不认终选参考区、也不认飙升区 —— 与卡片实际画了什么无关，属第三处定义。
+                    # 注意与「去重键」`_view_symbols`（只含主线票）不是同一个问题：
+                    # 推送判定用前者、节流判定用后者，详见 scanner/feishu.py 的 should_push。
+                    has_rows = view is not None and view_has_content(view)
                     if not pushed and has_rows:
                         print("\r  📤 飞书推送跳过（冷却中/无变化）", end="", flush=True)
 

@@ -25,6 +25,29 @@ intraday_score（-10~10：>0 平稳走高/高位不回落，<0 冲高回落/走�
   注意：Candidate.intraday_score 默认 0.0 且无法与「真实评了 0 分」区分，
   而 0.0 实际 overwhelmingly 是「未评分」（开盘前/无分时数据/AKShare 源），
   故 0.0 按缺失处理 fail-open；只有明确非 0 分才判定。
+
+展示标记分级（beauty_mark，2026-09-15 定稿）：**日线定准入、分时定级别**——
+  日线不漂亮 / 日线不足        → ""（不标）
+  日线漂亮，分时未确认漂亮      → "美"   （分时走弱 **或** 分时缺失，一律归此档）
+  日线漂亮，分时亦漂亮          → "美★"
+分时在这里是**分级维度**，不是准入硬门；硬门（FINAL_PICK_BEAUTY_ENABLED）仍按
+「日线 ∧ 分时」双维度判，两者有意不同源（标记比门宽，默认门关，见 config_sources）。
+
+数据依据（2026-09-15，n=(date,symbol) 去重 2429 / hit=次日≥7% / 分时缺失 24.6%）：
+旧口径「日线∧分时」标记率仅 **1.8%**（44 只），等于常年空白 —— 归因 **对半**：
+去掉分时的 AND 结构回收约一半，`INTRADAY_BEAUTY_MIN=2.5` 恰好压在 intraday_score 的
+p90（可判定样本通过率 12%）再砍掉约 2/3。故只调阈值上限仅 4.0%，达不到分级后的 7.0%。
+另旧口径有语义缺陷：`determined` 是 OR，44 只里有 **14 只（32%）是「日线不足 + 分时美」**
+—— 日线完全无法判定却被标「美」；分级后要求日线可判定，该缺陷消失。
+
+分档实测（覆盖率 / hit / avg / 尾部≤-7%）：
+  美★  0.7%（17）  hit 5.9%  avg -0.14%  尾部 0.0%
+  美   6.3%（154） hit 5.2%  avg -0.67%  尾部 7.8%
+  未标记 93.0%（2258）hit 7.1%  avg -0.38%  尾部 7.4%
+⇒ **★ 表示「回撤更小」，不是「更可能大涨」**：两档 hit 都低于基线（7.1%），彼此无
+正向区分度；差别只在尾部（美★ ≤-5%/≤-7% = 5.9%/0.0%，美 = 9.7%/7.8%）。★ 的
+n=17 是**极小样本**（脚本就此告警：单只 ≤-7% 即把该比率推到 5.9%），且它的
+≤-5% 优势在「美」档就已大部分拿到。复现：`python scripts/beauty_mark_eval.py`。
 """
 
 from __future__ import annotations
@@ -49,20 +72,27 @@ INTRADAY_MISSING = "分时缺失"
 
 # 满足美感的行尾标记（2026-09-09 用户口径：只标「美」，不标丑）
 BEAUTY_MARK = "美"
+# 强档标记（2026-09-15 分级）：日线漂亮 **且** 分时亦漂亮。
+# ★ 的语义是「尾部回撤更小」（买入体验），**不是**「更可能大涨」——
+# 见模块 docstring 的分档数据与 scripts/beauty_mark_eval.py 复现。
+BEAUTY_MARK_STRONG = "美★"
 
 
 def beauty_mark(entry: Any, kline: list[Any] | None, candidate: Any = None) -> str:
-    """走势标记（纯展示单源）：满足美感 → "美"；否则空串（不标丑）。
+    """走势标记（纯展示单源，2026-09-15 分级）：日线定准入、分时定级别。
 
-    「满足」= 日线/分时无任一可判定的丑，且至少一个维度可判定（全缺失不标，
-    避免误导）。fail-open 语义与硬门一致：数据缺失不加分也不标丑。
+    日线不漂亮 / 日线不足 → ""；日线漂亮但分时未确认漂亮（走弱或缺失）→ "美"；
+    日线漂亮且分时亦漂亮 → "美★"。fail-open 语义不变：数据缺失不判否、只降档。
+    判定单源：日线用 evaluate_daily_trend（与 hot_watch 美感门同源），
+    分时用 evaluate_intraday_beauty（0.0 视为未评分 → 缺失 → 归「美」档）。
     """
     daily_fail, _score, daily_detail = evaluate_daily_trend(kline)
-    intraday_fail, intraday_detail = evaluate_intraday_beauty(entry, candidate)
-    if daily_fail or intraday_fail:
+    if daily_fail or daily_detail == DAILY_INSUFFICIENT:
         return ""
-    determined = any(d not in (DAILY_INSUFFICIENT, INTRADAY_MISSING) for d in (daily_detail, intraday_detail))
-    return BEAUTY_MARK if determined else ""
+    intraday_fail, intraday_detail = evaluate_intraday_beauty(entry, candidate)
+    # ★ 要求分时**确认**漂亮：缺失是 fail-open（不判否）但也不加分，只降档到「美」。
+    strong = intraday_fail is None and intraday_detail != INTRADAY_MISSING
+    return BEAUTY_MARK_STRONG if strong else BEAUTY_MARK
 
 
 def evaluate_daily_trend(kline: list[Any] | None) -> tuple[str | None, int, str]:

@@ -2,6 +2,7 @@
 
 日线 6 硬门：MA 多头 / 趋势向上 / 无暴跌 / 回调可控 / 无长上影 / 未破位；
 分时：intraday_score ≥ INTRADAY_BEAUTY_MIN，0.0 视为缺失 fail-open。
+展示标记分档（2026-09-15）：日线定准入、分时定级别 → ""/"美"/"美★"。
 API 口径：返回「丑的理由 | None」，None = 漂亮或无法判定（detail 区分）。
 """
 
@@ -144,13 +145,51 @@ def test_intraday_missing_when_no_candidate_no_dims():
     assert fail is None and detail == INTRADAY_MISSING
 
 
-# ── beauty_mark（纯展示单源：只标美不标丑）──
+# ── beauty_mark（纯展示单源：分档 ""/"美"/"美★"，不标丑）──
+# 分档口径（2026-09-15）：日线定准入、分时定级别 —— 日线不漂亮/不足 → ""；
+# 日线漂亮而分时未确认（走弱或缺失）→ "美"；日线漂亮且分时**确认**漂亮 → "美★"。
+# 缺失只降档、不判否（fail-open）；分时 0.0 = 未评分 = 缺失（见 evaluate_intraday_beauty）。
 
 
-def test_beauty_mark_pass_shows_me():
+def test_beauty_mark_daily_and_intraday_both_beautiful_is_strong():
+    from scanner.trend_beauty import BEAUTY_MARK_STRONG, beauty_mark
+
+    assert beauty_mark({}, _kline(), SimpleNamespace(intraday_score=5.0)) == BEAUTY_MARK_STRONG == "美★"
+
+
+def test_beauty_mark_daily_ok_intraday_weak_is_base_tier():
+    """日线漂亮但分时走弱 → 降档到「美」（不是空串、也不是「美★」）。"""
+    from scanner.trend_beauty import BEAUTY_MARK, BEAUTY_MARK_STRONG, beauty_mark
+
+    assert beauty_mark({}, _kline(), SimpleNamespace(intraday_score=-3.0)) == BEAUTY_MARK
+    # 阈值边界：正分但 < INTRADAY_BEAUTY_MIN 同样只给基础档
+    assert beauty_mark({}, _kline(), SimpleNamespace(intraday_score=INTRADAY_BEAUTY_MIN - 1)) == BEAUTY_MARK
+    assert beauty_mark({}, _kline(), SimpleNamespace(intraday_score=INTRADAY_BEAUTY_MIN)) == BEAUTY_MARK_STRONG
+
+
+def test_beauty_mark_intraday_missing_downgrades_not_disqualifies():
+    """分时缺失（0.0 / 无候选无 dims）：fail-open 只降档到「美」，不判否。"""
     from scanner.trend_beauty import BEAUTY_MARK, beauty_mark
 
-    assert beauty_mark({}, _kline(), SimpleNamespace(intraday_score=5.0)) == BEAUTY_MARK == "美"
+    assert beauty_mark({}, _kline(), SimpleNamespace(intraday_score=0.0)) == BEAUTY_MARK
+    assert beauty_mark({}, _kline(), None) == BEAUTY_MARK
+
+
+def test_beauty_mark_daily_fail_never_marked_even_with_strong_intraday():
+    """日线是准入：日线不漂亮 → 空串，分时再漂亮也不标（旧口径的 OR 缺陷已消除）。"""
+    from scanner.trend_beauty import beauty_mark
+
+    assert beauty_mark({}, _kline(step=-0.01), SimpleNamespace(intraday_score=9.0)) == ""
+
+
+def test_beauty_mark_entry_dims_fallback_reaches_strong_tier():
+    """无实时候选 → 回退 score_breakdown dims，同样能判到「美★」。"""
+    from scanner.trend_beauty import BEAUTY_MARK, BEAUTY_MARK_STRONG, beauty_mark
+
+    strong = {"score_breakdown": {"intraday_score": INTRADAY_BEAUTY_MIN + 1}}
+    assert beauty_mark(strong, _kline()) == BEAUTY_MARK_STRONG
+    weak = {"score_breakdown": {"intraday_score": -1.5}}
+    assert beauty_mark(weak, _kline()) == BEAUTY_MARK
 
 
 def test_beauty_mark_ugly_not_marked():
