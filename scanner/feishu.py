@@ -16,6 +16,7 @@ config.py）。依赖方向收紧为：feishu → display(数据契约 ScanView)
 散落 global；_view_symbols 与 build_feishu_card 共用 FEISHU_TOP_N，门控与去重不再双处硬编码。
 """
 
+import hashlib
 import time
 from dataclasses import dataclass, field
 
@@ -388,11 +389,13 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
         _row_line(row.entry, view, rank=row.rank, accum=row.accum, score=_to_score(row.score)) for row in main
     ]
     if pool_lines:
-        # 美感标记分档图例（2026-09-15，与终端 render_terminal 同源）：仅在确有标记时追加
-        # 一行 —— ★ 必须就地解释成「回撤更小」，否则最自然的误读是「更可能大涨」，
-        # 而数据不支持（美★ 与 美 的 next_day hit 无区分度）。
+        # 美感标记分档图例（2026-09-15，与终端 render_terminal 的同义图例，两处须同步改，
+        # 守卫 tests/test_display.py::test_beauty_tier_legend_printed_on_both_surfaces）。
+        # ★ 必须就地解释成「回撤更小」—— 否则最自然的误读是「更可能大涨」，而数据不支持
+        # （美★ 与 美 的 next_day hit 无正向区分度，差别只在尾部回撤，见 trend_beauty docstring）。
+        # 仅在确有标记时追加，避免常年在卡片里占位。
         _marks = getattr(view, "beauty_mark", None) or {}
-        _legend = ["", ""] if any(_marks.values()) else []
+        _legend = ["", "美=日线趋势漂亮｜美★=分时亦漂亮（尾部回撤更小·非更易大涨）"] if any(_marks.values()) else []
         sections.append(("◆ v1 池选", pool_lines + _legend))
     # 「◆ v2 池选」与「◆ 核心方向低吸」两个分节已于 2026-09-14 按用户决策隐藏
     # （与终端 render_terminal 同步移除）。需复原见 git 历史。
@@ -521,20 +524,48 @@ def view_has_content(view: ScanView) -> bool:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _webhook_fingerprint() -> str:
+    """当前 webhook 的短指纹（sha256 前 8 位）：日志里只用来区分「这条记录来自哪条 webhook」。
+
+    刻意不回显 token —— token 曾泄露于 git 历史（见 config_sources 顶部注释），
+    日志不该成为新的泄露面。排查「推送到底有没有出去」时，它是第一现场证据：
+    5 天前启动的进程可能带着早已失效的端点，而日志原先只有一个 msg，看不出说的是谁。
+    """
+    if not FEISHU_WEBHOOK:
+        return "none"
+    return hashlib.sha256(FEISHU_WEBHOOK.encode()).hexdigest()[:8]
+
+
 def _post_card(card: dict) -> tuple[bool, str | None]:
     """POST 卡片到飞书 webhook。返回 (成功, 失败原因/None)。
 
     仅对连接/超时类外部故障（EXTERNAL_FAILURES）重试 1 次（退避 1s）；
     已收到飞书响应（含非 0 code）不重试——重试会重复推送两张卡片。
     编程错误（NameError/TypeError）不捕，冒泡到 unified_scanner 主循环记录完整 traceback。
+
+    2026-09-15：失败信息补全现场（原实现只留一句 msg，排查时无从区分「飞书拒绝」与
+    「根本不是飞书在回话」）。现一律带 code / http 状态 / body 片段 / webhook 指纹；
+    响应非 JSON（代理或网关的错误页）时也保留状态码与正文，而不是只剩「请求异常」。
     """
     last_err: BaseException | None = None
     for attempt in range(2):  # 首次 + 1 次退避重试
         try:
             resp = requests.post(FEISHU_WEBHOOK, json={"msg_type": "interactive", "card": card}, timeout=10)
-            result = resp.json()
+            try:
+                result = resp.json()
+            except ValueError:
+                # 非 JSON 响应：保留重试语义不变，但把「谁在回话」写进错误里。
+                last_err = ValueError(
+                    f"响应非 JSON：http={resp.status_code} hook={_webhook_fingerprint()} body={resp.text[:200]!r}"
+                )
+                if attempt == 0:
+                    time.sleep(1)
+                continue
             if result.get("code") != 0:
-                return False, f"飞书返回非 0: {result.get('msg')}"
+                return False, (
+                    f"飞书返回非 0: msg={result.get('msg')!r} code={result.get('code')!r} "
+                    f"http={resp.status_code} hook={_webhook_fingerprint()} body={resp.text[:200]}"
+                )
             return True, None
         except EXTERNAL_FAILURES as e:
             last_err = e
@@ -578,6 +609,10 @@ def push_feishu(
             return False
         state.last_time = now
         state.last_symbols = set(current_symbols)
+        # 成功也记一行（2026-09-15）：原实现只记失败，于是日志里「最后一条是 push failed」
+        # 会被误读成「推送一直坏着」（实际可能只是某次失败后早已恢复）。有 ok 记录，
+        # 「最后一次成功是什么时候」一眼可查，也能与失败的 hook 指纹对照。
+        log_event(f"push ok: {len(current_symbols)} 票 hook={_webhook_fingerprint()}")
         return True
     except EXTERNAL_FAILURES as e:
         # 2026-08-29：原为裸 except Exception——会把编程错误（NameError/TypeError）

@@ -6,11 +6,16 @@
   3. FEISHU_TOP_N 门控与去重同源（_view_symbols 与 build_feishu_card 同常量）
   4. 飙升区（hot_rows）：去重键**不含**飙升票、但参与「有内容」判据（2026-09-15 P1）
   5. 飙升行定宽：_COLS_HOT_FEISHU 每列宽度 ≥ 格式化输出上界，行宽不随数据参差（2026-09-15 P2）
+  6. 失败/成功都写日志、且写进**被隔离的**日志目录（2026-09-15 P3）
+  7. _post_card 失败信息带全现场（code / http / body / hook 指纹）
 
 注意：should_push 是纯函数，依赖模块级 FEISHU_WEBHOOK / FEISHU_MIN_INTERVAL；
 PushState 可注入，避免原 _last_push_time/_last_push_symbols 散落 global 的 monkeypatch。
+日志目录由 conftest 的 autouse fixture `_isolate_log_dir` 重定向到 tmp，
+故本文件任何用例都不可能写到生产 logs/。
 """
 
+from pathlib import Path
 from typing import Any, cast
 
 from scanner.feishu import (
@@ -161,6 +166,88 @@ def test_push_feishu_failure_does_not_update_state(monkeypatch):
     assert ok is False
     assert state.last_symbols == set()  # 未回写
     assert state.last_time == 0.0
+
+
+# ── 日志落盘：隔离 + 成功也记一行（2026-09-15 P3）──
+
+
+def test_push_feishu_logs_to_isolated_dir(monkeypatch):
+    """回归：失败只写进被隔离的 tmp 日志目录，绝不落到生产 logs/feishu_push.log。
+
+    修复前本文件用 `(False, "飞书返回非 0: xxx")` 这个**测试桩假串**模拟失败，却走真实的
+    `log_event` → 每跑一次单测就往生产 logs/feishu_push.log 追加一行假失败。那串 `xxx`
+    在飞书的真实错误码里根本不存在（真实是 19024 Key Words Not Found / 19001 token invalid …），
+    排查「推送为什么没到」时被这堆假记录带偏过。用户可见现象：日志里「今天 18 次推送失败」，
+    实际那 18 条全是 pytest 生成的。
+    """
+    import scanner.log_utils as log_utils
+
+    monkeypatch.setattr("scanner.feishu.FEISHU_WEBHOOK", "https://example.com/hook")
+    monkeypatch.setattr("scanner.feishu._post_card", lambda card: (False, "飞书返回非 0: 测试桩"))
+    assert push_feishu(_fake_view({"SZ300001"}), gem_total=10, state=PushState()) is False
+
+    monkeypatch.setattr("scanner.feishu._post_card", lambda card: (True, None))
+    assert push_feishu(_fake_view({"SZ300002"}), gem_total=10, state=PushState()) is True
+
+    text = (Path(log_utils.LOG_DIR) / "feishu_push.log").read_text(encoding="utf-8")
+    assert "push failed: 飞书返回非 0: 测试桩" in text
+    # 成功也记一行：否则「最后一条是 push failed」会被误读成「一直坏着」
+    assert "push ok:" in text
+    # 日志里不得出现 token 本身，只有指纹
+    assert "example.com/hook" not in text
+
+
+def test_post_card_failure_reports_full_context(monkeypatch):
+    """_post_card 的失败信息必须带 code / http / body / hook 指纹。
+
+    原实现只有 `飞书返回非 0: {msg}` 一句 —— 分不清「飞书明确拒绝」与「根本不是飞书在回话」
+    （代理/网关返回的 JSON 也长这样）。2026-09-15 排查推送时正是卡在这里。
+    """
+    import scanner.feishu as fh
+
+    class _Resp:
+        status_code = 200
+        text = '{"code":19024,"data":{},"msg":"Key Words Not Found"}'
+
+        def json(self):
+            return {"code": 19024, "data": {}, "msg": "Key Words Not Found"}
+
+    secret = "https://open.feishu.cn/open-apis/bot/v2/hook/2c288ae5-4468-47d0"
+    monkeypatch.setattr(fh, "FEISHU_WEBHOOK", secret)
+    monkeypatch.setattr(fh.requests, "post", lambda *a, **k: _Resp())
+
+    ok, err = fh._post_card({"elements": []})
+    assert ok is False
+    assert err is not None
+    for want in ("19024", "Key Words Not Found", "http=200", "hook="):
+        assert want in err, f"失败信息缺少 {want}：{err}"
+    assert "2c288ae5" not in err, "日志不得回显 token 本身"
+
+
+def test_post_card_non_json_response_keeps_retry_and_body(monkeypatch):
+    """响应非 JSON（代理/网关错误页）时仍重试 1 次，并保留状态码与正文片段。"""
+    import scanner.feishu as fh
+
+    class _Resp:
+        status_code = 502
+        text = "<html>502 Bad Gateway</html>"
+
+        def json(self):
+            raise ValueError("not json")
+
+    calls: list = []
+
+    def _fake_post(*a, **k):
+        calls.append(1)
+        return _Resp()
+
+    monkeypatch.setattr(fh, "FEISHU_WEBHOOK", "https://example.com/hook")
+    monkeypatch.setattr(fh.requests, "post", _fake_post)
+    monkeypatch.setattr(fh.time, "sleep", lambda s: None)
+
+    ok, err = fh._post_card({"elements": []})
+    assert ok is False and len(calls) == 2, "非 JSON 仍应退避重试 1 次（与外部故障同口径）"
+    assert err is not None and "502" in err and "Bad Gateway" in err
 
 
 # ── FEISHU_TOP_N 门控与去重同源 ──
