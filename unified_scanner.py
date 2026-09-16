@@ -15,6 +15,7 @@ import sqlite3
 import sys
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
@@ -51,6 +52,7 @@ from scanner.log_utils import log_results
 from scanner.models import RecommendationRow
 from scanner.orchestrator import scan_with_raw
 from scanner.ranking_snapshot import persist_ranking_snapshot
+from scanner.single_instance import SingleInstanceLock
 from scanner.trading_session import (
     is_trading_day,
     is_trading_time,
@@ -540,21 +542,35 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
             pass
 
 
-def main():
+def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(description="双源融合创业板飙升扫描器")
     parser.add_argument("interval", nargs="?", type=int, default=REFRESH_INTERVAL, help="刷新间隔（秒）")
     parser.add_argument("--no-feishu", action="store_true", help="禁用飞书推送")
+    parser.add_argument("--no-lock", action="store_true", help="跳过单实例锁（仅供调试，慎用）")
     args = parser.parse_args()
 
     interval = max(60, args.interval)
+
+    # 单实例守卫：拿到锁才进扫描循环。拿不到说明已有进程在写同一份 DB / CSV，
+    # 再起一个会导致重复请求数据源、重复推送，并互相抢 SQLite 写锁。
+    lock = SingleInstanceLock(Path(LOG_DIR) / "scanner.lock")
+    if not args.no_lock:
+        if not lock.acquire():
+            print(f"  ⛔ 已有扫描器实例在运行{lock.holder_description()}，本次启动退出。")
+            print("     （若是崩溃残留，锁会随进程退出由内核自动释放，无需手工删除）")
+            return 2
+        print(f"  🔒 已取得单实例锁：{lock.lock_path}（PID {os.getpid()}）")
 
     try:
         run_scanner(interval, args.no_feishu)
     except KeyboardInterrupt:
         print("\n  👋 扫描器已停止")
+    finally:
+        lock.release()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
