@@ -13,6 +13,21 @@
    percent 25 / price 15 / 量能 25），与 next_day 校准无关于是本区不做
    `--rescore` 回放、不参与 portfolio_backtest。
 
+风险门与标记（2026-09-16 统一）
+----------------------------
+「口径独立」指的是**选股口径**，不是**风险口径** —— 一个区不该因为口径不同就少几道风险门。
+故：
+- **硬门**走 `display_gates.common_hard_gate`（与 v1 池选 / v1 回捞同一实现、同一阈值源）：
+  ST / 样本面 / 状态 / 报价 / 量 / 价格(`MAX_STOCK_PRICE`) / 市值 / 资金流出
+  (`FUND_OUTFLOW_NET_PCT`)。本区在两处**收紧**（显式传参）：市值上限取
+  `HOT_MAX_MARKET_CAP`(300 亿，比主线的 500 亿更严)、样本面额外要求 exchange ∈ SH/SZ。
+  本区专有的涨跌停与涨幅带（`HOT_MIN_PERCENT`/`HOT_MAX_PERCENT`）留在 `hard_exclude`
+  本地 —— 它们需要昨收推算的涨跌停价，且「必须上涨」是本区取样定义而非风险门
+  （回捞区的取样条件方向相反）。
+- **标记**与 v1 池选 / v1 回捞同源：资金流（`fund_flow_signal` → 终端 ▲/▼、卡片 🟢/🔴）
+  与日线美感（`display_gates.beauty_marks_daily`）。因本区不抓分时，美感只有「美」一档，
+  结构上不会出现「美★」；同理资金流 ≤-8% 已被硬门剔除，图标不会出现「▼▼」。
+
 数据源与补全分工（2026-09-11 实测，勿互换）
 ------------------------------------------
 - 榜单：`hot_stock/new_list.json`（= `api.fetch_biaosheng`，同一接口同一排序键
@@ -41,7 +56,6 @@ from scanner.config import (
     HOT_DISPLAY_TOP,
     HOT_ENRICH_LIMIT,
     HOT_FUND_FLOW_FILTER_ENABLED,
-    HOT_FUND_FLOW_FILTER_THRESHOLD,
     HOT_LIMIT_DOWN_TOLERANCE,
     HOT_LIMIT_PCT_GEM,
     HOT_LIMIT_PCT_MAIN,
@@ -63,9 +77,10 @@ from scanner.config import (
     HOT_W_PRICE,
     HOT_W_RANK_CHANGE,
     HOT_W_VOLUME,
+    TREND_MARK_ENABLED,
     now_beijing,
 )
-from scanner.trend_beauty import evaluate_daily_trend
+from scanner.display_gates import beauty_marks_daily, common_hard_gate
 from scanner.utils import EXTERNAL_FAILURES, is_gem, is_st, to_float
 
 logger = logging.getLogger(__name__)
@@ -102,6 +117,17 @@ class HotCandidate:
     score: float = 0.0
     streak: int = 1
     reasons: list[str] = field(default_factory=list)
+    # ── 展示标记（2026-09-16）──
+    # 与 v1 池选 / v1 回捞**同一判定源**，本区只负责取值，成形（终端 ANSI 三角 /
+    # 卡片 emoji）留给各出口。
+    # ff_pct：主力净占比（DB 当日快照）。硬门已剔除 ≤ FUND_OUTFLOW_NET_PCT(-8%)，
+    #   故图标实际只可能落到 ▲▲/▲/▼/中性 四档，「▼▼」在本区结构上不可达。
+    # beauty：**只有日线档**（"美" / ""）。本区不抓分时数据，结构上不可能有「美★」。
+    #   注意 `HOT_BEAUTY_GATE_ENABLED` 开启（默认）时，本区**所有**通过的行都满足日线
+    #   美感 → 整列恒为「美」。这不是 bug：它回答的是「这一行确实过了日线美感门」，
+    #   把门关掉（RTS_HOT_BEAUTY_GATE=0）后标记才重新有区分度。
+    ff_pct: float | None = None
+    beauty: str = ""
 
 
 # ── 样本面与涨跌停价 ────────────────────────────────────────────────────────
@@ -153,23 +179,39 @@ def limit_prices(last_close: float, code: str) -> tuple[float, float]:
 # ── 硬性排除 ────────────────────────────────────────────────────────────────
 
 
-def hard_exclude(c: HotCandidate) -> str | None:
+def hard_exclude(c: HotCandidate, ff_pct: float | None = None) -> str | None:
     """硬性排除（必要条件，任一命中即剔除）。返回排除原因，通过返回 None。
 
-    与 rts-xueqiu 同口径，两处适配本项目：
-      - ST 判定复用 utils.is_st（项目单一事实来源，不再本地实现 is_st_name）；
-      - 涨跌停价由 last_close 推算（见 limit_prices），非接口直取。
+    分两层（2026-09-16 重构）：
+      1. **通用风险门** —— ST / 样本面 / 状态 / 报价 / 量 / 价格 / 市值 / 资金流出，
+         走 `display_gates.common_hard_gate`，与 v1 池选、v1 回捞**同一实现、同一阈值源**。
+         市值上限显式收紧到 `HOT_MAX_MARKET_CAP`(300 亿)：比主线的 500 亿更严，
+         「大盘股弹性不足」是本区自有口径（允许收紧，不允许放宽）。
+         资金流出只在 `HOT_FUND_FLOW_FILTER_ENABLED` 打开时才有值可用（由调用方
+         决定传不传 ff_pct），关掉开关即恢复「本区不做资金流门」的历史行为。
+      2. **本区专有门** —— 涨跌停位置与涨幅带。它们需要由昨收推算的涨跌停价
+         （只有本区拿得到 last_close），且「必须处于上涨状态」是本区的**取样定义**
+         而非风险门（回捞区的取样条件方向相反），故不并入通用层。
+
+    ff_pct 缺省 None = 本区当前不做资金流门（开关关闭 / 无数据）。
     """
-    if is_st(c.name):
-        return "ST/退市风险股"
+    reason = common_hard_gate(
+        name=c.name,
+        code=c.code,
+        current=c.current,
+        market_cap=c.market_capital,
+        volume=c.volume,
+        status=c.status,
+        ff_pct=ff_pct,
+        max_market_cap=HOT_MAX_MARKET_CAP,
+    )
+    if reason:
+        return reason
+    # ── 本区专有（含两处**收紧**，见上）──
+    # 样本面：通用门只按代码前缀判定（is_gem），本区还要拒掉榜单里混入的港股/外板行
+    # （exchange 非 SH/SZ）——这是收紧，与 `prefilter_board` 的白名单同一实现。
     if not is_hot_universe(c.exchange, c.code):
-        return "非创业板个股(沪深主板/科创板/ETF/北交所/港股等)"
-    if c.status != 1:
-        return f"非正常交易状态(status={c.status})"
-    if c.current <= 0:
-        return "无有效报价"
-    if c.volume <= 0:
-        return "无成交量(停牌或未成交)"
+        return "非创业板个股(非沪深交易所)"
     if c.limit_down > 0 and c.current <= c.limit_down * HOT_LIMIT_DOWN_TOLERANCE:
         return "已触及跌停"
     if c.percent <= HOT_MIN_PERCENT:
@@ -178,8 +220,6 @@ def hard_exclude(c: HotCandidate) -> str | None:
         return f"已封涨停({c.percent:.2f}%), 追高性价比低"
     if c.percent > HOT_MAX_PERCENT:
         return f"涨幅过高({c.percent:.2f}%>{HOT_MAX_PERCENT:.0f}%)"
-    if c.market_capital > 0 and c.market_capital > HOT_MAX_MARKET_CAP:
-        return f"市值过大({c.market_capital / 1e8:.0f}亿>{HOT_MAX_MARKET_CAP / 1e8:.0f}亿)"
     return None
 
 
@@ -335,20 +375,28 @@ def build_candidates(
     """合并榜单 + 补全行情 → 通过硬排除的候选（已按评分降序）。
 
     返回 (通过候选, 被排除候选)。被排除者仅用于调试/日志，不落库。
-    conn: 数据库连接，用于美感门/资金流过滤获取数据（可选，None 时跳过）。
+    conn: 数据库连接，用于美感门/美感标记（K 线）与资金流过滤/标记取数
+    （可选，None 时两样都跳过 —— 离线自检路径）。
+
+    「门」与「标记」是两个开关，刻意解耦：
+      - 门（是否剔除）：美感门 = HOT_BEAUTY_GATE_ENABLED、资金流门 = HOT_FUND_FLOW_FILTER_ENABLED；
+      - 标记（画不画）：美感 = 全局 TREND_MARK_ENABLED、资金流 = 有数据就画。
+    即关掉门不等于关掉标记：关掉资金流门后，净流出的票仍在结果里、但行尾会带 ▼/🔴，
+    这正是「风险可见」该有的样子（门是策略，标记是告知）。
     """
     from scanner.db.queries import get_cached_klines, get_fund_flow_pct_map
 
     passed: list[HotCandidate] = []
     rejected: list[HotCandidate] = []
 
-    # 预批量获取 K 线数据（美感门开启时）和资金流数据（资金流过滤开启时）
+    # 预批量取数：K 线供美感门/美感标记（门或标记任一开启就需要），
+    # 资金流供资金流门/**标记**（只画不拦时也需要），均 1 次查询。
     klines_map: dict = {}
     flow_pct_map: dict[str, float] = {}
     symbols = [str(it.get("symbol") or "") for it in board_items if it.get("symbol")]
-    if HOT_BEAUTY_GATE_ENABLED and conn is not None:
+    if (HOT_BEAUTY_GATE_ENABLED or TREND_MARK_ENABLED) and conn is not None:
         klines_map = get_cached_klines(conn, symbols)
-    if HOT_FUND_FLOW_FILTER_ENABLED and conn is not None:
+    if conn is not None:
         flow_pct_map = get_fund_flow_pct_map(conn, symbols)
 
     for idx, it in enumerate(board_items, 1):
@@ -377,27 +425,28 @@ def build_candidates(
             limit_up=limit_up,
             limit_down=limit_down,
         )
-        reason = hard_exclude(c)
+        # 资金流出：**门在通用门里**（2026-09-16 由原先此处那段
+        # `ff_pct <= HOT_FUND_FLOW_FILTER_THRESHOLD` 独立判定并入，阈值仍派生自
+        # FUND_OUTFLOW_NET_PCT 单一来源）；**标记**则一律取数，不受开关影响。
+        # 关掉门（HOT_FUND_FLOW_FILTER_ENABLED=0）后，净流出的票仍在结果里、
+        # 但行尾带 ▼ —— 门是策略，标记是告知，两者刻意分开。
+        ff_pct = flow_pct_map.get(symbol)
+        c.ff_pct = ff_pct
+        reason = hard_exclude(c, ff_pct if HOT_FUND_FLOW_FILTER_ENABLED else None)
         if reason:
             rejected.append(c)
             continue
 
-        # 美感门过滤（2026-09-14）：日线走势不漂亮 → 排除
-        if HOT_BEAUTY_GATE_ENABLED and conn is not None:
-            kline = klines_map.get(symbol)
-            daily_fail, _score, daily_detail = evaluate_daily_trend(kline)
-            if daily_fail:
-                c.reasons = [f"美感门: {daily_detail}"]
-                rejected.append(c)
-                continue
-
-        # 资金流过滤（2026-09-14）：主力净流出占比 ≤ 阈值 → 排除
-        if HOT_FUND_FLOW_FILTER_ENABLED:
-            ff_pct = flow_pct_map.get(symbol)
-            if ff_pct is not None and ff_pct <= HOT_FUND_FLOW_FILTER_THRESHOLD:
-                c.reasons = [f"资金流出: 主力净占比{ff_pct:.1f}%"]
-                rejected.append(c)
-                continue
+        # 美感门 + 美感标记（2026-09-16）：**同一次判定**同时供给门与标记
+        # （display_gates.beauty_marks_daily），故不存在「门放行却不标美」的错位。
+        # 门 = 本区自有开关（HOT_BEAUTY_GATE_ENABLED）；标记 = 全局开关
+        # TREND_MARK_ENABLED（与 v1 池选/回捞同一语义：全局关掉即整仓不标）。
+        blocked, mark, detail = beauty_marks_daily(klines_map.get(symbol) if conn is not None else None)
+        if HOT_BEAUTY_GATE_ENABLED and blocked:
+            c.reasons = [f"美感门: {detail}"]
+            rejected.append(c)
+            continue
+        c.beauty = mark if TREND_MARK_ENABLED else ""
 
         c.score = compute_score(c)
         c.reasons = build_reasons(c)
@@ -668,7 +717,16 @@ _DEMO_CASES = [
     # —— 创业板样本，覆盖其他排除分支 ——
     ("非正常交易状态", _demo_case("SZ300999", "300999", "停牌测试", "SZ", 20.0, 3.0, 19.0, 5e9, status=0, rc=500)),
     ("非上涨", _demo_case("SZ300888", "300888", "下跌测试", "SZ", 18.0, -2.0, 19.0, 5e9, rc=500)),
-    ("市值过大", _demo_case("SZ300750", "300750", "宁德时代", "SZ", 250.0, 3.0, 240.0, 5e11, rc=500)),
+    # 通用门的两条基础分支（2026-09-16 补样本）：此前 _DEMO_CASES 从未覆盖它们，
+    # 而它们现在由 display_gates.common_hard_gate 统一施加 —— 补上才算真覆盖。
+    ("无有效报价", _demo_case("SZ300777", "300777", "无报价测试", "SZ", 0.0, 1.0, 15.0, 5e9, rc=500)),
+    ("无成交量", _demo_case("SZ300666", "300666", "无成交测试", "SZ", 15.0, 2.0, 14.7, 5e9, vol=0, rc=500)),
+    # 现价须 < MAX_STOCK_PRICE(200)：2026-09-16 通用门把价格门排在市值门之前，
+    # 若样本同时超价又超市值，报的是「价格过高」而非本行的「市值过大」，
+    # 这条样本就覆盖不到市值分支了（下方 covers_every_exclusion_branch 会红）。
+    ("市值过大", _demo_case("SZ300750", "300750", "宁德时代", "SZ", 180.0, 3.0, 175.0, 5e11, rc=500)),
+    # 价格门（2026-09-16 新增到本区，此前本区无价格上限）：>200 元 → 剔除
+    ("价格过高", _demo_case("SZ301589", "301589", "诺泰生物", "SZ", 210.0, 3.0, 205.0, 1.5e10, rc=500)),
 ]
 
 
@@ -734,6 +792,8 @@ def _rows_to_json(rows) -> str:
                 "market_cap_yi": round(c.market_capital / 1e8, 2),
                 "score": round(c.score, 2),
                 "streak": c.streak,
+                "ff_pct": None if c.ff_pct is None else round(c.ff_pct, 2),
+                "beauty": c.beauty,
                 "reasons": c.reasons,
             }
             for c in rows

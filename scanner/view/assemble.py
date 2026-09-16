@@ -149,6 +149,7 @@ def build_scan_view(
     last_ranks: dict[str, int] | None = None,
     weak: bool | None = None,
     hot_rows: list | None = None,
+    hist_rows: list | None = None,
 ):
     """构建一次扫描的展示视图（纯计算，不 print、不写库）：读今日推荐并算出档位/标记/排序。
 
@@ -484,5 +485,6 @@ def build_scan_view(
         final_pick_lines=_final_pick_lines,
         beauty_mark=beauty_mark,
         hot_rows=hot_rows,
+        hist_rows=hist_rows,
         flow_filtered=flow_filtered,
     )

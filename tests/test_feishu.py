@@ -8,6 +8,8 @@
   5. 飙升行定宽：_COLS_HOT_FEISHU 每列宽度 ≥ 格式化输出上界，行宽不随数据参差（2026-09-15 P2）
   6. 失败/成功都写日志、且写进**被隔离的**日志目录（2026-09-15 P3）
   7. _post_card 失败信息带全现场（code / http / body / hook 指纹）
+  8. v1 回捞区（hist_rows，2026-09-16）：与飙升区同款 —— 进去重键会击穿节流、
+     参与「有内容」判据、行定宽、列数与终端 COLS_HIST 一致、分节在飙升区之前
 
 注意：should_push 是纯函数，依赖模块级 FEISHU_WEBHOOK / FEISHU_MIN_INTERVAL；
 PushState 可注入，避免原 _last_push_time/_last_push_symbols 散落 global 的 monkeypatch。
@@ -71,7 +73,7 @@ def test_should_push_ok_after_timeout(monkeypatch):
 # ── push_feishu 编排 ──
 
 
-def _fake_view(symbols, *, hot_rows=None, final_pick_lines=None):
+def _fake_view(symbols, *, hot_rows=None, hist_rows=None, final_pick_lines=None):
     """构造最小 ScanView 替身，只含 _view_symbols / view_has_content / build_feishu_card 读取的字段。
 
     main_rows 项需有 .entry(dict) / .rank / .accum / .score；
@@ -81,6 +83,9 @@ def _fake_view(symbols, *, hot_rows=None, final_pick_lines=None):
     已移除 —— 卡片不再画 v2 池选与核心低吸两节，头部也不再读池选计数。
     2026-09-15：新增 `hot_rows` / `final_pick_lines`（默认 None = 该区块为空），
     供飙升区门控与「有内容」判据的用例使用。
+    2026-09-16：新增 `hist_rows`（默认 None = 回捞区为空）—— 该字段是 build_feishu_card /
+    view_has_content 用 getattr 读的，桩必须显式持有，否则「回捞区有内容」的用例会静默退化成
+    「该区为空」而假绿。
     """
 
     class _Row:
@@ -97,6 +102,7 @@ def _fake_view(symbols, *, hot_rows=None, final_pick_lines=None):
             self.weak = False
             self.warnings = []
             self.hot_rows = hot_rows
+            self.hist_rows = hist_rows
             self.final_pick_lines = final_pick_lines
 
     # duck-typed 替身：结构上满足 push_feishu/_view_symbols/build_feishu_card 的读取面，
@@ -127,6 +133,30 @@ def _fake_hot(**over):
     }
     fields.update(over)
     return HotCandidate(**fields)
+
+
+def _fake_hist(**over):
+    """构造一条 HistCandidate（v1 回捞区行），默认值为「2 日前进过 v1、今日回调到位」。"""
+    from scanner.historical_watch import HistCandidate
+
+    fields = {
+        "symbol": "SZ300750",
+        "code": "300750",
+        "name": "宁德时代",
+        "current": 180.55,
+        "percent": -4.2,
+        "vol_ratio": 1.35,
+        "rec_date": "2026-09-14",
+        "rec_days_ago": 2,
+        "rec_category": "momentum",
+        "rec_score": 72,
+        "cum_pct": 3.5,
+        "market_cap": 8.0e11,
+        "score": 66.4,
+        "reasons": ["回调到位", "量能未缩"],
+    }
+    fields.update(over)
+    return HistCandidate(**fields)
 
 
 def _section_titles(card) -> list[str]:
@@ -283,6 +313,159 @@ def test_view_symbols_uses_feishu_top_n(monkeypatch):
     assert view_syms == set(syms[:FEISHU_TOP_N])
 
 
+# ── v1 回捞区（hist_rows，2026-09-16）：与飙升区同款门控、分节在飙升之前 ──
+
+
+def test_hist_only_view_is_pushable_but_hist_is_not_a_dedup_key(monkeypatch):
+    """回捞区有行、主线空池 → 卡片有内容可推；且回捞票**不进**去重键。
+
+    与飙升区同构（理由同 hot）：回捞的今日涨幅/量比是分钟级刷新，计入去重键会让
+    has_change 几乎每轮为真，把 FEISHU_MIN_INTERVAL 的节流打回 60s 一张卡。
+    同时钉死卡片确实画得出这一节 —— 该区 2026-09-16 前只进终端（本用例的回归点）。
+    """
+    from scanner.feishu import _view_symbols, view_has_content
+
+    monkeypatch.setattr("scanner.feishu.FEISHU_WEBHOOK", "https://example.com/hook")
+    view = _fake_view([], hist_rows=[_fake_hist()])
+
+    assert _view_symbols(view) == set(), "回捞票不是去重键"
+    assert view_has_content(view) is True, "仅回捞区有内容时也必须可推"
+
+    card = build_feishu_card(view, gem_total=100)
+    assert any("v1 回捞" in t for t in _section_titles(card)), "卡片应画出回捞区"
+    ok = should_push(PushState(), _view_symbols(view), 1000.0, has_content=view_has_content(view))
+    assert ok.push is True and ok.reason == "ok"
+
+
+def test_hist_section_precedes_hot_and_carries_disclaimer():
+    """分节顺序与终端一致（v1 池选 → v1 回捞 → 沪深飙升），且脚注带「未做样本外校准」。
+
+    顺序不是装饰：两区都自称"与上方口径独立"，若卡片里回捞排在飙升之后，读者会把它
+    当成飙升区的子表。脚注则是**防误读**的必要条件 —— 本区排序键未经样本外校准，
+    不写明的最自然读法就是「评分高 = 更可能大涨」（而数据不支持这种强度）。
+    """
+    view = _fake_view(["SZ300001"], hist_rows=[_fake_hist()], hot_rows=[_fake_hot()])
+    card = build_feishu_card(view, gem_total=100)
+    titles = _section_titles(card)
+
+    ordered = [t for t in titles if ("回捞" in t or "飙升" in t)]
+    assert ordered == ["**◆ v1 回捞**", "**◆ 沪深飙升 · 极有可能大涨**"], f"分节顺序与终端不一致：{titles}"
+
+    hist_sec = next(
+        e["text"]["content"] for e in card["elements"] if "◆ v1 回捞" in e.get("text", {}).get("content", "")
+    )
+    assert "未做样本外校准" in hist_sec
+    assert "已剔除今日已推荐票" in hist_sec, "与 v1 池选区互斥的口径必须在卡片里可见"
+
+
+def test_hist_row_width_is_uniform():
+    """回捞行可见宽度恒定（含双宽「—」与各列上界值）。
+
+    与 test_hot_row_width_is_uniform 同一套判据：任何一列宽度定小了都会红，
+    「数值列宁可错列也不截断」的下界由末段两条断言钉住。
+    """
+    from scanner.display import _vis_len
+    from scanner.feishu import _COLS_HIST_FEISHU, _fmt_hist_row_feishu
+
+    expected = sum(w for w, _ in _COLS_HIST_FEISHU) + (len(_COLS_HIST_FEISHU) - 1) + 2  # 分隔空格 + 反引号
+    cases = [
+        {},  # 常规
+        {"current": 0, "vol_ratio": 0, "cum_pct": 0},  # 字段缺失 → 全部「—」（最易触发字符数/可见宽度混用）
+        {  # 各列上界（创业板涨跌幅上限 ±20%，累计涨幅量级按 ±999.99% 给）
+            "current": 9999.99,
+            "percent": -20.0,
+            "cum_pct": -999.99,
+            "vol_ratio": 99.99,
+            "rec_days_ago": 9,
+            "score": 100.0,
+        },
+        {"name": "超长名字啊"},  # 自由文本列超宽 → 必须截断而不是撑宽
+        {"rec_category": "known_new_face"},  # 最长真实桶名（14 列）→ 恰好占满、不溢出
+    ]
+    widths = {_vis_len(_fmt_hist_row_feishu(_fake_hist(**c), i)) for i, c in enumerate(cases, 1)}
+    assert widths == {expected}, f"行宽参差：{sorted(widths)}（应恒为 {expected}）"
+
+    # 数值列宽度不足会走截断 —— 比错列更糟（显示错值），故单独钉住上界不被截断
+    extreme = _fmt_hist_row_feishu(_fake_hist(current=9999.99, cum_pct=-999.99, vol_ratio=99.99), 1)
+    assert "9999.99" in extreme and "-999.99%" in extreme and "99.99" in extreme
+
+
+def test_hist_row_columns_match_terminal():
+    """列数必须与终端 COLS_HIST 一致（列序/含义由 _COLS_HIST_FEISHU 的逐列注释对齐）。"""
+    from scanner.display import COLS_HIST
+    from scanner.feishu import _COLS_HIST_FEISHU
+
+    assert len(_COLS_HIST_FEISHU) == len(COLS_HIST), "终端加/删了列，卡片压缩列规格没跟着改"
+
+
+def test_hist_tail_marks_stay_outside_the_fixed_width_block():
+    """回捞行的行尾标记必须追加在反引号**之外**，定宽部分宽度不受影响。
+
+    塞进定宽块会撑破列对齐 —— 本区所有行共用一套列宽，一行变宽会让其后每列错位
+    （`_pad` 对超宽单元格只会 pad 0 个空格，不会报错）。
+    同时钉死卡片用 **emoji** 而不是终端那套 ANSI 三角：卡片是 lark_md，
+    ANSI 色码会原样显示成乱码。
+
+    2026-09-16：成形函数由 `_hist_tail_feishu` 改名为 `_marks_tail_card`（接收
+    裸 ff_pct/beauty 而非候选对象），因为**飙升区也要用同一份** —— 标记是跨展示区
+    通用的，不该只有回捞区画。
+    """
+    from scanner.display import _vis_len
+    from scanner.feishu import _fmt_hist_row_feishu, _marks_tail_card
+
+    c = _fake_hist(ff_pct=6.0, beauty="美")
+    base = _fmt_hist_row_feishu(c, 1)
+    tail = _marks_tail_card(c.ff_pct, c.beauty)
+
+    assert tail == " 🟢 美"
+    assert _vis_len(base) == 79, "定宽块宽度不应受行尾标记影响"
+    assert "🟢" not in base, "标记必须在块外"
+
+    assert _marks_tail_card(None, "") == ""  # 无数据 → 不标
+    assert _marks_tail_card(0.0, "") == ""  # 中性档不显示（与主线同一精简口径）
+    assert _marks_tail_card(-6.0, "") == " 🔴"
+    assert _marks_tail_card(9.0, "") == " 🟢🟢"
+    assert _marks_tail_card(6.0, "") == " 🟢"
+
+
+def test_marks_tail_card_is_shared_by_both_watch_regions():
+    """飙升区与回捞区必须走**同一个**行尾标记成形函数（标记跨区通用）。
+
+    此前只有回捞区画标记、飙升区不画 —— 同一条判定（`fund_flow_signal` /
+    `display_gates.beauty_marks_daily`）在两个出口两种待遇。本用例从**渲染结果**
+    反查：两个区的卡片行都必须带上标记，说明两边都调了它。
+    """
+    from scanner.feishu import _marks_tail_card, build_feishu_card
+
+    view = _fake_view(
+        [],
+        hot_rows=[_fake_hot(ff_pct=6.2, beauty="美")],
+        hist_rows=[_fake_hist(ff_pct=6.2, beauty="美")],
+    )
+    text = str(build_feishu_card(view, gem_total=100))
+    assert text.count("🟢 美") >= 2, f"两个区都应带行尾标记：{text}"
+    # 成形口径本身（emoji 而非 ANSI 三角、中性档留空）由上面那条用例钉住
+    assert _marks_tail_card(6.2, "美") == " 🟢 美"
+    assert "▲" not in text, "卡片是 lark_md，不能出现终端那套 ANSI 三角"
+
+
+def test_hist_category_column_fits_longest_bucket():
+    """终端与卡片的「上次v1桶」列都必须容得下最长真实桶名（14 个 ASCII 列）。
+
+    2026-09-16 修：终端原宽 12，而 `known_new_face` / `early_momentum` 都是 14 列 ——
+    `_pad` 对超宽单元格不补位（pad=max(0,…)），于是同一区里这些行比别的行宽、后续列整体错开。
+    两出口同宽是本用例的重点：卡片压缩列规格唯独**不**收窄这一列。
+    """
+    from scanner.categories import CATEGORY_REGISTRY
+    from scanner.display import COLS_HIST, _vis_len
+    from scanner.feishu import _COLS_HIST_FEISHU
+
+    longest = max(_vis_len(name) for name in CATEGORY_REGISTRY)
+    assert COLS_HIST[9][0] == "上次v1桶", "列位置变了，本用例的索引与断言需同步"
+    assert COLS_HIST[9][1] >= longest, f"终端列宽 {COLS_HIST[9][1]} < 最长桶名 {longest}"
+    assert _COLS_HIST_FEISHU[9][0] >= longest, f"卡片列宽 {_COLS_HIST_FEISHU[9][0]} < 最长桶名 {longest}"
+
+
 # ── 飙升区（hot_rows）：参与「有内容」判据、不参与去重键（2026-09-15 P1）──
 
 
@@ -311,7 +494,7 @@ def test_hot_only_view_is_pushable_but_hot_is_not_a_dedup_key(monkeypatch):
 
 
 def test_should_push_empty_only_when_card_has_no_section(monkeypatch):
-    """只有三个来源（终选参考 / v1 池选 / 飙升区）全空才算空卡片 → empty。"""
+    """只有四个来源（终选参考 / v1 池选 / v1 回捞 / 飙升区）全空才算空卡片 → empty。"""
     from scanner.feishu import view_has_content
 
     monkeypatch.setattr("scanner.feishu.FEISHU_WEBHOOK", "https://example.com/hook")

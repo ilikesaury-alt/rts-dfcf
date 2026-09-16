@@ -702,7 +702,9 @@ def test_render_hot_region_skipped_when_none(capsys):
 
     render_terminal(_make_view(None))
     out = capsys.readouterr().out
-    assert "沪深飙升" not in out
+    # 哨兵用**区块标题**而不是「沪深飙升」四个字：v1 池选的通用风险门脚注里
+    # 也提到了「沪深飙升」（说明三区同源），拿区名当哨兵会误报。
+    assert "◆ 沪深飙升" not in out
 
 
 def test_render_hot_region_skipped_when_empty(capsys):
@@ -710,7 +712,7 @@ def test_render_hot_region_skipped_when_empty(capsys):
     from scanner.display import render_terminal
 
     render_terminal(_make_view([]))
-    assert "沪深飙升" not in capsys.readouterr().out
+    assert "◆ 沪深飙升" not in capsys.readouterr().out
 
 
 def test_render_hot_region_marks_dash_for_missing_fields(capsys):
@@ -728,7 +730,7 @@ def test_render_hot_region_marks_dash_for_missing_fields(capsys):
 
 
 def test_offline_demo_all_cases_match_expectation(capsys):
-    """离线自检：内置 12 条样本的期望结果必须全部命中（退出码 0）。
+    """离线自检：内置样本的期望结果必须全部命中（退出码 0）。
 
     这条是「筛选规则回归哨兵」——改动任何阈值/排除条件却没同步 _DEMO_CASES 时，
     这里会失败并指出具体哪条样本不符。
@@ -742,7 +744,15 @@ def test_offline_demo_all_cases_match_expectation(capsys):
 
 
 def test_offline_demo_covers_every_exclusion_branch():
-    """样本的排除原因必须覆盖 hard_exclude 全部分支，防止自检漏测某条规则。"""
+    """样本的排除原因必须覆盖 `hard_exclude` 的全部分支，防止自检漏测某条规则。
+
+    2026-09-16：硬门拆成「通用门（display_gates.common_hard_gate，三区共用）+ 本区专有」
+    之后，关键字表按**通用门清单**重列 —— 少一个关键字就说明自检样本没跟上门的演化。
+    「主力净流出」不在本表：`hard_exclude` 的资金流门要传入 ff_pct（由 build_candidates
+    从 DB 快照取），离线样本路径没有资金流数据；该分支由 tests/test_display_gates.py
+    的「三区同答」用例覆盖。
+    """
+    from scanner.display_gates import UNIVERSAL_GATES
     from scanner.hot_watch import _DEMO_CASES, build_candidates
 
     board = [b for _, (b, _q) in _DEMO_CASES]
@@ -750,7 +760,9 @@ def test_offline_demo_covers_every_exclusion_branch():
     _passed, rejected = build_candidates(board, quotes)
 
     reasons = " ".join(hard_exclude(c) or "" for c in rejected)
-    for keyword in ("ST", "非创业板", "非正常交易状态", "非上涨", "涨幅过高", "市值过大"):
+    for keyword in (*UNIVERSAL_GATES, "非上涨", "涨幅过高"):
+        if keyword == "主力净流出":
+            continue
         assert keyword in reasons, f"自检样本未覆盖排除分支：{keyword}"
 
 

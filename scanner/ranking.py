@@ -28,6 +28,7 @@ from scanner.config import (
     OVERHEAT_ACCUM_MAX,
     SECTOR_RESONANCE_WARN_MAX,
 )
+from scanner.display_gates import fund_outflow_hit
 from scanner.utils import to_float
 
 
@@ -324,15 +325,18 @@ def entry_fund_flow_pct(entry: Any, flow_map: dict[str, float] | None = None) ->
 
 
 def is_fund_outflow(entry: Any, flow_map: dict[str, float] | None = None) -> bool:
-    """「资金流出」判定单源：主力净占比 ≤ FUND_OUTFLOW_NET_PCT(-8.0%) → True。
+    """「资金流出」判定单源（推荐行入口）：主力净占比 ≤ FUND_OUTFLOW_NET_PCT(-8.0%) → True。
 
     阈值唯一来源 `config_sources.FUND_OUTFLOW_NET_PCT`（与 enhancer 标签、档3劣后、
-    nextday_prob、final_pick 终选门、hot_watch 独立区门同源）。
+    nextday_prob、final_pick 终选门同源）。
     数据缺失（None）→ False：缺失不等于流出，与回马枪回踩门同语义（fail-open），
     避免资金流接口故障时把整屏推荐清空。
+
+    2026-09-16：**阈值比较已收敛到 `display_gates.fund_outflow_hit`** —— 本函数只负责
+    按回退链取出行内数值（这步是推荐行特有的），比较动作全仓只剩一处实现，飙升/回捞
+    两区（拿的是裸数值）与主线走的是同一句判定。
     """
-    flow = entry_fund_flow_pct(entry, flow_map)
-    return flow is not None and flow <= FUND_OUTFLOW_NET_PCT
+    return fund_outflow_hit(entry_fund_flow_pct(entry, flow_map))
 
 
 def _entry_sector_resonance(entry: Any) -> bool:

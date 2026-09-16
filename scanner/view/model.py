@@ -78,6 +78,7 @@ __all__ = (
     "ANSI",
     "CAT_COLOR",
     "COLS_DETAIL",
+    "COLS_HIST",
     "COLS_HOT",
     "COLS_POOL",
     "MainRow",
@@ -475,6 +476,23 @@ COLS_HOT: tuple = (
     ("评分", 6, "r"),
     ("连击", 5, "r"),
 )
+# 「v1 回捞」独立区（2026-09-16 上线）：列与本区口径对应（回调/量比/时效），
+# 与主线 COLS_POOL 无关 —— 本区不排涨跌幅榜上位置，只回答「回调到位了没」。
+COLS_HIST: tuple = (
+    ("#", 3, "r"),
+    ("代码", 12, "l"),
+    ("名称", 10, "l"),
+    ("现价", 8, "r"),
+    ("今日", 8, "r"),
+    ("自v1累计", 10, "r"),
+    ("量比", 6, "r"),
+    ("距v1", 6, "r"),
+    ("评分", 5, "r"),
+    # 「上次v1桶」宽 14（2026-09-16 由 12 调大）：真实桶名可达 14 个 ASCII 列
+    # （known_new_face / early_momentum），12 会让这些名字在本区内错列。
+    # 飞书压缩版同宽（_COLS_HIST_FEISHU），两出口同值同宽。
+    ("上次v1桶", 14, "l"),
+)
 
 
 @dataclass
@@ -527,9 +545,16 @@ class ScanView:
     beauty_mark: dict[tuple[str, str], str] | None = None
     # 沪深飙升·极有可能大涨独立区（2026-09-11 自 rts-xueqiu 合入）：HotCandidate 列表。
     # 与主线（创业板/next_day 口径）完全解耦——样本面更宽（沪深主板+创业板）、口径为
-    # 「当日 momentum + 榜单热度跃升」，不参与主线评分/档位/🎯，也不进飞书主卡片。
+    # 「当日 momentum + 榜单热度跃升」，不参与主线评分/档位/🎯。
+    # 终端与飞书**都画**（feishu build_feishu_card 的「◆ 沪深飙升」节），但不进去重键
+    # （分钟级刷新，计入会击穿 FEISHU_MIN_INTERVAL 节流，见 feishu._view_symbols）。
     # None = 本轮未启用或无结果（渲染时整区跳过，不留空表）。
     hot_rows: list | None = None
+    # 「v1 回捞」独立区（2026-09-16 上线）：HistCandidate 列表，回答「前 N 个交易日
+    # 进过 v1 的票，今天回调到位了没」。与 v1 池选区**样本域互斥**（默认剔除今日已推荐票），
+    # 与 hot_rows 同款：终端与飞书都画、不落库、不参与任何主线口径，也不进去重键。
+    # None / 空列表 = 本轮无结果（渲染时整区跳过，不留空表）。
+    hist_rows: list | None = None
     # 展示层资金流出硬门（2026-09-14）剔除的行数：主力净占比 ≤ FUND_OUTFLOW_NET_PCT
     # 的票不进任何展示区（v1 池选 / 回马枪 / 终选输入），终端与飞书同源。
     # 纯展示层过滤——不改 excluded、不落库，回测/归因样本口径不受影响。

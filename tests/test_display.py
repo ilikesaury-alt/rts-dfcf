@@ -1205,6 +1205,108 @@ def test_beauty_tier_legend_printed_on_both_surfaces(capsys):
         assert "回撤" in surface, f"图例未解释 ★ 的语义（应为「回撤更小」）：{surface[:200]}"
 
 
+def test_hist_legend_printed_on_both_surfaces(capsys):
+    """回捞区行尾标记的图例必须在终端与飞书**两端**都有，且写清「本区无分时档」。
+
+    少了这句，读者会拿主线的「美★=分时亦漂亮」去解读本区的空位 —— 把「没有分时数据」
+    误读成「分时不漂亮」。两端各写一份是「同源」契约的已知薄弱点（与美感图例同款），
+    故对两个出口同时断言；无回捞行时整区跳过，不留空图例与空说明。
+    """
+    from scanner.feishu import build_feishu_card
+    from scanner.historical_watch import HistCandidate
+
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "股1", "momentum", 70)
+    view = disp_mod.build_scan_view(conn, today_pool={})
+    assert view is not None
+
+    disp_mod.render_terminal(view)
+    assert "本区无分时档" not in capsys.readouterr().out  # 无回捞行 → 整区跳过
+    assert "本区无分时档" not in str(build_feishu_card(view, gem_total=100))
+
+    view.hist_rows = [
+        HistCandidate(
+            symbol="SZ300750",
+            code="300750",
+            name="宁德时代",
+            current=180.5,
+            percent=-4.2,
+            vol_ratio=1.35,
+            rec_date="2026-09-15",
+            rec_days_ago=1,
+            rec_category="momentum",
+            rec_score=70,
+            cum_pct=3.5,
+            market_cap=8e11,
+            ff_pct=6.2,  # ≥+5% → 终端 ▲ / 卡片 🟢
+            beauty="美",
+            score=66.0,
+        )
+    ]
+    disp_mod.render_terminal(view)
+    terminal_out = capsys.readouterr().out
+    card_text = str(build_feishu_card(view, gem_total=100))
+    for surface in (terminal_out, card_text):
+        assert "本区无分时档" in surface, f"回捞图例缺失：{surface[:200]}"
+    # 行尾标记本身也要落地（图例说了但行上没有 = 图例自我描述）
+    assert "▲ 美" in terminal_out, "终端行尾应带资金流 ▲ 与日线美感「美」"
+    assert "🟢 美" in card_text, "卡片行尾应带 emoji 资金流与「美」"
+
+
+def test_hot_legend_printed_on_both_surfaces(capsys):
+    """飙升区行尾标记的图例必须在终端与飞书**两端**都有，且写清「本区默认开启日线美感门」。
+
+    2026-09-16 新增标记列时一并加图例：飙升区此前**完全没有**行尾标记（同一条判定只在
+    回捞区画），标记跨区通用之后必须就地解释两件容易读错的事 ——
+      ① ▼▼ 不可达（≤-8% 已被通用门剔除），图标只回答「-8% 以上这一段的强弱」；
+      ② 本区默认开着日线美感门，故通过的行通常都带「美」，这不是「每只都很强」。
+    无飙升行时整区跳过，不留空图例与空说明。
+    """
+    from scanner.feishu import build_feishu_card
+    from scanner.hot_watch import HotCandidate
+
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "股1", "momentum", 70)
+    view = disp_mod.build_scan_view(conn, today_pool={})
+    assert view is not None
+
+    disp_mod.render_terminal(view)
+    assert "不出现 ▼▼" not in capsys.readouterr().out  # 无飙升行 → 整区跳过
+    assert "不出现 🔴🔴" not in str(build_feishu_card(view, gem_total=100))
+
+    view.hot_rows = [
+        HotCandidate(
+            symbol="SZ300750",
+            code="300750",
+            name="宁德时代",
+            exchange="SZ",
+            current=180.5,
+            percent=4.2,
+            rank_change=900,
+            rank=3,
+            volume=1e7,
+            amount=3e8,
+            market_capital=8e10,
+            turnover_rate=6.0,
+            volume_ratio=1.2,
+            score=70.0,
+            streak=1,
+            ff_pct=6.2,  # ≥+5% → 终端 ▲ / 卡片 🟢
+            beauty="美",
+        )
+    ]
+    disp_mod.render_terminal(view)
+    terminal_out = capsys.readouterr().out
+    card_text = str(build_feishu_card(view, gem_total=100))
+    for surface in (terminal_out, card_text):
+        assert "已被硬门剔除" in surface, f"飙升图例须说明 ▼▼ 不可达的成因：{surface[:200]}"
+        assert "本区默认开日线美感门" in surface, f"飙升图例须解释「美」为何近乎恒定：{surface[:200]}"
+        assert "不出现美★" in surface, f"飙升图例须说明无分时档：{surface[:200]}"
+    # 行尾标记本身也要落地（图例说了但行上没有 = 图例自我描述）
+    assert "▲ 美" in terminal_out, "终端飙升行尾应带资金流 ▲ 与日线美感「美」"
+    assert "🟢 美" in card_text, "卡片飙升行尾应带 emoji 资金流与「美」"
+
+
 def test_beauty_mark_disabled_when_gate_off(monkeypatch):
     """RTS_TREND_MARK=0：展示标记整体关闭（与硬拦开关独立）。
 

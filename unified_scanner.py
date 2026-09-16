@@ -26,6 +26,8 @@ from scanner.backtest import backfill_outcomes
 from scanner.config import (
     AFTERNOON_END,
     DB_PATH,
+    HIST_DISPLAY_TOP,
+    HIST_WATCH_ENABLED,
     HOT_DISPLAY_TOP,
     HOT_WATCH_ENABLED,
     KLINE_FETCH_DAYS,
@@ -47,6 +49,7 @@ from scanner.database import (
 )
 from scanner.display import display
 from scanner.feishu import push_feishu, view_has_content
+from scanner.historical_watch import run_historical_watch
 from scanner.hot_watch import run_hot_watch
 from scanner.log_utils import log_results
 from scanner.models import RecommendationRow
@@ -464,6 +467,30 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                         _log_exception("hot_watch 独立区异常", e)
                         hot_rows = None
 
+                # ── v1 回捞独立区（2026-09-16）──
+                # 动机：飙升榜天然滞后——好票等上榜单时已涨一截，追进去性价比差。本区把
+                # 「系统自己在前 N 个交易日认可过的票（v1 五桶产出）」拿出来，用一套**只
+                # 看价量、不看今日榜单**的规则重新过一遍：回调到位 + 未缩量。
+                # 为什么不是「沿用 v1 规则」：v1 的 is_new 由历史在榜记录决定，昨天进过 v1
+                # 的票今天必然判不出 new_face；2026-09-16 实测原样跑 v1 仅 1/15 过门。
+                # 样本域与 v1 池选互斥（today_syms 在此剔除），故同屏不会出现同一只票两种结论。
+                # 与 hot_watch 同为 fail-open：本区异常一律留空，主线扫描不受影响。
+                hist_rows = None
+                if HIST_WATCH_ENABLED:
+                    try:
+                        # today 走缺省（now_beijing 当日）：与 get_today_recommendations 的
+                        # 缺省口径同源 —— 本区候选的排除集正是后者产出的 today_syms。
+                        hist_rows = run_historical_watch(
+                            conn,
+                            adapter,
+                            exclude_symbols=today_syms,
+                            top_n=HIST_DISPLAY_TOP,
+                        )
+                    except Exception as e:
+                        print(f"  [!] 前日v1回捞区跳过: {type(e).__name__}: {e}")
+                        _log_exception("historical_watch 独立区异常", e)
+                        hist_rows = None
+
                 # 决策层已于 2026-09-14 按用户决策整体删除：主循环不再构建/落库
                 # decision_picks，也不再向 display 注入决策层文本行。仅保留
                 # scanner.decision.market_gate（择时门）供终选参考区标注门状态。
@@ -483,6 +510,7 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     today_pool=res.today_pool,
                     last_ranks=last_ranks,
                     hot_rows=hot_rows,
+                    hist_rows=hist_rows,
                 )
                 # 快照本轮榜单排名供下一轮展示排名变化（上一轮为 None 时显示纯名次）。
                 last_ranks = dict(current_rank_map)

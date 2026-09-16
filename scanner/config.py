@@ -11,6 +11,7 @@
 #   config_risk            风险标签、硬过滤集合、排雷阈值、基本面风险、反转移出阈值
 #   config_sources         飞书推送、外部数据源(涨停池/资金流/概念)、v2/决策/终选/走势美展示开关
 #   config_hot_watch       沪深飙升「极有可能大涨」独立区配置
+#   config_historical      「v1 回捞」独立区配置（前 N 交易日 v1 产出的回调筛选）
 #   config_tactics        盘中操作纪律(intraday tactics)参数
 #
 # 消费方若新增常量，请放到对应子模块并在其 __all__ 登记；本文件只负责聚合导出。
@@ -22,6 +23,7 @@ from scanner.categories import (  # noqa: F401,E402  (re-export)
 )
 from scanner.config_categories import *  # noqa: F401,F403
 from scanner.config_core import *  # noqa: F401,F403
+from scanner.config_historical import *  # noqa: F401,F403
 from scanner.config_hot_watch import *  # noqa: F401,F403
 from scanner.config_risk import *  # noqa: F401,F403
 from scanner.config_scoring import *  # noqa: F401,F403

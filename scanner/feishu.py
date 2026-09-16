@@ -28,9 +28,18 @@ from scanner.config import (
     FEISHU_TOP_N,
     FEISHU_WEBHOOK,
     FUND_OUTFLOW_NET_PCT,
+    HIST_DIP_PCT,
+    HIST_LOOKBACK_DAYS,
+    HIST_MAX_MARKET_CAP,
+    HIST_MIN_VOL_RATIO,
+    HIST_W_DIP,
+    HIST_W_RECENCY,
+    HIST_W_VOL,
     HOT_HIGHLIGHT_STREAK,
     HOT_MAX_MARKET_CAP,
     HOT_MAX_PERCENT,
+    MAX_MARKET_CAP,
+    MAX_STOCK_PRICE,
     now_beijing,
 )
 
@@ -236,6 +245,18 @@ def _extract_row(entry, flow_pct_map) -> RowSnapshot:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+# 资金流档位 → 卡片 emoji。终端那份是 **ANSI 三角**（display._FUND_FLOW_ICON，▲/▼），
+# 这里必须是 emoji —— 卡片是 lark_md，ANSI 色码会原样显示成乱码。
+# 档位判定（fund_flow_signal）与阈值仍是**同一单源**，两份表只差「画成什么形状」。
+# 2026-09-16：抽成模块级常量，此前 v1 池选行内联了一份、回捞行若再内联就是复制（本仓禁忌）。
+_FUND_FLOW_EMOJI = {
+    "strong_in": "🟢🟢",
+    "in": "🟢",
+    "out": "🔴",
+    "strong_out": "🔴🔴",
+}
+
+
 def _fmt_row(s: RowSnapshot) -> str:
     """单行：排名 名称 代码 涨幅 5日累计 评分 [风险] [资金流/连板] [操作纪律]。"""
     rs = f"{s.rank:>3}" if s.rank else "  —"
@@ -254,7 +275,7 @@ def _fmt_row(s: RowSnapshot) -> str:
     risk_str = (" " + " ".join(risk_parts)) if risk_parts else ""
     extra_parts = []
     if s.ff_pct is not None:
-        mark = {"strong_in": "🟢🟢", "in": "🟢", "out": "🔴", "strong_out": "🔴🔴"}.get(fund_flow_signal(s.ff_pct))
+        mark = _FUND_FLOW_EMOJI.get(fund_flow_signal(s.ff_pct))
         if mark:
             extra_parts.append(mark)
     if s.zt_lb:
@@ -340,6 +361,75 @@ def _fmt_hot_row_feishu(c, idx: int) -> str:
     return f"`{body}`"
 
 
+# 飞书回捞行 = 终端 COLS_HIST 的**压缩版**列规格：与 _COLS_HOT_FEISHU 同一套规则
+# （列序/列含义与终端一一对应，只在自由文本/低熵列上收窄；守卫见
+# tests/test_feishu.py::test_hist_row_columns_match_terminal / test_hist_row_width_is_uniform）。
+#   # 3→2、代码 12→8、名称 10→8、现价 8→7、今日 8→7、自v1累计 10→9、
+#   量比 6→5、距v1 6→4、评分 5→4；**「上次v1桶」14 不收窄** —— 它要放
+#   `known_new_face` / `early_momentum`（14 个 ASCII 列）这类真实桶名，
+#   终端同为 14（2026-09-16 由 12 调到 14：12 会让这类桶名在同一区内错列）。
+_COLS_HIST_FEISHU: tuple[tuple[int, str], ...] = (
+    (2, "r"),  # #         展示条数 ≤ 99
+    (8, "l"),  # 代码       6 位数字
+    (8, "l"),  # 名称       4 个汉字；超出先 _trunc（自由文本，不保证上界）
+    (7, "r"),  # 现价       "9999.99"
+    (7, "r"),  # 今日       "+10.0%"（涨停已由量比/回调门过滤，6 列足够）
+    (9, "r"),  # 自v1累计   "+999.99%"（v1 票回调后累计，量级远小于翻倍）
+    (5, "r"),  # 量比       "99.99"
+    (4, "r"),  # 距v1       "9日"
+    (4, "r"),  # 评分       "100"
+    (14, "l"),  # 上次v1桶  "known_new_face"
+)
+
+
+def _fmt_hist_row_feishu(c, idx: int) -> str:
+    """飞书卡片单行：「v1 回捞」候选（lark_md 定宽块，无 ANSI）。
+
+    取值与终端 _render_hist_watch_region **同源同式**：回调/量比缺失显示「—」而不是
+    0.00（0 与「没拿到」是两回事），累计涨幅为 0 也显示「—」（此时「自 v1 累计」等于
+    当日涨幅，终端同样不重复显示）。
+    """
+    pct_str = f"+{c.percent:.2f}%" if c.percent >= 0 else f"{c.percent:.2f}%"
+    cum_str = (f"{c.cum_pct:+.2f}%" if c.cum_pct >= 0 else f"{c.cum_pct:.2f}%") if c.cum_pct else "—"
+    cells = (
+        str(idx),
+        c.code,
+        _trunc(c.name, _COLS_HIST_FEISHU[2][0]),
+        f"{c.current:.2f}" if c.current else "—",
+        pct_str,
+        cum_str,
+        f"{c.vol_ratio:.2f}" if c.vol_ratio > 0 else "—",
+        f"{c.rec_days_ago}日",
+        f"{c.score:.0f}",
+        c.rec_category,
+    )
+    body = " ".join(_pad(str(cell), width, align) for cell, (width, align) in zip(cells, _COLS_HIST_FEISHU, strict=True))
+    return f"`{body}`"
+
+
+def _marks_tail_card(ff_pct, beauty: str) -> str:
+    """独立观察区（沪深飙升 / v1 回捞）的行尾标记（卡片成形）：资金流 emoji + 日线美感「美」。
+
+    与终端 `render._watch_tail_terminal` 是**同判定、不同形状**（终端 ▲/▼ 带 ANSI，
+    卡片 emoji）—— 与主线 `_entry_row_suffix` / `_fmt_row` 的分工完全一致，
+    判定源都是 `signals.fund_flow_signal` / `display_gates.beauty_marks_daily`，本函数不重算。
+    两个独立区共用本函数，免得「同一个标记在两个节里各画一遍、其中一个少个空格」。
+
+    追加位置在反引号**之外**，故不改变定宽块宽度（`_fmt_hot_row_feishu` / `_fmt_hist_row_feishu`
+    仍各自恒宽，守卫 test_hot_row_width_is_uniform / test_hist_row_width_is_uniform 量的就是它们）。
+
+    结构性上限（两个区都有）：🔴🔴 不可达（≤-8% 已被通用门剔除）、美★ 不可达（无分时数据）。
+    """
+    parts: list[str] = []
+    if ff_pct is not None:
+        mark = _FUND_FLOW_EMOJI.get(fund_flow_signal(ff_pct))
+        if mark:
+            parts.append(mark)
+    if beauty:
+        parts.append(beauty)
+    return (" " + " ".join(parts)) if parts else ""
+
+
 def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 0, top_n: int = FEISHU_TOP_N) -> dict:
     """从 ScanView 构建飞书卡片（与终端共用同一份选择）。
 
@@ -347,8 +437,8 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
     display_priority 读「DB 当日累计推荐」——同一只票可能一边排第 1、另一边不出现。
     现统一由 build_scan_view 供数，保证「终端看得到什么，卡片就推什么」。
 
-    分节口径（2026-09-15 同步）：卡片画 终选参考 → v1 池选 → 沪深飙升·极有可能大涨，
-    与终端 render_terminal 的区块一一对应。同期按用户决策移除三个区块：**决策层**（整体删除）、
+    分节口径（2026-09-16 同步）：卡片画 终选参考 → v1 池选 → v1 回捞 → 沪深飙升·极有可能大涨，
+    与终端 render_terminal 的区块**顺序与条件**一一对应。同期按用户决策移除三个区块：**决策层**（整体删除）、
     **v2 池选** 与 **核心方向低吸**（隐藏）。**回马枪（comeback）两处都没有展示区**
     （ca91d21 起移除，见 docs/CORE-FLOW.md §十-1），故它既不是分节门控、也不进
     `_view_symbols` 去重集合。
@@ -396,20 +486,66 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
         # 仅在确有标记时追加，避免常年在卡片里占位。
         _marks = getattr(view, "beauty_mark", None) or {}
         _legend = ["", "美=日线趋势漂亮｜美★=分时亦漂亮（尾部回撤更小·非更易大涨）"] if any(_marks.values()) else []
-        sections.append(("◆ v1 池选", pool_lines + _legend))
+        # 通用风险门清单（2026-09-16）：与终端 render_terminal 的同义行，两端须同步改，
+        # 否则「终端告诉了用户过了哪些门、卡片没说」= 两个出口的信息量不一致。
+        _gates = (
+            f"风险门（与沪深飙升 · v1 回捞 同源）：ST·非创业板·停牌/无成交·"
+            f"价格>{MAX_STOCK_PRICE:.0f}元·市值>{MAX_MARKET_CAP / 1e8:.0f}亿·资金流出≤{FUND_OUTFLOW_NET_PCT:.0f}%"
+        )
+        sections.append(("◆ v1 池选", pool_lines + [""] + _legend + [_gates]))
     # 「◆ v2 池选」与「◆ 核心方向低吸」两个分节已于 2026-09-14 按用户决策隐藏
     # （与终端 render_terminal 同步移除）。需复原见 git 历史。
+
+    # ── v1 回捞 独立区（与终端 _render_hist_watch_region 同源）──
+    # 与 v1 池选区样本域互斥（默认剔除今日已推荐票），故两节并存不会出现「同票两种结论」。
+    hist_rows = getattr(view, "hist_rows", None)
+    if hist_rows:
+        hist_lines = [
+            f"{_fmt_hist_row_feishu(c, i)}{_marks_tail_card(c.ff_pct, c.beauty)}" for i, c in enumerate(hist_rows, 1)
+        ]
+        hist_footer = (
+            f"判据=今日回调 ≤{HIST_DIP_PCT:.0f}% 且 量比 ≥{HIST_MIN_VOL_RATIO:.1f}（未缩量·有承接）| "
+            f"距上次 v1 ≤{HIST_LOOKBACK_DAYS} 交易日 | 已剔除今日已推荐票 | "
+            f"排序=回调深度{HIST_W_DIP:.0f}+量能{HIST_W_VOL:.0f}+时效{HIST_W_RECENCY:.0f}"
+            f"（启发式·未做样本外校准）"
+        )
+        # 通用风险门（2026-09-16）：三区同一实现（display_gates.common_hard_gate），
+        # 故这里只列**本区参数**（市值上限 500 亿），其余与飙升/主线同值。
+        hist_gates = (
+            f"通用风险门（与 v1 池选·沪深飙升同源）：ST·非创业板·无有效报价·"
+            f"价格>{MAX_STOCK_PRICE:.0f}元·市值>{HIST_MAX_MARKET_CAP / 1e8:.0f}亿·资金流出≤{FUND_OUTFLOW_NET_PCT:.0f}%"
+        )
+        # 行尾标记图例（2026-09-16）：与终端 _render_hist_watch_region 的同义图例，
+        # 两处须同步改（守卫 test_display.py::test_hist_legend_printed_on_both_surfaces）。
+        # 「本区无分时档」这句是**防误读的必要条件** —— 少了它，读者会拿主线的
+        # 「美★=分时亦漂亮」来判断本区的空位，把「无分时数据」误读成「分时不漂亮」。
+        hist_legend = (
+            "标记：🟢🟢/🟢=主力净流入(≥+8%/≥+5%) 🔴=净流出(≤-5%；≤-8% 已被硬门剔除，故不出现 🔴🔴) "
+            "美=日线趋势漂亮（尾部回撤更小·非更易大涨；本区无分时档，不会出现美★）"
+        )
+        sections.append(("◆ v1 回捞", hist_lines + ["", hist_footer, hist_gates, hist_legend]))
 
     # ── 沪深飙升·极有可能大涨 独立区（与终端 _render_hot_watch_region 同源）──
     hot_rows = getattr(view, "hot_rows", None)
     if hot_rows:
-        hot_lines = [_fmt_hot_row_feishu(c, i) for i, c in enumerate(hot_rows, 1)]
+        # 行尾标记（2026-09-16）：与 v1 回捞区共用 _marks_tail_card —— 标记是跨展示区
+        # 通用的，此前只有回捞区画、飙升区不画，是同一条判定在两个出口给了两种待遇。
+        hot_lines = [
+            f"{_fmt_hot_row_feishu(c, i)}{_marks_tail_card(c.ff_pct, c.beauty)}" for i, c in enumerate(hot_rows, 1)
+        ]
         hot_footer = (
             f"排序=评分(排名上升35/涨幅25/价格15/量能25) | "
-            f"已剔除涨停·涨幅>{HOT_MAX_PERCENT:.0f}%·市值>{HOT_MAX_MARKET_CAP / 1e8:.0f}亿·ST·非创业板 | "
+            f"已剔除 ST·非创业板·停牌/无成交·价格>{MAX_STOCK_PRICE:.0f}元·市值>{HOT_MAX_MARKET_CAP / 1e8:.0f}亿·"
+            f"涨停·涨幅>{HOT_MAX_PERCENT:.0f}%（通用风险门 + 本区专有）| "
             f"连击≥{HOT_HIGHLIGHT_STREAK}轮标★"
         )
-        sections.append(("◆ 沪深飙升 · 极有可能大涨", hot_lines + ["", hot_footer]))
+        # 标记图例（2026-09-16）：与终端 _render_hot_watch_region 的同义图例，
+        # 两处须同步改（守卫 test_display.py::test_hot_legend_printed_on_both_surfaces）。
+        hot_legend = (
+            "标记：🟢🟢/🟢=主力净流入(≥+8%/≥+5%) 🔴=净流出(≤-5%；≤-8% 已被硬门剔除，故不出现 🔴🔴) "
+            "美=日线趋势漂亮（尾部回撤更小·非更易大涨；日线数据不足则不标；本区默认开日线美感门，无分时档故不出现美★）"
+        )
+        sections.append(("◆ 沪深飙升 · 极有可能大涨", hot_lines + ["", hot_footer, hot_legend]))
 
     rendered = False
     for title, lines in sections:
@@ -480,6 +616,12 @@ def _view_symbols(view: ScanView) -> set[str]:
     成立 ⇒ should_push 绕过冷却、每轮（60s）推一张，把节流打回 5min 的 1/5。
     飙升区因此只参与 view_has_content（决定「空池要不要推」），不参与去重（决定
     「多久推一次」）—— 二者是两件事，见 should_push 的入参说明。
+
+    2026-09-16：**同样刻意不并入 hist_rows（v1 回捞区）**，理由与飙升区同构 ——
+    该区的「今日涨幅/量比」是分钟级刷新，且候选集来自前 N 个交易日的 v1 产出、
+    与 main_rows **样本域互斥**（`exclude_symbols` 默认剔除今日已推荐票）：
+    把它计入只会在主线票集不变时凭空制造 has_change，每轮（60s）推一张卡。
+    回捞区因此也只参与 view_has_content。
     """
     return {row.entry["symbol"] for row in view.main_rows[:FEISHU_TOP_N]}
 
@@ -488,13 +630,14 @@ def view_has_content(view: ScanView) -> bool:
     """卡片此刻**是否画得出任何区块**（判「空卡片」的唯一判据）。
 
     必须与 build_feishu_card 的区块条件逐条对齐，否则会出现「明明有内容却不推」
-    （本函数漏判）或「推了一张空卡」（本函数多判）。当前三个来源：
+    （本函数漏判）或「推了一张空卡」（本函数多判）。当前四个来源：
       1. view.final_pick_lines        —— 终选参考节（最先渲染，独立于 main_rows）；
       2. view.main_rows[:FEISHU_TOP_N] —— v1 池选节；
-      3. view.hot_rows                —— 沪深飙升独立区。
+      3. view.hist_rows               —— v1 回捞独立区（2026-09-16 上线）；
+      4. view.hot_rows                —— 沪深飙升独立区。
     公开（非 `_` 前缀）是刻意的：它是「有没有内容」的**跨模块单源**，
     除 should_push 外还被 unified_scanner 的「推送跳过」提示复用（此前那里自持
-    一份 `bool(view.main_rows)`，不认第 1、3 条）。
+    一份 `bool(view.main_rows)`，不认第 1、3、4 条）。
 
     2026-09-15 修：此前只等价于第 2 条 —— 于 `should_push` 里表现为「票集空 ⇒ empty ⇒
     整卡不推」，而终端在**同一份 view 上**照画。实测（真实 scanner.db，把展示层资金流出
@@ -515,6 +658,8 @@ def view_has_content(view: ScanView) -> bool:
     if getattr(view, "final_pick_lines", None):
         return True
     if view.main_rows[:FEISHU_TOP_N]:
+        return True
+    if getattr(view, "hist_rows", None):
         return True
     return bool(getattr(view, "hot_rows", None))
 

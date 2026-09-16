@@ -1,9 +1,18 @@
 from scanner.categories import CAT_LABEL
 from scanner.config import (
     FUND_OUTFLOW_NET_PCT,
+    HIST_DIP_PCT,
+    HIST_LOOKBACK_DAYS,
+    HIST_MAX_MARKET_CAP,
+    HIST_MIN_VOL_RATIO,
+    HIST_W_DIP,
+    HIST_W_RECENCY,
+    HIST_W_VOL,
     HOT_HIGHLIGHT_STREAK,
     HOT_MAX_MARKET_CAP,
     HOT_MAX_PERCENT,
+    MAX_MARKET_CAP,
+    MAX_STOCK_PRICE,
     TOP40_THRESHOLD,
     now_beijing,
 )
@@ -40,12 +49,15 @@ __all__ = (
     "_fmt_hot_volume_hand",
     "_is_console",
     "_print_priority_row",
+    "_render_hist_watch_region",
     "_render_hot_watch_region",
     "_supports_ansi",
     "_table_header",
     "_table_row",
+    "_watch_tail_terminal",
     "display",
     "display_priority",
+    "render_hist_watch_standalone",
     "render_hot_watch_standalone",
     "render_terminal",
 )
@@ -61,6 +73,7 @@ def display(
     today_pool: dict[str, Candidate] | None = None,
     last_ranks: dict[str, int] | None = None,
     hot_rows: list | None = None,
+    hist_rows: list | None = None,
 ) -> "ScanView | None":
     """扫描主屏：头部摘要 + 展示视图（构建/渲染委托 display_priority）。
 
@@ -91,6 +104,7 @@ def display(
         last_ranks=last_ranks,
         weak=weak,
         hot_rows=hot_rows,
+        hist_rows=hist_rows,
     )
 
 
@@ -240,6 +254,26 @@ def _fmt_hot_amount(amount: float) -> str:
     return f"{amount:.0f}"
 
 
+def _watch_tail_terminal(ff_pct, beauty: str) -> str:
+    """独立观察区（沪深飙升 / v1 回捞）的行尾标记：资金流 ▲▼ + 日线美感「美」。
+
+    与主表 `_entry_row_suffix` 同一分工 —— 判定单源（`signals.fund_flow_signal` /
+    `display_gates.beauty_marks_daily`），本层只负责成形（ANSI）。两个独立区共用本函数，
+    免得「同一个 ▲ 在两个区各画一遍、其中一个少了个空格」。
+
+    追加位置在定宽列**之外**：塞进列内会撑破 `COLS_HOT` / `COLS_HIST` 的对齐。
+
+    结构性上限（不是 bug，两个区都有）：▼▼ 不可达（≤-8% 已被通用门剔除）；
+    美★ 不可达（两区都不抓分时，`beauty_marks_daily` 只给日线档）。
+    """
+    tail = _fund_flow_icon_str(ff_pct)
+    if tail:
+        tail = f" {tail}"
+    if beauty:
+        tail += f" {ANSI['GREEN']}{beauty}{ANSI['RESET']}"
+    return tail
+
+
 def _render_hot_watch_region(rows) -> None:
     """渲染「沪深飙升·极有可能大涨」独立区（无结果时整区跳过，不留空表）。
 
@@ -282,13 +316,26 @@ def _render_hot_watch_region(rows) -> None:
                 ],
                 COLS_HOT,
             )
+            # 行尾标记（2026-09-16）：与 v1 回捞区/主表同源（_watch_tail_terminal），
+            # 本区此前没有这一列 —— 标记应当是**跨展示区通用**的，不该只有回捞区有。
+            + _watch_tail_terminal(c.ff_pct, c.beauty)
         )
     print(f"  {'-' * 92}")
     print(
-        f"  排序=评分(排名上升35/涨幅25/价格15/量能25) | 已剔除涨停·涨幅>{HOT_MAX_PERCENT:.0f}%·"
-        f"市值>{HOT_MAX_MARKET_CAP / 1e8:.0f}亿·ST·非创业板 | "
+        f"  排序=评分(排名上升35/涨幅25/价格15/量能25) | "
+        f"已剔除 ST·非创业板·停牌/无成交·价格>{MAX_STOCK_PRICE:.0f}元·市值>{HOT_MAX_MARKET_CAP / 1e8:.0f}亿·"
+        f"涨停·涨幅>{HOT_MAX_PERCENT:.0f}%（通用风险门 + 本区专有，见 scanner/display_gates.py）| "
         f"连击≥{HOT_HIGHLIGHT_STREAK}轮标★"
     )
+    # 行尾标记图例（2026-09-16）：飞书卡片有一份同义图例（build_feishu_card 的飙升节脚注），
+    # 两处须同步改 —— 守卫 tests/test_display.py::test_hot_legend_printed_on_both_surfaces。
+    if any((c.ff_pct is not None) or c.beauty for c in rows):
+        print(
+            f"  标记：{ANSI['GREEN']}▲▲/▲{ANSI['RESET']}=主力净流入(≥+8%/≥+5%)　"
+            f"{ANSI['RED']}▼{ANSI['RESET']}=净流出(≤-5%；≤-8% 已被硬门剔除，故不出现 ▼▼)　"
+            f"{ANSI['GREEN']}美{ANSI['RESET']}=日线趋势漂亮（尾部回撤更小·非更易大涨；"
+            f"日线数据不足则不标；本区默认开日线美感门，无分时档故不出现美★）"
+        )
 
 
 def render_hot_watch_standalone(rows) -> None:
@@ -298,6 +345,84 @@ def render_hot_watch_standalone(rows) -> None:
     逻辑分叉（独立区行宽/配色/脚注只此一份）。
     """
     _render_hot_watch_region(rows)
+
+
+def _render_hist_watch_region(rows) -> None:
+    """渲染「v1 回捞」独立区（无结果时整区跳过，不留空表）。
+
+    行元素为 scanner.historical_watch.HistCandidate（主循环内已算好），本函数只做渲染
+    —— 与 render_terminal 的「只画不算」纪律一致。形参取行列表而非 ScanView，理由同
+    _render_hot_watch_region：独立运行（`python -m scanner.historical_watch`）不必构造
+    一个满是空字段的 ScanView。
+
+    脚注必须带「启发式·未做样本外校准」：本区排序键的可信度低于 nextday_prob 那条
+    主线，不写清楚最自然的误读就是「评分高=更可能大涨」。
+    """
+    if not rows:
+        return
+
+    print(
+        f"\n{ANSI['BOLD']}{ANSI['CYAN']}◆ v1 回捞{ANSI['RESET']}"
+        f"（前 {HIST_LOOKBACK_DAYS} 个交易日进过 v1 · 今日回调到位 · 与上方口径独立）"
+    )
+    print(_table_header(COLS_HIST))
+    for _hi, c in enumerate(rows, 1):
+        # 行尾标记（2026-09-16）：资金流 ▲/▼ + 日线美感「美」，与飙升区共用
+        # `_watch_tail_terminal`（判定单源 signals / display_gates，本层只成形）。
+        # 本区结构上不会出现「美★」与「▼▼」，原因见 scanner/historical_watch
+        # 与 scanner/display_gates 的模块 docstring。
+        print(
+            _table_row(
+                [
+                    str(_hi),
+                    c.code,
+                    c.name[:9],
+                    f"{c.current:.2f}" if c.current else "—",
+                    pct_colored(c.percent),
+                    pct_colored(c.cum_pct) if c.cum_pct else "—",
+                    f"{c.vol_ratio:.2f}" if c.vol_ratio > 0 else "—",
+                    f"{c.rec_days_ago}日",
+                    f"{c.score:.0f}",
+                    c.rec_category,
+                ],
+                COLS_HIST,
+            )
+            + _watch_tail_terminal(c.ff_pct, c.beauty)
+        )
+    print(f"  {'-' * 92}")
+    print(
+        f"  判据=今日回调 ≤{HIST_DIP_PCT:.0f}% 且 量比 ≥{HIST_MIN_VOL_RATIO:.1f}"
+        f"（未缩量·有承接）| 距上次 v1 ≤{HIST_LOOKBACK_DAYS} 交易日 | 已剔除今日已推荐票"
+    )
+    # 通用风险门与飙升区同一份实现（scanner/display_gates.py），故这里只列**本区参数**：
+    # 市值上限 500 亿；其余（ST/非创业板/无报价/价格>200元/资金流出≤-8%）与另两区同值。
+    print(
+        f"  通用风险门（与 v1 池选·沪深飙升同源）：ST·非创业板·无有效报价·价格>{MAX_STOCK_PRICE:.0f}元·"
+        f"市值>{HIST_MAX_MARKET_CAP / 1e8:.0f}亿·资金流出≤{FUND_OUTFLOW_NET_PCT:.0f}%"
+    )
+    print(
+        f"  排序=回调深度{HIST_W_DIP:.0f}+量能{HIST_W_VOL:.0f}+时效{HIST_W_RECENCY:.0f}"
+        f"｜启发式排序·未做样本外校准（本区为观察窗口，非选股主线）"
+    )
+    # 行尾标记图例（2026-09-16）：飞书卡片有一份同义图例（build_feishu_card 的回捞节脚注），
+    # 两处须同步改 —— 守卫 tests/test_display.py::test_hist_legend_printed_on_both_surfaces。
+    # 两档的分档语义必须在**本区就地**说清，否则最自然的读法都是错的：
+    #   ▲▼ 只回答「-8% 以上这一段的强弱」（≤-8% 已被硬门剔除，故 ▼▼ 不可达）；
+    #   美 表示「尾部回撤更小」，不是「更可能大涨」（trend_beauty 分档实测 hit 低于基线）。
+    print(
+        f"  标记：{ANSI['GREEN']}▲▲/▲{ANSI['RESET']}=主力净流入(≥+8%/≥+5%)　"
+        f"{ANSI['RED']}▼{ANSI['RESET']}=净流出(≤-5%；≤-8% 已被硬门剔除，故不出现 ▼▼)　"
+        f"{ANSI['GREEN']}美{ANSI['RESET']}=日线趋势漂亮（尾部回撤更小·非更易大涨；本区无分时档，不会出现美★）"
+    )
+
+
+def render_hist_watch_standalone(rows) -> None:
+    """只渲染「v1 回捞」区（供 `python -m scanner.historical_watch` 独立运行）。
+
+    与主循环的 render_terminal 共用同一个 _render_hist_watch_region，避免两套渲染
+    逻辑分叉。
+    """
+    _render_hist_watch_region(rows)
 
 
 def render_terminal(view: ScanView) -> None:
@@ -374,6 +499,16 @@ def render_terminal(view: ScanView) -> None:
 
     # ── v1 池选 ──
     print(f"  {ANSI['BOLD']}◆ v1 池选 — 榜上优先·涨幅升序·回调核心{ANSI['RESET']}")
+    # 通用风险门清单（2026-09-16）：三个展示区共用一个实现（scanner/display_gates.py），
+    # 故这里把「哪些门在起作用」显式打出来 —— 此前只有飙升/回捞两区写了脚注，
+    # 主展示区什么都看不到，用户无从判断「这只票到底过没过风控」。
+    # ⚠ 主线这批门**在扫描期施加**（candidates.filter_gem_stocks + pipeline.pool +
+    # assemble 的资金流出过滤），展示期不再重复判一遍；飙升/回捞两区没有扫描链路，
+    # 在各自取数时判。差别只在**何时判**，不在**判什么**。
+    print(
+        f"  {ANSI['YELLOW']}▸ 风险门（与沪深飙升 · v1 回捞 同源）：ST·非创业板·停牌/无成交·"
+        f"价格>{MAX_STOCK_PRICE:.0f}元·市值>{MAX_MARKET_CAP / 1e8:.0f}亿·资金流出≤{FUND_OUTFLOW_NET_PCT:.0f}%{ANSI['RESET']}"
+    )
     # 美感标记分档图例（2026-09-15）：仅在确有标记时打一行，避免常年占位。
     # ★ 必须就地解释成「回撤更小」——否则最自然的误读是「更可能大涨」，而数据不支持
     # （美★ 与 美 的 next_day hit 无正向区分度，只有尾部回撤有差别，见 trend_beauty docstring）。
@@ -405,6 +540,12 @@ def render_terminal(view: ScanView) -> None:
     # 口径为「当日 momentum + 榜单热度跃升」（主线为 next_day 次日大涨）。
     # 独立成区而非并入主线表：两者排序键、评分体系、样本面都不同，混排会让
     # 「为什么这两只票排在同一个榜里」无法解释。
+    # ── v1 回捞 独立区（2026-09-16）──
+    # 候选来自 recommendations（前 N 个交易日的 v1 产出），与上方 v1 池选的「今日在榜票」
+    # 样本域**互斥**（默认剔除今日已推荐票）—— 并列为两区而不是合并成一区，正是因为
+    # 同一只票不可能同时出现在两边，不存在「同屏两种结论」的风险。
+    _render_hist_watch_region(view.hist_rows)
+
     _render_hot_watch_region(view.hot_rows)
 
 
@@ -416,6 +557,7 @@ def display_priority(
     last_ranks: dict[str, int] | None = None,
     weak: bool | None = None,
     hot_rows: list | None = None,
+    hist_rows: list | None = None,
 ) -> "ScanView | None":
     """构建展示视图并渲染到终端（build_scan_view + render_terminal 的便捷入口）。
 
@@ -432,6 +574,7 @@ def display_priority(
         last_ranks=last_ranks,
         weak=weak,
         hot_rows=hot_rows,
+        hist_rows=hist_rows,
     )
     if view is None:
         return None
