@@ -321,21 +321,21 @@ def _render_hot_watch_region(rows) -> None:
             + _watch_tail_terminal(c.ff_pct, c.beauty)
         )
     print(f"  {'-' * 92}")
-    print(
-        f"  排序=评分(排名上升35/涨幅25/价格15/量能25) | "
-        f"已剔除 ST·非创业板·停牌/无成交·价格>{MAX_STOCK_PRICE:.0f}元·市值>{HOT_MAX_MARKET_CAP / 1e8:.0f}亿·"
-        f"涨停·涨幅>{HOT_MAX_PERCENT:.0f}%（通用风险门 + 本区专有，见 scanner/display_gates.py）| "
-        f"连击≥{HOT_HIGHLIGHT_STREAK}轮标★"
-    )
+    # print(
+    #     f"  排序=评分(排名上升35/涨幅25/价格15/量能25) | "
+    #     f"已剔除 ST·非创业板·停牌/无成交·价格>{MAX_STOCK_PRICE:.0f}元·市值>{HOT_MAX_MARKET_CAP / 1e8:.0f}亿·"
+    #     f"涨停·涨幅>{HOT_MAX_PERCENT:.0f}%（通用风险门 + 本区专有，见 scanner/display_gates.py）| "
+    #     f"连击≥{HOT_HIGHLIGHT_STREAK}轮标★"
+    # )
     # 行尾标记图例（2026-09-16）：飞书卡片有一份同义图例（build_feishu_card 的飙升节脚注），
     # 两处须同步改 —— 守卫 tests/test_display.py::test_hot_legend_printed_on_both_surfaces。
-    if any((c.ff_pct is not None) or c.beauty for c in rows):
-        print(
-            f"  标记：{ANSI['GREEN']}▲▲/▲{ANSI['RESET']}=主力净流入(≥+8%/≥+5%)　"
-            f"{ANSI['RED']}▼{ANSI['RESET']}=净流出(≤-5%；≤-8% 已被硬门剔除，故不出现 ▼▼)　"
-            f"{ANSI['GREEN']}美{ANSI['RESET']}=日线趋势漂亮（尾部回撤更小·非更易大涨；"
-            f"日线数据不足则不标；本区默认开日线美感门，无分时档故不出现美★）"
-        )
+    # if any((c.ff_pct is not None) or c.beauty for c in rows):
+    #     print(
+    #         f"  标记：{ANSI['GREEN']}▲▲/▲{ANSI['RESET']}=主力净流入(≥+8%/≥+5%)　"
+    #         f"{ANSI['RED']}▼{ANSI['RESET']}=净流出(≤-5%；≤-8% 已被硬门剔除，故不出现 ▼▼)　"
+    #         f"{ANSI['GREEN']}美{ANSI['RESET']}=日线趋势漂亮（尾部回撤更小·非更易大涨；"
+    #         f"日线数据不足则不标；本区默认开日线美感门，无分时档故不出现美★）"
+    #     )
 
 
 def render_hot_watch_standalone(rows) -> None:
@@ -390,30 +390,30 @@ def _render_hist_watch_region(rows) -> None:
             + _watch_tail_terminal(c.ff_pct, c.beauty)
         )
     print(f"  {'-' * 92}")
-    print(
-        f"  判据=今日回调 ≤{HIST_DIP_PCT:.0f}% 且 量比 ≥{HIST_MIN_VOL_RATIO:.1f}"
-        f"（未缩量·有承接）| 距上次 v1 ≤{HIST_LOOKBACK_DAYS} 交易日 | 已剔除今日已推荐票"
-    )
+    # print(
+    #     f"  判据=今日回调 ≤{HIST_DIP_PCT:.0f}% 且 量比 ≥{HIST_MIN_VOL_RATIO:.1f}"
+    #     f"（未缩量·有承接）| 距上次 v1 ≤{HIST_LOOKBACK_DAYS} 交易日 | 已剔除今日已推荐票"
+    # )
     # 通用风险门与飙升区同一份实现（scanner/display_gates.py），故这里只列**本区参数**：
     # 市值上限 500 亿；其余（ST/非创业板/无报价/价格>200元/资金流出≤-8%）与另两区同值。
-    print(
-        f"  通用风险门（与 v1 池选·沪深飙升同源）：ST·非创业板·无有效报价·价格>{MAX_STOCK_PRICE:.0f}元·"
-        f"市值>{HIST_MAX_MARKET_CAP / 1e8:.0f}亿·资金流出≤{FUND_OUTFLOW_NET_PCT:.0f}%"
-    )
-    print(
-        f"  排序=回调深度{HIST_W_DIP:.0f}+量能{HIST_W_VOL:.0f}+时效{HIST_W_RECENCY:.0f}"
-        f"｜启发式排序·未做样本外校准（本区为观察窗口，非选股主线）"
-    )
+    # print(
+    #     f"  通用风险门（与 v1 池选·沪深飙升同源）：ST·非创业板·无有效报价·价格>{MAX_STOCK_PRICE:.0f}元·"
+    #     f"市值>{HIST_MAX_MARKET_CAP / 1e8:.0f}亿·资金流出≤{FUND_OUTFLOW_NET_PCT:.0f}%"
+    # )
+    # print(
+    #     f"  排序=回调深度{HIST_W_DIP:.0f}+量能{HIST_W_VOL:.0f}+时效{HIST_W_RECENCY:.0f}"
+    #     f"｜启发式排序·未做样本外校准（本区为观察窗口，非选股主线）"
+    # )
     # 行尾标记图例（2026-09-16）：飞书卡片有一份同义图例（build_feishu_card 的回捞节脚注），
     # 两处须同步改 —— 守卫 tests/test_display.py::test_hist_legend_printed_on_both_surfaces。
     # 两档的分档语义必须在**本区就地**说清，否则最自然的读法都是错的：
     #   ▲▼ 只回答「-8% 以上这一段的强弱」（≤-8% 已被硬门剔除，故 ▼▼ 不可达）；
     #   美 表示「尾部回撤更小」，不是「更可能大涨」（trend_beauty 分档实测 hit 低于基线）。
-    print(
-        f"  标记：{ANSI['GREEN']}▲▲/▲{ANSI['RESET']}=主力净流入(≥+8%/≥+5%)　"
-        f"{ANSI['RED']}▼{ANSI['RESET']}=净流出(≤-5%；≤-8% 已被硬门剔除，故不出现 ▼▼)　"
-        f"{ANSI['GREEN']}美{ANSI['RESET']}=日线趋势漂亮（尾部回撤更小·非更易大涨；本区无分时档，不会出现美★）"
-    )
+    # print(
+    #     f"  标记：{ANSI['GREEN']}▲▲/▲{ANSI['RESET']}=主力净流入(≥+8%/≥+5%)　"
+    #     f"{ANSI['RED']}▼{ANSI['RESET']}=净流出(≤-5%；≤-8% 已被硬门剔除，故不出现 ▼▼)　"
+    #     f"{ANSI['GREEN']}美{ANSI['RESET']}=日线趋势漂亮（尾部回撤更小·非更易大涨；本区无分时档，不会出现美★）"
+    # )
 
 
 def render_hist_watch_standalone(rows) -> None:

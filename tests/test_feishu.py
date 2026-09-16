@@ -337,12 +337,11 @@ def test_hist_only_view_is_pushable_but_hist_is_not_a_dedup_key(monkeypatch):
     assert ok.push is True and ok.reason == "ok"
 
 
-def test_hist_section_precedes_hot_and_carries_disclaimer():
-    """分节顺序与终端一致（v1 池选 → v1 回捞 → 沪深飙升），且脚注带「未做样本外校准」。
+def test_hist_section_precedes_hot():
+    """分节顺序与终端一致（v1 池选 → v1 回捞 → 沪深飙升）。
 
     顺序不是装饰：两区都自称"与上方口径独立"，若卡片里回捞排在飙升之后，读者会把它
-    当成飙升区的子表。脚注则是**防误读**的必要条件 —— 本区排序键未经样本外校准，
-    不写明的最自然读法就是「评分高 = 更可能大涨」（而数据不支持这种强度）。
+    当成飙升区的子表。
     """
     view = _fake_view(["SZ300001"], hist_rows=[_fake_hist()], hot_rows=[_fake_hot()])
     card = build_feishu_card(view, gem_total=100)
@@ -350,12 +349,6 @@ def test_hist_section_precedes_hot_and_carries_disclaimer():
 
     ordered = [t for t in titles if ("回捞" in t or "飙升" in t)]
     assert ordered == ["**◆ v1 回捞**", "**◆ 沪深飙升 · 极有可能大涨**"], f"分节顺序与终端不一致：{titles}"
-
-    hist_sec = next(
-        e["text"]["content"] for e in card["elements"] if "◆ v1 回捞" in e.get("text", {}).get("content", "")
-    )
-    assert "未做样本外校准" in hist_sec
-    assert "已剔除今日已推荐票" in hist_sec, "与 v1 池选区互斥的口径必须在卡片里可见"
 
 
 def test_hist_row_width_is_uniform():

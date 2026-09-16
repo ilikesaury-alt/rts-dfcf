@@ -28,18 +28,7 @@ from scanner.config import (
     FEISHU_TOP_N,
     FEISHU_WEBHOOK,
     FUND_OUTFLOW_NET_PCT,
-    HIST_DIP_PCT,
-    HIST_LOOKBACK_DAYS,
-    HIST_MAX_MARKET_CAP,
-    HIST_MIN_VOL_RATIO,
-    HIST_W_DIP,
-    HIST_W_RECENCY,
-    HIST_W_VOL,
     HOT_HIGHLIGHT_STREAK,
-    HOT_MAX_MARKET_CAP,
-    HOT_MAX_PERCENT,
-    MAX_MARKET_CAP,
-    MAX_STOCK_PRICE,
     now_beijing,
 )
 
@@ -479,20 +468,7 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
         _row_line(row.entry, view, rank=row.rank, accum=row.accum, score=_to_score(row.score)) for row in main
     ]
     if pool_lines:
-        # 美感标记分档图例（2026-09-15，与终端 render_terminal 的同义图例，两处须同步改，
-        # 守卫 tests/test_display.py::test_beauty_tier_legend_printed_on_both_surfaces）。
-        # ★ 必须就地解释成「回撤更小」—— 否则最自然的误读是「更可能大涨」，而数据不支持
-        # （美★ 与 美 的 next_day hit 无正向区分度，差别只在尾部回撤，见 trend_beauty docstring）。
-        # 仅在确有标记时追加，避免常年在卡片里占位。
-        _marks = getattr(view, "beauty_mark", None) or {}
-        _legend = ["", "美=日线趋势漂亮｜美★=分时亦漂亮（尾部回撤更小·非更易大涨）"] if any(_marks.values()) else []
-        # 通用风险门清单（2026-09-16）：与终端 render_terminal 的同义行，两端须同步改，
-        # 否则「终端告诉了用户过了哪些门、卡片没说」= 两个出口的信息量不一致。
-        _gates = (
-            f"风险门（与沪深飙升 · v1 回捞 同源）：ST·非创业板·停牌/无成交·"
-            f"价格>{MAX_STOCK_PRICE:.0f}元·市值>{MAX_MARKET_CAP / 1e8:.0f}亿·资金流出≤{FUND_OUTFLOW_NET_PCT:.0f}%"
-        )
-        sections.append(("◆ v1 池选", pool_lines + [""] + _legend + [_gates]))
+        sections.append(("◆ v1 池选", pool_lines))
     # 「◆ v2 池选」与「◆ 核心方向低吸」两个分节已于 2026-09-14 按用户决策隐藏
     # （与终端 render_terminal 同步移除）。需复原见 git 历史。
 
@@ -503,27 +479,7 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
         hist_lines = [
             f"{_fmt_hist_row_feishu(c, i)}{_marks_tail_card(c.ff_pct, c.beauty)}" for i, c in enumerate(hist_rows, 1)
         ]
-        hist_footer = (
-            f"判据=今日回调 ≤{HIST_DIP_PCT:.0f}% 且 量比 ≥{HIST_MIN_VOL_RATIO:.1f}（未缩量·有承接）| "
-            f"距上次 v1 ≤{HIST_LOOKBACK_DAYS} 交易日 | 已剔除今日已推荐票 | "
-            f"排序=回调深度{HIST_W_DIP:.0f}+量能{HIST_W_VOL:.0f}+时效{HIST_W_RECENCY:.0f}"
-            f"（启发式·未做样本外校准）"
-        )
-        # 通用风险门（2026-09-16）：三区同一实现（display_gates.common_hard_gate），
-        # 故这里只列**本区参数**（市值上限 500 亿），其余与飙升/主线同值。
-        hist_gates = (
-            f"通用风险门（与 v1 池选·沪深飙升同源）：ST·非创业板·无有效报价·"
-            f"价格>{MAX_STOCK_PRICE:.0f}元·市值>{HIST_MAX_MARKET_CAP / 1e8:.0f}亿·资金流出≤{FUND_OUTFLOW_NET_PCT:.0f}%"
-        )
-        # 行尾标记图例（2026-09-16）：与终端 _render_hist_watch_region 的同义图例，
-        # 两处须同步改（守卫 test_display.py::test_hist_legend_printed_on_both_surfaces）。
-        # 「本区无分时档」这句是**防误读的必要条件** —— 少了它，读者会拿主线的
-        # 「美★=分时亦漂亮」来判断本区的空位，把「无分时数据」误读成「分时不漂亮」。
-        hist_legend = (
-            "标记：🟢🟢/🟢=主力净流入(≥+8%/≥+5%) 🔴=净流出(≤-5%；≤-8% 已被硬门剔除，故不出现 🔴🔴) "
-            "美=日线趋势漂亮（尾部回撤更小·非更易大涨；本区无分时档，不会出现美★）"
-        )
-        sections.append(("◆ v1 回捞", hist_lines + ["", hist_footer, hist_gates, hist_legend]))
+        sections.append(("◆ v1 回捞", hist_lines))
 
     # ── 沪深飙升·极有可能大涨 独立区（与终端 _render_hot_watch_region 同源）──
     hot_rows = getattr(view, "hot_rows", None)
@@ -533,19 +489,7 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
         hot_lines = [
             f"{_fmt_hot_row_feishu(c, i)}{_marks_tail_card(c.ff_pct, c.beauty)}" for i, c in enumerate(hot_rows, 1)
         ]
-        hot_footer = (
-            f"排序=评分(排名上升35/涨幅25/价格15/量能25) | "
-            f"已剔除 ST·非创业板·停牌/无成交·价格>{MAX_STOCK_PRICE:.0f}元·市值>{HOT_MAX_MARKET_CAP / 1e8:.0f}亿·"
-            f"涨停·涨幅>{HOT_MAX_PERCENT:.0f}%（通用风险门 + 本区专有）| "
-            f"连击≥{HOT_HIGHLIGHT_STREAK}轮标★"
-        )
-        # 标记图例（2026-09-16）：与终端 _render_hot_watch_region 的同义图例，
-        # 两处须同步改（守卫 test_display.py::test_hot_legend_printed_on_both_surfaces）。
-        hot_legend = (
-            "标记：🟢🟢/🟢=主力净流入(≥+8%/≥+5%) 🔴=净流出(≤-5%；≤-8% 已被硬门剔除，故不出现 🔴🔴) "
-            "美=日线趋势漂亮（尾部回撤更小·非更易大涨；日线数据不足则不标；本区默认开日线美感门，无分时档故不出现美★）"
-        )
-        sections.append(("◆ 沪深飙升 · 极有可能大涨", hot_lines + ["", hot_footer, hot_legend]))
+        sections.append(("◆ 沪深飙升 · 极有可能大涨", hot_lines))
 
     rendered = False
     for title, lines in sections:
