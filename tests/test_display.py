@@ -719,14 +719,20 @@ def test_prominence_no_longer_sorts(monkeypatch, capsys):
 
 
 def test_display_priority_tier_banner_separates_groups(capsys):
-    """复合评分排序（2026-09-08）：档位升序 → composite_score 降序 → 类别优先级。
-    双跑同屏后主表恒为 v1 五桶口径（2026-09-02）。"""
+    """v1 池选排序（2026-09-16，用户决策：不依赖回测数据）：
+    档位(过热硬门劣后) → 类别展示优先级(策略语义) → 榜单排名升序(实时热度)
+    → 资金流降序(实时) → 形态标签加分。composite_score 仅作展示列，不再决定顺序。
+
+    关键不变量：同类别内顺序由榜单排名决定，而非 raw score（score 是回测驱动的策略
+    内部置信度，不能作为排序主键）。本例 SZ300001 评分 90 远高于 SZ300002 的 50，
+    但榜单排名 50 远落后于后者的排名 5 ⇒ SZ300002 排在前，直接证伪旧 score 排序。
+    """
     conn = _rec_db()
-    # composite_score = cat_base + tech_norm + rank_norm + fund_norm + dip_bonus
-    _insert_rec_pct(conn, "SZ300001", "低分", "rebound", 50, 1.0)  # cat=10, tech=0.5 → ~10.6
-    _insert_rec_pct(conn, "SZ300002", "动量", "momentum", 70, 3.0)  # cat=2.6, tech=0.7 → ~3.4
-    _insert_rec_pct(conn, "SZ300003", "高分", "rebound", 90, 2.0)  # cat=10, tech=0.9 → ~10.9
-    disp_mod.display_priority(conn, today_pool={})
+    _insert_rec_pct(conn, "SZ300001", "高分低排", "rebound", 90, 1.0)  # 评分高但榜单排名垫后
+    _insert_rec_pct(conn, "SZ300002", "低分高排", "rebound", 50, 2.0)  # 评分低但榜单排名靠前
+    _insert_rec_pct(conn, "SZ300003", "动量", "momentum", 70, 3.0)  # 类别档位劣后 → 末
+    rank_map = {"SZ300001": 50, "SZ300002": 5, "SZ300003": 1}
+    disp_mod.display_priority(conn, today_pool={}, rank_map=rank_map)
     out = capsys.readouterr().out
     assert "▶ 置顶档" not in out
     assert "▶ 普通档" not in out
@@ -736,10 +742,10 @@ def test_display_priority_tier_banner_separates_groups(capsys):
     def _idx(sym: str) -> int:
         return next(i for i, ln in enumerate(lines) if sym in ln)
 
-    # composite_score 排序：高分 rebound 前、低分 rebound 次之、momentum 末
-    assert _idx("SZ300003") == 0, f"高分rebound(90)应排最前: {lines}"
-    assert _idx("SZ300001") == 1, f"低分rebound(50)应居中: {lines}"
-    assert _idx("SZ300002") == 2, f"momentum应排最后: {lines}"
+    # 榜单排名升序：低分高排(5) 先于 高分低排(50)，证伪 score 排序
+    assert _idx("SZ300002") < _idx("SZ300001"), f"榜单排名应优先于 score: {lines}"
+    # 类别档位：rebound(tier0) 整体先于 momentum(tier1)
+    assert _idx("SZ300003") == 2, f"momentum 应排最后(档位劣后): {lines}"
 
 
 def test_pool_pick_kept_out_of_v1_main_table(capsys):
@@ -947,12 +953,12 @@ def test_display_priority_tier4_sector_resonance_low(capsys):
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     lines = [ln for ln in _main_lines(out) if "SZ3000" in ln]
-    # 复合评分排序（2026-09-08）：同类别 short_term 内按 composite_score 降序（tech_norm 主导）
-    # SZ300002(80) > SZ300003(70) > SZ300004(68) > SZ300001(60)
-    assert "SZ300002" in lines[0], f"高分短差(80)应排最前: {lines}"
-    # 四只票全部正常展示（小板块共振不再被劣后到末尾）
+    # 2026-09-16：排序不再依赖 composite_score/raw score（非回测驱动）。四只 short_term
+    # 档位相同(均 tier3)且无榜单排名/资金流差异时按稳定顺序并列，不再按分数降序；
+    # 故不再断言「高分短差(80)排最前」，只守住核心不变量：档位不再过滤/劣后到末尾。
     assert len(lines) == 4, f"档位不应再过滤/劣后排序: {lines}"
     assert any("SZ300002" in ln for ln in lines), f"小板块共振仍应展示: {lines}"
+    assert any("SZ300001" in ln for ln in lines), f"低分票不应被分数劣后隐藏: {lines}"
 
 
 def test_priority_row_breakout_mark_single_symbol(capsys):

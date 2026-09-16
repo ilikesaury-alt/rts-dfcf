@@ -28,12 +28,14 @@ from scanner.nextday_rule import scan_rule
 from scanner.ranking import (
     _breakout_profile_key,
     _breakout_structure_ok,
+    _dip_label_bonus,
     build_accum_map,
     build_breakout_kline_map,
     comeback_sort_key,
     composite_score,
     composite_tier,
     entry_dims,
+    entry_fund_flow_pct,
     fresh_candidate,
     is_fund_outflow,
     is_nextday_marked,
@@ -364,16 +366,29 @@ def build_scan_view(
                 accum_val = accum_map.get(sym)
             score = e.get("score", 0)
             is_core = bool(e.get("_core_stock"))
-            # 统一复合评分（2026-09-08）：取代原 5 元组排序（榜上优先→涨幅→核心→排名→新面孔）
+            # composite_score 仅作行内展示参考列（cat_base=回测先验、tech_norm=raw score，
+            # 均属"回测驱动"；依用户决策 2026-09-16 不再作为排序主键）。
             cs = composite_score(e, conn, accum_map=accum_map)
+            # 档位仍由过热硬门推导（accum≥50%→tier3 劣后），属实时安全阀、非回测。
             tier = composite_tier(e, conn, accum_map=accum_map)
-            _scored_rows.append((tier, cs, e, is_core, accum_val, score))
-        # 统一排序：档位升序 → composite_score 降序 → 类别优先级（composite_score 内已含 cat_base）
-        _scored_rows.sort(key=lambda x: (x[0], -x[1], CAT_DISPLAY_PRIORITY.get(x[2].get("category", ""), 99)))
+            # ── v1 排序主键（2026-09-16，不依赖回测数据）──
+            # 档位(过热劣后) → 类别展示优先级(策略语义,非历史hit) → 榜单排名升序(实时热度)
+            # → 资金流降序(实时主力) → 低吸/突破标签加分(形态,非回测)。
+            _rk = e.get("live_rank") or e.get("rank")
+            _rank_key = _rk if isinstance(_rk, (int, float)) and _rk > 0 else 99999
+            _flow = entry_fund_flow_pct(e, flow_pct_map)
+            _fund_key = _flow if _flow is not None else 0.0
+            _dip_key = _dip_label_bonus(e)
+            _cat_pri = CAT_DISPLAY_PRIORITY.get(e.get("category", ""), 99)
+            _scored_rows.append(
+                (tier, _cat_pri, _rank_key, -_fund_key, -_dip_key, e, is_core, accum_val, score, cs)
+            )
+        # 统一排序：过热硬门劣后 → 类别语义优先级 → 榜单排名升序 → 资金流降序 → 形态加分
+        _scored_rows.sort(key=lambda x: (x[0], x[1], x[2], x[3], x[4]))
         # 逐行解析为 MainRow（排序在上面的元组里完成，此处只做展示字段定型）。
         # 2026-08-29：候选（_fresh_c）必须逐行重算——构建循环里的 _fresh_c 只保留末行，
         # 跨行复用会把上一只票的行情安到本行。
-        for _tier, _cs, _e, _ic, _av, _sc in _scored_rows:
+        for _tier, _cat_pri, _rank_key, _neg_fund, _neg_dip, _e, _ic, _av, _sc, _cs in _scored_rows:
             _fresh_c = fresh_candidate(_e)
             _rk_disp = _e.get("live_rank") or _e.get("rank")
             if _rk_disp is None and _fresh_c:

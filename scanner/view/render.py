@@ -1,16 +1,8 @@
 from scanner.categories import CAT_LABEL
 from scanner.config import (
     FUND_OUTFLOW_NET_PCT,
-    HIST_DIP_PCT,
     HIST_LOOKBACK_DAYS,
-    HIST_MAX_MARKET_CAP,
-    HIST_MIN_VOL_RATIO,
-    HIST_W_DIP,
-    HIST_W_RECENCY,
-    HIST_W_VOL,
     HOT_HIGHLIGHT_STREAK,
-    HOT_MAX_MARKET_CAP,
-    HOT_MAX_PERCENT,
     MAX_MARKET_CAP,
     MAX_STOCK_PRICE,
     TOP40_THRESHOLD,
