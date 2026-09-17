@@ -35,6 +35,8 @@ import os
 import sys
 from pathlib import Path
 
+import psutil
+
 _IS_WINDOWS = sys.platform == "win32"
 
 #: 默认锁文件位置（相对项目根）。不删除，永久保留。
@@ -43,6 +45,71 @@ DEFAULT_LOCK_PATH = Path("logs") / "scanner.lock"
 
 class SingleInstanceError(RuntimeError):
     """锁文件无法打开等基础设施级错误（区别于「已被占用」）。"""
+
+
+def _runs_script(command: list[str], cwd: str, script_path: Path) -> bool:
+    if len(command) < 2:
+        return False
+    executable = Path(command[0]).name.lower()
+    if not executable.startswith(("python", "pypy")):
+        return False
+    index = 1
+    while index < len(command):
+        arg = command[index]
+        if arg == "-m":
+            return (
+                index + 1 < len(command)
+                and command[index + 1] == script_path.stem
+                and (Path(cwd) / script_path.name).resolve() == script_path
+            )
+        if arg in ("-c", "-", "--help", "--version", "-h", "-V"):
+            return False
+        if arg == "--":
+            index += 1
+            break
+        if arg in ("-W", "-X"):
+            index += 2
+        elif arg.startswith("-"):
+            index += 1
+        else:
+            break
+    if index >= len(command):
+        return False
+    candidate = Path(command[index])
+    if not candidate.is_absolute():
+        candidate = Path(cwd) / candidate
+    return candidate.resolve() == script_path
+
+
+def stop_existing_scanners(script_path: Path, timeout: float = 10.0) -> list[int]:
+    target = script_path.resolve()
+    victims = []
+    current = psutil.Process(os.getpid())
+    started_at = current.create_time()
+    for process in psutil.process_iter():
+        if process.pid == os.getpid():
+            continue
+        try:
+            if (process.create_time(), process.pid) < (started_at, current.pid) and _runs_script(
+                process.cmdline(), process.cwd(), target
+            ):
+                victims.append(process)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            continue
+    stopped = []
+    for process in victims:
+        try:
+            process.kill()
+            stopped.append(process.pid)
+        except psutil.NoSuchProcess:
+            continue
+        except psutil.AccessDenied as exc:
+            raise SingleInstanceError(f"无法结束旧扫描器 PID {process.pid}，本次启动退出") from exc
+    _, alive = psutil.wait_procs(victims, timeout=timeout)
+    if alive:
+        pids = ", ".join(str(process.pid) for process in alive)
+        raise SingleInstanceError(f"旧扫描器尚未退出（PID {pids}），本次启动退出")
+    return stopped
 
 
 class SingleInstanceLock:

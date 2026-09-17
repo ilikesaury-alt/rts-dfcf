@@ -14,9 +14,16 @@ import textwrap
 import time
 from pathlib import Path
 
+import psutil
 import pytest
 
-from scanner.single_instance import DEFAULT_LOCK_PATH, SingleInstanceError, SingleInstanceLock
+from scanner.single_instance import (
+    DEFAULT_LOCK_PATH,
+    SingleInstanceError,
+    SingleInstanceLock,
+    _runs_script,
+    stop_existing_scanners,
+)
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 
@@ -37,10 +44,24 @@ _CHILD_HOLD = textwrap.dedent(
 )
 
 
-def _spawn_holder(lock_path: Path, ready: Path, fail: Path) -> subprocess.Popen:
+def _spawn_holder(
+    lock_path: Path, ready: Path, fail: Path, script_path: Path | None = None, replace: bool = False
+) -> subprocess.Popen:
     script = _CHILD_HOLD.format(base=str(BASE_DIR), lock=str(lock_path), flag_ready=str(ready), flag_fail=str(fail))
+    if replace:
+        script = script.replace(
+            "lock = SingleInstanceLock",
+            "from pathlib import Path\n"
+            "from scanner.single_instance import stop_existing_scanners\n"
+            "stop_existing_scanners(Path(__file__))\n"
+            "lock = SingleInstanceLock",
+        )
+    command = [sys.executable, "-c", script]
+    if script_path is not None:
+        script_path.write_text(script, encoding="utf-8")
+        command = [sys.executable, str(script_path)]
     proc = subprocess.Popen(  # noqa: S603 - 固定命令 + 本地生成的脚本，无外部输入
-        [sys.executable, "-c", script],
+        command,
         cwd=str(BASE_DIR),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
@@ -233,6 +254,143 @@ def test_lock_auto_released_when_holder_killed(tmp_path):
         time.sleep(0.1)
     assert acquired, "持有者被强杀后锁未释放 —— 会留下永久死锁"
     lock.release()
+
+
+def test_real_restart_replaces_old_holder(tmp_path):
+    script = tmp_path / "unified_scanner.py"
+    lock_path = tmp_path / "restart.lock"
+    old = _spawn_holder(lock_path, tmp_path / "old.ready", tmp_path / "old.fail", script)
+    new = None
+    try:
+        assert (tmp_path / "old.ready").exists()
+        new = _spawn_holder(lock_path, tmp_path / "new.ready", tmp_path / "new.fail", script, replace=True)
+        assert (tmp_path / "new.ready").exists()
+        assert not (tmp_path / "new.fail").exists()
+        old.wait(timeout=15)
+        assert old.poll() is not None
+        lock = SingleInstanceLock(lock_path)
+        assert lock.holder_pid() == new.pid
+        assert not lock.acquire()
+    finally:
+        for process in (old, new):
+            if process is not None:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=15)
+
+
+@pytest.mark.parametrize(
+    ("arguments", "matches"),
+    [
+        (["unified_scanner.py"], True),
+        (["./unified_scanner.py", "120", "--no-lock"], True),
+        (["-u", "-X", "utf8", "unified_scanner.py"], True),
+        (["--", "unified_scanner.py"], True),
+        (["-m", "unified_scanner"], True),
+        (["-c", "unified_scanner.py"], False),
+        (["other.py", "unified_scanner.py"], False),
+        (["../other/unified_scanner.py"], False),
+        (["-m", "other", "unified_scanner.py"], False),
+        (["-X"], False),
+        ([], False),
+    ],
+)
+def test_script_matching(tmp_path, arguments, matches):
+    script = tmp_path / "unified_scanner.py"
+    assert _runs_script([sys.executable, *arguments], str(tmp_path), script) is matches
+    assert not _runs_script(["editor.exe", str(script)], str(tmp_path), script)
+
+
+def test_stop_only_older_matching_processes(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    import scanner.single_instance as module
+
+    target = tmp_path / "unified_scanner.py"
+    current = Mock(pid=os.getpid())
+    current.create_time.return_value = 100
+    old = Mock(pid=10001)
+    old.create_time.return_value = 90
+    old.cmdline.return_value = [sys.executable, str(target), "--no-lock"]
+    old.cwd.return_value = str(tmp_path)
+    second = Mock(pid=10002)
+    second.create_time.return_value = 91
+    second.cmdline.return_value = [sys.executable, str(target)]
+    second.cwd.return_value = str(tmp_path)
+    other = Mock(pid=10003)
+    other.create_time.return_value = 90
+    other.cmdline.return_value = [sys.executable, str(tmp_path / "other.py"), str(target)]
+    other.cwd.return_value = str(tmp_path)
+    newer = Mock(pid=10004)
+    newer.create_time.return_value = 101
+    denied = Mock(pid=10005)
+    denied.create_time.side_effect = psutil.AccessDenied(denied.pid)
+    monkeypatch.setattr(module.psutil, "Process", Mock(return_value=current))
+    monkeypatch.setattr(module.psutil, "process_iter", lambda: [current, old, second, other, newer, denied])
+    wait = Mock(return_value=([old, second], []))
+    monkeypatch.setattr(module.psutil, "wait_procs", wait)
+    assert stop_existing_scanners(target) == [old.pid, second.pid]
+    old.kill.assert_called_once_with()
+    second.kill.assert_called_once_with()
+    wait.assert_called_once_with([old, second], timeout=10.0)
+    for process in (current, other, newer, denied):
+        process.kill.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["denied", "timeout", "gone"])
+def test_stop_failure_handling(tmp_path, monkeypatch, failure):
+    from unittest.mock import Mock
+
+    import scanner.single_instance as module
+
+    target = tmp_path / "unified_scanner.py"
+    process = Mock(pid=10001)
+    process.create_time.return_value = 0
+    process.cmdline.return_value = [sys.executable, str(target)]
+    process.cwd.return_value = str(tmp_path)
+    monkeypatch.setattr(module.psutil, "process_iter", lambda: [process])
+    wait = Mock(return_value=([], [process]) if failure == "timeout" else ([process], []))
+    monkeypatch.setattr(module.psutil, "wait_procs", wait)
+    if failure == "denied":
+        process.kill.side_effect = psutil.AccessDenied(process.pid)
+    elif failure == "gone":
+        process.kill.side_effect = psutil.NoSuchProcess(process.pid)
+    if failure == "gone":
+        assert stop_existing_scanners(target) == []
+    else:
+        with pytest.raises(SingleInstanceError):
+            stop_existing_scanners(target)
+    process.kill.assert_called_once_with()
+
+
+@pytest.mark.parametrize("blocked", [False, True])
+def test_main_replaces_before_scanning(tmp_path, monkeypatch, blocked):
+    from unittest.mock import Mock
+
+    import unified_scanner as module
+
+    events = []
+
+    def stop(path):
+        assert path == Path(module.__file__).resolve()
+        events.append("stop")
+        if blocked:
+            raise SingleInstanceError("blocked")
+        return [123]
+
+    def scan(*args):
+        assert (tmp_path / "scanner.lock.pid").exists()
+        events.append("scan")
+
+    stop_mock = Mock(side_effect=stop)
+    monkeypatch.setattr(module, "stop_existing_scanners", stop_mock)
+    monkeypatch.setattr(module, "run_scanner", scan)
+    monkeypatch.setattr(module, "LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["unified_scanner.py", "--no-feishu"])
+    assert module.main() == (2 if blocked else 0)
+    assert events == (["stop"] if blocked else ["stop", "scan"])
+    stop_mock.assert_called_once()
+    assert not (tmp_path / "scanner.lock.pid").exists()
 
 
 def test_child_can_acquire_after_graceful_release(tmp_path):

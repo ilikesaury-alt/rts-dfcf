@@ -55,7 +55,7 @@ from scanner.log_utils import log_results
 from scanner.models import RecommendationRow
 from scanner.orchestrator import scan_with_raw
 from scanner.ranking_snapshot import persist_ranking_snapshot
-from scanner.single_instance import SingleInstanceLock
+from scanner.single_instance import SingleInstanceError, SingleInstanceLock, stop_existing_scanners
 from scanner.trading_session import (
     is_trading_day,
     is_trading_time,
@@ -585,6 +585,13 @@ def main() -> int:
     # 再起一个会导致重复请求数据源、重复推送，并互相抢 SQLite 写锁。
     lock = SingleInstanceLock(Path(LOG_DIR) / "scanner.lock")
     if not args.no_lock:
+        try:
+            stopped = stop_existing_scanners(Path(__file__).resolve())
+        except SingleInstanceError as exc:
+            print(f"  ⛔ {exc}")
+            return 2
+        if stopped:
+            print(f"  已结束旧扫描器实例：PID {', '.join(str(pid) for pid in stopped)}")
         if not lock.acquire():
             print(f"  ⛔ 已有扫描器实例在运行{lock.holder_description()}，本次启动退出。")
             print("     （若是崩溃残留，锁会随进程退出由内核自动释放，无需手工删除）")
