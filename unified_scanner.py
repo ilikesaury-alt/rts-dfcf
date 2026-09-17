@@ -497,6 +497,8 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
 
                 # 历史推荐跟踪已并入回马枪（2026-08-07）：tracker 模块删除，不再单独查询
                 # display() 返回本轮 ScanView，飞书复用同一份（避免两端选择分叉）。
+                # 真实市场指数（创业板指 pct）：供市况标签与板块建议，缓存命中无额外请求。
+                _market_pct = adapter.fetch_market_index()
                 view = display(
                     len(all_gem),
                     interval,
@@ -508,6 +510,7 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     last_ranks=last_ranks,
                     hot_rows=hot_rows,
                     hist_rows=hist_rows,
+                    market_idx_pct=_market_pct,
                 )
                 # 快照本轮榜单排名供下一轮展示排名变化（上一轮为 None 时显示纯名次）。
                 last_ranks = dict(current_rank_map)

@@ -556,3 +556,5 @@ class ScanView:
     # 的票不进任何展示区（v1 池选 / 回马枪 / 终选输入），终端与飞书同源。
     # 纯展示层过滤——不改 excluded、不落库，回测/归因样本口径不受影响。
     flow_filtered: int = 0
+    # 大盘指数涨幅（创业板指 pct），供 sector suggestion 展示；None = 取数失败。
+    market_idx_pct: float | None = None

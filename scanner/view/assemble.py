@@ -11,6 +11,7 @@ from scanner.config import (
     TACTICS_SELL_TAGS,
     TREND_MARK_ENABLED,
 )
+from scanner.config_scoring import MARKET_WEAK_THRESHOLD
 from scanner.core_themes import core_stock_symbols
 from scanner.database import (
     get_cached_klines,
@@ -55,10 +56,37 @@ __all__ = (
     "CAT_COLOR",
     "_ANSI_ESCAPE",
     "_is_console",
+    "_market_suggestion_text",
+    "_real_market_regime",
     "_regime_weak",
     "_supports_ansi",
     "build_scan_view",
 )
+
+
+def _real_market_regime(market_idx_pct: float | None) -> bool | None:
+    """基于真实市场指数（创业板指）判定弱市。
+
+    返回 True=弱市 / False=强市 / None=无数据（调用方 fail-open 按强市处理）。
+    使用 enhancer 同源阈值：MARKET_STRONG_THRESHOLD / MARKET_WEAK_THRESHOLD。
+    无数据时不判否（None → 按强市处理），避免无指数时误标「弱势」。
+    """
+    if market_idx_pct is None:
+        return None
+    return market_idx_pct < MARKET_WEAK_THRESHOLD
+
+
+def _market_suggestion_text(weak: bool | None, market_idx_pct: float | None) -> str:
+    """根据市况生成板块观察建议文本（纯展示，不参与评分/选股）。
+
+    weak=True → 弱市（防御型板块）；weak=False → 强市（进攻型板块）；
+    weak=None → 无指数数据，给通用建议。
+    """
+    if weak is True:
+        return "弱市·防御优先：银行/医药/消费红利"
+    if weak is False:
+        return "强势·进攻优先：科技/AI/半导体/新能源"
+    return "市况未知·均衡配置"
 
 
 def _regime_weak(conn, lookback=10):
@@ -120,6 +148,7 @@ def build_scan_view(
     weak: bool | None = None,
     hot_rows: list | None = None,
     hist_rows: list | None = None,
+    market_idx_pct: float | None = None,
 ):
     """构建一次扫描的展示视图（纯计算，不 print、不写库）：读今日推荐并算出档位/标记/排序。
 
@@ -374,17 +403,20 @@ def build_scan_view(
     # （沿革：原实现按「排名升序 → 低吸标签优先 → 涨幅降序」排序后截前
     #  V2_POOL_DISPLAY_TOP 行。需复原见 git 历史。）
 
-    # 市况信号与头部 _market_env_tag / 飞书 env_tag 同源（统一 _regime_weak）；
+    # 市况信号：优先使用真实市场指数（创业板指 pct），无数据时回退到 DB 推荐历史。
     # weak 由调用方传入时复用（避免 Display 头/体重复查询），None 时自算一次。
-    # （原「动态推荐序列」`_adjusted_picks` 已随 🎯/回马枪于 2026-09-16 删除。）
     if weak is None:
-        try:
-            weak = _regime_weak(conn)
-        except EXTERNAL_FAILURES as _e:
-            # 编程错误（KeyError/TypeError 等）不再被吞——冒泡到主循环记录完整 traceback；
-            # 此处仅承接数据类异常并按强市 fail-open。
-            warnings.append(f"regime 判定中断（数据缺失，按强市处理）: {type(_e).__name__}: {_e}")
-            weak = False
+        real_regime = _real_market_regime(market_idx_pct)
+        if real_regime is not None:
+            weak = real_regime
+        else:
+            try:
+                weak = _regime_weak(conn)
+            except EXTERNAL_FAILURES as _e:
+                # 编程错误（KeyError/TypeError 等）不再被吞——冒泡到主循环记录完整 traceback；
+                # 此处仅承接数据类异常并按强市 fail-open。
+                warnings.append(f"regime 判定中断（数据缺失，按强市处理）: {type(_e).__name__}: {_e}")
+                weak = False
     _weak = weak
 
     # 显示门（核心低吸）：原为「主区条数 ≤ COMEBACK_DISPLAY_MIN_MAIN 或弱市 regime 时
@@ -436,4 +468,5 @@ def build_scan_view(
         hot_rows=hot_rows,
         hist_rows=hist_rows,
         flow_filtered=flow_filtered,
+        market_idx_pct=market_idx_pct,
     )

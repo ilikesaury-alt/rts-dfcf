@@ -3,8 +3,6 @@ from scanner.config import (
     FUND_OUTFLOW_NET_PCT,
     HIST_LOOKBACK_DAYS,
     HOT_HIGHLIGHT_STREAK,
-    MAX_MARKET_CAP,
-    MAX_STOCK_PRICE,
     TOP40_THRESHOLD,
     now_beijing,
 )
@@ -66,6 +64,7 @@ def display(
     last_ranks: dict[str, int] | None = None,
     hot_rows: list | None = None,
     hist_rows: list | None = None,
+    market_idx_pct: float | None = None,
 ) -> "ScanView | None":
     """扫描主屏：头部摘要 + 展示视图（构建/渲染委托 display_priority）。
 
@@ -84,9 +83,16 @@ def display(
     print(f"{'=' * 96}")
     print(f"  创业板飙升榜监控  ({now})")
     filter_info = f" | 过滤{filtered_large_cap}只" if filtered_large_cap else ""
-    # 统一市况信号：与动态推荐 / 飞书 env_tag 同源（_regime_weak），避免同屏矛盾。
-    weak = _regime_weak(conn) if conn is not None else False
-    print(f"  创业板共 {gem_total} 只{filter_info} | 每{interval}s刷新 | {_market_env_tag(weak)}")
+    # 市况信号：优先使用真实市场指数（创业板指 pct），无数据时回退到 DB 推荐历史。
+    _real_weak = _real_market_regime(market_idx_pct)
+    if _real_weak is not None:
+        weak = _real_weak
+    elif conn is not None:
+        weak = _regime_weak(conn)
+    else:
+        weak = False
+    _suggestion = _market_suggestion_text(weak, market_idx_pct)
+    print(f"  创业板共 {gem_total} 只{filter_info} | 每{interval}s刷新 | {_market_env_tag(weak)} | {_suggestion}")
     print(f"{'=' * 96}")
     return display_priority(
         conn=conn,
@@ -97,6 +103,7 @@ def display(
         weak=weak,
         hot_rows=hot_rows,
         hist_rows=hist_rows,
+        market_idx_pct=market_idx_pct,
     )
 
 
@@ -542,11 +549,13 @@ def display_priority(
     weak: bool | None = None,
     hot_rows: list | None = None,
     hist_rows: list | None = None,
+    market_idx_pct: float | None = None,
 ) -> "ScanView | None":
     """构建展示视图并渲染到终端（build_scan_view + render_terminal 的便捷入口）。
 
     weak：市况信号（弱市布尔）。None 时由 build_scan_view 内部按 _regime_weak 自算；
     传入则复用（display 主屏已在打印头部前算过一次，避免重复查询）。
+    market_idx_pct：真实市场指数（创业板指 pct），优先用于弱市判定。
     返回 ScanView 供复用（display 主屏回传飞书 / 测试捕获输出后取数据两用）；
     无 conn 或今日无推荐时返回 None。
     """
@@ -559,6 +568,7 @@ def display_priority(
         weak=weak,
         hot_rows=hot_rows,
         hist_rows=hist_rows,
+        market_idx_pct=market_idx_pct,
     )
     if view is None:
         return None

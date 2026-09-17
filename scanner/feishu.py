@@ -44,6 +44,7 @@ from scanner.display import ScanView, _fmt_hot_amount, _fmt_hot_volume_hand, _pa
 from scanner.log_utils import log_event
 from scanner.signals import fund_flow_signal, split_risk_flags
 from scanner.utils import EXTERNAL_FAILURES, to_float
+from scanner.view.assemble import _market_suggestion_text
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ── 推送决策 ──
@@ -442,7 +443,11 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
     main = view.main_rows[:top_n]
 
     env_tag = " | 🔴大盘弱势·谨慎" if view.weak else ""
-    header_text = f"**{now}** | 优选 {len(main)} 只{env_tag}"
+    _suggestion = _market_suggestion_text(
+        getattr(view, "weak", None),
+        getattr(view, "market_idx_pct", None),
+    )
+    header_text = f"**{now}** | 优选 {len(main)} 只{env_tag} | {_suggestion}"
     elements: list[dict] = [{"tag": "div", "text": {"tag": "lark_md", "content": header_text}}]
 
     sections: list[tuple[str, list[str]]] = []
