@@ -5,8 +5,9 @@
   - 终选区 =「若必须持仓，买谁」：无论门开关都给出最优组合——为什么是它、
     谁被否、否在哪。用户 2026-09-04 需求：终端 v1/v2 池几十只票里选不出来。
     2026-09-05 升级：用户实际买入预算只有 1-2 只，粗粒度 verdict 星级 + 跨桶
-    不可比 score 的排序无法回答「池内谁更可能次日大涨」——终选排序改用
-    scanner.nextday_prob 的当日口径次日大涨概率（连续可比），并：
+    不可比 score 的排序无法回答「池内谁更可能次日大涨」——终选排序 2026-09-16 起
+    改为意图驱动（类别语义优先级→实时资金流→走势美感→辨识度），nextday_prob 概率
+    仅作行内参考展示，并：
       1. 每只标注持有周期（次日靶点 / 3日修复，HOLD_DAYS_BY_CATEGORY 单源）；
       2. 买满 ≥2 只时按驱动概念去相关（同主题第 2 只劣后——同板块齐涨齐跌，
          买 2 只的覆盖度≈买 1 只）；
@@ -14,8 +15,11 @@
 
 评级/风险依据全部为已回测结论（today_report._tier0_verdict 单源复用），概率
 校准依据见 scanner/nextday_prob.py 模块 docstring：
-  正向：🎯复合画像 OR1.56 / 辨识度 OR2.0；风险：主力流出 OR0.32 / 小板块共振
-  OR0.58 / 超买 OR0.84 / 2-4%死区 / ≥8% 陷阱带。
+  正向：辨识度 OR2.0；风险：主力流出 OR0.32 / 小板块共振 OR0.58 / 超买 OR0.84 /
+  2-4%死区 / ≥8% 陷阱带。
+  （2026-09-16：上述回测概率/评级仅作行内参考展示，终选顺序改由意图驱动，
+  见 build_final_picks 排序键 / _final_sort_key。同日 🎯 复合画像 OR1.56 已删除
+  —— 🎯 降为纯展示标记，不再进概率模型。）
   类别先验：**一律用 hit 率**（config_scoring.CATEGORY_HIT_RATE，2026-09-14 统一口径）。
   ⚠ 本模块原有 `category != "momentum"` 的**无条件剔除**，理由是「唯一负超额类别
   （-0.70%）」——那是**平均超额**口径，与终选排序用的 hit 率口径方向相反
@@ -31,6 +35,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from scanner.categories import CAT_DISPLAY_PRIORITY
 from scanner.config import (
     DISPLAY_MAX_TODAY_PCT,
     FINAL_PICK_BEAUTY_ENABLED,
@@ -45,7 +50,6 @@ from scanner.config import (
 )
 from scanner.decision import market_gate
 from scanner.nextday_prob import BASE_RATE_DEFAULT, next_day_hit_probability
-from scanner.ranking import is_nextday_marked
 from scanner.utils import to_float
 
 # 相对导入：pyright 会话早期缓存未含新建模块时，相对路径走目录直查可绕开绝对名解析。
@@ -64,8 +68,10 @@ from .trend_beauty import (
 
 # 双挂归一（同 display 的 nf∩st 规则）：同 symbol 多类别行时按类别优先级取一行。
 # short_term 行恒存（池内事实），优先级最高；pool_pick 是 v2 合池快照行；
-# comeback/core_dip 为低优桶（2026-09-05 纳入终选池——用户决策宇宙含核心低吸/回马枪，
-# 其 3 日语义由周期标签明示，概率按各类别 base rate 如实反映 comeback 2.8%）。
+# core_dip 为低优桶（2026-09-05 纳入终选池——用户决策宇宙含核心低吸，
+# 其 3 日语义由周期标签明示，概率按各类别 base rate 如实反映）。
+# ⚠ `cat not in _CAT_PRIORITY` 会直接丢弃该行 ⇒ 本表同时是**入池白名单**。
+# 2026-09-16：「comeback」随回马枪桶删除而移出白名单（历史 comeback 行不再进终选池）。
 _CAT_PRIORITY: tuple[str, ...] = (
     "short_term",
     "rebound",
@@ -73,7 +79,6 @@ _CAT_PRIORITY: tuple[str, ...] = (
     "pool_pick",
     "momentum",
     "new_face",
-    "comeback",
     "core_dip",
 )
 
@@ -89,7 +94,7 @@ HORIZON_CUM3D = "3日修复"
 
 
 def horizon_label(category: str) -> str:
-    """类别持有周期标签：cum_3d 语义类（comeback/core_dip）vs 次日靶点类。"""
+    """类别持有周期标签：cum_3d 语义类（core_dip）vs 次日靶点类。"""
     return HORIZON_CUM3D if category in HOLD_DAYS_BY_CATEGORY else HORIZON_NEXTDAY
 
 
@@ -188,17 +193,36 @@ def _beauty_gate(kline_map: dict[str, list[Any] | None], sym: str, entry: Any, c
     return "·".join(reasons) if reasons else None
 
 
+def _final_sort_key(v: dict, prom_map: dict[str, Any]) -> tuple:
+    """终选意图驱动排序键（2026-09-16）：不再用回测校准的 nextday_prob(-_p)/verdict(stars)/score。
+
+    主键 = 类别语义优先级(CAT_DISPLAY_PRIORITY，与 v1 池选同源) → 实时主力资金净流入
+    (在前) → 走势美感(美★>美>无) → 辨识度。_p / stars / score 仍计算并作行内参考展示，
+    但不再决定顺序。所有分量均为非回测的语义/实时信号。
+    """
+    mark = v.get("_beauty_mark") or ""
+    beauty = 2 if mark == "美★" else (1 if mark == "美" else 0)
+    flow = v.get("flow") or 0.0
+    prom = prom_map.get(v.get("symbol", ""), 0.0) or 0.0
+    return (
+        CAT_DISPLAY_PRIORITY.get(v.get("category", ""), 99),
+        -float(flow),
+        -beauty,
+        -float(prom),
+    )
+
+
 def build_final_picks(
     conn: sqlite3.Connection,
     entries: list[Any],
     accum_map: dict[str, float | None],
     flow_pct_map: dict[str, float],
-    nextday_mark: dict[tuple[str, str], bool] | None = None,
 ) -> dict[str, Any]:
     """构建终选：双挂归一 → 追涨门/减仓标签过滤 → 走势美感门 → 概率+评级 → 去相关 → 截断。
 
-    排序键：次日大涨概率降序（nextday_prob，连续可比）→ verdict 降序（风险折价：
-    尾盘回吐/顶背离/疲劳等概率模型未含的回测风险因子）→ 评分降序（平局末键）。
+    排序键（2026-09-16 意图驱动）：类别语义优先级(CAT_DISPLAY_PRIORITY，与 v1 池选同源)
+    → 实时主力资金净流入(在前) → 走势美感(美★>美>无) → 辨识度。nextday_prob 的 _p /
+    verdict 星级 / score 仍计算并作行内参考展示，但不再决定顺序。
     买满 ≥2 只时贪心去相关：同驱动概念的第 2 只跳过，名额不满再按概率回填并标注。
 
     2026-09-09 新增走势美感门（FINAL_PICK_BEAUTY_ENABLED）：分时/日线走势「漂亮」
@@ -211,7 +235,8 @@ def build_final_picks(
 
     返回 {"available", "gate_allowed", "pool_size", "beauty_blocked", "picks",
     "rejects", "ts"}；picks/rejects 元素为 _tier0_verdict dict + 注入键
-    _display_pct/_p/_horizon/_marked/_beauty_fail。
+    _display_pct/_p/_horizon/_beauty_fail。
+    （原 nextday_mark 入参与 _marked 注入键随 🎯 画像于 2026-09-16 删除。）
     """
     fn = _verdict_fn()
     allowed, _gate_reason = market_gate(conn)
@@ -228,7 +253,6 @@ def build_final_picks(
     # display 单源行情/候选链（懒导入：display 反向懒导入本模块，避免循环导入）
     from scanner.display import entry_display_quote, fresh_candidate
 
-    nextday_mark = nextday_mark or {}
     deduped = dedup_candidates(entries)
     # 辨识度批量预计算（pool 级一次，fail-open 空 map = 因子跳过）
     prom_map = _prominence_map_safe(conn, [e["symbol"] for e in deduped])
@@ -257,14 +281,8 @@ def build_final_picks(
             e["_accum"] = accum_map.get(sym)
         v = fn(e, flow_pct_map)
         v["_display_pct"] = pct
-        # 🎯 判定：display 预计算 map 优先（全 today_recs 覆盖）；缺项按同源口径现算
-        # （is_nextday_marked 内部 accum 缺失 fail-open，与 🎯 展示标记语义一致）。
-        mk = nextday_mark.get((sym, e["category"]))
-        if mk is None:
-            mk = is_nextday_marked(e, conn, accum=e.get("_accum"))
-        v["_marked"] = bool(mk)
         v["_horizon"] = horizon_label(e["category"])
-        v["_p"] = next_day_hit_probability(e, marked=v["_marked"], prominence=prom_map.get(sym), flow=v.get("flow"))
+        v["_p"] = next_day_hit_probability(e, prominence=prom_map.get(sym), flow=v.get("flow"))
         # 走势美感门（2026-09-09）：硬拦默认关（数据裁决，见 config）。类别一律评——
         # 2026-09-14 前 momentum 因「永禁」被豁免，现无类别豁免规则。
         # None = 漂亮或数据缺失（fail-open 放行，见 trend_beauty）。
@@ -279,7 +297,10 @@ def build_final_picks(
     # （hit 率）如实反映在 _p 里——用一句硬编码再整体删掉某一类，等于把两个口径
     # 混在一条流水线里互相抵消（旧 `category != "momentum"` 即此）。
     pool = [v for v in all_v if not v.get("_beauty_fail")]
-    pool.sort(key=lambda v: (-v["_p"], -v["verdict"], -to_float(v.get("score"), default=0.0)))
+    # 意图驱动排序（2026-09-16）：不再用回测校准的 nextday_prob(-_p)/verdict(stars)/score。
+    # 主键 = 类别语义优先级 → 实时资金流(净流入在前) → 走势美感 → 辨识度（详见 _final_sort_key）。
+    # _p / stars / score 仍计算并作行内参考展示，但不再决定顺序。
+    pool.sort(key=lambda v: _final_sort_key(v, prom_map))
 
     # 贪心去相关：同驱动概念的第 2 只跳过；名额不满再按概率回填（render 标注同板块）。
     picks: list[dict] = []
@@ -301,7 +322,7 @@ def build_final_picks(
     result["picks"] = picks
     picked_ids = {id(p) for p in picks}
     rejected = [v for v in all_v if id(v) not in picked_ids]
-    rejected.sort(key=lambda v: -v["_p"])
+    rejected.sort(key=lambda v: _final_sort_key(v, prom_map))
     result["rejects"] = rejected[:FINAL_PICK_REJECT_TOP]
     return result
 
@@ -317,8 +338,9 @@ def render_final_pick_lines(result: dict[str, Any]) -> list[str]:
     """渲染终选区文本行（纯函数，供 display / feishu / 测试共用）。
 
     2026-09-08 精简：个股行只保留决策核心字段（代码/名称/类别/概率/周期/星级
-    /🎯/现涨幅/驱动概念/同板块提示），位置·主力资金·风险明细·评分砍掉——
+    /现涨幅/驱动概念/同板块提示），位置·主力资金·风险明细·评分砍掉——
     风险已折入星级（评级单源），明细在主表/v2 池选区可查，落选行保留理由。
+    2026-09-16：行尾 🎯 标记随该画像删除。
     """
     title = f"◆ 终选参考 — 合池·次日概率终选（≤{FINAL_PICK_MAX}只·非交易指令）"
     if not result.get("available"):
@@ -335,7 +357,7 @@ def render_final_pick_lines(result: dict[str, Any]) -> list[str]:
     else:
         # 2026-09-09 数据裁决后硬拦默认关；美感词表降级为展示（池选行尾「美」/「美★」标记）
         gate_s = " · 走势美感门:关（「美/美★」仅为展示参考）" if TREND_MARK_ENABLED else ""
-    lines.append(f"  合格池 {pool_size} 只 · P=排序估计非保证（全池基准 {BASE_RATE_DEFAULT:.1%}）{gate_s}")
+    lines.append(f"  合格池 {pool_size} 只 · P=参考估计·非排序依据（全池基准 {BASE_RATE_DEFAULT:.1%}）{gate_s}")
     if not picks:
         lines.append("  — 合池无合格标的（全部被追涨门/减仓标签/走势美感门/评级过滤）")
         if result.get("rejects"):
@@ -345,7 +367,6 @@ def render_final_pick_lines(result: dict[str, Any]) -> list[str]:
         concept = str(v.get("concept") or "").strip()
         pct = v.get("_display_pct")
         pct_s = f"{pct:+.1f}%" if pct is not None else "—"
-        marked_s = "🎯" if v.get("_marked") else ""
         beauty_s = f" {v['_beauty_mark']}" if v.get("_beauty_mark") else ""
         theme_s = ""
         if i > 1:
@@ -355,7 +376,7 @@ def render_final_pick_lines(result: dict[str, Any]) -> list[str]:
         lines.append(
             f"  {i}. {v['symbol']} {v['name']}[{v['category']}] "
             f"P={to_float(v.get('_p'), default=0.0):.0%} {v.get('_horizon', '')} "
-            f"{v.get('stars', '')}{v.get('label', '')}{marked_s} 现{pct_s}{beauty_s}"
+            f"{v.get('stars', '')}{v.get('label', '')} 现{pct_s}{beauty_s}"
             + (f" {concept}" if concept else "")
             + theme_s
         )
@@ -370,8 +391,10 @@ def final_pick_lines(
     entries: list[Any],
     accum_map: dict[str, float | None],
     flow_pct_map: dict[str, float],
-    nextday_mark: dict[tuple[str, str], bool] | None = None,
 ) -> list[str]:
-    """便捷组合：构建 + 渲染（display.build_scan_view 调用入口）。"""
-    result = build_final_picks(conn, entries, accum_map, flow_pct_map, nextday_mark)
+    """便捷组合：构建 + 渲染（display.build_scan_view 调用入口）。
+
+    2026-09-16：`nextday_mark` 入参已随 🎯 画像删除（行尾 🎯 标记与档0提权均已移除）。
+    """
+    result = build_final_picks(conn, entries, accum_map, flow_pct_map)
     return render_final_pick_lines(result)

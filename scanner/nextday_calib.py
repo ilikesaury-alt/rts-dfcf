@@ -6,14 +6,12 @@
 `nextday_attribution` 报告，人眼读数、手抄进代码，两边之间没有任何自动校验。
 实测后果（2026-09-13 复核）：
 
-1. **OR_MARKED 的拟合口径与线上判据不一致（确证）**。常数 `2.6` 记的读数是
-   「marked 13.6% (n=543) vs unmarked 5.8% (n=794)」。本次在 09-05 子集按
-   「甜蜜带 ∩ 非超买」（**不含累计门槛**）复现出 marked 596 / unmarked 775、
-   unmarked hit 5.8% —— 与文档完全一致，确认口径来源。但线上
-   `ranking.is_nextday_marked` 自 2026-08-14 起含「5 日累计 ≥ NEXTDAY_ACCUM_MIN」
-   门槛，按线上真实口径重算当前 OR 仅 **1.56**（n=344/1213）—— 常数被高估 67%
-   （odds 尺度）。docstring 还把正确口径（「甜蜜带+累计≥6」）标注为「已失效」，
-   实为口径取错。
+1. **OR_MARKED 的拟合口径与线上判据不一致（已确证；2026-09-16 随该常数删除而归档）**。
+   常数 `2.6` 记的读数漏了线上 `ranking.is_nextday_marked` 自 2026-08-14 起含的
+   「5 日累计 ≥ NEXTDAY_ACCUM_MIN」门槛，按线上真实口径重算仅 **1.56**（被高估 67%，
+   odds 尺度）。本模块正是为抓出这类手抄漂移而生。**2026-09-16 用户决策把 🎯 降为
+   纯展示标记**（不喂 OR 因子、不提 tier-0），`OR_MARKED` 已从 `nextday_prob` 与本
+   模块一并删除——它既不在下方 FACTOR_SPECS / 快照中，也不再是模型的乘子。
 2. **类别 base rate 末段普遍高估**：core_dip 0.089 → 实测 0.065、pool_pick
    0.028 → 0.021。
 3. `tests/test_nextday_prob.py` 只断言因子**方向**不断言数值，故上述漂移不会被
@@ -38,8 +36,8 @@
 
 漂移是双向噪声：样本每月增长约 10-20%，hit 率的抽样波动在 n≈200 的分组上约
 ±3-5 个百分点。15% 相对阈值能放过正常抽样波动（实测 OR_PROMINENCE 9%、
-OR_SMALL_SECTOR 12% 均属此类），又能抓住口径错误与真实衰减（OR_MARKED 40%、
-core_dip 27%）。调低到 10% 会让巡检长期红着，反而没人看。
+OR_SMALL_SECTOR 12% 均属此类），又能抓住口径错误与真实衰减（历史上的 OR_MARKED
+40%、core_dip 27%）。调低到 10% 会让巡检长期红着，反而没人看。
 
 ## 用法
 
@@ -80,20 +78,16 @@ from scanner.nextday_prob import (
     OR_BAND_MID,
     OR_BAND_SWEET_LOW,
     OR_BAND_TRAP,
-    OR_MARKED,
     OR_OUTFLOW,
     OR_OVERBOUGHT,
     OR_PROMINENCE,
     OR_SMALL_SECTOR,
 )
 from scanner.ranking import (
-    NEXTDAY_CAT_SPECS,
     _entry_fund_flow_pct,
     _entry_overbought,
     _entry_sector_resonance,
     _nextday_entry_percent,
-    build_accum_map,
-    is_nextday_marked,
 )
 
 SNAPSHOT_PATH = Path(__file__).with_name("nextday_calib.json")
@@ -111,22 +105,33 @@ MIN_COND_SAMPLE = 20
 # 新增豁免需走 code review：这是「承认问题存在」，不是「把检查关掉」。
 ACKNOWLEDGED_DRIFT: dict[str, str] = {
     "OR_BAND_SWEET_LOW": "口径错位 + 已做样本外验证（2026-09-13）：遗留常数按「全样本条件组 vs "
-                         "全体」拟合，按适用集合（未标记且非 short_term）重算为 0.690（漂移 21.6%）。"
+                         "全体」拟合，按适用集合（非 short_term）重算为 0.653（漂移 25.8%）。"
                          "§B1 样本外判定（python -m scanner.rule_validate，test 窗 40 日、"
                          "日等权 top-3）：换实测值后 hit 无变化（Δ +0.0pp，CI [0,0]）、rank-IC "
-                         "微升 +0.0122→+0.0131 —— 证据不足，暂留。",
-    "OR_BAND_DEAD": "口径错位 + 已做样本外验证（2026-09-13）：同上，按适用集合重算为 0.806"
-                    "（漂移 15.2%）。§B1 样本外判定：换实测值后 test hit Δ −0.8pp"
-                    "（CI [−3.3,+1.7] 跨 0）、rank-IC +0.0122→+0.0163（改善）—— 头部与整体"
-                    "方向相反，证据不足，暂留。",
-    "OR_BAND_MID": "口径错位 + 已做样本外验证（2026-09-13）：按适用集合重算为 2.040（漂移 51.1%）。"
-                   "§B1 样本外判定（python -m scanner.rule_validate --set "
+                         "微升 +0.0122→+0.0131 —— 证据不足，暂留。"
+                         "（2026-09-16 重算快照：适用集合由「未标记且非 short_term」改为"
+                         "「非 short_term」，实测值随之更新。）",
+    "OR_BAND_MID": "口径错位 + 已做样本外验证（2026-09-13）：按适用集合（非 short_term）重算为 2.155"
+                   "（漂移 59.6%）。§B1 样本外判定（python -m scanner.rule_validate --set "
                    "scanner.nextday_prob.OR_BAND_MID=2.04）：**改实测值反而更差** —— "
                    "test hit 13.3%→11.7%（Δ −1.7pp，CI [−4.2,+0.0]），train 窗 Δ −3.3pp 且 "
                    "CI [−6.7,−0.6] **不含 0**；rank-IC +0.0122→+0.0078 亦降。三项一起改更差"
                    "（test Δ −2.5pp，train CI [−7.2,−1.1] 不含 0）。"
                    "结论：该常数是**按终选目标校准**的，不是 OR 的无偏估计 —— 不要按 OR 实测值"
-                   "去「修正」它（详见 nextday_prob._band_or docstring）。",
+                   "去「修正」它（详见 nextday_prob._band_or docstring）。"
+                   "（2026-09-16 重算快照：实测值由 2.040 更新为 2.155。）",
+    "OR_OVERBOUGHT": "2026-09-16 重算快照时实测 0.691（常数 0.840，漂移 17.7%）：主因是同日 "
+                     "🎯 降为纯展示标记后，本因子适用集合由「未标记行」扩到「全体行」"
+                     "（原 marked 行按定义非超买，加入参照组后抬高了参照组 hit）。"
+                     "按纪律**不直接改常数**（改常数属行为变更，须先过 §B1 样本外验证）。"
+                     "解除条件：跑 `python -m scanner.rule_validate --evaluator nextday-prob "
+                     "--set scanner.nextday_prob.OR_OVERBOUGHT=<实测>` 确认无显著变差后同步。",
+    "OR_OUTFLOW": "2026-09-16 重算快照时实测 1.037（常数 0.320，漂移 223.9%）—— **纯数据漂移**"
+                  "（本因子的适用集合与判定自 2026-09-13 起未变）：最近数个交易日的净流出票"
+                  "次日 hit 率由 1.1% 抬升到 3.8%，与参照组（3.7%）持平，即该因子在当前 regime "
+                  "已**失去区分度**（不再是负向）。按纪律不直接改常数（属行为变更，须先过 §B1）。"
+                  "解除条件：样本外验证确认因子已失效后，评估降权/移除（`_p` 现为展示参考量，"
+                  "已不影响终选排序）。⚠ 待复核。",
 }
 
 
@@ -135,12 +140,16 @@ ACKNOWLEDGED_DRIFT: dict[str, str] = {
 
 @dataclass(frozen=True)
 class Enriched:
-    """一行样本 + 全部因子判定结果（判定全部走生产单源助手，防口径漂移）。"""
+    """一行样本 + 全部因子判定结果（判定全部走生产单源助手，防口径漂移）。
+
+    2026-09-16：`marked`（🎯 判定）字段随 `OR_MARKED` 因子一并删除 —— 🎯 已降为
+    纯展示标记，不再是模型输入，也不再用于划分因子适用集合（overbought / band
+    现对全体适用集合生效）。
+    """
 
     category: str
     date: str
     next_day: float
-    marked: bool
     overbought: bool
     band: str
     flow: float | None
@@ -180,12 +189,13 @@ OR_BAND_MID_KEY = "OR_BAND_MID"
 OR_BAND_TRAP_KEY = "OR_BAND_TRAP"
 
 # 适用范围文字（快照/报告共用，避免措辞漂移）
+# 2026-09-16：🎯 降为纯展示标记后，模型不再有 marked/unmarked 分流 —— overbought
+# 对全体生效，band 对「非 short_term」生效。原 _SCOPE_MARKABLE / _SCOPE_UNMARKED /
+# _SCOPE_UNMARKED_NONSHORT 随之删除。
 _SCOPE_ALL = "全体样本"
-_SCOPE_MARKABLE = "可标记类别行（category ∈ ranking.NEXTDAY_CAT_SPECS）"
-_SCOPE_UNMARKED = "未标记行（marked=False）"
-_SCOPE_UNMARKED_NONSHORT = "未标记且非 short_term 行"
+_SCOPE_ALL_NONSHORT = "非 short_term 行"
 _SCOPE_FLOW_KNOWN = "资金流可得行（fund_flow_main_pct 非空）"
-_SCOPE_LEGACY_ALL = "全体样本（遗留口径，含 marked 行）"
+_SCOPE_LEGACY_ALL = "全体样本（遗留口径）"
 
 
 def _band_label(percent: float) -> str:
@@ -199,16 +209,8 @@ def _band_label(percent: float) -> str:
     return OR_BAND_TRAP_KEY
 
 
-def _in_markable(e: Enriched) -> bool:
-    return e.category in NEXTDAY_CAT_SPECS
-
-
-def _unmarked(e: Enriched) -> bool:
-    return not e.marked
-
-
-def _unmarked_nonshort(e: Enriched) -> bool:
-    return (not e.marked) and e.category != "short_term"
+def _all_nonshort(e: Enriched) -> bool:
+    return e.category != "short_term"
 
 
 def _all(_e: Enriched) -> bool:
@@ -221,22 +223,12 @@ def _flow_known(e: Enriched) -> bool:
 
 _BAND_LEGACY_NOTE = (
     "遗留常数按「全样本条件组 vs 全体样本」拟合（文档各带 n 之和 = 全样本），"
-    "而模型只对未标记且非 short_term 行乘该 OR —— 参照组不是适用集合的补集。"
+    "而模型只对非 short_term 行乘该 OR —— 参照组不是适用集合的补集。"
     "★ 2026-09-13 §B1 样本外判定结论：**不按实测值修正**（改后终选 hit 更差）；"
     "这些常数是按终选目标校准的，不是 OR 的无偏估计。详见 ACKNOWLEDGED_DRIFT。"
 )
 
 FACTOR_SPECS: tuple[FactorSpec, ...] = (
-    FactorSpec(
-        "OR_MARKED",
-        "🎯 次日大涨画像",
-        applies_to=_SCOPE_MARKABLE,
-        pop=_in_markable,
-        cond=lambda e: e.marked,
-        legacy_note="2026-09-13 口径修正（已完成）：原常数 2.6 的拟合口径漏了线上 "
-                    "is_nextday_marked 的 5 日累计门槛（2026-08-14 新增），"
-                    "按线上口径重算为 1.56。",
-    ),
     FactorSpec(
         "OR_PROMINENCE",
         "辨识度（↻ 反复上榜）",
@@ -247,17 +239,18 @@ FACTOR_SPECS: tuple[FactorSpec, ...] = (
     FactorSpec(
         "OR_OVERBOUGHT",
         "超买死亡信号",
-        applies_to=_SCOPE_UNMARKED,
-        pop=_unmarked,
+        applies_to=_SCOPE_ALL,
+        pop=_all,
         cond=lambda e: e.overbought,
         legacy_note="2026-09-13 口径修正（已完成）：原常数 0.68 按全样本补集拟合"
-                    "（含 marked 行），按适用集合（未标记行）重算为 0.84。",
+                    "（含 marked 行），按适用集合（未标记行）重算为 0.84。2026-09-16 起"
+                    "🎯 分流删除，本因子对全体生效（口径随之扩到含原 marked 行）。",
     ),
     FactorSpec(
         OR_BAND_SWEET_LOW_KEY,
         "涨幅带 <2%（低吸）",
-        applies_to=_SCOPE_UNMARKED_NONSHORT,
-        pop=_unmarked_nonshort,
+        applies_to=_SCOPE_ALL_NONSHORT,
+        pop=_all_nonshort,
         cond=lambda e: e.band == OR_BAND_SWEET_LOW_KEY,
         legacy_scope=_SCOPE_LEGACY_ALL,
         legacy_note=_BAND_LEGACY_NOTE,
@@ -265,8 +258,8 @@ FACTOR_SPECS: tuple[FactorSpec, ...] = (
     FactorSpec(
         OR_BAND_DEAD_KEY,
         "涨幅带 2-4%（死区）",
-        applies_to=_SCOPE_UNMARKED_NONSHORT,
-        pop=_unmarked_nonshort,
+        applies_to=_SCOPE_ALL_NONSHORT,
+        pop=_all_nonshort,
         cond=lambda e: e.band == OR_BAND_DEAD_KEY,
         legacy_scope=_SCOPE_LEGACY_ALL,
         legacy_note=_BAND_LEGACY_NOTE,
@@ -274,8 +267,8 @@ FACTOR_SPECS: tuple[FactorSpec, ...] = (
     FactorSpec(
         OR_BAND_MID_KEY,
         "涨幅带 4-8%（甜蜜中段）",
-        applies_to=_SCOPE_UNMARKED_NONSHORT,
-        pop=_unmarked_nonshort,
+        applies_to=_SCOPE_ALL_NONSHORT,
+        pop=_all_nonshort,
         cond=lambda e: e.band == OR_BAND_MID_KEY,
         legacy_scope=_SCOPE_LEGACY_ALL,
         legacy_note=_BAND_LEGACY_NOTE,
@@ -283,8 +276,8 @@ FACTOR_SPECS: tuple[FactorSpec, ...] = (
     FactorSpec(
         OR_BAND_TRAP_KEY,
         "涨幅带 ≥8%（陷阱）",
-        applies_to=_SCOPE_UNMARKED_NONSHORT,
-        pop=_unmarked_nonshort,
+        applies_to=_SCOPE_ALL_NONSHORT,
+        pop=_all_nonshort,
         cond=lambda e: e.band == OR_BAND_TRAP_KEY,
         legacy_scope=_SCOPE_LEGACY_ALL,
         legacy_note=_BAND_LEGACY_NOTE,
@@ -307,7 +300,6 @@ FACTOR_SPECS: tuple[FactorSpec, ...] = (
 
 # 常数镜像（快照与巡检共用；新增因子必须同时登记到 FACTOR_SPECS 与本表）
 CONSTANT_BY_KEY: dict[str, float] = {
-    "OR_MARKED": OR_MARKED,
     "OR_PROMINENCE": OR_PROMINENCE,
     "OR_OVERBOUGHT": OR_OVERBOUGHT,
     "OR_BAND_SWEET_LOW": OR_BAND_SWEET_LOW,
@@ -336,7 +328,6 @@ def load_enriched(conn: sqlite3.Connection, days: int = 0) -> list[Enriched]:
         # 转 dict —— entry_dims 只认 dict，直接赋值会让所有维度因子静默判 False。
         r["score_breakdown"] = parse_score_breakdown(r.get("breakdown"))
         r["_candidate"] = None
-    accum_map = build_accum_map(conn, recs)
     out: list[Enriched] = []
     for e in recs:
         if e["next_day"] is None:
@@ -346,7 +337,6 @@ def load_enriched(conn: sqlite3.Connection, days: int = 0) -> list[Enriched]:
                 category=e["category"],
                 date=e["date"],
                 next_day=float(e["next_day"]),
-                marked=bool(is_nextday_marked(e, conn, accum_map=accum_map)),
                 overbought=bool(_entry_overbought(e)),
                 band=_band_label(_nextday_entry_percent(e)),
                 flow=_entry_fund_flow_pct(e),

@@ -10,6 +10,10 @@
 2026-09-14 更新：v2 池选与核心方向低吸的展示区已隐藏，故原先针对
 `view.pool_rows` / `view.core_dip_rows` 的两条断言改为断言「过滤计数不受展示区减少影响」
 与 `comeback_rows` 口径 —— 门本身仍在 `today_recs` 层生效，只是少了两个可见出口。
+
+2026-09-16 更新：回马枪展示区亦随桶删除（`comeback_rows` 字段已移除），断言改为只看
+v1 主表与计数 —— 门依旧压在 `today_recs` 单点，历史 orphan 类别行（如残留的
+`category='comeback'`）照样被同一条门剔掉。
 """
 
 import sqlite3
@@ -22,12 +26,15 @@ from scanner.view.assemble import build_scan_view
 
 
 def test_threshold_is_single_source_minus_8():
-    """阈值单源 -8.0：hot_watch 派生、comeback 保持 -5.0 是刻意的更严前置门。"""
-    from scanner.config import COMEBACK_REENTRY_FUND_FLOW_LOW, HOT_FUND_FLOW_FILTER_THRESHOLD
+    """阈值单源 -8.0：hot_watch 派生展示门与主门同值。
+
+    2026-09-16：原「回马枪扫描期前置门 -5.0」随 comeback.py 删除而消失
+    （`COMEBACK_REENTRY_FUND_FLOW_LOW` 已从 config 移除），子集关系不复存在。
+    """
+    from scanner.config import HOT_FUND_FLOW_FILTER_THRESHOLD
 
     assert FUND_OUTFLOW_NET_PCT == -8.0
     assert HOT_FUND_FLOW_FILTER_THRESHOLD == FUND_OUTFLOW_NET_PCT
-    assert COMEBACK_REENTRY_FUND_FLOW_LOW == -5.0, "回马枪扫描期前置门应比展示门更严（子集关系）"
 
 
 def test_is_fund_outflow_boundaries():
@@ -44,7 +51,7 @@ def test_is_fund_outflow_fail_open_without_data():
 
 
 def test_entry_fund_flow_pct_fallback_chain():
-    """行内 dims 优先于 market_extra_cache 快照（与 comeback_sort_key 同链）。"""
+    """行内 dims 优先于 market_extra_cache 快照（展示层资金流单一回退链）。"""
     entry = {"symbol": "SZ1", "score_breakdown": {"fund_flow_main_pct": -1.0}}
     assert entry_fund_flow_pct(entry, {"SZ1": -9.0}) == -1.0
     assert entry_fund_flow_pct({"symbol": "SZ1"}, {"SZ1": -9.0}) == -9.0
@@ -84,7 +91,8 @@ def _seed_five(conn: sqlite3.Connection, today: str) -> None:
         ("SZ300002", "正常票", "rebound", 55, '{"fund_flow_main_pct": -1.0}', None),
         ("SZ300003", "快照流出", "pool_pick", 50, None, -9.0),
         ("SZ300004", "无数据", "core_dip", 45, None, None),
-        ("SZ300005", "回马枪流出", "comeback", 40, None, -20.0),
+        # 历史 orphan 类别行（回马枪桶已删除，但库里存量行仍会被门扫到）
+        ("SZ300005", "orphan 流出", "comeback", 40, None, -20.0),
     ]
     for sym, name, cat, score, sb, snapshot in rows:
         conn.execute(
@@ -102,7 +110,7 @@ def _seed_five(conn: sqlite3.Connection, today: str) -> None:
 
 
 def _sym_set(rows) -> set:
-    """main_rows 是 MainRow（.entry），comeback 是裸 RecommendationRow。"""
+    """main_rows 是 MainRow（.entry），其余展示区（hot/hist）是裸对象。"""
     return {r.entry["symbol"] if hasattr(r, "entry") else r["symbol"] for r in rows}
 
 
@@ -110,8 +118,9 @@ def test_build_scan_view_filters_every_region():
     """过滤在 today_recs 单一入口生效，所有展示区一致继承（不是只剔某一处）。
 
     2026-09-14：v2 池选与核心低吸展示区隐藏后，可见出口只剩 v1 主表与回马枪；
-    三条判定路径（行内流出 / 快照流出 / 回马枪流出）仍各剔一只，计数不变——
-    这正是「展示区减少不应影响门本身」的守护。
+    2026-09-16：回马枪展示区亦随桶删除，可见出口只剩 v1 主表。
+    三条判定路径（行内流出 / 快照流出 / 历史 orphan 类别流出）仍各剔一只，
+    计数不变——这正是「展示区减少不应影响门本身」的守护。
     """
     conn = _rec_db()
     today = now_beijing().date().isoformat()
@@ -120,9 +129,8 @@ def test_build_scan_view_filters_every_region():
     view = build_scan_view(conn)
 
     assert view is not None
-    assert view.flow_filtered == 3, "行内流出 + 快照流出 + 回马枪流出 应各剔一只"
+    assert view.flow_filtered == 3, "行内流出 + 快照流出 + orphan 类别流出 应各剔一只"
     assert _sym_set(view.main_rows) == {"SZ300002"}
-    assert _sym_set(view.comeback_rows) == set()
 
 
 def test_build_scan_view_does_not_touch_excluded_column():

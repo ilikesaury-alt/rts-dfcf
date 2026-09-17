@@ -9,15 +9,14 @@ from __future__ import annotations
 from typing import Any
 
 from scanner.candidates import new_face_sort_key
-from scanner.ranking import comeback_sort_key
 
 # 分桶规则：桶名 → 判定（原 scan_with_raw L565-569）
+# comeback 桶已于 2026-09-16 删除（用户决策；其 category 与扫描逻辑一并移除）。
 BUCKET_MATCHERS: dict[str, Any] = {
     "new_faces": lambda c: c.category in ("new_face", "known_new_face"),
     "momentum": lambda c: c.category == "momentum",
     "rebound": lambda c: c.category == "rebound",
     "short_term": lambda c: c.category == "short_term",
-    "comeback": lambda c: c.category == "comeback",
 }
 
 
@@ -32,9 +31,9 @@ def split_and_sort_categories(all_candidates: list) -> dict[str, list]:
 
     排序键（与 display / today_report 单源，勿改）：
       - new_faces：`candidates.new_face_sort_key`
-      - comeback：`ranking.comeback_sort_key`（资金流优先）—— 2026-08-24 审查：
-        此前按 score 降序，导致飞书卡片与终端两种顺序。
       - 其余三桶：score 降序。
+
+    ⚠ 原 comeback 桶（`ranking.comeback_sort_key`，资金流优先）已于 2026-09-16 删除。
     """
     buckets: dict[str, list] = {
         name: [c for c in all_candidates if matcher(c)]
@@ -43,9 +42,4 @@ def split_and_sort_categories(all_candidates: list) -> dict[str, list]:
     buckets["new_faces"].sort(key=lambda c: new_face_sort_key(c))
     for name in ("momentum", "rebound", "short_term"):
         buckets[name].sort(key=lambda c: -c.score)
-    buckets["comeback"].sort(
-        key=lambda c: comeback_sort_key(
-            {"symbol": c.stock.symbol, "score": c.score, "_candidate": c}
-        )
-    )
     return buckets

@@ -119,7 +119,7 @@ def _bars(dates: list[str], closes: list[float], volumes: list[float], percents:
 
 def test_v2_kline_summary_builds_dims():
     """v2_kline_summary 必须产出非 None 的 KlineSummary，且带 rank_trend /
-    accumulated_incl_today 维度（matcher 放量突破与 🎯 累计口径消费）。"""
+    accumulated_incl_today 维度（matcher 放量突破与累计回放链消费）。"""
     dates = [f"2026-08-{d:02d}" for d in range(10, 22)]
     today = dates[-1]
     closes = [10.0] * 6 + [10.2, 10.4, 10.6, 10.8, 11.0, 11.4]

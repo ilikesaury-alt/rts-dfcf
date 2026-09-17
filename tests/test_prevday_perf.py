@@ -73,16 +73,14 @@ def _insert(conn, date, symbol, name, category, score, percent, dims=None,
 
 def _build():
     conn = _perf_db()
-    # D1: momentum 甜蜜带 → 🎯 档0（+3.0）；short_term 陷阱带 → 档3（-2.0）
+    # D1: momentum 甜蜜带 → 档2（+3.0）；short_term 陷阱带 → 档3（-2.0）
     _insert(conn, "2026-08-01", "SZ300001", "动量票", "momentum", 70, 1.5,
             dims={"accumulated_incl_today": 8.0}, next_day=3.0)
     _insert(conn, "2026-08-01", "SZ300002", "陷阱票", "short_term", 60, 9.0,
             dims={"v_st_overbought": True}, next_day=-2.0)
-    # D2: rebound 甜蜜带 → 🎯 档0（+9.0 hit）；comeback → 回马枪（+1.0）
+    # D2: rebound → 档1（+9.0 hit）
     _insert(conn, "2026-08-04", "SZ300003", "反弹票", "rebound", 50, 1.0,
             dims={"accumulated_incl_today": -5.0}, next_day=9.0)
-    _insert(conn, "2026-08-04", "SZ300004", "回踩票", "comeback", 101, 2.0,
-            dims={"comeback_variant": "回踩"}, next_day=1.0)
     return conn
 
 
@@ -91,20 +89,21 @@ def test_build_history_groups_and_stats():
     hist = _build_history(conn, ["2026-08-01", "2026-08-04"])
     assert len(hist) == 2
     d1, d2 = hist
-    # 档位归属
-    assert d1["tier0"] == [3.0], f"momentum 甜蜜带应进档0: {d1['tier0']}"
+    # 档位归属（2026-09-16：🎯 降为纯展示标记 → entry_tier 不再产出档0）
+    assert d1["tier0"] == [] and d2["tier0"] == [], "🎯 降级后档0 恒空"
+    assert d1["tier2"] == [3.0], f"momentum 甜蜜带应进档2: {d1['tier2']}"
     assert d1["tier3"] == [-2.0], f"陷阱带 short_term 应进档3: {d1['tier3']}"
-    assert d2["tier0"] == [9.0] and d2["comeback"] == [1.0]
-    # 档0 内部类别
-    assert d1["tier0_cats"]["momentum"] == [3.0]
-    assert d2["tier0_cats"]["rebound"] == [9.0]
-    # 汇总
-    all_t0 = d1["tier0"] + d2["tier0"]
-    n, avg, hit, win, med = _stats(all_t0)
+    assert d2["tier1"] == [9.0], f"rebound 应进档1: {d2['tier1']}"
+    # 档0 内部类别分组现恒空
+    assert d1["tier0_cats"] == {}
+    # 汇总（改按档2 + 档1 两组样本）
+    all_t = d1["tier2"] + d2["tier1"]
+    n, avg, hit, win, med = _stats(all_t)
     assert n == 2 and round(avg, 2) == 6.0 and hit == 50.0
-    # 案例样本含日期/名称
-    case = d2["cases"]["tier0"][0]
-    assert case["date"] == "2026-08-04" and case["name"] == "反弹票" and case["next"] == 9.0
+    # 案例样本含日期/名称（档0 已空，改看档3 大坑案例）
+    assert d2["cases"]["tier0"] == []
+    case = d1["cases"]["tier3"][0]
+    assert case["date"] == "2026-08-01" and case["name"] == "陷阱票" and case["next"] == -2.0
     conn.close()
 
 
@@ -149,6 +148,6 @@ def test_render_smoke():
     out = _render(hist, 30)
     assert "综合排序历史复盘" in out
     assert "各组次日表现" in out
-    assert "档0 🎯 次日大涨画像" in out
+    assert "档0 最高分档" in out
     assert "案例" in out
     conn.close()

@@ -1,8 +1,10 @@
 """综合排序档位快照落库（2026-08-26）。
 
-目的：ranking 判定代码（entry_tier / entry_tier_reasons / 🎯 画像）日后演进时，
+目的：ranking 判定代码（entry_tier / entry_tier_reasons）日后演进时，
 历史归因不被「用最新代码重放历史」静默篡改——收盘定稿后把当日全部推荐的
-档位/🎯/劣后原因/主表展示序号一次性落库，作为当日规则下的权威存证。
+档位/劣后原因/主表展示序号一次性落库，作为当日规则下的权威存证。
+
+2026-09-16：🎯 画像删除 → 原 `marked` 列（🎯 判定存证）一并掉列（迁移 m014）。
 
 写入时机：unified_scanner 收盘定稿批次内（_finalize_today_klines 之后），每交易日
 一次、幂等覆盖、fail-open（异常只告警不杀进程，写 logs/finalize.log 审计）。
@@ -21,7 +23,6 @@ from scanner.ranking import (
     build_accum_map,
     entry_tier,
     entry_tier_reasons,
-    is_nextday_marked,
     sort_main_entries,
 )
 from scanner.utils import EXTERNAL_FAILURES
@@ -32,7 +33,7 @@ def persist_ranking_snapshot(conn, target_date: str | None = None) -> int:
 
     异常向上抛出——调用方（unified_scanner._persist_ranking_snapshot_once）负责
     fail-open。行键 (date, symbol, category)；主表行 rank_in_table = 当日综合排序
-    最终展示序号（sort_main_entries 同源），comeback/core_dip 独立区行为 NULL。
+    最终展示序号（sort_main_entries 同源），core_dip 独立区行为 NULL。
     """
     if target_date is None:
         target_date = now_beijing().strftime("%Y-%m-%d")
@@ -46,17 +47,15 @@ def persist_ranking_snapshot(conn, target_date: str | None = None) -> int:
     main: list[Any] = []
     rows: list[tuple] = []
     for e in recs:
-        marked = is_nextday_marked(e, conn, accum_map=accum_map)
-        tier = entry_tier(e, conn, accum_map=accum_map, marked=marked)
-        # marked 传实际判定值（非 🎯 票才评估警示因子——与 entry_tier 级联一致）
-        reasons = entry_tier_reasons(e, accum=accum_map.get(e["symbol"]), marked=marked)
-        rows.append((e, tier, marked, reasons))
-        if e["category"] not in ("comeback", CORE_DIP_CATEGORY):
+        tier = entry_tier(e, conn, accum_map=accum_map)
+        reasons = entry_tier_reasons(e, accum=accum_map.get(e["symbol"]))
+        rows.append((e, tier, reasons))
+        if e["category"] != CORE_DIP_CATEGORY:
             main.append(e)
 
     # 主表展示序号与当日综合排序一致（排序组合层单源）
     tier_map = {
-        (e["symbol"], e["category"]): t for e, t, _, _ in rows if e["category"] not in ("comeback", CORE_DIP_CATEGORY)
+        (e["symbol"], e["category"]): t for e, t, _ in rows if e["category"] != CORE_DIP_CATEGORY
     }
     rank_in_table: dict[tuple[str, str], int] = {}
     for i, e in enumerate(sort_main_entries(main, tier_map), 1):
@@ -69,18 +68,17 @@ def persist_ranking_snapshot(conn, target_date: str | None = None) -> int:
             e["symbol"],
             e["category"],
             tier,
-            int(marked),
             json.dumps(reasons, ensure_ascii=False),
             rank_in_table.get((e["symbol"], e["category"])),
             created,
         )
-        for e, tier, marked, reasons in rows
+        for e, tier, reasons in rows
     ]
     with conn:
         conn.execute("DELETE FROM ranking_snapshot WHERE date = ?", (target_date,))
         conn.executemany(
-            "INSERT INTO ranking_snapshot (date, symbol, category, tier, marked, "
-            "reasons_json, rank_in_table, created) VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO ranking_snapshot (date, symbol, category, tier, "
+            "reasons_json, rank_in_table, created) VALUES (?,?,?,?,?,?,?)",
             payload,
         )
     return len(payload)
@@ -89,25 +87,24 @@ def persist_ranking_snapshot(conn, target_date: str | None = None) -> int:
 def load_ranking_snapshot(conn, target_date: str) -> dict[tuple[str, str], dict]:
     """读取某日快照 → {(symbol, category): row_dict}；无表/无数据返回空 dict。
 
-    row_dict 含 tier/marked/reasons(list)/rank_in_table。消费端以空返回为
+    row_dict 含 tier/reasons(list)/rank_in_table。消费端以空返回为
     「无快照」信号回退现算（历史日期在功能上线前天然无快照）。
     """
     try:
         rows = conn.execute(
-            "SELECT symbol, category, tier, marked, reasons_json, rank_in_table FROM ranking_snapshot WHERE date = ?",
+            "SELECT symbol, category, tier, reasons_json, rank_in_table FROM ranking_snapshot WHERE date = ?",
             (target_date,),
         ).fetchall()
     except EXTERNAL_FAILURES:
         return {}
     result: dict[tuple[str, str], dict] = {}
-    for sym, cat, tier, marked, reasons_json, rank in rows:
+    for sym, cat, tier, reasons_json, rank in rows:
         try:
             reasons = json.loads(reasons_json) if reasons_json else []
         except (TypeError, ValueError):
             reasons = []
         result[(sym, cat)] = {
             "tier": tier,
-            "marked": bool(marked),
             "reasons": reasons if isinstance(reasons, list) else [],
             "rank_in_table": rank,
         }

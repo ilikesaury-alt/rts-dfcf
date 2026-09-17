@@ -8,8 +8,8 @@
 回答哪些子键有真实边际、值得作为排序细化依据。
 
 方法：
-  - 逐日重建推荐（get_today_recommendations + ranking.entry_tier/is_nextday_marked，
-    与 today_report/display 同源），仅主力五类；nf∩st 双挂票按类别优先级去重。
+  - 逐日重建推荐（get_today_recommendations + ranking.entry_tier，与 today_report/
+    display 同源），仅主力五类；nf∩st 双挂票按类别优先级去重。
   - 「推荐时刻榜排名」由 leaderboard_log(symbol_snapshot) 回放：取推荐时间之前
     最近一次快照中该票的排名，无则回退当日最早出现该票的快照。快照只存近几日，
     rank 相关表自动缩窗并标注；rank=None 同时含「快照未覆盖日」与「榜外」，
@@ -40,7 +40,7 @@ from scanner.core_themes import core_stock_symbols  # noqa: E402
 from scanner.data_health import check_kline_health, health_banner  # noqa: E402
 from scanner.database import get_fund_flow_pct_map, get_today_recommendations  # noqa: E402
 from scanner.db.queries import get_cached_klines  # noqa: E402
-from scanner.ranking import build_accum_map, entry_tier, is_nextday_marked  # noqa: E402
+from scanner.ranking import build_accum_map, entry_tier  # noqa: E402
 from scanner.utils import to_float  # noqa: E402
 
 MAIN_CATS = ("rebound", "momentum", "new_face", "known_new_face", "short_term")
@@ -141,7 +141,6 @@ def collect(conn: sqlite3.Connection, dates: list[str]) -> tuple[list[dict[str, 
         if scans:
             lb_dates.append(dt)
         flow_map = get_fund_flow_pct_map(conn, sorted({e["symbol"] for e in main}), as_of=dt)
-        marked_map = {e["symbol"]: is_nextday_marked(e, conn, accum_map=accum_map) for e in main}
         # nf∩st 双挂：同类多行取分数最高一行的载体，符号级再按类别优先级去重在 render 前
         for e in main:
             p = nd_map.get(e["symbol"])
@@ -159,8 +158,7 @@ def collect(conn: sqlite3.Connection, dates: list[str]) -> tuple[list[dict[str, 
                     "rec_pct": to_float(e.get("percent"), default=0.0) or 0.0,
                     "accum": accum_map.get(e["symbol"]),
                     "flow": flow,
-                    "marked": bool(marked_map[e["symbol"]]),
-                    "tier": entry_tier(e, conn, accum_map=accum_map, marked=marked_map[e["symbol"]]),
+                    "tier": entry_tier(e, conn, accum_map=accum_map),
                     "score": to_float(e.get("score"), default=0.0),
                     "rank": _rec_rank(scans, e["symbol"], e.get("time") or ""),
                 }
@@ -251,7 +249,7 @@ def _sections(out: list[str], base_rows: list[dict[str, Any]], lb_dates: list[st
         f"[{tag}] 现行主键基线",
         [
             ("全样本", base_rows),
-            ("🎯档0(marked)", [r for r in base_rows if r["tier"] == 0]),
+            # 2026-09-16：🎯 档0 提权删除后 entry_tier 不再产出档0，该分层移除
             ("档1(rebound)", [r for r in base_rows if r["tier"] == 1]),
             ("档2(普通)", [r for r in base_rows if r["tier"] == 2]),
             ("档3(警示劣后)", [r for r in base_rows if r["tier"] == 3]),

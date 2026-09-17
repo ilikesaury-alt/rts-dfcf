@@ -124,12 +124,14 @@ def _print_priority_row(
     （+N 升 / -N 降），与已下线策略桶的 _rank_delta_str 同口径；缺省 None 不显示变化。
 
     （原 `nextday_mark`（🎯）入参 2026-09-14 删除：全仓无任何调用方传入，且 🎯 行尾
-    渲染自 2026-09-04 已停用 —— 纯哑参。🎯 的判定仍在 ranking.is_nextday_marked。）
+    渲染自 2026-09-04 已停用 —— 纯哑参。2026-09-16：🎯 画像与回马枪桶按用户决策整体
+    删除，本函数的 `cat == "comeback"` 变体渲染分支（反转/回踩单行保留）一并移除。）
     """
-    c = entry.get("_candidate")
+    # 2026-09-16：原 `c = entry.get("_candidate")` 随回马枪变体标签渲染一并删除
+    # （它是该分支的唯一消费者）。
     # 标签/优先级列统一用 entry["category"]（与排序口径一致），
-    # 不用 c.category：双挂票的 today_pool 按 symbol 覆盖会拿到 short_term 候选，
-    # 而 DB 保留的是最高分行的 category（可能是 new_face），两者不一致会导致
+    # 不用候选对象的 category：双挂票的 today_pool 按 symbol 覆盖会拿到 short_term
+    # 候选，而 DB 保留的是最高分行的 category（可能是 new_face），两者不一致会导致
     # 排到 new_face 档却显示 ST 标签 + 回避建议的矛盾。
     cat = entry["category"]
     # 板块列单源（_entry_sector）：与主表 MainRow.sector 同一实现。
@@ -157,18 +159,7 @@ def _print_priority_row(
     else:
         rank_str = "—"
     label_display = f"{CAT_COLOR.get(cat, '')}{CAT_LABEL.get(cat, cat)}{ANSI['RESET']}"
-    # 回马枪变体（反转/回踩）：策略桶下线后由此处单行保留，避免掉榜区丢失语义。
-    if cat == "comeback":
-        variant = ""
-        if c:
-            variant = getattr(c, "comeback_variant", "") or (
-                c.kline.dimensions.get("comeback_variant", "") if c.kline else ""
-            )
-        if not variant:
-            trend = entry.get("trend") or ""
-            variant = trend.split("·")[0] if "·" in trend else ""
-        if variant:
-            label_display += f"{ANSI['CYAN']}·{variant}{ANSI['RESET']}"
+    # 回马枪变体（反转/回踩）标签渲染已于 2026-09-16 删除（回马枪桶整体移除）。
     # 辨识度（↻）行内标记已下线（2026-08-22 标记精简）：回测证独立增量≈0、已退出排序，
     # 纯装饰性噪音；prominence 数据仍在 today_report 归因中使用，不受影响。
     first_time = str(entry.get("first_time") or entry.get("time") or "")[:5]
@@ -179,7 +170,7 @@ def _print_priority_row(
     tail = _entry_row_suffix(entry, flow_pct_map, breakout_marked=breakout_mark)
     # 板块普涨避雷行尾标记已下线（2026-08-17 用户反馈「太扎眼」）：小板块共振避雷
     # 结论保留于回测（cnt<15 票 hit 5.9-6.7%/cum_3d -2.2~-2.6 最差），但黄色长文本
-    # 移除，避免干扰 🎯 档0 等主信号。
+    # 移除，避免干扰档位主信号。
     # 核心股高亮（2026-08-19）：该票今日在核心方向低吸区（category=core_dip）→ 判定
     # 为核心股，名称加粗品红高亮（判定在 display_priority 预计算 _core_stock，主表与
     # 回马枪区共用本函数同规则）。纯展示层不改评分不落库。
@@ -497,29 +488,30 @@ def render_terminal(view: ScanView) -> None:
     # ⚠ 主线这批门**在扫描期施加**（candidates.filter_gem_stocks + pipeline.pool +
     # assemble 的资金流出过滤），展示期不再重复判一遍；飙升/回捞两区没有扫描链路，
     # 在各自取数时判。差别只在**何时判**，不在**判什么**。
-    print(
-        f"  {ANSI['YELLOW']}▸ 风险门（与沪深飙升 · v1 回捞 同源）：ST·非创业板·停牌/无成交·"
-        f"价格>{MAX_STOCK_PRICE:.0f}元·市值>{MAX_MARKET_CAP / 1e8:.0f}亿·资金流出≤{FUND_OUTFLOW_NET_PCT:.0f}%{ANSI['RESET']}"
-    )
+    # print(
+    #     f"  {ANSI['YELLOW']}▸ 风险门（与沪深飙升 · v1 回捞 同源）：ST·非创业板·停牌/无成交·"
+    #     f"价格>{MAX_STOCK_PRICE:.0f}元·市值>{MAX_MARKET_CAP / 1e8:.0f}亿·资金流出≤{FUND_OUTFLOW_NET_PCT:.0f}%{ANSI['RESET']}"
+    # )
     # 美感标记分档图例（2026-09-15）：仅在确有标记时打一行，避免常年占位。
     # ★ 必须就地解释成「回撤更小」——否则最自然的误读是「更可能大涨」，而数据不支持
     # （美★ 与 美 的 next_day hit 无正向区分度，只有尾部回撤有差别，见 trend_beauty docstring）。
     # 飞书卡片 build_feishu_card 有一份同义图例，两处须同步改（守卫见 test_display）。
-    if any((view.beauty_mark or {}).values()):
-        print(
-            f"  {ANSI['GREEN']}美{ANSI['RESET']}=日线趋势漂亮　"
-            f"{ANSI['GREEN']}美★{ANSI['RESET']}=分时亦漂亮（尾部回撤更小·非更易大涨）"
-        )
+    # if any((view.beauty_mark or {}).values()):
+    #     print(
+    #         f"  {ANSI['GREEN']}美{ANSI['RESET']}=日线趋势漂亮　"
+    #         f"{ANSI['GREEN']}美★{ANSI['RESET']}=分时亦漂亮（尾部回撤更小·非更易大涨）"
+    #     )
     print(_table_header(COLS_POOL))
     for _si, row in enumerate(view.main_rows, 1):
         _emit_pool_table_row(view, row, _si)
 
-    # ── ⚡ 蓄势突破观察（动态推荐区已按需求移除，2026-09-03；adj_picks 仍在 ScanView 保留供复用）──
-    if any(view.breakout_mark.values()):
-        print(
-            f"  {ANSI['CYAN']}⚡ 蓄势突破观察{ANSI['RESET']}（缩量回调蓄势位·含新面孔/重上榜两变体"
-            f"·样本收集中·非排序因子）"
-        )
+    # ── ⚡ 蓄势突破观察（动态推荐区已按需求移除，2026-09-03；其数据字段 adj_picks 亦
+    # 于 2026-09-16 随 🎯/回马枪删除——该序列的语义完全由这两个特性构成）──
+    # if any(view.breakout_mark.values()):
+        # print(
+        #     f"  {ANSI['CYAN']}⚡ 蓄势突破观察{ANSI['RESET']}（缩量回调蓄势位·含新面孔/重上榜两变体"
+        #     f"·样本收集中·非排序因子）"
+        # )
 
     # 2026-09-14 按用户决策隐藏的两个展示区（需复原见 git 历史）：
     #   ◆ v2 池选（2026-09-02 上线，双跑同屏）—— 池→排雷→低吸匹配。

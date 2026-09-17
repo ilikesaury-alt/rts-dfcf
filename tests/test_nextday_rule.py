@@ -256,14 +256,10 @@ def test_scanview_rule_result_default():
 
     sv = ScanView(
         main_rows=[],
-        comeback_rows=[],
-        nextday_mark={},
         breakout_mark={},
         flow_pct_map={},
         last_ranks={},
-        adj_picks=None,
         weak=False,
-        show_comeback=False,
         warnings=[],
     )
     assert sv.rule_result is None

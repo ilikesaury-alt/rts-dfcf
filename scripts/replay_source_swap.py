@@ -444,17 +444,18 @@ def main() -> int:
     # 且双跑模式下同一票在 v1/v2 各有一个独立 Candidate 对象、各自打风险标签，
     # 把两边的分数并列展示会得到看似自相矛盾的结果（实测踩过：怡达股份 v1 域被
     # 「主力出货」硬过滤、v2 域却留在池选里）。
-    # comeback / core_dip 同为附加桶，一并关闭——它们与前一日推荐池耦合，属另一问题。
+    # core_dip 同为附加桶，一并关闭——它与前一日推荐池耦合，属另一问题。
+    # （2026-09-16：comeback 桶已删除，无需再行关闭。）
     os.environ["RTS_ENABLE_POOL"] = "1" if args.with_v2 else "0"
     import scanner.orchestrator as _orch  # noqa: E402
     from scanner.data_source import get_adapter  # noqa: E402
     from scanner.database import init_db  # noqa: E402
     from scanner.models import ScanResult  # noqa: E402
 
-    # ENABLE_COMEBACK / ENABLE_CORE_DIP 在 config_categories 里是硬编码常量，
-    # 且 orchestrator 用 `from scanner.config import X` 快照式绑定 —— 必须打在
-    # **orchestrator 的命名空间**上才生效（项目里踩过 4 次的同一个坑）。
-    _orch.ENABLE_COMEBACK = False
+    # ENABLE_CORE_DIP 在 config_categories 里是硬编码常量，且 orchestrator 用
+    # `from scanner.config import X` 快照式绑定 —— 必须打在 **orchestrator 的
+    # 命名空间**上才生效（项目里踩过 4 次的同一个坑）。
+    # （原 `ENABLE_COMEBACK = False` 随 comeback 桶删除，2026-09-16。）
     _orch.ENABLE_CORE_DIP = False
     scan_with_raw = _orch.scan_with_raw
 
@@ -480,7 +481,6 @@ def main() -> int:
             "momentum": [c.stock.symbol for c in result.momentum],
             "rebound": [c.stock.symbol for c in result.rebound],
             "short_term": [c.stock.symbol for c in result.short_term],
-            "comeback": [c.stock.symbol for c in result.comeback],
             "pool_picks": [c.stock.symbol for c in result.pool_picks],
         }
         gems = {s.symbol for s in result.gem_stocks}

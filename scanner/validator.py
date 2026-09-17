@@ -1,5 +1,4 @@
 from scanner.config import (
-    COMEBACK_POS_DIMS,
     PULLBACK_20D_GAIN_EXTREME,
     ST_OVERBOUGHT_BOLL,
     ST_OVERBOUGHT_KDJ,
@@ -690,7 +689,6 @@ def validate(
     historical_kline: list[KlineBar],
     clusters: dict[str, list[str]] | None = None,
     feats: dict | None = None,
-    off_list: bool = False,
     kline: list[KlineBar] | None = None,
     today: str | None = None,
 ) -> tuple[bool, int, dict]:
@@ -699,11 +697,9 @@ def validate(
     if cat == "momentum":
         return validate_momentum(stock, kline_summary, closes, historical_kline, clusters, feats, kline, today)
     if cat == "rebound":
-        passed, bonus, details = validate_rebound(stock, kline_summary, closes, historical_kline, clusters, feats)
-        if off_list and details.get("_pos_dims", 0) < COMEBACK_POS_DIMS:
-            # 回马枪·反转：掉榜票无热榜背书，交叉验证维度比榜上更严
-            return False, 0, details
-        return passed, bonus, details
+        # （原 `off_list` 分支——回马枪·反转的交叉验证维度加严门 < COMEBACK_POS_DIMS——
+        # 已于 2026-09-16 随回马枪桶删除；`_pos_dims` 仍由 validate_rebound 产出。）
+        return validate_rebound(stock, kline_summary, closes, historical_kline, clusters, feats)
     if cat == "short_term":
         return validate_short_term(stock, kline_summary, closes, historical_kline, clusters, feats, kline, today)
     return False, 0, {}

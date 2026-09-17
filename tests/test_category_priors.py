@@ -52,7 +52,10 @@ def test_nextday_prob_aliases_the_single_source():
 
 
 def test_single_source_keys_cover_all_live_categories():
-    """单源必须覆盖全部在产类别（含已下线 pullback 供回测），否则下游会静默取兜底值。"""
+    """单源必须覆盖全部在产类别（含已下线 pullback 供回测），否则下游会静默取兜底值。
+
+    2026-09-16：`comeback` 随回马枪桶删除而移出（其 0.028 是全场最差 hit，桶已不产出）。
+    """
     expected = {
         "rebound",
         "known_new_face",
@@ -60,7 +63,6 @@ def test_single_source_keys_cover_all_live_categories():
         "new_face",
         "core_dip",
         "short_term",
-        "comeback",
         "pool_pick",
         "pullback",
     }

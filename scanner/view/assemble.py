@@ -2,8 +2,6 @@ import statistics
 
 from scanner.config import (
     CAT_DISPLAY_PRIORITY,
-    COMEBACK_DISPLAY_MAX,
-    COMEBACK_DISPLAY_MIN_MAIN,
     CORE_DIP_CATEGORY,
     CORE_PULLBACK_MAX,
     CORE_PULLBACK_MIN,
@@ -31,19 +29,16 @@ from scanner.ranking import (
     _dip_label_bonus,
     build_accum_map,
     build_breakout_kline_map,
-    comeback_sort_key,
     composite_score,
     composite_tier,
-    entry_dims,
     entry_fund_flow_pct,
     fresh_candidate,
     is_fund_outflow,
-    is_nextday_marked,
 )
 
 # 走势美感标记判定单源在 scanner.trend_beauty（日线定准入、分时定级别）——经下方
 # `from scanner.view.model import *` 带入 _beauty_mark_for，本模块不重复持有判定逻辑。
-from scanner.utils import EXTERNAL_FAILURES, to_float
+from scanner.utils import EXTERNAL_FAILURES
 from scanner.view.model import *  # noqa: F401,F403
 
 # ANSI 探测（_is_console / _supports_ansi）/ ANSI / CAT_COLOR / _ANSI_ESCAPE 的单源在
@@ -59,7 +54,6 @@ __all__ = (
     "ANSI",
     "CAT_COLOR",
     "_ANSI_ESCAPE",
-    "_adjusted_picks",
     "_is_console",
     "_regime_weak",
     "_supports_ansi",
@@ -69,8 +63,13 @@ __all__ = (
 
 def _regime_weak(conn, lookback=10):
     """近端主表档(非 comeback/core_dip)次日表现均值 < 0 → 弱市(regime 退潮)。
-    纯展示层用：驱动「动态推荐」区域是否在弱市下剔除动量/kNF 类🎯。
+    纯展示层用：驱动头部市况标签（与飞书 env_tag 同源）。
     fail-open：无数据/查询异常时返回 False(按强市处理，不误删推荐)。
+
+    ⚠ SQL 里的 `category NOT IN ('comeback','core_dip')` **必须保留 comeback**：
+    这是对**历史 recommendations 行**的过滤（回马枪桶曾长期产出并落库），
+    删掉它会把历史 comeback 行纳入近端均值 → 头部市况标签对历史日期的判定静默改变。
+    与「回马枪桶 2026-09-16 删除」无关（该桶只是不再产出新行）。
 
     注意：OFFSET 必须作用于 DISTINCT date，否则多个推荐行共享同一 date 会使
     OFFSET 始终落在最近一日块内、date>cutoff 恒为空而 fail-open 误判为强市。
@@ -103,44 +102,13 @@ def _regime_weak(conn, lookback=10):
         return False
 
 
-def _adjusted_picks(today_recs, nextday_mark, conn, flow_pct_map, top_n=10, weak=None):
-    """regime 自适应推荐序列（纯展示，不改落库/评分/排序）。
-
-    弱市：剔除 momentum/known_new_face/new_face 全类（🎯 与否均剔），按系统自有质量信号精选
-    核心低吸(_core_dip_entry_quality) / 回马枪(comeback_sort_key) / 🎯(rebound·弱转强) 各桶
-    最前少数几只——而非整个桶堆叠；强市：🎯 前置、其余按评分。返回 (名称, 类别, 是否🎯) 列表。
-
-    weak: 弱市标志。None 时内部自算 _regime_weak(conn)；调用方（display_priority）
-    预计算后传入可省掉同轮第二次 SQL（此前每轮跑两遍同一查询）。
-    """
-    if weak is None:
-        weak = _regime_weak(conn)
-    core_dip, comeback, yt, other = [], [], [], []
-    for e in today_recs:
-        sym, cat = e["symbol"], e["category"]
-        marked = nextday_mark.get((sym, cat), False)
-        if cat == "core_dip":
-            sb = entry_dims(e)
-            if sb.get("run") is None or sb.get("pullback") is None:
-                continue
-            core_dip.append(e)
-        elif cat == "comeback":
-            comeback.append(e)
-        elif marked and cat in ("rebound", "short_term"):
-            yt.append(e)
-        elif weak and cat in ("momentum", "known_new_face", "new_face"):
-            continue
-        else:
-            other.append(e)
-    core_dip.sort(key=_core_dip_entry_quality)
-    comeback.sort(key=lambda x: comeback_sort_key(x, flow_pct_map))
-    yt.sort(key=lambda x: -to_float(x.get("score"), default=0.0))
-    other.sort(key=lambda x: -to_float(x.get("score"), default=0.0))
-    if weak:
-        ordered = core_dip[:4] + comeback[:3] + yt[:2] + other[:1]
-    else:
-        ordered = yt[:3] + other[:3] + core_dip[:2] + comeback[:2]
-    return [(e["name"], e["category"], nextday_mark.get((e["symbol"], e["category"]), False)) for e in ordered[:top_n]]
+# ── 动态推荐（regime 自适应序列）已于 2026-09-16 整体删除 ──
+# 原 `_adjusted_picks(today_recs, nextday_mark, conn, flow_pct_map, ...)` 的排序语义
+# **完全**由被删的两个特性构成：🎯 桶（marked ∩ rebound/short_term）与回马枪桶
+# （comeback_sort_key）。两者删除后该函数没有可保留的语义——强行留下就得凭空发明
+# 替代规则（那是新增行为，不是删除）。且它的渲染出口早在 2026-09-03 就已移除
+# （render.py 只留注释），`ScanView.adj_picks` 字段同期一并删除。
+# 需复原见 git 历史（2026-09-16 之前）——`_regime_weak` 仍保留，现只服务市况标签。
 
 
 def build_scan_view(
@@ -227,7 +195,7 @@ def build_scan_view(
     # 判定单源 ranking.is_fund_outflow（阈值 config_sources.FUND_OUTFLOW_NET_PCT = -8.0%，
     # 回退链：行内 dims/score_breakdown → flow_pct_map 当日全市场快照）。
     # 在此处过滤 `today_recs` 一次，下游全部派生集合（main_recs / pool_pick_recs /
-    # comeback_recs / core_dip_recs / adj_picks / 终选输入）自动继承——终端与飞书同源
+    # core_dip_recs / 终选输入）自动继承——终端与飞书同源
     # （feishu 只读 build_scan_view 产出的同一份 ScanView），不会再出现「终选区剔了、
     # 上方池选区还在」的同屏口径分叉。
     # ⚠ 刻意**不改 excluded 标记、不写库**：excluded=1 会改回测 / nextday_attribution /
@@ -246,38 +214,22 @@ def build_scan_view(
         # 比直接少一整块输出更可诊断），只是各展示区天然为空。
         # 比直接少一整块输出更可诊断），只是各展示区天然为空。
 
-    # 🎯 标记预计算（2026-08-14 起 map 化：排序+渲染各调一次 is_nextday_marked 会触发
-    # 两次 daily_kline 回放全表扫描；预计算后只查一次，判定与行尾渲染共用同一结果）。
-    # 键 (symbol, category) 复合——nf∩st 双挂票两行判定口径不同，按 symbol 键控时归属
-    # 取决于遍历顺序（隐式依赖）。
-    nextday_mark: dict[tuple[str, str], bool] = {}
-    # P1-9（2026-08-20）：全部推荐一次性批量回放累计（build_accum_map 单查询），
-    # 替代逐行 _nextday_entry_accum 的 N+1 daily_kline 查询。
+    # P1-9（2026-08-20）：全部推荐一次性批量回放累计（build_accum_map 单查询）。
+    # 2026-09-16：🎯 标记预计算（`nextday_mark` + 双挂票归一）随 🎯 画像删除。
     accum_map = build_accum_map(conn, today_recs)
-    for e in today_recs:
-        nextday_mark[(e["symbol"], e["category"])] = is_nextday_marked(e, conn, accum_map=accum_map)
-    # 双挂票归一（用户确认）：同 symbol 存在 short_term 行时，其余类别行沿用 st 行的
-    # 🎯 判定，与「nf∩st 双挂恒存 short_term」的池内事实对齐。
-    st_marks = {(s, c): v for (s, c), v in nextday_mark.items() if c == "short_term"}
-    for key in list(nextday_mark):
-        st_key = (key[0], "short_term")
-        if key[1] != "short_term" and st_key in st_marks:
-            nextday_mark[key] = st_marks[st_key]
 
-    # 回马枪独立成区（2026-08-07 方案A）：comeback 是 off_list 掉榜跟踪票，语义与榜上票不同，
-    # 从主排序表抽出放到末尾独立区块；主表只排榜上五类（rebound/known_new_face/new_face/
-    # momentum/short_term，不含 comeback/pullback）。
-    comeback_recs = [e for e in today_recs if e["category"] == "comeback"]
     core_dip_recs = [e for e in today_recs if e["category"] == CORE_DIP_CATEGORY]
     # 双跑同屏（2026-09-02 用户确认）：主表显 v1 五桶；v2 pool_pick 原独立成区
     # （两套排序口径不同：v1 档位序 / v2 涨幅降序，合并单表会破坏各自语义）。
     # 2026-09-14：v2 池选展示区已隐藏，但 pool_pick_recs 仍单独取出——它是终选参考区
     # 合池输入之一，混进 main_recs 会同时改变 v1 主表内容与终选结果。
     # RTS_PIPELINE 不再影响显示层。
+    # 2026-09-16：comeback 桶删除 → 过滤条件去掉该类别（历史行仍可能在 today_recs 里，
+    # 故下面的 `main_recs` 过滤显式带上 "comeback" 只为排除历史行，见下方注释）。
     main_recs = [e for e in today_recs if e["category"] not in ("comeback", CORE_DIP_CATEGORY, V2_CATEGORY)]
     pool_pick_recs = [e for e in today_recs if e["category"] == V2_CATEGORY]
 
-    # 核心股高亮（2026-08-19）：综合排序/回马枪列表里属于当前主线方向核心股的票，
+    # 核心股高亮（2026-08-19）：综合排序/低吸列表里属于当前主线方向核心股的票，
     # 名称加粗高亮。**判定 = core_stock_symbols（核心主题成员 + 20日累计≥CORE_RUN_MIN
     # 走强龙头），不用 core_dip 列表**——低吸区只含「回调中的核心股」，会漏掉创新高走强
     # 中的主线龙头（2026-08-19 江天化学案例：央国企改革成员、20日+22.3%，回撤0%落不进
@@ -422,11 +374,9 @@ def build_scan_view(
     # （沿革：原实现按「排名升序 → 低吸标签优先 → 涨幅降序」排序后截前
     #  V2_POOL_DISPLAY_TOP 行。需复原见 git 历史。）
 
-    # 动态推荐（2026-08-27）：根据近端主表档次日表现自动判断 regime，弱市下把
-    # momentum/known_new_face/new_face 类🎯 从推荐序列剔除、优先 核心低吸/回马枪/
-    # rebound🎯/弱转强；强市则正常优先级。纯展示行，不改排序/评分/落库。
     # 市况信号与头部 _market_env_tag / 飞书 env_tag 同源（统一 _regime_weak）；
     # weak 由调用方传入时复用（避免 Display 头/体重复查询），None 时自算一次。
+    # （原「动态推荐序列」`_adjusted_picks` 已随 🎯/回马枪于 2026-09-16 删除。）
     if weak is None:
         try:
             weak = _regime_weak(conn)
@@ -436,25 +386,13 @@ def build_scan_view(
             warnings.append(f"regime 判定中断（数据缺失，按强市处理）: {type(_e).__name__}: {_e}")
             weak = False
     _weak = weak
-    try:
-        _adj = _adjusted_picks(today_recs, nextday_mark, conn, flow_pct_map, weak=_weak)
-    except EXTERNAL_FAILURES as _e:
-        # 2026-08-29：原为裸 except Exception（`pi-lens-ignore` 绕过告警）——会把
-        # _adjusted_picks 内的 KeyError/TypeError 静默吞成「无动态推荐」，用户无法
-        # 区分「本就无推荐」与「推荐逻辑崩了」。收窄到数据类异常并显式告警。
-        warnings.append(f"动态推荐计算中断（数据缺失）: {type(_e).__name__}: {_e}")
-        _adj = None
 
     # 显示门（核心低吸）：原为「主区条数 ≤ COMEBACK_DISPLAY_MIN_MAIN 或弱市 regime 时
     # 展示核心方向低吸区」。2026-09-14 按用户决策**隐藏该展示区**，故 show_core_dip 门
     # 与对应字段一并移除。
     # ⚠ core_dips 本身仍在算：它是终选参考区合池输入之一（见下方 final_pick 调用），
     # 且 core_dips 排序仍按 _core_dip_entry_quality 保持原口径，只是不再单独成区渲染。
-    # 回马枪区（comeback）虽无展示区，其排序结果同样进入终选合池，故一并保留。
-    _show_comeback = bool(comeback_recs) and (len(main_recs) <= COMEBACK_DISPLAY_MIN_MAIN or bool(_weak))
-    # 2026-08-24：回马枪区内按资金流优先（ranking.comeback_sort_key 单源，与 today_report
-    # 回马枪小节同源防漂移）——▲▲回流可取在前、▼▼背离回避劣后，次键评分。
-    _comeback_sorted = sorted(comeback_recs, key=lambda x: comeback_sort_key(x, flow_pct_map))
+    # 回马枪区（comeback）连同 `_show_comeback` / `_comeback_sorted` 于 2026-09-16 删除。
     core_dips: list[RecommendationRow] = list(core_dip_recs)
     core_dips.sort(key=_core_dip_entry_quality)
 
@@ -467,9 +405,10 @@ def build_scan_view(
     # 仅保留 scanner.decision.market_gate（择时门），由终选参考区用于标注
     # 「门开」/「门关·仅观察参考」。需复原见 git 历史。
 
-    # 终选参考区（2026-09-05 升级）：v1+v2+回马/低吸 合池 → 次日大涨概率终选 ≤2 只
+    # 终选参考区（2026-09-05 升级）：v1+v2+低吸 合池 → 次日大涨概率终选 ≤2 只
     # + 落选理由 + 周期标签（概率排序单源 scanner.nextday_prob，去相关在 final_pick）。
     # 纯计算无落库，fail-open 不阻断展示主流程（评级单源在 scanner.final_pick）。
+    # 2026-09-16：合池去掉回马枪（该桶删除）；`nextday_mark` 入参随 🎯 一并移除。
     _final_pick_lines: list[str] | None = None
     if FINAL_PICK_ENABLED:
         try:
@@ -477,24 +416,19 @@ def build_scan_view(
 
             _final_pick_lines = _build_final(
                 conn,
-                main_recs + pool_pick_recs + _comeback_sorted + core_dips,
+                main_recs + pool_pick_recs + core_dips,
                 accum_map,
                 flow_pct_map,
-                nextday_mark,
             )
         except EXTERNAL_FAILURES as _fpx:
             warnings.append(f"终选区构建失败: {type(_fpx).__name__}: {_fpx}")
 
     return ScanView(
         main_rows=main_rows,
-        comeback_rows=_comeback_sorted[:COMEBACK_DISPLAY_MAX],
-        nextday_mark=nextday_mark,
         breakout_mark=breakout_mark,
         flow_pct_map=flow_pct_map,
         last_ranks=last_ranks or {},
-        adj_picks=_adj,
         weak=_weak,
-        show_comeback=_show_comeback,
         warnings=warnings,
         rule_result=_rule_result,
         final_pick_lines=_final_pick_lines,

@@ -239,7 +239,7 @@ class TestParseOverride:
         assert isinstance(ov.value, int)
 
     def test_float_value(self):
-        ov = rv.parse_override("scanner.nextday_prob.OR_MARKED=1.56")
+        ov = rv.parse_override("scanner.nextday_prob.OR_OVERBOUGHT=1.56")
         assert ov.value == pytest.approx(1.56)
 
     def test_bool_value(self):
@@ -282,7 +282,7 @@ class TestCheckVisibility:
         assert "scanner.config" in problems[0]
 
     def test_nextday_prob_accepts_its_own_module(self):
-        ov = rv.parse_override("scanner.nextday_prob.OR_MARKED=1.56")
+        ov = rv.parse_override("scanner.nextday_prob.OR_OVERBOUGHT=1.56")
         assert rv.check_visibility([ov], "nextday-prob") == []
 
     def test_nextday_prob_rejects_config_change(self):
@@ -300,7 +300,7 @@ class TestCheckVisibility:
         assert rv.check_visibility(ovs, "rescore") == []
 
     def test_rescore_rejects_nextday_prob_change(self):
-        ov = rv.parse_override("scanner.nextday_prob.OR_MARKED=1.56")
+        ov = rv.parse_override("scanner.nextday_prob.OR_OVERBOUGHT=1.56")
         assert len(rv.check_visibility([ov], "rescore")) == 1
 
     def test_reports_every_offending_override(self):
@@ -397,13 +397,13 @@ class TestApplyAndRestore:
         """传播后必须能精确回滚，否则测试之间会互相污染。"""
         import scanner.nextday_prob as np_mod
 
-        original = np_mod.OR_MARKED
-        journal = rv.apply_overrides([rv.parse_override("scanner.nextday_prob.OR_MARKED=1.234")])
+        original = np_mod.OR_OVERBOUGHT
+        journal = rv.apply_overrides([rv.parse_override("scanner.nextday_prob.OR_OVERBOUGHT=1.234")])
         try:
-            assert pytest.approx(1.234) == np_mod.OR_MARKED
+            assert pytest.approx(1.234) == np_mod.OR_OVERBOUGHT
         finally:
             rv.restore_overrides(journal)
-        assert original == np_mod.OR_MARKED
+        assert original == np_mod.OR_OVERBOUGHT
 
     def test_roundtrip_restores_propagated_copies(self):
         # rule_validate 自己 from ... import 了 NEXTDAY_HIT_THRESHOLD，
@@ -421,7 +421,7 @@ class TestApplyAndRestore:
             rv.restore_overrides(journal)
         assert original == cfg.WF_EMBARGO_DAYS
         assert original == rv_mod.WF_EMBARGO_DAYS
-        assert np_mod.OR_MARKED > 0  # 未受影响的模块保持原样
+        assert np_mod.OR_OVERBOUGHT > 0  # 未受影响的模块保持原样
 
     def test_journal_records_spec_and_patched_modules(self):
         import scanner.config as cfg

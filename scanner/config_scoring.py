@@ -229,12 +229,10 @@ NEXTDAY_SPIKE_SWEET_MIN = 0.0  # 低吸潜伏带下限（推荐时刻盘中涨�
 NEXTDAY_SPIKE_SWEET_LOW = 2.0  # 低吸潜伏带上限（<2%）
 NEXTDAY_SPIKE_MID_MIN = 4.0  # 中段启动带下限
 NEXTDAY_SPIKE_MID_MAX = 8.0  # 中段启动带上限（<8%，排除 8-10% 陷阱）
-# 5 日累计门槛（2026-08-14，🎯 判定新增维度）。数据（nextday_attribution kline 回放全量，
-# 含推荐日口径）：推荐前 5 日累计 10~15% 档 hit 21.2%（最好）、0~3 平档仅 5.4%（全场最差）——
-# 「5 日累计低=安全」是反指（平盘=无动量，累计 10%+ = 资金已连续介入的潜伏启动）。
-# 甜蜜带 + 累计≥6 使 hit 从 16.5% 提升至 20.0%（new_face 15.7%→21.1%、momentum 23.7%→26.5%）；
-# rebound（超跌反弹，负累计天然，hit 33.3%）与 short_term（其规律在超买/弱转强，不在此列）豁免。
-NEXTDAY_ACCUM_MIN = 6.0
+# ⚠ 原 NEXTDAY_ACCUM_MIN = 6.0（🎯 画像的 5 日累计门槛）随 🎯 画像于 2026-09-16 删除。
+# 该门槛的实测结论仍具参考价值，留档：推荐前 5 日累计 10~15% 档 hit 21.2%（最好）、
+# 0~3 平档仅 5.4%（全场最差）——「5 日累计低=安全」是反指。现行系统里 5 日累计只服务
+# 过热门槛（OVERHEAT_ACCUM_MAX，见下方 ranking.entry_tier 第一优先级）。
 # 次日大涨口径阈值（%）：2026-08-18 起唯一决策口径（hit = next_day ≥ 7%）。
 # 原散落于 nextday_attribution.DEFAULT_THRESHOLD 与 scripts/*.py 各抄一份，
 # 2026-08-20 收敛到 config 单源（见 AGENTS.md「次日大涨归因」）。
@@ -260,7 +258,7 @@ TB_HORIZON_DAYS = 3  # 时间屏障：最多持有的交易日数（对齐 cum_3
 # 反馈下线（太扎眼），此配置仅用于排序，不渲染任何行尾文本。
 SECTOR_RESONANCE_WARN_MAX = 15
 # 过热妖股档位阈值（ranking.entry_tier 第一优先级）：5日累计（含推荐日口径，
-# _nextday_entry_accum 回退链）≥50% 即使命中 🎯 也劣后档3（精选区校准 hit 最低区）。
+# _nextday_entry_accum 回退链）≥50% 一律劣后档3（精选区校准 hit 最低区）。
 # 资金流出档位阈值复用上方 FUND_OUTFLOW_NET_PCT（与「资金流出」标签同源防漂移）。
 OVERHEAT_ACCUM_MAX = 50.0
 
@@ -288,9 +286,11 @@ CATEGORY_HIT_RATE: dict[str, float] = {
     "core_dip": 0.065,
     "short_term": 0.062,
     "pullback": 0.056,  # 已下线，保留供回测
-    "comeback": 0.028,
     "pool_pick": 0.021,
 }
+# 2026-09-16：comeback（0.028，全场最差）随回马枪桶删除。注意本表是**先验单一事实
+# 源**，删键只影响 comeback 自身（_CAT_BASE_SPREAD 取 max，恒为 rebound 0.179），
+# 其余类别的 COMPOSITE_CAT_BASE 取值逐位不变。
 # 全体兜底 hit 率（未知类别；亦作 composite 线性映射的基准点）
 CATEGORY_HIT_RATE_DEFAULT = 0.078
 
@@ -305,7 +305,7 @@ COMPOSITE_CAT_BASE: dict[str, float] = {
 }
 # 档位阈值：composite_score 推导，取代原 entry_tier 的 if/elif 级联。
 COMPOSITE_TIER_THRESHOLDS: dict[int, float] = {
-    0: 6.0,  # 档0：次日大涨画像区
+    0: 6.0,  # 档0：最高分档（原「次日大涨画像区」，🎯 删除后为纯 composite 分档）
     1: 4.0,  # 档1：强信号
     2: 2.0,  # 档2：普通
     # tier 3 = composite < 2.0 或过热硬门
@@ -316,12 +316,12 @@ COMPOSITE_TIER_THRESHOLDS: dict[int, float] = {
 # （深交所账户级数据，Princeton）：涨停类信号次日高开（集中在次日开盘价）、随后长期反转。
 # 推论：next_day 靶点类 1 日持有最优（次日兑现）；回测默认 hold 3 会把「次日兑现 +
 # 后续回吐」混进同一 P&L，与 next_day 校准的排序结论系统性背离。
-# 映射只收「信号校准于 cum_3d 语义」的类别：comeback（回踩买点是 3 日修复语义，
-# 见 ranking.entry_tier 注释）、core_dip（低吸，非次日靶点）。next_day 靶点类
-# （new_face/known_new_face/momentum/short_term/rebound/pool_pick）不在映射中，
-# 沿用 base。portfolio_backtest --hold-days-auto 消费；不开该开关时回测行为
-# 与历史完全一致（回归安全）。
-HOLD_DAYS_BY_CATEGORY: dict[str, int] = {"comeback": 3, "core_dip": 3}
+# 映射只收「信号校准于 cum_3d 语义」的类别：core_dip（低吸，非次日靶点）。
+# （comeback 原在映射内——回踩买点是 3 日修复语义——随回马枪桶于 2026-09-16 删除。）
+# next_day 靶点类（new_face/known_new_face/momentum/short_term/rebound/pool_pick）
+# 不在映射中，沿用 base。portfolio_backtest --hold-days-auto 消费；不开该开关时
+# 回测行为与历史完全一致（回归安全）。
+HOLD_DAYS_BY_CATEGORY: dict[str, int] = {"core_dip": 3}
 
 
 def hold_days_for(category: str, base: int) -> int:
@@ -331,7 +331,7 @@ def hold_days_for(category: str, base: int) -> int:
 
 # ── 复权漂移指纹监控（2026-09-05 M1.2）──
 # daily_kline 存雪球前复权（qfq）价，除权事件会静默重算全部历史 → 回测/rescore
-# 跨期不可复现、accumulated_pct/🎯 门槛失真。收盘定稿后对锚定历史窗口做 SHA256
+# 跨期不可复现、accumulated_pct 与档位门槛失真。收盘定稿后对锚定历史窗口做 SHA256
 # 指纹比对，漂移即告警（scanner/kline_drift.py，unified_scanner 非交易分支调用）。
 KLINE_DRIFT_FINGERPRINT_BARS = 250  # 指纹窗口覆盖的交易日数（约一年，上限）
 KLINE_DRIFT_MIN_BARS = 30  # 初始化最低历史：不足则不锚定；可用历史在 [30,250) 时取全量锚定
@@ -348,8 +348,8 @@ BREAKOUT_ACCUM_MAX = 5.0  # 前5日累计（含推荐日口径）上限：横盘
 BREAKOUT_T1_VOL_RATIO = 0.9  # T-1 缩量阈值：T-1 量 / 前5日均量 ≤ 0.9
 BREAKOUT_PULLBACK_MIN = -18.0  # T-1 收盘距20日高点回撤下限（%）
 BREAKOUT_PULLBACK_MAX = -8.0  # 回撤上限：太浅=还在高位，太深=趋势可能已破
-# NEXTDAY_CAT_PRIORITY（🎯 次日大涨画像可标记类别集合）已迁至 scanner/categories
-# 单一事实来源，config 仅 re-export，见上方 from scanner.categories import。
+# ⚠ NEXTDAY_CAT_PRIORITY（🎯 可标记类别集合）随 🎯 画像于 2026-09-16 删除
+# （原由 scanner/categories 派生并 re-export）。
 
 # ── 次日大涨高概率规则（display-only，2026-08-30）──
 # 实证：ma5r ≥ 5% & atrpct ≥ 8% & ret20 ≤ 40% → H2 盲测 LIFT 1.53x，
@@ -507,7 +507,6 @@ __all__ = [
     "NEXTDAY_SPIKE_SWEET_LOW",
     "NEXTDAY_SPIKE_MID_MIN",
     "NEXTDAY_SPIKE_MID_MAX",
-    "NEXTDAY_ACCUM_MIN",
     "NEXTDAY_HIT_THRESHOLD",
     "WF_EMBARGO_DAYS",
     "TB_STOP_LOSS_PCT",

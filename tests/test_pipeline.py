@@ -291,11 +291,11 @@ class TestSplitAndSortCategories:
 
     def test_buckets_are_disjoint_and_complete(self):
         cands = [_cand(f"SZ30000{i}", cat) for i, cat in enumerate(
-            ["new_face", "momentum", "rebound", "short_term", "comeback", "pool_pick"])]
+            ["new_face", "momentum", "rebound", "short_term", "pool_pick", "core_dip"])]
         b = split_and_sort_categories(cands)
         covered = sum(len(v) for v in b.values())
-        # pool_pick 不属于五个桶（它由 V2_CATEGORY 单独重建）
-        assert covered == 5
+        # 四个桶；pool_pick（由 V2_CATEGORY 单独重建）与 core_dip（独立区）不在桶内
+        assert covered == 4
 
     def test_score_buckets_sorted_descending(self):
         cands = [_cand("A", "momentum", 10), _cand("B", "momentum", 30), _cand("C", "momentum", 20)]
@@ -315,26 +315,9 @@ class TestSplitAndSortCategories:
         nf = split_and_sort_categories([_cand("A", "new_face", 30), _cand("B", "new_face", 10)])
         assert [c.score for c in nf["new_faces"]] == [30, 10]
 
-    def test_comeback_uses_comeback_sort_key_not_raw_score(self):
-        """comeback 排 |今日波动| 优先，不是 score 降序（2026-08-24 审查：两种顺序曾不一致）。
-
-        构造「低分但今日波动大」 vs 「高分但今日波动小」：按 score 降序会得 [A, B]，
-        按 comeback_sort_key 得 [B, A] —— 顺序不同即证明用的不是裸 score。
-        """
-        a = _cand("A", "comeback", 99)   # 高分
-        b_ = _cand("B", "comeback", 10)  # 低分
-        a.stock.percent = 1.0
-        b_.stock.percent = 9.0
-        out = split_and_sort_categories([a, b_])["comeback"]
-        assert [c.stock.symbol for c in out] == ["B", "A"]
-
-    def test_comeback_falls_back_to_score_when_amplitude_ties(self):
-        """今日波动相同 → 次级区分退化为 score 降序。"""
-        a = _cand("A", "comeback", 10)
-        b_ = _cand("B", "comeback", 99)
-        a.stock.percent = b_.stock.percent = 5.0
-        out = split_and_sort_categories([a, b_])["comeback"]
-        assert [c.score for c in out] == [99, 10]
+    # 2026-09-16：原 `test_comeback_uses_comeback_sort_key_not_raw_score` /
+    # `test_comeback_falls_back_to_score_when_amplitude_ties` 随 comeback 桶与
+    # `ranking.comeback_sort_key` 删除。
 
     def test_rebuilds_from_all_candidates_not_stale_refs(self):
         """加分循环用 dataclass_replace 造了新对象——必须从 all_candidates 重建。
@@ -350,7 +333,7 @@ class TestSplitAndSortCategories:
 
     def test_empty_input_gives_all_empty_buckets(self):
         b = split_and_sort_categories([])
-        assert set(b) == {"new_faces", "momentum", "rebound", "short_term", "comeback"}
+        assert set(b) == {"new_faces", "momentum", "rebound", "short_term"}
         assert all(v == [] for v in b.values())
 
 

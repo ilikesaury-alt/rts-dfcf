@@ -203,6 +203,22 @@ def _check_hot_watch(conn: sqlite3.Connection) -> bool:
     return _has_table(conn, "hot_watch_hits") and _has_table(conn, "hot_watch_meta")
 
 
+def _up_ranking_snapshot_drop_marked(conn: sqlite3.Connection) -> None:
+    """m014（2026-09-16）：🎯 画像删除 → `ranking_snapshot.marked` 失去语义。
+
+    该列是 🎯 判定的观测存证（`is_nextday_marked` 的结果），画像连同判定函数一起
+    删除后，继续保留它只能写常量 0 —— 正是本仓明令避免的「看起来在记录、其实
+    没信息」的字段。故直接掉列（SQLite ≥3.35 支持 ALTER TABLE ... DROP COLUMN；
+    实测运行库 3.45）。只影响观测基建，不改排序/评分/候选生成。
+    """
+    conn.execute("ALTER TABLE ranking_snapshot DROP COLUMN marked")
+
+
+def _check_ranking_snapshot_drop_marked(conn: sqlite3.Connection) -> bool:
+    # check 语义 = 「已满足」：表不存在（全新库，schema.py 已无该列）或列已不在 → 满足。
+    return not _has_column(conn, "ranking_snapshot", "marked")
+
+
 # ── 迁移总表（顺序即执行顺序；只在末尾追加）──
 
 MIGRATIONS: list[Migration] = [
@@ -273,6 +289,12 @@ MIGRATIONS: list[Migration] = [
         desc="hot_watch 独立区连击跟踪表（hits / meta）",
         check=_check_hot_watch,
         up=_up_hot_watch,
+    ),
+    Migration(
+        id="m014_ranking_snapshot_drop_marked",
+        desc="ranking_snapshot 掉 marked 列（🎯 画像已删除，该列失去语义）",
+        check=_check_ranking_snapshot_drop_marked,
+        up=_up_ranking_snapshot_drop_marked,
     ),
 ]
 

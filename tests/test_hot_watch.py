@@ -670,14 +670,10 @@ def _make_view(hot_rows):
 
     return ScanView(
         main_rows=[],
-        comeback_rows=[],
-        nextday_mark={},
         breakout_mark={},
         flow_pct_map={},
         last_ranks={},
-        adj_picks=None,
         weak=False,
-        show_comeback=False,
         warnings=[],
         hot_rows=hot_rows,
     )

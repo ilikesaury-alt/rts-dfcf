@@ -133,27 +133,30 @@ def _insert_rec(conn, symbol, name, category, score, percent, trend="",
 
 
 def test_build_report_tiers_and_analysis():
-    """集成：甜蜜带 rebound → 档0 首选；8-10% momentum → 档3；comeback → 回马枪资金质量。"""
+    """集成：甜蜜带 rebound → 档1；8-10% momentum → 档3；历史 orphan comeback 行不入主表。
+
+    2026-09-16：🎯 与回马枪删除 → entry_tier 不再产出档0、报告不再有
+    `comeback` / `comeback_flow` 小节。库里残留的 `category='comeback'` 行（历史
+    回放场景）仍须被排除在主表之外——否则 tier1/2/3 计数会凭空多出无关行。
+    """
     conn = _report_db()
     _insert_rec(conn, "SZ300001", "反弹票", "rebound", 47, 1.5, trend="阴跌企稳",
                 concept="华为概念", dims={"fund_flow_main_pct": 6.0,
                                         "v_rb_volume_detail": "vol_healthy"}, accum=-8.0)
     _insert_rec(conn, "SZ300002", "陷阱票", "momentum", 70, 9.0, trend="放量启动",
                 dims={"v_mo_divergence": -10, "fund_flow_main_pct": 1.0}, accum=12.0)
-    _insert_rec(conn, "SZ300003", "回踩票", "comeback", 101, 2.4, trend="回踩·到买点",
-                dims={"comeback_variant": "回踩", "fund_flow_main_pct": 8.0,
-                      "comeback_signals": "缩量/未破位"}, accum=3.0)
+    # 历史 orphan 行（回马枪桶已删除，存量库仍有此类行）
+    _insert_rec(conn, "SZ300003", "遗留回踩票", "comeback", 101, 2.4, trend="回踩·到买点",
+                dims={"fund_flow_main_pct": 8.0}, accum=3.0)
     conn.commit()
     rep = _build_report(conn, now_beijing().date().isoformat(), None)
     assert not rep["empty"]
-    assert len(rep["tier0"]) == 1, "甜蜜带 rebound 应进档0"
-    assert rep["tier0"][0]["label"] == "首选"
-    assert rep["tier0"][0]["symbol"] == "SZ300001"
+    assert rep["tier0"] == [], "🎯 删除后 entry_tier 不再产出档0（2026-09-16）"
+    assert len(rep["tier1"]) == 1 and rep["tier1"][0]["symbol"] == "SZ300001", "甜蜜带 rebound 落档1"
     assert len(rep["tier3"]) == 1, "8-10% 陷阱带 momentum 应进档3"
     assert rep["tier3"][0]["symbol"] == "SZ300002"
-    assert len(rep["comeback_flow"]) == 1
-    assert rep["comeback_flow"][0]["flow"] == 8.0
-    assert rep["main"] == 2 and rep["comeback"] == 1
+    assert "comeback" not in rep and "comeback_flow" not in rep, "回马枪小节已删除"
+    assert rep["main"] == 2, "orphan comeback 行不得进主表"
 
 
 def test_build_report_excluded_and_quality():
@@ -174,9 +177,11 @@ def test_build_report_excluded_and_quality():
     # 盘中新鲜度：质量快照时间 + 最近推荐时间（2026-08-18 新增）
     assert rep["quality_time"] == "15:00"
     assert rep["last_rec_time"] == "14:00"
-    # 非 excluded 的过热票（累计112 ≥50）→ 档3（累计过热优先于 🎯）
+    # 非 excluded 的过热票（累计112 ≥50）→ 档3
     assert rep["tier3"][0]["symbol"] == "SZ300003"
-    assert [a["symbol"] for a in rep["tier0"]] == ["SZ300001"], "过热票不应进档0（累计≥50 优先劣后）"
+    # 2026-09-16：🎯 降级后档0 恒空；甜蜜带 momentum 改落档2
+    assert rep["tier0"] == []
+    assert [a["symbol"] for a in rep["tier2"]] == ["SZ300001"]
 
 
 def test_build_report_empty_date():
@@ -200,4 +205,6 @@ def test_build_report_historical_as_of():
     assert len(recs) == 1 and recs[0]["symbol"] == "SZ300001"
     rep = _build_report(conn, "2026-08-17", None)
     assert not rep["empty"] and rep["date"] == "2026-08-17"
-    assert len(rep["tier0"]) == 1
+    # 2026-09-16：🎯 降级后档0 恒空，rebound 落档1
+    assert rep["tier0"] == []
+    assert len(rep["tier1"]) == 1 and rep["tier1"][0]["symbol"] == "SZ300001"

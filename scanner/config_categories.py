@@ -1,4 +1,4 @@
-# scanner/config_categories.py — 策略桶门槛 / 市值价格限制 / 回马枪·核心低吸配置
+# scanner/config_categories.py — 策略桶门槛 / 市值价格限制 / 核心低吸配置
 # 2026-09-13 从 config.py 拆出。定义集中在此，由 scanner/config.py 统一 re-export，
 # 保持 `from scanner.config import ...` 导入路径不变。
 
@@ -53,11 +53,9 @@ ST_BOMB_CLOSE = 0.10  # 昨日收盘/前收 - 1 < 此值 视为收盘大回落�
 # ── 策略桶开关（2026-08-30 简化聚焦）──
 # 归因结论（nextday_attribution 去重 1559 样本，P0 修复后）：
 #   rebound 17.9% / known_new_face 13.1% → 核心，保留
-#   comeback 3.8% → 已禁用（全场最差）
 #   short_term 6.8%（低于基准 8.7%）→ 冻结（不产出新推荐，历史数据保留）
 #   momentum 10.3%（≈基准但回测 P&L -7.6%）→ 冻结
 #   core_dip 9.4%（高于基准但仅 53 样本）→ 不进主推荐，保留数据采集
-ENABLE_COMEBACK = True
 ENABLE_CORE_DIP = True
 # 2026-09-02 用户决策：重开（此前 Phase 3 冻结，因盘中 v1 主表多日仅 new_face/rebound
 # 两桶在产、策略优选池频繁空表）。重开前归因基线见上方注释；如需回滚改回 False 即可。
@@ -68,35 +66,12 @@ ENABLE_MOMENTUM = True
 # 开启后观察：① 信号量暴增是否稀释质量 ② 组合 P&L 是否改善 ③ hit rate 是否变化。
 DISABLE_MIN_SCORE = False  # 实验结论：关闭后 P&L 变差，保留作为过滤器
 
-# ── 回马枪（掉榜跟踪）— 独立策略桶（2026-08-07 新增）──
-# 背景：候选池由"当次热榜"驱动，掉榜超跌股（如志特新材 07-09→07-31 三周掉榜）完全不可见，
-# 反弹企稳日（07-14~07-30）无法被 rebound 评估。回马枪补上这块盲区。
-# 评估域 = watch_pool（上过榜的 GEM 股）∪ 近 N 日推荐，减去今日在榜票；
-# 每票每日最多评估一次（last_eval_date 落库，重启不丢）。
+# ── 掉榜跟踪池（watch_pool，与 matcher 在榜回调观察共享）──
+# 维护上过榜的 GEM 股，掉榜后保留 WATCH_OFFLIST_KEEP_DAYS 个交易日，供 matcher Chain A 观察回调。
 WATCH_POOL_MAX = 600  # 掉榜跟踪池上限（超限时淘汰 last_list_date 最旧）
-WATCH_OFFLIST_KEEP_DAYS = 15  # 掉榜后保留交易日数（覆盖三周级掉榜，见志特新材案例）
-# 反转变体：超跌企稳（复用 analyze_rebound 语义，off_list 收紧）
-COMEBACK_MIN_TODAY_PCT = 2.0  # off_list 今日涨幅下限（比 rebound 0.5 更严，反转确认）
-COMEBACK_MAX_TODAY_PCT = 12.0  # 与 short_term 上限同源：覆盖 8-12% 续涨（掉榜日无热榜背书）
-COMEBACK_PREFILTER_5D_DROP = -8.0  # 5日累计跌幅≤此值才补拉当日 bar（成本预过滤，从~600降到数十/日）
-COMEBACK_POS_DIMS = 3  # off_list 交叉验证维度下限（榜上为2，掉榜无热榜背书更严）
-COMEBACK_KLINE_DEADLINE = 15  # 回马枪独立 K 线拉取 deadline（秒）：不与主榜共用，避免主榜耗尽预算后回马枪全 stale
-# 回踩变体（吸收原历史推荐跟踪 tracker）：近 N 日推荐回调到买点 → 二次上车
-COMEBACK_REENTRY_DAYS = 5  # 回踩跟踪窗口（交易日）
-COMEBACK_REENTRY_BASE_SCORE = 40  # 回踩基础分（每命中一个买点信号 +15）
-COMEBACK_REENTRY_SIGNAL_SCORE = 15
-COMEBACK_REENTRY_FILTER_TODAY_HIGH = 5.0  # 今日涨幅≥此值 → 过滤（不追高）
-COMEBACK_REENTRY_FILTER_TODAY_LOW = -5.0  # 今日跌幅≤此值 → 过滤（可能破位）
-COMEBACK_REENTRY_FILTER_CUM_HIGH = 10.0  # 累计收益≥此值 → 过滤（已错过）
-COMEBACK_REENTRY_FILTER_CUM_LOW = -10.0  # 累计收益≤此值 → 过滤（信号失效）
-# 回马枪**扫描期**前置门：主力净占比 ≤ -5% → 候选直接丢弃（回调可能是出货）；
-# 无当日数据 → 保留（视同中性，fail-open）。
-# ⚠ 这不是「资金流出」档（那档单源在 config_sources.FUND_OUTFLOW_NET_PCT = -8.0%，
-# 由 ranking.is_fund_outflow 判定、在展示层执行）。本处刻意更严：它是候选生成门
-# （决定 recommendations 落库内容），一旦放宽到 -8% 会让 (-8%, -5%] 区间的票重新
-# 进入落库与展示——那是放宽，不是"统一"。故保留 -5%，与展示门构成子集关系。
-COMEBACK_REENTRY_FUND_FLOW_LOW = FUND_FLOW_MAIN_PCT_WEAK  # 与评分扣分档同源，避免阈值漂移
-# 买点信号阈值（满足条件计 1 分，信号数决定状态分类）
+WATCH_OFFLIST_KEEP_DAYS = 15  # 掉榜后保留交易日数（覆盖三周级掉榜）
+# matcher 在榜回调观察「五维企稳信号」阈值（原回马枪回踩变体复用，回马枪删除后归 matcher 所有）：
+# 信号数 ≥ COMEBACK_REENTRY_STATUS_BUY → 到买点（见 scanner/matcher.py:_stabilization_signals）。
 COMEBACK_REENTRY_MA20_SUPPORT_PCT = 3.0  # |close-MA20|/MA20 < 此值 且 MA20 上行 → MA20 支撑
 COMEBACK_REENTRY_VOL_SHRINK_RATIO = 0.8  # vol_ratio < 此值 → 缩量回调
 COMEBACK_REENTRY_RSI_LOW = 30  # RSI 合理区下限
@@ -104,19 +79,9 @@ COMEBACK_REENTRY_RSI_HIGH = 50  # RSI 合理区上限（回落但不超卖）
 COMEBACK_REENTRY_BOLL_MID_PCT = 3.0  # 距 BOLL 中轨±此值内 → 位置合理
 COMEBACK_REENTRY_MA20_SLOPE_MIN = 0.5  # MA20 日涨幅>此值 → 上行（百分比）
 COMEBACK_REENTRY_STATUS_BUY = 3  # 信号数≥此值 → "到买点"（5维信号：均线支撑/缩量/RSI/BOLL/MACD）
-# 观察中门槛调整：原 6 维信号时为 3（防同源指标凑数），合并 MA20支撑+未破位→均线支撑后
-# 降为 5 维，阈值相应下调到 2（仍需至少 2 个独立维度确认）。
-COMEBACK_REENTRY_STATUS_WATCH = 2  # 信号数≥此值 → "观察中"，否则 "未到买点"（过滤）
-COMEBACK_REENTRY_DISPLAY_WATCH_MAX = 0  # "观察中"补充最多显示条数（0 = 不显示，只看到买点）
-# 回马枪独立区仅作兜底参考：主区（榜上五类）推荐条数 > COMEBACK_DISPLAY_MIN_MAIN 时
-# 隐藏回马枪/核心低吸两低吸区（避免刷屏）；主区推荐条数 ≤ 该值（含为空）时补充展示，
-# 最多前 COMEBACK_DISPLAY_MAX 条（回马枪为掉榜无热榜背书票，评分语义弱于榜上推荐）。
-# 2026-08-24 用户决策：阈值 3→5，且删除大盘弱势 OR 门——主表 >5 条一律隐藏。
-COMEBACK_DISPLAY_MAX = 3  # 回马枪最多显示条数
 # 核心低吸单独放宽（2026-09-08 用户要求多显示几条）：核心股有主线方向背书，
 # 语义强于回马枪，且仅主区稀少时才补充展示，多几条不刷屏。
 CORE_DIP_DISPLAY_MAX = 6  # 核心方向低吸区最多显示条数
-COMEBACK_DISPLAY_MIN_MAIN = 5  # 主区推荐条数大于此值 → 隐藏回马枪/核心低吸区；≤ 此值 → 补充显示
 
 # 核心方向低吸（2026-08-19，`scanner/core_themes.py` + display 独立区）：
 # 大跌市中找「当前市场主线方向（核心概念）的核心股低吸」机会。纯展示层推导（DB-only，
@@ -167,26 +132,12 @@ __all__ = [
     "ST_DIVERGE_CLOSE_WEAK",
     "ST_BOMB_HIGH",
     "ST_BOMB_CLOSE",
-    "ENABLE_COMEBACK",
     "ENABLE_CORE_DIP",
     "ENABLE_SHORT_TERM",
     "ENABLE_MOMENTUM",
     "DISABLE_MIN_SCORE",
     "WATCH_POOL_MAX",
     "WATCH_OFFLIST_KEEP_DAYS",
-    "COMEBACK_MIN_TODAY_PCT",
-    "COMEBACK_MAX_TODAY_PCT",
-    "COMEBACK_PREFILTER_5D_DROP",
-    "COMEBACK_POS_DIMS",
-    "COMEBACK_KLINE_DEADLINE",
-    "COMEBACK_REENTRY_DAYS",
-    "COMEBACK_REENTRY_BASE_SCORE",
-    "COMEBACK_REENTRY_SIGNAL_SCORE",
-    "COMEBACK_REENTRY_FILTER_TODAY_HIGH",
-    "COMEBACK_REENTRY_FILTER_TODAY_LOW",
-    "COMEBACK_REENTRY_FILTER_CUM_HIGH",
-    "COMEBACK_REENTRY_FILTER_CUM_LOW",
-    "COMEBACK_REENTRY_FUND_FLOW_LOW",
     "COMEBACK_REENTRY_MA20_SUPPORT_PCT",
     "COMEBACK_REENTRY_VOL_SHRINK_RATIO",
     "COMEBACK_REENTRY_RSI_LOW",
@@ -194,11 +145,7 @@ __all__ = [
     "COMEBACK_REENTRY_BOLL_MID_PCT",
     "COMEBACK_REENTRY_MA20_SLOPE_MIN",
     "COMEBACK_REENTRY_STATUS_BUY",
-    "COMEBACK_REENTRY_STATUS_WATCH",
-    "COMEBACK_REENTRY_DISPLAY_WATCH_MAX",
-    "COMEBACK_DISPLAY_MAX",
     "CORE_DIP_DISPLAY_MAX",
-    "COMEBACK_DISPLAY_MIN_MAIN",
     "CORE_THEME_LOOKBACK_DAYS",
     "CORE_THEME_MIN_DAYS",
     "CORE_THEME_TOP_N",

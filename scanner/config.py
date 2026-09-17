@@ -18,7 +18,6 @@
 
 from scanner.categories import (  # noqa: F401,E402  (re-export)
     CAT_DISPLAY_PRIORITY,
-    NEXTDAY_CAT_PRIORITY,
     SUGGEST_BY_CAT,
 )
 from scanner.config_categories import *  # noqa: F401,F403

@@ -240,17 +240,18 @@ def _canon(obj: Any, _depth: int = 0) -> Any:
 def canonicalize(result: Any) -> dict:
     """ScanResult → 规范化 dict（各桶按 symbol 排序，消除列表顺序噪声）。"""
     out = _canon(result)
-    for key in ("new_faces", "momentum", "rebound", "short_term", "comeback", "pool_picks"):
+    for key in ("new_faces", "momentum", "rebound", "short_term", "pool_picks"):
         if isinstance(out.get(key), list):
             out[key] = sorted(out[key], key=lambda c: str((c or {}).get("stock", {}).get("symbol", "")))
     return out
 
 
 # 空桶 = 该代码路径**没有被黄金样本走到** → 拆它时这个基线保护不了你。
-# 实测（2026-09-13）：comeback 在所有可用日期恒为 0（evaluate_comeback 依赖
-# adapter 实时行情，离线模式下必然失败）；new_face / momentum 多数日期为 0~1
-# （真实数据使然——多数票此前已上榜，不构成 new_face）。
-COVERAGE_BUCKETS = ("new_faces", "momentum", "rebound", "short_term", "comeback", "pool_picks")
+# 实测（2026-09-13）：new_face / momentum 多数日期为 0~1（真实数据使然——多数票
+# 此前已上榜，不构成 new_face）。
+# （2026-09-16：`comeback` 桶随该策略删除一并移出——它此前因依赖 adapter 实时行情
+# 离线恒为 0，本就属于保护不到的路径。）
+COVERAGE_BUCKETS = ("new_faces", "momentum", "rebound", "short_term", "pool_picks")
 
 
 def _coverage_warnings(summary: dict) -> list[str]:
@@ -273,7 +274,6 @@ def _summary(result: Any) -> dict:
         "momentum": len(getattr(result, "momentum", []) or []),
         "rebound": len(getattr(result, "rebound", []) or []),
         "short_term": len(getattr(result, "short_term", []) or []),
-        "comeback": len(getattr(result, "comeback", []) or []),
         "pool_picks": len(getattr(result, "pool_picks", []) or []),
         "gem_stocks": len(getattr(result, "gem_stocks", []) or []),
         "filtered_large_cap": getattr(result, "filtered_large_cap", 0),

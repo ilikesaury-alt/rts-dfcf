@@ -44,7 +44,6 @@ CORE_MODULES = (
     "matcher",
     "weights",
     "intraday_tactics",
-    "comeback",
     "core_themes",
     "trend_beauty",
 )

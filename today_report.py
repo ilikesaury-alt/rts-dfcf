@@ -62,11 +62,9 @@ from scanner.ranking import (  # noqa: E402  (纯排序逻辑单源，与 displa
     _entry_weak_to_strong,
     _nextday_entry_percent,
     build_accum_map,
-    comeback_sort_key,
     entry_dims,
     entry_tier,
     entry_tier_reasons,
-    is_nextday_marked,
     sort_main_entries,
 )
 from scanner.utils import to_float, to_int  # noqa: E402
@@ -233,7 +231,7 @@ def _tier0_verdict(entry: Any, flow_pct_map: dict) -> dict:
     }
 
 
-# ── 报告组装（与 display_priority 同源的档位/🎯 判定）──
+# ── 报告组装（与 display_priority 同源的档位判定）──
 def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int | None) -> dict:
     recs = get_today_recommendations(conn, as_of=target_date)
     if not recs:
@@ -248,11 +246,13 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int | None)
     for e in recs:
         acc = accum_map.get(e["symbol"])
         e["_accum"] = acc
-        e["_marked"] = is_nextday_marked(e, conn, accum_map=accum_map)
-        e["_tier"] = entry_tier(e, conn, accum_map=accum_map, marked=e["_marked"])
-
+        e["_tier"] = entry_tier(e, conn, accum_map=accum_map)
+    # 2026-09-16：🎯（_marked）与回马枪桶（comeback 小节）按用户决策删除。
+    # ⚠ `main` 的排除集**保留 "comeback"**：本报告支持 `--date` 回放历史，历史
+    # recommendations 里仍有大量 category='comeback' 行；把它们放进主表会让
+    # tier1/2/3 计数与「档0 分析」凭空多出与主表语义无关的行。保留排除 =
+    # 历史回放的主表口径不变（这些行只是不再有专属小节）。
     main = [e for e in recs if e["category"] not in ("comeback", CORE_DIP_CATEGORY)]
-    comeback = [e for e in recs if e["category"] == "comeback"]
     core_dip = [e for e in recs if e["category"] == CORE_DIP_CATEGORY]
 
     # 2026-08-20 收敛：排序组合层（档位+类别优先级+分数键含 kNF 升序）统一走 ranking.sort_main_entries，
@@ -281,30 +281,10 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int | None)
         flow = entry_dims(e).get("fund_flow_main_pct")
         if flow is None:
             flow = flow_map.get(e["symbol"])
-        for r in entry_tier_reasons(e, accum=e.get("_accum"), marked=e["_marked"], flow=flow):
+        for r in entry_tier_reasons(e, accum=e.get("_accum"), flow=flow):
             tier3_reasons[r] = tier3_reasons.get(r, 0) + 1
 
-    # 回马枪资金质量
-    cb_flow = []
-    # 2026-08-24：与 display 回马枪区同源排序（ranking.comeback_sort_key，资金流优先）
-    for e in sorted(comeback, key=lambda x: comeback_sort_key(x, flow_map)):
-        d = entry_dims(e)
-        flow = d.get("fund_flow_main_pct")
-        if flow is None:
-            flow = flow_map.get(e["symbol"])
-        flow = to_float(flow, default=None)
-        variant = d.get("comeback_variant") or str(e.get("trend", "")).split("·")[0]
-        signals = d.get("comeback_signals", "")
-        cb_flow.append(
-            {
-                "symbol": e["symbol"],
-                "name": e["name"],
-                "score": e["score"],
-                "variant": variant,
-                "signals": signals,
-                "flow": flow,
-            }
-        )
+    # 回马枪资金质量小节（cb_flow）已于 2026-09-16 随回马枪桶删除。
 
     # 数据质量（scan_quality_log）+ 数据新鲜度（盘中运行语义：截至最近一次扫描轮）
     quality = {}
@@ -381,7 +361,6 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int | None)
         "empty": False,
         "total": len(recs),
         "main": len(main),
-        "comeback": len(comeback),
         "tier0": analyzed,
         "tier1": [
             {
@@ -415,7 +394,6 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int | None)
             for e in tier3
         ],
         "tier3_reasons": tier3_reasons,
-        "comeback_flow": cb_flow,
         "core_dip": [
             {"symbol": e["symbol"], "name": e["name"], "category": e["category"], "score": e["score"]} for e in core_dip
         ],
@@ -465,9 +443,9 @@ def _render(report: dict) -> str:
         )
     )
     out.append(
-        f"  推荐 {report['total']} 只（主表 {report['main']} + 回马枪 {report['comeback']} + "
+        f"  推荐 {report['total']} 只（主表 {report['main']} + "
         f"核心方向低吸 {len(report['core_dip'])}）| "
-        f"档0🎯 {len(report['tier0'])} 只 / 档1强信号 {len(report['tier1'])} / "
+        f"档0 {len(report['tier0'])} 只 / 档1强信号 {len(report['tier1'])} / "
         f"档3警示 {len(report['tier3'])} | 数据质量: {q_str}"
     )
     if report.get("unfinalized"):
@@ -487,10 +465,10 @@ def _render(report: dict) -> str:
         excl = "、".join(f"{x['name']}({x['category']})" for x in report["excluded"])
         out.append(f"  被移出（硬过滤/反转移出，不展示）: {excl}")
 
-    # 二、档0 个股分析
-    out.append(f"\n{ANSI['BOLD']}二、🎯 档0 个股分析（次日大涨画像·选股决策参考）{ANSI['RESET']}")
+    # 二、档0 个股分析（2026-09-16：🎯 画像删除后，档0 = 纯 composite 评分最高档）
+    out.append(f"\n{ANSI['BOLD']}二、档0 个股分析（最高分档·选股决策参考）{ANSI['RESET']}")
     if not report["tier0"]:
-        out.append("  今日无 🎯 档0 票。")
+        out.append("  今日无档0 票。")
     else:
         for i, a in enumerate(report["tier0"], 1):
             cat_label = (
@@ -533,25 +511,9 @@ def _render(report: dict) -> str:
         for c in report["core_dip"]:
             out.append(f"  {c['name']} {c['symbol']} 评分{c['score']}")
 
-    # 六、回马枪资金质量
-    out.append(f"\n{ANSI['BOLD']}六、回马枪（掉榜跟踪·cum_3d 语义·参考）{ANSI['RESET']}")
-    if not report["comeback_flow"]:
-        out.append("  今日无回马枪。")
-    else:
-        for c in report["comeback_flow"]:
-            flow_str = _fmt_flow(c["flow"])
-            verdict = (
-                "资金回流可取"
-                if (c["flow"] is not None and c["flow"] >= 5)
-                else ("资金背离回避" if (c["flow"] is not None and c["flow"] <= FUND_OUTFLOW_NET_PCT) else "中性观察")
-            )
-            out.append(
-                f"  {c['name']} {c['symbol']} 评分{c['score']} [{c['variant']}] "
-                f"{flow_str} → {verdict}（信号: {c['signals'] or '—'}）"
-            )
-
-    # 七、结论
-    out.append(f"\n{ANSI['BOLD']}七、结论{ANSI['RESET']}")
+    # 六、回马枪资金质量小节已于 2026-09-16 随回马枪桶删除（原「六」）。
+    # 七、结论 → 现为「六」。
+    out.append(f"\n{ANSI['BOLD']}六、结论{ANSI['RESET']}")
     picks = [a for a in report["tier0"] if a["verdict"] >= _VERDICT_STRONG]
     watches = [a for a in report["tier0"] if a["verdict"] == _VERDICT_OK]
     if picks:

@@ -35,7 +35,6 @@ from scanner.ranking import (  # noqa: E402
     entry_dims,
     entry_tier,
     entry_tier_reasons,
-    is_nextday_marked,
 )
 from scanner.ranking_snapshot import load_ranking_snapshot  # noqa: E402
 
@@ -94,11 +93,10 @@ def collect(conn, dates):
                 tier = snap["tier"]
                 reasons = list(snap["reasons"])
             else:
-                marked = is_nextday_marked(e, conn, accum_map=accum_map)
-                tier = entry_tier(e, conn, accum_map=accum_map, marked=marked)
+                tier = entry_tier(e, conn, accum_map=accum_map)
                 d = entry_dims(e)
                 flow = _flow_of(e, d, flow_map)
-                reasons = entry_tier_reasons(e, accum=accum_map.get(e["symbol"]), marked=marked, flow=flow)
+                reasons = entry_tier_reasons(e, accum=accum_map.get(e["symbol"]), flow=flow)
             if tier != 3:
                 continue
             recent_ok = dt >= DIMS_COMPLETE_SINCE

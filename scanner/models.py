@@ -76,9 +76,9 @@ class RecommendationRow(_RecRowRequired, total=False):
     live_percent: float
     live_current: float
     live_rank: int
-    # 展示层注入键（display/today_report 写入）：档位/标记预计算与核心股高亮
+    # 展示层注入键（display/today_report 写入）：档位预计算与核心股高亮
+    # （原 `_marked: bool`（🎯 标记）随 🎯 画像于 2026-09-16 删除，全仓不再写入该键）
     _accum: float | None
-    _marked: bool
     _tier: int
     _core_stock: bool
 
@@ -209,8 +209,9 @@ class Candidate:
     risk_flags: list[str] = field(default_factory=list)  # 复合风险标签（超买/出货/破位等）
     prominence_labels: list[str] = field(default_factory=list)  # 辨识度标签（反复上榜等）
     driving_concept: str = ""  # 当前推动概念（仅展示，不参与打分）
-    off_list: bool = False  # 掉榜跟踪候选（回马枪）：不在当次热榜上，无热榜背书
-    comeback_variant: str = ""  # 回马枪变体："反转" / "回踩"（展示与持久化区分）
+    # （原 `off_list`（掉榜跟踪候选）与 `comeback_variant`（回马枪变体）两个字段随
+    # 回马枪桶于 2026-09-16 删除——唯一写入方是 scanner/comeback.py，删除后恒为
+    # 默认值，留着只会让 enhancer 的豁免分支与 golden 快照里多两个空壳字段。）
     stale_kline: bool = False  # 评分所用 K 线缺今日 bar（补拉失败旧缓存兜底）——审计用（2026-08-14）
     excluded_reason: str = ""  # 硬过滤命中标签串（审计用，2026-08-20）：excluded=1 时记录
     # 命中哪些 RISK_FLAGS_HARD_FILTER 标签，消除"无依据误杀"盲点
@@ -230,7 +231,7 @@ class ScanResult:
     momentum: list[Candidate] = field(default_factory=list)
     rebound: list[Candidate] = field(default_factory=list)
     short_term: list[Candidate] = field(default_factory=list)
-    comeback: list[Candidate] = field(default_factory=list)
+    # （原 `comeback: list[Candidate]` 桶随回马枪于 2026-09-16 删除。）
     pool_picks: list[Candidate] = field(default_factory=list)  # v2: pool→danger→matcher 统一输出
     gem_stocks: list[StockInfo] = field(default_factory=list)
     filtered_large_cap: int = 0

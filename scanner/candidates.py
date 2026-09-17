@@ -393,8 +393,8 @@ def compute_rps(
         for rank, i in enumerate(order):
             pctiles[i] = (rank + 1) * 100 // total
     for c, pctile, ok in zip(candidates, pctiles, caliber_ok, strict=True):
-        # 超跌反弹/回马枪 accumulated 为负必落底部分位，RPS_LOW 惩罚违背策略初衷，豁免
-        if c.category in ("rebound", "comeback"):
+        # 超跌反弹 accumulated 为负必落底部分位，RPS_LOW 惩罚违背策略初衷，豁免
+        if c.category == "rebound":
             scores[c.stock.symbol] = 0
             continue
         if not ok:
@@ -413,15 +413,14 @@ def compute_rps(
 
 
 def enrich_candidate_market_cap(c: Candidate, cap_data: dict) -> None:
-    """为候选补齐市值字段（榜上票与回马枪 off-list 票同口径）。
+    """为候选补齐市值字段（各桶统一口径）。
 
     - c.market_cap / c.circ_market_cap：元原始值（供行情侧/资金流查询门禁）
     - c.stock.market_cap：亿元（供 enhancer._apply_market_cap_bonus 的阈值比较）
 
-    榜上票的 stock 对象在 _filter_gem 富集时已赋值 stock.market_cap；回马枪
-    off-list 票的 StockInfo 由 evaluate_comeback 新建、market_cap 恒为 0，
-    导致小市值加分系统性缺失（c.market_cap 是元原始值，与亿元阈值不是同一
-    单位，不能替代）。统一在此按同口径补齐。
+    榜上票的 stock 对象在 _filter_gem 富集时已赋值 stock.market_cap；但并非所有
+    候选都带非零市值（c.market_cap 是元原始值，与亿元阈值不是同一单位，不能
+    替代）。统一在此按同口径补齐，避免小市值加分系统性缺失。
     """
     c.market_cap = cap_data.get("market_cap", 0)
     c.circ_market_cap = cap_data.get("circ_market_cap", 0)

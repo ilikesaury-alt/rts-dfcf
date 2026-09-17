@@ -3,7 +3,8 @@
 
 终选区 = v1+v2+回马/低吸 合池 → 次日大涨概率终选（nextday_prob 单源）→ ≤N 只
 + 落选理由。与决策层互补：决策层答「该不该买」，终选区答「必须持仓时买谁」。
-2026-09-05 升级：排序键由「verdict→🎯→score」改为「概率→verdict→score」，
+2026-09-16 排序键改为意图驱动（类别语义优先级→实时资金流→走势美感→辨识度），
+nextday_prob 概率仅作行内参考展示（此前 2026-09-05 由「verdict→🎯→score」改为「概率→verdict→score」）。
 FINAL_PICK_MAX 3→2，新增驱动概念去相关与周期标签。
 2026-09-14：删除 momentum 无条件剔除（目标函数统一为 hit 率，见 scanner/final_pick.py）。
 """
@@ -77,15 +78,19 @@ def test_dedup_keeps_all_distinct_symbols():
     assert len(rows) == 2
 
 
-def test_dedup_keeps_comeback_core_dip_low_priority():
-    """2026-09-05 扩池：comeback/core_dip 纳入终选池（低优桶，不遮蔽主表类别）。"""
+def test_dedup_keeps_core_dip_low_priority():
+    """2026-09-05 扩池：core_dip 纳入终选池（低优桶，不遮蔽主表类别）。
+
+    2026-09-16：回马枪桶删除 → `comeback` 退出 `_CAT_PRIORITY` 白名单，
+    历史 comeback 行不再进终选池（`cat not in _CAT_PRIORITY` 直接丢弃）。
+    """
     rows = dedup_candidates(
         [
             _entry(symbol="SZ300001", category="comeback"),
             _entry(symbol="SZ300002", category="core_dip"),
         ]
     )
-    assert {r["category"] for r in rows} == {"comeback", "core_dip"}
+    assert {r["category"] for r in rows} == {"core_dip"}
 
 
 # ── 过滤门与排序 ──
@@ -95,10 +100,11 @@ def test_momentum_no_longer_hard_excluded():
     """★ momentum 不再被无条件剔除（2026-09-14：目标函数统一为 hit 率）。
 
     旧实现：`category != "momentum"` 直接出局，落选理由写「momentum负先验」，
-    依据是**平均超额**（-0.70%）——与终选排序键（nextday_prob，hit 率）方向相反。
-    新实现：momentum（base 10.0%）由 base rate 如实参与排序。本用例用
-    「🎯甜蜜带 momentum」 vs 「2-4% 死区 pool_pick（base 2.1%）」这一对，
-    锁定 base rate 确实进了排序，而非只是把顺序碰巧换了。
+    依据是**平均超额**（-0.70%）——与终选口径方向相反。新实现：momentum 与
+    其他类别走同一条路径，不被硬剔除。2026-09-16 终选排序改为意图驱动
+    （类别语义优先级 → 实时资金流 → 走势美感 → 辨识度），_p 仅作展示——
+    本用例锁定 momentum 仍入选、且顺序由类别优先级决定（池选0 > momentum3），
+    而非由 _p 高低决定。
     """
     mom = _entry(
         symbol="SZ300009",
@@ -112,11 +118,12 @@ def test_momentum_no_longer_hard_excluded():
     pool = _entry(symbol="SZ300001", name="池选票", category="pool_pick", score=10, percent=3.0, accum=5.0)
     result = _build(_conn(), [mom, pool])
     syms = [p["symbol"] for p in result["picks"]]
-    assert syms == ["SZ300009", "SZ300001"], f"momentum<{{base 10.0%}} 应压过死区 pool_pick<{{2.1%}}>: {syms}"
-    assert result["rejects"] == [], "池子未满时不应有人落选（旧实现会把 momentum 踢进落选）"
+    assert "SZ300009" in syms, "momentum 不得被硬剔除（2026-09-14 删除无条件剔除）"
+    assert syms[0] == "SZ300001", f"池选(类别优先级0)应排 momentum(3)前，_p 不再决定顺序: {syms}"
+    assert syms[1] == "SZ300009"
     p_mom = next(p["_p"] for p in result["picks"] if p["symbol"] == "SZ300009")
     p_pool = next(p["_p"] for p in result["picks"] if p["symbol"] == "SZ300001")
-    assert p_mom > p_pool, "概率差必须来自 base rate（hit 率口径）"
+    assert p_mom > p_pool, "概率差仍来自 base rate（hit 率口径，仅作展示参考）"
     lines = render_final_pick_lines(result)
     assert not any("momentum负先验" in ln for ln in lines), "已废弃的均值口径理由不得再出现"
 
@@ -130,40 +137,38 @@ def test_chase_gate_filters_overcap():
     assert "SZ300008" not in syms and "SZ300001" in syms
 
 
-def test_picks_sorted_by_probability():
-    """主排序：次日大涨概率降序。rebound 🎯（甜蜜带+非超买，base 17.9%×OR2.6）
-    概率显著高于 unmarked 池选（2-4% 死区，base 2.8%×OR0.70）——分数仅平局末键。"""
+def test_picks_sorted_by_category_priority():
+    """意图驱动排序（2026-09-16）：类别语义优先级(CAT_DISPLAY_PRIORITY) 为主键，_p 不再决定顺序。
+
+    pool_pick(优先级0) 排 rebound(1) 前，即使 rebound 次日大涨概率更高（🎯 甜蜜带）。
+    同类别内稳定顺序（实时资金流/美感/辨识度在测试里均为中性，故退化为插入序）。
+    """
     rbd = _entry(
         symbol="SZ300002",
         name="反弹票",
         category="rebound",
-        score=10,  # 低分但概率高
-        percent=1.5,  # 低吸带 + 非超买 → 🎯
+        score=10,
+        percent=1.5,
         accum=-8.0,
     )
-    pool_hi = _entry(symbol="SZ300001", name="池选高分", score=99)  # percent 3.0 死区
-    pool_lo = _entry(symbol="SZ300003", name="池选低分", score=5)
+    pool_hi = _entry(symbol="SZ300001", name="池选高分", category="pool_pick", score=99, percent=3.0)
+    pool_lo = _entry(symbol="SZ300003", name="池选低分", category="pool_pick", score=5, percent=3.0)
     result = _build(_conn(), [rbd, pool_hi, pool_lo])
     syms = [p["symbol"] for p in result["picks"]]
-    assert syms[0] == "SZ300002"  # 概率排序压过跨桶分数
-    assert result["picks"][1]["symbol"] == "SZ300001"  # 平级概率按分数
+    assert syms[0] == "SZ300001", f"池选(优先级0)应排反弹(1)前，_p 不决定顺序: {syms}"
+    assert syms[1] == "SZ300003"
+    assert syms[2] == "SZ300002"
 
 
-def test_nextday_mark_map_feeds_probability():
-    """display 预计算 map 优先：map 标 🎯 的行概率提升并入选首位（同类别对比）。"""
-    marked_lo = _entry(symbol="SZ300001", name="池选🎯", category="pool_pick", score=13, percent=1.5)
-    unmarked_hi = _entry(symbol="SZ300002", name="池选高分", category="pool_pick", score=93, percent=3.0)
-    result = build_final_picks(
-        _conn(),
-        [unmarked_hi, marked_lo],
-        {},
-        {},
-        nextday_mark={
-            ("SZ300001", "pool_pick"): True,
-            ("SZ300002", "pool_pick"): False,
-        },
-    )
-    assert result["picks"][0]["symbol"] == "SZ300001"
+def test_no_marked_key_after_nextday_profile_removal():
+    """🎯 画像删除后终选行不再携带 `_marked`（原 `nextday_mark` 入参已移除）。"""
+    a = _entry(symbol="SZ300001", name="池选甲", category="pool_pick", score=13, percent=1.5)
+    b = _entry(symbol="SZ300002", name="池选乙", category="pool_pick", score=93, percent=3.0)
+    result = build_final_picks(_conn(), [b, a], {}, {})
+    for p in result["picks"]:
+        assert "_marked" not in p, "🎯 画像已删除，不应再注入 _marked"
+    for v in render_final_pick_lines(result) or []:
+        assert "🎯" not in v, "终选区行尾不得再渲染 🎯"
 
 
 def test_max_picks_quota():
@@ -179,16 +184,15 @@ def test_max_picks_quota():
 
 
 def test_horizon_labels_cum3d_vs_nextday():
-    """周期标签单源 HOLD_DAYS_BY_CATEGORY：comeback/core_dip = 3日修复，其余次日靶点。"""
-    assert horizon_label("comeback") == "3日修复"
+    """周期标签单源 HOLD_DAYS_BY_CATEGORY：core_dip = 3日修复，其余次日靶点。"""
     assert horizon_label("core_dip") == "3日修复"
     assert horizon_label("rebound") == "次日靶点"
     assert horizon_label("pool_pick") == "次日靶点"
 
 
-def test_comeback_pick_carries_horizon_tag():
-    cb = _entry(symbol="SZ300004", name="回马票", category="comeback", score=45, percent=1.0)
-    result = _build(_conn(), [cb])
+def test_core_dip_pick_carries_horizon_tag():
+    dip = _entry(symbol="SZ300004", name="低吸票", category="core_dip", score=45, percent=1.0)
+    result = _build(_conn(), [dip])
     assert result["picks"][0]["_horizon"] == "3日修复"
 
 
@@ -236,8 +240,9 @@ def _reject_reason_text(result, v):
 def test_render_pick_and_reject_lines():
     """渲染：入选行含代码/名称/概率/周期，落选行含名称与理由。
 
-    2026-09-14 更新：momentum 不再是「必落选」的固定角色（旧实现拿它当落选样本），
-    落选样本改用概率更低的第二只 pool_pick 票，momentum 票作为入选样本。
+    2026-09-16 起顺序由意图驱动（类别语义优先级）：pool_pick(0) 双双进 picks，
+    rebound(1) 进 picks（配额3），momentum(3) 因类别优先级最低而落选（非硬剔除）。
+    落选样本中「momentum负先验」这类废弃均值口径理由不得出现。
     """
     reb = _entry(
         symbol="SZ300011",
@@ -262,10 +267,13 @@ def test_render_pick_and_reject_lines():
     result = _build(_conn(), [reb, mom, pool_hi, pool_lo])
     lines = render_final_pick_lines(result)
     assert any("终选参考" in ln for ln in lines)
-    assert any("合格池" in ln and "排序估计非保证" in ln for ln in lines)  # 基准率诚实提示
+    assert any("合格池" in ln and "参考估计·非排序依据" in ln for ln in lines)  # 基准率诚实提示
+    # 类别语义优先级：pool_pick(0) 进 picks，rebound(1) 进 picks（配额3）
     assert any("SZ300001" in ln and "池选票" in ln and "P=" in ln and "次日靶点" in ln for ln in lines)
-    assert any("SZ300009" in ln and "动量票" in ln and "P=" in ln for ln in lines), "momentum 应能入选"
-    assert any("落选" in ln and "池选低票" in ln for ln in lines)
+    assert any("SZ300002" in ln and "池选低票" in ln and "P=" in ln for ln in lines)
+    assert any("SZ300011" in ln and "反弹票" in ln and "P=" in ln for ln in lines)
+    # momentum(3) 因类别优先级最低落选（非硬剔除）
+    assert any("落选" in ln and "动量票" in ln for ln in lines), "momentum 因类别优先级最低(3)落选，非硬剔除"
     assert not any("momentum负先验" in ln for ln in lines)
 
 
@@ -466,6 +474,46 @@ def test_beauty_gate_default_off(monkeypatch):
     result = _build(conn, [bad])
     assert [p["symbol"] for p in result["picks"]] == ["SZ300002"]
     assert result["beauty_blocked"] == 0
+
+
+# ── 意图驱动排序键回归（2026-09-16）──
+
+
+def test_final_sort_key_excludes_backtest_signals():
+    """_final_sort_key 不得含回测校准的 _p/verdict/score；仅 类别优先级 + 实时信号。"""
+    from scanner.final_pick import _final_sort_key
+
+    base = {"symbol": "SZ300001", "category": "rebound", "_beauty_mark": "", "flow": 0.0, "_p": 0.5}
+    # 仅 _p 不同 → 排序键相等
+    hi = dict(base, _p=0.95)
+    lo = dict(base, _p=0.05)
+    assert _final_sort_key(hi, {}) == _final_sort_key(lo, {})
+    # 仅 verdict/score 不同 → 排序键相等
+    a = dict(base, verdict=5, score=99)
+    b = dict(base, verdict=1, score=5)
+    assert _final_sort_key(a, {}) == _final_sort_key(b, {})
+
+
+def test_final_sort_key_category_priority_first():
+    from scanner.final_pick import _final_sort_key
+
+    # 类别语义优先级 > 实时资金流：rebound(1) 即使资金净流出也排 momentum(3) 前
+    rebound = {"symbol": "SZ300001", "category": "rebound", "_beauty_mark": "", "flow": -5.0}
+    momentum = {"symbol": "SZ300002", "category": "momentum", "_beauty_mark": "", "flow": 8.0}
+    assert _final_sort_key(rebound, {}) < _final_sort_key(momentum, {})
+
+
+def test_final_sort_key_live_signals_tiebreak():
+    from scanner.final_pick import _final_sort_key
+
+    mk = lambda sym, flow=0.0, beauty="": {  # noqa: E731
+        "symbol": sym, "category": "pool_pick", "_beauty_mark": beauty, "flow": flow}
+    # 同类别内（其余分量中性）：资金流 > 美感 > 辨识度
+    assert _final_sort_key(mk("a", flow=6.0), {}) < _final_sort_key(mk("b", flow=-3.0), {})
+    assert _final_sort_key(mk("a", beauty="美★"), {}) < _final_sort_key(mk("b", beauty="美"), {})
+    assert _final_sort_key(mk("a", beauty="美"), {}) < _final_sort_key(mk("b", beauty=""), {})
+    # 辨识度来自 prom_map（按 symbol 查），不在 v 内
+    assert _final_sort_key(mk("a"), {"a": 0.8}) < _final_sort_key(mk("b"), {"b": 0.1})
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -143,7 +143,8 @@ class TestRun:
         # embargo 空窗：test 窗从 train 末日 +2 开始（02-05 被跳过）
         assert "2026-02-01~2026-02-04" in result["windows"][0]
         assert "2026-02-06~2026-02-07" in result["windows"][0]
-        assert {f["factor"] for f in result["factors"]} >= {"rebound 类别", "🎯 完整画像"}
+        # 2026-09-16：原 "🎯 完整画像" 因子随 🎯 画像删除。
+        assert {f["factor"] for f in result["factors"]} >= {"rebound 类别", "甜蜜带+非超买"}
         for tw in result["tier_windows"]:
             assert set(tw["tiers"].keys()) == {0, 1, 2, 3}
 

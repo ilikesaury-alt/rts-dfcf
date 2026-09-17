@@ -54,10 +54,8 @@ def main() -> None:
     conn.close()
 
     pool = list(res.pool_picks)
-    comeback = list(res.comeback)
     # v2 主表口径：直接按今日涨幅降序
     pool.sort(key=lambda c: -(c.stock.percent if c.stock.percent is not None else -1e9))
-    comeback.sort(key=lambda c: -(c.stock.percent if c.stock.percent is not None else -1e9))
 
     print(f"\n{'=' * 78}")
     print(f"v2 池选推荐列表（pool_pick）：共 {len(pool)} 只")
@@ -82,15 +80,7 @@ def main() -> None:
         print(f"{i:>2}. {s.name}({s.symbol}) {_fmt_pct(s.percent)} 榜排{s.rank if s.rank else '-'} | 标签:{label_str}")
         print(f"      {' · '.join(extra) if extra else '—'}")
 
-    if comeback:
-        print(f"\n{'=' * 78}")
-        print(f"回马枪（comeback）：共 {len(comeback)} 只")
-        print(f"{'=' * 78}")
-        for i, c in enumerate(comeback, 1):
-            s = c.stock
-            print(f"{i:>2}. {s.name}({s.symbol}) {_fmt_pct(s.percent)} [{c.comeback_variant}]")
-
-    print(f"\n小结: 池选 {len(pool)} + 回马枪 {len(comeback)}")
+    print(f"\n小结: 池选 {len(pool)}")
 
 
 if __name__ == "__main__":

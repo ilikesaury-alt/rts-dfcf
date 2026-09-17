@@ -10,7 +10,7 @@ accumulated_pct 口径说明（重要）：
   - short_term: 含今日 bar 的5日累计，
     计算方式: (all_closes[-1] - all_closes[-6]) / all_closes[-6] * 100
     语义: "今日异动"（含今日涨幅）
-  - accumulated_incl_today: 全策略共用的含今日口径（供 🎯 次日大涨画像判定），
+  - accumulated_incl_today: 全策略共用的含今日口径（供累计回放链与累计计分），
     由 _accum_incl_today() 计算，语义与 short_term.accumulated_pct 一致。
 """
 
@@ -18,8 +18,6 @@ from scanner.config import (
     BOTTOM_MAX_LOSS,
     BOTTOM_NEAR_LOW_PCT,
     BOTTOM_VOL_SURGE,
-    COMEBACK_MAX_TODAY_PCT,
-    COMEBACK_MIN_TODAY_PCT,
     CRASH_THRESHOLD,
     GAP_UP_MEDIUM,
     GAP_UP_MEDIUM_PTS,
@@ -148,14 +146,17 @@ def _split_today(kline: list[KlineBar], today_str: str) -> tuple[list[KlineBar],
 def _accum_incl_today(kline: list[KlineBar], today_str: str, today_pct: float) -> float:
     """5 日累计涨幅（含今日 bar，复利口径），存入 accumulated_incl_today 维度。
 
-    用途：次日大涨 🎯 门槛 NEXTDAY_ACCUM_MIN 校准于「含推荐日」口径（含今日 bar），
-    但 new_face/momentum/rebound 的 accumulated_pct 为历史口径（_split_today 剔除今日）。
-    此处另算含今日值供展示层判定，消除门槛口径错位（short_term 的 accumulated_pct
-    本身即此口径，维度值与之相等，统一存放）。
+    用途：new_face/momentum/rebound 的 accumulated_pct 为历史口径（_split_today 剔除
+    今日），而累计类判定/评分需要「含推荐日」口径。此处另算含今日值统一存放，消除
+    口径错位（short_term 的 accumulated_pct 本身即此口径，维度值与之相等）。
 
     统一使用复利公式（6 根收盘价 → 5 日累计），数据不足 6 根时返回 0.0（不使用
     单利近似，避免两种算法产出不同数值导致阈值判定口径错位）。0.0 被下游视为
-    「无有效累计」，不命中 NEXTDAY_ACCUM_MIN 门槛，等价于数据不足时的保守策略。
+    「无有效累计」，等价于数据不足时的保守策略。
+
+    ⚠ 2026-09-16：原用途写「供 🎯 次日大涨门槛判定」——该门槛
+    （NEXTDAY_ACCUM_MIN）随 🎯 画像删除。本维度**仍在产出且仍被消费**
+    （ranking 累计回放链 build_accum_map、enhancer 累计计分），只是不再服务 🎯。
     """
     all_closes = [k["close"] for k in kline]
     if len(all_closes) >= 6:
@@ -915,7 +916,6 @@ def analyze_rebound(
     kline: list[KlineBar] | None,
     today_str: str | None = None,
     features: dict | None = None,
-    off_list: bool = False,
     now=None,
 ) -> KlineSummary | None:
     """超跌反弹策略：识别暴跌后的企稳首阳。
@@ -925,9 +925,8 @@ def analyze_rebound(
     典型场景：连跌4-5日（含暴跌日）后出现温和放量阳线；
     或阴跌企稳（无单日暴跌但累计跌 10-15%，P0-1 放宽）。
 
-    off_list=True（回马枪·反转）：掉榜票无热榜背书，收紧今日涨幅下限
-    （COMEBACK_MIN_TODAY_PCT=2.0，反转确认而非抄底猜单），上限放宽到 12%
-    （覆盖 8-12% 续涨，掉榜日无短线上限约束）。
+    （原 `off_list=True` 分支——回马枪·反转的收紧档位 2.0%/12.0%——已于 2026-09-16
+    随回马枪桶删除：该分支唯一调用方是 scanner/comeback.py。）
     """
     if not kline or len(kline) < 6:  # 至少6根：5日历史+今日
         return None
@@ -937,10 +936,8 @@ def analyze_rebound(
     today_str = today_str or now_beijing().date().isoformat()
     today_pct = today_pct_from_kline(kline, today_str, stock.percent)
 
-    # 入池硬筛：今日企稳阳线（温和涨幅）；off_list 用回马枪档位
-    min_today = COMEBACK_MIN_TODAY_PCT if off_list else REBOUND_MIN_TODAY_PCT
-    max_today = COMEBACK_MAX_TODAY_PCT if off_list else REBOUND_MAX_TODAY_PCT
-    if today_pct < min_today or today_pct > max_today:
+    # 入池硬筛：今日企稳阳线（温和涨幅）
+    if today_pct < REBOUND_MIN_TODAY_PCT or today_pct > REBOUND_MAX_TODAY_PCT:
         return None
 
     historical_kline, pcts, closes = _split_today(kline, today_str)

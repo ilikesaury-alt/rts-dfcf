@@ -4,6 +4,11 @@
 新判定：short_term = 弱转强 + 非超买（不看甜蜜带）；其余 = 甜蜜带 + 非超买 + 累计门槛
 
 用 recommendations 落库 score_breakdown 模拟两版判定，对比 next_day≥7% 命中率。
+
+⚠ 2026-09-16：🎯 次日大涨画像已整体删除（`ranking.is_nextday_marked` /
+`NEXTDAY_CAT_SPECS` / `NEXTDAY_ACCUM_MIN` 均不存在）。本脚本内的判定是**自包含
+副本**，故仍可运行，但对比对象（线上 🎯）已不存在 —— 仅作历史档案保留，勿再据此
+推断线上行为。需复原 🎯 见 git 历史（2026-09-16 之前）。
 """
 import json
 import sqlite3

@@ -379,21 +379,24 @@ def get_today_recommendations(conn: sqlite3.Connection, as_of=None) -> list[Reco
     2026-08-18 新增（配合 today_report.py 历史回放）：历史日期按该日推荐/上榜
     快照查询，去重口径与今日一致。
 
-    去重优先级：榜上类别（非 comeback/core_dip）优先于 comeback 与核心方向低吸（core_dip），
+    去重优先级：榜上类别（非 comeback/core_dip）优先于低优桶（comeback / core_dip），
     同优先级内保留最高分——
-    防止同票同时有 comeback（掉榜跟踪）与榜上推荐（如 short_term）时，因 comeback
-    基线分更高（40+15×信号数）而遮蔽榜上记录，导致该票在综合排序主表消失
-    （回马枪区仅在主区条数 ≤ COMEBACK_DISPLAY_MIN_MAIN 且大盘弱势时展示，平时整体隐藏）。
-    comeback 仅是"榜上之外单独评估"的补充信号，在榜票应以主表类别展示。
+    防止同票同时有低优桶记录与榜上推荐（如 short_term）时，因低优桶基线分更高
+    （comeback 旧式为 40+15×信号数）而遮蔽榜上记录，导致该票在综合排序主表消失。
+    榜上票应以主表类别展示。
     2026-08-19：core_dip 与 comeback 同族（不入综合排序主表，display/today_report 的
     main 均排除），归入同一低优桶——否则 core_dip 记录（CASE 0）会按 score 遮蔽榜上五类
-    主表行，且恒压过 comeback（CASE 1），使同票在综合排序/回马枪列表消失。
+    主表行，使同票在综合排序列表消失。
+
+    ⚠ 2026-09-16 删除回马枪桶后，SQL 里的 `'comeback'` **仍须保留**：这是对**历史
+    recommendations 行**的去重归类（回马枪曾长期产出并落库），删掉会让历史日期
+    （`--date` 回放）的同票去重结果静默改变。
 
     返回列表未排序，每项包含：
       symbol, name, category, score, trend, first_time,
       live_percent (from appearances),
-      score_breakdown（2026-08-17 新增：解析为 dict，供掉榜/重启行的 🎯 分型
-      （short_term 弱转强）与板块普涨避雷标记判定，见 ranking.entry_dims）
+      score_breakdown（2026-08-17 新增：解析为 dict，供掉榜/重启行的分型与
+      板块普涨避雷标记判定，见 ranking.entry_dims）
     """
     if as_of is None:
         as_of = now_beijing().date()

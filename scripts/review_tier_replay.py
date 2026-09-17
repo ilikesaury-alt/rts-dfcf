@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
-"""忠实回放：用生产 scanner/ranking.py 的 entry_tier/is_nextday_marked 对历史推荐分档，
-验证综合排序档位规则的区分度（next_day hit ≥7% / 平均次日 / cum_3d）。"""
+"""忠实回放：用生产 scanner/ranking.py 的 entry_tier 对历史推荐分档，
+验证综合排序档位规则的区分度（next_day hit ≥7% / 平均次日 / cum_3d）。
+
+（2026-09-16：🎯 画像（is_nextday_marked / NEXTDAY_CAT_PRIORITY）已删除，
+本脚本不再做 🎯 单列验证。）"""
 
 import json
 import sys
@@ -11,7 +14,7 @@ sys.path.insert(0, ".")
 # E402 为刻意设计：必须先 sys.path.insert(0, ".") 才能 import scanner.*，
 # 否则脚本从其他工作目录直接执行时找不到包。
 from scanner import ranking  # noqa: E402
-from scanner.config import NEXTDAY_CAT_PRIORITY, NEXTDAY_HIT_THRESHOLD  # noqa: E402
+from scanner.config import NEXTDAY_HIT_THRESHOLD  # noqa: E402
 from scanner.database import init_db  # noqa: E402
 
 THRESH = NEXTDAY_HIT_THRESHOLD  # 单源见 config
@@ -144,12 +147,8 @@ def main():
     subset(lambda r: band(r["percent"]) == "trap", "8-10% 陷阱")
     subset(lambda r: r["accumulated_pct"] is not None and r["accumulated_pct"] >= 50, "累计≥50% 过热")
 
-    # 🎯 判定单独验证
-    print("\n== 🎯 标记 ==")
-    marked = [r for r in recs if ranking.is_nextday_marked(r, conn)]
-    not_marked = [r for r in recs if r["category"] in NEXTDAY_CAT_PRIORITY and not ranking.is_nextday_marked(r, conn)]
-    stat(marked, "🎯 标记")
-    stat(not_marked, "非🎯(可标记类别)")
+    # 🎯 画像判定已随该特性删除（2026-09-16），不再单独验证。
+    # （原 `NEXTDAY_CAT_PRIORITY` 可标记类别集合与 `is_nextday_marked` 均已移除。）
 
 
 if __name__ == "__main__":

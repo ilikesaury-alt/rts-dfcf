@@ -2,6 +2,9 @@
 
 覆盖：round-trip（写→读一致）、幂等覆盖、主表序号与排序组合层一致、
 独立区行 rank 为 NULL、无表/无数据回退空 dict、unified_scanner 写入器 fail-open。
+
+2026-09-16：🎯 画像与回马枪桶删除 → `marked` 列掉列（迁移 m014），
+`entry_tier` 不再产出档0/档2 的 comeback 特判；独立区示例改用 `core_dip`。
 """
 import json
 import sqlite3
@@ -32,7 +35,7 @@ def _mk_db(with_snapshot_table=True):
         conn.execute("""
             CREATE TABLE ranking_snapshot (
                 date TEXT NOT NULL, symbol TEXT NOT NULL, category TEXT NOT NULL,
-                tier INTEGER NOT NULL, marked INTEGER NOT NULL, reasons_json TEXT,
+                tier INTEGER NOT NULL, reasons_json TEXT,
                 rank_in_table INTEGER, created TEXT NOT NULL,
                 PRIMARY KEY(date, symbol, category))
         """)
@@ -49,7 +52,7 @@ def _ins_rec(conn, sym, cat, percent, score=60, sb=None):
 
 
 def _ins_kline(conn, sym):
-    """6 根 K 线 → 5 日累计（含推荐日）≈ +26%（≥ NEXTDAY_ACCUM_MIN，可过 🎯 累计门槛）。"""
+    """6 根 K 线 → 5 日累计（含推荐日）≈ +26%（供累计类档位判定使用）。"""
     closes = [10.0, 10.5, 11.0, 11.5, 12.0, 12.6]
     dates = [f"2026-08-{d}" for d in ("19", "20", "21", "22", "23", "24")]
     # 推荐日 2026-08-25，K 线到 08-24（T-1 及更早），accum 回放取 <= 推荐日窗口
@@ -63,15 +66,15 @@ def _ins_kline(conn, sym):
 @pytest.fixture()
 def db():
     conn = _mk_db()
-    # momentum：甜蜜带 + 累计达标 → 🎯 档0
+    # momentum：甜蜜带，2026-09-16 起 🎯 不再提档 → 落档2
     _ins_rec(conn, "SZ300001", "momentum", 5.0)
     _ins_kline(conn, "SZ300001")
     # new_face：死区带 → 档3（涨幅带死区/陷阱）
     _ins_rec(conn, "SZ300002", "new_face", 3.0)
     # rebound：档1 强信号
     _ins_rec(conn, "SZ300003", "rebound", -1.0)
-    # comeback：独立区（不入主表）
-    _ins_rec(conn, "SZ300004", "comeback", 2.0, score=55)
+    # core_dip：独立区（不入主表）
+    _ins_rec(conn, "SZ300004", "core_dip", 2.0, score=55)
     conn.commit()
     return conn
 
@@ -84,8 +87,9 @@ class TestPersistRoundTrip:
         snap = load_ranking_snapshot(db, "2026-08-25")
         assert ("SZ300001", "momentum") in snap
         m = snap[("SZ300001", "momentum")]
-        assert m["tier"] == 0
-        assert m["marked"] is True
+        # 2026-09-16：🎯 删除后不再提档，甜蜜带 momentum 落档2；marked 列已掉列
+        assert m["tier"] == 2
+        assert "marked" not in m, "🎯 画像删除后不再落 marked 列"
         assert m["reasons"] == []
 
     def test_tier3_reasons_persisted(self, db):
@@ -93,19 +97,19 @@ class TestPersistRoundTrip:
         snap = load_ranking_snapshot(db, "2026-08-25")
         nf = snap[("SZ300002", "new_face")]
         assert nf["tier"] == 3
-        assert nf["marked"] is False
         assert R.TIER_REASON_BAND in nf["reasons"]
 
-    def test_comeback_rank_null_main_ranks_ordered(self, db):
+    def test_independent_region_rank_null_main_ranks_ordered(self, db):
         persist_ranking_snapshot(db, "2026-08-25")
         snap = load_ranking_snapshot(db, "2026-08-25")
-        cb = snap[("SZ300004", "comeback")]
-        assert cb["rank_in_table"] is None
+        dip = snap[("SZ300004", "core_dip")]
+        assert dip["rank_in_table"] is None
         ranks = {k: v["rank_in_table"] for k, v in snap.items()
                  if v["rank_in_table"] is not None}
         assert sorted(ranks.values()) == [1, 2, 3]
-        # 档0 momentum 应排主表第 1
-        assert snap[("SZ300001", "momentum")]["rank_in_table"] == 1
+        # 档1 rebound 排第 1；档0 空档后 momentum（档2）排第 2
+        assert snap[("SZ300003", "rebound")]["rank_in_table"] == 1
+        assert snap[("SZ300001", "momentum")]["rank_in_table"] == 2
 
     def test_idempotent_overwrite(self, db):
         n1 = persist_ranking_snapshot(db, "2026-08-25")

@@ -64,10 +64,10 @@
 
     # 1b) 想看真实可检测下限：用一个能翻转 top-N 的大扰动跑一次，
     #     观察其 MDE 与「翻转了 X/N 个交易日」。
-    python -m scanner.rule_validate --set scanner.nextday_prob.OR_MARKED=5.0
+    python -m scanner.rule_validate --set scanner.nextday_prob.OR_OVERBOUGHT=5.0
 
     # 2) 验证一个改动（改 nextday_prob 的常数，用概率排序评估器）
-    python -m scanner.rule_validate --set scanner.nextday_prob.OR_MARKED=1.56
+    python -m scanner.rule_validate --set scanner.nextday_prob.OR_OVERBOUGHT=1.56
 
     # 3) 验证 config 权重/阈值改动（必须用 rescore，否则报错）
     python -m scanner.rule_validate --evaluator rescore --set scanner.config.MIN_SCORE=60
@@ -461,14 +461,10 @@ def _score_stored(sample: list[Sample], conn) -> dict[str, list[tuple[float, flo
 
 def _score_nextday_prob(sample: list[Sample], conn) -> dict[str, list[tuple[float, float]]]:
     from scanner.nextday_prob import next_day_hit_probability
-    from scanner.ranking import build_accum_map, is_nextday_marked
 
-    entries = [s.entry for s in sample]
-    accum_map = build_accum_map(conn, entries)
     by_day: dict[str, list[tuple[float, float]]] = defaultdict(list)
     for s in sample:
-        marked = is_nextday_marked(s.entry, conn, accum_map=accum_map)
-        p = next_day_hit_probability(s.entry, marked=marked, prominence=s.entry.get("_prominent"), flow=None)
+        p = next_day_hit_probability(s.entry, prominence=s.entry.get("_prominent"), flow=None)
         by_day[s.date].append((p, s.next_day))
     return by_day
 
@@ -749,7 +745,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="MODULE.ATTR=VALUE",
-        help="声明一个改动（可重复），如 scanner.nextday_prob.OR_MARKED=1.56",
+        help="声明一个改动（可重复），如 scanner.nextday_prob.OR_OVERBOUGHT=1.56",
     )
     p.add_argument("--evaluator", default=DEFAULT_EVALUATOR, choices=sorted(EVALUATORS))
     p.add_argument("--top-n", type=int, default=DEFAULT_TOP_N, help=f"每日取前 N（默认 {DEFAULT_TOP_N}）")

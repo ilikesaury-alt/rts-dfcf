@@ -344,7 +344,7 @@ class TestAccumulatedCalculation:
 
     def test_incl_today_dim_momentum_includes_today_bar(self):
         # 2026-08-17 修复回归：momentum 的 accumulated_pct 为历史口径（不含今日，
-        # RPS/评分用），accumulated_incl_today 维度须含今日 bar——🎯 门槛即用后者。
+        # RPS/评分用），accumulated_incl_today 维度须含今日 bar——累计回放链即用后者。
         # 6 根历史各 +1.7%（5 日复利 ≈ +8.79%）+ 今日 +6%；含今日窗口前移一根 → ≈ +13.4%。
         kline = _kline_with_today([1.7] * 6, 6.0)
         result = analyze_momentum(_stock(percent=6.0, rank_change=2000, value=12000),

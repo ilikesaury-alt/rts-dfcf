@@ -369,27 +369,9 @@ class TestApplyListMomentumBonus:
         _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, cross_days=2)
         assert c.list_momentum_bonus == 5
 
-    @patch("scanner.enhancer.rank_trajectory_score", return_value=0)
-    def test_fatigue_comeback_off_list_full_exemption(self, mock_traj):
-        """回归（2026-08-14）：off_list（回马枪）整体豁免榜单动能——cross_days 是
-        掉榜前残留（跟踪池最长保留 15 交易日），traj 来自掉榜前排名快照，均不构成
-        真实榜单动能。负累计 + 残留 streak 不得触发疲劳罚分。"""
-        c = _make_candidate(accumulated_pct=-10.0, volume_ratio=0.8, percent=2.0, category="comeback")
-        c.off_list = True
-        c.comeback_variant = "反转"
-        _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, cross_days=2)
-        assert c.list_momentum_bonus == 0, f"off_list 应整体豁免榜单动能, got {c.list_momentum_bonus}"
-
-    @patch("scanner.enhancer.rank_trajectory_score", return_value=-2)
-    def test_fatigue_comeback_stale_volume_traj_not_counted(self, mock_traj):
-        """回归（2026-08-14）：掉榜票残留的量能/轨迹信号不再计入疲劳——回踩变体
-        volume_ratio 曾是占位 0.0（恒触发缩量信号）、traj 是掉榜前快照，二者叠加
-        会给回马枪候选误打「疲劳」标签。"""
-        c = _make_candidate(accumulated_pct=-10.0, volume_ratio=0.5, percent=-1.0, category="comeback")
-        c.off_list = True
-        c.comeback_variant = "回踩"
-        _apply_list_momentum_bonus(c, list_streaks={"300999": 1}, cross_days=5)
-        assert c.list_momentum_bonus == 0, f"off_list 残留数据不得触发疲劳/加分, got {c.list_momentum_bonus}"
+    # 2026-09-16：原 `test_fatigue_comeback_off_list_full_exemption` /
+    # `test_fatigue_comeback_stale_volume_traj_not_counted` 随回马枪桶与
+    # `Candidate.off_list` 字段删除（豁免分支本体已从 enhancer 移除）。
 
     @patch("scanner.enhancer.rank_trajectory_score", return_value=0)
     def test_accelerating(self, mock_traj):
@@ -437,17 +419,14 @@ class TestApplyListMomentumBonus:
         assert c.list_momentum_bonus == 0
 
     @patch("scanner.enhancer.rank_trajectory_score", return_value=0)
-    def test_comeback_rank0_no_top40_bonus(self, mock_traj):
-        """回归：回马枪掉榜票 rank=0（无榜单排名）不得被当作"榜上第 1 名"计
-        TOP40/top20 加分——此前 off-list 候选 list_momentum_bonus 虚高 +13，
-        超过真实榜上前 40 名的加分，违背"掉榜无热榜背书、比榜上更严"的设计。"""
-        c = _make_candidate(rank=0, category="comeback")
-        c.off_list = True
-        c.comeback_variant = "反转"
+    def test_rank0_no_top40_bonus(self, mock_traj):
+        """回归：rank=0（无榜单排名，原回马枪掉榜票场景）不得被当作"榜上第 1 名"计
+        TOP40/top20 加分——`0 < rank <= TOP40_THRESHOLD` 的严格大于 0 前提守住它。
+        （2026-09-16：`off_list` 字段已删，本断言改用普通榜上类别，守护的仍是同一分支。）"""
+        c = _make_candidate(rank=0, category="momentum")
         _apply_list_momentum_bonus(c, list_streaks={})
-        assert c.list_momentum_bonus == 0, f"off-list rank=0 不应有榜单动能加分, got {c.list_momentum_bonus}"
-        # off_list 整体豁免后不写榜单动能维度（2026-08-14 口径）
-        assert _kdims(c).get("list_top40_bonus") is None
+        assert c.list_momentum_bonus == 0, f"rank=0 不应有榜单动能加分, got {c.list_momentum_bonus}"
+        assert _kdims(c).get("list_top40_bonus") == 0
 
     @patch("scanner.enhancer.rank_trajectory_score", return_value=0)
     def test_no_kline(self, mock_traj):

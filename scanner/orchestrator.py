@@ -9,11 +9,8 @@ from scanner.candidates import (
     filter_gem_stocks,
     score_stock,
 )
-from scanner.comeback import evaluate_comeback
 from scanner.concept import compute_driving_concepts
 from scanner.config import (
-    COMEBACK_KLINE_DEADLINE,
-    ENABLE_COMEBACK,
     ENABLE_CORE_DIP,
     ENABLE_MOMENTUM,
     ENABLE_POOL_PIPELINE,
@@ -84,6 +81,8 @@ def _update_excluded_marks(conn: sqlite3.Connection, today: str, excluded_by_ris
         # 变体未触发）会被 v1 候选的硬过滤连带排除，违反「回马枪/核心低吸不参与
         # v1 硬过滤连带」的设计语义（mark_reversed 2026-08-17 已加同款守卫，
         # d3c519b 只补了置回侧，置 1 侧同族遗漏）。
+        # ⚠ 2026-09-16 删除回马枪桶后，SQL 里的 `'comeback'` **仍须保留**：这里约束的是
+        # **库里存量历史行**（历史日期仍有该类别），删掉会让 `--date` 回放的置位结果改变。
         conn.executemany(
             "UPDATE recommendations SET excluded=1, excluded_reason=? WHERE date=? AND symbol=? "
             "AND COALESCE(category, '') NOT IN ('comeback', 'core_dip')",
@@ -106,7 +105,7 @@ def v2_kline_summary(row, kl: list | None, today: str) -> KlineSummary:
     minute_trends 不落 dims——v2 的标签与展示维度整体失效。此构造补齐最小字段集：
     - accumulated_pct：历史 5 日累计（排除今日，与 v1 各桶口径一致）；
     - volume_ratio/avg_volume：今日量 / 前 5 日均量（matcher 放量突破、疲劳判定消费）；
-    - dimensions：accumulated_incl_today（🎯 含今日口径）/ bias20 / rank_trend
+    - dimensions：accumulated_incl_today（含今日口径）/ bias20 / rank_trend
       （matcher 放量突破标签读 rank_trend 维度）。
     """
     hist = [k for k in (kl or []) if k.get("date") != today]
@@ -199,8 +198,7 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
     except EXTERNAL_FAILURES as e:
         print(f"  [!] 掉榜跟踪池维护失败: {e}")
 
-    # 主榜 K 线拉取 deadline（45s）。回马枪使用独立 deadline（COMEBACK_KLINE_DEADLINE=15s），
-    # 不再共用此 deadline，避免主榜耗尽预算后回马枪全部 stale 缓存。
+    # 主榜 K 线拉取 deadline（45s）。
     kline_deadline = now_beijing().timestamp() + KLINE_FETCH_DEADLINE
     quality_stats: dict = {}
     klines = fetch_all_klines(conn, adapter, gem_stocks_filtered, deadline=kline_deadline, stats=quality_stats)
@@ -302,33 +300,6 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
 
     all_candidates = pool_picks + new_faces + momentum + rebound_list + short_term_list
 
-    # 回马枪：评估掉榜跟踪池 + 近 N 日推荐（两变体均 category="comeback"）。
-    # 开关关闭时不评估（hit 3.3% 远低于基准，不再作为活跃推荐桶产出）。
-    comeback_rebound: list[Candidate] = []
-    comeback_reentry: list[Candidate] = []
-    if ENABLE_COMEBACK:
-        try:
-            on_list_symbols = {s.symbol for s in gem_stocks_filtered}
-            comeback_rebound, comeback_reentry, cb_quotes = evaluate_comeback(
-                conn,
-                adapter,
-                lambda stocks: fetch_all_klines(
-                    conn,
-                    adapter,
-                    stocks,
-                    deadline=now_beijing().timestamp() + COMEBACK_KLINE_DEADLINE,
-                    stats=quality_stats,
-                ),
-                today,
-                on_list_symbols,
-                clusters,
-            )
-            market_caps.update(cb_quotes)  # 并入市值/行情，供后续市值富集与实时行情
-        except EXTERNAL_FAILURES as e:
-            print(f"  [!] 回马枪评估失败: {type(e).__name__}: {e}")
-
-    # 双跑：v1 五桶 + pool_picks 已在上方合并，回马枪对两管道统一追加
-    all_candidates = all_candidates + comeback_rebound + comeback_reentry
     for c in all_candidates:
         enrich_candidate_market_cap(c, market_caps.get(c.stock.symbol, {}))
 
@@ -364,12 +335,10 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
     # 并把合并后的 danger_flags 补进 pool_log 落库（首轮只含 bias20/冲高回落/翻绿）。
     # 双跑语义（2026-09-02）：只作用于 v2 域——v1 五桶保持自身 validator/硬过滤
     # 口径（历史上该块仅在 v2 模式运行，从未移除过 v1 候选）。
-    # 覆盖边界（2026-09-04 审查修正）：evaluate_pool 输入是 pool_rows（在榜池），
-    # 回马枪是掉榜票、symbol 不在池内，故 DANGER_MAIN_OUTFLOW / DANGER_FINANCIAL /
-    # DANGER_TURNED_RED_GAP 的 danger 通道对 comeback 实际不触发（下方过滤条件里
-    # 的 comeback 分支防御性保留，勿据此认定已覆盖）。comeback 的风险覆盖来自
-    # enhancer 硬过滤（主力出货复合判定/财务风险/翻绿回落/弱转强失效）+
-    # candidate_excluded_by_risk。
+    # 覆盖边界（2026-09-04 审查修正；2026-09-16 收敛）：evaluate_pool 输入是
+    # pool_rows（在榜池），本块只作用于 v2 域候选。原过滤条件里还带一个
+    # `or c.category == "comeback"` 的防御分支（回马枪是掉榜票、symbol 从不在池内，
+    # 该分支实际永不命中）——随回马枪桶删除一并去掉，判定等价（全仓再无该类别候选）。
     if pool_log_rows:
         try:
             late_map = evaluate_pool(pool_rows, klines, market_extra, fund_risk, today=today)
@@ -381,20 +350,20 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
                 _names = "、".join(
                     f"{c.stock.name}({c.stock.symbol})"
                     for c in all_candidates
-                    if c.stock.symbol in new_danger_syms and c.category in (V2_CATEGORY, "comeback")
+                    if c.stock.symbol in new_danger_syms and c.category == V2_CATEGORY
                 )
                 print(f"  [排雷] {len(new_danger_syms)} 只命中资金流/财务危险信号，已排除：{_names}")
                 all_candidates = [
                     c
                     for c in all_candidates
-                    if c.stock.symbol not in new_danger_syms or c.category not in (V2_CATEGORY, "comeback")
+                    if c.stock.symbol not in new_danger_syms or c.category != V2_CATEGORY
                 ]
             for _r in pool_log_rows:
                 _r["danger_flags"] = danger_flags_json(merged_flags.get(str(_r["symbol"]), []))
             save_pool_log(conn, pool_log_rows)
             # 存留的 v2 候选补挂二轮新命中的软信号（硬信号已被上面剔除，不会走到这里）
             for c in all_candidates:
-                if c.category not in (V2_CATEGORY, "comeback"):
+                if c.category != V2_CATEGORY:
                     continue
                 for f in soft_flags(merged_flags.get(c.stock.symbol, [])):
                     if f not in c.risk_flags:
@@ -511,7 +480,6 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
     momentum = _buckets["momentum"]
     rebound_list = _buckets["rebound"]
     short_term_list = _buckets["short_term"]
-    comeback_list = _buckets["comeback"]
 
     # 综合排序「板块」列：计算当前推动概念（东财 F10 概念归属 + 今日飙升池聚合）。
     # 仅影响展示，不参与任何打分。首次拉取缺失缓存，之后 DB/进程缓存零网络开销。
@@ -565,7 +533,6 @@ def scan_with_raw(raw: list[dict], conn: sqlite3.Connection, adapter) -> ScanRes
         momentum=momentum,
         rebound=rebound_list,
         short_term=short_term_list,
-        comeback=comeback_list,
         pool_picks=pool_picks,
         gem_stocks=gem_stocks_filtered,
         filtered_large_cap=filtered_large_cap,

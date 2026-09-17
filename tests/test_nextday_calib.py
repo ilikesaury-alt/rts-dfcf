@@ -1,9 +1,10 @@
 """scanner.nextday_calib 离线守护：代码常数 vs 校准快照的一致性（audit §B2）。
 
-**为什么需要这组测试**：2026-09-13 复核发现 `nextday_prob.py` 的 OR_MARKED 常数
+**为什么需要这组测试**：2026-09-13 复核发现 `nextday_prob.py` 当时的 OR_MARKED 常数
 被高估 67% —— 它的拟合口径漏了线上 `is_nextday_marked` 自 2026-08-14 起含的
 「5 日累计门槛」，而 `tests/test_nextday_prob.py` **只断言因子方向不断言数值**，
-所以漂移没有任何测试能发现。本组测试补上这道门：
+所以漂移没有任何测试能发现。本组测试补上这道门（OR_MARKED 本身已于 2026-09-16
+随 🎯 降为纯展示标记而删除，但守护机制与其余常数照常生效）：
 
   1. 代码里的每个常数必须与 `scanner/nextday_calib.json` 快照一致
      —— 改常数而不重算快照（`python -m scanner.nextday_calib --write`）即 fail；
@@ -30,7 +31,6 @@ from scanner.nextday_prob import (
     OR_BAND_MID,
     OR_BAND_SWEET_LOW,
     OR_BAND_TRAP,
-    OR_MARKED,
     OR_OUTFLOW,
     OR_OVERBOUGHT,
     OR_PROMINENCE,
@@ -39,7 +39,6 @@ from scanner.nextday_prob import (
 
 # 代码里的常数（与 nextday_prob 的模块级名一一对应；新增常数必须同步登记）
 CODE_CONSTANTS: dict[str, float] = {
-    "OR_MARKED": OR_MARKED,
     "OR_PROMINENCE": OR_PROMINENCE,
     "OR_OVERBOUGHT": OR_OVERBOUGHT,
     "OR_BAND_SWEET_LOW": OR_BAND_SWEET_LOW,

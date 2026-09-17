@@ -102,6 +102,10 @@ EXPECTED_SURFACE_REDUCTION = {
     "TOP40_THRESHOLD",
     "V2_CATEGORY",
     "V2_POOL_DISPLAY_TOP",
+    # ── 有意缩掉的**真实定义**（不属于"泄漏名"，机制上同表登记）──
+    # 2026-09-16「🎯 标记与回马枪都删除」：`_adjusted_picks` 是 display 的顶层 def，
+    # 其排序语义完全由被删的两个特性构成（见 assemble.py 的删除说明），故整体删除。
+    "_adjusted_picks",
     # 私有名泄漏（第 1 步已升公共名，旧 display 仍留着旧别名）
     "_breakout_profile_key",
     "_breakout_structure_ok",
@@ -117,6 +121,17 @@ EXPECTED_SURFACE_REDUCTION = {
     "_mode",
 }
 
+# ── 拆分后**有意**删除的定义白名单（2026-09-16 新增）──
+# 拆分本身是等价变换，定义一个都不能少；但**功能迭代**会合法地删掉整个函数（例如
+# 「🎯 标记与回马枪都删除」带走了 `_adjusted_picks`）。这类删除必须显式登记，否则
+# 检查 1 的「定义缺失」会永久变红 —— 而常红守卫的下场是被无视，真出现拆分走样时
+# 就没人看得见了（与 `_render_hot_watch_region` 脚注改动同理）。
+# 双向校验：登记了却仍然存在 = 表过期，同样报错。
+EXPECTED_DEFINITION_REMOVAL = {
+    "_adjusted_picks": "2026-09-16 🎯/回马枪删除：该序列的排序语义完全由 marked(🎯) 与 "
+    "comeback_sort_key(回马枪) 构成，两者删除后无剩余语义可保留",
+}
+
 # ── 拆分后**有意**改动的定义体白名单 ──
 # 拆分本身是等价变换；此后的功能迭代会合法地改动 view/ 里的函数体，那不属于「拆分走样」。
 # 每条都必须写明改了什么、归属哪次改动，避免这张表变成「把红灯涂绿」的垃圾桶。
@@ -130,6 +145,10 @@ EXPECTED_BODY_DIVERGENCE = {
     # 2026-09-14 哑参清理：🎯 行尾渲染自 2026-09-04 停用后遗留的两个入参
     "_entry_row_suffix": "删除从未被读取的 marked 入参（🎯 行尾渲染已停用）",
     "_print_priority_row": "删除无任何调用方传入的 nextday_mark 入参",
+    # 2026-09-16 🎯/回马枪删除：函数体未变，docstring 补注「SQL 里的
+    # `NOT IN ('comeback',…)` 必须保留」（那是对**历史 recommendations 行**的过滤，
+    # 与桶删除无关），并删掉已不存在的「动态推荐」消费方提法。
+    "_regime_weak": "docstring 补注：comeback 历史行过滤必须保留；动态推荐消费方已删除",
     # 2026-09-14 第二批：决策层删除 + v2/核心低吸展示区隐藏（用户决策）
     "display": "移除 decision_lines 入参（决策层删除后无处可注入）",
     "display_priority": "同上：移除 decision_lines 入参与其透传",
@@ -221,28 +240,42 @@ def collect_defs(tree: ast.Module) -> tuple[dict[str, str], dict[str, str]]:
     return defs, consts
 
 
-def _config_shim_for_legacy() -> types.ModuleType:
-    """镜像 `scanner.config`，但对**已被删除的常量**返回哨兵而非抛 ImportError。
+# 执行历史快照时要换成"宽容 shim"的模块：快照里有 `from <mod> import <name>`，
+# 而这些名字会被后续功能迭代合法删除。仅替换这几个模块 —— 不换 `scanner.view.*`
+# 等被测对象，否则会把真实的等价性差异一起吞掉。
+LEGACY_TOLERATED_MODULES = (
+    "scanner.config",
+    "scanner.ranking",
+)
+
+
+def _shim_for_legacy(module_name: str) -> types.ModuleType:
+    """镜像 `module_name`，但对**已被删除的名字**返回哨兵而非抛 ImportError。
 
     为什么需要：`load_legacy` 是**真实执行**历史快照（基线 rev 的 display.py），而快照里
-    写着当时存在的 `from scanner.config import ...`。之后 config 一旦删名（2026-09-14
-    删除决策层时移除了 `DECISION_LAYER_ENABLED` / `DECISION_INTRADAY_BEAUTY_ENABLED`），
-    本工具就会自己先 ImportError 挂掉 —— 那是**与「拆分是否等价」无关的假失败**，
-    且会随 config 正常演进反复出现，不能靠"别删常量"来回避。
+    写着当时存在的 `from scanner.config import ...` / `from scanner.ranking import ...`。
+    之后这些模块一旦删名，本工具就会自己先 ImportError 挂掉 —— 那是**与「拆分是否
+    等价」无关的假失败**，且会随正常演进反复出现，不能靠"别删常量"来回避。
 
-    故仅在执行快照期间替换 `sys.modules["scanner.config"]`：属性取值照搬真实模块，
+    实例：2026-09-14 删决策层时移除了 `DECISION_LAYER_ENABLED`；2026-09-16 删 🎯/回马枪
+    时移除了 `scanner.config.COMEBACK_DISPLAY_MAX` / `COMEBACK_DISPLAY_MIN_MAIN` 与
+    `scanner.ranking.comeback_sort_key` / `is_nextday_marked` —— 快照全都引用了它们。
+
+    故仅在执行快照期间替换 `sys.modules[module_name]`：属性取值照搬真实模块，
     未知名回退哨兵并打印告警。判定不受影响 —— 检查 3 比对的是**属性名集合**（旧快照
     暴露了哪些名字），不是取值；这些名字本就该出现在 `EXPECTED_SURFACE_REDUCTION` 里。
     """
-    import scanner.config as _cfg  # noqa: PLC0415
+    import importlib
 
-    shim = types.ModuleType(_cfg.__name__)
-    shim.__dict__.update(_cfg.__dict__)
+    real = importlib.import_module(module_name)
+
+    shim = types.ModuleType(module_name)
+    shim.__dict__.update(real.__dict__)
 
     def _missing(name: str) -> object:
         if name.startswith("__"):
             raise AttributeError(name)
-        print(f"    [warn] 历史快照引用了已删除的 scanner.config.{name} → 哨兵顶替（非等价性差异）")
+        print(f"    [warn] 历史快照引用了已删除的 {module_name}.{name} → 哨兵顶替（非等价性差异）")
         return None
 
     shim.__getattr__ = _missing
@@ -263,13 +296,15 @@ def load_legacy(rev: str) -> types.ModuleType:
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
     # 快照执行期间换入宽容 shim，跑完立刻还原（否则会污染其后 `import scanner.display`）。
-    saved = sys.modules.get("scanner.config")
-    sys.modules["scanner.config"] = _config_shim_for_legacy()
+    saved = {m: sys.modules.get(m) for m in LEGACY_TOLERATED_MODULES}
+    for m in LEGACY_TOLERATED_MODULES:
+        sys.modules[m] = _shim_for_legacy(m)
     try:
         spec.loader.exec_module(mod)
     finally:
-        if saved is not None:
-            sys.modules["scanner.config"] = saved
+        for m, mod_or_none in saved.items():
+            if mod_or_none is not None:
+                sys.modules[m] = mod_or_none
     return mod
 
 
@@ -350,14 +385,22 @@ def main() -> int:
 
     failures: list[str] = []
 
-    # ── 检查 1：每个旧的顶层 def/class 必须存在且 AST 一致（已登记的有意分歧除外） ──
+    # ── 检查 1：每个旧的顶层 def/class 必须存在且 AST 一致（已登记的有意分歧/删除除外） ──
     missing = sorted(set(legacy_defs) - set(new_defs))
+    # 已登记的有意删除不算走样；登记了却还在 = 表过期。
+    removed_decl = sorted(n for n in missing if n in EXPECTED_DEFINITION_REMOVAL)
+    missing = sorted(n for n in missing if n not in EXPECTED_DEFINITION_REMOVAL)
+    stale_removal = sorted(set(EXPECTED_DEFINITION_REMOVAL) - set(removed_decl))
     diverged = sorted(n for n in set(legacy_defs) & set(new_defs) if legacy_defs[n] != new_defs[n])
     changed = sorted(n for n in diverged if n not in EXPECTED_BODY_DIVERGENCE)
     declared_div = sorted(n for n in diverged if n in EXPECTED_BODY_DIVERGENCE)
     stale_div = sorted(set(EXPECTED_BODY_DIVERGENCE) - set(declared_div))
     if missing:
         failures.append(f"定义缺失 {len(missing)} 个：{missing}")
+    if stale_removal:
+        failures.append(
+            f"EXPECTED_DEFINITION_REMOVAL 有 {len(stale_removal)} 项其实还在（表已过期）：{stale_removal}"
+        )
     if changed:
         failures.append(f"定义体被改动 {len(changed)} 个（未登记为有意分歧）：{changed}")
     if stale_div:
@@ -411,6 +454,10 @@ def main() -> int:
     print(
         f"  已登记的有意分歧（拆分后功能迭代，不算走样）：{len(declared_div)} 个"
         + (f" {declared_div}" if declared_div else "")
+    )
+    print(
+        f"  已登记的有意删除（拆分后功能迭代）：{len(removed_decl)} 个"
+        + (f" {removed_decl}" if removed_decl else "")
     )
     if args.verbose and extra:
         print(f"  新增属性（无害）：{sorted(extra)}")

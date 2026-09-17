@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 """概率常数变更的排序 A/B 验证台（audit §B1/§B2 配套，2026-09-13 新增）。
 
-用途：任何 `nextday_prob.py` 常数改动**上生产前**，先用历史样本量化它对终选排序的影响。
-影响面说明：这些常数只参与 `final_pick` 的 `_p` 排序键（`ranking.entry_tier` 用的是
-`is_nextday_marked`，不经概率），所以「影响面 = 终选 ≤2 只的顺序与集合」。
+用途：任何 `nextday_prob.py` 常数改动**上生产前**，先用历史样本量化它对排序的影响。
+影响面说明（2026-09-16 更新）：这些常数只参与 `final_pick` 的 `_p` —— 而 `_p` 自
+2026-09-16 起**已不是终选排序键**（排序改由 `final_pick._final_sort_key` 意图驱动）。
+故本台现在度量的是「参考展示值 `_p` 的相对排序」，**不再等价于终选顺序**；作为
+常数改动的影响面证据时须据此打折。`ranking.entry_tier` 不吃这些常数（🎯 亦已降为
+纯展示标记，不再提档）。
 
 指标口径（代理终选）：
   - rank-IC      ：全体样本 Spearman(_p, next_day_pct)（排序量整体单调性）
@@ -36,14 +39,13 @@ from scanner.backtest import spearman  # noqa: E402
 from scanner.config import DB_PATH, NEXTDAY_HIT_THRESHOLD  # noqa: E402
 from scanner.models import parse_score_breakdown  # noqa: E402
 from scanner.nextday_attribution import attach_prominence, load_dedup  # noqa: E402
-from scanner.ranking import build_accum_map, is_nextday_marked  # noqa: E402
 
 TH = NEXTDAY_HIT_THRESHOLD
 
 # 常数家族（用于分项 A/B：一次只改一族，定位是哪个常数在起作用）
 # 基线 = 当前代码常数；下列变体 = 基线 + 把该族常数换成快照里的实测值。
 FAMILIES = {
-    "改 OR_MARKED→实测": ["OR_MARKED"],
+    # 2026-09-16：OR_MARKED 已随 🎯 降级为纯展示标记而删除，不再有该因子族
     "改 OR_OVERBOUGHT→实测": ["OR_OVERBOUGHT"],
     "改 涨幅带→实测": ["OR_BAND_SWEET_LOW", "OR_BAND_DEAD", "OR_BAND_MID", "OR_BAND_TRAP"],
     "改 辨识度/流出/板块→实测": ["OR_PROMINENCE", "OR_OUTFLOW", "OR_SMALL_SECTOR"],
@@ -71,11 +73,7 @@ def _load(conn, days: int) -> list[dict]:
     for r in raw:
         r["score_breakdown"] = parse_score_breakdown(r.get("breakdown"))
         r["_candidate"] = None
-    accum_map = build_accum_map(conn, raw)
-    recs = [r for r in raw if r["next_day"] is not None]
-    for r in recs:
-        r["_mk"] = is_nextday_marked(r, conn, accum_map=accum_map)
-    return recs
+    return [r for r in raw if r["next_day"] is not None]
 
 
 def _evaluate(recs: list[dict]) -> dict:
@@ -83,9 +81,7 @@ def _evaluate(recs: list[dict]) -> dict:
         (
             r["date"][:10],
             r["category"],
-            npb.next_day_hit_probability(
-                r, marked=r["_mk"], prominence=r.get("_prominent"), flow=None
-            ),
+            npb.next_day_hit_probability(r, prominence=r.get("_prominent"), flow=None),
             float(r["next_day"]),
         )
         for r in recs

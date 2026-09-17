@@ -235,8 +235,8 @@ def _calibrated_accum(c: Candidate, dims: dict) -> float:
 
     `c.kline.accumulated_pct` 的口径随类别变化：short_term **含今日**，其余为历史
     口径（_split_today 剔除今日）。硬过滤阈值（DISTRIBUTION_ACCUM_*）若直接吃该
-    字段，同一阈值在 short_term 与非 short_term 上语义不同 —— 与 ranking 侧已修的
-    🎯 累计口径错位是同一类问题（见 ranking._nextday_entry_accum）。
+    字段，同一阈值在 short_term 与非 short_term 上语义不同 —— 与 ranking 侧的累计
+    口径错位是同一类问题（见 ranking._nextday_entry_accum）。
 
     分析侧已为全部策略写入 dimensions["accumulated_incl_today"]（含今日复利口径，
     与 OVERHEAT_ACCUM_MAX 等档位阈值的校准口径一致），优先取它；缺失时回退旧行为。
@@ -481,15 +481,9 @@ def _apply_zt_bonus(c: Candidate, market_extra: dict | None):
 
 
 def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] | None = None, cross_days: int = 0):
-    if c.off_list:
-        # 掉榜跟踪票（回马枪）整体豁免榜单动能：cross_days/盘中 streak 是掉榜前残留
-        # （跟踪池最长保留 WATCH_OFFLIST_KEEP_DAYS=15 交易日，连榜早已结束）；traj 来自
-        # 掉榜前排名快照；回踩变体的 volume_ratio 还是合成占位值 0.0——三者都不构成
-        # 真实榜单动能。若不豁免：0.0 < FATIGUE_VOL_WARN_RATIO 恒真 + 掉榜票排名走低的
-        # traj<0，两个"疲劳信号"叠加即误触疲劳惩罚与「疲劳」风险标签（2026-08-14 修复，
-        # 与 rank=0 豁免 TOP40 路径同族）。
-        c.list_momentum_bonus = 0
-        return
+    # （原 `if c.off_list:` 整体豁免分支——掉榜跟踪票（回马枪）不做榜单动能加分——
+    # 已于 2026-09-16 随回马枪桶删除：`Candidate.off_list` 字段一并移除，全仓再无
+    # 掉榜候选进入本函数；`matcher` 的在榜回调观察走独立链路，不经此豁免。）
     intraday_streak = (list_streaks or {}).get(c.stock.symbol, 0)
     # streak 以"交易日"计：cross_days 是历史连续上榜天数（不含今日，由调用方批量查询），
     # intraday_streak 是本次盘中连续扫描次数（60s/次），仅作为"今日上榜"=+1 天。
@@ -501,12 +495,13 @@ def _apply_list_momentum_bonus(c: Candidate, list_streaks: dict[str, int] | None
 
     if streak >= FATIGUE_STREAK_MIN:
         # 底部反转类本就期望低 accumulated，跳过价格疲劳信号以免误罚。
-        # new_face/known_new_face：新面孔底部突破；comeback 反转变体：掉榜 5 日跌≤-8% 后企稳；
-        # rebound：超跌反弹（5日跌≤-10% 后企稳），负累计是策略核心前提——按价格判疲劳等于
-        # 惩罚策略本身（与 RPS 豁免同理由，candidates.compute_rps 对 rebound 返回 0）。
+        # new_face/known_new_face：新面孔底部突破；rebound：超跌反弹（5日跌≤-10% 后企稳），
+        # 负累计是策略核心前提——按价格判疲劳等于惩罚策略本身（与 RPS 豁免同理由，
+        # candidates.compute_rps 对 rebound 返回 0）。
         # 2026-08-17 审查修复：此前漏掉 rebound，连榜≥3 天时 accumulated_pct<8 恒真，
         # 叠加低量比易凑 2 信号 → 误打「疲劳」风险标签。
-        is_reversal = c.category in ("new_face", "known_new_face", "comeback", "rebound")
+        # 2026-09-16：comeback 从本豁免名单移除（回马枪桶删除）。
+        is_reversal = c.category in ("new_face", "known_new_face", "rebound")
         fatigue_signals = 0
         if c.kline and c.kline.accumulated_pct < FATIGUE_PRICE_WARN_ACCUM and not is_reversal:
             fatigue_signals += 1

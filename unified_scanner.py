@@ -390,7 +390,6 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 momentum = res.momentum
                 rebound_list = res.rebound
                 short_term_list = res.short_term
-                comeback_list = res.comeback
                 pool_picks = res.pool_picks
                 all_gem = res.gem_stocks
                 filtered_large_cap = res.filtered_large_cap
@@ -406,9 +405,7 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 # today_recs/mark_reversed/display 之前，终端与本轮扫描同源。
                 # 本轮候选随后由 mark_reversed 经 active_syms 跳过、不被反转评估，
                 # 行为等价；orchestrator 的 excluded 置 0/1 更新仍在其内部先行完成。
-                save_recommendations(
-                    conn, new_faces + pool_picks, momentum + rebound_list + short_term_list + comeback_list
-                )
+                save_recommendations(conn, new_faces + pool_picks, momentum + rebound_list + short_term_list)
 
                 # 为综合推荐补拉今日曾推荐但不在 current_quotes 中的票的实时行情
                 live_quotes: dict[str, dict] = {}
@@ -444,7 +441,7 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 try:
                     active_syms = {
                         c.stock.symbol
-                        for c in (new_faces + momentum + rebound_list + short_term_list + comeback_list + pool_picks)
+                        for c in (new_faces + momentum + rebound_list + short_term_list + pool_picks)
                     }
                     reversed_syms = mark_reversed_recommendations(conn, today_recs, active_syms, live_quotes)
                     if reversed_syms:
@@ -514,7 +511,7 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 )
                 # 快照本轮榜单排名供下一轮展示排名变化（上一轮为 None 时显示纯名次）。
                 last_ranks = dict(current_rank_map)
-                log_results(new_faces + pool_picks, momentum + rebound_list + short_term_list + comeback_list)
+                log_results(new_faces + pool_picks, momentum + rebound_list + short_term_list)
                 if not no_feishu:
                     pushed = push_feishu(view, len(all_gem), filtered_large_cap=filtered_large_cap)
                     # 「有没有内容」的唯一判据 = feishu.view_has_content（与 build_feishu_card 的

@@ -669,11 +669,10 @@ def _cand_tier(
     accum: float = 8.0,
     incl_accum: float | None = None,
 ) -> Candidate:
-    # percent 默认 3.0（2~4% 死区，不在次日大涨甜蜜带）：避免候选行被 🎯 误置顶，
-    # 使档位测试只由 prominent 决定；需要 🎯 的测试显式传甜蜜带（<2% / 4~8%）。
-    # accum 默认 8.0 ≥ NEXTDAY_ACCUM_MIN（6.0）：甜蜜带 momentum/new_face 票默认可标 🎯，
-    # 保持既有档位测试语义；测试 5 日累计门槛时显式传低值（如 accum=2.0）。
-    # incl_accum：accumulated_incl_today 维度（含今日口径，2026-08-17 起 🎯 优先取用它）。
+    # percent 默认 3.0（2~4% 死区）：涨幅带判定取中间档，档位测试只由 prominent 决定。
+    # accum / incl_accum 是 2026-09-16 前 🎯 累计门槛用到的历史默认值（门槛已随 🎯 删除）；
+    # 仍保留形参以免大规模改动既有调用点——现仅作 KlineSummary 的普通字段填充。
+    # incl_accum：accumulated_incl_today 维度（含今日口径，累计回放链消费）。
     dims: dict[str, object] = {}
     if fund_flow is not None:
         dims["fund_flow_main_pct"] = fund_flow

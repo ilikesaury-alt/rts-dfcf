@@ -5,6 +5,10 @@
    警示因子的票），防两套逻辑再次漂移；
 2. sort_main_entries 复合键 (symbol, category)：nf∩st 双挂票不再按 symbol 键控；
 3. score_sort_key 分数方向由类别注册表驱动（kNF 升序、其余降序）。
+
+2026-09-16：🎯 降为纯展示标记 —— entry_tier 的「🎯 命中 → 档0」提权已删除、
+`marked` 形参一并移除（composite_tier 的空转形参同步移除）。原「marked 票不评估
+警示因子」的短路断言随之改为「不再特殊对待」。
 """
 
 from scanner import ranking as R
@@ -22,32 +26,56 @@ class TestEntryTierReasons:
     """entry_tier_reasons 单源不变量。"""
 
     def test_overheat_reason_and_tier(self):
-        """过热（≥OVERHEAT_ACCUM_MAX）→ 唯一原因 + 档3，优先于 🎯。"""
+        """过热（≥OVERHEAT_ACCUM_MAX）→ 唯一原因 + 档3，优先于一切档位。"""
         e = _entry("SZ300001", "momentum", percent=5.0)
         rs = R.entry_tier_reasons(e, accum=60.0)
         assert rs == [R.TIER_REASON_OVERHEAT]
-        assert R.entry_tier(e, accum=60.0, marked=True) == 3
+        assert R.entry_tier(e, accum=60.0) == 3
 
-    def test_marked_entry_has_no_reasons(self):
-        """🎯 档0 票不评估警示因子（与级联短路一致）→ 空原因。"""
-        e = _entry("SZ300002", "momentum", breakdown={"v_st_overbought": True})
-        # percent=5.0 在甜蜜带；显式 marked=True 模拟画像命中
-        assert R.entry_tier_reasons(e, accum=10.0, marked=True) == []
-        assert R.entry_tier(e, accum=10.0, marked=True) == 0
+    def test_marked_no_longer_special_cased(self):
+        """2026-09-16：🎯 降为纯展示标记 —— 原「marked → 空原因 + 档0」短路已删。
 
-    def test_rebound_comeback_exempt_from_warnings(self):
-        """rebound（档1）/comeback（豁免）不看警示因子 → 空原因。"""
+        现在 marked 票与普通票一视同仁评估警示因子（各类别不再有档0 来源）。
+        """
+        e = _entry("SZ300002", "momentum", percent=-1.0, breakdown={"v_mo_overbought": True})
+        assert R.entry_tier_reasons(e, accum=10.0) == [R.TIER_REASON_OVERBOUGHT]
+        assert R.entry_tier(e, accum=10.0) == 3
+
+    def test_no_tier0_from_entry_tier(self):
+        """档0 已成空档：entry_tier 任何输入都不再返回 0（保留刻度避免下游映射错位）。"""
+        for cat, pct in (
+            ("momentum", 5.0),
+            ("new_face", 5.0),
+            ("known_new_face", 1.0),
+            ("pool_pick", 5.0),
+        ):
+            e = _entry("SZ300040", cat, percent=pct)
+            assert R.entry_tier(e, accum=10.0) != 0
+
+    def test_marked_param_removed(self):
+        """去提权守卫：entry_tier / entry_tier_reasons / composite_tier 不再接受 marked。"""
+        e = _entry("SZ300041", "momentum", percent=5.0)
+        for fn in (R.entry_tier, R.entry_tier_reasons, R.composite_tier):
+            try:
+                fn(e, accum=10.0, marked=True)
+            except TypeError:
+                continue
+            raise AssertionError(f"{fn.__name__} 不应再接受 marked 形参（🎯 已降为纯展示标记）")
+
+    def test_rebound_exempt_from_warnings(self):
+        """rebound（档1）不看警示因子 → 空原因。
+
+        2026-09-16：原 `comeback`（豁免档2）随回马枪桶删除——该类别不再由 `entry_tier`
+        特判，历史 comeback 行会落入普通警示路径（不再有专属豁免分支）。
+        """
         rb = _entry("SZ300003", "rebound", breakdown={"v_st_overbought": True})
-        cb = _entry("SZ300004", "comeback", breakdown={"v_st_overbought": True})
         assert R.entry_tier_reasons(rb, accum=10.0) == []
-        assert R.entry_tier_reasons(cb, accum=10.0) == []
         assert R.entry_tier(rb, accum=10.0) == 1
-        assert R.entry_tier(cb, accum=10.0) == 2
 
     def test_warning_reason_matches_tier3(self):
         """超买命中 → 原因非空且档3；无警示 → 空原因且档2。同源不变量。
 
-        percent=-1.0（down 带）避开 🎯 甜蜜带短路，确保走到警示因子评估。
+        percent=-1.0（down 带）避开 2-4% 死区 / ≥8% 陷阱带，确保分档只由超买因子决定。
         """
         overbought = _entry("SZ300005", "momentum", percent=-1.0,
                             breakdown={"v_mo_overbought": True})
@@ -65,8 +93,8 @@ class TestEntryTierReasons:
         assert R.TIER_REASON_BAND in rs
         assert R.entry_tier(e, accum=10.0) == 3
 
-    def test_short_term_band_exempt_but_weak_to_strong_markable(self):
-        """short_term 豁免涨幅带：死区涨幅无弱转强不标 🎯 → 落档2 无原因。"""
+    def test_short_term_band_exempt(self):
+        """short_term 豁免涨幅带：死区涨幅不评估 band → 落档2 无原因。"""
         e = _entry("SZ300008", "short_term", percent=3.0)
         assert R.entry_tier_reasons(e, accum=10.0) == []
         assert R.entry_tier(e, accum=10.0) == 2

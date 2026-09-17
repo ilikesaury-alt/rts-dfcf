@@ -20,7 +20,6 @@ from scanner.config import (
     COMPOSITE_CAT_BASE,
     COMPOSITE_TIER_THRESHOLDS,
     FUND_OUTFLOW_NET_PCT,
-    NEXTDAY_ACCUM_MIN,
     NEXTDAY_SPIKE_MID_MAX,
     NEXTDAY_SPIKE_MID_MIN,
     NEXTDAY_SPIKE_SWEET_LOW,
@@ -60,13 +59,13 @@ def _nextday_entry_percent(entry: Any) -> float:
 
     2026-08-21 审查修复（口径漂移）：掉榜行此前在 DB percent 之前就吃
     live_quotes——而 unified_scanner 会为今日曾推荐但已掉榜的票主动补拉实时行情，
-    导致 🎯 甜蜜带 / _entry_band 涨幅带判定随盘中价格逐轮漂移（档位闪变），且偏离
+    导致 _entry_band 涨幅带判定随盘中价格逐轮漂移（档位闪变），且偏离
     校准口径（nextday_attribution 落库的是推荐时刻 percent）。现掉榜行优先 DB
     落库值，live 仅在落库缺失时兜底。展示列的实时涨幅由 display 独立回退链负责，
       不受本函数影响。
 
     2026-08-24 审查补：is_stale 候选（掉榜后池内快照冻结在掉榜时刻）不作为第一
-    优先级——冻结 percent 会让 🎯 甜蜜带 / _entry_band 涨幅带判定偏离推荐时刻落库
+    优先级——冻结 percent 会让 _entry_band 涨幅带判定偏离推荐时刻落库
     口径，stale 视同无候选直接落 DB percent 回退链。同批升级走 fresh_candidate
     单源助手（叠加双挂票类别错位拦截）。
     """
@@ -125,9 +124,10 @@ def _replay_accum_from_rows(rows: list, rec_date: str) -> float | None:
 
 
 def _nextday_entry_accum(entry: Any, conn=None) -> float | None:
-    """推荐前 5 日累计涨幅（%），用于 🎯 判定；拿不到返回 None（不阻断）。
+    """推荐前 5 日累计涨幅（%），用于档位过热门槛判定；拿不到返回 None（不阻断）。
 
-    口径：NEXTDAY_ACCUM_MIN=6.0 校准于「含推荐日」口径（5 日复利，含推荐日 bar）。
+    口径：过热门槛（OVERHEAT_ACCUM_MAX）校准于「含推荐日」口径（5 日复利，含推荐日 bar）。
+    （原 🎯 累计门槛的常数 6.0 随 🎯 画像于 2026-09-16 删除。）
     - short_term 的 KlineSummary.accumulated_pct 本身含今日（策略语义）；
     - new_face/known_new_face/momentum/rebound 的 accumulated_pct 不含今日（历史口径，
       RPS/评分用），其「含今日」值由分析侧另存于 dimensions["accumulated_incl_today"]。
@@ -313,8 +313,9 @@ def entry_fund_flow_pct(entry: Any, flow_map: dict[str, float] | None = None) ->
     flow_map = `get_fund_flow_pct_map`（market_extra_cache 当日全市场快照），专门补
     「行内没有 fund_flow_main_pct」的场景——掉榜/重启行、以及 core_dip/new_face 等
     类别在写库时未记录该维度的行（实测 dims 覆盖率 core_dip/new_face 仅 0~2%）。
-    展示层资金流出硬门与 comeback_sort_key 共用本函数：**排序看到的资金流**与
+    展示层资金流出硬门（view.assemble）与 today_report 共用本函数：**排序看到的资金流**与
     **过滤看到的资金流**必须是同一条回退链，否则会出现「排前却被过滤」的怪象。
+    （原 comeback_sort_key 亦曾共用，该桶 2026-09-16 删除。）
 
     无任何来源 → None（缺失，不是 0，调用方自行决定 fail-open 方向）。
     """
@@ -389,7 +390,8 @@ def _warning_tier3_reasons(entry: Any, flow: float | None = None) -> list[str]:
     if flow is not None and flow <= FUND_OUTFLOW_NET_PCT:
         rs.append(TIER_REASON_FUND_OUTFLOW)
     # 小板块共振（cnt<15）档3 劣后：板块普涨日冲进去即接盘位（next_day hit 5.6% vs 无共振 13.7%）。
-    # 仅非 🎯 票生效（🎯∩板块普涨 hit 12.2% 仍有效，太辰光案例）；不渲染文本，只排序。
+    # 2026-09-16：🎯 画像删除后不再有「🎯 票豁免本因子」的特例——所有非 rebound
+    # 行一视同仁评估（rebound 已在档1 短路返回）。不渲染文本，只排序。
     if _entry_sector_resonance(entry):
         rs.append(TIER_REASON_SECTOR)
     # 涨幅带劣后（next_day 口径，全量 1184 样本）：2-4% 死区 hit 7.0%（基准 9.7%）；
@@ -405,17 +407,19 @@ def entry_tier_reasons(
     entry: Any,
     conn=None,
     accum: float | None = None,
-    marked: bool | None = None,
     accum_map: dict | None = None,
     flow: float | None = None,
 ) -> list[str]:
     """单票命中的档位劣后原因（与 entry_tier 级联判定完全同源，单源防漂移）。
 
     只返回实际导致/将导致档3 的因子：
-    - 过热（accum ≥ OVERHEAT_ACCUM_MAX）优先于一切档位（含 🎯），恒最先判定；
-    - 🎯 档0 / rebound 档1 / comeback 豁免票不评估警示因子（与级联短路一致——
-      这些档位的票即使超买也不会因警示因子降档，返回空列表是真实语义）；
+    - 过热（accum ≥ OVERHEAT_ACCUM_MAX）优先于一切档位，恒最先判定；
+    - rebound 档1 不评估警示因子（与级联短路一致——该档位的票即使超买
+      也不会因警示因子降档，返回空列表是真实语义）；
     - 其余主表票返回 _warning_tier3_reasons 结果（空列表 = 档2 普通）。
+
+    2026-09-16（用户决策「🎯 降为纯展示标记」）：原「🎯 命中 → 直接返回空原因」的
+    短路已删除，`marked` 形参一并移除 —— 🎯 不再影响档位，故不再豁免警示因子。
     """
     if accum_map is not None:
         accum = accum_map.get(entry.get("symbol"))
@@ -423,12 +427,8 @@ def entry_tier_reasons(
         accum = _nextday_entry_accum(entry, conn)
     if accum is not None and accum >= OVERHEAT_ACCUM_MAX:
         return [TIER_REASON_OVERHEAT]
-    if marked is None:
-        marked = is_nextday_marked(entry, conn, accum=accum, accum_map=accum_map)
-    if marked:
-        return []
     cat = entry["category"]
-    if cat in ("rebound", "comeback"):
+    if cat == "rebound":
         return []
     return _warning_tier3_reasons(entry, flow=flow)
 
@@ -437,13 +437,12 @@ def entry_tier(
     entry: Any,
     conn=None,
     accum: float | None = None,
-    marked: bool | None = None,
     accum_map: dict | None = None,
     flow: float | None = None,
 ) -> int:
     """综合排序档位（2026-08-17 二值 → 4 级；2026-08-18 统一口径为「次日大涨」）。
 
-    档0 = 🎯 次日大涨画像（数据最强，见 is_nextday_marked，short_term 弱转强分型）
+    档0 = 保留刻度（2026-09-16 起**无判定来源**，恒不产出；见下方变更说明）
     档1 = 强信号：rebound（next_day 口径全场最强类别）
           ⚠️ 注释里的具体数字会随样本变化而失效——2026-08-29 实测为 hit 17.9%/+1.30%
           （旧注释写的 28.6%/+2.78% 是更小样本期的读数）。以
@@ -451,14 +450,17 @@ def entry_tier(
     档2 = 普通：无警示（参考）
     档3 = 警示劣后：累计≥OVERHEAT_ACCUM_MAX 过热 / 超买（hit 6.8%）/ 小板块共振 cnt<15
           （hit 5.6%）/ 2-4% 死区（hit 7.0%）/ momentum、new_face 的 8-10% 陷阱（hit 0%）/
-          资金流出≤FUND_OUTFLOW_NET_PCT。short_term 豁免涨幅带（规律在弱转强）；
-          comeback 统一档2——除过热外不看任何警示因子（超买/资金流/板块共振/涨幅带，
-          2026-08-18 设计）。
+          资金流出≤FUND_OUTFLOW_NET_PCT。short_term 豁免涨幅带（规律在弱转强）。
+
+    2026-09-16（用户决策「🎯 标记与回马枪都删除」）：🎯 画像与 comeback 桶**均已删除**。
+    原「🎯 命中 → 档0 置顶」的判定与 `marked` 形参一并移除，档0 因此成为空档——保留
+    刻度（0..3）以免下游映射错位；注意 live 展示走的 `composite_tier` 仍按 composite
+    分档产出档0（那是评分分档口径，与本函数无关）。comeback 桶自 2026-08-18 起即因
+    next_day 口径 hit 3.3%（全场最差）降为档2，2026-09-16 整个桶连同 `comeback_sort_key`
+    删除。
 
     2026-08-18 口径统一：全部档位判定因子均校准于 next_day（次日大涨≥7% hit 口径，
-    scanner.nextday_attribution 1184 去重样本）。comeback 由档1 移除——其 6 维回踩买点
-    信号是 cum_3d 语义（回踩企稳等 3 日修复），next_day 口径下 hit 仅 3.3% 全场最差，
-    不再置顶，统一回档2（独立区补充参考）。
+    scanner.nextday_attribution 1184 去重样本）。
     2026-08-26 重构：警示因子判定收口到 _warning_tier3_reasons / entry_tier_reasons
     单源（today_report 档3 避雷汇总与 scripts/tier3_reason_perf 归因消费同一函数），
     阈值 OVERHEAT_ACCUM_MAX/FUND_OUTFLOW_NET_PCT 入 config。级联顺序与返回值不变。
@@ -469,93 +471,17 @@ def entry_tier(
         accum = accum_map.get(entry.get("symbol"))
     elif accum is None:
         accum = _nextday_entry_accum(entry, conn)
-    # 过热妖股优先于一切：累计≥阈值即使命中 🎯 画像也劣后（精选区校准，hit 最低区）
+    # 过热妖股优先于一切（精选区校准，hit 最低区）
     if accum is not None and accum >= OVERHEAT_ACCUM_MAX:
         return 3
-    if marked is None:
-        marked = is_nextday_marked(entry, conn, accum=accum, accum_map=accum_map)
-    if marked:
-        return 0
     cat = entry["category"]
     if cat == "rebound":
         return 1
-    if cat == "comeback":
-        return 2
     # flow 透传（2026-08-30）：与 entry_tier_reasons 同参数，供调用方用
     # market_extra_cache 回退链补资金流值（掉榜行 dims 缺失场景）。此前本函数
     # 恒不传 flow，导致「档位判定」与「档位原因归因」两条路径对同一行可能给出
     # 不同结论（一个拿不到兜底值）。
     return 3 if _warning_tier3_reasons(entry, flow=flow) else 2
-
-
-# ── 🎯 次日大涨画像：类别规格表（2026-08-26 收口）──
-# 每类别一行：(入场分型, 累计门槛是否生效)。此前分支散在 is_nextday_marked 的
-# if/elif 里（short_term 特判两处、豁免类别硬编码元组），新增/调整类别画像需改
-# 函数体；现数据驱动，键集合必须与 categories.NEXTDAY_CAT_PRIORITY 一致
-# （一致性由 tests/test_profile_registry.py 守护）。
-#   - shape="sweet_band"：推荐时刻涨幅在甜蜜带（_in_nextday_sweet_band）；
-#   - shape="weak_to_strong"：弱转强分型（_entry_weak_to_strong；2026-08-17 起
-#     short_term 专用——甜蜜带对 short_term 负效，规律在弱转强∩非超买）；
-#   - accum_required=False 为豁免累计门槛（rebound 超跌反弹负累计天然 /
-#     short_term 规律不在累计口径）；True 时累计缺失 fail-open 放行。
-NEXTDAY_CAT_SPECS: dict[str, tuple[str, bool]] = {
-    "pool_pick": ("sweet_band", False),
-    "rebound": ("sweet_band", False),
-    "known_new_face": ("sweet_band", True),
-    "momentum": ("sweet_band", True),
-    "new_face": ("sweet_band", True),
-    "short_term": ("weak_to_strong", False),
-}
-
-
-def is_nextday_marked(entry: Any, conn=None, accum: float | None = None, accum_map: dict | None = None) -> bool:
-    """次日大涨画像标记（🎯）：推荐时刻涨幅在甜蜜带 + 非超买死亡信号 + 5日累计门槛。
-
-    类别差异走 NEXTDAY_CAT_SPECS 规格表（2026-08-26 数据驱动收口，判定语义不变）。
-
-    2026-08-11：原「◆ 次日大涨候选」独立区与综合排序主表重合度 65%（实测当日
-    主表 17 只中 11 只甜蜜带、两表排序几乎一致、辨识度因子空转），改为主表行尾
-    标记，消除重复输出。筛形条件与独立区完全一致（nextday_attribution 口径）：
-      1. 推荐时刻涨幅在甜蜜带（<2% 低吸潜伏 或 4~8% 中段启动）；
-      2. 排除超买（short_term/动量死亡信号：hit 5% vs 非超买 10.5%）。
-    2026-08-14 新增 3. 5 日累计 ≥ NEXTDAY_ACCUM_MIN（用户怕追高只选涨幅小/累计低的票，
-    实测 0~3 平档 hit 仅 5.4% 全场最差、10~15 档 21.2% 最好——「累计低=安全」是反指；
-    甜蜜带+累计≥6 使 hit 16.5%→20.0%）。rebound 豁免（超跌反弹，负累计天然，hit 33.3%）、
-    short_term 豁免（其规律在超买/弱转强，不在此列）。累计缺失 fail-open 不阻断（见
-    _nextday_entry_accum）。累计口径 = 校准口径（含推荐日 bar，_nextday_entry_accum
-    优先取候选 kline 的 accumulated_incl_today 维度；2026-08-17 修复口径错位）。
-    视觉标记 + 参与综合排序档位（档0置顶），不改 score / 不落库。
-    """
-    spec = NEXTDAY_CAT_SPECS.get(entry["category"])
-    if spec is None:
-        return False
-    shape, accum_required = spec
-    if shape == "weak_to_strong":
-        # 2026-08-17 🎯 分型（组合信号分析，去重 1224 样本）：short_term 次日大涨规律
-        # 在弱转强（弱转强∩非超买 hit 15.8%），甜蜜带对 short_term 反而负效（5.7% vs
-        # 全类 8.5%）——原「甜蜜带+非超买」判定把 122 只甜蜜带 short_term 里仅 1/7 命中
-        # 的侥幸票（太辰光式）顶进档0。掉榜行经 score_breakdown 判定，缺数据不标。
-        if not _entry_weak_to_strong(entry):
-            return False
-    elif not _in_nextday_sweet_band(_nextday_entry_percent(entry)):
-        return False
-    if accum_required:
-        if accum_map is not None:
-            accum = accum_map.get(entry.get("symbol"))
-        elif accum is None:
-            accum = _nextday_entry_accum(entry, conn)
-        if accum is not None and accum < NEXTDAY_ACCUM_MIN:
-            return False  # 有累计数据且不达门槛 → 不标；缺数据 fail-open 放行
-    # 超买 = 次日大涨死亡信号：候选行读 dims，掉榜/重启行读 score_breakdown（统一 entry_dims）。
-    # 2026-08-17 修复：此前只查候选行，掉榜行（无 _candidate）直接放行——兆日科技
-    # 案例（超买+累计74.7%妖股被误标 🎯）。掉榜行 score_breakdown 含 v_st_overbought 等字段。
-    d = entry_dims(entry)
-    return not (
-        d.get("st_overbought_flag")
-        or d.get("mo_overbought_flag")
-        or d.get("v_st_overbought")
-        or d.get("v_mo_overbought")
-    )
 
 
 # ── 蓄势突破观察画像（2026-08-21，纯展示层 ⚡ 标记）──
@@ -831,14 +757,14 @@ def composite_tier(
     conn: Any = None,
     accum: float | None = None,
     accum_map: dict | None = None,
-    marked: bool | None = None,
 ) -> int:
     """复合评分推导档位：过热硬门 → composite 分档。
 
     取代原 entry_tier 的 if/elif 级联（类别硬编码 rebound→1, comeback→2 等）。
     过热（accum >= 50%）仍为最优先硬门——妖股累计过高时无论 composite 多高都劣后。
-    🎯 次日大涨画像（marked）降级为展示标记：composite 的 cat_base + rank_norm +
-    fund_norm 已捕获相同底层信号（甜蜜带→cat_base 间接、非超买→tech_norm 间接）。
+    🎯 次日大涨画像从来未经本函数分档（composite 的 cat_base + rank_norm + fund_norm
+    已间接捕获同源信号）；2026-09-16 起全系统 🎯 均为纯展示标记，原 `marked` 形参
+    （本已空转）一并移除。见 entry_tier docstring。
     """
     if accum_map is not None:
         accum = accum_map.get(entry.get("symbol"))
@@ -892,19 +818,3 @@ def sort_main_entries(main_recs: list[Any], tier_map: dict[tuple[str, str], int]
     )
 
 
-def comeback_sort_key(entry: Any, flow_map: dict[str, float] | None = None) -> tuple:
-    """回马枪区内排序键（2026-08-24 初版：主力净占比优先→评分）：
-
-    2026-08-29 调整：今日波动剧烈（涨多/跌狠）优先排前，资金流与评分为次级区分。
-    回测依据：comeback 统一 next_day 口径 hit 3.3%（全场最差，已移出档1），区内
-    score 不再是有效区分度；资金流是回马枪区已验证的分化信号（▲▲回流可取 vs
-    ▼▼背离回避，today_report 回马枪资金质量小节口径）。flow 缺失按中性 0 处理，
-    可选 flow_map（display 从 market_extra_cache 批量读的回退源）供掉榜行补值。
-    display 回马枪区与 today_report 回马枪小节共用本函数，防两处口径漂移。
-    """
-    today = _entry_today_pct(entry)
-    # 资金流走 entry_fund_flow_pct 单源回退链（2026-09-14 收敛）：此前本函数自己内联
-    # 「dims → flow_map」两步，与展示层资金流出硬门各写一份，两处口径可各自漂移。
-    flow = entry_fund_flow_pct(entry, flow_map)
-    # 今日波动幅度 |today| 越大越靠前（取负升序=降序）；同幅度下主力净占比、评分降序。
-    return (-abs(today), -(flow if flow is not None else 0.0), -entry["score"])

@@ -46,7 +46,6 @@ from scanner.ranking import (  # noqa: E402
     entry_dims,
     entry_tier,
     entry_tier_reasons,
-    is_nextday_marked,
 )
 
 # 扣分权重（脚本本地常量：本工具只测量不调参，权重若经数据支持升级为正式实现，
@@ -115,11 +114,10 @@ def collect(conn, dates):
             p = nd_map.get(e["symbol"])
             if p is None:
                 continue
-            marked = is_nextday_marked(e, conn, accum_map=accum_map)
-            tier = entry_tier(e, conn, accum_map=accum_map, marked=marked)
+            tier = entry_tier(e, conn, accum_map=accum_map)
             d = entry_dims(e)
             flow = _flow_of(e, d, flow_map)
-            reasons = entry_tier_reasons(e, accum=accum_map.get(e["symbol"]), marked=marked, flow=flow)
+            reasons = entry_tier_reasons(e, accum=accum_map.get(e["symbol"]), flow=flow)
             rows.append(
                 {
                     "date": dt,
@@ -128,9 +126,10 @@ def collect(conn, dates):
                     "tier": tier,
                     "penalty": _penalty(reasons),
                     "reasons": reasons,
-                    # 可评估警示因子的人群（🎯 档0/rebound 档1/comeback 豁免票不评估
-                    # 警示因子、天然扣0——混入会稀释扣分桶对照）
-                    "evaluable": (not marked) and e["category"] not in ("rebound", "comeback"),
+                    # 可评估警示因子的人群（rebound 档1/comeback 豁免票不评估警示因子、
+                    # 天然扣0——混入会稀释扣分桶对照）。2026-09-16：🎯 档0 提权已删，
+                    # 不再有「marked 票不评估」的特例。
+                    "evaluable": e["category"] not in ("rebound", "comeback"),
                 }
             )
     return rows, n_days

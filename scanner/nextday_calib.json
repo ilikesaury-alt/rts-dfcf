@@ -1,41 +1,30 @@
 {
-  "generated_at": "2026-09-13",
-  "data_through": "2026-09-10",
+  "generated_at": "2026-09-16",
+  "data_through": "2026-09-15",
   "sample": {
-    "n": 2185,
-    "days": 75,
+    "n": 2466,
+    "days": 78,
     "threshold": 7.0,
-    "hit_rate": 0.0682,
+    "hit_rate": 0.0657,
     "data_from": "2026-05-28",
-    "data_through": "2026-09-10"
+    "data_through": "2026-09-15"
   },
   "tolerance": 0.15,
   "max_age_days": 45,
   "acknowledged_drift": {
-    "OR_BAND_SWEET_LOW": "口径错位 + 已做样本外验证（2026-09-13）：遗留常数按「全样本条件组 vs 全体」拟合，按适用集合（未标记且非 short_term）重算为 0.690（漂移 21.6%）。§B1 样本外判定（python -m scanner.rule_validate，test 窗 40 日、日等权 top-3）：换实测值后 hit 无变化（Δ +0.0pp，CI [0,0]）、rank-IC 微升 +0.0122→+0.0131 —— 证据不足，暂留。",
-    "OR_BAND_DEAD": "口径错位 + 已做样本外验证（2026-09-13）：同上，按适用集合重算为 0.806（漂移 15.2%）。§B1 样本外判定：换实测值后 test hit Δ −0.8pp（CI [−3.3,+1.7] 跨 0）、rank-IC +0.0122→+0.0163（改善）—— 头部与整体方向相反，证据不足，暂留。",
-    "OR_BAND_MID": "口径错位 + 已做样本外验证（2026-09-13）：按适用集合重算为 2.040（漂移 51.1%）。§B1 样本外判定（python -m scanner.rule_validate --set scanner.nextday_prob.OR_BAND_MID=2.04）：**改实测值反而更差** —— test hit 13.3%→11.7%（Δ −1.7pp，CI [−4.2,+0.0]），train 窗 Δ −3.3pp 且 CI [−6.7,−0.6] **不含 0**；rank-IC +0.0122→+0.0078 亦降。三项一起改更差（test Δ −2.5pp，train CI [−7.2,−1.1] 不含 0）。结论：该常数是**按终选目标校准**的，不是 OR 的无偏估计 —— 不要按 OR 实测值去「修正」它（详见 nextday_prob._band_or docstring）。"
+    "OR_BAND_SWEET_LOW": "口径错位 + 已做样本外验证（2026-09-13）：遗留常数按「全样本条件组 vs 全体」拟合，按适用集合（非 short_term）重算为 0.653（漂移 25.8%）。§B1 样本外判定（python -m scanner.rule_validate，test 窗 40 日、日等权 top-3）：换实测值后 hit 无变化（Δ +0.0pp，CI [0,0]）、rank-IC 微升 +0.0122→+0.0131 —— 证据不足，暂留。（2026-09-16 重算快照：适用集合由「未标记且非 short_term」改为「非 short_term」，实测值随之更新。）",
+    "OR_BAND_MID": "口径错位 + 已做样本外验证（2026-09-13）：按适用集合（非 short_term）重算为 2.155（漂移 59.6%）。§B1 样本外判定（python -m scanner.rule_validate --set scanner.nextday_prob.OR_BAND_MID=2.04）：**改实测值反而更差** —— test hit 13.3%→11.7%（Δ −1.7pp，CI [−4.2,+0.0]），train 窗 Δ −3.3pp 且 CI [−6.7,−0.6] **不含 0**；rank-IC +0.0122→+0.0078 亦降。三项一起改更差（test Δ −2.5pp，train CI [−7.2,−1.1] 不含 0）。结论：该常数是**按终选目标校准**的，不是 OR 的无偏估计 —— 不要按 OR 实测值去「修正」它（详见 nextday_prob._band_or docstring）。（2026-09-16 重算快照：实测值由 2.040 更新为 2.155。）",
+    "OR_OVERBOUGHT": "2026-09-16 重算快照时实测 0.691（常数 0.840，漂移 17.7%）：主因是同日 🎯 降为纯展示标记后，本因子适用集合由「未标记行」扩到「全体行」（原 marked 行按定义非超买，加入参照组后抬高了参照组 hit）。按纪律**不直接改常数**（改常数属行为变更，须先过 §B1 样本外验证）。解除条件：跑 `python -m scanner.rule_validate --evaluator nextday-prob --set scanner.nextday_prob.OR_OVERBOUGHT=<实测>` 确认无显著变差后同步。",
+    "OR_OUTFLOW": "2026-09-16 重算快照时实测 1.037（常数 0.320，漂移 223.9%）—— **纯数据漂移**（本因子的适用集合与判定自 2026-09-13 起未变）：最近数个交易日的净流出票次日 hit 率由 1.1% 抬升到 3.8%，与参照组（3.7%）持平，即该因子在当前 regime 已**失去区分度**（不再是负向）。按纪律不直接改常数（属行为变更，须先过 §B1）。解除条件：样本外验证确认因子已失效后，评估降权/移除（`_p` 现为展示参考量，已不影响终选排序）。⚠ 待复核。"
   },
   "factors": {
-    "OR_MARKED": {
-      "constant": 1.56,
-      "measured": 1.5598,
-      "n_cond": 344,
-      "hit_cond": 0.1076,
-      "n_ref": 1213,
-      "hit_ref": 0.0717,
-      "applies_to": "可标记类别行（category ∈ ranking.NEXTDAY_CAT_SPECS）",
-      "legacy_scope": null,
-      "legacy_scope_differs": false,
-      "legacy_note": "2026-09-13 口径修正（已完成）：原常数 2.6 的拟合口径漏了线上 _is_nextday_marked 的 5 日累计门槛（2026-08-14 新增），按线上口径重算为 1.56。"
-    },
     "OR_PROMINENCE": {
       "constant": 2.0,
-      "measured": 2.179,
-      "n_cond": 454,
-      "hit_cond": 0.1145,
-      "n_ref": 1731,
-      "hit_ref": 0.056,
+      "measured": 2.2466,
+      "n_cond": 484,
+      "hit_cond": 0.1136,
+      "n_ref": 1982,
+      "hit_ref": 0.054,
       "applies_to": "全体样本",
       "legacy_scope": null,
       "legacy_scope_differs": false,
@@ -43,71 +32,71 @@
     },
     "OR_OVERBOUGHT": {
       "constant": 0.84,
-      "measured": 0.8403,
-      "n_cond": 153,
-      "hit_cond": 0.0523,
-      "n_ref": 1688,
-      "hit_ref": 0.0616,
-      "applies_to": "未标记行（marked=False）",
+      "measured": 0.6915,
+      "n_cond": 169,
+      "hit_cond": 0.0473,
+      "n_ref": 2297,
+      "hit_ref": 0.067,
+      "applies_to": "全体样本",
       "legacy_scope": null,
       "legacy_scope_differs": false,
-      "legacy_note": "2026-09-13 口径修正（已完成）：原常数 0.68 按全样本补集拟合（含 marked 行），按适用集合（未标记行）重算为 0.84。"
+      "legacy_note": "2026-09-13 口径修正（已完成）：原常数 0.68 按全样本补集拟合（含 marked 行），按适用集合（未标记行）重算为 0.84。2026-09-16 起🎯 分流删除，本因子对全体生效（口径随之扩到含原 marked 行）。"
     },
     "OR_BAND_SWEET_LOW": {
       "constant": 0.88,
-      "measured": 0.6903,
-      "n_cond": 718,
-      "hit_cond": 0.0543,
-      "n_ref": 690,
-      "hit_ref": 0.0768,
-      "applies_to": "未标记且非 short_term 行",
-      "legacy_scope": "全体样本（遗留口径，含 marked 行）",
+      "measured": 0.6527,
+      "n_cond": 1024,
+      "hit_cond": 0.0566,
+      "n_ref": 914,
+      "hit_ref": 0.0842,
+      "applies_to": "非 short_term 行",
+      "legacy_scope": "全体样本（遗留口径）",
       "legacy_scope_differs": true,
-      "legacy_note": "遗留常数按「全样本条件组 vs 全体样本」拟合（文档各带 n 之和 = 全样本），而模型只对未标记且非 short_term 行乘该 OR —— 参照组不是适用集合的补集。★ 2026-09-13 §B1 样本外判定结论：**不按实测值修正**（改后终选 hit 更差）；这些常数是按终选目标校准的，不是 OR 的无偏估计。详见 ACKNOWLEDGED_DRIFT。"
+      "legacy_note": "遗留常数按「全样本条件组 vs 全体样本」拟合（文档各带 n 之和 = 全样本），而模型只对非 short_term 行乘该 OR —— 参照组不是适用集合的补集。★ 2026-09-13 §B1 样本外判定结论：**不按实测值修正**（改后终选 hit 更差）；这些常数是按终选目标校准的，不是 OR 的无偏估计。详见 ACKNOWLEDGED_DRIFT。"
     },
     "OR_BAND_DEAD": {
       "constant": 0.7,
-      "measured": 0.8063,
-      "n_cond": 323,
-      "hit_cond": 0.0557,
-      "n_ref": 1085,
-      "hit_ref": 0.0682,
-      "applies_to": "未标记且非 short_term 行",
-      "legacy_scope": "全体样本（遗留口径，含 marked 行）",
+      "measured": 0.7049,
+      "n_cond": 341,
+      "hit_cond": 0.0528,
+      "n_ref": 1597,
+      "hit_ref": 0.0733,
+      "applies_to": "非 short_term 行",
+      "legacy_scope": "全体样本（遗留口径）",
       "legacy_scope_differs": true,
-      "legacy_note": "遗留常数按「全样本条件组 vs 全体样本」拟合（文档各带 n 之和 = 全样本），而模型只对未标记且非 short_term 行乘该 OR —— 参照组不是适用集合的补集。★ 2026-09-13 §B1 样本外判定结论：**不按实测值修正**（改后终选 hit 更差）；这些常数是按终选目标校准的，不是 OR 的无偏估计。详见 ACKNOWLEDGED_DRIFT。"
+      "legacy_note": "遗留常数按「全样本条件组 vs 全体样本」拟合（文档各带 n 之和 = 全样本），而模型只对非 short_term 行乘该 OR —— 参照组不是适用集合的补集。★ 2026-09-13 §B1 样本外判定结论：**不按实测值修正**（改后终选 hit 更差）；这些常数是按终选目标校准的，不是 OR 的无偏估计。详见 ACKNOWLEDGED_DRIFT。"
     },
     "OR_BAND_MID": {
       "constant": 1.35,
-      "measured": 2.04,
-      "n_cond": 239,
-      "hit_cond": 0.1088,
-      "n_ref": 1169,
-      "hit_ref": 0.0565,
-      "applies_to": "未标记且非 short_term 行",
-      "legacy_scope": "全体样本（遗留口径，含 marked 行）",
+      "measured": 2.1551,
+      "n_cond": 426,
+      "hit_cond": 0.115,
+      "n_ref": 1512,
+      "hit_ref": 0.0569,
+      "applies_to": "非 short_term 行",
+      "legacy_scope": "全体样本（遗留口径）",
       "legacy_scope_differs": true,
-      "legacy_note": "遗留常数按「全样本条件组 vs 全体样本」拟合（文档各带 n 之和 = 全样本），而模型只对未标记且非 short_term 行乘该 OR —— 参照组不是适用集合的补集。★ 2026-09-13 §B1 样本外判定结论：**不按实测值修正**（改后终选 hit 更差）；这些常数是按终选目标校准的，不是 OR 的无偏估计。详见 ACKNOWLEDGED_DRIFT。"
+      "legacy_note": "遗留常数按「全样本条件组 vs 全体样本」拟合（文档各带 n 之和 = 全样本），而模型只对非 short_term 行乘该 OR —— 参照组不是适用集合的补集。★ 2026-09-13 §B1 样本外判定结论：**不按实测值修正**（改后终选 hit 更差）；这些常数是按终选目标校准的，不是 OR 的无偏估计。详见 ACKNOWLEDGED_DRIFT。"
     },
     "OR_BAND_TRAP": {
       "constant": 1.07,
-      "measured": 1.0907,
-      "n_cond": 128,
-      "hit_cond": 0.0703,
-      "n_ref": 1280,
-      "hit_ref": 0.0648,
-      "applies_to": "未标记且非 short_term 行",
-      "legacy_scope": "全体样本（遗留口径，含 marked 行）",
+      "measured": 0.9728,
+      "n_cond": 147,
+      "hit_cond": 0.068,
+      "n_ref": 1791,
+      "hit_ref": 0.0698,
+      "applies_to": "非 short_term 行",
+      "legacy_scope": "全体样本（遗留口径）",
       "legacy_scope_differs": true,
-      "legacy_note": "遗留常数按「全样本条件组 vs 全体样本」拟合（文档各带 n 之和 = 全样本），而模型只对未标记且非 short_term 行乘该 OR —— 参照组不是适用集合的补集。★ 2026-09-13 §B1 样本外判定结论：**不按实测值修正**（改后终选 hit 更差）；这些常数是按终选目标校准的，不是 OR 的无偏估计。详见 ACKNOWLEDGED_DRIFT。"
+      "legacy_note": "遗留常数按「全样本条件组 vs 全体样本」拟合（文档各带 n 之和 = 全样本），而模型只对非 short_term 行乘该 OR —— 参照组不是适用集合的补集。★ 2026-09-13 §B1 样本外判定结论：**不按实测值修正**（改后终选 hit 更差）；这些常数是按终选目标校准的，不是 OR 的无偏估计。详见 ACKNOWLEDGED_DRIFT。"
     },
     "OR_OUTFLOW": {
       "constant": 0.32,
-      "measured": 0.2769,
-      "n_cond": 92,
-      "hit_cond": 0.0109,
-      "n_ref": 917,
-      "hit_ref": 0.0382,
+      "measured": 1.0366,
+      "n_cond": 131,
+      "hit_cond": 0.0382,
+      "n_ref": 1112,
+      "hit_ref": 0.0369,
       "applies_to": "资金流可得行（fund_flow_main_pct 非空）",
       "legacy_scope": null,
       "legacy_scope_differs": false,
@@ -115,11 +104,11 @@
     },
     "OR_SMALL_SECTOR": {
       "constant": 0.58,
-      "measured": 0.65,
-      "n_cond": 635,
-      "hit_cond": 0.0504,
-      "n_ref": 1550,
-      "hit_ref": 0.0755,
+      "measured": 0.6541,
+      "n_cond": 662,
+      "hit_cond": 0.0483,
+      "n_ref": 1804,
+      "hit_ref": 0.0721,
       "applies_to": "全体样本",
       "legacy_scope": null,
       "legacy_scope_differs": false,
@@ -129,19 +118,19 @@
   "base_rates": {
     "comeback": {
       "constant": 0.028,
-      "measured": 0.0273
+      "measured": 0.0266
     },
     "core_dip": {
       "constant": 0.065,
-      "measured": 0.0654
+      "measured": 0.0688
     },
     "known_new_face": {
       "constant": 0.127,
-      "measured": 0.1259
+      "measured": 0.125
     },
     "momentum": {
       "constant": 0.1,
-      "measured": 0.099
+      "measured": 0.097
     },
     "new_face": {
       "constant": 0.097,
@@ -149,7 +138,7 @@
     },
     "pool_pick": {
       "constant": 0.021,
-      "measured": 0.0205
+      "measured": 0.0387
     },
     "pullback": {
       "constant": 0.056,
@@ -157,15 +146,15 @@
     },
     "rebound": {
       "constant": 0.179,
-      "measured": 0.1724
+      "measured": 0.1667
     },
     "short_term": {
       "constant": 0.062,
-      "measured": 0.0548
+      "measured": 0.0511
     },
     "_default": {
       "constant": 0.078,
-      "measured": 0.0682
+      "measured": 0.0657
     }
   }
 }

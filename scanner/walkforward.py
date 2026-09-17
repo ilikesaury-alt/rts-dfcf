@@ -23,7 +23,7 @@ import json
 import sys
 
 from scanner.config import NEXTDAY_HIT_THRESHOLD, WF_EMBARGO_DAYS
-from scanner.ranking import entry_dims, entry_tier, is_nextday_marked
+from scanner.ranking import entry_dims, entry_tier
 
 # 方向翻转判定的最小样本：因子行数与基线行数各自达标才比较 delta，
 # 否则视为噪声（跨窗口对比同哲学）。
@@ -203,7 +203,7 @@ def build_factors() -> list[tuple[str, object]]:
     return [
         ("rebound 类别", lambda e: e["category"] == "rebound"),
         ("甜蜜带+非超买", sweet_non_overbought),
-        ("🎯 完整画像", lambda e: is_nextday_marked(_entry(e))),
+        # （原「🎯 完整画像」因子行随 🎯 画像于 2026-09-16 删除）
         ("弱转强", lambda e: _dim(e, "st_weak_to_strong") or _dim(e, "v_st_weak")),
         ("超买", overbought),
         ("累计≥50 过热", overheated),

@@ -52,12 +52,14 @@ BASELINE: dict[str, tuple[int, str]] = {
 # 关键常量基线：(模块属性路径, 期望值)
 CONST_BASELINE: dict[str, object] = {
     "scanner.config.NEXTDAY_HIT_THRESHOLD": 7.0,
-    "scanner.config.HOLD_DAYS_BY_CATEGORY": {"comeback": 3, "core_dip": 3},
+    # 2026-09-16：comeback 键随回马枪桶删除（HOLD_DAYS_BY_CATEGORY 现只剩 core_dip）。
+    "scanner.config.HOLD_DAYS_BY_CATEGORY": {"core_dip": 3},
     "scanner.decision.GATE_INDEX_MIN_PCT": 0.0,
     "scanner.decision.GATE_CUM5_MIN_PCT": -3.0,
 }
 
 # 类别注册表基线：键 -> (label, display_priority, live_produced)
+# 2026-09-16：`comeback`（"CB", 6, True）随回马枪桶与 🎯 画像一并从注册表删除。
 CATEGORY_BASELINE: dict[str, tuple[str, int, bool]] = {
     "pool_pick": ("池选", 0, True),
     "rebound": ("RBD", 1, True),
@@ -65,7 +67,6 @@ CATEGORY_BASELINE: dict[str, tuple[str, int, bool]] = {
     "momentum": ("MOM", 3, True),
     "new_face": ("NEW", 4, True),
     "short_term": ("ST", 5, True),
-    "comeback": ("CB", 6, True),
     "core_dip": ("DIP", 99, True),
     "pullback": ("PB", 7, False),
 }

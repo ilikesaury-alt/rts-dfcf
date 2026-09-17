@@ -52,13 +52,14 @@ from scanner.nextday_attribution import DEFAULT_THRESHOLD, hit_stats  # noqa: E4
 from today_report import _build_report  # noqa: E402
 
 # 档位组标签（与 today_report/entry_tier 对应）
-GROUPS = ("tier0", "tier1", "tier2", "tier3", "comeback", "core_dip", "excluded")
+# 2026-09-16：`comeback`（回马枪）随该桶删除而移出本表——它同时依赖 today_report
+# 报告里的 `comeback` / `comeback_flow` 两个键（已删除），留着会直接 KeyError。
+GROUPS = ("tier0", "tier1", "tier2", "tier3", "core_dip", "excluded")
 GROUP_LABEL = {
-    "tier0": "档0 🎯 次日大涨画像",
+    "tier0": "档0 最高分档",
     "tier1": "档1 强信号",
     "tier2": "档2 普通",
     "tier3": "档3 警示劣后",
-    "comeback": "回马枪",
     "core_dip": "核心方向低吸",
     "excluded": "被移出",
 }
@@ -159,14 +160,13 @@ def _build_history(conn, dates):
             "tier1": [e["symbol"] for e in rep["tier1"]],
             "tier2": [e["symbol"] for e in rep["tier2"]],
             "tier3": [e["symbol"] for e in rep["tier3"]],
-            "comeback": [c["symbol"] for c in rep["comeback_flow"]],
             "core_dip": [c["symbol"] for c in rep["core_dip"]],
             "excluded": [e["symbol"] for e in rep["excluded"]],
         }
         for g, syms in groups.items():
             day[g] = [nd_map[s] for s in syms if s in nd_map]
 
-        # 案例样本（档0 命中 / 档3 大坑 / 回马枪最佳）
+        # 案例样本（档0 命中 / 档3 大坑）——原「回马枪最佳」随该桶删除
         day["cases"] = {
             "tier0": _case(
                 [
@@ -181,14 +181,6 @@ def _build_history(conn, dates):
                     {"name": e["name"], "symbol": e["symbol"], "score": e["score"], "next": nd_map.get(e["symbol"])}
                     for e in rep["tier3"]
                     if e["symbol"] in nd_map
-                ],
-                d,
-            ),
-            "comeback": _case(
-                [
-                    {"name": c["name"], "symbol": c["symbol"], "score": c["score"], "next": nd_map.get(c["symbol"])}
-                    for c in rep["comeback_flow"]
-                    if c["symbol"] in nd_map
                 ],
                 d,
             ),
@@ -299,7 +291,7 @@ def _render(hist, days_arg):
         )
 
     # 五、案例
-    all_cases = {g: [c for h in hist for c in h["cases"][g]] for g in ("tier0", "tier3", "comeback")}
+    all_cases = {g: [c for h in hist for c in h["cases"][g]] for g in ("tier0", "tier3")}
     out.append("\n五、案例")
     hits = sorted(all_cases["tier0"], key=lambda x: x["next"], reverse=True)[:5]
     if hits:
@@ -311,16 +303,11 @@ def _render(hist, days_arg):
         out.append("  档3 最大坑 top5（避雷价值）：")
         for c in pits:
             out.append(f"    {c['date']} {c['name']} {c['symbol'][-6:]} 评分{c['score']} → 次日 {c['next']:+.2f}%")
-    cb_best = sorted(all_cases["comeback"], key=lambda x: x["next"], reverse=True)[:3]
-    if cb_best:
-        out.append("  回马枪最佳 top3：")
-        for c in cb_best:
-            out.append(f"    {c['date']} {c['name']} {c['symbol'][-6:]} 评分{c['score']} → 次日 {c['next']:+.2f}%")
+    # （原「回马枪最佳 top3」片段随回马枪桶于 2026-09-16 删除。）
 
     # 六、结论（数据驱动）
     out.append("\n六、结论")
     t0_avg, t0_hit = s0[1], s0[2]
-    c_avg, c_hit = _stats(agg["comeback"])[1], _stats(agg["comeback"])[2]
     e_avg = _stats(agg["excluded"])[1]
     verdicts = []
     if s0[0] >= 30:
@@ -334,11 +321,6 @@ def _render(hist, days_arg):
                 f"档位排序未跑赢：档0 {t0_avg:+.2f}% ≤ 档3 {s3[1]:+.2f}%"
                 f"（hit {t0_hit:.1f}% vs {s3[2]:.1f}%），样本 {s0[0]}"
             )
-    if _stats(agg["comeback"])[0] >= 20:
-        verdicts.append(
-            f"回马枪（低吸语义）整体 {c_avg:+.2f}%/hit {c_hit:.1f}%——"
-            + ("在回调日更抗跌" if c_avg is not None and c_avg > (t0_avg or 0) else "与主表相当")
-        )
     if _stats(agg["excluded"])[0] >= 10 and e_avg is not None and e_avg < 0:
         verdicts.append(f"被移出票均次日 {e_avg:+.2f}%——硬过滤/反转移出排除有效（避开了下跌）")
     up_s, dn_s = _stats(buckets["普涨日(≥+1%)"]["all"]), _stats(buckets["普跌日(≤-1%)"]["all"])

@@ -350,10 +350,9 @@ def _entry_row_suffix(
     已于 2026-09-14 隐藏）。
 
     2026-09-14：原 `marked`（🎯 次日大涨画像）入参已删除 —— 🎯 的行尾渲染自
-    2026-09-04 停用（见下方注释），该参数遂成哑参（调用方一直在传、函数体不读）。
-    注意 🎯 的**判定**（ranking.is_nextday_marked）仍在生产链上（终选概率排序、
-    回测档位），停用的只是"行尾打个 🎯"这一展示动作。要恢复展示：放开下方注释
-    的 if，并把 `marked` 入参加回签名与本函数的两个调用点。
+    2026-09-04 停用，该参数遂成哑参（调用方一直在传、函数体不读）。
+    2026-09-16：🎯 画像本身（ranking.is_nextday_marked）已按用户决策整体删除，
+    故下方"要恢复展示"的路径已不存在——恢复需从 git 历史取回 ⌈判定 + 入参⌋ 两处。
     """
     c = fresh_candidate(entry)
     parts: list[str] = []
@@ -375,10 +374,8 @@ def _entry_row_suffix(
             extra = f"{extra} {icon}".strip() if extra else icon
     if extra:
         parts.append(f" {extra}")
-    # 🎯（次日大涨画像）行尾标记自 2026-09-04 起停用：命中率过低。判定逻辑仍保留，
-    # 但消费方是终选概率排序与回测档位，不是这里 —— 故本函数不再收 `marked` 入参。
-    # if marked:
-    #     parts.append(f" {ANSI['GREEN']}🎯{ANSI['RESET']}")
+    # 🎯（次日大涨画像）行尾标记：自 2026-09-04 停用（命中率过低），2026-09-16 连
+    # 判定函数（ranking.is_nextday_marked）一并删除——故此处不再留注释开关。
     if breakout_marked:
         parts.append(f" {ANSI['CYAN']}⚡{ANSI['RESET']}")
     # 盘中操作纪律标签（纯展示，不参与排序/评分）
@@ -520,14 +517,10 @@ class ScanView:
     """
 
     main_rows: list[MainRow]
-    comeback_rows: list[RecommendationRow]
-    nextday_mark: dict[tuple[str, str], bool]
     breakout_mark: dict[tuple[str, str], bool]
     flow_pct_map: dict[str, float]
     last_ranks: dict[str, int]
-    adj_picks: list[tuple[str, str, bool]] | None
     weak: bool
-    show_comeback: bool
     warnings: list[str]
     rule_result: RuleResult | None = None
     # 2026-09-14 按用户决策移除的字段（需复原见 git 历史）：
@@ -536,6 +529,10 @@ class ScanView:
     #   decision_lines                —— 决策层已整体删除。
     # 上述区域的数据（pool_pick_recs / core_dip_recs）仍参与终选参考区合池，
     # 只是不再单独成区渲染。
+    # 2026-09-16 按用户决策「🎯 标记与回马枪都删除」移除的字段（需复原见 git 历史）：
+    #   comeback_rows / show_comeback —— 回马枪展示区（其排序「comeback_sort_key」）；
+    #   nextday_mark                  —— 🎯 行尾标记 map（判定 is_nextday_marked）；
+    #   adj_picks                     —— 动态推荐序列（语义完全由 🎯/回马枪构成）。
     # 终选参考区文本行（2026-09-04）：v1+v2 合池 → 档0画像评级 ≤3 只 + 落选理由。
     final_pick_lines: list[str] | None = None
     # 走势美感标记（2026-09-09 上线 / 2026-09-15 分档）：{(symbol, category): ""|"美"|"美★"}，

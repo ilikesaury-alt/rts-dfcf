@@ -183,6 +183,7 @@ class TestMigrationCatalog:
             "m011_observation_schema",
             "m012_market_extra_cache_pk",
             "m013_hot_watch_tables",
+            "m014_ranking_snapshot_drop_marked",
         ]
 
     def test_every_migration_has_desc(self):

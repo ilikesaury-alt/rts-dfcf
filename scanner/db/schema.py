@@ -248,18 +248,18 @@ def init_db() -> sqlite3.Connection:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_lb_date ON leaderboard_log(date, source)")
-    # 综合排序档位快照（2026-08-26）：收盘定稿后把当日全部推荐的档位/🎯/劣后原因
+    # 综合排序档位快照（2026-08-26）：收盘定稿后把当日全部推荐的档位/劣后原因
     # 一次性落库。目的：ranking 判定代码日后演进时，历史归因不被「用最新代码重放
     # 历史」篡改——快照是当日规则下的权威存证，复盘消费端优先读它、无快照日期才
-    # 回退现算。主表行 rank_in_table = 当日综合排序最终展示序号；comeback/core_dip
+    # 回退现算。主表行 rank_in_table = 当日综合排序最终展示序号；core_dip
     # 独立区行该列为 NULL。
+    # 2026-09-16：`marked`（🎯 标记存证）随 🎯 画像删除，存量库由 m014 迁移掉列。
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ranking_snapshot (
             date TEXT NOT NULL,
             symbol TEXT NOT NULL,
             category TEXT NOT NULL,
             tier INTEGER NOT NULL,
-            marked INTEGER NOT NULL,
             reasons_json TEXT,
             rank_in_table INTEGER,
             created TEXT NOT NULL,
