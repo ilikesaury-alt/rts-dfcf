@@ -539,6 +539,15 @@ def render_terminal(view: ScanView) -> None:
 
     _render_hot_watch_region(view.hot_rows)
 
+    # 综合判断摘要（build_scan_view 计算，纯展示不参与评分/排序）。
+    # 首行挂 ◆ 标签，明细行固定 4 空格缩进——**不用**去对齐 ◆/— 这类全角字符的列宽，
+    # 终端对全角宽度的判定因字体而异，硬对齐在某些终端会歪。
+    if view.summary:
+        print()
+        for _i, _line in enumerate(view.summary):
+            _head = f"  {ANSI['BOLD']}◆ 综合判断{ANSI['RESET']} — " if _i == 0 else "    "
+            print(f"{_head}{_line}")
+
 
 def display_priority(
     conn=None,

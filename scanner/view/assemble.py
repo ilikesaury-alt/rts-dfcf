@@ -12,12 +12,14 @@ from scanner.config import (
     TREND_MARK_ENABLED,
 )
 from scanner.config_scoring import MARKET_WEAK_THRESHOLD
+from scanner.config_sources import FUND_FLOW_MAIN_PCT_STRONG
 from scanner.core_themes import core_stock_symbols
 from scanner.database import (
     get_cached_klines,
     get_fund_flow_pct_map,
     get_today_recommendations,
 )
+from scanner.display_gates import code_of
 from scanner.models import V2_CATEGORY, Candidate, RecommendationRow
 from scanner.nextday_rule import scan_rule
 
@@ -39,7 +41,7 @@ from scanner.ranking import (
 
 # 走势美感标记判定单源在 scanner.trend_beauty（日线定准入、分时定级别）——经下方
 # `from scanner.view.model import *` 带入 _beauty_mark_for，本模块不重复持有判定逻辑。
-from scanner.utils import EXTERNAL_FAILURES
+from scanner.utils import EXTERNAL_FAILURES, to_float
 from scanner.view.model import *  # noqa: F401,F403
 
 # ANSI 探测（_is_console / _supports_ansi）/ ANSI / CAT_COLOR / _ANSI_ESCAPE 的单源在
@@ -87,6 +89,145 @@ def _market_suggestion_text(weak: bool | None, market_idx_pct: float | None) -> 
     if weak is False:
         return "强势·进攻优先：科技/AI/半导体/新能源"
     return "市况未知·均衡配置"
+
+
+# ── 综合判断摘要的观察线（纯展示阈值，不参与评分/排序/落库）──────────────────
+# 这一组**不是打分权重**：新摘要不产生分数、不排名，只用它们把三区的证据分布数出来
+# （设计依据见 _build_summary docstring）。
+# 4.0 / 2.0 沿用旧摘要的档位值（未做样本外验证，仅作「是否追涨 / 是否回调到位」的分界，
+# 故标注为观察线而非常数门）；其余门槛全部引用既有单源，不复制字面量。
+SUMMARY_CHASE_PCT = 4.0  # 今日涨幅 ≥ 此值 → 计入「追涨」（硬过滤线是 DISPLAY_MAX_TODAY_PCT=8.0）
+SUMMARY_DIP_PCT = 2.0  # 回捞区「回调到位」：今日涨幅 ≤ 此值
+SUMMARY_VOL_MIN = 1.0  # 回捞区「有量」下限：缩量(vr<0.8) hit 4.3% 显著低于平量 8.1%（2026-09-16 实测）
+SUMMARY_RANK_JUMP = 500  # 飙升区「热度跃升」下限（沿用 HOT 打分的中档门槛）
+SUMMARY_RISK_DIVERGE = 2  # 风险剔除 ≥ 此数且强信号存在 → 判「口径分歧」
+
+
+def _build_summary(
+    *,
+    weak: bool | None,
+    market_idx_pct: float | None,
+    main_rows: list,
+    hist_rows: list | None,
+    hot_rows: list | None,
+    beauty_mark: dict | None,
+    flow_pct_map: dict[str, float],
+    flow_filtered: int,
+    chase_filtered: int,
+    tactic_filtered: int,
+) -> list[str]:
+    """综合判断摘要：分区陈述三区证据分布 + 口径一致性（纯展示，不给买卖结论）。
+
+    2026-09-17 重写。旧实现是「三区各自加权 → 合池按总分降序取前 4 → 推荐X、Y」，三个硬伤：
+      ① **跨区相加没有口径**：主线是 next_day（次日≥7%）靶点、回捞是「回调到位」观察域、
+         沪深飙升实测是**下行风险选择器**（在榜 vs 未在榜的下行 lift 是上行 lift 的
+         1.7 倍、半衰期 3~5 个交易日）——三者量纲不同，加权相加等于交出一份没有口径的排名；
+      ② **证据与体验混算**：美感标记实测与 hit **无正向区分度**（只压尾部回撤，见
+         trend_beauty docstring），旧实现给它 +2（权重等同于「主力净占比 ≥3%」）；
+      ③ **输出「推荐」越界**：本项目已证伪「按 score 排序可盈利」（AUC 0.469 < 0.5），
+         摘要应是**体检报告**而不是选股名单——名单在下面三张表里本来就都有。
+
+    新规则三条：
+      · **不跨区排名**：三区只各自计数、并列陈述，永不合并排序（口径不可比是事实，不是缺陷）；
+      · **证据分级、不设权重**：强信号 = 「主力净占比 ≥ 强流入分界」∧「今日未追涨」——
+        两个各有依据的硬条件取**交**，而不是若干弱条件累加后比大小；追涨是否决项，
+        不做「扣分抵扣」；美感**不进**强信号，只作重点观察的第三重过滤（它压的是回撤）；
+      · **风险剔除显性化**：被三道风险门（资金流出 / 追涨 / 减仓标签）剔掉的只数直接写出，
+        强信号与风险证据并存时判「口径分歧」，而不是挑一只最上面的当结论；
+      · **弱市不点名**：weak=True 时结论行只给「仅观察」，明细里也不列个股名字
+        （结论说观望、下面却给名字，属于自相矛盾）。
+
+    参数全为关键字：旧实现的三个哑参里 weak 与 flow_filtered 已真正接入判定，
+    final_pick_lines **删除**（终选区有自己的区块，摘要再复述一遍只会让「摘要 = 名单」
+    的印象回来）。
+
+    返回 [结论行, 明细行...]（≤4 行）。数据完整度行**只在确有缺失时**输出——
+    每轮复读「一切正常」会把真正异常的那几轮淹没。
+    """
+
+    lines: list[str] = []
+    # None = 本轮该区未产出（未启用或失败）；[] = 跑了但无结果。二者要区分，
+    # 故先在 `or []` 之前留档。
+    hot_given = hot_rows is not None
+    hist_given = hist_rows is not None
+
+    # ── 一、主线（next_day 靶点）：证据分级，不累加分数 ──
+    main_n = len(main_rows)
+    flow_hit = 0  # 主力净占比 ≥ 强流入分界
+    strong: list = []  # 强信号：强流入 ∧ 未追涨
+    focus: list[str] = []  # 重点观察：强信号 ∧ 日线美感（三重交集，天然稀缺）
+    flow_miss = 0  # 无资金流快照的行数（缺失 ≠ 中性，必须单独计数）
+    for r in main_rows:
+        sym = r.entry["symbol"]
+        ff = to_float(flow_pct_map.get(sym), default=None)
+        if ff is None:
+            flow_miss += 1
+            continue
+        if ff < FUND_FLOW_MAIN_PCT_STRONG:
+            continue
+        flow_hit += 1
+        if r.pct >= SUMMARY_CHASE_PCT:  # 追涨一票否决
+            continue
+        strong.append(r)
+        if (beauty_mark or {}).get((sym, r.entry["category"]), ""):
+            focus.append(f"{r.entry['name']}({code_of(sym)})")
+
+    # ── 二、v1 回捞：回调到位 = 今日没涨 ∧ 有量（缩量不算到位，见 SUMMARY_VOL_MIN）──
+    hist_rows = hist_rows or []
+    hist_ready = sum(1 for h in hist_rows if h.percent <= SUMMARY_DIP_PCT and h.vol_ratio >= SUMMARY_VOL_MIN)
+
+    # ── 三、沪深飙升：只报热度跃升计数；口径与主线不同，不参与任何合并排序 ──
+    hot_rows = hot_rows or []
+    hot_jump = sum(1 for h in hot_rows if h.rank_change >= SUMMARY_RANK_JUMP)
+
+    # ── 四、口径判定（市况优先：弱市不给进攻结论）──
+    risk_n = flow_filtered + chase_filtered + tactic_filtered
+    regime = "弱市" if weak is True else ("强市" if weak is False else "市况未知")
+    if weak is True:
+        verdict, detail = "仅观察", f"强信号 {len(strong)} ↔ 风险剔除 {risk_n}"
+    elif not strong:
+        verdict, detail = "无强信号·观望", f"主线 {main_n} 只无「强流入 ∧ 未追涨」"
+    elif risk_n >= SUMMARY_RISK_DIVERGE:
+        verdict, detail = "口径分歧", f"强信号 {len(strong)} ↔ 风险剔除 {risk_n}"
+    else:
+        verdict, detail = "口径一致", f"强信号 {len(strong)} · 风险剔除 {risk_n}"
+    lines.append(f"{regime} · {verdict}（{detail}）")
+
+    # ── 明细一：三区计数并列（不跨区排序，故并列陈述）──
+    lines.append(
+        f"主线 {main_n} 只（强流入 {flow_hit} · 强信号 {len(strong)}）· "
+        f"回捞 {len(hist_rows)} 只（到位 {hist_ready}）· "
+        f"飙升 {len(hot_rows)} 只（跃升 {hot_jump}·非 next_day 口径）"
+    )
+
+    # ── 明细二：重点观察（三重交集；为空时说明缺哪一条，而不是退而求其次给一只）──
+    # 弱市下**不点名**：结论行已经判「仅观察」，再列一只个股名字自相矛盾（强信号只数
+    # 已在结论行给出，信息不丢）。
+    if weak is not True:
+        if focus:
+            more = f" 等 {len(focus)} 只" if len(focus) > 1 else ""
+            lines.append(f"重点观察 {focus[0]}{more}（强流入 ∧ 未追涨 ∧ 日线美感）")
+        elif strong:
+            lines.append(f"无重点观察：{len(strong)} 只强信号均无日线美感标记（美感只压回撤、非 hit 证据）")
+
+    # ── 明细三：风险剔除明细（只在判为分歧时展开，平时只留总数）──
+    if verdict == "口径分歧":
+        lines.append(f"风险剔除 资金流出 {flow_filtered} · 追涨 {chase_filtered} · 减仓标签 {tactic_filtered}")
+
+    # ── 明细四：数据完整度（只在确有缺失时输出）──
+    gaps: list[str] = []
+    if flow_miss:
+        gaps.append(f"资金流快照缺 {flow_miss}/{main_n} 行（缺失不参与强信号判定）")
+    if market_idx_pct is None:
+        gaps.append("指数缺失·市况走历史口径")
+    if not hot_given:
+        gaps.append("飙升区未产出")
+    if not hist_given:
+        gaps.append("回捞区未产出")
+    if gaps:
+        lines.append("数据 " + " · ".join(gaps))
+
+    return lines
 
 
 def _regime_weak(conn, lookback=10):
@@ -324,6 +465,10 @@ def build_scan_view(
         "pool_pick": "池选",
     }
     main_rows: list[MainRow] = []
+    # 风险剔除计数（纯展示统计，不改变任何过滤行为）：供 _build_summary 的「口径分歧」
+    # 判定与数据完整度行使用——被挡掉的票数本身就是当日风险密度的证据。
+    chase_filtered = 0
+    tactic_filtered = 0
     try:
         _scored_rows = []
         # 减仓类纪律标签（卖出信号）：有这些标签的票从主表过滤掉
@@ -332,12 +477,14 @@ def build_scan_view(
             # 检查减仓类纪律标签
             _fc = fresh_candidate(e)
             if _fc and _fc.tactic_tags and any(t in TACTICS_SELL_TAGS for t in _fc.tactic_tags):
+                tactic_filtered += 1
                 continue  # 有减仓类标签，跳过
             # 涨幅键与展示列同源（entry_display_quote）：live 0.00% 合法不被 `or` 吞。
             chg = entry_display_quote(e)[0]
             # 不追涨过滤（2026-09-04 用户决策）：今日实时涨幅超过阈值的票不进主表
             # （纯显示层，不改评分/落库；回马枪/核心低吸区不受影响）。
             if chg > DISPLAY_MAX_TODAY_PCT:
+                chase_filtered += 1
                 continue
             _fresh_c = _fc
             accum_val = None
@@ -455,6 +602,20 @@ def build_scan_view(
         except EXTERNAL_FAILURES as _fpx:
             warnings.append(f"终选区构建失败: {type(_fpx).__name__}: {_fpx}")
 
+    # 综合判断摘要（纯展示，不参与评分/排序/落库）
+    _summary = _build_summary(
+        weak=_weak,
+        market_idx_pct=market_idx_pct,
+        main_rows=main_rows,
+        hist_rows=hist_rows,
+        hot_rows=hot_rows,
+        beauty_mark=beauty_mark,
+        flow_pct_map=flow_pct_map,
+        flow_filtered=flow_filtered,
+        chase_filtered=chase_filtered,
+        tactic_filtered=tactic_filtered,
+    )
+
     return ScanView(
         main_rows=main_rows,
         breakout_mark=breakout_mark,
@@ -469,4 +630,5 @@ def build_scan_view(
         hist_rows=hist_rows,
         flow_filtered=flow_filtered,
         market_idx_pct=market_idx_pct,
+        summary=_summary,
     )

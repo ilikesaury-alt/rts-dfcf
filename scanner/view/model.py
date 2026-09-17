@@ -558,3 +558,8 @@ class ScanView:
     flow_filtered: int = 0
     # 大盘指数涨幅（创业板指 pct），供 sector suggestion 展示；None = 取数失败。
     market_idx_pct: float | None = None
+    # 综合判断摘要（build_scan_view 计算，render_terminal 打印）：
+    # [结论行, 明细行...]，≤4 行；None / 空 = 无数据不输出。
+    # 2026-09-17 由单行 str（「推荐X、Y」）改为多行 list —— 新摘要是分区体检报告，
+    # 一行写不下且强行合并会把「三区口径不可比」这个事实又抹掉。
+    summary: list[str] | None = None
