@@ -979,7 +979,12 @@ def test_priority_row_breakout_mark_single_symbol(capsys):
 def test_display_priority_relist_hit_renders_bolt(capsys):
     """重上榜变体命中也走同一 ⚡ 标记（display_priority 接线锁定，样本积累路径）。
 
-    构造：short_term 非首推推荐 + 前 ≥21 根缩量回调 K 线（肯特股份形态）。"""
+    构造：short_term 非首推推荐 + 前 ≥21 根缩量回调 K 线（肯特股份形态）。
+    2026-09-17：表尾那行合并图例（「⚡ 蓄势突破观察…」）已随图例块整体下线，故只守标记本身。
+    本用例是**唯一**驱动 display_priority 真实重上榜判定链路的一条 ——
+    test_priority_row_breakout_mark_single_symbol 直接传 breakout_mark=True，
+    只覆盖渲染，不覆盖「行情+K线 → 判定出 ⚡」这一段。
+    """
     conn = _rec_db()
     conn.execute("""CREATE TABLE daily_kline (
         symbol TEXT NOT NULL, date TEXT NOT NULL, open REAL,
@@ -1029,8 +1034,7 @@ def test_display_priority_relist_hit_renders_bolt(capsys):
     conn.commit()
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
-    assert "⚡" in out and "⚡R" not in out, "命中时合并图例应打印单个 ⚡（两变体不区分渲染）"
-    assert "蓄势突破观察" in out, "命中时表尾应打印合并图例"
+    assert "⚡" in out and "⚡R" not in out, "命中时应打印单个 ⚡（两变体不区分渲染）"
 
 
 # ── 表头 / 数据行列边界一致（2026-08-29）──
@@ -1182,27 +1186,6 @@ def test_beauty_mark_for_verdicts():
     bare = {"symbol": "SZ300001", "category": "pool_pick"}  # 无候选无分时维度 = 缺失
     assert _beauty_mark_for(bare, bars) == "美"  # fail-open 只降档
     assert _beauty_mark_for(bare, None) == ""  # 日线也缺 → 不标
-
-
-def test_beauty_tier_legend_printed_on_terminal(capsys):
-    """★ 必须在终端就地解释为「回撤更小」——否则最自然的误读是「更易大涨」。
-
-    飞书卡片（2026-09-16）按用户决策已移除全部图例/脚注说明，只保留行内标记
-    （🟢🔴/美），故本用例只守终端侧。仅在确有标记时打印（无标记不留空白行）。
-    """
-    conn = _rec_db()
-    _insert_rec_cat(conn, "SZ300001", "股1", "momentum", 70)
-    view = disp_mod.build_scan_view(conn, today_pool={})
-    assert view is not None
-
-    disp_mod.render_terminal(view)
-    assert "回撤" not in capsys.readouterr().out  # 无标记 → 不打图例
-
-    view.beauty_mark = {("SZ300001", "momentum"): "美★"}
-    disp_mod.render_terminal(view)
-    terminal_out = capsys.readouterr().out
-    assert "美★" in terminal_out, f"标记缺失：{terminal_out[:200]}"
-    assert "回撤" in terminal_out, f"图例未解释 ★ 的语义（应为「回撤更小」）：{terminal_out[:200]}"
 
 
 def test_hist_inline_marks_on_both_surfaces(capsys):
