@@ -126,6 +126,9 @@ class HistCandidate:
     rec_score: int
     cum_pct: float  # 自 v1 日收盘以来的累计涨跌幅（%）
     market_cap: float
+    # ── 5日累计（2026-09-18）──
+    # 从 daily_kline 缓存计算，排除今日 bar（与主线「5日累计」列同口径）
+    accum_5d: float | None = None
     # ── 展示标记（2026-09-16）──
     # 与主线**同一判定源**（signals.fund_flow_signal / trend_beauty.beauty_mark），
     # 本区只负责取值，成形（ANSI 三角形 / 卡片 emoji）留给各出口。
@@ -437,6 +440,14 @@ def evaluate(
                     cum_pct = (current - rc) / rc * 100
                 break
 
+        # 5日累计（2026-09-18）：从 daily_kline 缓存计算，排除今日 bar
+        # （与主线「5日累计」列同口径）。无 K 线数据时显示 —（fail-open）。
+        accum_5d = None
+        if len(hist) >= 6:
+            closes = [k.get("close") for k in hist if k.get("close")]
+            if len(closes) >= 6 and closes[-6] > 0:
+                accum_5d = round((closes[-1] - closes[-6]) / closes[-6] * 100.0, 2)
+
         # 走势美感（展示标记，不改门禁/排序/评分）：走 display_gates.beauty_marks_daily，
         # 与飙升区**同一次判定、同一准入条件**（日线 6 硬门）。本区只取标记、不用其
         # blocked 半（本区不设美感门），且结构上只会出现「美」——
@@ -459,6 +470,7 @@ def evaluate(
             rec_score=int(m["rec_score"]),
             cum_pct=round(cum_pct, 2),
             market_cap=_f(q.get("market_capital")),
+            accum_5d=accum_5d,
             ff_pct=None if flow_pct is None else _f(flow_pct),
             beauty=beauty,
         )

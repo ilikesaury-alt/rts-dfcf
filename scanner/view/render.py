@@ -293,8 +293,9 @@ def _render_hot_watch_region(rows) -> None:
                     str(_hi),
                     c.code,
                     c.name,
-                    f"{c.current:.2f}" if c.current else "—",
                     pct_colored(c.percent),
+                    f"{c.accum_5d:+.2f}%" if c.accum_5d is not None else "—",
+                    f"{c.current:.2f}" if c.current else "—",
                     f"+{c.rank_change}",
                     _fmt_hot_volume_hand(c.volume),
                     _fmt_hot_amount(c.amount),
@@ -367,9 +368,9 @@ def _render_hist_watch_region(rows) -> None:
                     str(_hi),
                     c.code,
                     c.name[:9],
-                    f"{c.current:.2f}" if c.current else "—",
                     pct_colored(c.percent),
-                    pct_colored(c.cum_pct) if c.cum_pct else "—",
+                    f"{c.accum_5d:+.2f}%" if c.accum_5d is not None else "—",
+                    f"{c.current:.2f}" if c.current else "—",
                     f"{c.vol_ratio:.2f}" if c.vol_ratio > 0 else "—",
                     f"{c.rec_days_ago}日",
                     f"{c.score:.0f}",
@@ -515,10 +516,10 @@ def render_terminal(view: ScanView) -> None:
     # ── ⚡ 蓄势突破观察（动态推荐区已按需求移除，2026-09-03；其数据字段 adj_picks 亦
     # 于 2026-09-16 随 🎯/回马枪删除——该序列的语义完全由这两个特性构成）──
     # if any(view.breakout_mark.values()):
-        # print(
-        #     f"  {ANSI['CYAN']}⚡ 蓄势突破观察{ANSI['RESET']}（缩量回调蓄势位·含新面孔/重上榜两变体"
-        #     f"·样本收集中·非排序因子）"
-        # )
+    # print(
+    #     f"  {ANSI['CYAN']}⚡ 蓄势突破观察{ANSI['RESET']}（缩量回调蓄势位·含新面孔/重上榜两变体"
+    #     f"·样本收集中·非排序因子）"
+    # )
 
     # 2026-09-14 按用户决策隐藏的两个展示区（需复原见 git 历史）：
     #   ◆ v2 池选（2026-09-02 上线，双跑同屏）—— 池→排雷→低吸匹配。

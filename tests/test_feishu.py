@@ -152,6 +152,7 @@ def _fake_hist(**over):
         "rec_score": 72,
         "cum_pct": 3.5,
         "market_cap": 8.0e11,
+        "accum_5d": -2.5,
         "score": 66.4,
         "reasons": ["回调到位", "量能未缩"],
     }
@@ -379,8 +380,8 @@ def test_hist_row_width_is_uniform():
     assert widths == {expected}, f"行宽参差：{sorted(widths)}（应恒为 {expected}）"
 
     # 数值列宽度不足会走截断 —— 比错列更糟（显示错值），故单独钉住上界不被截断
-    extreme = _fmt_hist_row_feishu(_fake_hist(current=9999.99, cum_pct=-999.99, vol_ratio=99.99), 1)
-    assert "9999.99" in extreme and "-999.99%" in extreme and "99.99" in extreme
+    extreme = _fmt_hist_row_feishu(_fake_hist(current=9999.99, accum_5d=-99.9, vol_ratio=99.99), 1)
+    assert "9999.99" in extreme and "-99.9%" in extreme and "99.99" in extreme
 
 
 def test_hist_row_columns_match_terminal():
@@ -411,7 +412,7 @@ def test_hist_tail_marks_stay_outside_the_fixed_width_block():
     tail = _marks_tail_card(c.ff_pct, c.beauty)
 
     assert tail == " 🟢 美"
-    assert _vis_len(base) == 79, "定宽块宽度不应受行尾标记影响"
+    assert _vis_len(base) == 77, "定宽块宽度不应受行尾标记影响"
     assert "🟢" not in base, "标记必须在块外"
 
     assert _marks_tail_card(None, "") == ""  # 无数据 → 不标

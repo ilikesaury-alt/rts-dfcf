@@ -311,8 +311,9 @@ _COLS_HOT_FEISHU: tuple[tuple[int, str], ...] = (
     (2, "r"),  # #        展示条数 ≤ 99
     (8, "l"),  # 代码      6 位数字（终端留 12 是为旧 SZ/SH 前缀展示，卡片不需要）
     (8, "l"),  # 名称      4 个汉字；超出先 _trunc（自由文本，不保证上界）
-    (7, "r"),  # 现价      "9999.99"
     (7, "r"),  # 涨幅      "+10.0%"（涨停已剔除，6 列足够）
+    (7, "r"),  # 5日累计   "+99.99%"
+    (7, "r"),  # 现价      "9999.99"
     (5, "r"),  # 排名上升  "+" + 榜内跃升位数（榜长 ≤ 4 位）
     (11, "r"),  # 成交量   "9999.99万手"（万手分支上界）
     (9, "r"),  # 成交额    "9999.99亿"
@@ -332,12 +333,14 @@ def _fmt_hot_row_feishu(c, idx: int) -> str:
     名称是唯一自由文本列，先 _trunc 再补位——否则 5 字名（10 列）会撑破 8 列的列宽。
     """
     pct_str = f"+{c.percent:.1f}%" if c.percent >= 0 else f"{c.percent:.1f}%"
+    accum_str = f"{c.accum_5d:+.1f}%" if c.accum_5d is not None else "—"
     cells = (
         str(idx),
         c.code,
         _trunc(c.name, _COLS_HOT_FEISHU[2][0]),
-        f"{c.current:.2f}" if c.current else "—",
         pct_str,
+        accum_str,
+        f"{c.current:.2f}" if c.current else "—",
         f"+{c.rank_change}",
         _fmt_hot_volume_hand(c.volume),
         _fmt_hot_amount(c.amount),
@@ -354,7 +357,7 @@ def _fmt_hot_row_feishu(c, idx: int) -> str:
 # 飞书回捞行 = 终端 COLS_HIST 的**压缩版**列规格：与 _COLS_HOT_FEISHU 同一套规则
 # （列序/列含义与终端一一对应，只在自由文本/低熵列上收窄；守卫见
 # tests/test_feishu.py::test_hist_row_columns_match_terminal / test_hist_row_width_is_uniform）。
-#   # 3→2、代码 12→8、名称 10→8、现价 8→7、今日 8→7、自v1累计 10→9、
+#   # 3→2、代码 12→8、名称 10→8、涨幅 8→7、5日累计 8→7、现价 8→7、
 #   量比 6→5、距v1 6→4、评分 5→4；**「上次v1桶」14 不收窄** —— 它要放
 #   `known_new_face` / `early_momentum`（14 个 ASCII 列）这类真实桶名，
 #   终端同为 14（2026-09-16 由 12 调到 14：12 会让这类桶名在同一区内错列）。
@@ -362,9 +365,9 @@ _COLS_HIST_FEISHU: tuple[tuple[int, str], ...] = (
     (2, "r"),  # #         展示条数 ≤ 99
     (8, "l"),  # 代码       6 位数字
     (8, "l"),  # 名称       4 个汉字；超出先 _trunc（自由文本，不保证上界）
+    (7, "r"),  # 涨幅       "+10.0%"（涨停已由量比/回调门过滤，6 列足够）
+    (7, "r"),  # 5日累计    "+99.99%"
     (7, "r"),  # 现价       "9999.99"
-    (7, "r"),  # 今日       "+10.0%"（涨停已由量比/回调门过滤，6 列足够）
-    (9, "r"),  # 自v1累计   "+999.99%"（v1 票回调后累计，量级远小于翻倍）
     (5, "r"),  # 量比       "99.99"
     (4, "r"),  # 距v1       "9日"
     (4, "r"),  # 评分       "100"
@@ -380,20 +383,22 @@ def _fmt_hist_row_feishu(c, idx: int) -> str:
     当日涨幅，终端同样不重复显示）。
     """
     pct_str = f"+{c.percent:.2f}%" if c.percent >= 0 else f"{c.percent:.2f}%"
-    cum_str = (f"{c.cum_pct:+.2f}%" if c.cum_pct >= 0 else f"{c.cum_pct:.2f}%") if c.cum_pct else "—"
+    accum_str = f"{c.accum_5d:+.1f}%" if c.accum_5d is not None else "—"
     cells = (
         str(idx),
         c.code,
         _trunc(c.name, _COLS_HIST_FEISHU[2][0]),
-        f"{c.current:.2f}" if c.current else "—",
         pct_str,
-        cum_str,
+        accum_str,
+        f"{c.current:.2f}" if c.current else "—",
         f"{c.vol_ratio:.2f}" if c.vol_ratio > 0 else "—",
         f"{c.rec_days_ago}日",
         f"{c.score:.0f}",
         c.rec_category,
     )
-    body = " ".join(_pad(str(cell), width, align) for cell, (width, align) in zip(cells, _COLS_HIST_FEISHU, strict=True))
+    body = " ".join(
+        _pad(str(cell), width, align) for cell, (width, align) in zip(cells, _COLS_HIST_FEISHU, strict=True)
+    )
     return f"`{body}`"
 
 

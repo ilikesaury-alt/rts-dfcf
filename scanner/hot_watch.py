@@ -117,6 +117,9 @@ class HotCandidate:
     score: float = 0.0
     streak: int = 1
     reasons: list[str] = field(default_factory=list)
+    # ── 5日累计（2026-09-18）──
+    # 从 daily_kline 缓存计算，排除今日 bar（与主线「5日累计」列同口径）
+    accum_5d: float | None = None
     # ── 展示标记（2026-09-16）──
     # 与 v1 池选 / v1 回捞**同一判定源**，本区只负责取值，成形（终端 ANSI 三角 /
     # 卡片 emoji）留给各出口。
@@ -399,6 +402,10 @@ def build_candidates(
     if conn is not None:
         flow_pct_map = get_fund_flow_pct_map(conn, symbols)
 
+    # 「5日累计」需排除今日 bar（与主线「5日累计」列同口径），故取一次今日日期。
+    # 与 scan_with_raw 同源（均为 now_beijing 的当日）；放在循环外，避免逐票重复求值。
+    today = now_beijing().date().isoformat()
+
     for idx, it in enumerate(board_items, 1):
         symbol = str(it.get("symbol") or "")
         q = quotes.get(symbol)
@@ -432,6 +439,15 @@ def build_candidates(
         # 但行尾带 ▼ —— 门是策略，标记是告知，两者刻意分开。
         ff_pct = flow_pct_map.get(symbol)
         c.ff_pct = ff_pct
+
+        # 5日累计（2026-09-18）：从 daily_kline 缓存计算，排除今日 bar
+        # （与主线「5日累计」列同口径）。无 K 线数据时显示 —（fail-open）。
+        kl = klines_map.get(symbol)
+        if kl and len(kl) >= 6:
+            hist_closes = [k.get("close") for k in kl if k.get("date") != today and k.get("close")]
+            if len(hist_closes) >= 6 and hist_closes[-6] > 0:
+                c.accum_5d = round((hist_closes[-1] - hist_closes[-6]) / hist_closes[-6] * 100.0, 2)
+
         reason = hard_exclude(c, ff_pct if HOT_FUND_FLOW_FILTER_ENABLED else None)
         if reason:
             rejected.append(c)
@@ -570,6 +586,7 @@ def run_hot_watch(
     if HOT_FUND_FLOW_FILTER_ENABLED and conn is not None:
         try:
             from scanner.market_extra import collect_market_extra
+
             collect_market_extra(conn, symbols, include_zt=False, include_flow=True)
         except EXTERNAL_FAILURES as e:
             logger.warning("hot_watch 资金流预收集失败（过滤跳过）: %s", e)
@@ -701,15 +718,39 @@ _DEMO_CASES = [
         ),
     ),
     # —— 应被排除 ——
-    ("非创业板", _demo_case("SZ002443", "002443", "金洲管道", "SZ", 11.81, 5.73, 11.17, 6.1e9, tr=8.6, vol=4.491e7, amount=5.15e8, rc=493)),
-    ("非创业板", _demo_case("SH605006", "605006", "山东玻纤", "SH", 18.40, 6.24, 17.32, 8.9e9, tr=7.8, vol=2.9e7, amount=5.3e8, rc=6445)),
+    (
+        "非创业板",
+        _demo_case(
+            "SZ002443",
+            "002443",
+            "金洲管道",
+            "SZ",
+            11.81,
+            5.73,
+            11.17,
+            6.1e9,
+            tr=8.6,
+            vol=4.491e7,
+            amount=5.15e8,
+            rc=493,
+        ),
+    ),
+    (
+        "非创业板",
+        _demo_case(
+            "SH605006", "605006", "山东玻纤", "SH", 18.40, 6.24, 17.32, 8.9e9, tr=7.8, vol=2.9e7, amount=5.3e8, rc=6445
+        ),
+    ),
     ("ST", _demo_case("SZ002514", "002514", "*ST宝馨", "SZ", 2.65, 9.96, 2.41, 2.4e9, rc=4463)),
     ("非创业板", _demo_case("SH688260", "688260", "昀冢科技", "SH", 106.58, 15.1, 92.60, 1.3e10, rc=3713)),
     ("非创业板", _demo_case("01810", "01810", "小米集团-W", "HK", 26.44, 2.01, 25.92, 6.6e11, rc=6656)),
     ("非创业板", _demo_case("SZ159516", "159516", "半导体ETF", "SZ", 0.652, 2.10, 0.639, 1.1e10, rc=4050)),
-    ("非创业板", _demo_case(
+    (
+        "非创业板",
+        _demo_case(
             "SH600000", "600000", "浦发银行", "SH", 9.80, 0.50, 9.75, 2.9e11, status=0, vol=0, amount=0, tr=0.0, rc=900
-        )),
+        ),
+    ),
     ("非创业板", _demo_case("SH601899", "601899", "紫金矿业", "SH", 32.23, -5.51, 34.11, 8.5e11, rc=11001)),
     ("涨幅过高", _demo_case("SZ301176", "301176", "逸豪新材", "SZ", 61.06, 7.50, 56.80, 1.03e10, rc=4432)),
     ("非创业板", _demo_case("SZ002201", "002201", "九鼎新材", "SZ", 11.09, 10.02, 10.08, 5.8e9, rc=4705)),
