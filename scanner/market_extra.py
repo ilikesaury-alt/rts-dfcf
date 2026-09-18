@@ -1,12 +1,17 @@
-"""行情增强数据源（涨停池 + 个股资金流）。
+"""行情增强数据源（涨停池 + 全市场准实时快照：资金流 + 报价）。
 
 数据源：
 - 涨停池   主源同花顺官方 API（ths_api.py，2026-08-23 接入）；AKShare
            `stock_zt_pool_em(date)` 降为兜底。全市场 1 次请求/轮
-- 资金流   自实现直连东财 clist API（push2delay.eastmoney.com）全市场分页拉取，
+- 全市场快照 自实现直连东财 clist API（push2delay.eastmoney.com）分页拉取，
            主因 akshare `stock_individual_fund_flow_rank` 硬编码 host
            push2.eastmoney.com 在本机网络直连/代理均不可达；push2delay 提供相同
-           API 且可达（数据可能延迟约15分钟）。host 可用 RTS_FUND_FLOW_HOST 覆盖。
+           API 且可达。host 可用 RTS_FUND_FLOW_HOST 覆盖。
+           ⚠ 此处原记「数据可能延迟约15分钟」，2026-09-18 实测证伪：响应内 f124
+           更新戳距本地时间仅 1~5s，且与雪球实时行情逐票一致（push2delay 只是域名，
+           返回的是实时快照）。故本表可当**准实时全市场快照**使用。
+           同一响应行除资金流外还带报价字段（价/涨幅/量比/换手/量额/市值），
+           见 _absorb —— 这是榜外票（不在 daily_kline 内）唯一的价量来源。
 
 与 concept.py 相同的可靠性模式：
 - lazy import akshare（仅涨停池兜底依赖；未安装时自动禁用，返回空）
@@ -45,9 +50,14 @@ logger = logging.getLogger(__name__)
 _ZT_POOL = "zt_pool"
 _FUND_FLOW = "fund_flow"
 
-# 资金流 clist API：与 akshare stock_individual_fund_flow_rank("今日") 同参数。
+# 全市场 clist API：与 akshare stock_individual_fund_flow_rank("今日") 同参数。
 # 字段码：f12=代码, f62=主力净流入净额, f184=主力净流入净占比, f66=超大单净流入净额
-_FUND_FLOW_FIELDS = "f12,f14,f2,f3,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,f204,f205,f124"
+# 末段 f5/f6/f8/f10/f18/f20/f21 是**报价快照**：与资金流同一响应行返回，扩字段
+# 不增加请求数（实测中位页耗时 1.249s→1.240s，噪声内；响应 25.4→34.2KB/页）。
+# 这是榜外票（不在 daily_kline，全市场 5305 只里 4284 只）唯一的价量来源。
+# f11(5分钟涨跌)/f22(涨速) 实测恒为 0，该接口不提供，故不请求。
+_FUND_FLOW_FIELDS = ("f12,f14,f2,f3,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,"
+                     "f204,f205,f124,f5,f6,f8,f10,f18,f20,f21")
 _FUND_FLOW_FS = ("m:0+t:6+f:!2,m:0+t:13+f:!2,m:0+t:80+f:!2,m:1+t:2+f:!2,"
                  "m:1+t:23+f:!2,m:0+t:7+f:!2,m:1+t:3+f:!2")
 _FUND_FLOW_PAGE_SIZE = 100
@@ -171,7 +181,11 @@ def _collect_fund_flow(box: dict, deadline: float) -> dict:
     服务端 pz 封顶 100（实测 200/500/1000 仍返回 100 行），全市场约 5292 只 →
     53 页，串行太慢，故按 6 线程并行拉页。每页 timeout=10，页间检查 deadline：
     超时取消未开始任务并返回已收集部分。网络/解析异常该页返回空继续。
-    返回 {6位代码: {main_net, main_pct, super_net}}。
+    返回 {6位代码: {main_net, main_pct, super_net, price, percent, volume, amount,
+    turnover, vol_ratio, prev_close, total_cap, float_cap}} —— 前三个是资金流，
+    其余是**同一响应行的报价快照**（不额外请求）。后者使榜外票获得当日价量，
+    配合 PK(symbol,data_type,date) 的"当日最后一次写入即收盘值"语义，
+    日积即成全市场日频价量面板（daily_kline 只覆盖榜内 1022 只）。
     完成全部页数时置 box["done"]=True，供外层区分"完整快照 vs 超时部分"。
     """
     result: dict[str, dict] = {}
@@ -209,6 +223,21 @@ def _collect_fund_flow(box: dict, deadline: float) -> dict:
                 "main_net": _num(row, "f62"),
                 "main_pct": _num(row, "f184"),
                 "super_net": _num(row, "f66"),
+                # 报价快照（同一响应行，零额外请求）。用途：榜外票无 daily_kline，
+                # 收盘后最后一次写入即当日收盘价/涨幅/量比/换手，可累积成
+                # 全市场日频价量面板，供日后验证"脱离榜单"的信号。
+                "price": _num(row, "f2"),
+                "percent": _num(row, "f3"),
+                "volume": _num(row, "f5"),
+                "amount": _num(row, "f6"),
+                "turnover": _num(row, "f8"),
+                "vol_ratio": _num(row, "f10"),
+                "prev_close": _num(row, "f18"),
+                "total_cap": _num(row, "f20"),
+                "float_cap": _num(row, "f21"),
+                # 名称（f14）本就在请求字段里、此前被丢弃。榜外票**不在榜单**，
+                # 拿不到榜单侧的 name，这里不取就只能回落到 6 位代码（B 段展示用）。
+                "name": str(row.get("f14") or "").strip(),
             }
 
     first, total = _page(1)

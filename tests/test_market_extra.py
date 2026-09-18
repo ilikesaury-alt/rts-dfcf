@@ -27,7 +27,11 @@ def _ff_rows(*codes):
     rows = []
     for i, code in enumerate(codes):
         rows.append({"f12": code, "f14": "测试", "f2": 15.0, "f3": 10.0,
-                     "f62": 123456789.0 + i, "f184": 8.5, "f66": 60000000.0 + i})
+                     "f62": 123456789.0 + i, "f184": 8.5, "f66": 60000000.0 + i,
+                     # 报价快照字段（与资金流同一响应行，见 _absorb 注释）
+                     "f5": 1000.0 + i, "f6": 15000000.0 + i, "f8": 3.2,
+                     "f10": 2.5, "f18": 13.64, "f20": 4.0e9 + i,
+                     "f21": 3.0e9 + i})
     return rows
 
 
@@ -210,6 +214,43 @@ class TestFetchFundFlow:
         assert result["300003"]["main_pct"] == 8.5
         assert box["value"] == result
         assert box.get("done") is True, "完整拉取应标记完成（供外层区分完整/部分快照）"
+
+    def test_absorb_captures_quote_snapshot(self, monkeypatch):
+        # 报价快照：与资金流同行返回，零额外请求。这是榜外票（无 daily_kline）
+        # 唯一的价量来源，落库后累积成全市场日频价量面板 —— 不得再被丢弃。
+        import time as _t
+        box = {}
+        pages = {1: {"rc": 0, "data": {"total": 100, "diff": _ff_rows("300001")}}}
+        monkeypatch.setattr(me._requests, "get", _NetCounter(pages=pages).get)
+        result = me._collect_fund_flow(box, _t.time() + 60)
+        payload = result["300001"]
+        # 报价快照字段全部落进 payload
+        assert payload["price"] == 15.0
+        assert payload["percent"] == 10.0
+        assert payload["volume"] == 1000.0
+        assert payload["amount"] == 15000000.0
+        assert payload["turnover"] == 3.2
+        assert payload["vol_ratio"] == 2.5
+        assert payload["prev_close"] == 13.64
+        assert payload["total_cap"] == 4.0e9
+        assert payload["float_cap"] == 3.0e9
+        # 原三字段不受影响（消费方按 .get 读取，加键为纯增量）
+        assert payload["main_net"] == 123456789.0
+        assert payload["main_pct"] == 8.5
+
+    def test_absorb_quote_fields_fail_soft(self, monkeypatch):
+        # 报价字段缺失/不可解析时退化为 0.0，不得抛异常影响整轮扫描
+        import time as _t
+        box = {}
+        row = {"f12": "300001", "f62": 1.0, "f184": 2.0, "f66": 0.0,
+               "f2": None, "f3": "N/A", "f10": float("nan")}
+        pages = {1: {"rc": 0, "data": {"total": 100, "diff": [row]}}}
+        monkeypatch.setattr(me._requests, "get", _NetCounter(pages=pages).get)
+        result = me._collect_fund_flow(box, _t.time() + 60)
+        payload = result["300001"]
+        assert payload["price"] == 0.0
+        assert payload["percent"] == 0.0
+        assert payload["vol_ratio"] == 0.0
 
     def test_deadline_partial_marks_not_done(self, monkeypatch):
         # 多页拉到一半超时：取消剩余任务，box["done"] 不置位 → 外层按部分快照处理
