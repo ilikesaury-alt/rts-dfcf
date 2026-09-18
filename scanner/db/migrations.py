@@ -219,8 +219,60 @@ def _check_ranking_snapshot_drop_marked(conn: sqlite3.Connection) -> bool:
     return not _has_column(conn, "ranking_snapshot", "marked")
 
 
-# ── 迁移总表（顺序即执行顺序；只在末尾追加）──
+_OFFBOARD_KLINE_DDL = """
+    CREATE TABLE IF NOT EXISTS offboard_kline_cache (
+        symbol TEXT NOT NULL,           -- 雪球符号（SZ300862）
+        fetch_date TEXT NOT NULL,       -- 抓取日（当日缓存键；5 日累计/MA 只依赖抓取日
+                                        -- 之前的 bar，故盘中一次抓取当日可复用）
+        payload_json TEXT NOT NULL,     -- JSON：日线 bars（含抓取日盘中 bar，排除今日由消费方做）
+        updated TEXT NOT NULL,
+        PRIMARY KEY(symbol, fetch_date)
+    )
+"""
+_OFFBOARD_LAUNCH_LOG_DDL = """
+    CREATE TABLE IF NOT EXISTS offboard_launch_log (
+        date TEXT NOT NULL,             -- 信号日
+        symbol TEXT NOT NULL,
+        name TEXT,
+        tier TEXT NOT NULL,             -- 'T1'=量先动·价未动 / 'T2'=启动首日
+        percent REAL,                   -- 信号时的今日涨幅（快照）
+        accum_5d REAL,                  -- 5 日累计涨幅（排除今日）
+        vol_ratio REAL,                 -- 量比（快照）
+        main_pct REAL,                  -- 主力净占比（快照）
+        amount REAL,                    -- 成交额（元）
+        float_cap REAL,                 -- 流通市值（元）
+        price REAL,                     -- 现价
+        first_time TEXT,                -- 本区当日首次产出该行的时刻
+        next_day_pct REAL,              -- 次日收益（%，由 backfill 回填）
+        updated TEXT DEFAULT '',
+        PRIMARY KEY(date, symbol)
+    )
+"""
 
+
+def _up_offboard_tables(conn: sqlite3.Connection) -> None:
+    """v8（2026-09-18）：沪深飙升区 B 段（榜外异动）的两张表。
+
+    1. `offboard_kline_cache` —— **榜外 K 线池，独立于 `daily_kline`**。后者的既定
+       语义是「榜单衍生池」（999 只里 982 只在 appearances），塞入榜外票会污染所有
+       基于它的回测基准与归因口径（portfolio_backtest / prevday_perf / 召回率）。
+       B 段需要 5 日累计 / MA 结构 / 顶背离，只能另起一张。
+    2. `offboard_launch_log` —— B 段逐日落库。**这是本类信号上线前的硬前置**：
+       在有人能按日回溯量化之前，任何阈值调整都是无标签调参（项目铁律 observe-first）。
+       `hot_watch_hits` 以 symbol 为主键、只存滚动最新态，回答不了「T1/T2 的次日
+       hit 率是多少」。
+    """
+    conn.execute(_OFFBOARD_KLINE_DDL)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_obk_fetch_date ON offboard_kline_cache(fetch_date)")
+    conn.execute(_OFFBOARD_LAUNCH_LOG_DDL)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_obl_date ON offboard_launch_log(date)")
+
+
+def _check_offboard_tables(conn: sqlite3.Connection) -> bool:
+    return _has_table(conn, "offboard_kline_cache") and _has_table(conn, "offboard_launch_log")
+
+
+# ── 迁移总表（顺序即执行顺序；只在末尾追加）──
 MIGRATIONS: list[Migration] = [
     add_column(
         "daily_kline", "finalized", "INTEGER DEFAULT 1",
@@ -295,6 +347,12 @@ MIGRATIONS: list[Migration] = [
         desc="ranking_snapshot 掉 marked 列（🎯 画像已删除，该列失去语义）",
         check=_check_ranking_snapshot_drop_marked,
         up=_up_ranking_snapshot_drop_marked,
+    ),
+    Migration(
+        id="m015_offboard_tables",
+        desc="沪深飙升 B 段（榜外异动）：榜外 K 线池 + 逐日落库表",
+        check=_check_offboard_tables,
+        up=_up_offboard_tables,
     ),
 ]
 

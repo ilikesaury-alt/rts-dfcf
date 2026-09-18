@@ -1341,6 +1341,8 @@ def _summary(**over):
         "main_rows": [],
         "hist_rows": [],
         "hot_rows": [],
+        # 沪深飙升区 B 段（榜外异动，2026-09-18）：与 hot_rows 分开计数的第四个来源。
+        "offboard_rows": [],
         "beauty_mark": {},
         "flow_pct_map": {},
         "flow_filtered": 0,

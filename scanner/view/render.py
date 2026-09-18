@@ -49,6 +49,7 @@ __all__ = (
     "display_priority",
     "render_hist_watch_standalone",
     "render_hot_watch_standalone",
+    "render_offboard_standalone",
     "render_terminal",
 )
 
@@ -63,6 +64,7 @@ def display(
     today_pool: dict[str, Candidate] | None = None,
     last_ranks: dict[str, int] | None = None,
     hot_rows: list | None = None,
+    offboard_rows: list | None = None,
     hist_rows: list | None = None,
     market_idx_pct: float | None = None,
 ) -> "ScanView | None":
@@ -102,6 +104,7 @@ def display(
         last_ranks=last_ranks,
         weak=weak,
         hot_rows=hot_rows,
+        offboard_rows=offboard_rows,
         hist_rows=hist_rows,
         market_idx_pct=market_idx_pct,
     )
@@ -264,16 +267,60 @@ def _watch_tail_terminal(ff_pct, beauty: str) -> str:
     return tail
 
 
-def _render_hot_watch_region(rows) -> None:
-    """渲染「沪深飙升·极有可能大涨」独立区（无结果时整区跳过，不留空表）。
+def _hot_row_cells(c, idx: int, *, board_segment: bool) -> list[str]:
+    """独立区一行 → `COLS_HOT` 的 14 个单元格（**A/B 两段共用**，列集不许分叉）。
 
-    行元素为 scanner.hot_watch.HotCandidate（主循环内已算好并落连击），本函数只做
-    渲染——与 render_terminal 的「只画不算」纪律一致。
+    A 段（榜内飙升）带榜单专属量：「排名上升」= `+rank_change`、「连击」= streak（≥
+    `HOT_HIGHLIGHT_STREAK` 标 ★）、「评分」= 本区复合分。
+    B 段（榜外异动）**结构上**没有榜单排名与连击 ⇒ 显 `—`（不是 0：0 会被读成
+    「排名没动/没连击」）；「评分」列改显分层标记（T1/T2）—— B 段没有复合分，
+    该列硬填 0.0 是伪造一个不存在的量。
+
+    量比/市值/成交额可能因快照缺字段而为 0 → 显示 —（不伪造为 0.00）。
+    """
+    if board_segment:
+        streak = c.streak
+        streak_str = f"{streak}"
+        if streak is not None and streak >= HOT_HIGHLIGHT_STREAK:
+            streak_str = f"{ANSI['RED']}★{streak}{ANSI['RESET']}"
+        rank_str = f"+{c.rank_change}"
+        score_str = f"{c.score:.1f}"
+    else:
+        streak_str = "—"
+        rank_str = "—"
+        score_str = getattr(c, "tier", "") or "—"
+    return [
+        str(idx),
+        c.code,
+        c.name,
+        pct_colored(c.percent),
+        f"{c.accum_5d:+.2f}%" if c.accum_5d is not None else "—",
+        f"{c.current:.2f}" if c.current else "—",
+        rank_str,
+        _fmt_hot_volume_hand(c.volume),
+        _fmt_hot_amount(c.amount),
+        f"{c.volume_ratio:.2f}" if c.volume_ratio > 0 else "—",
+        f"{c.turnover_rate:.1f}" if c.turnover_rate > 0 else "—",
+        f"{c.market_capital / 1e8:.0f}" if c.market_capital > 0 else "—",
+        score_str,
+        streak_str,
+    ]
+
+
+def _render_hot_watch_region(rows, offboard_rows=None) -> None:
+    """渲染「沪深飙升·极有可能大涨」独立区（两段都空时整区跳过，不留空表）。
+
+    A 段（榜内飙升，`hot_watch.HotCandidate`）与 **B 段（榜外异动，
+    `offboard_watch.OffboardCandidate`）同区并列、不混排**：A 段的复合分里
+    `rank_change` 独占 35/100，而榜外票结构上恒缺该项 ⇒ 混排必被永久压到最末。
+    两段共用 `COLS_HOT`（14 列，**不加列**）—— B 段仅「排名上升/连击」回落 `—`、
+    「评分」列改显分层标记。
 
     形参取行列表而非 ScanView：本区与主线数据完全无关，取 view 会让独立运行
-    （`python -m scanner.hot_watch`）被迫构造一个满是空字段的 ScanView。
+    （`python -m scanner.hot_watch` / `scanner.offboard_watch`）被迫构造一个满是
+    空字段的 ScanView。
     """
-    if not rows:
+    if not rows and not offboard_rows:
         return
 
     print(
@@ -281,36 +328,25 @@ def _render_hot_watch_region(rows) -> None:
         f"（创业板 · 当日动能+热度跃升 · 与上方主线口径独立）"
     )
     print(_table_header(COLS_HOT))
-    for _hi, c in enumerate(rows, 1):
-        # 连击 ≥ 阈值 → 「★重点关注」（跨轮连续命中的稳定性信号）。
-        # 量比/市值/成交额可能因批量补全缺字段而为 0 → 显示 —（不伪造为 0.00）。
-        _streak_str = f"{c.streak}"
-        if c.streak >= HOT_HIGHLIGHT_STREAK:
-            _streak_str = f"{ANSI['RED']}★{c.streak}{ANSI['RESET']}"
+    for _hi, c in enumerate(rows or [], 1):
         print(
-            _table_row(
-                [
-                    str(_hi),
-                    c.code,
-                    c.name,
-                    pct_colored(c.percent),
-                    f"{c.accum_5d:+.2f}%" if c.accum_5d is not None else "—",
-                    f"{c.current:.2f}" if c.current else "—",
-                    f"+{c.rank_change}",
-                    _fmt_hot_volume_hand(c.volume),
-                    _fmt_hot_amount(c.amount),
-                    f"{c.volume_ratio:.2f}" if c.volume_ratio > 0 else "—",
-                    f"{c.turnover_rate:.1f}" if c.turnover_rate > 0 else "—",
-                    f"{c.market_capital / 1e8:.0f}" if c.market_capital > 0 else "—",
-                    f"{c.score:.1f}",
-                    _streak_str,
-                ],
-                COLS_HOT,
-            )
-            # 行尾标记（2026-09-16）：与 v1 回捞区/主表同源（_watch_tail_terminal），
-            # 本区此前没有这一列 —— 标记应当是**跨展示区通用**的，不该只有回捞区有。
+            _table_row(_hot_row_cells(c, _hi, board_segment=True), COLS_HOT)
+            # 行尾标记（2026-09-16）：与 v1 回捞区/主表同源（_watch_tail_terminal）。
             + _watch_tail_terminal(c.ff_pct, c.beauty)
         )
+    if offboard_rows:
+        # B 段小标题必须写明「候选来源 + 排序键 + 未回测」：不写清楚，最自然的误读
+        # 就是「它和 A 段一样是热度跃升」，而两者的口径与证据强度完全不同。
+        print(
+            f"  {ANSI['CYAN']}— 榜外异动{ANSI['RESET']}"
+            f"（榜外创业板·非榜单来源·排序=量比→主力净占比·T1 量先动/T2 启动首日"
+            f"·{len(offboard_rows)} 只·观察段·未回测）"
+        )
+        for _bi, b in enumerate(offboard_rows, 1):
+            print(
+                _table_row(_hot_row_cells(b, _bi, board_segment=False), COLS_HOT)
+                + _watch_tail_terminal(b.ff_pct, b.beauty)
+            )
     print(f"  {'-' * 92}")
     # print(
     #     f"  排序=评分(排名上升35/涨幅25/价格15/量能25) | "
@@ -329,13 +365,23 @@ def _render_hot_watch_region(rows) -> None:
     #     )
 
 
-def render_hot_watch_standalone(rows) -> None:
+def render_hot_watch_standalone(rows, offboard_rows=None) -> None:
     """只渲染「沪深飙升·极有可能大涨」区（供 `python -m scanner.hot_watch` 独立运行）。
 
     与主循环的 render_terminal 共用同一个 _render_hot_watch_region，避免两套渲染
     逻辑分叉（独立区行宽/配色/脚注只此一份）。
     """
-    _render_hot_watch_region(rows)
+    _render_hot_watch_region(rows, offboard_rows)
+
+
+def render_offboard_standalone(rows) -> None:
+    """只渲染「沪深飙升」区的 **B 段（榜外异动）**（供 `python -m scanner.offboard_watch`）。
+
+    与终端主循环共用 `_render_hot_watch_region` —— 独立运行看到的列宽/配色与主屏
+    一致（本区 A/B 两段同表，渲染逻辑只此一份）。A 段传空列表：单独查看 B 段时
+    不必、也不该去构造 A 段的数据。
+    """
+    _render_hot_watch_region([], rows)
 
 
 def _render_hist_watch_region(rows) -> None:
@@ -532,13 +578,15 @@ def render_terminal(view: ScanView) -> None:
     # 口径为「当日 momentum + 榜单热度跃升」（主线为 next_day 次日大涨）。
     # 独立成区而非并入主线表：两者排序键、评分体系、样本面都不同，混排会让
     # 「为什么这两只票排在同一个榜里」无法解释。
+    # 2026-09-18 起本区含**两段**：A 段榜内飙升（view.hot_rows）+ B 段榜外异动
+    # （view.offboard_rows）。同区两段并列、不混排（成因见 model.ScanView.offboard_rows）。
     # ── v1 回捞 独立区（2026-09-16）──
     # 候选来自 recommendations（前 N 个交易日的 v1 产出），与上方 v1 池选的「今日在榜票」
     # 样本域**互斥**（默认剔除今日已推荐票）—— 并列为两区而不是合并成一区，正是因为
     # 同一只票不可能同时出现在两边，不存在「同屏两种结论」的风险。
     _render_hist_watch_region(view.hist_rows)
 
-    _render_hot_watch_region(view.hot_rows)
+    _render_hot_watch_region(view.hot_rows, view.offboard_rows)
 
     # 综合判断摘要（build_scan_view 计算，纯展示不参与评分/排序）。
     # 首行挂 ◆ 标签，明细行固定 4 空格缩进——**不用**去对齐 ◆/— 这类全角字符的列宽，
@@ -558,6 +606,7 @@ def display_priority(
     last_ranks: dict[str, int] | None = None,
     weak: bool | None = None,
     hot_rows: list | None = None,
+    offboard_rows: list | None = None,
     hist_rows: list | None = None,
     market_idx_pct: float | None = None,
 ) -> "ScanView | None":
@@ -577,6 +626,7 @@ def display_priority(
         last_ranks=last_ranks,
         weak=weak,
         hot_rows=hot_rows,
+        offboard_rows=offboard_rows,
         hist_rows=hist_rows,
         market_idx_pct=market_idx_pct,
     )

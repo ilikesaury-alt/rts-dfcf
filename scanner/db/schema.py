@@ -19,7 +19,8 @@ from scanner.config import now_beijing
 # 当时代码写入，而此后代码常量一度回退到 4）→ 若沿用 5，判定 `MAX(version) < 5`
 # 为假，本版既不会插入版本行、也无法被后续迁移正确比较。故跳到 7。
 # 取版本号前先查：SELECT MAX(version) FROM schema_version;
-SCHEMA_VERSION = 7  # v7 (2026-09-11): hot_watch 独立区连击跟踪表（hot_watch_hits / hot_watch_meta）
+SCHEMA_VERSION = 8  # v8 (2026-09-18): 沪深飙升 B 段（榜外异动）榜外 K 线池 + 逐日落库表
+# v7 (2026-09-11): hot_watch 独立区连击跟踪表（hot_watch_hits / hot_watch_meta）
 
 
 def get_conn(db_path: str | None = None) -> sqlite3.Connection:

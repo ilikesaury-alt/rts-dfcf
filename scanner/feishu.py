@@ -325,15 +325,28 @@ _COLS_HOT_FEISHU: tuple[tuple[int, str], ...] = (
 )
 
 
-def _fmt_hot_row_feishu(c, idx: int) -> str:
+def _fmt_hot_row_feishu(c, idx: int, *, board_segment: bool = True) -> str:
     """飞书卡片单行：沪深飙升·极有可能大涨候选（lark_md 定宽块，无 ANSI）。
 
     单元格一律经 _pad 按**可见宽度**补位（成因见 _COLS_HOT_FEISHU 的宽度规则），
     故每行可见宽度恒为 sum(宽度)+12 个分隔空格 = 97 列（含两侧反引号共 99）。
     名称是唯一自由文本列，先 _trunc 再补位——否则 5 字名（10 列）会撑破 8 列的列宽。
+
+    `board_segment=False` → B 段（榜外异动）行：与终端 `_hot_row_cells` 完全同口径 ——
+    「排名上升/连击」榜外票结构上没有 → `—`；「评分」列改显分层标记（T1/T2）。
+    两出口必须同口径，否则同一张表在终端和手机上含义不同（守卫
+    `tests/test_feishu.py::test_hot_row_columns_match_terminal` 只保列数，口径靠本注释）。
     """
     pct_str = f"+{c.percent:.1f}%" if c.percent >= 0 else f"{c.percent:.1f}%"
     accum_str = f"{c.accum_5d:+.1f}%" if c.accum_5d is not None else "—"
+    if board_segment:
+        rank_str = f"+{c.rank_change}"
+        score_str = f"{c.score:.1f}"
+        streak_str = f"★{c.streak}" if c.streak >= HOT_HIGHLIGHT_STREAK else f"{c.streak}"
+    else:
+        rank_str = "—"
+        score_str = getattr(c, "tier", "") or "—"
+        streak_str = "—"
     cells = (
         str(idx),
         c.code,
@@ -341,14 +354,14 @@ def _fmt_hot_row_feishu(c, idx: int) -> str:
         pct_str,
         accum_str,
         f"{c.current:.2f}" if c.current else "—",
-        f"+{c.rank_change}",
+        rank_str,
         _fmt_hot_volume_hand(c.volume),
         _fmt_hot_amount(c.amount),
         f"{c.volume_ratio:.2f}" if c.volume_ratio > 0 else "—",
         f"{c.turnover_rate:.1f}%" if c.turnover_rate > 0 else "—",
         f"{c.market_capital / 1e8:.0f}亿" if c.market_capital > 0 else "—",
-        f"{c.score:.1f}",
-        f"★{c.streak}" if c.streak >= HOT_HIGHLIGHT_STREAK else f"{c.streak}",
+        score_str,
+        streak_str,
     )
     body = " ".join(_pad(str(cell), width, align) for cell, (width, align) in zip(cells, _COLS_HOT_FEISHU, strict=True))
     return f"`{body}`"
@@ -492,13 +505,27 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
         sections.append(("◆ v1 回捞", hist_lines))
 
     # ── 沪深飙升·极有可能大涨 独立区（与终端 _render_hot_watch_region 同源）──
+    # 2026-09-18 起含两段：A 段榜内飙升（hot_rows）+ B 段榜外异动（offboard_rows），
+    # 同节两段并列、不混排（成因见 model.ScanView.offboard_rows 的注释）。
     hot_rows = getattr(view, "hot_rows", None)
-    if hot_rows:
+    offboard_rows = getattr(view, "offboard_rows", None)
+    if hot_rows or offboard_rows:
         # 行尾标记（2026-09-16）：与 v1 回捞区共用 _marks_tail_card —— 标记是跨展示区
         # 通用的，此前只有回捞区画、飙升区不画，是同一条判定在两个出口给了两种待遇。
         hot_lines = [
-            f"{_fmt_hot_row_feishu(c, i)}{_marks_tail_card(c.ff_pct, c.beauty)}" for i, c in enumerate(hot_rows, 1)
+            f"{_fmt_hot_row_feishu(c, i)}{_marks_tail_card(c.ff_pct, c.beauty)}" for i, c in enumerate(hot_rows or [], 1)
         ]
+        if offboard_rows:
+            # B 段小标题与终端同款：候选来源 + 排序键 + 「未回测」一个都不能省 ——
+            # 否则最自然的误读就是「它与 A 段一样是热度跃升」，而证据强度完全不同。
+            hot_lines.append(
+                f"— 榜外异动（榜外创业板·非榜单来源·排序=量比→主力净占比·"
+                f"T1 量先动/T2 启动首日·{len(offboard_rows)} 只·观察段·未回测）"
+            )
+            hot_lines += [
+                f"{_fmt_hot_row_feishu(c, i, board_segment=False)}{_marks_tail_card(c.ff_pct, c.beauty)}"
+                for i, c in enumerate(offboard_rows, 1)
+            ]
         sections.append(("◆ 沪深飙升 · 极有可能大涨", hot_lines))
 
     rendered = False
@@ -588,7 +615,8 @@ def view_has_content(view: ScanView) -> bool:
       1. view.final_pick_lines        —— 终选参考节（最先渲染，独立于 main_rows）；
       2. view.main_rows[:FEISHU_TOP_N] —— v1 池选节；
       3. view.hist_rows               —— v1 回捞独立区（2026-09-16 上线）；
-      4. view.hot_rows                —— 沪深飙升独立区。
+      4. view.hot_rows                —— 沪深飙升独立区（A 段榜内飙升）；
+      5. view.offboard_rows           —— 沪深飙升独立区的 B 段（榜外异动，2026-09-18 上线）
     公开（非 `_` 前缀）是刻意的：它是「有没有内容」的**跨模块单源**，
     除 should_push 外还被 unified_scanner 的「推送跳过」提示复用（此前那里自持
     一份 `bool(view.main_rows)`，不认第 1、3、4 条）。
@@ -614,6 +642,8 @@ def view_has_content(view: ScanView) -> bool:
     if view.main_rows[:FEISHU_TOP_N]:
         return True
     if getattr(view, "hist_rows", None):
+        return True
+    if getattr(view, "offboard_rows", None):
         return True
     return bool(getattr(view, "hot_rows", None))
 

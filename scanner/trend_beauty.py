@@ -10,7 +10,8 @@ API 口径：两个判定函数都返回「丑的理由 | None」——None 表�
 
 日线漂亮（evaluate_daily_trend）：基于 daily_kline 缓存（离线、无网络），
 要求干净的上升趋势，6 硬门全过才判漂亮——
-  ① MA 多头排列 MA5>MA10>MA20（趋势骨架）；
+  ① MA 多头排列 MA5>MA10>MA20（趋势骨架）—— 判定单源 `ma_bullish`，
+     沪深飙升区 B 段（榜外异动）的「MA 非空头」也走它；
   ② 近 5 日收盘趋势向上（slope ≥ DAILY_BEAUTY_MIN_SLOPE_PCT）；
   ③ 近 5 日无暴跌日（单日跌幅 ≤ DAILY_BEAUTY_MAX_CRASH_PCT）；
   ④ 回调可控（单日跌幅 > DAILY_BEAUTY_MAX_PULLBACK_PCT = 深回调，丑）；
@@ -95,6 +96,28 @@ def beauty_mark(entry: Any, kline: list[Any] | None, candidate: Any = None) -> s
     return BEAUTY_MARK_STRONG if strong else BEAUTY_MARK
 
 
+def ma_bullish(kline: list[Any] | None) -> bool | None:
+    """多头排列（MA5 > MA10 > MA20）单源判定：True / False；**数据不足返回 None**。
+
+    这是「MA 非空头」在仓里的唯一定义 —— `evaluate_daily_trend` 的 ① 号硬门与
+    沪深飙升区 B 段（榜外异动，`scanner/offboard_watch.py`）共用本函数，避免
+    同一个 MA 多头在两处各写一遍 MA5/MA10/MA20（本仓最忌讳的同名不同义）。
+
+    None 的语义是「**无法判定**」而不是「空头」：调用方必须自己决定 fail-open
+    还是 fail-closed —— 美感门不因数据缺口误杀（放行）；B 段不能产出无法验证的
+    信号（按不合格处理）。这个区别是本函数只返回 `bool | None`、不替调用方兜底的原因。
+    """
+    if not kline or len(kline) < DAILY_BEAUTY_MIN_BARS:
+        return None
+    closes = [to_float(k.get("close"), default=0.0) for k in kline]
+    if any(c <= 0 for c in closes[-DAILY_BEAUTY_MIN_BARS:]):
+        return None
+    ma5 = sum(closes[-5:]) / 5
+    ma10 = sum(closes[-10:]) / 10
+    ma20 = sum(closes[-20:]) / 20
+    return ma5 > ma10 > ma20
+
+
 def evaluate_daily_trend(kline: list[Any] | None) -> tuple[str | None, int, str]:
     """日线走势美感判定 → (丑的理由 | None, score 0-100, detail)。
 
@@ -107,10 +130,8 @@ def evaluate_daily_trend(kline: list[Any] | None) -> tuple[str | None, int, str]
     if any(c <= 0 for c in closes[-DAILY_BEAUTY_MIN_BARS:]):
         return None, 0, DAILY_INSUFFICIENT
 
-    ma5 = sum(closes[-5:]) / 5
-    ma10 = sum(closes[-10:]) / 10
-    ma20 = sum(closes[-20:]) / 20
-    ma_bull = ma5 > ma10 > ma20
+    # 多头排列走单源 ma_bullish（与 B 段共用）；上面两道前置已保证它不返回 None。
+    ma_bull = bool(ma_bullish(kline))
 
     pcts = [to_float(k.get("percent"), default=0.0) for k in kline[-5:]]
     slope = (closes[-1] / closes[-6] - 1) * 100  # len ≥ 20 保证 -6 安全

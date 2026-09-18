@@ -548,6 +548,13 @@ class ScanView:
     # （分钟级刷新，计入会击穿 FEISHU_MIN_INTERVAL 节流，见 feishu._view_symbols）。
     # None = 本轮未启用或无结果（渲染时整区跳过，不留空表）。
     hot_rows: list | None = None
+    # 沪深飙升区 **B 段「榜外异动」**（2026-09-18）：OffboardCandidate 列表 —— 候选来自
+    # 全市场快照里的**榜外创业板**（T1 量先动·价未动 / T2 启动首日），与 A 段（`hot_rows`）
+    # **同区不同段、不混排**（A 段的复合分含 rank_change 35/100，榜外票恒缺该项）。
+    # 单列一个字段而不是并进 hot_rows：摘要按 `rank_change` 统计跃升数，B 段该量为 None
+    # （结构性缺失），混在一起会让摘要的判断条件直接 TypeError。
+    # 与 hot_rows 同款：终端与飞书都画、不落主线库、不进去重键。
+    offboard_rows: list | None = None
     # 「v1 回捞」独立区（2026-09-16 上线）：HistCandidate 列表，回答「前 N 个交易日
     # 进过 v1 的票，今天回调到位了没」。与 v1 池选区**样本域互斥**（默认剔除今日已推荐票），
     # 与 hot_rows 同款：终端与飞书都画、不落库、不参与任何主线口径，也不进去重键。

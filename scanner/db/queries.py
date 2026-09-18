@@ -572,3 +572,68 @@ def get_fund_flow_pct_map(conn: sqlite3.Connection, symbols: list[str],
         for sym, payload in ff_db.items()
         if (pct := (payload.get("main_pct") if payload else None)) is not None
     }
+
+
+def get_market_extra_snapshot(conn: sqlite3.Connection, data_type: str = "fund_flow",
+                              as_of: str | None = None) -> dict[str, dict]:
+    """读取**全市场**当日快照（不限 symbol 集合），返回 {symbol: payload}。
+
+    与 `get_market_extra_cache` 的差别只有一处：那个按 symbols 白名单过滤，本函数
+    取当日该 data_type 的**全部**行 —— 服务对象是「榜外」消费方（沪深飙升区 B 段），
+    它们的 symbol 事先不可知。
+
+    不带盘中 TTL：这里读的是「最近一次落库的快照」，由主循环按自己的节拍刷新；
+    再叠一层新鲜度门只会让 B 段随资金流接口抖动而闪烁。缺失/解析失败按空处理
+    （fail-open，调用方留空该区）。
+    """
+    day = as_of or now_beijing().date().isoformat()
+    try:
+        rows = conn.execute(
+            "SELECT symbol, payload_json FROM market_extra_cache WHERE data_type = ? AND date = ?",
+            (data_type, day),
+        ).fetchall()
+    except sqlite3.Error as e:
+        logger.warning(f"get_market_extra_snapshot failed: {e}")
+        return {}
+    result: dict[str, dict] = {}
+    for sym, payload in rows:
+        try:
+            parsed = json.loads(payload)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(parsed, dict):
+            result[sym] = parsed
+    return result
+
+
+def get_symbol_names(conn: sqlite3.Connection, symbols: list[str]) -> dict[str, str]:
+    """按 symbol 批量取名称（每个 symbol 取**最近一条** appearances 记录）。
+
+    消费方是沪深飙升区 B 段（榜外异动）：榜外票今天不在榜、拿不到榜单侧的 name。
+    `market_extra_cache` 的快照自 2026-09-18 起才带 name 字段，此前落库的行没有，
+    故仍需要一个兜底源 —— `appearances` 是仓里唯一覆盖「历史上曾在榜过」的
+    symbol→name 映射（榜外 ≠ 从未上过榜）。查不到则不出现在结果里，由调用方回落代码。
+    """
+    if not symbols:
+        return {}
+    uniq = list(dict.fromkeys(symbols))
+    # 分块（每块 400）：B 段的调用面是**全部榜外创业板**（~1300 只），一次性 IN 会
+    # 触到 SQLite 的变量数上限（旧版 999）而整条查询报错 → 名称全丢。分块后单块查询
+    # 走 idx_app_sym 索引，成本可忽略。
+    out: dict[str, str] = {}
+    for i in range(0, len(uniq), 400):
+        chunk = uniq[i : i + 400]
+        placeholders = ",".join("?" * len(chunk))
+        try:
+            rows = conn.execute(
+                f"SELECT symbol, name FROM appearances "  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
+                f"WHERE symbol IN ({placeholders}) AND name IS NOT NULL AND name <> '' "
+                f"ORDER BY date",
+                tuple(chunk),
+            ).fetchall()
+        except sqlite3.Error as e:
+            logger.warning(f"get_symbol_names failed: {e}")
+            continue
+        # ORDER BY date 升序 → 后写的覆盖先写的，最终留下每个 symbol 最近一条。
+        out.update(dict(rows))
+    return out

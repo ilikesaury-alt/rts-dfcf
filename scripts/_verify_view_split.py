@@ -7,7 +7,10 @@
 
 它回答三个问题：
 1. **逻辑有没有被改动** —— `git show <rev>:scanner/display.py` 的每个顶层 def/class
-   与其模块级常量，与拆分后同名定义的 AST 逐一对比（AST 不含行号）。
+   与其模块级常量，与拆分后同名定义的 AST 逐一对比（AST 不含行号）。拆分之后**合法的
+   功能迭代**会改动它们，两类改动分别登记在 `EXPECTED_BODY_DIVERGENCE`（函数体）与
+   `EXPECTED_CONST_DIVERGENCE`（模块级常量值，2026-09-18 补：此前常量没有白名单，
+   任何合法列变更都会让本工具**永久红**，常红的守卫等于没有守卫）。两者都双向校验。
 2. **被消费的名字有没有缺口** —— 全仓扫描 `from scanner.display import X` /
    `scanner.display.X`，这些 X 必须都能从新的 `scanner.display` 取到。（这是硬门禁）
 3. **缩掉的面是不是显式登记的** —— 旧模块把大量"顺带导入"的名字暴露成了模块属性
@@ -132,6 +135,21 @@ EXPECTED_DEFINITION_REMOVAL = {
     "comeback_sort_key(回马枪) 构成，两者删除后无剩余语义可保留",
 }
 
+# ── 拆分后**有意**改动的模块级常量白名单（2026-09-18 新增）──
+# 与 EXPECTED_BODY_DIVERGENCE 对称：检查 2 原先**没有**白名单，于是「拆分之后任何
+# 合法的列定义变更」都会让本工具永久红 —— 而常红守卫的下场是被无视，真出现拆分走样
+# 时反而没人看得见（本仓已因同类理由给脚注改动开过白名单，见下面那条 61631bc 的登记）。
+# 双向校验：登记了却已不再与基线分歧 = 表已过期，同样报错。
+EXPECTED_CONST_DIVERGENCE = {
+    # 2026-09-18 commit 5efd8cb「统一终端/飞书列表列顺序，三区均显示5日累计」：
+    # COLS_HOT 在「现价」之后插入「5日累计」列（13 → 14 列）。基线是 09-13 拆分时的旧列集，
+    # 故这不是拆分走样而是功能迭代。
+    # ⚠ 本工具**够不着**列变更的下游一致性（飞书压缩列规格的列数、两出口行宽）——
+    # 那由 tests/test_feishu.py::test_hot_row_columns_match_terminal /
+    # test_hot_row_width_is_uniform 守，改列必须同时跑它们。
+    "COLS_HOT": "列集变更（5efd8cb 插入「5日累计」列）：功能迭代，非拆分走样",
+}
+
 # ── 拆分后**有意**改动的定义体白名单 ──
 # 拆分本身是等价变换；此后的功能迭代会合法地改动 view/ 里的函数体，那不属于「拆分走样」。
 # 每条都必须写明改了什么、归属哪次改动，避免这张表变成「把红灯涂绿」的垃圾桶。
@@ -158,7 +176,11 @@ EXPECTED_BODY_DIVERGENCE = {
     # 「沪深主板+创业板」→「创业板」、「ST·科创板/北交所/ETF」→「非创业板」）。
     # 该改动发生在**拆分之前、基线之后**，与拆分等价性无关，但按本工具的规则必须登记
     # —— 否则守卫常年红 1 行，真出现等价性破坏时会被这条噪音淹没。
-    "_render_hot_watch_region": "脚注文案口径修正（61631bc，拆分前引入）：样本面收窄为创业板",
+    "_render_hot_watch_region": "脚注文案口径修正（61631bc，拆分前引入）：样本面收窄为创业板；"
+    "2026-09-18 本区扩为 A 段榜内飙升 + B 段榜外异动两段并列（行渲染抽成 _hot_row_cells 共用）",
+    # 2026-09-18 沪深飙升区 B 段（榜外异动）：独立运行 `python -m scanner.offboard_watch`
+    # 也要能画 B 段，故新增 offboard_rows 入参并透传给 _render_hot_watch_region。
+    "render_hot_watch_standalone": "新增 offboard_rows 入参（B 段榜外异动的独立渲染入口）",
     # 这两个纯函数**函数体未改**，只是补了 docstring（docstring 属于函数体 AST，故须登记）：
     # 隐藏的是渲染与 ScanView 字段，排序/标签口径本身完整保留，供恢复 v2 区时零成本复原。
     "_v2_pool_sort_key": "docstring 补注：v2 展示区隐藏后本函数无生产调用方（有意保留）",
@@ -406,13 +428,20 @@ def main() -> int:
     if stale_div:
         failures.append(f"EXPECTED_BODY_DIVERGENCE 有 {len(stale_div)} 项其实已不再与基线分歧（表已过期）：{stale_div}")
 
-    # ── 检查 2：每个旧的模块级常量必须存在且值一致 ──
+    # ── 检查 2：每个旧的模块级常量必须存在且值一致（已登记的有意变更除外） ──
     c_missing = sorted(set(legacy_consts) - set(new_consts))
-    c_changed = sorted(n for n in set(legacy_consts) & set(new_consts) if legacy_consts[n] != new_consts[n])
+    c_diverged = sorted(n for n in set(legacy_consts) & set(new_consts) if legacy_consts[n] != new_consts[n])
+    c_changed = sorted(n for n in c_diverged if n not in EXPECTED_CONST_DIVERGENCE)
+    declared_cdiv = sorted(n for n in c_diverged if n in EXPECTED_CONST_DIVERGENCE)
+    stale_cdiv = sorted(set(EXPECTED_CONST_DIVERGENCE) - set(declared_cdiv))
     if c_missing:
         failures.append(f"常量缺失 {len(c_missing)} 个：{c_missing}")
     if c_changed:
-        failures.append(f"常量值被改动 {len(c_changed)} 个：{c_changed}")
+        failures.append(f"常量值被改动 {len(c_changed)} 个（未登记为有意变更）：{c_changed}")
+    if stale_cdiv:
+        failures.append(
+            f"EXPECTED_CONST_DIVERGENCE 有 {len(stale_cdiv)} 项其实已不再与基线分歧（表已过期）：{stale_cdiv}"
+        )
 
     # ── 检查 3：对外属性面 ──
     try:
@@ -454,6 +483,10 @@ def main() -> int:
     print(
         f"  已登记的有意分歧（拆分后功能迭代，不算走样）：{len(declared_div)} 个"
         + (f" {declared_div}" if declared_div else "")
+    )
+    print(
+        f"  已登记的常量变更（拆分后功能迭代）：{len(declared_cdiv)} 个"
+        + (f" {declared_cdiv}" if declared_cdiv else "")
     )
     print(
         f"  已登记的有意删除（拆分后功能迭代）：{len(removed_decl)} 个"

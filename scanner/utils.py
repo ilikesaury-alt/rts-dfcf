@@ -69,6 +69,35 @@ def to_int(v, default: int = 0) -> int:
         return default
 
 
+def accum_5d(klines, today: str) -> float | None:
+    """5 日累计涨幅（%，**剔除今日 bar**）：最近 6 根有效收盘的 (c[-1]-c[-6])/c[-6]。
+
+    口径与主线 `analysis._split_today` + 第 450 行的 accumulated 完全一致（都是
+    「剔除今日后的最近 6 根收盘」）。「5 日累计」在展示层有两个消费方 ——
+    沪深飙升区 A 段（hot_watch）与 B 段（offboard_watch）—— 故收口在此单源，
+    避免同一个列名在两处各写一遍公式而悄悄分叉。
+
+    ⚠ 与「**含**今日」口径（`analysis._accum_incl_today`，存 accumulated_incl_today
+    维度）是两个不同的量，勿混用。
+
+    klines: KlineBar（dict）列表，需含 date/close。today 之外的 bar 才参与。
+    数据不足 6 根有效收盘 → None（调用方按「无法判定」处理：A 段显示 —，
+    B 段按不产出该票处理）。
+    """
+    if not klines:
+        return None
+    closes: list[float] = []
+    for k in klines:
+        if k.get("date") == today:
+            continue
+        c = to_float(k.get("close"), 0.0) or 0.0
+        if c > 0:
+            closes.append(c)
+    if len(closes) < 6 or closes[-6] <= 0:
+        return None
+    return (closes[-1] - closes[-6]) / closes[-6] * 100.0
+
+
 def cache_put(cache: dict, key, value, max_entries: int = CACHE_MAX_ENTRIES) -> None:
     """带上限的进程内缓存写入：超限时淘汰最旧条目，防止长跑内存无限增长。
 

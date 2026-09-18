@@ -34,6 +34,8 @@ from scanner.config import (
     KLINE_FETCH_DEADLINE,
     LOG_DIR,
     NEW_FACE_LOOKBACK_DAYS,
+    OFFBOARD_DISPLAY_TOP,
+    OFFBOARD_WATCH_ENABLED,
     REFRESH_INTERVAL,
     now_beijing,
 )
@@ -53,6 +55,7 @@ from scanner.historical_watch import run_historical_watch
 from scanner.hot_watch import run_hot_watch
 from scanner.log_utils import log_results
 from scanner.models import RecommendationRow
+from scanner.offboard_watch import run_offboard_watch
 from scanner.orchestrator import scan_with_raw
 from scanner.ranking_snapshot import persist_ranking_snapshot
 from scanner.single_instance import SingleInstanceError, SingleInstanceLock, stop_existing_scanners
@@ -464,6 +467,28 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                         _log_exception("hot_watch 独立区异常", e)
                         hot_rows = None
 
+                # ── 沪深飙升区 B 段「榜外异动」（2026-09-18）──
+                # 动机：飙升榜天然滞后（好票等上榜已涨一截），且榜外票结构上永远进不来。
+                # B 段把**已在手但从未被消费**的全市场快照（market_extra_cache 的 fund_flow
+                # 行，5305 只）拿来，在**榜外创业板**里找 T1 量先动·价未动 / T2 启动首日。
+                # 与 A 段同区不同段、不混排；样本域与主线互斥（exclude_symbols 剔除今日
+                # 已推荐票，同 v1 回捞区先例）⇒ 同屏不会出现同一只票两种结论。
+                # 本段不依赖榜单 ⇒ 雪球榜单熔断时它仍可产出。完全 fail-open。
+                offboard_rows = None
+                if OFFBOARD_WATCH_ENABLED:
+                    try:
+                        offboard_rows = run_offboard_watch(
+                            adapter,
+                            conn,
+                            xq_raw,
+                            exclude_symbols=today_syms,
+                            top_n=OFFBOARD_DISPLAY_TOP,
+                        )
+                    except Exception as e:
+                        print(f"  [!] 飙升榜外段跳过: {type(e).__name__}: {e}")
+                        _log_exception("offboard_watch 独立区异常", e)
+                        offboard_rows = None
+
                 # ── v1 回捞独立区（2026-09-16）──
                 # 动机：飙升榜天然滞后——好票等上榜单时已涨一截，追进去性价比差。本区把
                 # 「系统自己在前 N 个交易日认可过的票（v1 五桶产出）」拿出来，用一套**只
@@ -509,6 +534,7 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     today_pool=res.today_pool,
                     last_ranks=last_ranks,
                     hot_rows=hot_rows,
+                    offboard_rows=offboard_rows,
                     hist_rows=hist_rows,
                     market_idx_pct=_market_pct,
                 )

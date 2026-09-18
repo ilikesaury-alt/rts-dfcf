@@ -110,6 +110,7 @@ def _build_summary(
     main_rows: list,
     hist_rows: list | None,
     hot_rows: list | None,
+    offboard_rows: list | None,
     beauty_mark: dict | None,
     flow_pct_map: dict[str, float],
     flow_filtered: int,
@@ -149,6 +150,7 @@ def _build_summary(
     # None = 本轮该区未产出（未启用或失败）；[] = 跑了但无结果。二者要区分，
     # 故先在 `or []` 之前留档。
     hot_given = hot_rows is not None
+    offboard_given = offboard_rows is not None
     hist_given = hist_rows is not None
 
     # ── 一、主线（next_day 靶点）：证据分级，不累加分数 ──
@@ -177,8 +179,13 @@ def _build_summary(
     hist_ready = sum(1 for h in hist_rows if h.percent <= SUMMARY_DIP_PCT and h.vol_ratio >= SUMMARY_VOL_MIN)
 
     # ── 三、沪深飙升：只报热度跃升计数；口径与主线不同，不参与任何合并排序 ──
+    # A 段（热榜内）= 热度跃升；B 段（榜外异动）= 量先动/启动首日，与 A 段同区不同段、
+    # 同样不跨段排序。两段分开计数、并列陈述 —— 它们的证据性质不同（A 段实测偏**下行**
+    # 风险选择器，B 段尚未回测），合起来报一个数会把「未验证」混进「已验证」。
     hot_rows = hot_rows or []
     hot_jump = sum(1 for h in hot_rows if h.rank_change >= SUMMARY_RANK_JUMP)
+    offboard_rows = offboard_rows or []
+    offboard_t1 = sum(1 for b in offboard_rows if getattr(b, "tier", "") == "T1")
 
     # ── 四、口径判定（市况优先：弱市不给进攻结论）──
     risk_n = flow_filtered + chase_filtered + tactic_filtered
@@ -197,7 +204,8 @@ def _build_summary(
     lines.append(
         f"主线 {main_n} 只（强流入 {flow_hit} · 强信号 {len(strong)}）· "
         f"回捞 {len(hist_rows)} 只（到位 {hist_ready}）· "
-        f"飙升 {len(hot_rows)} 只（跃升 {hot_jump}·非 next_day 口径）"
+        f"飙升 {len(hot_rows)} 只（跃升 {hot_jump}·非 next_day 口径）· "
+        f"榜外 {len(offboard_rows)} 只（T1 {offboard_t1}·未回测）"
     )
 
     # ── 明细二：重点观察（三重交集；为空时说明缺哪一条，而不是退而求其次给一只）──
@@ -222,6 +230,8 @@ def _build_summary(
         gaps.append("指数缺失·市况走历史口径")
     if not hot_given:
         gaps.append("飙升区未产出")
+    if not offboard_given:
+        gaps.append("榜外段未产出")
     if not hist_given:
         gaps.append("回捞区未产出")
     if gaps:
@@ -288,6 +298,7 @@ def build_scan_view(
     last_ranks: dict[str, int] | None = None,
     weak: bool | None = None,
     hot_rows: list | None = None,
+    offboard_rows: list | None = None,
     hist_rows: list | None = None,
     market_idx_pct: float | None = None,
 ):
@@ -609,6 +620,7 @@ def build_scan_view(
         main_rows=main_rows,
         hist_rows=hist_rows,
         hot_rows=hot_rows,
+        offboard_rows=offboard_rows,
         beauty_mark=beauty_mark,
         flow_pct_map=flow_pct_map,
         flow_filtered=flow_filtered,
@@ -627,6 +639,7 @@ def build_scan_view(
         final_pick_lines=_final_pick_lines,
         beauty_mark=beauty_mark,
         hot_rows=hot_rows,
+        offboard_rows=offboard_rows,
         hist_rows=hist_rows,
         flow_filtered=flow_filtered,
         market_idx_pct=market_idx_pct,

@@ -81,7 +81,7 @@ from scanner.config import (
     now_beijing,
 )
 from scanner.display_gates import beauty_marks_daily, common_hard_gate
-from scanner.utils import EXTERNAL_FAILURES, is_gem, is_st, to_float
+from scanner.utils import EXTERNAL_FAILURES, accum_5d, is_gem, is_st, to_float
 
 logger = logging.getLogger(__name__)
 
@@ -440,13 +440,13 @@ def build_candidates(
         ff_pct = flow_pct_map.get(symbol)
         c.ff_pct = ff_pct
 
-        # 5日累计（2026-09-18）：从 daily_kline 缓存计算，排除今日 bar
-        # （与主线「5日累计」列同口径）。无 K 线数据时显示 —（fail-open）。
+        # 5日累计（2026-09-18）：排除今日 bar（与主线同口径）。**公式单源 `utils.accum_5d`**
+        # —— 飙升区 A 段（本函数）与 B 段（offboard_watch）共用，免得同一个列名两处各写一遍。
+        # 无 K 线数据时显示 —（fail-open）。
         kl = klines_map.get(symbol)
-        if kl and len(kl) >= 6:
-            hist_closes = [k.get("close") for k in kl if k.get("date") != today and k.get("close")]
-            if len(hist_closes) >= 6 and hist_closes[-6] > 0:
-                c.accum_5d = round((hist_closes[-1] - hist_closes[-6]) / hist_closes[-6] * 100.0, 2)
+        _accum = accum_5d(kl, today)
+        if _accum is not None:
+            c.accum_5d = round(_accum, 2)
 
         reason = hard_exclude(c, ff_pct if HOT_FUND_FLOW_FILTER_ENABLED else None)
         if reason:

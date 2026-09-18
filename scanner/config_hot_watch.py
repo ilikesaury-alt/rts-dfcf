@@ -5,6 +5,10 @@
 import os
 
 from scanner.config_categories import YI  # noqa: F401 (市值上限复用单一 YI 单位)
+from scanner.config_scoring import (  # noqa: F401 (B 段两层涨幅带派生自启动口径单源)
+    MOMENTUM_LAUNCH_TODAY_MAX,
+    MOMENTUM_LAUNCH_TODAY_MIN,
+)
 from scanner.config_sources import FUND_OUTFLOW_NET_PCT  # noqa: F401 (资金流出阈值单源)
 
 HOT_WATCH_ENABLED = os.environ.get("RTS_HOT_WATCH", "1") != "0"
@@ -60,6 +64,38 @@ HOT_BATCH_SIZE = 50  # 批量行情单批 symbol 数（雪球 batch/quote 上限
 HOT_DETAIL_TOP = 5  # 仅对最终前 N 名补拉 detail（拿量比/涨跌停价），0=关闭
 HOT_DISPLAY_TOP = 5  # 终端独立区展示行数
 
+# ── B 段「榜外异动」（2026-09-18）：本区扩容，候选来自全市场快照的**榜外创业板** ──
+# 动机：飙升榜天然滞后（好票等上榜已涨一截）。榜外票没有榜单排名，但有全市场快照
+# 里的价/涨幅/量比/换手/成交额/流通市值 + 主力净占比 ⇒ 可做「量先动·价未动」的提前观察。
+# 三条边界（与 A 段一致，见 hot_watch 模块 docstring）：不进 recommendations、不参与
+# 复合评分/档位/画像、不给操作建议 —— 本段定位是**信号观察段**，且**尚无历史背书**
+# （阈值的常量是在**榜上**样本校准的，域迁移到榜外不保证成立）。
+OFFBOARD_WATCH_ENABLED = os.environ.get("RTS_HOT_OFFBOARD", "1") != "0"
+# 榜外专属新增门（方向 = **收紧**，符合 display_gates 的「区域可收紧不可放宽」契约）。
+# 依据（2026-09-18 实盘快照）：榜外主体是「冷门低换手小微盘」（换手 p50 仅 1.0%、
+# 流通市值 p50 仅 25 亿），成交额过低的票少量资金即可操纵分时、指标本身无参考价值。
+OFFBOARD_MIN_AMOUNT = 3000 * 1e4  # 成交额下限（元）：3000 万
+OFFBOARD_MIN_FLOAT_CAP = 10 * YI  # 流通市值下限（元）：10 亿
+# T1（量先动·价未动）额外要求：主力净占比 ≥ 此值（0 = 至少不是净流出）。
+# T2 不设该条 —— 它复用既有 MOMENTUM_LAUNCH_* 口径（那里没有资金流项），
+# 加进来会变成「同名不同义」的第三种启动定义。
+OFFBOARD_T1_MAIN_PCT_MIN = 0.0
+OFFBOARD_DISPLAY_TOP = 5  # 终端同区 B 段展示行数（与 A 段体量一致）
+# B 段两层涨幅带（**派生**，不写字面量）：分界点就是既有启动定义的下沿 ——
+# 低于 MOMENTUM_LAUNCH_TODAY_MIN(3.5%) = 「价还没动」(T1)，达到它 = 「已启动」(T2)。
+# 整条带的上界取 `min(MOMENTUM_LAUNCH_TODAY_MAX, HOT_MAX_PERCENT)`：
+# ⚠ 这是对设计稿（写的 8.0）的**有意收紧**。MOMENTUM_LAUNCH_TODAY_MAX(8.0) 是
+# 「启动首日」这个口径的上界，而 HOT_MAX_PERCENT(7.0) 是**本区**的涨幅带 ——
+# 同一张表里 A 段永不出现 >7% 的行、B 段却出现 +7.8%，是肉眼可见的区内外不一致；
+# 区域「可收紧不可放宽」的契约下取严，代价是丢掉 [7,8] 这一小段。
+OFFBOARD_T1_TODAY_MAX = MOMENTUM_LAUNCH_TODAY_MIN
+OFFBOARD_T2_TODAY_MAX = min(MOMENTUM_LAUNCH_TODAY_MAX, HOT_MAX_PERCENT)
+# 榜外 K 线池（独立于 daily_kline —— 后者的既定语义是「榜单衍生池」，塞入榜外票会
+# 污染所有基于它的回测基准与归因）：5 日累计 / MA 结构 / 顶背离判定所需的日线。
+OFFBOARD_KLINE_DAYS = 60  # 单票取多少根日线
+OFFBOARD_KLINE_WORKERS = 8  # 补 K 线并发（实测 6→16 线程无收益，服务端受限）
+OFFBOARD_KLINE_FETCH_LIMIT = 80  # 单轮最多补 K 线的候选数（按量比降序取前 N）
+
 __all__ = [
     "HOT_WATCH_ENABLED",
     "HOT_MAX_MARKET_CAP",
@@ -91,4 +127,14 @@ __all__ = [
     "HOT_BEAUTY_GATE_ENABLED",
     "HOT_FUND_FLOW_FILTER_ENABLED",
     "HOT_FUND_FLOW_FILTER_THRESHOLD",
+    "OFFBOARD_WATCH_ENABLED",
+    "OFFBOARD_MIN_AMOUNT",
+    "OFFBOARD_MIN_FLOAT_CAP",
+    "OFFBOARD_T1_MAIN_PCT_MIN",
+    "OFFBOARD_T1_TODAY_MAX",
+    "OFFBOARD_T2_TODAY_MAX",
+    "OFFBOARD_DISPLAY_TOP",
+    "OFFBOARD_KLINE_DAYS",
+    "OFFBOARD_KLINE_WORKERS",
+    "OFFBOARD_KLINE_FETCH_LIMIT",
 ]
