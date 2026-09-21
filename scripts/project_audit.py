@@ -30,6 +30,8 @@ from pathlib import Path
 DECISION_NODES = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.ExceptHandler, ast.IfExp)
 
 # 评分/决策核心模块（常量面统计范围）
+# 2026-09-21：final_pick / decision 两项随终选参考区与决策层整体删除而移除
+# （此前 parse() 对缺失文件返回 None 并 continue，属于"静默漏统计"，不如删掉）。
 CORE_MODULES = (
     "enhancer",
     "analysis",
@@ -37,8 +39,6 @@ CORE_MODULES = (
     "validator",
     "candidates",
     "nextday_prob",
-    "final_pick",
-    "decision",
     "pool",
     "danger",
     "matcher",

@@ -3,6 +3,7 @@ from scanner.config import (
     FUND_OUTFLOW_NET_PCT,
     HIST_LOOKBACK_DAYS,
     HOT_HIGHLIGHT_STREAK,
+    OFFBOARD_OPENING_SILENCE_MIN,
     TOP40_THRESHOLD,
     now_beijing,
 )
@@ -339,7 +340,8 @@ def _render_hot_watch_region(rows, offboard_rows=None) -> None:
         # 就是「它和 A 段一样是热度跃升」，而两者的口径与证据强度完全不同。
         print(
             f"  {ANSI['CYAN']}— 榜外异动{ANSI['RESET']}"
-            f"（榜外创业板·非榜单来源·排序=量比→主力净占比·T1 量先动/T2 启动首日"
+            f"（榜外创业板·非榜单来源·排序=T2 启动首日→T1 量先动→量比"
+            f"·开盘 {OFFBOARD_OPENING_SILENCE_MIN} 分内不产出(量比失真)"
             f"·{len(offboard_rows)} 只·观察段·未回测）"
         )
         for _bi, b in enumerate(offboard_rows, 1):
@@ -479,22 +481,11 @@ def render_terminal(view: ScanView) -> None:
             f"（主力净占比 ≤ {FUND_OUTFLOW_NET_PCT:.0f}% · 全区域统一口径）{ANSI['RESET']}"
         )
 
-    # 终选参考区（2026-09-08 起与决策层合并渲染；2026-09-14 决策层删除后本区独立）。
-    # 市况门状态（scanner.decision.market_gate）决定标题措辞：门关时标注「仅观察参考」。
-    if view.final_pick_lines:
-        print("=" * 78)
-        print("◆ 终选参考 — 若必须持仓买谁（空仓是合法输出）")
-        _fp_header = view.final_pick_lines[0] if view.final_pick_lines else ""
-        # 市况门状态由 final_pick 标题携带（「⚠大盘门关·仅观察参考」），不再从决策层行推断
-        # ——决策层已于 2026-09-14 删除，标题是门状态的唯一可见来源。
-        _gate_open = "大盘门关" not in _fp_header
-        if _gate_open:
-            print("  ── 终选参考（合池·次日概率排序）──")
-        else:
-            print("  ── 终选参考（门关·仅观察参考）──")
-        for _fpl in view.final_pick_lines[1:]:
-            print(f"  {_fpl}")
-        print("=" * 78)
+    # 终选参考区（2026-09-08 起与决策层合并渲染；2026-09-14 决策层删除后本区独立；
+    # 2026-09-21 按用户决策**整体删除**——连同 scanner/final_pick.py、scanner/decision.py
+    # 与 ScanView.final_pick_lines 字段）。终端现状只剩四个区块：
+    # v1 池选 / v1 回捞 / 沪深飙升（A 段） / 榜外异动（B 段），四区互不排名。
+    # 需复原见 git 历史。
 
     # ── 主表 / v2 池选区共用行渲染（同列 spec，行尾标记与回马枪/低吸区同源）──
     def _emit_pool_table_row(view: ScanView, row: MainRow, idx: int) -> None:
@@ -570,7 +561,8 @@ def render_terminal(view: ScanView) -> None:
     # 2026-09-14 按用户决策隐藏的两个展示区（需复原见 git 历史）：
     #   ◆ v2 池选（2026-09-02 上线，双跑同屏）—— 池→排雷→低吸匹配。
     #   ◆ 核心方向低吸（2026-08-19 上线）—— 主线方向核心股回调参考。
-    # 两者的数据仍参与终选参考区合池（见 assemble.build_scan_view），只是不再单独成区。
+    # 两者曾以「数据仍参与终选参考区合池」为保留理由；2026-09-21 终选参考区删除后，
+    # 这两个类别在展示通路已无任何消费方（见 assemble.build_scan_view 的说明）。
 
     # ── 沪深飙升·极有可能大涨 独立区（2026-09-11 自 rts-xueqiu 合入）──
     # 与上方所有区块口径不同且互不干扰：样本面为**创业板**（300/301，与主线一致；
@@ -588,14 +580,10 @@ def render_terminal(view: ScanView) -> None:
 
     _render_hot_watch_region(view.hot_rows, view.offboard_rows)
 
-    # 综合判断摘要（build_scan_view 计算，纯展示不参与评分/排序）。
-    # 首行挂 ◆ 标签，明细行固定 4 空格缩进——**不用**去对齐 ◆/— 这类全角字符的列宽，
-    # 终端对全角宽度的判定因字体而异，硬对齐在某些终端会歪。
-    if view.summary:
-        print()
-        for _i, _line in enumerate(view.summary):
-            _head = f"  {ANSI['BOLD']}◆ 综合判断{ANSI['RESET']} — " if _i == 0 else "    "
-            print(f"{_head}{_line}")
+    # 综合判断摘要（2026-09-17 重写的「分区体检报告」）已于 2026-09-21 按用户决策整体
+    # 删除：终端因此**只剩四个区块**（v1 池选 / v1 回捞 / 沪深飙升 A 段 / 榜外异动 B 段），
+    # 且四区互不排名、不给出任何买卖结论。需复原见 git 历史（_build_summary 与其
+    # ScanView.summary 字段同批移除）。
 
 
 def display_priority(

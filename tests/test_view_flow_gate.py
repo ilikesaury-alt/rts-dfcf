@@ -4,7 +4,7 @@
   1. 判定单源 = `ranking.is_fund_outflow`，阈值 = `config_sources.FUND_OUTFLOW_NET_PCT`(-8.0)，
      回退链 = 行内 dims/score_breakdown → `market_extra_cache` 当日全市场快照，缺失 fail-open。
   2. 过滤发生在 `view.build_scan_view` **一处**，压在 `today_recs` 上，故所有下游集合
-     （v1 池选 / 回马枪 / 终选输入）自动继承（终端与飞书共用同一份 ScanView）。
+     （v1 池选 / v1 回捞 / 沪深飙升 A·B 段）自动继承（终端与飞书共用同一份 ScanView）。
   3. 过滤**只影响展示**：`recommendations.excluded` 必须保持 0，回测/归因样本口径不受污染。
 
 2026-09-14 更新：v2 池选与核心方向低吸的展示区已隐藏，故原先针对

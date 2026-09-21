@@ -2,7 +2,11 @@
 
 ## What this is
 
-A-share (创业板) stock scanner that watches the Xueqiu biaosheng (飙升) leaderboard, scores candidates across 5 strategy buckets (rebound, known_new_face, momentum, new_face, short_term), and recommends stocks with a focus on "next-day big-rise" (次日大涨) probability. SQLite-backed, dual data source (Xueqiu primary + THS fallback).
+A-share (创业板) stock scanner that watches the Xueqiu biaosheng (飙升) leaderboard, scores candidates across 5 strategy buckets (rebound, known_new_face, momentum, new_face, short_term), and surfaces them for a "next-day big-rise" (次日大涨) read. SQLite-backed, dual data source (Xueqiu primary + THS fallback).
+
+**输出形态（2026-09-21 定稿）**：终端与飞书**只有四个区块**，各自成表、互不排名、不给结论：
+`v1 池选`（榜上主线五桶）/ `v1 回捞`（前 N 日 v1 产出今日回调到位）/ `沪深飙升 · 极有可能大涨` A 段（榜内飙升）/ 同节 B 段（榜外异动）。
+系统**不再产出任何「短名单」或「综合判断」** —— 历史上的决策层（≤3 只短名单 + 空仓判定，2026-09-14 删除）、终选参考区（「若必须持仓买谁」，2026-09-21 删除）、综合判断摘要（分区体检报告，2026-09-21 删除）都已移除。理由是它们各自构成第二个结论源，而系统唯一有证据的口径只有类别先验（见「目标函数」）。需要复原请查 git 历史。
 
 ## Commands
 
@@ -57,15 +61,17 @@ next_day 靶点不应与 3 日 P&L 混算）。
 
 ```
 python -m scanner.rule_validate                      # 基线自检：样本量/窗口/基线指标（不改任何东西）
-python -m scanner.rule_validate --set scanner.nextday_prob.OR_MARKED=5.0   # 看真实可检测下限（MDE）
-python -m scanner.rule_validate --set scanner.nextday_prob.OR_MARKED=1.56
+python -m scanner.rule_validate --set scanner.nextday_prob.OR_OVERBOUGHT=5.0   # 看真实可检测下限（MDE）
+python -m scanner.rule_validate --set scanner.nextday_prob.OR_OVERBOUGHT=1.56
 python -m scanner.rule_validate --evaluator rescore --set scanner.config.MIN_SCORE=60
 python -m scanner.rule_validate --list-evaluators     # 各评估器能"看见"哪些模块
 ```
 
 **退出码：0 = 样本外支持 / 1 = 证据不足（默认拒绝）/ 2 = 样本外显著变差 / 3 = 用法或可见性错误。**
 
-主指标 = test 窗**按日等权 top-N 次日 hit 率**（N = `FINAL_PICK_MAX`，即真实终选宽度），
+主指标 = test 窗**按日等权 top-N 次日 hit 率**（N = `rule_validate.DEFAULT_TOP_N` = 3，
+即**名次带宽度**；2026-09-21 终选参考区删除后系统已无任何"短名单"，N 只是报告宽度，
+取 3 是为了与历史报告可比），
 显著性 = 按日配对 bootstrap 的 95% CI。**判定只看 test 窗**；train 窗 Δ 用于暴露过拟合。
 报告里的 **MDE** 正面回答"以当前样本量，多小的改善才可能被检出"——若 MDE 远大于你观察到的 Δ，
 那"指标变好"不构成上生产的理由。
@@ -147,9 +153,9 @@ This rebuilds scores via `scanner/historical_rescan.py --rescore` (faithful to t
 
 ## 目标函数（2026-09-14 定稿，唯一口径）
 
-**次日≥7% hit 率**是系统唯一的类别先验口径 —— 排序、档位、🎯 画像、决策层准入**全部**用它。
-（平均超额收益只保留一处：`decision.market_gate` 的择时门，回答「今天开仓期望是否为负」，
-是择时问题不是择股问题；见 `scanner/decision.py` 模块 docstring 的显式豁免说明。）
+**次日≥7% hit 率**是系统唯一的类别先验口径 —— 排序、档位、🎯 画像、类别准入**全部**用它。
+（2026-09-21 起「唯一例外」不复存在：平均超额收益的最后一位消费者 `decision.market_gate`
+择时门随终选参考区删除，`scanner/decision.py` 整个模块已不在仓库里。）
 
 **唯一手抄源 = `config_scoring.CATEGORY_HIT_RATE`**（+ `_DEFAULT`）。下游一律派生，不得复制：
 
@@ -157,12 +163,13 @@ This rebuilds scores via `scanner/historical_rescan.py --rescore` (faithful to t
 |---|---|
 | `nextday_prob.BASE_RATE_BY_CAT` | **别名**（`is` 同一对象，非 copy） |
 | `config_scoring.COMPOSITE_CAT_BASE` | `(hit − 基准) / (最高 hit − 基准) × 10` |
-| `decision.DECISION_GATED_CATEGORIES` | 主表类别 ∩ hit > 基准 |
-| `decision.DECISION_CATEGORY_SPECS` | 顺序 = hit 降序；方向 = `categories.SCORE_DESCENDING_BY_CAT` |
+
+（2026-09-14 删除的 `decision.DECISION_GATED_CATEGORIES` / `DECISION_CATEGORY_SPECS`
+两行随决策层移除；重建决策层时需恢复派生关系与守护。）
 
 守护：`tests/test_category_priors.py`（结构/派生关系；数值漂移另有 `test_nextday_calib.py`）。
 改动这类**结构性**口径别只跑 `rule_validate` —— 它的三个评估器
-（`stored-score` / `nextday-prob` / `rescore`）**都看不见决策层准入与 `COMPOSITE_CAT_BASE`**，
+（`stored-score` / `nextday-prob` / `rescore`）**都看不见 `COMPOSITE_CAT_BASE`**，
 纯搬迁（取值未变）必然报「证据不足 / 翻转 0 天」。对**等价变换**要另证
 （比较改造前后的常量取值 + 生产函数体是否逐字节相同），对**行为变更**要列出受影响的类别集合差异。
 

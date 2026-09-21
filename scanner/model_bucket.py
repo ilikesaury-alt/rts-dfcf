@@ -66,7 +66,8 @@ def _load_join_features(conn: sqlite3.Connection) -> tuple[pd.DataFrame, pd.Data
 
     - rank：appearances 按票按日的榜单排名（历史样本也有 → 立即可用）
     - index_pct / index_cum5：market_index_log 的当日大盘涨幅与 5 日累计
-      （与 decision.market_gate 同口径：近 5 条记录求和）
+      （口径：近 5 条记录求和 —— 原 decision.market_gate 的择时门同款口径，
+        该模块已于 2026-09-14 随决策层删除，此处保留口径说明以便与历史结论对照）
     """
     try:
         rank_rows = conn.execute(

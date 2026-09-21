@@ -271,7 +271,12 @@ OVERHEAT_ACCUM_MAX = 50.0
 #   core_dip  平均超额 +1.69%（旧表第一优先级） vs hit 率 6.5%（**低于**全体基准）
 #   momentum  平均超额 −0.70%（旧表「永禁」）   vs hit 率 10.0%（**高于**全体基准）
 # 2026-09-14 用户拍板：**hit 率是唯一类别先验口径**。本表即唯一手抄源，
-# 下游（nextday_prob / ranking / decision）一律从它派生，不得再抄第二份。
+# 下游（nextday_prob / ranking）一律从它派生，不得再抄第二份。
+# 2026-09-14 同日：第三份副本（decision.DECISION_CATEGORY_SPECS）随决策层整体删除，
+# 故上面那张「三份副本」的对照表现在只剩两行 —— 保留它是因为**口径冲突的教训**
+# 比当前副本数量更有价值。
+# 2026-09-21：终选参考区（scanner.final_pick）删除后，本表的直接消费方只剩
+# nextday_prob.BASE_RATE_BY_CAT（别名）与 composite_score 的类别基准。
 #
 # 数据来源与复核纪律：nextday_calib 按统一去重口径重算并做漂移巡检——
 #   python -m scanner.nextday_calib            # 巡检（漂移即退出码 1）

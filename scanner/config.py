@@ -9,7 +9,7 @@
 #   config_categories       策略桶门槛、市值/价格限制、回马枪·核心低吸配置、策略桶开关
 #   config_scoring         评分/打分阈值、加分项、交叉验证权重、次日大涨/复合评分/持有期
 #   config_risk            风险标签、硬过滤集合、排雷阈值、基本面风险、反转移出阈值
-#   config_sources         飞书推送、外部数据源(涨停池/资金流/概念)、v2/决策/终选/走势美展示开关
+#   config_sources         飞书推送、外部数据源(涨停池/资金流/概念)、v2/走势美感展示开关
 #   config_hot_watch       沪深飙升「极有可能大涨」独立区配置
 #   config_historical      「v1 回捞」独立区配置（前 N 交易日 v1 产出的回调筛选）
 #   config_tactics        盘中操作纪律(intraday tactics)参数

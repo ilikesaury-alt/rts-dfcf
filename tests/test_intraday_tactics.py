@@ -344,31 +344,10 @@ class TestTagSingleSource:
 
     收敛前有 7 份拷贝——产生端 4 处（本模块规则 1/2/3/5/6/7/12 的 append）+
     消费端 3 处（display 主表 / display v2 池选区 / final_pick 终选）。
-    final_pick.py 的注释还声称「与 display 同源」，实为拷贝，改一处忘另两处
-    会导致展示与终选硬过滤口径静默不一致。
+    2026-09-21：消费端只剩 display 主表一处 —— v2 池选展示区 2026-09-14 隐藏、
+    final_pick 终选随终选参考区整体删除，原先针对 final_pick._SELL_TAGS 的
+    单源回归测试随之移除（那个模块已不存在）。下面几条改为只守「config 单源本身」。
     """
-
-    def test_sell_tags_refers_to_config_single_source(self):
-        """final_pick._SELL_TAGS 必须来自 config 单源，而非字面量拷贝。
-
-        注意：这里断言「值相等 + 源码是引用」而非 `is` 身份相等。原因：全量测试下
-        `scanner.config` 可能被重载（产生等值的另一个 frozenset 实例），
-        `is` 断言会随测试顺序虚假失败。防回归靠的是下面的源码检查。
-        """
-        import pathlib
-        import re
-
-        from scanner import final_pick
-        from scanner.config import TACTICS_SELL_TAGS
-
-        assert set(final_pick._SELL_TAGS) == set(TACTICS_SELL_TAGS)
-
-        src = pathlib.Path(final_pick.__file__).read_text(encoding="utf-8")
-        # 定义行必须是 `_SELL_TAGS = TACTICS_SELL_TAGS`，不能是字面量集合
-        assert re.search(r"^_SELL_TAGS\s*=\s*TACTICS_SELL_TAGS\s*$", src, re.M), (
-            "final_pick._SELL_TAGS 不再是 config 单源引用——"
-            "说明又被复制成了字面量，改标签会漏改此处"
-        )
 
     def test_sell_tags_exact_membership(self):
         """卖出集合精确等于 4 项，且不含方向相反的 ⬆加仓。"""

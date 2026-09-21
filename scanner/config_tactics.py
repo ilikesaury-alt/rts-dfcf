@@ -45,16 +45,17 @@ TACTICS_MINUTE_VOL_RECENT_BARS = 30  # 量能趋势对比的近期分钟窗口
 # （display.py 主表、display.py v2 池选区、final_pick.py）各自硬编码同一批 emoji 字面量，
 # 共 7 份拷贝。改名需同步 7 处，且 final_pick.py 注释声称「与 display 同源」实为拷贝
 # （误导）。现统一到此处，产生端与消费端全部改为引用。
-# ⚠️ 这些字符串是 emoji + 中文，改动会同时影响展示与终选硬过滤语义，勿轻易调整。
+# 2026-09-21：消费端只剩 display 主表一处（v2 池选区 2026-09-14 隐藏、final_pick 删除）。
+# ⚠️ 这些字符串是 emoji + 中文，改动会同时影响展示与硬过滤语义，勿轻易调整。
 TACTICS_TAG_REDUCE_HALF = "⬇减半"  # rule 2：高开≥5% 但封不住板
 TACTICS_TAG_REDUCE = "⬇减仓"  # rule 1/7：早盘冲高 / 午盘冲高回落+缩量
 TACTICS_TAG_ADD = "⬆加仓"  # rule 3/12：平开稳步走高 / 早上大跌无硬风险
 TACTICS_TAG_NO_CHASE = "🔻勿接"  # rule 5：14:30 后尾盘跳水
 TACTICS_TAG_TAKE_PROFIT = "💰落袋"  # rule 6/10：14:00-14:30 涨停
 
-# 减仓类纪律标签集合（卖出信号）：命中即被三处硬过滤剔除
-# —— display 主表 / display v2 池选区 / final_pick 终选。语义为「回避」，
-# 不含 TACTICS_TAG_ADD（加仓是买点信号，方向相反）。
+# 减仓类纪律标签集合（卖出信号）：命中即被展示层硬过滤剔除
+# —— 现只剩 display 主表一处（v2 池选区 2026-09-14 隐藏、final_pick 终选 2026-09-21 删除）。
+# 语义为「回避」，不含 TACTICS_TAG_ADD（加仓是买点信号，方向相反）。
 TACTICS_SELL_TAGS: frozenset[str] = frozenset(
     {
         TACTICS_TAG_REDUCE,

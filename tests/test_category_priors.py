@@ -3,7 +3,7 @@
 **为什么需要这组测试**：2026-09-14 静态审查（docs/strategy-flow-review-2026-09-14.md §一）
 发现系统里存在**三张手抄的类别先验表且口径互相矛盾**：
 
-  nextday_prob.BASE_RATE_BY_CAT      → hit 率（终选排序用）
+  nextday_prob.BASE_RATE_BY_CAT      → hit 率（曾用于终选排序，现只剩离线消费者）
   config_scoring.COMPOSITE_CAT_BASE  → hit 率线性映射（但取自更早的快照）
   decision.DECISION_CATEGORY_SPECS   → **平均超额收益**（决策层准入与顺序）
 
@@ -18,6 +18,11 @@
 2026-09-14 后续（决策层删除）：第三张表随 `scanner/decision.py` 的决策层一起消失，
 本文件相应删掉「决策层准入/顺序」那两节守护（原 §3/§4）。**口径约束本身不变**——
 现在只剩两位派生消费方（nextday_prob 别名、COMPOSITE_CAT_BASE），守护照旧逐项复算。
+
+2026-09-21 后续（终选参考区删除）：`nextday_prob.BASE_RATE_BY_CAT` 的线上消费者
+（scanner/final_pick.py）也删除了，本别名现在只服务**离线**评估（rule_validate 的
+nextday-prob 评估器 / scripts/nextday_calib_ab.py）。守护不变 —— 别名关系与派生公式
+仍必须成立，因为离线评估结论直接影响「是否上生产」的判断。
 
 （数值漂移由 tests/test_nextday_calib.py 的代码常数↔快照守护负责，与本文件的
 「结构/派生关系」守护互补。）

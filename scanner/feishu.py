@@ -445,9 +445,10 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
     display_priority 读「DB 当日累计推荐」——同一只票可能一边排第 1、另一边不出现。
     现统一由 build_scan_view 供数，保证「终端看得到什么，卡片就推什么」。
 
-    分节口径（2026-09-16 同步）：卡片画 终选参考 → v1 池选 → v1 回捞 → 沪深飙升·极有可能大涨，
-    与终端 render_terminal 的区块**顺序与条件**一一对应。同期按用户决策移除三个区块：**决策层**（整体删除）、
-    **v2 池选** 与 **核心方向低吸**（隐藏）。**回马枪（comeback）两处都没有展示区**
+    分节口径（2026-09-21 同步）：卡片画 v1 池选 → v1 回捞 → 沪深飙升·极有可能大涨，
+    与终端 render_terminal 的区块**顺序与条件**一一对应。按用户决策累计移除的区块：
+    **决策层**（2026-09-14 整体删除）、**终选参考**（2026-09-21 整体删除）、
+    **v2 池选** 与 **核心方向低吸**（2026-09-14 隐藏）。**回马枪（comeback）两处都没有展示区**
     （ca91d21 起移除，见 docs/CORE-FLOW.md §十-1），故它既不是分节门控、也不进
     `_view_symbols` 去重集合。
 
@@ -469,24 +470,10 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
     elements: list[dict] = [{"tag": "div", "text": {"tag": "lark_md", "content": header_text}}]
 
     sections: list[tuple[str, list[str]]] = []
-    # 终选参考置顶（2026-09-04 上线；2026-09-14 决策层删除后本区独占首区块）。
-    # 市况门状态由 final_pick 标题携带（「⚠大盘门关·仅观察参考」）——决策层行已不存在，
-    # 标题是门状态的唯一可见来源。
-    final_pick_lines = getattr(view, "final_pick_lines", None)
-    if final_pick_lines:
-        _gate_open = "大盘门关" not in (final_pick_lines[0] if final_pick_lines else "")
-        merged = ["**◆ 终选参考 — 若必须持仓买谁（空仓是合法输出）**"]
-        merged.append("── 终选参考（合池·次日概率排序）──" if _gate_open else "── 终选参考（门关·仅观察参考）──")
-        merged.extend(final_pick_lines[1:])
-        elements.append(
-            {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": "\n".join(merged),
-                },
-            }
-        )
+    # 终选参考节（2026-09-04 上线）已于 2026-09-21 按用户决策**整体删除** —— 连同
+    # scanner/final_pick.py（含市况门 scanner.decision.market_gate）与 ScanView.final_pick_lines
+    # 字段。卡片现状与终端同步只剩四节：v1 池选 / v1 回捞 / 沪深飙升（A 段）/ 榜外异动（B 段）。
+    # 需复原见 git 历史。
     pool_lines = [
         _row_line(row.entry, view, rank=row.rank, accum=row.accum, score=_to_score(row.score)) for row in main
     ]
@@ -542,8 +529,8 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
     # 展示层资金流出硬门（2026-09-14）同理：卡片少了几只，必须说明为什么（与终端同源，
     # 过滤本身在 build_scan_view 一处完成，本处只做告知）。
     _notes = list(view.warnings)
-    # getattr 兜底：与上方 final_pick_lines 同款——轻量 view 桩（测试/回放）
-    # 可能只实现部分字段，缺 flow_filtered 时按「未过滤」处理，不因此抛错。
+    # getattr 兜底：轻量 view 桩（测试/回放）可能只实现部分字段，
+    # 缺 flow_filtered 时按「未过滤」处理，不因此抛错。
     _flow_filtered = getattr(view, "flow_filtered", 0)
     if _flow_filtered:
         _notes.append(f"资金流出已剔除 {_flow_filtered} 只（主力净占比 ≤ {FUND_OUTFLOW_NET_PCT:.0f}%）")
@@ -612,33 +599,32 @@ def view_has_content(view: ScanView) -> bool:
 
     必须与 build_feishu_card 的区块条件逐条对齐，否则会出现「明明有内容却不推」
     （本函数漏判）或「推了一张空卡」（本函数多判）。当前四个来源：
-      1. view.final_pick_lines        —— 终选参考节（最先渲染，独立于 main_rows）；
-      2. view.main_rows[:FEISHU_TOP_N] —— v1 池选节；
-      3. view.hist_rows               —— v1 回捞独立区（2026-09-16 上线）；
-      4. view.hot_rows                —— 沪深飙升独立区（A 段榜内飙升）；
-      5. view.offboard_rows           —— 沪深飙升独立区的 B 段（榜外异动，2026-09-18 上线）
+      1. view.main_rows[:FEISHU_TOP_N] —— v1 池选节；
+      2. view.hist_rows               —— v1 回捞独立区（2026-09-16 上线）；
+      3. view.hot_rows                —— 沪深飙升独立区（A 段榜内飙升）；
+      4. view.offboard_rows           —— 沪深飙升独立区的 B 段（榜外异动，2026-09-18 上线）
     公开（非 `_` 前缀）是刻意的：它是「有没有内容」的**跨模块单源**，
     除 should_push 外还被 unified_scanner 的「推送跳过」提示复用（此前那里自持
-    一份 `bool(view.main_rows)`，不认第 1、3、4 条）。
+    一份 `bool(view.main_rows)`，不认第 2、3、4 条）。
 
-    2026-09-15 修：此前只等价于第 2 条 —— 于 `should_push` 里表现为「票集空 ⇒ empty ⇒
+    2026-09-15 修：此前只等价于第 1 条 —— 于 `should_push` 里表现为「票集空 ⇒ empty ⇒
     整卡不推」，而终端在**同一份 view 上**照画。实测（真实 scanner.db，把展示层资金流出
     硬门置为全剔）该场景可复现且非假设：
-        main_rows=0 / final_pick_lines=3 / hot_rows=1 / flow_filtered=70
-        终端画出「终选参考 + 飙升区」，卡片分节同样是这两节；
+        main_rows=0 / hot_rows=1 / flow_filtered=70
+        终端画出「飙升区」，卡片分节同样是这一节；
         `_view_symbols`=∅ 但本函数=True；旧门判 empty（整卡不推），新门判 ok。
     ⚠ 边界（别把结论说满）：`build_scan_view` 在 `today_recs` 为空时**先返回 None**，
     此时 `display_priority` 直接返回、终端也不画飙升区 —— 两出口是**一致**的（都没输出）。
     所以本函数的修复针对的是「有推荐但被展示层门剔除（资金流出硬门 / 减仓标签 / 不追涨）」
     这一类空池，不是「今日完全无推荐」。
+    2026-09-21：第 1 条来源（终选参考节）随该区删除而移除 —— 少一个「有内容」来源，
+    判据相应收紧（原先「只有终选参考、池选为空」也推卡的情形不复存在）。
     遗留（未动，需另行决策）：`view is None` 时 `run_hot_watch` 已算出的飙升区被静默丢弃
     （每轮白算 3~5s，两出口都看不到）—— 属 `display_priority` 的提前返回语义，改动会变更
     终端与推送行为，故留作独立议题。
 
     getattr 兜底：轻量 view 桩（测试/回放）可能只实现部分字段，缺字段按「该区块为空」处理。
     """
-    if getattr(view, "final_pick_lines", None):
-        return True
     if view.main_rows[:FEISHU_TOP_N]:
         return True
     if getattr(view, "hist_rows", None):

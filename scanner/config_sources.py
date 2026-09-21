@@ -61,7 +61,7 @@ FUND_FLOW_BONUS_WEAK = -3
 # 「资金流出」的**唯一阈值**（2026-09-14 收敛为单源）：全系统凡判定「主力净流出 →
 # 剔除 / 劣后 / 过滤」之处一律引用本常量，禁止再写字面量或另立同义常量。消费方：
 #   enhancer「资金流出」标签 / ranking 档3劣后 / nextday_prob / nextday_calib 校准桶 /
-#   final_pick 终选门 / hot_watch 独立区门（派生）/ view 展示层硬门（terminal+飞书）。
+#   hot_watch 独立区门（派生）/ view 展示层硬门（terminal+飞书）。
 # 反例（已收口）：hot_watch 曾手抄 -8.0 字面量（现已派生）。
 # 注意区分**不同语义**、刻意保留的相邻阈值，不要一并"统一"：
 #   - FUND_FLOW_MAIN_PCT_WEAK(-5%)：**评分扣分档**（弱流出告警），不是「流出」档；
@@ -181,50 +181,40 @@ DISPLAY_MAX_TODAY_PCT = _env_float("RTS_DISPLAY_MAX_TODAY_PCT", 8.0)
 # ── 决策层已于 2026-09-14 整体删除（用户决策）──
 # 删除内容：≤3 只短名单/空仓判定、类别先验门、配额截断、decision_picks 落库采集、
 # 终端与飞书的「今日决策」区块，以及 DECISION_LAYER_ENABLED /
-# DECISION_INTRADAY_BEAUTY_ENABLED 两个开关。
-# 仅保留 scanner.decision.market_gate（择时门）——终选参考区靠它标注「门关·仅观察参考」。
+# DECISION_INTRADAY_BEAUTY_ENABLED 两个开关。复原见 git 历史。
+#
+# ── 终选参考区已于 2026-09-21 整体删除（用户决策）──
+# 删除内容：scanner/final_pick.py 整模块、scanner/decision.py（决策层删除后仅剩的
+# 择时门 market_gate 也在同一批删除）、终端与飞书的「终选参考」区块、
+# ScanView.final_pick_lines 字段，以及 FINAL_PICK_ENABLED / FINAL_PICK_MAX /
+# FINAL_PICK_REJECT_TOP / FINAL_PICK_BEAUTY_ENABLED / FINAL_PICK_FUND_FLOW_FILTER
+# 五个常量（连同 RTS_FINAL_PICK* 三个环境变量杠杆）。
+# 动机：终端只保留四个区块（v1 池选 / v1 回捞 / 沪深飙升 / 榜外异动）；
+# 「若必须持仓买谁」这张短名单自成一个结论源，与系统唯一口径（类别先验）不同源，
+# 留着只会引出「以哪张表为准」的二次解释成本。
 # 复原见 git 历史。
 
-# ── 终选参考区（2026-09-04；2026-09-05 升级为概率+周期感知终选）──
-# 定位：回答「若必须持仓买谁」（无论市况门开关都给结论）。市场门状态由
-# scanner.decision.market_gate 提供，用于标题区分「门开」/「门关·仅观察参考」。
-# 评级单源复用 today_report._tier0_verdict（已回测口径），
-# 排序单源用 scanner.nextday_prob（当日口径次日大涨概率，朴素贝叶斯式 odds 模型）；
-# 买满 ≥2 只时按驱动概念去相关（同主题第 2 只劣后）。
-# 2026-09-14：删除「momentum 负先验永禁」——那是平均超额口径，与终选排序的 hit 率
-# 口径方向相反（momentum hit 10.0% > 基准 7.8%）。类别优劣一律由 base rate 如实反映。
-# 纯展示层，不改评分/排序/落库。回滚杠杆：RTS_FINAL_PICK=0 关闭。
-FINAL_PICK_ENABLED = _env_flag("RTS_FINAL_PICK", True)
-FINAL_PICK_MAX = 3  # 终选最多 N 只（用户买入预算 1-3 只，2026-09-08 由 2 放宽为 3）
-FINAL_PICK_REJECT_TOP = 4  # 落选理由最多展示条数（按概率降序取头部）
-# 终选资金流过滤（2026-09-14）：主力净流出占比 ≤ 阈值 → 不进终选
-# 与 hot_watch/comeback 同源阈值（FUND_OUTFLOW_NET_PCT = -8.0%）
-# 1=开启（默认），0=关闭
-FINAL_PICK_FUND_FLOW_FILTER = _env_flag("RTS_FINAL_PICK_FUND_FLOW_FILTER", True)
-
-# ── 终选走势美感门（2026-09-09）：分时/日线走势「漂亮」是终选准入条件 ──
+# ── 走势美感判定（2026-09-09 上线；2026-09-15 分档）──
 # 日线漂亮（scanner/trend_beauty.evaluate_daily_trend）= 干净上升趋势 6 硬门：
 #   ① MA 多头排列 MA5>MA10>MA20 ② 近5日收盘趋势向上 ③ 无暴跌日
 #   ④ 回调可控（单日跌幅小）⑤ 无长上影冲高回落 ⑥ 收盘未远离 20 日高点。
 # 分时漂亮 = intraday_score ≥ INTRADAY_BEAUTY_MIN（复用盘中 analyze_intraday
 #   评分，-10~10；>0 平稳走高/高位不回落，<0 冲高回落/走弱）。
 # 数据缺失（日线不足/intraday_score 缺失即 0.0 默认值）fail-open 不判否——
-#   终选是展示层，只拦「可判定的丑」，不因数据缺口误杀。
-# 【2026-09-09 数据裁决：硬拦默认关】双窗口实测（原 beauty_gate_eval.py，2307 样本，
-#   日线 T-1 前防前视）：放行组 hit 8.4%/0.0% vs 基线 9.8%/5.5%，双窗口同向低于
-#   基线；且样本内放行仅 21/1346（1.6%）。「漂亮=稳但不爆」：放行组 avg/med 两窗
+#   美感判定是展示层，只拦「可判定的丑」，不因数据缺口误杀。
+# 【2026-09-09 数据裁决：日线漂亮**不作**准入硬门】双窗口实测（原 beauty_gate_eval.py，
+#   2307 样本，日线 T-1 前防前视）：放行组 hit 8.4%/0.0% vs 基线 9.8%/5.5%，双窗口同向
+#   低于基线；且样本内放行仅 21/1346（1.6%）。「漂亮=稳但不爆」：放行组 avg/med 两窗
 #   均高于基线（滤掉大亏）但 hit 反而低（滤掉爆发票）。对「次日大涨」目标负贡献，
-#   硬拦降级；展示标记保留（TREND_MARK_ENABLED）作为买入体验参考。
+#   故从不做准入门，只作展示标记（TREND_MARK_ENABLED）供买入体验/回撤控制参考。
 #   ⚠ 该脚本**不在仓库里**（docs/refactor-recommendation-2026-09-11.md 已指出），
 #     上述数字不可复现，仅作历史决策记录。2026-09-15 的复核见下方分级说明，
 #     复现入口 `python scripts/beauty_mark_eval.py`（离线·确定性·读 scanner.db）。
-#   重开硬拦：RTS_FINAL_PICK_BEAUTY=1。
-FINAL_PICK_BEAUTY_ENABLED = _env_flag("RTS_FINAL_PICK_BEAUTY", False)
-# 走势展示标记（2026-09-09 上线 / 2026-09-15 分档）：v1 池选行 + 终选个股行尾，纯展示。
+#   2026-09-21：随终选参考区删除，原 FINAL_PICK_BEAUTY_ENABLED 硬拦开关一并移除
+#     ——该门默认即为关（数据裁决从未放行），删除不改变任何线上行为。
+# 走势展示标记（2026-09-09 上线 / 2026-09-15 分档）：v1 池选行行尾，纯展示。
 # 分档口径 = **日线定准入、分时定级别**（trend_beauty.beauty_mark）："" / "美" / "美★"。
-# 独立于硬拦开关——硬拦关了标记仍在（买入体验/回撤控制参考）。关：RTS_TREND_MARK=0。
-# ⚠ 与硬拦**有意不同口径**：门是「日线 ∧ 分时」双维度硬拦（默认关）；标记比门宽
-#   （分时走弱/缺失只降档到「美」）。门一旦打开，标「美」的票可能被门按分时拦掉。
+# 关：RTS_TREND_MARK=0。
 # 【2026-09-15 分级裁决】旧标记（日线∧分时）标记率仅 1.8% ≈ 常年空白，归因**对半**：
 #   取消 AND 结构回收约一半，INTRADAY_BEAUTY_MIN=2.5 恰压在 intraday_score 的 p90
 #   （可判定样本通过率 12%）再砍掉约 2/3 —— 只调阈值上限仅 4.0%，故改分级而非调阈值。
@@ -281,11 +271,6 @@ __all__ = [
     "CONCEPT_NOISE_BOARD_SUFFIXES",
     "V2_POOL_DISPLAY_TOP",
     "DISPLAY_MAX_TODAY_PCT",
-    "FINAL_PICK_ENABLED",
-    "FINAL_PICK_MAX",
-    "FINAL_PICK_REJECT_TOP",
-    "FINAL_PICK_BEAUTY_ENABLED",
-    "FINAL_PICK_FUND_FLOW_FILTER",
     "TREND_MARK_ENABLED",
     "INTRADAY_BEAUTY_MIN",
     "DAILY_BEAUTY_MIN_BARS",

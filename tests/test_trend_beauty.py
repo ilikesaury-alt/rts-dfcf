@@ -1,4 +1,4 @@
-"""终选走势美感门（scanner.trend_beauty）单元测试。
+"""走势美感判定（scanner.trend_beauty）单元测试。
 
 日线 6 硬门：MA 多头 / 趋势向上 / 无暴跌 / 回调可控 / 无长上影 / 未破位；
 分时：intraday_score ≥ INTRADAY_BEAUTY_MIN，0.0 视为缺失 fail-open。
@@ -11,9 +11,10 @@ from types import SimpleNamespace
 
 from scanner.config import INTRADAY_BEAUTY_MIN, now_beijing
 
-# 经终选门单源导入（final_pick 相对 re-export）：pyright 会话快照不含新建子模块，
-# 绝对名 scanner.trend_beauty 在其冻结缓存里解析不到，运行时/ mypy 均正常。
-from scanner.final_pick import (  # noqa: F401
+# 2026-09-21：原先经 scanner.final_pick 中转导入（该模块是趋势判定的历史归属地），
+# 终选参考区整体删除后改为**直接**从 scanner.trend_beauty 取 —— 判定单源没变，
+# 只是不再绕一个已不存在的模块。
+from scanner.trend_beauty import (
     DAILY_INSUFFICIENT,
     INTRADAY_MISSING,
     evaluate_daily_trend,

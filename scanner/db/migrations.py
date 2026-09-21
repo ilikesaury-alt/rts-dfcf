@@ -243,6 +243,7 @@ _OFFBOARD_LAUNCH_LOG_DDL = """
         float_cap REAL,                 -- 流通市值（元）
         price REAL,                     -- 现价
         first_time TEXT,                -- 本区当日首次产出该行的时刻
+        last_hit_time TEXT DEFAULT '',  -- 当日最后一次命中该行的时刻（v9 新增）
         next_day_pct REAL,              -- 次日收益（%，由 backfill 回填）
         updated TEXT DEFAULT '',
         PRIMARY KEY(date, symbol)
@@ -270,6 +271,26 @@ def _up_offboard_tables(conn: sqlite3.Connection) -> None:
 
 def _check_offboard_tables(conn: sqlite3.Connection) -> bool:
     return _has_table(conn, "offboard_kline_cache") and _has_table(conn, "offboard_launch_log")
+
+
+def _up_offboard_log_last_hit(conn: sqlite3.Connection) -> None:
+    """v9（2026-09-21）：`offboard_launch_log` 补 `last_hit_time`。
+
+    动机：`updated` 被两处写（`persist_round` 每轮 + `backfill_next_day` 回填），
+    于是它既不是「命中时刻」也不是「回填时刻」——09-18 那 5 行的 `updated` 全被回填
+    写成 09-21 的时刻，和当日行的 `first_time` 撞在一起，命中时间维度事实上丢失。
+    拆出专列后语义唯一：`first_time` 首次产出、`last_hit_time` 最后命中、
+    `updated` 最后任何写入。
+
+    与本次同批的 `persist_round` 语义变更（信号值首次写入即冻结）配套：只有
+    `last_hit_time` / `updated` 每轮刷新。
+    """
+    conn.execute("ALTER TABLE offboard_launch_log ADD COLUMN last_hit_time TEXT DEFAULT ''")
+
+
+def _check_offboard_log_last_hit(conn: sqlite3.Connection) -> bool:
+    # check 语义 = 「已满足」：表不存在（全新库，DDL 已含该列）或列已在 → 满足。
+    return not _has_table(conn, "offboard_launch_log") or _has_column(conn, "offboard_launch_log", "last_hit_time")
 
 
 # ── 迁移总表（顺序即执行顺序；只在末尾追加）──
@@ -353,6 +374,12 @@ MIGRATIONS: list[Migration] = [
         desc="沪深飙升 B 段（榜外异动）：榜外 K 线池 + 逐日落库表",
         check=_check_offboard_tables,
         up=_up_offboard_tables,
+    ),
+    Migration(
+        id="m016_offboard_log_last_hit",
+        desc="offboard_launch_log 补 last_hit_time（updated 被回填补写，命中时刻需独立列）",
+        check=_check_offboard_log_last_hit,
+        up=_up_offboard_log_last_hit,
     ),
 ]
 

@@ -73,7 +73,7 @@ def test_should_push_ok_after_timeout(monkeypatch):
 # ── push_feishu 编排 ──
 
 
-def _fake_view(symbols, *, hot_rows=None, hist_rows=None, final_pick_lines=None):
+def _fake_view(symbols, *, hot_rows=None, hist_rows=None):
     """构造最小 ScanView 替身，只含 _view_symbols / view_has_content / build_feishu_card 读取的字段。
 
     main_rows 项需有 .entry(dict) / .rank / .accum / .score；
@@ -81,11 +81,12 @@ def _fake_view(symbols, *, hot_rows=None, hist_rows=None, final_pick_lines=None)
 
     2026-09-14：`show_core_dip` / `core_dip_rows` / `pool_rows` / `pool_total` 四个桩字段
     已移除 —— 卡片不再画 v2 池选与核心低吸两节，头部也不再读池选计数。
-    2026-09-15：新增 `hot_rows` / `final_pick_lines`（默认 None = 该区块为空），
-    供飙升区门控与「有内容」判据的用例使用。
+    2026-09-15：新增 `hot_rows`（默认 None = 该区块为空），供飙升区门控与「有内容」判据用。
     2026-09-16：新增 `hist_rows`（默认 None = 回捞区为空）—— 该字段是 build_feishu_card /
     view_has_content 用 getattr 读的，桩必须显式持有，否则「回捞区有内容」的用例会静默退化成
     「该区为空」而假绿。
+    2026-09-21：`final_pick_lines` 桩字段随终选参考区整体删除而移除 —— 卡片不再有该节，
+    `view_has_content` 也不再认它（原先「仅终选参考有内容也推卡」的用例改用 hist_rows 表达）。
     """
 
     class _Row:
@@ -103,7 +104,6 @@ def _fake_view(symbols, *, hot_rows=None, hist_rows=None, final_pick_lines=None)
             self.warnings = []
             self.hot_rows = hot_rows
             self.hist_rows = hist_rows
-            self.final_pick_lines = final_pick_lines
 
     # duck-typed 替身：结构上满足 push_feishu/_view_symbols/build_feishu_card 的读取面，
     # cast 仅为通过类型检查（测试桩不继承 ScanView）。
@@ -488,18 +488,19 @@ def test_hot_only_view_is_pushable_but_hot_is_not_a_dedup_key(monkeypatch):
 
 
 def test_should_push_empty_only_when_card_has_no_section(monkeypatch):
-    """只有四个来源（终选参考 / v1 池选 / v1 回捞 / 飙升区）全空才算空卡片 → empty。"""
+    """四个来源（v1 池选 / v1 回捞 / 飙升 A 段 / 榜外 B 段）全空 → empty。
+
+    2026-09-21：终选参考节随该区删除而移除 —— 原先本用例还断言「仅终选参考有内容也推卡」，
+    那条命题现在由 test_hist_only_view_is_pushable_but_hist_is_not_a_dedup_key /
+    test_hot_only_push_keeps_min_interval 等价覆盖（非 main_rows 来源照样算内容），
+    故此处只保留「全空 ⇒ empty」这一半，避免与上述两例重复。
+    """
     from scanner.feishu import view_has_content
 
     monkeypatch.setattr("scanner.feishu.FEISHU_WEBHOOK", "https://example.com/hook")
     empty = _fake_view([])
     assert view_has_content(empty) is False
     assert should_push(PushState(), set(), 1000.0, has_content=view_has_content(empty)).reason == "empty"
-
-    # 仅终选参考有内容（main_rows 仍为空）→ 也必须推
-    fp_only = _fake_view([], final_pick_lines=["终选参考 # 1 只", "  300001 股1 70分"])
-    assert view_has_content(fp_only) is True
-    assert should_push(PushState(), set(), 1000.0, has_content=view_has_content(fp_only)).push is True
 
 
 def test_hot_only_push_keeps_min_interval(monkeypatch):

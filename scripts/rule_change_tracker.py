@@ -42,20 +42,22 @@ BASELINE: dict[str, tuple[int, str]] = {
     "scanner/config.py": (63283, "0dc7b4f9aef04804"),
     "scanner/categories.py": (5439, "90697eb00d26f129"),
     "scanner/weights.py": (5364, "cf5fa9a489c3248f"),
-    "scanner/decision.py": (11962, "267003fb19a3b82f"),
     "scanner/orchestrator.py": (32918, "c497f30b38273d6f"),
     "scanner/ranking.py": (42745, "adf11cfc2e8875d6"),
     "scanner/enhancer.py": (33215, "b87407e97b7899b9"),
     "scanner/validator.py": (30144, "3008f127b214b5f7"),
 }
+# ⚠ 2026-09-21：`scanner/decision.py` 已随终选参考区删除，条目从 BASELINE 移除
+# （原条目 `(11962, "267003fb19a3b82f")`）。若日后重建决策层，需按新文件重新登记指纹。
 
 # 关键常量基线：(模块属性路径, 期望值)
 CONST_BASELINE: dict[str, object] = {
     "scanner.config.NEXTDAY_HIT_THRESHOLD": 7.0,
     # 2026-09-16：comeback 键随回马枪桶删除（HOLD_DAYS_BY_CATEGORY 现只剩 core_dip）。
     "scanner.config.HOLD_DAYS_BY_CATEGORY": {"core_dip": 3},
-    "scanner.decision.GATE_INDEX_MIN_PCT": 0.0,
-    "scanner.decision.GATE_CUM5_MIN_PCT": -3.0,
+    # 2026-09-21：`scanner.decision.GATE_INDEX_MIN_PCT(0.0)` / `GATE_CUM5_MIN_PCT(-3.0)`
+    # 两条随 scanner/decision.py 一起移除 —— 决策层（2026-09-14）与终选参考区
+    # （2026-09-21）先后删除后，择时门已无任何消费方。
 }
 
 # 类别注册表基线：键 -> (label, display_priority, live_produced)

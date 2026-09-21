@@ -329,7 +329,7 @@ def is_fund_outflow(entry: Any, flow_map: dict[str, float] | None = None) -> boo
     """「资金流出」判定单源（推荐行入口）：主力净占比 ≤ FUND_OUTFLOW_NET_PCT(-8.0%) → True。
 
     阈值唯一来源 `config_sources.FUND_OUTFLOW_NET_PCT`（与 enhancer 标签、档3劣后、
-    nextday_prob、final_pick 终选门同源）。
+    nextday_prob 同源；原同源名单里的 final_pick 终选门已随终选参考区 2026-09-21 删除）。
     数据缺失（None）→ False：缺失不等于流出，与回马枪回踩门同语义（fail-open），
     避免资金流接口故障时把整屏推荐清空。
 

@@ -7,7 +7,6 @@ import wcwidth
 from scanner.config import (
     TREND_MARK_ENABLED,
 )
-from scanner.core_themes import low_buy_quality as _core_dip_quality
 from scanner.models import Candidate, RecommendationRow
 from scanner.nextday_rule import RuleResult
 
@@ -86,7 +85,6 @@ __all__ = (
     "_ANSI_ESCAPE",
     "_FUND_FLOW_ICON",
     "_beauty_mark_for",
-    "_core_dip_entry_quality",
     "_entry_dip_labels",
     "_entry_row_suffix",
     "_entry_sector",
@@ -322,13 +320,13 @@ def _beauty_mark_for(entry: RecommendationRow | dict, kline: list | None) -> str
     判定单源在 trend_beauty.beauty_mark——**日线定准入、分时定级别**：日线不漂亮或
     不足 → 不标；日线漂亮而分时未确认（走弱/缺失）→ "美"；日线漂亮且分时亦漂亮 → "美★"。
     fail-open 一致：数据缺失只降档、不判否。纯展示，不改过滤/排序/落库。
-    2026-09-09 数据裁决后硬拦默认关（RTS_FINAL_PICK_BEAUTY），本标记保留作买入体验
+    2026-09-09 数据裁决后走势漂亮**从不作准入硬门**，本标记保留作买入体验
     参考（"稳而不爆"）；开关 RTS_TREND_MARK。
     ⚠ ★ 的语义是**尾部回撤更小**，不是「更可能大涨」（美★/美 的 hit 无正向区分度）——
     分档依据与复现脚本见 trend_beauty 模块 docstring / scripts/beauty_mark_eval.py。
-    注意本标记**比终选美感门宽**（门是「日线 ∧ 分时」双维度硬拦，默认关）：门一旦打开，
-    标「美」的票可能被门按「分时不漂亮」拦掉，标「美★」的才与门一致。
     2026-09-14：v2 池选展示区隐藏后，本标记现状只落在 v1 池选行。
+    2026-09-21：原「终选美感门」（FINAL_PICK_BEAUTY_ENABLED，默认关）随终选参考区
+    一并删除 —— 本项目**不再有任何按走势美感做准入的门**，只有本标记。
     """
     if not TREND_MARK_ENABLED:
         return ""
@@ -401,23 +399,11 @@ def _market_env_tag(weak: bool) -> str:
     return f"{ANSI['GREEN']}[大盘强势]{ANSI['RESET']}"
 
 
-def _core_dip_entry_quality(entry: RecommendationRow | dict) -> tuple:
-    """推荐记录条目 → 低吸质量排序键（复用 core_themes.low_buy_quality）。
-
-    entry 是完整 recommendation 行（含 score_breakdown 的 run/pullback/today_pct/
-    flow_pct/concept），先经 entry_dims 抽取为低吸质量函数所需字典再排序。
-    """
-    sb = entry_dims(entry)
-    return _core_dip_quality(
-        {
-            "concept": sb.get("concept", ""),
-            "flow_pct": to_float(sb.get("flow_pct"), default=None),
-            "today_pct": to_float(sb.get("today_pct"), default=0.0),
-            "run": to_float(sb.get("run"), default=0.0),
-            "pullback": to_float(sb.get("pullback"), default=0.0),
-        }
-    )
-
+# 2026-09-21 删除：`_core_dip_entry_quality`（低吸质量排序键，复用
+# core_themes.low_buy_quality）。它唯一的生产调用方是 assemble 里给终选参考区合池
+# 准备的 core_dips 序列；终选参考区整体删除后该序列消失，排序键随之无消费方。
+# 需复原见 git 历史；底层 low_buy_quality 仍在 scanner/core_themes.py（核心主题模块
+# 自己在用），故本次只删视图层的这一层包装。
 
 # ── 展示视图模型（2026-08-29）──
 # 此前终端「读 DB 当日累计推荐」、飞书「读本轮候选桶」，两个出口各渲染各的——
@@ -528,17 +514,16 @@ class ScanView:
     #   core_dip_rows / show_core_dip —— 核心方向低吸展示区已隐藏；
     #   pool_rows / pool_total        —— v2 池选展示区已隐藏；
     #   decision_lines                —— 决策层已整体删除。
-    # 上述区域的数据（pool_pick_recs / core_dip_recs）仍参与终选参考区合池，
-    # 只是不再单独成区渲染。
     # 2026-09-16 按用户决策「🎯 标记与回马枪都删除」移除的字段（需复原见 git 历史）：
     #   comeback_rows / show_comeback —— 回马枪展示区（其排序「comeback_sort_key」）；
     #   nextday_mark                  —— 🎯 行尾标记 map（判定 is_nextday_marked）；
     #   adj_picks                     —— 动态推荐序列（语义完全由 🎯/回马枪构成）。
-    # 终选参考区文本行（2026-09-04）：v1+v2 合池 → 档0画像评级 ≤3 只 + 落选理由。
-    final_pick_lines: list[str] | None = None
+    # 2026-09-21 按用户决策「终选参考区整体删除」移除的字段（需复原见 git 历史）：
+    #   final_pick_lines              —— 终选参考区文本行（scanner/final_pick.py 整模块
+    #                                    与 scanner/decision.py 同批删除）。
     # 走势美感标记（2026-09-09 上线 / 2026-09-15 分档）：{(symbol, category): ""|"美"|"美★"}，
-    # v1 池选行行尾渲染（_entry_row_suffix beauty 参数）。与终选美感门同判定单源但**不同口径**
-    # （标记：日线准入+分时分级；门：日线∧分时硬拦，默认关），纯展示预判。
+    # v1 池选行行尾渲染（_entry_row_suffix beauty 参数）。纯展示预判（判定单源
+    # trend_beauty.beauty_mark：日线准入+分时分级），不改过滤/排序/落库。
     # 2026-09-14：v2 池选展示区已隐藏，故现状只服务 v1 池选行。
     beauty_mark: dict[tuple[str, str], str] | None = None
     # 沪深飙升·极有可能大涨独立区（2026-09-11 自 rts-xueqiu 合入）：HotCandidate 列表。
@@ -561,13 +546,12 @@ class ScanView:
     # None / 空列表 = 本轮无结果（渲染时整区跳过，不留空表）。
     hist_rows: list | None = None
     # 展示层资金流出硬门（2026-09-14）剔除的行数：主力净占比 ≤ FUND_OUTFLOW_NET_PCT
-    # 的票不进任何展示区（v1 池选 / 回马枪 / 终选输入），终端与飞书同源。
+    # 的票不进任何展示区（v1 池选 / v1 回捞 / 沪深飙升 A·B 段），终端与飞书同源。
     # 纯展示层过滤——不改 excluded、不落库，回测/归因样本口径不受影响。
     flow_filtered: int = 0
     # 大盘指数涨幅（创业板指 pct），供 sector suggestion 展示；None = 取数失败。
     market_idx_pct: float | None = None
-    # 综合判断摘要（build_scan_view 计算，render_terminal 打印）：
-    # [结论行, 明细行...]，≤4 行；None / 空 = 无数据不输出。
-    # 2026-09-17 由单行 str（「推荐X、Y」）改为多行 list —— 新摘要是分区体检报告，
-    # 一行写不下且强行合并会把「三区口径不可比」这个事实又抹掉。
-    summary: list[str] | None = None
+    # 2026-09-21 按用户决策「终端只留四个区块」移除的字段（需复原见 git 历史）：
+    #   summary —— 综合判断摘要（[结论行, 明细行...] ≤4 行；2026-09-17 由单行 str
+    #              「推荐X、Y」改为多行「分区体检报告」，本次整块删除）。
+    # 至此终端与飞书渲染的区块均为「各自独立的表」，没有任何跨区结论行或合池排名。

@@ -463,15 +463,18 @@ class TestApplyAndRestore:
 # ── 6. 默认参数契约 ──
 
 
-def test_default_top_n_tracks_final_pick_width():
-    """主指标取前 N 必须与真实买入预算一致，否则验证的不是上线口径。
+def test_default_top_n_is_band_width_not_a_live_shortlist():
+    """主指标取前 N = **名次带宽度**，不再挂钩任何线上名单宽度。
 
-    本模块首版把 2 写死，而 `FINAL_PICK_MAX` 已于 2026-09-08 放宽为 3 ——
-    该测试确保这种失配不能再发生（改为引用而非复制）。
+    沿革：本模块首版把 2 写死，而终选宽度曾于 2026-09-08 放宽为 3，两边静默失配，
+    故改为引用 `FINAL_PICK_MAX`；2026-09-21 终选参考区（scanner/final_pick）整体删除后，
+    那个上游已不存在 —— 该测试随之改为钉「值仍为 3」+「不再从 config 取」
+    （防止有人误以为它还跟着某个开关走）。
     """
-    from scanner.config import FINAL_PICK_MAX
+    import scanner.config as cfg
 
-    assert rv.DEFAULT_TOP_N == FINAL_PICK_MAX
+    assert rv.DEFAULT_TOP_N == 3
+    assert not hasattr(cfg, "FINAL_PICK_MAX"), "终选参考区已删除，config 不应再有 FINAL_PICK_MAX"
 
 
 def test_parser_defaults_match_module_constants():

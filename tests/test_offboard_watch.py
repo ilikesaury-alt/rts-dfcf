@@ -1,14 +1,16 @@
 """offboard_watch（沪深飙升区 **B 段·榜外异动**）单测。
 
 覆盖：门槛（通用 8 门 + 本段专属收紧门）、候选构建（榜外/已推荐/非创业板过滤）、
-T1/T2 分层、排序键（A/B 不混排的结构性理由）、榜外 K 线池（**独立于 daily_kline**）、
-逐日落库与次日收益回填（含两个防呆）、主流程端到端、两出口渲染、CLI 离线自检。
+T1/T2 分层、排序键（T2 在前的实测依据 + A/B 不混排的结构性理由）、榜外 K 线池
+（**独立于 daily_kline**）、逐日落库（信号值冻结 + last_hit_time）与次日收益回填
+（含两个防呆）、**开盘静默窗口**、主流程端到端、两出口渲染、CLI 离线自检。
 
 全部为密封单测：不触网、不依赖真实 `scanner.db`（用内存库 + 假 adapter）。
 """
 
 import sqlite3
 from datetime import date as _date
+from datetime import datetime, time
 from datetime import timedelta as _td
 
 import pytest
@@ -26,6 +28,7 @@ from scanner.config import (
     OFFBOARD_KLINE_FETCH_LIMIT,
     OFFBOARD_MIN_AMOUNT,
     OFFBOARD_MIN_FLOAT_CAP,
+    OFFBOARD_OPENING_SILENCE_MIN,
     OFFBOARD_T1_MAIN_PCT_MIN,
     OFFBOARD_T1_TODAY_MAX,
     OFFBOARD_T2_TODAY_MAX,
@@ -49,10 +52,12 @@ from scanner.offboard_watch import (
     load_offboard_klines,
     main,
     offboard_gate,
+    opening_silence_active,
     persist_round,
     run_offboard_watch,
     sort_key,
 )
+from scanner.trading_session import is_trading_day
 
 # ── 夹具 / 构造器 ────────────────────────────────────────────────────────────
 
@@ -173,6 +178,17 @@ def db():
     conn.commit()
     yield conn
     conn.close()
+
+
+@pytest.fixture(autouse=True)
+def _no_opening_silence(monkeypatch):
+    """默认关闭开盘静默窗口，防 flaky。
+
+    本文件绝大多数用例不关心这道门，但 `run_offboard_watch` 会按**真实时钟**判定 ——
+    测试若在 09:45 前跑，整批会返回 []（CI 在任意时刻触发，典型 flaky）。
+    窗口本身的边界由 `TestOpeningSilence` 显式开关来验。
+    """
+    monkeypatch.setattr("scanner.offboard_watch.OFFBOARD_OPENING_SILENCE_MIN", 0)
 
 
 class _FakeKlineAdapter:
@@ -548,11 +564,16 @@ def test_annotate_records_reason_when_not_produced():
 # ── 排序键（A/B 不混排的结构性理由）──────────────────────────────────────────
 
 
-def test_sort_key_puts_t1_first_regardless_of_volume_ratio():
-    """T1 在前 = 「真正的提前」；量比再高只要是 T2 也排后。"""
-    a = _cand(symbol="SZ300101", code="300101", tier=T1, volume_ratio=1.6)
-    b = _cand(symbol="SZ300102", code="300102", tier=T2, volume_ratio=9.9)
-    assert [c.code for c in sorted([b, a], key=sort_key)] == ["300101", "300102"]
+def test_sort_key_puts_t2_first_regardless_of_volume_ratio():
+    """**T2 在前**（2026-09-21 翻转）：T1 是「今日涨幅 < 3.5%」= 当日势能最弱的一层。
+
+    实测 T1 当日 −0.76pp / 09-18 次日 +0.29%，均弱于 T2 的 +1.28pp / +4.34%
+    （见 sort_key docstring）。把 T1 置顶 = 系统性把最不符合价值函数的那层放第一屏。
+    本用例是那次翻转的回归哨兵：量比再高，只要是 T1 也排后。
+    """
+    a = _cand(symbol="SZ300101", code="300101", tier=T1, volume_ratio=9.9)
+    b = _cand(symbol="SZ300102", code="300102", tier=T2, volume_ratio=1.6)
+    assert [c.code for c in sorted([a, b], key=sort_key)] == ["300102", "300101"]
 
 
 def test_sort_key_orders_by_volume_ratio_then_main_pct():
@@ -663,7 +684,8 @@ def test_persist_round_writes_signal_snapshot(db):
     day = now_beijing().date().isoformat()
     row = db.execute(
         "SELECT name, tier, percent, accum_5d, vol_ratio, main_pct, amount, float_cap, price,"
-        " first_time, updated, next_day_pct FROM offboard_launch_log WHERE date=? AND symbol=?",
+        " first_time, last_hit_time, updated, next_day_pct FROM offboard_launch_log"
+        " WHERE date=? AND symbol=?",
         (day, c.symbol),
     ).fetchone()
     assert row[0] == "自检样本"
@@ -675,29 +697,42 @@ def test_persist_round_writes_signal_snapshot(db):
     assert row[6] == pytest.approx(8.0e7)
     assert row[7] == pytest.approx(3.0e9)
     assert row[8] == pytest.approx(10.0)
-    assert row[9] == row[10]  # 首次写入：first_time == updated
-    assert row[11] is None  # 待回填
+    assert row[9] == row[10] == row[11]  # 首次写入：first_time / last_hit_time / updated 同为当轮时刻
+    assert row[12] is None  # 待回填
 
 
-def test_persist_round_keeps_first_time_and_refreshes_values(db):
-    """`first_time` 只在首次写入时记（否则「当日何时首次产出」会被最后一轮覆盖）。"""
-    c = _cand(percent=2.5)
+def test_persist_round_freezes_signal_snapshot_and_refreshes_last_hit(db):
+    """信号值**首次写入即冻结**，只有 `last_hit_time` / `updated` 每轮刷新。
+
+    旧语义「当日最后一次写入即收盘值」是照抄 `market_extra_cache` 的 —— 对收盘价缓存
+    正确，对**信号观测表**错误：一只票上午以 T1 被产出、下午涨过 3.5% 变 T2，旧实现
+    会把 `tier`/`percent` 改写掉，事后无法还原它当初以什么身份被推出（实测 09-21 有
+    3 只 T1 信号只存活 4 分钟，库里看不出来）。本用例锁定冻结语义。
+    """
+    c = _cand(tier=T1, percent=2.5, volume_ratio=2.0)
     persist_round(db, [c])
     day = now_beijing().date().isoformat()
     db.execute(
-        "UPDATE offboard_launch_log SET first_time='2000-01-01T00:00:00' WHERE date=? AND symbol=?",
+        "UPDATE offboard_launch_log SET first_time='2000-01-01T00:00:00',"
+        " last_hit_time='2000-01-01T00:00:00' WHERE date=? AND symbol=?",
         (day, c.symbol),
     )
     db.commit()
-    c.percent = 2.9
+    # 第二轮：同一只票已涨过 3.5%，变成 T2、量比也变了
+    c.percent = 5.9
     c.tier = T2
+    c.volume_ratio = 4.4
     persist_round(db, [c])
     row = db.execute(
-        "SELECT first_time, percent, tier FROM offboard_launch_log WHERE date=? AND symbol=?", (day, c.symbol)
+        "SELECT first_time, last_hit_time, tier, percent, vol_ratio FROM offboard_launch_log"
+        " WHERE date=? AND symbol=?",
+        (day, c.symbol),
     ).fetchone()
     assert row[0] == "2000-01-01T00:00:00"  # 首见时刻不被覆盖
-    assert row[1] == pytest.approx(2.9)  # 信号原始值每轮刷新（同 market_extra_cache 语义）
-    assert row[2] == T2
+    assert row[1] != "2000-01-01T00:00:00"  # 最后命中时刻每轮刷新
+    assert row[2] == T1  # 信号身份冻结：仍记着它当初以 T1 被推出
+    assert row[3] == pytest.approx(2.5)  # 捕获时的涨幅冻结（不是后来的 5.9）
+    assert row[4] == pytest.approx(2.0)  # 捕获时的量比冻结（不是后来的 4.4）
     assert db.execute("SELECT COUNT(*) FROM offboard_launch_log").fetchone()[0] == 1  # (date, symbol) 唯一
 
 
@@ -802,6 +837,30 @@ def test_backfill_already_filled_is_not_touched(db):
 # ── 主流程端到端 ────────────────────────────────────────────────────────────
 
 
+def test_backfill_leaves_last_hit_time_alone(db):
+    """回填只写 next_day_pct / updated，不得碰 last_hit_time。
+
+    `updated` 被两处写（每轮落库 + 回填）正是当初拆出 `last_hit_time` 的原因：
+    09-18 那 5 行的 `updated` 全被回填写成 09-21 的时刻，与当日行的 `first_time` 撞车，
+    命中时间维度事实上丢失。本用例锁定「回填不改命中时刻」。
+    """
+    today = now_beijing().date()
+    d0 = (today - _td(days=3)).isoformat()
+    d1 = (today - _td(days=2)).isoformat()
+    sym = "SZ300201"
+    _save_klines(db, {sym: _bars_by_date([(d0, 10.0), (d1, 11.0)])}, today.isoformat())
+    _insert_signal(db, sym, d0)
+    db.execute("UPDATE offboard_launch_log SET last_hit_time='2026-09-18T09:50:00' WHERE symbol=?", (sym,))
+    db.commit()
+
+    assert backfill_next_day(db, None) == 1
+    row = db.execute(
+        "SELECT next_day_pct, last_hit_time FROM offboard_launch_log WHERE date=? AND symbol=?", (d0, sym)
+    ).fetchone()
+    assert row[0] == pytest.approx(10.0)  # 回填成功
+    assert row[1] == "2026-09-18T09:50:00"  # 命中时刻不被回填改写
+
+
 def test_run_offboard_watch_end_to_end(db):
     day = now_beijing().date().isoformat()
     snapshot = {
@@ -811,8 +870,8 @@ def test_run_offboard_watch_end_to_end(db):
     }
     klines = {"SZ300101": _bars(_UP_SERIES, day), "SZ300102": _bars(_UP_SERIES, day)}
     rows = run_offboard_watch(None, db, [], top_n=5, klines=klines, snapshot=snapshot)
-    assert [r.tier for r in rows] == [T1, T2]  # T1 在前，与量比排序无关
-    assert [r.code for r in rows] == ["300101", "300102"]
+    assert [r.tier for r in rows] == [T2, T1]  # T2 在前（2026-09-21 翻转），与量比排序无关
+    assert [r.code for r in rows] == ["300102", "300101"]
     # 落库：只有产出者
     logged = dict(db.execute("SELECT symbol, tier FROM offboard_launch_log").fetchall())
     assert logged == {"SZ300101": T1, "SZ300102": T2}
@@ -916,6 +975,92 @@ def _offboard_row(**kw) -> OffboardCandidate:
     return _cand(streak=None, rank_change=None, **kw)
 
 
+# ── 开盘静默窗口（量比失真的对策）───────────────────────────────────────────
+
+
+def _first_trading_day() -> _date:
+    """今天起第一个交易日。窗口判定只关心「是不是交易日」，不关心是哪天。"""
+    d = now_beijing().date()
+    for _ in range(14):
+        if is_trading_day(d):
+            return d
+        d += _td(days=1)
+    raise AssertionError("14 天内找不到交易日（holidays.json 可疑）")
+
+
+def _first_non_trading_day() -> _date:
+    d = now_beijing().date()
+    for _ in range(14):
+        if not is_trading_day(d):
+            return d
+        d += _td(days=1)
+    raise AssertionError("14 天内找不到非交易日（holidays.json 可疑）")
+
+
+class TestOpeningSilence:
+    """开盘 15 分钟内不产出 —— 修的是**量比失真**（分母趋 0 时商发散），不是阈值。
+
+    量比 = 当日累计量 ÷（近 5 日均每分钟量 × 已交易分钟数）：开盘头几分钟分母只有
+    几分钟，读数虚高一个量级。实测 09:33 捕获的 3 只 T1 虚高 6.6~11.5 倍且当日全数
+    转跌；09:45 之后收敛到 ≈1.0。而量比正是本段排序键的主键。
+
+    本类显式**打开**窗口（文件级 autouse 夹具默认把它关成 0 防 flaky）。
+    窗口按 `trading_minutes_elapsed` 判定：午休 120 分钟已排除 —— 这正是不能用
+    墙上时间差的原因，否则 11:30 与 13:00 会被算成「刚开盘一小时」。
+    """
+
+    @staticmethod
+    def _at(hh: int, mm: int) -> datetime:
+        return datetime.combine(_first_trading_day(), time(hh, mm))
+
+    @pytest.fixture(autouse=True)
+    def _enable(self, monkeypatch):
+        monkeypatch.setattr(
+            "scanner.offboard_watch.OFFBOARD_OPENING_SILENCE_MIN", OFFBOARD_OPENING_SILENCE_MIN
+        )
+
+    def test_window_uses_config_constant(self):
+        """守卫：本类确实把窗口打开了（否则下面几条会静默地全测成「不静默」）。"""
+        from scanner import offboard_watch as ow
+
+        assert OFFBOARD_OPENING_SILENCE_MIN > 0, "配置侧窗口被关掉，本类失去意义"
+        assert ow.OFFBOARD_OPENING_SILENCE_MIN == OFFBOARD_OPENING_SILENCE_MIN
+
+    def test_silent_right_after_open(self):
+        assert opening_silence_active(self._at(9, 30)) is True
+
+    def test_silent_one_minute_before_boundary(self):
+        assert opening_silence_active(self._at(9, 44)) is True
+
+    def test_not_silent_at_boundary(self):
+        assert opening_silence_active(self._at(9, 45)) is False
+
+    def test_not_silent_during_and_after_lunch_break(self):
+        """午休不算「开盘头几分钟」：11:30 与 13:00 的已交易分钟数都是 120。"""
+        assert opening_silence_active(self._at(11, 30)) is False
+        assert opening_silence_active(self._at(13, 0)) is False
+
+    def test_silent_before_open_and_on_non_trading_day(self):
+        assert opening_silence_active(self._at(9, 0)) is True  # 开盘前 elapsed=0
+        non_trading = datetime.combine(_first_non_trading_day(), time(11, 0))
+        assert opening_silence_active(non_trading) is True  # 非交易日 elapsed=0
+
+    def test_window_disabled_when_constant_zero(self, monkeypatch):
+        monkeypatch.setattr("scanner.offboard_watch.OFFBOARD_OPENING_SILENCE_MIN", 0)
+        assert opening_silence_active(self._at(9, 30)) is False
+
+    def test_run_offboard_watch_returns_empty_inside_window(self, db, monkeypatch):
+        """整条主流程在窗口内直接返回 [] —— 第一道门在读任何数据之前。"""
+        monkeypatch.setattr("scanner.offboard_watch.opening_silence_active", lambda *a, **k: True)
+        day = now_beijing().date().isoformat()
+        snapshot = {"SZ300101": _payload(vol_ratio=2.0, percent=2.5)}
+        klines = {"SZ300101": _bars(_UP_SERIES, day)}
+        rows = run_offboard_watch(None, db, [], top_n=5, klines=klines, snapshot=snapshot)
+        assert rows == []
+        # 静默 = 不产出且不落库（不是「产出了但没展示」）
+        assert db.execute("SELECT COUNT(*) FROM offboard_launch_log").fetchone()[0] == 0
+
+
 def test_render_offboard_standalone_prints_b_segment(capsys):
     from scanner.view.render import render_offboard_standalone
 
@@ -973,51 +1118,16 @@ def test_scan_view_offboard_rows_rendered_by_terminal(capsys):
     assert "300101" in out
 
 
-def test_summary_line_counts_offboard_rows():
-    """综合判断摘要只各自计数、不跨区排序；B 段报「N 只（T1 x·未回测）」。"""
-    from scanner.view.assemble import _build_summary
-
-    lines = _build_summary(
-        main_rows=[],
-        hist_rows=[],
-        hot_rows=[],
-        offboard_rows=[_offboard_row(tier=T1), _offboard_row(tier=T2), _offboard_row(tier=T1)],
-        beauty_mark=None,
-        flow_pct_map={},
-        flow_filtered=0,
-        chase_filtered=0,
-        tactic_filtered=0,
-        weak=False,
-        market_idx_pct=None,
-    )
-    joined = "\n".join(lines)
-    assert "榜外 3 只（T1 2·未回测）" in joined
-
-
-def test_summary_distinguishes_none_from_empty_offboard():
-    """None（本轮未产出）≠ []（跑了无结果）：计数都是 0，但完整度行只在确有时打。"""
-    from scanner.view.assemble import _build_summary
-
-    def _lines(offboard):
-        return "\n".join(
-            _build_summary(
-                main_rows=[],
-                hist_rows=[],
-                hot_rows=[],
-                offboard_rows=offboard,
-                beauty_mark=None,
-                flow_pct_map={},
-                flow_filtered=0,
-                chase_filtered=0,
-                tactic_filtered=0,
-                weak=False,
-                market_idx_pct=None,
-            )
-        )
-
-    assert "榜外 0 只" in _lines([])
-    assert "榜外段未产出" not in _lines([])  # 跑了但无结果 ≠ 没跑
-    assert "榜外段未产出" in _lines(None)
+# ── 已删除的摘要断言（2026-09-21）─────────────────────────────────────────
+# 原 `test_summary_line_counts_offboard_rows` / `test_summary_distinguishes_none_from_empty_offboard`
+# 两条断言挂在 `view.assemble._build_summary` 上（B 段入选「综合判断摘要」的计数行、
+# 以及 None（本轮未产出）≠ []（跑了无结果）的完整度行语义）。
+# 用户决策「终端只留四个区块」后 `_build_summary` / `ScanView.summary` /
+# render_terminal 的「◆ 综合判断」区块整体删除，**被测对象已不存在**，故两条一并移除。
+# 刻意留注释而不留空函数：空测试体恒真，等于给"这里守住了"的错觉 —— 本仓对此已
+# 有过明确教训（常红守卫会被无视，恒绿空壳更糟）。
+# ⚠ 恢复摘要时须连这两条一起从 git 历史取回：B 段「未回测」标注是**必留**的
+#   ——B 段至今没有回测结论，摘要若不写「未回测」，读起来会与已回测的 A 段同权。
 
 
 # ── CLI / 离线自检（回归哨兵）───────────────────────────────────────────────
@@ -1056,8 +1166,8 @@ def test_cli_json_output_is_parseable(capsys):
     rows = json.loads(out[out.rindex("\n[") + 1 :])
     assert rows, "自检样本应至少产出 T1/T2 各一只"
     assert {"code", "symbol", "name", "tier"} <= set(rows[0])
-    # 排序键：T1 在 T2 之前
-    assert rows[0]["tier"] == T1
+    # 排序键：T2 在 T1 之前（2026-09-21 翻转；实测 T1 当日/次日均弱于 T2）
+    assert rows[0]["tier"] == T2
 
 
 def test_cli_conn_is_isolated():

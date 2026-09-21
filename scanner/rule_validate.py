@@ -35,7 +35,7 @@
 
 ## 统计口径
 
-主指标 = **样本外日等权 top-N 次日 hit 率**（N 默认 = `FINAL_PICK_MAX`，即真实终选宽度）。
+主指标 = **样本外日等权 top-N 次日 hit 率**（N 默认 3 = 名次带宽度，不是任何线上名单宽度）。
 显著性 = 按日配对 bootstrap（重采样交易日，B 默认 2000）：
   - `Δ` 的 95% CI 下界 > 0 → **样本外支持**（退出码 0）
   - `Δ` 的 95% CI 上界 < 0 → **样本外显著变差**（退出码 2）
@@ -96,16 +96,19 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from scanner.config import DB_PATH, FINAL_PICK_MAX, NEXTDAY_HIT_THRESHOLD, WF_EMBARGO_DAYS
+from scanner.config import DB_PATH, NEXTDAY_HIT_THRESHOLD, WF_EMBARGO_DAYS
 from scanner.models import parse_score_breakdown
 from scanner.nextday_attribution import attach_prominence, load_dedup
 from scanner.walkforward import walkforward_windows
 
 # ── 默认参数 ──
-# 主指标取前 N 必须与真实终选宽度一致，否则验证的不是上线口径。
-# 直接引用 FINAL_PICK_MAX（而非写死 2）——该值 2026-09-08 由 2 放宽为 3 时，
-# 写死的副本会静默失配（本模块首版就踩了这个坑）。
-DEFAULT_TOP_N = FINAL_PICK_MAX
+# N = 主指标的**名次带宽度**（每天取概率最高的 N 只算 hit），不是某个线上名单的宽度：
+# 2026-09-21 终选参考区（scanner/final_pick）整体删除后，系统已不存在任何「短名单」概念。
+# 仍取 3 是为了**与历史报告可比** —— 2026-09-08~2026-09-21 期间 N 曾硬等于终选宽度
+# FINAL_PICK_MAX(=3)，旧报告全部按 3 只/天计算；改成别处派生会让新旧报告失去可比性。
+# （沿革：首版把 2 写死，而终选宽度曾在 2026-09-08 放宽为 3，两边静默失配 —— 这就是
+#  原先直接引用 FINAL_PICK_MAX 的原因；现在那个上游没了，故把值就地定死并写明来历。）
+DEFAULT_TOP_N = 3
 DEFAULT_TRAIN_DAYS = 30
 DEFAULT_TEST_DAYS = 10
 DEFAULT_BOOT = 2000
@@ -127,9 +130,9 @@ EVALUATORS: dict[str, dict[str, Any]] = {
         "note": "仅作对照/回归基线。任何会影响评分的 --set 都会被可见性校验拒绝。",
     },
     "nextday-prob": {
-        "desc": "用 nextday_prob.next_day_hit_probability 的 _p 排序（终选层口径）",
+        "desc": "用 nextday_prob.next_day_hit_probability 的 _p 排序（类别 hit 先验口径）",
         "sees": frozenset({"scanner.nextday_prob"}),
-        "note": "覆盖 final_pick 终选排序；不反映评分链（config/analysis/...）的改动。",
+        "note": "覆盖 nextday_prob 常数；不反映评分链（config/analysis/...）的改动。",
     },
     "rescore": {
         "desc": "用 historical_rescan 以当前（含 override）config 重算 score 排序",

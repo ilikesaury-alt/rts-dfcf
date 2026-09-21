@@ -152,37 +152,20 @@ def test_market_extra_str_zt_kept():
 def _main_lines(out: str) -> list[str]:
     """v1 池选区行，用于测试断言。
 
-    终选参考区（含个股行）渲染在 v1 之前，剥离该区块保留 v1 部分。
-    （2026-09-14：决策层区块已删除，v2 池选与核心低吸区块已隐藏 —— 原先用来切分的
-    「◆ 今日决策」「◆ v2 池选」「◆ 核心方向低吸」三个锚点都不再出现。）"""
-    main_part = out
-    head, sep, rest = main_part.partition("◆ 终选参考")
-    if sep:
-        _, sep2, v1 = rest.partition("◆ v1 池选")
-        main_part = head + ("◆ v1 池选" + v1 if sep2 else "")
-    return [ln for ln in main_part.splitlines() if "SZ30000" in ln]
+    （沿革：终选参考区曾渲染在 v1 之前且含个股行，故本函数要先把该区块切掉；
+    2026-09-21 终选参考区整体删除后，输出里只有 v1 池选这一处含个股行，
+    切分逻辑随之移除 —— 替代它的守卫是 test_v2_pool_display 里
+    「ScanView 不得再有 final_pick_lines」那条。）"""
+    return [ln for ln in out.splitlines() if "SZ30000" in ln]
 
 
 def _main_line(out: str, sym: str) -> str:
-    """首个含 sym 的主表行：剥掉终选参考区后再取首匹配。
+    """首个含 sym 的主表行（保留原始行含 ANSI，供测试断言高亮码）。
 
-    终选参考区渲染在 v1 之前且含个股行——直接对全输出取首个含 sym 的行会命中终选行
-    而非主表行。该区块结束于下一个「◆」标题行。
+    （沿革：终选参考行也含个股代码与资金流图标，直接取首匹配会命中终选行；
+    2026-09-21 该区块删除后不再需要跳过逻辑。）
     """
-    lines: list[str] = []
-    in_decision = False
-    for ln in out.splitlines():
-        plain = _ANSI_RE.sub("", ln)
-        if in_decision:
-            if plain.lstrip().startswith("◆"):
-                in_decision = False
-            else:
-                continue
-        if plain.startswith("◆ 终选参考"):
-            in_decision = True
-            continue
-        lines.append(ln)  # 保留原始行（含 ANSI），供测试断言高亮码
-    return next(ln for ln in lines if sym in ln)
+    return next(ln for ln in out.splitlines() if sym in ln)
 
 
 def _rec_db():
@@ -247,8 +230,9 @@ def _set_market_index(conn, index_pct: float):
 # 以及 `test_display_priority_recommended_region_shown_when_main_dense`（弱市下主区
 # 密集仍强制展示，修复「推荐了却看不到标的」割裂）。两个展示区均已按用户决策隐藏，
 # 故断言一并移除。
-# ⚠ 注意：`assemble` 里 core_dips 的排序（_core_dip_entry_quality）仍在跑——它是终选
-# 参考区合池输入。被删的只是「这个区要不要画出来」的门控。
+# 2026-09-21：core_dips 的排序（_core_dip_entry_quality）与 `assemble` 里的 core_dips
+# 变量也一并删除 —— 原「它是终选参考区合池输入」这一保留理由随终选参考区删除而消失。
+# 被删的只是「这个区要不要画出来」的门控。
 # 需复原见 git 历史。
 
 
@@ -752,8 +736,9 @@ def test_pool_pick_kept_out_of_v1_main_table(capsys):
 
     2026-09-14：v2 池选展示区已隐藏，故这里不再断言「存在 ◆ v2 池选 区块」，
     只守住仍然重要的隔离不变量 —— pool_pick 类别不得出现在 v1 主表里。
-    该隔离至今必需：pool_pick 仍是终选参考区合池输入之一，混进 main_recs 会同时
-    改变 v1 主表内容与终选结果。
+    2026-09-21：它作为终选参考区合池输入的身份也随该区删除而消失；本隔离仍然必需，
+    理由换成**桶语义**：pool_pick 的排序口径是「涨幅降序」，v1 主表是「档位→类别
+    展示优先级→榜单排名→资金流」，混表会让同一列在同一张表里代表两套排序。
     """
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "v1票", "rebound", 50, 1.0)
@@ -1312,236 +1297,13 @@ def test_entry_row_suffix_renders_beauty_tag():
 # 若日后重新引入带副作用的视图逻辑，必须同时补一条直接断言（勿只靠这条注释）。
 
 
-# ── 综合判断摘要（2026-09-17 重写：分区体检报告，取代「三区加权 → 推荐X、Y」）──
-# 直接调用纯函数 _build_summary，不经 render_terminal 抓文本——本仓教训：锚点
-# `_main_line` 那类"从整屏输出里挑一行"的写法会在格式微调后**静默失真**
-# （不再命中被测代码却仍然通过）。
-def _summary_row(symbol="SZ300001", name="甲", category="momentum", pct=1.0, accum=-1.0):
-    """构造一行 MainRow（纯展示函数 _build_summary 的输入，不需要 DB）。"""
-    entry = {"symbol": symbol, "name": name, "category": category, "score": 60, "percent": pct}
-    return vm.MainRow(
-        entry=entry,
-        rank=1,
-        accum=accum,
-        score=60.0,
-        composite_score=5.0,
-        core=False,
-        cat_label="MOM",
-        pct=pct,
-        current=10.0,
-        sector="半导体",
-    )
-
-
-def _summary(**over):
-    """带全部默认入参调用 _build_summary（参数关键字唯一，防止哑参重新混进来）。"""
-    kw = {
-        "weak": False,
-        "market_idx_pct": 1.2,
-        "main_rows": [],
-        "hist_rows": [],
-        "hot_rows": [],
-        # 沪深飙升区 B 段（榜外异动，2026-09-18）：与 hot_rows 分开计数的第四个来源。
-        "offboard_rows": [],
-        "beauty_mark": {},
-        "flow_pct_map": {},
-        "flow_filtered": 0,
-        "chase_filtered": 0,
-        "tactic_filtered": 0,
-    }
-    kw.update(over)
-    return va._build_summary(**kw)
-
-
-def test_summary_is_a_report_not_a_recommendation_list():
-    """不得再输出「推荐X、Y」。
-
-    旧实现把三区各自加权后丢进同一个池子排序取前 4，而三区口径**不可比**
-    （主线 = next_day 靶点 / 回捞 = 回调到位 / 飙升 = 当日热度），等价于交出一份
-    没有口径的排名；新摘要只做分区计数 + 口径判定，名单在下面三张表里本来就有。
-    """
-    rows = [_summary_row(symbol="SZ300001", name="甲", pct=1.0)]
-    out = _summary(
-        main_rows=rows,
-        flow_pct_map={"SZ300001": 9.0},
-        beauty_mark={("SZ300001", "momentum"): "美"},
-    )
-    assert isinstance(out, list) and len(out) >= 2, out
-    text = "\n".join(out)
-    assert "推荐" not in text
-    assert out[0].startswith("强市 · ")
-    assert "重点观察 甲(300001)" in text  # 6 位纯码走 code_of 单源，不是 replace("SZ","")
-
-
-def test_summary_strong_signal_is_intersection_not_weighted_sum():
-    """强信号 = 「主力净占比 ≥ 强流入分界」∧「未追涨」的**交**，不是加权求和。
-
-    旧实现里强流入 +3、涨幅 5% 只 −1，两者相抵仍得正分 → 一只已追涨的票照样能进名单；
-    新规则把追涨设为**否决项**，不存在"抵掉"。
-    """
-    rows = [
-        _summary_row(symbol="SZ300001", name="追涨甲", pct=5.5),
-        _summary_row(symbol="SZ300002", name="合格乙", pct=1.5),
-    ]
-    out = _summary(main_rows=rows, flow_pct_map={"SZ300001": 9.0, "SZ300002": 9.0})
-    text = "\n".join(out)
-    assert "强流入 2 · 强信号 1" in text
-    assert "追涨甲" not in text and "合格乙" not in text  # 无美感 → 不生成「重点观察」名单
-    assert "无重点观察" in text
-
-
-def test_summary_weak_market_suppresses_attack_verdict():
-    """弱市优先于一切：即便有强信号也只给「仅观察」，且**不点名**个股。
-
-    结论行说观望、明细却列出一只票名字，属于自相矛盾（强信号只数已在结论行给出）。
-    （旧实现里 weak 是**哑参**——签名收了却从不读，弱市与强市输出完全同形。）
-    """
-    out = _summary(
-        weak=True,
-        main_rows=[_summary_row(name="弱市甲", pct=1.0)],
-        flow_pct_map={"SZ300001": 9.0},
-        beauty_mark={("SZ300001", "momentum"): "美"},
-    )
-    text = "\n".join(out)
-    assert out[0].startswith("弱市 · 仅观察"), out[0]
-    assert "口径一致" not in text
-    assert "重点观察" not in text and "弱市甲" not in text
-
-
-def test_summary_flags_divergence_with_risk_breakdown():
-    """强信号与风险证据并存 → 判「口径分歧」并展开三道风险门的剔除明细。"""
-    out = _summary(
-        main_rows=[_summary_row(pct=1.0)],
-        flow_pct_map={"SZ300001": 9.0},
-        flow_filtered=3,
-        chase_filtered=1,
-        tactic_filtered=0,
-    )
-    text = "\n".join(out)
-    assert "口径分歧" in text
-    assert "风险剔除 资金流出 3 · 追涨 1 · 减仓标签 0" in text
-
-
-def test_summary_consistent_when_risk_below_threshold():
-    """风险剔除 1 只（< SUMMARY_RISK_DIVERGE）→ 口径一致，且不展开明细行。"""
-    out = _summary(main_rows=[_summary_row(pct=1.0)], flow_pct_map={"SZ300001": 9.0}, flow_filtered=1)
-    text = "\n".join(out)
-    assert "口径一致" in text
-    assert "风险剔除 资金流出" not in text
-
-
-def test_summary_gap_line_only_when_degraded():
-    """数据完整度行只在真有缺失时输出——每轮复读「一切正常」会淹没真正异常的那几轮。"""
-    healthy = _summary(main_rows=[_summary_row()], flow_pct_map={"SZ300001": 9.0})
-    assert not any(ln.startswith("数据 ") for ln in healthy), healthy
-
-    degraded = _summary(
-        main_rows=[_summary_row(symbol="SZ300001"), _summary_row(symbol="SZ300002")],
-        flow_pct_map={"SZ300001": 9.0},  # SZ300002 缺当日快照
-        market_idx_pct=None,
-        hot_rows=None,  # None = 本轮未产出（区别于 [] = 跑了但无结果）
-        hist_rows=None,
-    )
-    text = "\n".join(degraded)
-    assert "资金流快照缺 1/2 行" in text
-    assert "指数缺失" in text
-    assert "飙升区未产出" in text and "回捞区未产出" in text
-
-
-def test_summary_hist_ready_requires_volume():
-    """回捞「到位」= 今日没涨 ∧ 有量：缩量(vr<1.0)不算到位。
-
-    依据：该样本域缩量回调 hit 4.3%，显著低于平量的 8.1%（2026-09-16 实测）——
-    缩量是「没人接」而不是「惜售」。旧实现只给高量比加分，对缩量无任何表示。
-    """
-    from scanner.historical_watch import HistCandidate
-
-    def _h(percent, vr):
-        return HistCandidate(
-            symbol="SZ300004",
-            code="300004",
-            name="回捞甲",
-            current=10.0,
-            percent=percent,
-            vol_ratio=vr,
-            rec_date="2026-09-15",
-            rec_days_ago=1,
-            rec_category="momentum",
-            rec_score=60,
-            cum_pct=-3.0,
-            market_cap=8e9,
-        )
-
-    out = _summary(hist_rows=[_h(1.0, 0.7), _h(1.5, 1.6)])
-    assert "回捞 2 只（到位 1）" in "\n".join(out)
-
-
-def test_summary_hot_region_is_counted_not_ranked():
-    """飙升区只报计数并标注口径，绝不进「重点观察」——它不是 next_day 口径。
-
-    （实测该区在榜 vs 未在榜的下行 lift 是上行 lift 的 1.7 倍，属下行风险选择器。）
-    """
-    from scanner.hot_watch import HotCandidate
-
-    def _hot(rc, pct):
-        return HotCandidate(
-            symbol="SZ300005",
-            code="300005",
-            name="飙升甲",
-            exchange="SZ",
-            current=10.0,
-            percent=pct,
-            rank_change=rc,
-            rank=3,
-        )
-
-    out = _summary(hot_rows=[_hot(9999, 5.0), _hot(100, 1.0)])
-    text = "\n".join(out)
-    assert "飙升 2 只（跃升 1·非 next_day 口径）" in text
-    assert "飙升甲" not in text
-
-
-def test_build_scan_view_wires_summary_through(capsys):
-    """接线锁定：build_scan_view 必须把 summary 装进 ScanView，render_terminal 打印它。
-
-    纯函数单测覆盖规则本身，这条只覆盖「接线」——摘要参数名/字段改名会让它红。
-    """
-    conn = _rec_db()
-    today = now_beijing().date().isoformat()
-    conn.execute(
-        "INSERT INTO recommendations (date, time, symbol, name, category, score, percent) VALUES (?,?,?,?,?,?,?)",
-        (today, "10:00", "SZ300001", "接线甲", "momentum", 60, 1.0),
-    )
-    conn.execute(
-        "INSERT INTO market_extra_cache (symbol, date, data_type, payload_json, updated) VALUES (?,?,?,?,?)",
-        ("SZ300001", today, "fund_flow", '{"main_pct": 6.0, "main_net": 1e7}', now_beijing().isoformat()),
-    )
-    conn.commit()
-
-    view = disp_mod.build_scan_view(conn, today_pool={})
-    assert view is not None
-    assert isinstance(view.summary, list) and view.summary, view.summary
-    assert view.summary[0].startswith("强市 · "), view.summary[0]
-    assert "强流入 1 · 强信号 1" in "\n".join(view.summary)
-
-    disp_mod.render_terminal(view)
-    out = capsys.readouterr().out
-    assert "◆ 综合判断 — " in out
-    assert view.summary[0] in out
-
-
-def test_summary_renders_multiline_in_terminal(capsys):
-    """终端渲染：首行挂 ◆ 标签，明细行 4 空格缩进（不去对齐全角 ◆/— 的列宽）。"""
-    view = vm.ScanView(
-        main_rows=[],
-        breakout_mark={},
-        flow_pct_map={},
-        last_ranks={},
-        weak=False,
-        warnings=[],
-        summary=["强市 · 无强信号·观望（主线 0 只无「强流入 ∧ 未追涨」）", "明细行"],
-    )
-    vr.render_terminal(view)
-    out = capsys.readouterr().out
-    assert "◆ 综合判断 — 强市 · 无强信号·观望" in out
-    assert "\n    明细行\n" in out
+# ── 综合判断摘要（2026-09-17「分区体检报告」）──
+# 2026-09-21 按用户决策「终端只留四个区块（v1 池选 / v1 回捞 / 沪深飙升 / 榜外异动）」
+# 整体删除：被测对象 `view.assemble._build_summary`、`ScanView.summary` 字段与
+# `render_terminal` 的「◆ 综合判断」区块均已不在代码里。
+# 原段共 10 个测试 + 2 个工厂（`_summary_row` / `_summary`），覆盖的规则要点
+# —— 分区只计数不跨区排名、强信号是「强流入 ∧ 未追涨」的交、weak 优先且不点名、
+# 口径分歧才展开风险剔除明细、数据完整度行只在降级时输出、缩量不算「回调到位」、
+# 飙升区不进重点观察 —— 对应的**行为断言随功能一起消失**。若日后恢复摘要，
+# 必须连这些断言一起从 git 历史取回（只恢复函数不恢复测试 = 无守护）。
+# 需复原见 git 历史。

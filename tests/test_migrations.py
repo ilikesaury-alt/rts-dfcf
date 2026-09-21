@@ -185,6 +185,7 @@ class TestMigrationCatalog:
             "m013_hot_watch_tables",
             "m014_ranking_snapshot_drop_marked",
             "m015_offboard_tables",
+            "m016_offboard_log_last_hit",
         ]
 
     def test_every_migration_has_desc(self):

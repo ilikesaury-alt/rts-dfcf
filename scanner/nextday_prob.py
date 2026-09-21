@@ -12,6 +12,14 @@ verdict 是粗粒度整数、score 跨类别尺度不可比。在 ≤2 只的真
 去掉 marked/unmarked 分流后，**全部行统一按下列单因子计算**，不再有
 「防重复计费」的复合 OR 特例。
 
+⚠ **2026-09-21 消费者清空（终选参考区删除）**：`final_pick` 与 `decision` 两个模块
+整体删除后，本模型在**线上展示通路已无任何消费者**——终端与飞书都不再渲染 `_p`。
+现存的消费者只有两处，且都是**离线**的：
+  · `scanner.rule_validate` 的 `nextday-prob` 评估器（用它排序算样本外 top-N hit 率）；
+  · `scripts/nextday_calib_ab.py`（常数改动的事前量化）。
+故本模块的定位从「展示值」变成「**离线评估用的类别先验打分器**」；常数纪律
+（校准快照、漂移巡检、样本外验证门）一条都不能松，因为评估结论直接影响是否上生产。
+
 模型：朴素贝叶斯式 odds 乘积（log-odds 可加）
   P = σ( logit(base) + SHRINK × Σ log(OR_i) )
 base 按类别取当日口径命中率；OR 为因子条件命中率对参照组的 odds ratio。
@@ -22,9 +30,9 @@ rank_trend_bonus n=26 贴门槛且与辨识度相关）。
 
 **类别先验单源（2026-09-14）**：类别 base rate 的定义已上移到
 `config_scoring.CATEGORY_HIT_RATE`——它是全系统「类别先验」的唯一手抄源，本模块的
-`BASE_RATE_BY_CAT` 只是它的别名。同源派生出 `COMPOSITE_CAT_BASE`（综合评分）与
-`decision.DECISION_CATEGORY_SPECS`（决策层准入/顺序）。此前这三处各抄一份且口径
-互相矛盾（本模块用 hit 率、决策层用平均超额），已统一为 **hit 率**。
+`BASE_RATE_BY_CAT` 只是它的别名。同源派生出 `COMPOSITE_CAT_BASE`（综合评分）。
+（原第三份副本 `decision.DECISION_CATEGORY_SPECS` 已于 2026-09-14 随决策层删除；
+2026-09-21 终选参考区删除后，本表派生的 `BASE_RATE_BY_CAT` 也只剩离线消费者。）
 
 校准来源与复核纪律（2026-09-13 重写，audit §B2）：
   常数**不再靠人眼读数手抄**。重算与漂移巡检单源：

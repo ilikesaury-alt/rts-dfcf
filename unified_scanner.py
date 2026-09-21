@@ -514,8 +514,9 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                         hist_rows = None
 
                 # 决策层已于 2026-09-14 按用户决策整体删除：主循环不再构建/落库
-                # decision_picks，也不再向 display 注入决策层文本行。仅保留
-                # scanner.decision.market_gate（择时门）供终选参考区标注门状态。
+                # decision_picks，也不再向 display 注入决策层文本行。其中仅剩的
+                # scanner.decision.market_gate（择时门）又随 2026-09-21 终选参考区删除
+                # 一并移除 —— 展示通路现已无任何门控/短名单环节。
                 # 历史沿革（2026-09-13 测评 A2）：决策层的落库副作用曾从视图层
                 # build_scan_view 移出到此处显式执行，理由是一个"只算不画"的视图函数
                 # 不该写库；该教训在删除后依然成立——视图层至今保持零写库副作用。

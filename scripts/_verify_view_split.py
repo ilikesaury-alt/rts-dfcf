@@ -109,6 +109,9 @@ EXPECTED_SURFACE_REDUCTION = {
     # 2026-09-16「🎯 标记与回马枪都删除」：`_adjusted_picks` 是 display 的顶层 def，
     # 其排序语义完全由被删的两个特性构成（见 assemble.py 的删除说明），故整体删除。
     "_adjusted_picks",
+    # 2026-09-21「终选参考区整体删除」：`_core_dip_entry_quality` 是 display 的顶层 def，
+    # 唯一生产调用方是终选合池用的 core_dips 序列（同批删除），故整体删除。
+    "_core_dip_entry_quality",
     # 私有名泄漏（第 1 步已升公共名，旧 display 仍留着旧别名）
     "_breakout_profile_key",
     "_breakout_structure_ok",
@@ -133,6 +136,8 @@ EXPECTED_SURFACE_REDUCTION = {
 EXPECTED_DEFINITION_REMOVAL = {
     "_adjusted_picks": "2026-09-16 🎯/回马枪删除：该序列的排序语义完全由 marked(🎯) 与 "
     "comeback_sort_key(回马枪) 构成，两者删除后无剩余语义可保留",
+    "_core_dip_entry_quality": "2026-09-21 终选参考区删除：它是低吸质量排序键，唯一生产调用方是 assemble 里"
+    "为终选合池准备的 core_dips 序列；序列消失后排序键无消费方（底层 core_themes.low_buy_quality 仍在用）",
 }
 
 # ── 拆分后**有意**改动的模块级常量白名单（2026-09-18 新增）──
@@ -157,9 +162,22 @@ EXPECTED_CONST_DIVERGENCE = {
 EXPECTED_BODY_DIVERGENCE = {
     # 2026-09-14 资金流出口径统一（commit 02ae8af）：展示层新增「资金流出」过滤。
     # 同日第二批（决策层删除 + v2/核心低吸展示区隐藏）又改了同一批函数，两条理由合并记录。
-    "ScanView": "新增 flow_filtered 字段；随后移除 core_dip_rows/show_core_dip（低吸区隐藏）、pool_rows/pool_total（v2 隐藏）、decision_lines（决策层删除）四组字段",
-    "build_scan_view": "新增资金流出过滤（today_recs 单点过滤，下游区域自动继承）；随后不再构建 v2 pool_rows/pool_total、不再算 _show_core_dip/decision_lines",
-    "render_terminal": "顶部输出「▸ 资金流出已剔除 N 只」；随后移除「今日决策」区块（决策层删除、终选参考改独立区块）、v2 池选区、核心方向低吸区",
+    # 2026-09-21 第三批：终选参考区整体删除（scanner/final_pick.py + scanner/decision.py），
+    # 本表四条相关登记同步追加该批次说明。
+    "ScanView": "新增 flow_filtered 字段；随后移除 core_dip_rows/show_core_dip（低吸区隐藏）、"
+    "pool_rows/pool_total（v2 隐藏）、decision_lines（决策层删除）四组字段；"
+    "2026-09-21 再移除 final_pick_lines（终选参考区删除）",
+    "build_scan_view": "新增资金流出过滤（today_recs 单点过滤，下游区域自动继承）；"
+    "随后不再构建 v2 pool_rows/pool_total、不再算 _show_core_dip/decision_lines；"
+    "2026-09-21 再移除终选合池调用与 core_dips/pool_pick_recs 两个中间序列",
+    "render_terminal": "顶部输出「▸ 资金流出已剔除 N 只」；随后移除「今日决策」区块"
+    "（决策层删除、终选参考改独立区块）、v2 池选区、核心方向低吸区；"
+    "2026-09-21 再移除「终选参考」区块本身（终端只剩四区）",
+    # ⚠ `_build_summary` **不登记**（两个规则外的事实）：
+    #   ① 它是拆分之后新增的函数，不在基线 display.py 里 —— 本工具只比对「基线里已有的
+    #      定义」，登记一个基线里没有的名字会被判「表已过期」（2026-09-21 实测）；
+    #   ② 它本身已在 2026-09-21 随「综合判断摘要」整块删除（用户决策：终端只留四区），
+    #      删除也无需登记 —— 它从不在基线的 missing 集合里。
     # 2026-09-14 哑参清理：🎯 行尾渲染自 2026-09-04 停用后遗留的两个入参
     "_entry_row_suffix": "删除从未被读取的 marked 入参（🎯 行尾渲染已停用）",
     "_print_priority_row": "删除无任何调用方传入的 nextday_mark 入参",

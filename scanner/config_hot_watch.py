@@ -47,7 +47,8 @@ HOT_HIGHLIGHT_STREAK = 3  # 连续出现 ≥ 该轮数 → 终端标记「★重
 HOT_STREAK_RESET_DAYS = 7  # 超过该天数未再命中的记录清理（防表无限增长）
 
 # 美感门（2026-09-14）：日线走势「漂亮」判定，过滤掉走势不佳的候选
-# 与终选参考区（final_pick）的美感门同源，但独立开关控制
+# 判定函数与终选参考区曾有过的美感门同源（scanner.trend_beauty.evaluate_daily_trend）；
+# 后者已于 2026-09-21 随终选参考区删除，本门保留且独立开关控制
 # 1=开启（默认，过滤掉日线不漂亮的候选），0=关闭
 HOT_BEAUTY_GATE_ENABLED = int(os.environ.get("RTS_HOT_BEAUTY_GATE", "1"))
 
@@ -76,6 +77,23 @@ OFFBOARD_WATCH_ENABLED = os.environ.get("RTS_HOT_OFFBOARD", "1") != "0"
 # 流通市值 p50 仅 25 亿），成交额过低的票少量资金即可操纵分时、指标本身无参考价值。
 OFFBOARD_MIN_AMOUNT = 3000 * 1e4  # 成交额下限（元）：3000 万
 OFFBOARD_MIN_FLOAT_CAP = 10 * YI  # 流通市值下限（元）：10 亿
+
+# ── 开盘静默窗口（2026-09-21）：本段延后到开盘满 N 分钟才产出 ──
+# 🔴 这不是调阈值，是修一个**测量缺陷**。量比 = 当日累计量 ÷（近 5 日均每分钟量 ×
+# 已交易分钟数）：开盘头几分钟的集合竞价量被一个只有几分钟的分母摊薄，读数**虚高
+# 一个量级**；而量比正是 B 段 sort_key 的**第一排序键** ⇒ 不设窗口等于「越早出现
+# 越靠前」，把失真最严重的行推到第一屏。
+# 实测（`offboard_launch_log` 19 行 / 2 个交易日，对照 `market_extra_cache` 收盘快照）：
+#   09:33 捕获的 3 只 T1 量比虚高 **11.5 / 8.6 / 6.6 倍**，当日唯三由涨转跌的恰好就是
+#   这三只；09:45 之后捕获的行，虚高倍数收敛到 ≈1.0。
+# 设计稿 §6 自己点名过这个风险（「建议在 09:35–09:45 窗口复核」）—— 那次复核没做，
+# 文档里的两源量比一致性实测是在 11:18 做的，正好避开了失真窗口。既然失真是量纲性质
+# （分母趋 0 时商发散），此处按数学性质直接设窗，不等统计证据（19 行样本也支撑不了）。
+# 窗口用 `trading_session.trading_minutes_elapsed` 判定（午休 120 分钟已排除），
+# 故「开盘满 15 分钟」在任何时刻都只指「上午连续竞价满 15 分钟」。
+# 0 = 关闭窗口（离线自检 / 回放用）。
+OFFBOARD_OPENING_SILENCE_MIN = 15
+
 # T1（量先动·价未动）额外要求：主力净占比 ≥ 此值（0 = 至少不是净流出）。
 # T2 不设该条 —— 它复用既有 MOMENTUM_LAUNCH_* 口径（那里没有资金流项），
 # 加进来会变成「同名不同义」的第三种启动定义。
@@ -130,6 +148,7 @@ __all__ = [
     "OFFBOARD_WATCH_ENABLED",
     "OFFBOARD_MIN_AMOUNT",
     "OFFBOARD_MIN_FLOAT_CAP",
+    "OFFBOARD_OPENING_SILENCE_MIN",
     "OFFBOARD_T1_MAIN_PCT_MIN",
     "OFFBOARD_T1_TODAY_MAX",
     "OFFBOARD_T2_TODAY_MAX",

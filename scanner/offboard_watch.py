@@ -48,6 +48,19 @@ fail-open / fail-closed
   **不同**（风险门宁可放过，信号门不能凭空产出）。这正是两个 MA 判定函数都返回
   `bool | None` 而不替调用方兜底的原因；
 - 落库失败 → 只告警，本轮结果照常返回。
+
+2026-09-21 的两处修正（都落在「测量」层，**不是**阈值层）
+--------------------------------------------------------
+1. **开盘静默**（`OFFBOARD_OPENING_SILENCE_MIN` / `opening_silence_active`）：
+   开盘满 15 分钟才产出，作为 `run_offboard_watch` 的**第一道门**。依据是量比在开盘
+   头几分钟存在**量纲性失真**（商的分母趋 0 时发散），而量比正是本段第一排序键 ——
+   实测 09:33 捕获的 3 只 T1 量比虚高 6.6~11.5 倍，且是当日唯三由涨转跌的票。
+2. **落库冻结**（`persist_round` + 迁移 `m016`）：信号值改为「首次写入即冻结」，
+   另立 `last_hit_time` 列记最后命中。旧语义「最后写入即收盘值」会把票的**信号身份**
+   （T1/T2、捕获时的涨幅）覆盖掉，事后无法还原它以什么身份被推出。
+
+⚠ 本段**筛选常量一个没动**：样本只有 2 个交易日 / 19 行 —— 够证伪「量比在开盘几分钟
+可用」（那是数学性质，不是统计推断），远不够支撑任何阈值调整（项目铁律 observe-first）。
 """
 
 from __future__ import annotations
@@ -57,6 +70,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date as _date
+from datetime import datetime
 from datetime import timedelta as _td
 from typing import Sequence
 
@@ -73,6 +87,7 @@ from scanner.config import (
     OFFBOARD_KLINE_WORKERS,
     OFFBOARD_MIN_AMOUNT,
     OFFBOARD_MIN_FLOAT_CAP,
+    OFFBOARD_OPENING_SILENCE_MIN,
     OFFBOARD_T1_MAIN_PCT_MIN,
     OFFBOARD_T1_TODAY_MAX,
     OFFBOARD_T2_TODAY_MAX,
@@ -86,6 +101,7 @@ from scanner.display_gates import beauty_marks_daily, code_of, common_hard_gate
 from scanner.features import ma_alignment_score
 from scanner.hot_watch import is_hot_universe
 from scanner.models import make_kline_bar
+from scanner.trading_session import trading_minutes_elapsed
 from scanner.trend_beauty import DAILY_BEAUTY_MIN_BARS, ma_bullish
 from scanner.utils import EXTERNAL_FAILURES, accum_5d, to_float
 from scanner.validator import mo_divergence
@@ -98,7 +114,9 @@ _MA_MIN_BARS = DAILY_BEAUTY_MIN_BARS
 # 两层标记（也是 `offboard_launch_log.tier` 的取值域）
 T1 = "T1"  # 量先动·价未动
 T2 = "T2"  # 启动首日
-_TIER_RANK = {T1: 0, T2: 1}
+# 层序（2026-09-21 **翻转**）：T2 在前。T1 按定义就是「今日涨幅 < 3.5%」= 当日势能最弱
+# 的一层，置顶等于必然把最不符合价值函数的那层放第一屏（实测见 sort_key docstring）。
+_TIER_RANK = {T2: 0, T1: 1}
 
 _KLINE_TABLE = "offboard_kline_cache"
 _LOG_TABLE = "offboard_launch_log"
@@ -141,11 +159,23 @@ class OffboardCandidate:
 
 
 def sort_key(c: OffboardCandidate) -> tuple:
-    """B 段排序键：**T1 在前**（真正的「提前」）→ 量比降序 → 主力净占比降序。
+    """B 段排序键：**T2 在前** → 量比降序 → 主力净占比降序。
+
+    层序 2026-09-21 由「T1 在前」**翻转**为「T2 在前」。原序的理由是「T1 = 真正的
+    提前」，但 T1 按定义就是「今日涨幅 < 3.5%」（带 `(HOT_MIN_PERCENT,
+    OFFBOARD_T1_TODAY_MAX)`）—— 与 T2「启动首日」相比，它是**当日势能最弱的一层**；
+    把它置顶等于系统性把最不符合价值函数的那层放第一屏。实测（同一份落库快照）：
+
+      - 09-21 当日：T1 −0.76pp vs T2 +1.28pp（n=8 / 6）；
+      - 09-18 次日：T1 +0.29% vs T2 +4.34%。
+
+    两层都**保留**（T1 的「价未动」样本对观察段仍有价值），只是不再占据首位。
 
     不引入复合权重：项目已证复合排序在无标签时必然过拟合（推荐池 `score` 排序
-    AUC 0.469 < 0.5）。主键取量比，机制依据是「量比 = 当日每分钟均量 ÷ 近 5 日
+    AUC 0.469 < 0.5）。段内主键取量比，机制依据是「量比 = 当日每分钟均量 ÷ 近 5 日
     每分钟均量」= **增量资金**的直接代理，且与「量能领先于价格」的假设同向。
+    ⚠ 量比在开盘头几分钟虚高一个量级（分母只有几分钟）⇒ **本排序键的正确性依赖
+    `OFFBOARD_OPENING_SILENCE_MIN` 那道静默窗口**，两者是一组，不可只删其一。
 
     ⚠ A/B 两段**不混排**（同一张表内分段并列）：A 段的复合分里 `rank_change` 独占
     35/100，榜外票恒缺该项 ⇒ 混排必被永久压到最末。这不是「口径不可比」的抽象说法，
@@ -532,9 +562,20 @@ def load_offboard_klines(conn, adapter, symbols: list[str], fetch_date: str | No
 def persist_round(conn, rows: Sequence[OffboardCandidate]) -> None:
     """B 段逐日落库（(date, symbol) 唯一）。失败只告警，不影响本轮结果返回。
 
-    `first_time` **只在首次写入时记**（ON CONFLICT 不更新它）：否则「本区当日何时首次
-    产出该行」会被当日最后一轮覆盖掉，时间维度直接丢失。信号原始值则每轮刷新 ——
-    与 `market_extra_cache` 的「当日最后一次写入即收盘值」同一语义。
+    🔴 **信号值首次写入即冻结**（2026-09-21 修）：`name / tier / percent / accum_5d /
+    vol_ratio / main_pct / amount / float_cap / price` 九列在 ON CONFLICT 时**不更新**，
+    只有 `last_hit_time` 与 `updated` 每轮刷新。
+
+    旧语义是「当日最后一次写入即收盘值」—— 那对 `market_extra_cache`（收盘价缓存）
+    是对的，对**这张表**是错的：一只票上午以 T1 身份被产出、下午涨过 3.5% 变成 T2，
+    旧的 `tier` / `percent` 就被改写，事后**无法还原它当初以什么身份被推出**。
+    实测 09-21 有 3 只 T1 信号只存活 4 分钟，但库里既看不出它出没过、也看不出只出没
+    过 4 分钟 —— 一张「信号观测表」丢失了信号本身，就失去了唯一的存在理由。
+
+    `first_time` 仍只在首次写入时记（「当日何时首次产出」），`last_hit_time` 记录
+    「当日最后一次命中」。**为什么不让 `updated` 兼作命中时刻**：`backfill_next_day`
+    也写 `updated`，09-18 那 5 行的 `updated` 全被回填写成 09-21 的时刻，与当日行的
+    `first_time` 撞在一起 → 命中时间维度事实上丢失。拆出专列后语义唯一。
 
     这张表是**本类信号上线前的唯一硬前置**：`hot_watch_hits` 以 symbol 为主键、
     只存滚动最新态，回答不了「T1/T2 的次日 hit 率是多少」。
@@ -547,19 +588,16 @@ def persist_round(conn, rows: Sequence[OffboardCandidate]) -> None:
         conn.executemany(
             f"""INSERT INTO {_LOG_TABLE}
                 (date, symbol, name, tier, percent, accum_5d, vol_ratio, main_pct,
-                 amount, float_cap, price, first_time, updated)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 amount, float_cap, price, first_time, last_hit_time, updated)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(date, symbol) DO UPDATE SET
-                  name=excluded.name, tier=excluded.tier, percent=excluded.percent,
-                  accum_5d=excluded.accum_5d, vol_ratio=excluded.vol_ratio,
-                  main_pct=excluded.main_pct, amount=excluded.amount,
-                  float_cap=excluded.float_cap, price=excluded.price,
+                  last_hit_time=excluded.last_hit_time,
                   updated=excluded.updated""",  # noqa: S608 - 常量表名
             [
                 (
                     day, c.symbol, c.name, c.tier, round(c.percent, 3), round(c.accum_5d, 3),
                     round(c.volume_ratio, 3), round(c.main_pct, 3), c.amount,
-                    c.float_market_capital, c.current, now, now,
+                    c.float_market_capital, c.current, now, now, now,
                 )
                 for c in rows
             ],
@@ -638,6 +676,26 @@ def backfill_next_day(conn, adapter, signal_date: str | None = None) -> int:
 # ── 单轮主流程 ──────────────────────────────────────────────────────────────
 
 
+def opening_silence_active(now: datetime | None = None) -> bool:
+    """开盘静默窗口是否生效（True = 本轮不产出）。
+
+    窗口依据见 `config_hot_watch.OFFBOARD_OPENING_SILENCE_MIN` 的注释：量比 = 当日累计量
+    ÷（近 5 日均每分钟量 × 已交易分钟数），开盘头几分钟的分母只有几分钟，商**虚高一个
+    量级**；而量比是本段 `sort_key` 的第一排序键。实测 09:33 捕获的 3 只 T1 虚高
+    11.5/8.6/6.6 倍且当日全数转跌，09:45 之后收敛到 ≈1.0。
+
+    用 `trading_minutes_elapsed` 而**不是**墙上时间差：它已把午休 120 分钟排除在外
+    （11:30 与 13:00 都返回 120），故「开盘满 N 分钟」在任何时刻都只指「上午连续竞价
+    满 N 分钟」，下午开盘不会被误判为仍在窗口内。非交易日与开盘前返回 0 → 同样静默
+    （那两种时段本就不该产出）。
+
+    `OFFBOARD_OPENING_SILENCE_MIN <= 0` = 关闭窗口（离线自检 / 回放路径）。
+    """
+    if OFFBOARD_OPENING_SILENCE_MIN <= 0:
+        return False
+    return trading_minutes_elapsed(now) < OFFBOARD_OPENING_SILENCE_MIN
+
+
 def run_offboard_watch(
     adapter,
     conn,
@@ -659,6 +717,11 @@ def run_offboard_watch(
     异常处理见模块 docstring 的 fail-open / fail-closed 一节；编程错误不吞。
     """
     if conn is None:
+        return []
+
+    # 第一道门：开盘静默窗口。**放在读任何数据之前** —— 否则要把 5305 行全市场快照
+    # 读进来、跑完 5000 次门判定，再整批丢弃。窗口语义与实测见 opening_silence_active。
+    if opening_silence_active():
         return []
 
     if snapshot is None:
@@ -939,6 +1002,16 @@ def main(argv: "list[str] | None" = None) -> int:
         finally:
             conn.close()
         print(f"  B 段次日收益回填 {filled} 行")
+        return 0
+
+    # 手动运行时的可解释性：静默窗口生效 → 直接说明为何本轮无结果。生产主循环里
+    # 这段逻辑由 `run_offboard_watch` 内部的第一道门承担，此处只是给人看的提示。
+    if opening_silence_active():
+        print(
+            f"  开盘静默窗口生效中：已交易 {trading_minutes_elapsed()} 分钟 < "
+            f"OFFBOARD_OPENING_SILENCE_MIN={OFFBOARD_OPENING_SILENCE_MIN} 分钟"
+            " —— 量比在此窗口内虚高一个量级，本轮不产出"
+        )
         return 0
 
     board = adapter.fetch_biaosheng(100)

@@ -1,6 +1,6 @@
 """display 聚合器：物理实现已拆到 scanner/view/{model,assemble,render}.py。
 
-本模块仅做 re-export，保持 `from scanner.display import X` 对外契约零变化（feishu / final_pick / hot_watch / today_report / leaderboard_obs / tests 一行不改）。
+本模块仅做 re-export，保持 `from scanner.display import X` 对外契约零变化（feishu / hot_watch / today_report / leaderboard_obs / tests 一行不改；原清单里的 final_pick 已于 2026-09-21 随终选参考区整体删除）。
 
 **唯一有意的收窄**：旧 display.py 在模块顶层 `from x import y` 顺带把一批名字暴露成了
 `scanner.display.y`（如 `os` / `now_beijing` / `Candidate` / `composite_tier` 等 47 个），

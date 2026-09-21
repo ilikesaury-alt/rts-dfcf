@@ -54,6 +54,7 @@ class TestV2PoolSortKey:
         pool_total（v2 隐藏）、decision_lines（决策层删除）。
         2026-09-16 移除：comeback_rows / show_comeback（回马枪删除）、nextday_mark
         （🎯 画像删除）、adj_picks（动态推荐序列，语义由 🎯/回马枪构成）。
+        2026-09-21 移除：final_pick_lines（终选参考区整体删除，连同 scanner/final_pick.py）。
         """
         view = ScanView(
             main_rows=[],
@@ -64,7 +65,7 @@ class TestV2PoolSortKey:
             warnings=[],
         )
         for gone in ("pool_total", "pool_rows", "core_dip_rows", "show_core_dip", "decision_lines",
-                     "comeback_rows", "show_comeback", "nextday_mark", "adj_picks"):
+                     "comeback_rows", "show_comeback", "nextday_mark", "adj_picks", "final_pick_lines"):
             assert not hasattr(view, gone), f"{gone} 已随展示区移除，不应再是 ScanView 字段"
 
 
