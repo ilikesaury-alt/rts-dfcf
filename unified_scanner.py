@@ -325,6 +325,13 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
     last_ranks: dict[str, int] = {}
     # 榜单可观测性：上一轮飙升榜成员集合，用于算本轮重叠率（探测上游样本口径抖动）。
     prev_board_syms: set[str] = set()
+    # v1 主表「新票优先」的跨轮状态（2026-09-21）：上一轮的今日推荐票集 + 其所属日期。
+    # 与 last_ranks 同款循环态。**不看 DB 时间戳**：recommendations.time 在「分数提高」
+    # 时会被 save_recommendations 的 UPDATE 分支覆盖，故 MIN(time)/first_time 的语义是
+    # 「最后一次提分时刻」而非首次出现，拿它判新票会把「老票提分」误标成新票
+    # （口径取舍见 scanner/view/assemble.py 的 build_scan_view docstring）。
+    prev_rec_syms: set[str] = set()
+    prev_rec_date: str = ""
 
     try:
         while True:
@@ -523,6 +530,22 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
 
                 # 历史推荐跟踪已并入回马枪（2026-08-07）：tracker 模块删除，不再单独查询
                 # display() 返回本轮 ScanView，飞书复用同一份（避免两端选择分叉）。
+                # ── v1 主表「新票优先」的输入（2026-09-21）──
+                # 差集口径：本轮票集 − 上一轮票集 = 本轮**新进入**今日推荐池的票。
+                # 跨交易日必须先清空上一轮快照 —— 推荐池按 date 重置，不清空的话
+                # 「昨日也推荐过」的票会在今日首轮被判成「不是新票」（它已在昨日快照里）。
+                # 清空后跨日首轮会把当日全部产出标为「新」：这是**正确**的（当日确实全部
+                # 首次出现），且此时第 1 排序键对所有行恒等，顺序不受影响。
+                _rec_date = now_beijing().date().isoformat()
+                if prev_rec_date != _rec_date:
+                    prev_rec_syms = set()
+                    prev_rec_date = _rec_date
+                # today_recs 取数失败时 today_syms 为空集：此时既不推新票、也不覆盖快照
+                # （set() - prev 会把空集当成「本轮无票」，覆盖后下一轮全部误判为新票）。
+                new_syms = today_syms - prev_rec_syms if today_syms else set()
+                if today_syms:
+                    prev_rec_syms = set(today_syms)
+
                 # 真实市场指数（创业板指 pct）：供市况标签与板块建议，缓存命中无额外请求。
                 _market_pct = adapter.fetch_market_index()
                 view = display(
@@ -538,6 +561,7 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     offboard_rows=offboard_rows,
                     hist_rows=hist_rows,
                     market_idx_pct=_market_pct,
+                    new_symbols=new_syms,
                 )
                 # 快照本轮榜单排名供下一轮展示排名变化（上一轮为 None 时显示纯名次）。
                 last_ranks = dict(current_rank_map)

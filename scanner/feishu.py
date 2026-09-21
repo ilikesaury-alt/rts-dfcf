@@ -276,8 +276,12 @@ def _fmt_row(s: RowSnapshot) -> str:
     return f"`{rs} {_pad(s.name, 8)} {s.symbol} {pct_str:>7} {acc_str:>7}  {s.score:>2}分{risk_str}{extra_str}`{tactic_str}"
 
 
-def _row_line(entry, view, rank=None, accum=None, score=None) -> str:
-    """把一条推荐行渲染成卡片文本行（rank/accum/score 可由调用方直接给最终值）。"""
+def _row_line(entry, view, rank=None, accum=None, score=None, is_new_entry: bool = False) -> str:
+    """把一条推荐行渲染成卡片文本行（rank/accum/score 可由调用方直接给最终值）。
+
+    is_new_entry：本轮新进入今日推荐池（MainRow.is_new_entry 透传），行尾打「新」标记。
+    位置与终端一致 —— 插在**美 标记之前**（终端里「新」也排在行尾最前，相对顺序同为「新 … 美」）。
+    """
     snap = _extract_row(entry, view.flow_pct_map)
     if rank is not None:
         snap.rank = rank
@@ -286,6 +290,9 @@ def _row_line(entry, view, rank=None, accum=None, score=None) -> str:
     if score is not None:
         snap.score = score
     line = _fmt_row(snap)
+    # 本轮新进池标记（2026-09-21）：与终端 v1 池选行同位，判定单源 MainRow.is_new_entry。
+    if is_new_entry:
+        line += " 新"
     # 走势美感标记（2026-09-09 上线 / 2026-09-15 分档）：v1 池选行尾 ""/"美"/"美★"，
     # 与终端同源（view.beauty_mark，判定单源 trend_beauty.beauty_mark）。
     bm = (getattr(view, "beauty_mark", None) or {}).get((entry.get("symbol"), entry.get("category")), "")
@@ -475,7 +482,15 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
     # 字段。卡片现状与终端同步只剩四节：v1 池选 / v1 回捞 / 沪深飙升（A 段）/ 榜外异动（B 段）。
     # 需复原见 git 历史。
     pool_lines = [
-        _row_line(row.entry, view, rank=row.rank, accum=row.accum, score=_to_score(row.score)) for row in main
+        _row_line(
+            row.entry,
+            view,
+            rank=row.rank,
+            accum=row.accum,
+            score=_to_score(row.score),
+            is_new_entry=bool(getattr(row, "is_new_entry", False)),
+        )
+        for row in main
     ]
     if pool_lines:
         sections.append(("◆ v1 池选", pool_lines))

@@ -187,8 +187,10 @@ EXPECTED_BODY_DIVERGENCE = {
     # 与桶删除无关），并删掉已不存在的「动态推荐」消费方提法。
     "_regime_weak": "docstring 补注：comeback 历史行过滤必须保留；动态推荐消费方已删除",
     # 2026-09-14 第二批：决策层删除 + v2/核心低吸展示区隐藏（用户决策）
-    "display": "移除 decision_lines 入参（决策层删除后无处可注入）",
-    "display_priority": "同上：移除 decision_lines 入参与其透传",
+    "display": "移除 decision_lines 入参（决策层删除后无处可注入）；"
+    "2026-09-21 新增 new_symbols 入参并透传（v1 新票优先）",
+    "display_priority": "同上：移除 decision_lines 入参与其透传；"
+    "2026-09-21 新增 new_symbols 入参并透传给 build_scan_view",
     "_beauty_mark_for": "docstring 口径更新（v2 池选展示区已隐藏，标记现状只落 v1 池选行）；"
     '2026-09-15 再更新为分档口径（日线定准入、分时定级别 → ""/"美"/"美★"）',
     # 2026-09-11 飙升区合入后、拆分提交之前的脚注文案改动（commit 61631bc：
@@ -205,6 +207,11 @@ EXPECTED_BODY_DIVERGENCE = {
     # 隐藏的是渲染与 ScanView 字段，排序/标签口径本身完整保留，供恢复 v2 区时零成本复原。
     "_v2_pool_sort_key": "docstring 补注：v2 展示区隐藏后本函数无生产调用方（有意保留）",
     "_entry_dip_labels": "docstring 补注：唯一调用方 _v2_pool_sort_key 失去生产消费（有意保留）",
+    # 2026-09-21「v1 主表新票优先」（用户决策 ④B）：MainRow 新增 is_new_entry 字段 ——
+    # 它既是 v1 排序键第 1 项，也是终端/飞书行尾「新」标记的判定源。判据来自
+    # build_scan_view 的 new_symbols 入参（跨轮票集差集），**不读** recommendations.time
+    # （后者会被提分覆盖，MIN(time) 是「最后一次提分」而非首次出现）。
+    "MainRow": "新增 is_new_entry 字段（本轮新进池：v1 排序第 1 键 + 两出口行尾「新」标记）",
 }
 
 SKIP_MODULES = {

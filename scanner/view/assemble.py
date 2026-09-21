@@ -158,6 +158,7 @@ def build_scan_view(
     offboard_rows: list | None = None,
     hist_rows: list | None = None,
     market_idx_pct: float | None = None,
+    new_symbols: set[str] | None = None,
 ):
     """构建一次扫描的展示视图（纯计算，不 print、不写库）：读今日推荐并算出档位/标记/排序。
 
@@ -170,10 +171,22 @@ def build_scan_view(
     渲染最新候选数据（实时候选 > DB 快照）。
     last_ranks: 上一轮扫描的榜单排名 {symbol: rank}，供「排名」列显示雪球榜单排名变化
     （+N 升 / -N 降），与已下线策略桶同口径；缺省 None 不显示变化。
+    new_symbols: 本轮**新进入**今日推荐池的票集（symbol）。由调用方（扫描循环）持有
+    上一轮的票集快照做差集得到 —— 本函数**刻意不自行推导「新」**：
+    `recommendations.time` 在「分数提高」时会被覆盖（dal.save_recommendations 的
+    UPDATE 分支），故 `MIN(time)` / `first_time` 的真实语义是「最后一次提分时刻」而非
+    首次出现；拿它判「新票」会把「老票提分」误标成新票（实测每轮 1~3 行，最大一轮
+    12 行，全部落在这个误判口径里）。缺省 None / 空集 ⇒ 不标记任何新票，排序退化为
+    原有键序 —— 收盘后无新票时即此状态，输出与加本功能之前**逐字节相同**。
 
-    v1 池选排序键（2026-09-16 换键，2026-09-21 更正本文）：过热劣后 → 类别展示优先级
-    → 榜单排名升序 → 资金流降序 → 低吸/突破标签加分。旧文写的是 2026-08-30 的键
-    （「榜上优先 → 涨幅升序 → 回调核心 → 排名升序 → 新面孔」），换键时漏改，与实现不符。
+    v1 池选排序键（2026-09-16 换键，2026-09-21 加「新票优先」并更正本文）：
+    新票优先 → 过热劣后 → 类别展示优先级 → 榜单排名升序 → 资金流降序 → 低吸/突破标签加分。
+    （2026-09-16 之前的旧文写的是 2026-08-28 的键「榜上优先 → 涨幅升序 → 回调核心 →
+    排名升序 → 新面孔」，换键时漏改，与实现不符，已更正。）
+    ⚠ 「新票优先」压过「过热劣后」（用户 2026-09-21 明确选择「绝对置顶」）：一只本轮
+    刚进池的过热票也会到第 1 行。选它的理由是主表是**观察名单**不是买入清单，而
+    「新信息必须先看到」优先于「排序按质量读」；安全阀并未消失 —— 过热票仍带
+    ⚠超买 行尾标记。若要改回「桶内新票优先」，把 is_new 键从 x[0] 移到 x[1] 即可。
     🎯（次日大涨画像）/⚡（蓄势突破观察）为行尾展示标记，不参与排序、不改评分、不落库。
     """
     if conn is None:
@@ -315,14 +328,16 @@ def build_scan_view(
     # （档位分组渲染的旧实现已删除；需还原见 git 历史，勿在此堆积注释代码。）
 
     # v1 池选（2026-08-28）：按优先级规则排序的详细列表，关键列展示。
-    # 排序规则（2026-09-16 换键，2026-09-21 同步文档）：过热劣后 → 类别展示优先级
-    # → 榜单排名升序 → 资金流降序 → 低吸/突破标签加分。**涨幅不在键内**。
+    # 排序规则（2026-09-16 换键，2026-09-21 加「新票优先」并同步文档）：新票优先 →
+    # 过热劣后 → 类别展示优先级 → 榜单排名升序 → 资金流降序 → 低吸/突破标签加分。
+    # **涨幅不在键内**。
     # （旧注释写的「榜上优先 → 涨幅升序 → 回调核心 → 排名升序 → 新面孔」是
     #  2026-08-28 的实现，换键时漏改，已在此更正 —— 标题串见 render.render_terminal。）
-    # 实测（2026-09-21 真实 scanner.db 17:28 那轮，25 行）：
-    #   · 第 3 键**在榜票之间真实生效** —— rank_map 只覆盖当轮在榜票（今日 7 只），
-    #     故只有少数行有值；正是它把 rank17 的义翘神州排在 rank43 的威尔高之前，
-    #     并让这两只排在资金流更优的 ▲▲ 行之前（纯 3 键假设无法解释该顺序）。
+    # 实测（2026-09-21 真实 scanner.db 17:28 那轮，25 行；键位按**加「新票优先」之前**
+    # 的编号标注，即并列于下文的 tier=第1、类别=第2、排名=第3、资金流=第4、形态=第5）：
+    #   · 第 3 键（榜单排名升序）**在榜票之间真实生效** —— rank_map 只覆盖当轮在榜票
+    #     （今日 7 只），故只有少数行有值；正是它把 rank17 的义翘神州排在 rank43 的
+    #     威尔高之前，并让这两只排在资金流更优的 ▲▲ 行之前（纯 3 键假设无法解释该顺序）。
     #   · 第 5 键（形态加分）该轮全 0，属稀有 tie-breaker。
     #   · 第 1 键 tier 与第 2 键类别高度重合（kNF→tier1、MOM/NEW→tier2、ST→tier3），属待议冗余。
     def _cb_core_pullback_ok(sym: str) -> bool:
@@ -383,9 +398,14 @@ def build_scan_view(
             # 原注释只提「档位仍由过热硬门推导……属实时安全阀、非回测」——不完整且后半失实：
             # 它让「第 1 主键与回测无关」看起来成立，而实际上 tier 恒等于 composite 的粗分档。
             tier = composite_tier(e, conn, accum_map=accum_map)
-            # ── v1 排序主键（2026-09-16）──
-            # 档位(过热劣后/composite 分档) → 类别展示优先级(策略语义,非历史hit)
-            # → 榜单排名升序(实时热度) → 资金流降序(实时主力) → 低吸/突破标签加分(形态)。
+            # ── v1 排序主键（2026-09-16 换键；2026-09-21 加「新票优先」居首）──
+            # 新票优先(本轮新进池) → 档位(过热劣后/composite 分档) → 类别展示优先级
+            # (策略语义,非历史hit) → 榜单排名升序(实时热度) → 资金流降序(实时主力)
+            # → 低吸/突破标签加分(形态)。
+            # 「新」取自调用方传入的 new_symbols（跨轮票集差集）——**不读 DB 时间戳**，
+            # 理由见本函数 docstring 的 new_symbols 段（time 会被提分覆盖）。
+            # new_symbols 缺省/空 ⇒ 本键恒 1 ⇒ 键序完全还原，输出逐字节不变。
+            _is_new_key = 0 if (new_symbols and sym in new_symbols) else 1
             _rk = e.get("live_rank") or e.get("rank")
             _rank_key = _rk if isinstance(_rk, (int, float)) and _rk > 0 else 99999
             _flow = entry_fund_flow_pct(e, flow_pct_map)
@@ -393,14 +413,15 @@ def build_scan_view(
             _dip_key = _dip_label_bonus(e)
             _cat_pri = CAT_DISPLAY_PRIORITY.get(e.get("category", ""), 99)
             _scored_rows.append(
-                (tier, _cat_pri, _rank_key, -_fund_key, -_dip_key, e, is_core, accum_val, score, cs)
+                (_is_new_key, tier, _cat_pri, _rank_key, -_fund_key, -_dip_key, e, is_core, accum_val, score, cs)
             )
-        # 统一排序：过热硬门劣后 → 类别语义优先级 → 榜单排名升序 → 资金流降序 → 形态加分
-        _scored_rows.sort(key=lambda x: (x[0], x[1], x[2], x[3], x[4]))
+        # 统一排序：新票优先 → 过热硬门劣后 → 类别语义优先级 → 榜单排名升序 → 资金流降序
+        # → 形态加分
+        _scored_rows.sort(key=lambda x: (x[0], x[1], x[2], x[3], x[4], x[5]))
         # 逐行解析为 MainRow（排序在上面的元组里完成，此处只做展示字段定型）。
         # 2026-08-29：候选（_fresh_c）必须逐行重算——构建循环里的 _fresh_c 只保留末行，
         # 跨行复用会把上一只票的行情安到本行。
-        for _tier, _cat_pri, _rank_key, _neg_fund, _neg_dip, _e, _ic, _av, _sc, _cs in _scored_rows:
+        for _ink, _tier, _cat_pri, _rank_key, _neg_fund, _neg_dip, _e, _ic, _av, _sc, _cs in _scored_rows:
             _fresh_c = fresh_candidate(_e)
             _rk_disp = _e.get("live_rank") or _e.get("rank")
             if _rk_disp is None and _fresh_c:
@@ -419,6 +440,7 @@ def build_scan_view(
                     pct=_pct_row,
                     current=_cur_row,
                     sector=_entry_sector(_e),
+                    is_new_entry=not _ink,
                 )
             )
     except EXTERNAL_FAILURES as _e:

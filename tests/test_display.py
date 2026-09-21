@@ -1317,3 +1317,53 @@ def test_entry_row_suffix_renders_beauty_tag():
 # 飙升区不进重点观察 —— 对应的**行为断言随功能一起消失**。若日后恢复摘要，
 # 必须连这些断言一起从 git 历史取回（只恢复函数不恢复测试 = 无守护）。
 # 需复原见 git 历史。
+
+
+# ── v1 主表「新票优先」+ 行尾「新」标记（2026-09-21，用户决策 ④B）──
+# 判据 `new_symbols` 由扫描循环持有跨轮票集快照做**差集**得到，**不是**读 DB 时间戳 ——
+# recommendations.time 会被「分数提高」覆盖（dal.save_recommendations 的 UPDATE 分支），
+# 故 MIN(time)/first_time 是「最后一次提分时刻」而非首次出现。本段桩直接传集合，与生产口径同构。
+
+
+def test_v1_new_symbols_sorted_to_top(capsys):
+    """new_symbols 命中的票置顶 —— 即便它按其余 5 键该排最后（类别优先级最低）。"""
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "甲", "known_new_face", 90)  # 类别优先级最高
+    _insert_rec_cat(conn, "SZ300002", "乙", "short_term", 10)  # 类别优先级最低
+    _insert_rec_cat(conn, "SZ300003", "丙", "momentum", 50)
+
+    disp_mod.display_priority(conn, today_pool={})
+    base = [ln.split()[1] for ln in _main_lines(capsys.readouterr().out)]
+    assert base == ["SZ300001", "SZ300003", "SZ300002"], f"基线序变了：{base}"
+
+    disp_mod.display_priority(conn, today_pool={}, new_symbols={"SZ300002"})
+    got = [ln.split()[1] for ln in _main_lines(capsys.readouterr().out)]
+    assert got == ["SZ300002", "SZ300001", "SZ300003"], f"新票未置顶：{got}"
+
+
+def test_v1_new_symbols_absent_keeps_original_order(capsys):
+    """缺省 None / 空集 ⇒ 排序完全还原（收盘后无新票即此状态，输出与加本功能前相同）。"""
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "甲", "known_new_face", 90)
+    _insert_rec_cat(conn, "SZ300002", "乙", "short_term", 10)
+    _insert_rec_cat(conn, "SZ300003", "丙", "momentum", 50)
+
+    orders = []
+    for kwargs in ({}, {"new_symbols": None}, {"new_symbols": set()}):
+        disp_mod.display_priority(conn, today_pool={}, **kwargs)
+        orders.append([ln.split()[1] for ln in _main_lines(capsys.readouterr().out)])
+    assert orders[0] == orders[1] == orders[2], f"缺省/空集改变了排序：{orders}"
+
+
+def test_v1_new_entry_renders_tail_mark(monkeypatch, capsys):
+    """行尾「新」标记只落在 new_symbols 命中的行上（与排序第 1 键同源）。"""
+    _force_ansi(monkeypatch)
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "甲", "short_term", 10)
+    _insert_rec_cat(conn, "SZ300002", "乙", "short_term", 10)
+
+    disp_mod.display_priority(conn, today_pool={}, new_symbols={"SZ300001"})
+    out = capsys.readouterr().out
+    # 加粗+品红：与 _force_ansi 注入的码一致；断言码而非裸字，避免命中票名里的「新」
+    assert f"{vm.ANSI['BOLD']}{vm.ANSI['MAGENTA']}新" in _main_line(out, "SZ300001")
+    assert "新" not in _main_line(out, "SZ300002")

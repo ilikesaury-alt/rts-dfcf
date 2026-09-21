@@ -352,6 +352,24 @@ def test_hist_section_precedes_hot():
     assert ordered == ["**◆ v1 回捞**", "**◆ 沪深飙升 · 极有可能大涨**"], f"分节顺序与终端不一致：{titles}"
 
 
+def test_card_marks_new_entry_in_v1_section():
+    """本轮新进池票在卡片 v1 池选行尾打「新」——与终端同一条判定（MainRow.is_new_entry）。
+
+    守卫的是**两出口同源**：终端的行尾「新」由 render 读 row.is_new_entry 画出，卡片由
+    _row_line 读同一个字段。若只改一端，用户会在终端看到「新」而卡片看不到（或反之），
+    而两边的票集本来就来自同一份 ScanView。
+    """
+    view = _fake_view(["SZ300001", "SZ300002"])
+    view.main_rows[0].is_new_entry = True
+    card = build_feishu_card(view, gem_total=100)
+    section = next(
+        e["text"]["content"]
+        for e in card["elements"]
+        if e.get("tag") == "div" and e.get("text", {}).get("content", "").startswith("**◆ v1 池选**")
+    )
+    assert section.count(" 新") == 1, f"「新」标记应恰好落在 1 行上：{section!r}"
+
+
 def test_hist_row_width_is_uniform():
     """回捞行可见宽度恒定（含双宽「—」与各列上界值）。
 

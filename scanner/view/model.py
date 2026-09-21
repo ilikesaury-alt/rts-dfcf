@@ -493,6 +493,13 @@ class MainRow:
     pct: float  # 涨幅（entry_display_quote 单源回退链）
     current: float  # 现价（0.0 = 无数据 → 渲染为 —）
     sector: str  # 板块（_entry_sector 单源，与详情区同口径）
+    # 本轮新进入今日推荐池（2026-09-21）：v1 排序键**第 1 项**，也是行尾「新」标记的判定。
+    # 判定源是 build_scan_view 的 new_symbols 入参（扫描循环持有的跨轮集合差集），
+    # **不是** recommendations.time / first_time —— 那两个字段在「分数提高」时会被覆盖，
+    # 语义是「最后一次提分时刻」而非首次出现（见 assemble.build_scan_view 的说明）。
+    # ⚠ 刻意**不叫** `is_new`：`new_face` 是「过去 N 天未出现」的**策略桶**，与本字段
+    # （本轮新进池，不看历史）是两回事，同名会让人误以为二者同源。
+    is_new_entry: bool = False
 
 
 @dataclass

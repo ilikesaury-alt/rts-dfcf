@@ -516,6 +516,11 @@ def render_terminal(view: ScanView) -> None:
             breakout_marked=_bolt,
             beauty=(view.beauty_mark or {}).get((_e["symbol"], _e["category"]), ""),
         )
+        if row.is_new_entry:
+            # 本轮新进池标记（2026-09-21）：与 v1 排序第 1 键 is_new 同源。
+            # 插在**行尾最前**（新 → ⚠风险 → 资金流 → ⚡ → 纪律标签 → 美），与飞书卡片
+            # _row_line 的插入位置一致 —— 同一条判定在两个出口必须给出同一种待遇。
+            _suffix = f" {ANSI['BOLD']}{ANSI['MAGENTA']}新{ANSI['RESET']}" + _suffix
         print(
             _table_row(
                 [
@@ -536,22 +541,25 @@ def render_terminal(view: ScanView) -> None:
         )
 
     # ── v1 池选 ──
-    # 标题 = 实际排序键的语义项（2026-09-21 更正）。旧标题「榜上优先·涨幅升序·回调核心」
-    # 描述的是 2026-08-28 的实现，09-16 换排序键时漏改 —— 而「涨幅」根本不在排序键里
-    # （实测 -0.65% 夹在 6.09% 与 6.93% 之间）。标题是用户判断「排序对不对」的唯一线索，
-    # 给错比不给更糟。
-    # 实现在 assemble.build_scan_view：sort(key=(tier, 类别优先级, 榜单排名, -资金流, -形态加分))
-    #   第1键 过热劣后（tier：过热硬门 accum≥50% 或 composite 低分档）
-    #   第2键 类别展示优先级      → 上两者共同产生「kNF→MOM/NEW→ST」的分组
-    #   第3键 榜单排名升序        ← **在生产路径是活的**（rank_map 只覆盖当轮在榜票，
+    # 标题 = 实际排序键的语义项（2026-09-21 更正，同日加「新票优先」）。旧标题
+    # 「榜上优先·涨幅升序·回调核心」描述的是 2026-08-28 的实现，09-16 换排序键时漏改
+    # —— 而「涨幅」根本不在排序键里。标题是用户判断「排序对不对」的唯一线索，
+    # 给错比不给更糟（本条正是 09-21 那次修正的对象）。
+    # 实现在 assemble.build_scan_view：
+    #   sort(key=(is_new, tier, 类别优先级, 榜单排名, -资金流, -形态加分))
+    #   第1键 新票优先            ← 本轮新进池（new_symbols 差集）。无新票时该键恒等，
+    #                              顺序完全还原 —— 收盘后即此状态，输出与加本功能前相同
+    #   第2键 过热劣后（tier：过热硬门 accum≥50% 或 composite 低分档）
+    #   第3键 类别展示优先级      → 与第2键共同产生「kNF→MOM/NEW→ST」的分组
+    #   第4键 榜单排名升序        ← **在生产路径是活的**（rank_map 只覆盖当轮在榜票，
     #                              故只有少数行有值；2026-09-21 17:28 那轮正是它把
     #                              rank17 的义翘神州排在 rank43 的威尔高之前，且让这两只
     #                              排在资金流更好的 ▲▲ 行之前）
-    #   第4键 资金流降序          ← 组内主力（无榜内排名的那 23 行靠它定序）
-    #   第5键 形态加分（低吸/突破标签）← 稀有，多数行恒 0
-    # ⚠ 标题只列第 1/2/4 项，**未列第 3 项（榜单排名升序）** —— 该项在榜内票之间真实生效，
-    #   补进标题即可（「过热劣后·类别优先·排名升序·资金流降序」），留给用户定夺长度。
-    print(f"  {ANSI['BOLD']}◆ v1 池选 — 过热劣后·类别优先·资金流降序{ANSI['RESET']}")
+    #   第5键 资金流降序          ← 组内主力（无榜内排名的那 23 行靠它定序）
+    #   第6键 形态加分（低吸/突破标签）← 稀有，多数行恒 0
+    # ⚠ 标题只列第 1/2/3/5 项，**未列第 4 项（榜单排名升序）** —— 该项在榜内票之间真实生效，
+    #   补进标题即可（「新票优先·过热劣后·类别优先·排名升序·资金流降序」），留给用户定夺长度。
+    print(f"  {ANSI['BOLD']}◆ v1 池选 — 新票优先·过热劣后·类别优先·资金流降序{ANSI['RESET']}")
     # 通用风险门清单（2026-09-16）：三个展示区共用一个实现（scanner/display_gates.py），
     # 故这里把「哪些门在起作用」显式打出来 —— 此前只有飙升/回捞两区写了脚注，
     # 主展示区什么都看不到，用户无从判断「这只票到底过没过风控」。
@@ -622,6 +630,7 @@ def display_priority(
     offboard_rows: list | None = None,
     hist_rows: list | None = None,
     market_idx_pct: float | None = None,
+    new_symbols: set[str] | None = None,
 ) -> "ScanView | None":
     """构建展示视图并渲染到终端（build_scan_view + render_terminal 的便捷入口）。
 
@@ -642,6 +651,7 @@ def display_priority(
         offboard_rows=offboard_rows,
         hist_rows=hist_rows,
         market_idx_pct=market_idx_pct,
+        new_symbols=new_symbols,
     )
     if view is None:
         return None
