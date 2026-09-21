@@ -4,7 +4,11 @@ psutil>=7.0
 # 同花顺官方金融数据 API（2026-08-23 起为除雪球外主数据源）：涨停池/K线兜底/财务过滤/健康验证。
 # 零安装依赖（纯 requests），只需配置 API Key：项目根 .env 写 HITHINK_FINANCE_API_KEY=xxx，
 # 或设系统环境变量。Key 签发：https://fuyao.aicubes.cn/admin/
-akshare>=1.12  # 可选兜底：涨停池 THS 失败时兜底 + 大盘指数 spot + 新浪 qfq 参照（未安装自动降级）
+akshare>=1.12,<2.0  # 可选兜底：涨停池 THS 失败时兜底 + 大盘指数 spot + 新浪 qfq 参照（未安装自动降级）
+# 2026-09-20 补上界 <2.0：本项目把 akshare 当兜底数据源，而它接口以频繁变更著称
+# （实装已从 1.12 跨到 1.18.64，6 个 minor）。无上界时 CI 每次全新安装都会拉最新版，
+# 上游改了返回结构会表现为「CI 突然变红」或更糟的「静默返回不同数据」。
+# 精确可复现请用 requirements.lock（pip install -r requirements.lock）。
 # 可选兜底：财务风险过滤在 THS 主源失败时降级问财。未安装时自动跳过，不影响主扫描。
 # 属重依赖（连带 numpy/pandas/ipykernel），按需 `pip install pywencai`。
 # pywencai>=0.13

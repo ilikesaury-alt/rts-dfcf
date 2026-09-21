@@ -1,0 +1,18 @@
+# rts-dfcf-max 依赖锁定（生产依赖）
+#
+# 2026-09-20 生成。用途：让 CI / 换机安装**可复现**，避免上游 minor 升级
+# 静默改变兜底数据源（akshare）的返回结构。
+#
+# 用法：
+#   pip install -r requirements.lock          # 精确复现当前已验证环境
+#   pip install -r requirements.txt           # 宽松范围（日常开发，允许升级）
+#
+# 精度说明：本项目历史遗留依赖未全量固定（含已安装的 numpy/pandas 等传递依赖），
+# 下方仅为**直接生产依赖**的精确版本 —— 已能消除 akshare 跨 minor 漂移这一主要风险。
+# 若需全量（含传递依赖）锁定，可在干净虚拟环境中跑
+#   pip install -r requirements.txt && pip freeze > requirements.lock
+
+requests==2.34.2
+wcwidth==0.2.13
+psutil==7.2.2
+akshare==1.18.64
