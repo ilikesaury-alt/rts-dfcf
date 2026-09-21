@@ -312,6 +312,30 @@ def _persist_ranking_snapshot_once(conn) -> None:
         pass
 
 
+def _new_rec_symbols(today_syms: set[str], prev_syms: set[str], prev_date: str, today: str) -> set[str]:
+    """本轮**新进入**今日推荐池的票集 —— v1 主表「新票优先」第 1 排序键的输入。
+
+    纯函数（抽出来是为了可单测：这段逻辑原先内联在主循环里，而主循环无法单测）。
+
+    为什么用**集合差集**而不是 recommendations.time / first_time：后者在
+    dal.save_recommendations 的 UPDATE 分支里被「分数提高」覆盖，故 MIN(time) 的真实
+    语义是「最后一次提分时刻」而非首次出现 —— 实测最新交易日 129 行 / 58 个写入时刻、
+    每轮 1~3 行，拿时间戳判「新票」会把这批「老票提分」全部误标。
+
+    四种状态（见 tests/test_new_entry_symbols.py）：
+      - 无基线（prev_date != today，含本进程首轮与跨交易日首轮）→ 空集。
+        「全部都是新的」是平凡事实，全表打「新」等于零信息；且推荐池按 date 重置，
+        不清空上一交易日的快照会让「昨日也推荐过」的票在今日首轮被判成「不是新票」。
+      - 取数失败（today_syms 空）→ 空集。⚠ 调用方**不得**用空集覆盖快照，
+        否则下一轮会把全部票误判为新票（覆盖动作由调用方条件化，不在本函数内）。
+      - 跨交易日 + 有票 → 空集（同第 1 条：无同日基线）。
+      - 同日续轮 → today_syms - prev_syms。
+    """
+    if not today_syms or prev_date != today:
+        return set()
+    return today_syms - prev_syms
+
+
 def run_scanner(interval: int, no_feishu: bool) -> None:
     """单进程扫描循环。"""
     conn = init_db()
@@ -531,20 +555,15 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                 # 历史推荐跟踪已并入回马枪（2026-08-07）：tracker 模块删除，不再单独查询
                 # display() 返回本轮 ScanView，飞书复用同一份（避免两端选择分叉）。
                 # ── v1 主表「新票优先」的输入（2026-09-21）──
-                # 差集口径：本轮票集 − 上一轮票集 = 本轮**新进入**今日推荐池的票。
-                # 跨交易日必须先清空上一轮快照 —— 推荐池按 date 重置，不清空的话
-                # 「昨日也推荐过」的票会在今日首轮被判成「不是新票」（它已在昨日快照里）。
-                # 清空后跨日首轮会把当日全部产出标为「新」：这是**正确**的（当日确实全部
-                # 首次出现），且此时第 1 排序键对所有行恒等，顺序不受影响。
+                # 差集口径与四条边界见 _new_rec_symbols 的 docstring（含「为何不读
+                # recommendations.time」：该列会被提分覆盖）。此处只负责维护跨轮快照。
                 _rec_date = now_beijing().date().isoformat()
-                if prev_rec_date != _rec_date:
-                    prev_rec_syms = set()
-                    prev_rec_date = _rec_date
-                # today_recs 取数失败时 today_syms 为空集：此时既不推新票、也不覆盖快照
-                # （set() - prev 会把空集当成「本轮无票」，覆盖后下一轮全部误判为新票）。
-                new_syms = today_syms - prev_rec_syms if today_syms else set()
+                new_syms = _new_rec_symbols(today_syms, prev_rec_syms, prev_rec_date, _rec_date)
+                # today_recs 取数失败（today_syms 空）时**不**覆盖快照：否则空集覆盖后
+                # 下一轮会把全部票误判为新票（本行条件即该约束）。
                 if today_syms:
                     prev_rec_syms = set(today_syms)
+                prev_rec_date = _rec_date
 
                 # 真实市场指数（创业板指 pct）：供市况标签与板块建议，缓存命中无额外请求。
                 _market_pct = adapter.fetch_market_index()
