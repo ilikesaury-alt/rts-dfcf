@@ -7,8 +7,18 @@
    回填 recommendations 的收益字段：
    - next_day_pct / fwd_3d / fwd_5d：单日涨幅口径（旧，次日/第3/第5日当日涨幅）
    - cum_2d / cum_3d：累计收益口径（新，T+0 close 到 T+N close 累计涨幅）
-2. 分策略表现（strategy_performance）：按 category 聚合胜率、盈亏比、
-   平均收益、IC（评分 vs 收益的相关性）。
+2. 分策略表现（strategy_performance）：按 category 聚合 **hit≥7% 率（主口径）**、
+   `>0` 胜率（辅助）、盈亏比、平均收益、IC（评分 vs 收益的相关性）。
+
+   🔴 口径修正（2026-09-21）：主口径曾是 `>0` 胜率，但那是「不跌」而非「次日大涨」，
+   与全项目唯一目标函数脱节（实测 core_dip 胜率 52.8% 但 hit≥7% 仅 3.44%）。
+   现 `hit_rate`（`>= NEXTDAY_HIT_THRESHOLD`）为主口径并作为排序键，`win_rate` 降级为对照。
+   同时 `rank_category_stats` / `suggest_priority` 的排序从裸 `avg_return` 改为
+   **日超额**（配对、剥掉当日大盘 beta）—— 裸均收益无法区分 alpha 与 beta。
+
+   此外诊断出四个使「类别胜率」不可比的结构性缺陷（详见 `day_excess_stats` docstring）：
+   类别样本期几乎不重叠（old_face 仅 05-28~06-09、core_dip 08-19 才上线、momentum 仅 5
+   个有效交易日）、日 hit 极差 38.9pp、同票跨类别重复计数（14.1%）、未扣成本。
 3. 分维度 IC（dimension_ic）：解析 score_breakdown JSON，逐维度计算
    IC，输出"正 IC 维度 / 反指维度"表，指导权重调整。
 
@@ -40,7 +50,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from scanner.config import BACKFILL_OUTCOMES_WINDOW_DAYS, DB_PATH, now_beijing
+from scanner.config import BACKFILL_OUTCOMES_WINDOW_DAYS, DB_PATH, NEXTDAY_HIT_THRESHOLD, now_beijing
 from scanner.models import parse_score_breakdown
 from scanner.trading_session import nth_trading_day_after
 from scanner.utils import clear_screen
@@ -296,8 +306,17 @@ def _rank(xs: Sequence[float]) -> list[float]:
 
 @dataclass
 class StrategyStat:
+    """单类别策略表现。
+
+    🔑 主口径 = `hit_rate`（`next_day_pct >= NEXTDAY_HIT_THRESHOLD`，即次日≥7%），
+    与全项目唯一目标函数一致。`win_rate`（收益 > 0）是 2026-09-21 起**降级为辅助**的
+    旧口径，保留仅供对照 —— 它测的是「不跌」，与「次日大涨」目标不相干
+    （实测 core_dip 胜率 52.8% 但 hit≥7% 仅 3.44%，两个数字描述完全不同的东西）。
+    """
+
     category: str
     count: int
+    hit_rate: float = 0.0
     win_rate: float = 0.0
     avg_return: float = 0.0
     profit_loss_ratio: float = 0.0
@@ -424,6 +443,7 @@ def strategy_performance(
             StrategyStat(
                 category=cat,
                 count=len(pairs),
+                hit_rate=sum(1 for r in returns if r >= NEXTDAY_HIT_THRESHOLD) / len(returns),
                 win_rate=wins / len(returns),
                 avg_return=sum(returns) / len(returns),
                 profit_loss_ratio=pl,
@@ -431,7 +451,10 @@ def strategy_performance(
                 avg_score=sum(scores) / len(scores),
             )
         )
-    stats.sort(key=lambda s: -s.win_rate)
+    # 主口径排序：hit≥7%（与综合排序/档位/优先级校准同一目标函数）。
+    # 旧口径按 win_rate 排序会让「跌得少但不涨」的类别排在前面（pool_pick 38.6%
+    # 胜率却只有 3.45% hit），与系统目标反向。
+    stats.sort(key=lambda s: -s.hit_rate)
     return stats
 
 
@@ -506,17 +529,80 @@ def dimension_ic(conn: sqlite3.Connection, metric: str = "next_day_pct", days: i
 
 @dataclass
 class RankCategoryStat:
-    """综合排序类别优先级校准用的单类别表现统计。"""
+    """综合排序类别优先级校准用的单类别表现统计。
+
+    day_excess / eff_days 是 2026-09-21 新增的**配对超额**口径（见 day_excess_stats）：
+    绝对胜率与均收益会被市场 regime 主导（实测日 hit 极差 38.9pp），此二列用于
+    区分「类别真有增量」与「只是赶上了好行情」。**不替代** avg_return / win_rate，
+    仅并排展示供对照。
+    """
 
     category: str
     count: int
     avg_return: float
     win_rate: float
     ic: float
+    day_excess: float = 0.0
+    """按天等权的「类别日超额」均值（%）：每日先算 类别均值 − 当日全池均值，再对日等权。"""
+    eff_days: int = 0
+    """计入 day_excess 的有效交易日数（当日全池样本 >= DAY_EXCESS_MIN_POOL 且类别当日 >= 3 只）。"""
 
 
 # 样本量低于此值视为不可靠（小样本均值噪声大，校准需谨慎）
 RANK_MIN_SAMPLE = 20
+
+# 计数 day_excess 时，当日全池至少要有这么多样本，否则「当日基准」本身噪声过大
+DAY_EXCESS_MIN_POOL = 20
+# 类别在单日至少这么多只票才计入该日的超额（低于此则该日类别均值无意义）
+DAY_EXCESS_MIN_CAT = 3
+
+# day_excess 低于这么多天的类别，其超额均值不可信（应显示 n/a 而非数字）
+DAY_EXCESS_MIN_DAYS = 5
+
+
+def day_excess_stats(
+    rows: Sequence[sqlite3.Row], metric: str = "next_day_pct"
+) -> dict[str, tuple[float, int]]:
+    """按天等权的「类别日超额」→ {category: (超额均值%, 有效天数)}。
+
+    🔴 为什么需要这个（2026-09-21 归因审计）：绝对胜率/均收益无法区分 alpha 与 beta。
+    实测两个致命噪声源：
+
+    1. **类别样本期几乎不重叠**：old_face 仅 05-28~06-09（已下线）、core_dip 08-19 才上线、
+       momentum 只有 5 个有效交易日。拿 6 月的 old_face 与 9 月的 pool_pick 比胜率，
+       比的是两个不同市场。
+    2. **日 hit 极差 38.9pp**（0.0%~38.9%），且 08-20 后有 regime 断点（多为 0~3%）。
+       全期均值由「富月」主导 → 全期与近 30 天结论可能相反。
+
+    控制方法是**配对**：每日先减去「当日全池同口径均值」（把当天大盘 beta 剥掉），
+    再对**交易日**等权（避免样本多的日子主导）。
+
+    实测效果（08-20 后）：全期口径 momentum 第 1（hit 15.78%）/ core_dip 垫底（3.44%）；
+    本口径下**完全反转**（core_dip +1.056 / momentum −1.481）。
+    这正是「全期胜率在测市场、不在测类别」的直接证据。
+
+    metric 由调用方保证合法（与 load_attribution_rows 同源）。
+    """
+    by_day: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    for r in rows:
+        by_day[r["date"]].append((r["category"], r[metric]))
+
+    acc: dict[str, float] = defaultdict(float)
+    days: dict[str, int] = defaultdict(int)
+    for _d, items in by_day.items():
+        if len(items) < DAY_EXCESS_MIN_POOL:
+            continue
+        day_mean = sum(v for _, v in items) / len(items)
+        per: dict[str, list[float]] = defaultdict(list)
+        for cat, v in items:
+            per[cat].append(v)
+        for cat, vals in per.items():
+            if len(vals) < DAY_EXCESS_MIN_CAT:
+                continue
+            acc[cat] += (sum(vals) / len(vals)) - day_mean
+            days[cat] += 1
+
+    return {c: (acc[c] / days[c], days[c]) for c in acc if days[c] > 0}
 
 
 def rank_category_stats(
@@ -536,11 +622,14 @@ def rank_category_stats(
     for r in rows:
         by[r["category"]].append((r["score"], r[metric]))
 
+    excess = day_excess_stats(rows, metric)
+
     stats: list[RankCategoryStat] = []
     for cat, pairs in by.items():
         rets = [p[1] for p in pairs]
         scores = [p[0] for p in pairs]
         ic = spearman(scores, rets) or 0.0
+        ex, ex_days = excess.get(cat, (0.0, 0))
         stats.append(
             RankCategoryStat(
                 category=cat,
@@ -548,15 +637,25 @@ def rank_category_stats(
                 avg_return=sum(rets) / len(rets),
                 win_rate=sum(1 for r in rets if r > 0) / len(rets),
                 ic=ic,
+                day_excess=ex,
+                eff_days=ex_days,
             )
         )
-    stats.sort(key=lambda s: -s.avg_return)
+    # 🔑 排序口径 = 日超额（配对、剥掉当日大盘 beta），而非裸 avg_return。
+    # 裸均收益会把「赶上了好行情」的类别排到前面（实测全期 momentum avg_return 靠前
+    # 但日超额 −0.586）。日超额样本不足（eff_days 少）的类别排在后面并打 n/a。
+    stats.sort(key=lambda s: (-s.day_excess, -s.avg_return))
     return stats
 
 
 def suggest_priority(stats: list[RankCategoryStat]) -> list[str]:
-    """按均收益降序给出建议类别展示优先级（供人工复核后更新 CAT_DISPLAY_PRIORITY）。"""
-    return [s.category for s in sorted(stats, key=lambda s: -s.avg_return)]
+    """按**日超额**降序给出建议类别展示优先级（供人工复核后更新 CAT_DISPLAY_PRIORITY）。
+
+    2026-09-21 口径修正：此前按裸 `avg_return` 排序 —— 那会把「赶上好行情」的类别
+    排前（全期 momentum avg_return 靠前，日超额却 −0.586 垫底）。现改用剔除当日
+    大盘 beta 后的配对超额，与「类别是否真有增量」对齐。
+    """
+    return [s.category for s in sorted(stats, key=lambda s: (-s.day_excess, -s.avg_return))]
 
 
 def print_ranking_report(conn: sqlite3.Connection, metric: str = "next_day_pct", recent_days: int = 30) -> None:
@@ -597,8 +696,13 @@ def print_ranking_report(conn: sqlite3.Connection, metric: str = "next_day_pct",
     print("[建议优先级]       " + " > ".join(suggested))
 
     print("\n[各类别表现]（按建议用的口径降序；近期样本不足回退全期）")
-    print(f"{'类别':<16}{'窗口':>6}{'样本':>6}{'均收益':>9}{'胜率':>8}{'IC(score)':>10}  备注")
-    for s in sorted(repr_stats, key=lambda x: -x.avg_return):
+    print("  日超额 = 按天等权的「类别均值 − 当日全池均值」，剥掉当日大盘 beta 后仍为正才算真有增量；")
+    print("  有效日 = 计入日超额的交易日数（当日全池≥20 只且本类别≥3 只）。日超额样本不足显示 n/a。")
+    print(
+        f"{'类别':<16}{'窗口':>6}{'样本':>6}{'均收益':>9}{'胜率':>8}"
+        f"{'IC(score)':>10}{'日超额':>9}{'有效日':>7}  备注"
+    )
+    for s in sorted(repr_stats, key=lambda x: (-x.day_excess, -x.avg_return)):
         if s.category in recent_map and recent_map[s.category].count >= RANK_MIN_SAMPLE:
             src = "近期"
         elif s.category in full_map and full_map[s.category].count >= RANK_MIN_SAMPLE:
@@ -612,7 +716,16 @@ def print_ranking_report(conn: sqlite3.Connection, metric: str = "next_day_pct",
             note = "<== 分数正效"
         if s.count < RANK_MIN_SAMPLE:
             note = note + " [样本不足]" if note else "[样本不足]"
-        print(f"{s.category:<16}{src:>6}{s.count:>6}{s.avg_return:>9.2f}{s.win_rate * 100:>7.1f}%{s.ic:>10.3f}  {note}")
+        if s.eff_days < DAY_EXCESS_MIN_DAYS:
+            # 日超额基于过少交易日 → 不给数字，避免又造一个「看起来可信」的伪数
+            ex_str, days_str, ex_note = "n/a", f"{s.eff_days}", "[日超额样本不足]"
+            note = note + " " + ex_note if note else ex_note
+        else:
+            ex_str, days_str = f"{s.day_excess:+.3f}", f"{s.eff_days}"
+        print(
+            f"{s.category:<16}{src:>6}{s.count:>6}{s.avg_return:>9.2f}{s.win_rate * 100:>7.1f}%"
+            f"{s.ic:>10.3f}{ex_str:>9}{days_str:>7}  {note}"
+        )
 
     diff = [c for c in current_order if c in suggested and current_order.index(c) != suggested.index(c)]
     diff_str = "无，顺序一致" if not diff else " ".join(f"{c}(当前{c}→建议{suggested.index(c)})" for c in diff)
@@ -634,11 +747,17 @@ def print_report(conn: sqlite3.Connection, metric: str = "next_day_pct", days: i
     print()
 
     print("\n[1] 分策略表现")
-    print(f"{'类别':<16}{'样本':>6}{'胜率':>8}{'均收益':>9}{'盈亏比':>8}{'IC':>8}{'均分':>8}")
+    print(f"  主口径 = hit≥{NEXTDAY_HIT_THRESHOLD:g}%（= 全项目唯一目标函数「次日大涨」），按它降序；")
+    print("  胜率(>0) 为旧口径，已降级为辅助对照 —— 它测「不跌」，与「次日大涨」不相干。")
+    print(
+        f"{'类别':<16}{'样本':>6}{'hit≥7%':>9}{'胜率>0':>8}"
+        f"{'均收益':>9}{'盈亏比':>8}{'IC':>8}{'均分':>8}"
+    )
     stats = strategy_performance(conn, metric, days=days)
     for s in stats:
         print(
-            f"{s.category:<16}{s.count:>6}{s.win_rate * 100:>7.1f}%"
+            f"{s.category:<16}{s.count:>6}{s.hit_rate * 100:>8.1f}%"
+            f"{s.win_rate * 100:>7.1f}%"
             f"{s.avg_return:>9.2f}{s.profit_loss_ratio:>8.2f}"
             f"{s.ic_score:>8.3f}{s.avg_score:>8.1f}"
         )
@@ -648,8 +767,12 @@ def print_report(conn: sqlite3.Connection, metric: str = "next_day_pct", days: i
     tot_n = sum(s.count for s in stats)
     if tot_n:
         tot_ret = sum(s.avg_return * s.count for s in stats) / tot_n
+        tot_hit = sum(s.hit_rate * s.count for s in stats) / tot_n
         tot_win = sum(s.win_rate * s.count for s in stats) / tot_n
-        print(f"{'ALL(全推荐基准)':<16}{tot_n:>6}{tot_win * 100:>7.1f}%{tot_ret:>9.2f}")
+        print(
+            f"{'ALL(全推荐基准)':<16}{tot_n:>6}{tot_hit * 100:>8.1f}%"
+            f"{tot_win * 100:>7.1f}%{tot_ret:>9.2f}"
+        )
 
     print("\n[2] 分维度 IC（降序，正=加分越多收益越好）")
     print(f"{'维度':<28}{'样本':>6}{'IC':>8}{'加正分均收益':>14}{'零分均收益':>12}")
