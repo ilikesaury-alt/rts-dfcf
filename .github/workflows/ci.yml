@@ -13,8 +13,14 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install deps
+        # 2026-09-20：改用 requirements.lock 精确锁定生产依赖。
+        # 原 `pip install -r requirements-dev.txt` 全是 `>=`，每次全新安装都会拉到
+        # 最新版；akshare 是涨停池/指数/qfq 的兜底源且接口频繁变更，曾实测跨 6 个
+        # minor（1.12 → 1.18.64）⇒ 上游改动会表现为「CI 突然变红」或静默换数据。
+        # 这里先锁生产依赖，再单独装开发工具（工具版本漂移风险低，保留范围写法）。
         run: |
-          pip install -r requirements-dev.txt
+          pip install -r requirements.lock
+          pip install pytest>=8.0 pytest-cov>=5.0 ruff>=0.16 mypy>=1.10 lightgbm>=4.0
       - name: Ruff lint (必须全绿)
         # 2026-09-13：原为显式文件清单，漏检 today_report.py / prevday_perf.py /
         # leaderboard_obs.py / repair_kline.py / backfill_market_index.py / diag_*.py
@@ -26,17 +32,20 @@ jobs:
         run: |
           python scripts/rule_change_tracker.py
         continue-on-error: true
-      - name: Mypy (类型债 backlog，暂不阻断，见 AGENTS.md)
+      - name: Mypy（类型检查 · 阻断）
         # 2026-09-13：去掉 `|| true`。该步骤本就有 continue-on-error，加 `|| true`
         # 是双保险里的多余那一层——它把失败**连同错误信息一起**吞成 exit 0，
-        # 注解里什么都看不到。去掉后：失败仍不阻断（continue-on-error），
-        # 但真实错误会显示在步骤输出与 PR 注解里。
-        # 2026-09-13 实测 mypy scanner/ 全绿（70 files），故去掉不影响现状。
+        # 注解里什么都看不到。
+        # 2026-09-20 改为**阻断**：实测 mypy scanner/ 与 --check-untyped-defs 双模式
+        # 均 0 error（85 files，函数返回标注率 90.5%）。原先唯一的错误
+        # （data_source.py 的 _last_index_meta 推断成 tuple[None,None,str]）已加显式
+        # 标注修复。既然真的干净，就该守住它，不再当"仅供参考"的噪音步骤。
         run: |
           mypy scanner/ --ignore-missing-imports
-        continue-on-error: true
-      - name: pytest（默认跳过真实库/外网集成测试）+ 覆盖率报告
-        # 覆盖率只报告不设门禁（无 --cov-fail-under）：先积累基线，再决定阈值。
+      - name: pytest（默认跳过真实库/外网集成测试）+ 覆盖率报告与门禁
+        # 2026-09-20 加门禁：基线实测 78.0%（11840 语句 / 2606 未覆盖），设 75% 留 3pp
+        # 缓冲 —— 既能拦住「新增大段无测试代码」，又不会让正常小幅波动误伤。
+        # 报告与判定同一步完成，避免重复跑一遍全套测试。
         # 测试失败仍然阻断（--cov 不改变 pytest 退出码语义）。
         run: |
-          python -m pytest tests/ -q --cov=scanner --cov-report=term-missing:skip-covered
+          python -m pytest tests/ -q --cov=scanner --cov-fail-under=75 --cov-report=term-missing:skip-covered

@@ -172,7 +172,10 @@ class ThsAdapter:
     name = "ths"
 
     def __init__(self):
-        self._last_index_meta = (None, None, self.name)
+        # 显式标注：(涨跌幅, 日期, 数据源) —— 失败时前两项为 None，成功时分别为
+        # float 与 ISO 日期串。不标注会被首行 None 推断成 tuple[None, None, str]，
+        # 导致后续赋真实值时报 assignment（mypy --check-untyped-defs 可见）。
+        self._last_index_meta: tuple[float | None, str | None, str] = (None, None, self.name)
 
     def is_available(self) -> bool:
         from scanner import ths_api

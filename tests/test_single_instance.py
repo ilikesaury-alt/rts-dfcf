@@ -65,6 +65,7 @@ def _spawn_holder(
         cwd=str(BASE_DIR),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
+        **({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}),
     )
 
     def _wait_for(path: Path, timeout: float) -> bool:
@@ -77,10 +78,20 @@ def _spawn_holder(
             time.sleep(0.05)
         return path.exists()
 
-    if not _wait_for(ready, 30.0) and not fail.exists():
+    # 就绪窗口 90s：本判定只用于「区分挂死与慢」，失败仍由外层断言捕获。
+    # 原值 30s 与实测耗时同量级，全量套件下曾偶发压线（2026-09-20）。
+    if not _wait_for(ready, 90.0) and not fail.exists():
+        polled = proc.poll()
         proc.kill()
+        # 必须先 kill 再 wait 才能读完 stderr：子进程常驻 sleep(120)，
+        # 直接 read() 会阻塞到它自然结束（或永久阻塞），报错里只会剩空串。
+        proc.wait(timeout=15)
         err = proc.stderr.read().decode("utf-8", "ignore") if proc.stderr else ""
-        pytest.fail(f"子进程未能就绪：{err}")
+        # 带上诊断事实：poll() 为 None = 超时仍存活（慢/挂死）；非 None = 已自行退出。
+        # 后者配合 stderr 可区分「取锁失败 exit 3」与「被外部 kill」。
+        pytest.fail(
+            f"子进程未能就绪：poll={polled} ready={ready.exists()} fail={fail.exists()} stderr={err!r}"
+        )
     return proc
 
 
@@ -257,6 +268,16 @@ def test_lock_auto_released_when_holder_killed(tmp_path):
 
 
 def test_real_restart_replaces_old_holder(tmp_path):
+    """真实重启语义：新实例清掉旧持有者并接管锁。
+
+    ⚠ 本用例是本文件唯一**真的**调 ``stop_existing_scanners`` 的测试，
+    而该函数用 ``psutil.process_iter()`` 枚举全机进程、按
+    ``(create_time, pid) < (当前进程)`` 判辈分后 kill。因此它会命中
+    **任何 cwd/cmdline 匹配的更早进程** —— 本文件其它用例（如
+    ``test_cross_process_mutual_exclusion`` 派生的持锁进程）也在候选集内。
+    跑整个文件时它们已被上层 finally 清理，所以当前是安全的；
+    但若新增「长驻的统一脚本名子进程」用例，请一并核对这里不会误杀。
+    """
     script = tmp_path / "unified_scanner.py"
     lock_path = tmp_path / "restart.lock"
     old = _spawn_holder(lock_path, tmp_path / "old.ready", tmp_path / "old.fail", script)

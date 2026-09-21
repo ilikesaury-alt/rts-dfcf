@@ -22,16 +22,23 @@ dependencies = { file = ["requirements.txt"] }
 
 [tool.setuptools]
 # 只打包 scanner 及其子包；顶层脚本（unified_scanner.py 等）与 tests/scripts 不进 wheel。
-packages = ["scanner", "scanner.db", "scanner.pipeline"]
+# 2026-09-20 补上 scanner.view：此前漏声明，`pip install .` 装出来的包不含该子包，
+# 而 view/assemble.py 与 view/render.py 是展示层核心（ScannerView 消费方）⇒
+# 安装后必然 ImportError。源码直跑时被 sys.path 兜住，所以一直没暴露。
+packages = ["scanner", "scanner.db", "scanner.pipeline", "scanner.view"]
 
 [tool.ruff]
 line-length = 120
 target-version = "py312"
 
 [tool.ruff.lint]
-# 2026-08-29 扩充：原 select 仅 E/F/W/I，漏检 C901 58 / PLR0913 35 /
-# PLR0912 34 / PLR0915 27 共 163 条复杂度与坏味道。分档纳入，先守正确性
-# （B=bugbear 常见 bug、S=bandit 安全），再守可读性（C4/SIM/RET/ARG/PTH）。
+# 2026-08-29 扩充：原 select 仅 E/F/W/I，漏检大量复杂度与坏味道。分档纳入，
+# 先守正确性（B=bugbear 常见 bug、S=bandit 安全），再守可读性（C4/SIM/RET/ARG/PTH）。
+# ⚠ 存量数字随代码增长会漂移，引用前请以 `ruff check . --select <规则> --statistics` 实测为准。
+# ⚠ 务必在**干净工作树**上测：临时诊断脚本落在仓库里会污染计数（本次实测曾被 2 个遗留脚本
+#   抬高 55 条 / 使总量虚增到 267）。
+# 2026-09-20 实测总量 = 264（原注释记 163，全线低估：C901 84 / PLR0912 53 /
+# PLR0913 49 / PLR0915 37 / E501 22 / SIM105 19）。
 select = [
     "E", "F", "W",  # pycodestyle / pyflakes（含 F821 未定义名）/ warning
     "I",            # isort
@@ -43,13 +50,14 @@ select = [
 ]
 ignore = [
     "S101",  # assert：本项目在测试与数据断言中大量使用，属既有风格
-    # ── 已知技术债（2026-08-29 实测存量，逐个排期后移出本表）──
-    "C901",     # 圈复杂度过高 58 处：stock_report.main(461L) / display_priority(352L) 等
-    "PLR0913",  # 参数过多 35 处：apply_all_bonuses(13参) / validate(6参)，待引入上下文对象
-    "PLR0912",  # 分支过多 34 处
-    "PLR0915",  # 语句过多 27 处
-    "SIM105",   # 用 contextlib.suppress 替代 try/except/pass 15 处（与 S110 重叠，择一处理）
-    "E501",     # 行过长 9 处
+    # ── 已知技术债（`ruff check . --select <规则> --statistics` 实测存量，
+    #    逐个排期后移出本表）。下列数字为 2026-09-20 快照，会随代码增长漂移 ──
+    "C901",     # 圈复杂度过高 84 处：stock_report.main(461L) / display_priority(352L) 等
+    "PLR0913",  # 参数过多 49 处：apply_all_bonuses(13参) / validate(6参)，待引入上下文对象
+    "PLR0912",  # 分支过多 53 处
+    "PLR0915",  # 语句过多 37 处
+    "SIM105",   # 用 contextlib.suppress 替代 try/except/pass 19 处（与 S110 重叠，择一处理）
+    "E501",     # 行过长 22 处
 ]
 # 说明：ARG（未使用参数 460 处，多为测试 lambda 与回调签名）与 PTH（os.path → pathlib
 # 60 处，纯churn 无收益）经评估不纳入，避免噪音淹没真实信号。
