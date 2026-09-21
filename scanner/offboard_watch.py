@@ -22,9 +22,10 @@ B 段把**项目已在手但从未被消费**的全市场快照（`market_extra_
   同一套阈值的第二个定义就是本仓最忌讳的「同名不同义」；
 - T1/T2 的分界点也取 `MOMENTUM_LAUNCH_TODAY_MIN`(3.5%)：低于它 = 「价还没动」，
   达到它 = 「已启动」。T1 不是新发明的语义，而是既有启动定义的**下沿延伸**；
-- 「MA 非空头」= `trend_beauty.ma_bullish`；「顶背离」= `validator.mo_divergence`；
-  「5 日累计」= `utils.accum_5d`；「通用风险门」= `display_gates.common_hard_gate`。
-  本模块不自造任何一条判定。
+- MA 判据**按层分化**（2026-09-21 起）：T1「MA 非空头」= `features.ma_alignment_score > 0`
+  （经本模块 `_ma_not_bearish` 收口 None 语义）；T2「MA 完全多头」= `trend_beauty.ma_bullish`。
+  「顶背离」= `validator.mo_divergence`；「5 日累计」= `utils.accum_5d`；
+  「通用风险门」= `display_gates.common_hard_gate`。本模块不自造任何一条判定。
 
 ⚠ 尚未回测：T2 的常量是在**榜上**样本校准的，域迁移到榜外不保证成立。榜外 K 线池 +
 `offboard_launch_log` 逐日落库是上线前唯一的硬前置 —— 没有按日样本，调阈值就是
@@ -43,8 +44,8 @@ fail-open / fail-closed
 -----------------------
 - 快照缺失（本轮未落库）→ 返回 []（本区留空，不告警噪音）；
 - K 线补取失败 / 不足 20 根 → **该票不产出**。T1/T2 的条件里含「5 日累计 ∈ [0,7)」
-  与「MA 非空头」两个**必须**成立项，验不了就不该报 —— 这与风险门的 fail-open 语义
-  **不同**（风险门宁可放过，信号门不能凭空产出）。这正是 `ma_bullish` 返回
+  与「MA 判据」两个**必须**成立项，验不了就不该报 —— 这与风险门的 fail-open 语义
+  **不同**（风险门宁可放过，信号门不能凭空产出）。这正是两个 MA 判定函数都返回
   `bool | None` 而不替调用方兜底的原因；
 - 落库失败 → 只告警，本轮结果照常返回。
 """
@@ -82,13 +83,17 @@ from scanner.config import (
 from scanner.data_source import ak_to_xq
 from scanner.db.queries import get_market_extra_snapshot, get_symbol_names
 from scanner.display_gates import beauty_marks_daily, code_of, common_hard_gate
+from scanner.features import ma_alignment_score
 from scanner.hot_watch import is_hot_universe
 from scanner.models import make_kline_bar
-from scanner.trend_beauty import ma_bullish
+from scanner.trend_beauty import DAILY_BEAUTY_MIN_BARS, ma_bullish
 from scanner.utils import EXTERNAL_FAILURES, accum_5d, to_float
 from scanner.validator import mo_divergence
 
 logger = logging.getLogger(__name__)
+
+# MA 判定的最小 bar 数（与 `trend_beauty.ma_bullish` 同源，不写字面量 20）
+_MA_MIN_BARS = DAILY_BEAUTY_MIN_BARS
 
 # 两层标记（也是 `offboard_launch_log.tier` 的取值域）
 T1 = "T1"  # 量先动·价未动
@@ -279,9 +284,28 @@ def classify_tier(c: OffboardCandidate, klines: list | None, today: str) -> tupl
 
     判定顺序（先验不可得的条件，再分层；两层的涨幅带互斥且穷尽）：
       1. 5 日累计（剔除今日）必须落在 `[MOMENTUM_LAUNCH_ACCUM_MIN, ACCUM_MAX)`；
-      2. MA 必须**明确**多头（`ma_bullish` 返回 None = 数据不足 → 不产出）；
+      2. MA 判据**按层不同**（见下）；
       3. 涨幅带 → T2（`[TODAY_MIN, OFFBOARD_T2_TODAY_MAX]`，另需无顶背离）
          或 T1（`(HOT_MIN_PERCENT, TODAY_MIN)`，另需主力净占比 ≥ `OFFBOARD_T1_MAIN_PCT_MIN`）。
+
+    🔑 MA 判据按层分化（2026-09-21，与主线既有做法对齐）
+    ---------------------------------------------------
+    T1 要求「MA **非空头**」（MA5 > MA10），T2 仍要求「MA **完全多头**」
+    （MA5 > MA10 > MA20）。两侧都不是本模块发明的口径，各有单源：
+
+      - T1 取非空头 ← 对齐 `analysis.py` 的「首次启动」子模式（那里注释写明
+        「MA 多头排列**通常滞后于价格启动**，导致信号量过少」，故放宽至 score>=0）。
+        T1 的语义正是「价还没动」，要求价格已走出一段多头趋势**在逻辑上自相矛盾**
+        —— 实测（2026-09-21 池 215 只，剔除今日 bar）：MA 完全多头 36 只、
+        MA 非空头 92 只；当日实际产出 3 只（300793/300918/300389）在旧口径下
+        **全部为 False**、新口径下**全部为 True** ⇒ 确系放宽所得，非其他缺陷的副产物。
+      - T2 保持完全多头 ← T2 = 「启动首日」，与主线 momentum 池的启动口径同域
+        （该域已在榜上样本校准过），本模块不应单方面放宽它。
+
+    ⚠ 这是**放宽信号门**（扩大产出面），与风险门「只能收紧」的契约方向相反 ——
+    放宽的理由是「T1 未被 MA 门保护住任何东西」（旧口径下 36/215 的通过率不是筛选而是误杀），
+    且 T1 段**尚无历史背书**（`offboard_launch_log` 样本 2 日），属观察段的探索性调整。
+    回退方式：把 T1 分支的 `_ma_not_bearish(hist)` 改回 `ma_bullish(hist)` 即可。
     """
     if not klines:
         return None, "无K线数据(榜外池未覆盖)"
@@ -291,15 +315,22 @@ def classify_tier(c: OffboardCandidate, klines: list | None, today: str) -> tupl
     if not (MOMENTUM_LAUNCH_ACCUM_MIN <= accum < MOMENTUM_LAUNCH_ACCUM_MAX):
         return None, f"5日累计{accum:+.2f}%不在[{MOMENTUM_LAUNCH_ACCUM_MIN:g},{MOMENTUM_LAUNCH_ACCUM_MAX:g})"
 
-    ma = ma_bullish(klines)
-    if ma is None:
-        return None, "K线不足20根(MA不可判定)"
-    if ma is not True:
-        return None, "MA未多头"
-
     c.accum_5d = round(accum, 2)
 
+    # 🔴 MA 判据必须**剔除今日 bar**（2026-09-21 修）：kline 池的最后一根就是当日
+    # 盘中未收盘 bar（实测 09-21 215 只 100% 末根 date == fetch_date），拿它算 MA5/MA10
+    # 等于用「还在变的收盘价」判趋势。同一份快照里，含今日 vs 剔除今日会翻转
+    # 完全多头 7.5%（16/212）、非空头 25.0%（53/212）的判定 —— 且翻转全是 True→False，
+    # 即含今日 bar 会**系统性放大过门率**（今日上涨把 MA5 抬上去），并让判定随盘中时间漂移。
+    # `utils.accum_5d` 早已按「剔除今日」定义（其 docstring 明写），此处对齐同一口径。
+    hist = _exclude_today(klines, today)
+
     if MOMENTUM_LAUNCH_TODAY_MIN <= c.percent <= OFFBOARD_T2_TODAY_MAX:
+        ma = ma_bullish(hist)
+        if ma is None:
+            return None, "K线不足20根(MA不可判定)"
+        if ma is not True:
+            return None, "MA未完全多头"
         closes = [to_float(k.get("close"), 0.0) or 0.0 for k in klines]
         div, div_detail = mo_divergence(closes, klines)
         if div == V_MO_DIVERGENCE_BEAR:
@@ -307,11 +338,59 @@ def classify_tier(c: OffboardCandidate, klines: list | None, today: str) -> tupl
         return T2, f"启动首日(累计{accum:+.2f}% 今日{c.percent:+.2f}% 量比{c.volume_ratio:.2f})"
 
     if HOT_MIN_PERCENT < c.percent < OFFBOARD_T1_TODAY_MAX:
+        ma = _ma_not_bearish(hist)
+        if ma is None:
+            return None, "K线不足20根(MA不可判定)"
+        if ma is not True:
+            return None, "MA空头排列(MA5<=MA10)"
         if c.main_pct < OFFBOARD_T1_MAIN_PCT_MIN:
             return None, f"主力净占比{c.main_pct:+.2f}%<{OFFBOARD_T1_MAIN_PCT_MIN:g}"
         return T1, f"量先动·价未动(累计{accum:+.2f}% 今日{c.percent:+.2f}% 量比{c.volume_ratio:.2f})"
 
     return None, f"今日涨幅{c.percent:.2f}%不在两层带内"
+
+
+def _exclude_today(klines: list | None, today: str) -> list:
+    """剔除今日 bar（与 `utils.accum_5d` 同口径）。
+
+    K 线池的末根就是当日盘中 bar（实测 09-21 215/215 的末根 date == fetch_date），
+    它不是「已收盘的历史」：拿它算 MA 会用还在变的收盘价判趋势，且判定随盘中漂移。
+    MA 判据（T1/T2 两侧）都须先过本函数；`accum_5d` 内部自行剔除，不必再包。
+
+    ⚠ `mo_divergence`（顶背离）**未**改口径：它同时吃 closes 与 klines，
+    改动需单独评估，不在本次 MA 修复范围内。
+    """
+    if not klines:
+        return []
+    return [k for k in klines if k.get("date") != today]
+
+
+def _ma_not_bearish(klines: list | None) -> bool | None:
+    """「MA 非空头」判定（T1 专用）：True / False；**数据不足返回 None**。
+
+    定义 = `features.ma_alignment_score(closes) > 0`，即 MA5 > MA10（含完全多头）。
+    与 `analysis.py` 首次启动子模式的 `ma_boost >= 0` 同源 —— 那里注释写明放宽理由：
+    「MA 多头排列**通常滞后于价格启动**，导致信号量过少」。
+
+    🔴 为什么不复用 `trend_beauty.ma_bullish`：那个函数返回的是**完全多头**
+    （MA5 > MA10 > MA20），其 `False` 无法区分「仅 MA5>MA10 的部分多头」与
+    「MA5<=MA10 的真空头」—— 用它做非空头判定会把部分多头误杀。这正是本函数存在的原因。
+    阈值/评分口径全部委托 `ma_alignment_score`，本函数只做「None 语义」的收口。
+
+    ⚠ 调用方须传**已剔除今日 bar** 的序列（见 `_exclude_today`）。这里的 `_MA_MIN_BARS`
+    门槛补齐 `ma_alignment_score` 的一个口径缺口：后者在 `len<20` 时仍会算 EMA5/EMA10
+    并返回 ±3（不返回 data_short），只有 `<10` 根才报 data_short —— 若不拦，
+    19 根也能过 T1 的 MA 门，与 `ma_bullish` 的 20 根门槛不一致。
+    """
+    if not klines or len(klines) < _MA_MIN_BARS:
+        return None
+    closes = [to_float(k.get("close"), 0.0) or 0.0 for k in klines]
+    if any(c <= 0 for c in closes[-_MA_MIN_BARS:]):
+        return None
+    score, _detail = ma_alignment_score(closes)
+    if score == 0:  # data_short
+        return None
+    return score > 0
 
 
 def annotate(c: OffboardCandidate, klines: list | None, today: str) -> str | None:
@@ -631,14 +710,24 @@ def _lin(start: float, end: float, n: int) -> list[float]:
     return [round(start + step * i, 4) for i in range(n)]
 
 
-_DEMO_HIST_UP = _lin(9.0, 10.15, 19)  # 平滑上行：MA 多头、5 日累计 ≈ +3.3%
-_DEMO_HIST_ACCUM_HIGH = _lin(9.0, 9.0, 13) + _lin(9.0, 11.34, 6)  # 5 日累计 ≈ +26%
-_DEMO_HIST_MA_BEAR = _lin(12.0, 10.0, 14) + _lin(10.2, 10.6, 5)  # 5 日累计 +6% 但 MA 未多头
-_DEMO_HIST_SHORT = _lin(10.0, 10.2, 8)  # 不足 20 根 → MA 不可判定
+# ⚠ 样本长度约定（2026-09-21 修）：`_demo_klines` 会在尾部**追加今日 bar**，
+# 而所有「历史态」判定（MA / 5 日累计）都**剔除今日**。故这里给的 hist 必须是
+# 「真正的历史根数」——要让 T2 的 `ma_bullish` 可判定（需 ≥20 根历史），hist 至少 20 根。
+# 此前样本只有 19 根（+今日=20），剔除今日后恒为 19 → T2 永远「MA不可判定」，
+# 而当时的 `ma_bullish(klines)` 却因**含今日**而恰好过门 —— 自检一直在验证错误的口径。
+_DEMO_HIST_UP = _lin(9.0, 10.2, 20)  # 完全多头(EMA +6)、5 日累计 ≈ +3.2%
+_DEMO_HIST_ACCUM_HIGH = _lin(9.0, 9.0, 14) + _lin(9.0, 11.34, 7)  # 5 日累计 ≈ +26%（超上限）
+_DEMO_HIST_MA_BEAR = _lin(12.0, 10.0, 15) + _lin(10.2, 10.6, 5)  # 5 日累计 +6.0% 但 MA 空头(ma_none)
+_DEMO_HIST_PARTIAL_BULL = _lin(10.6, 9.8, 12) + _lin(9.8, 10.25, 8)  # EMA 部分多头(+3)：T1 放行 / T2 拦下
+_DEMO_HIST_SHORT = _lin(10.0, 10.2, 11)  # 剔除今日后 <20 根 → MA 不可判定
 
 
 def _demo_klines(hist_closes: list[float], today_close: float, today: str) -> list[dict]:
-    """(历史 closes + 今日 bar) → 日线序列；最后一根 date == today（今日 bar 由口径剔除）。"""
+    """(历史 closes + 今日 bar) → 日线序列；最后一根 date == today。
+
+    ⚠ 追加的今日 bar 与生产一致（K 线池末根即当日盘中 bar），**不会被本函数剔除**；
+    是否剔除由消费方决定（`accum_5d` / `_exclude_today` 各自处理）。
+    """
     series = [*hist_closes, today_close]
     base = _date.fromisoformat(today)
     bars = []
@@ -690,10 +779,15 @@ _DEMO_CASES: list[tuple[str, str, bool, list[float] | None, float, dict]] = [
     ("当前非上涨状态", "300113", False, _DEMO_HIST_UP, -2.0, {}),
     # —— 分层阶段排除 ——
     ("5日累计", "300114", False, _DEMO_HIST_ACCUM_HIGH, 2.5, {}),
-    ("MA未多头", "300115", False, _DEMO_HIST_MA_BEAR, 2.5, {}),
+    ("MA空头排列", "300115", False, _DEMO_HIST_MA_BEAR, 2.5, {}),
     ("K线不足", "300116", False, _DEMO_HIST_SHORT, 2.5, {}),
     ("无K线数据", "300117", False, None, 2.5, {}),
     ("主力净占比", "300118", False, _DEMO_HIST_UP, 2.5, {"main_pct": -3.0}),  # T1 需 ≥0
+    # —— MA 判据按层分化（T1 非空头 / T2 完全多头）—— 同一条 EMA 部分多头序列，
+    #    在 T1 带应放行、在 T2 带应被「MA未完全多头」拦下：这是两极分化的关键哨兵，
+    #    若哪天有人把两侧判据统一了，这两条会同时变红。
+    ("T1", "300119", False, _DEMO_HIST_PARTIAL_BULL, 2.5, {}),
+    ("MA未完全多头", "300120", False, _DEMO_HIST_PARTIAL_BULL, 5.0, {"vol_ratio": 2.4, "main_pct": 0.5}),
 ]
 
 

@@ -426,20 +426,67 @@ def test_classify_tier_accum_out_of_range():
     assert f"[{MOMENTUM_LAUNCH_ACCUM_MIN:g},{MOMENTUM_LAUNCH_ACCUM_MAX:g})" in why
 
 
-def test_classify_tier_ma_not_bullish(monkeypatch):
-    """MA 非多头 → 不产出。
+def test_classify_tier_t2_ma_not_bullish(monkeypatch):
+    """T2 的 MA 完全多头门：非完全多头 → 不产出。
 
     MA 计算本身是 `trend_beauty.ma_bullish` 的职责（另有单测），这里只验证本模块
-    对「明确非多头」的处理 —— 手搓一条「5 日累计在带内但 MA 非多头」的序列既脆又
+    对「明确非完全多头」的处理 —— 手搓一条「5 日累计在带内但 MA 非多头」的序列既脆又
     与那个函数耦合，故直接桩掉判定结果。
+
+    ⚠ 候选必须落在 **T2 涨幅带**（`percent >= MOMENTUM_LAUNCH_TODAY_MIN`）：
+    默认 `_cand()` 是 T1 带（percent=2.5），而 T1 走的是 `_ma_not_bearish`，
+    桩 `ma_bullish` 对那条路径毫无影响 —— 这正是本用例曾被写成「T1 却断言 T2 行为」
+    而误过的原因（2026-09-21 修）。
     """
     import scanner.offboard_watch as ow
 
     today = now_beijing().date().isoformat()
     monkeypatch.setattr(ow, "ma_bullish", lambda kline: False)
-    tier, why = classify_tier(_cand(), _bars(_UP_SERIES, today), today)
+    c = _cand(percent=MOMENTUM_LAUNCH_TODAY_MIN, volume_ratio=2.4)
+    tier, why = classify_tier(c, _bars(_UP_SERIES, today), today)
     assert tier is None
-    assert why == "MA未多头"
+    assert why == "MA未完全多头"
+
+
+def test_classify_tier_t1_ma_not_bearish_gate(monkeypatch):
+    """T1 的 MA 非空头门：空头 → 不产出；部分多头 → 放行。"""
+    import scanner.offboard_watch as ow
+
+    today = now_beijing().date().isoformat()
+    bars = _bars(_UP_SERIES, today)
+
+    monkeypatch.setattr(ow, "_ma_not_bearish", lambda kline: False)
+    tier, why = classify_tier(_cand(), bars, today)
+    assert tier is None
+    assert why == "MA空头排列(MA5<=MA10)"
+
+    monkeypatch.setattr(ow, "_ma_not_bearish", lambda kline: True)
+    tier, _ = classify_tier(_cand(), bars, today)
+    assert tier == T1
+
+
+def test_classify_tier_ma_uses_history_excluding_today(monkeypatch):
+    """🔴 MA 判定必须收到**剔除今日 bar** 的序列（与 accum_5d 同口径）。
+
+    生产 K 线池末根就是当日盘中 bar（实测 09-21 215/215 末根 date == fetch_date）。
+    若把含今日 bar 的整段丢给 MA：① 用未收盘价判趋势，判定随盘中漂移；
+    ② 实测翻转 7.5% 的完全多头 / 25.0% 的非空头判定，且方向全是「含今日 → 更易过门」
+    （今日上涨把 MA5 抬上去）→ 系统性放大过门率。
+    """
+    import scanner.offboard_watch as ow
+
+    today = now_beijing().date().isoformat()
+    seen: list[list] = []
+
+    def _spy(kline):
+        seen.append([b.get("date") for b in kline])
+        return True
+
+    monkeypatch.setattr(ow, "ma_bullish", _spy)
+    c = _cand(percent=MOMENTUM_LAUNCH_TODAY_MIN, volume_ratio=2.4)
+    classify_tier(c, _bars(_UP_SERIES, today), today)
+    assert seen, "ma_bullish 未被调用"
+    assert today not in seen[0], "MA 判定收到了今日 bar（应剔除）"
 
 
 def test_classify_tier_ma_undecidable_when_bars_short():
@@ -1042,6 +1089,9 @@ def test_demo_samples_cover_offboard_specific_branches(capsys):
     out = capsys.readouterr().out
     for keyword in ("量比不足", "成交额不足", "流通市值过小", "涨幅过高", "主力净流出", "ST"):
         assert keyword in out, f"自检样本未覆盖排除分支：{keyword}"
-    for keyword in ("5日累计", "MA未多头", "K线不足", "无K线数据", "主力净占比"):
+    for keyword in ("5日累计", "MA空头排列", "MA未完全多头", "K线不足", "无K线数据", "主力净占比"):
         assert keyword in out, f"自检样本未覆盖分层分支：{keyword}"
     assert sum(1 for e, *_ in _DEMO_CASES if e == "跳过") == 3  # 在榜 / 主板 / 已推荐
+    # MA 判据按层分化的两极哨兵：同一条「EMA 部分多头」序列在 T1 放行、在 T2 拦下。
+    assert sum(1 for e, *_ in _DEMO_CASES if e == "T1") == 2
+    assert sum(1 for e, *_ in _DEMO_CASES if e == "T2") == 1
