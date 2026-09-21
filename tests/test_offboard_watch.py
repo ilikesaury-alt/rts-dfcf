@@ -1062,18 +1062,58 @@ class TestOpeningSilence:
 
 
 def test_render_offboard_standalone_prints_b_segment(capsys):
+    """独立渲染入口只画 B 段：列头与列规格与主屏同源，但**不打 A 段标题**。
+
+    2026-09-21：`◆ 沪深飙升 · 极有可能大涨（创业板·当日动能+热度跃升…）` 描述的是
+    **A 段**口径；A 段空时不再打（用户决策「A 段空时不打标题与表头」）。本入口只喂 B 段，
+    故它现在自成一个完整表：B 段小标题 → 列头 → 行。
+    （旧断言 `"沪深飙升" in out` 守的是「与 A 段同区、同一张表」—— 该意图改由列规格守卫：
+      `test_hot_row_columns_match_terminal` + 下面的列头断言。）
+    """
     from scanner.view.render import render_offboard_standalone
 
     c = _offboard_row(tier=T1, accum_5d=2.64, volume_ratio=2.0, main_pct=1.5)
     render_offboard_standalone([c])
     out = capsys.readouterr().out
-    assert "沪深飙升" in out  # 与 A 段同区（同一张表）
     assert "榜外异动" in out
     assert "300101" in out
     assert "自检样本" in out
     assert "T1" in out  # 「评分」列改显分层标记
     assert "未回测" in out  # 小标题必须声明证据强度
     assert "—" in out  # 榜单专属列（排名上升/连击）显 —，不是 0
+    # A 段口径的区块标题不再出现（A 段没有数据）
+    assert "◆ 沪深飙升" not in out
+    # 但列头必须在（A 段没打，B 段自带一份）—— 否则 14 列数字没有列名，无从解读
+    assert "排名上升" in out
+    assert "换手%" in out
+    assert out.index("榜外异动") < out.index("排名上升"), "列头应在 B 段小标题之后"
+
+
+def test_render_region_column_header_printed_exactly_once(capsys):
+    """两段共用一张表 ⇒ 列头只打一份，且总在该段第一行数据之前。
+
+    A 段非空：打在 A 段行之前，B 段复用（不重复）；
+    A 段为空：打在 B 段小标题之后（否则整表无列名）。
+    """
+    from scanner.hot_watch import HotCandidate
+    from scanner.view.render import _render_hot_watch_region
+
+    a = HotCandidate(
+        symbol="SZ300862", code="300862", name="蓝盾光电", exchange="SZ",
+        current=50.10, percent=5.76, rank_change=1257, rank=3,
+    )
+    b = _offboard_row(tier=T2, code="300201", symbol="SZ300201", name="榜外样本")
+
+    _render_hot_watch_region([a], [b])
+    both = capsys.readouterr().out
+    assert both.count("排名上升") == 1
+    assert both.index("排名上升") < both.index("300862") < both.index("榜外异动")
+
+    _render_hot_watch_region([], [b])
+    b_only = capsys.readouterr().out
+    assert b_only.count("排名上升") == 1
+    assert "◆ 沪深飙升" not in b_only
+    assert b_only.index("榜外异动") < b_only.index("排名上升") < b_only.index("300201")
 
 
 def test_render_region_skips_when_both_segments_empty(capsys):
@@ -1099,7 +1139,12 @@ def test_render_region_puts_b_segment_after_a_segment(capsys):
 
 
 def test_scan_view_offboard_rows_rendered_by_terminal(capsys):
-    """终端主屏：`view.offboard_rows` 透传到独立区（与 hot_rows 分开承载）。"""
+    """终端主屏：`view.offboard_rows` 透传到独立区（与 hot_rows 分开承载）。
+
+    2026-09-21：A 段（hot_rows）为空时不再打区块标题与 A 段列头 —— 否则终端留下一张
+    「只有列头、没有数据行」的空表，且标题（创业板·当日动能+热度跃升）描述的是 A 段口径，
+    与 B 段（榜外异动·非榜单来源）无关。B 段自带列头，见 _render_hot_watch_region。
+    """
     from scanner.display import ScanView, render_terminal
 
     view = ScanView(
@@ -1116,6 +1161,8 @@ def test_scan_view_offboard_rows_rendered_by_terminal(capsys):
     out = capsys.readouterr().out
     assert "榜外异动" in out
     assert "300101" in out
+    assert "◆ 沪深飙升" not in out, "A 段空 → 不应打 A 段区块标题"
+    assert "排名上升" in out, "列头必须在（A 段没打则 B 段自带）"
 
 
 # ── 已删除的摘要断言（2026-09-21）─────────────────────────────────────────

@@ -315,7 +315,8 @@ def _render_hot_watch_region(rows, offboard_rows=None) -> None:
     `offboard_watch.OffboardCandidate`）同区并列、不混排**：A 段的复合分里
     `rank_change` 独占 35/100，而榜外票结构上恒缺该项 ⇒ 混排必被永久压到最末。
     两段共用 `COLS_HOT`（14 列，**不加列**）—— B 段仅「排名上升/连击」回落 `—`、
-    「评分」列改显分层标记。
+    「评分」列改显分层标记。列头只打一份：A 段非空时打在 A 段行之前（B 段复用），
+    A 段空时打在 B 段小标题之后 —— 见下方 `if rows` 的说明。
 
     形参取行列表而非 ScanView：本区与主线数据完全无关，取 view 会让独立运行
     （`python -m scanner.hot_watch` / `scanner.offboard_watch`）被迫构造一个满是
@@ -324,17 +325,23 @@ def _render_hot_watch_region(rows, offboard_rows=None) -> None:
     if not rows and not offboard_rows:
         return
 
-    print(
-        f"\n{ANSI['BOLD']}{ANSI['CYAN']}◆ 沪深飙升 · 极有可能大涨{ANSI['RESET']}"
-        f"（创业板 · 当日动能+热度跃升 · 与上方主线口径独立）"
-    )
-    print(_table_header(COLS_HOT))
-    for _hi, c in enumerate(rows or [], 1):
+    print()
+    # A 段：**非空才打区块标题与列头**（2026-09-21 用户决策）。该标题描述的是 A 段口径
+    # （「创业板·当日动能+热度跃升」），B 段口径与它完全不同（见下方小标题）。A 段空时照打，
+    # 终端会留下一张只有列头、没有数据行的空表 —— 2026-09-21 实跑即此形（收盘后 A 段 0 只，
+    # 标题+列头孤悬在 B 段小标题之上，看起来像"本区有内容"，实际一行没有）。
+    if rows:
         print(
-            _table_row(_hot_row_cells(c, _hi, board_segment=True), COLS_HOT)
-            # 行尾标记（2026-09-16）：与 v1 回捞区/主表同源（_watch_tail_terminal）。
-            + _watch_tail_terminal(c.ff_pct, c.beauty)
+            f"{ANSI['BOLD']}{ANSI['CYAN']}◆ 沪深飙升 · 极有可能大涨{ANSI['RESET']}"
+            f"（创业板 · 当日动能+热度跃升 · 与上方主线口径独立）"
         )
+        print(_table_header(COLS_HOT))
+        for _hi, c in enumerate(rows, 1):
+            print(
+                _table_row(_hot_row_cells(c, _hi, board_segment=True), COLS_HOT)
+                # 行尾标记（2026-09-16）：与 v1 回捞区/主表同源（_watch_tail_terminal）。
+                + _watch_tail_terminal(c.ff_pct, c.beauty)
+            )
     if offboard_rows:
         # B 段小标题必须写明「候选来源 + 排序键 + 未回测」：不写清楚，最自然的误读
         # 就是「它和 A 段一样是热度跃升」，而两者的口径与证据强度完全不同。
@@ -344,6 +351,9 @@ def _render_hot_watch_region(rows, offboard_rows=None) -> None:
             f"·开盘 {OFFBOARD_OPENING_SILENCE_MIN} 分内不产出(量比失真)"
             f"·{len(offboard_rows)} 只·观察段·未回测）"
         )
+        # A 段空时列头还没打过 —— B 段自带一份，否则 14 列数字整片没有列名，无从解读。
+        if not rows:
+            print(_table_header(COLS_HOT))
         for _bi, b in enumerate(offboard_rows, 1):
             print(
                 _table_row(_hot_row_cells(b, _bi, board_segment=False), COLS_HOT)
@@ -526,7 +536,22 @@ def render_terminal(view: ScanView) -> None:
         )
 
     # ── v1 池选 ──
-    print(f"  {ANSI['BOLD']}◆ v1 池选 — 榜上优先·涨幅升序·回调核心{ANSI['RESET']}")
+    # 标题 = 实际排序键的语义项（2026-09-21 更正）。旧标题「榜上优先·涨幅升序·回调核心」
+    # 描述的是 2026-08-28 的实现，09-16 换排序键时漏改 —— 而「涨幅」根本不在排序键里
+    # （实测 -0.65% 夹在 6.09% 与 6.93% 之间）。标题是用户判断「排序对不对」的唯一线索，
+    # 给错比不给更糟。
+    # 实现在 assemble.build_scan_view：sort(key=(tier, 类别优先级, 榜单排名, -资金流, -形态加分))
+    #   第1键 过热劣后（tier：过热硬门 accum≥50% 或 composite 低分档）
+    #   第2键 类别展示优先级      → 上两者共同产生「kNF→MOM/NEW→ST」的分组
+    #   第3键 榜单排名升序        ← **在生产路径是活的**（rank_map 只覆盖当轮在榜票，
+    #                              故只有少数行有值；2026-09-21 17:28 那轮正是它把
+    #                              rank17 的义翘神州排在 rank43 的威尔高之前，且让这两只
+    #                              排在资金流更好的 ▲▲ 行之前）
+    #   第4键 资金流降序          ← 组内主力（无榜内排名的那 23 行靠它定序）
+    #   第5键 形态加分（低吸/突破标签）← 稀有，多数行恒 0
+    # ⚠ 标题只列第 1/2/4 项，**未列第 3 项（榜单排名升序）** —— 该项在榜内票之间真实生效，
+    #   补进标题即可（「过热劣后·类别优先·排名升序·资金流降序」），留给用户定夺长度。
+    print(f"  {ANSI['BOLD']}◆ v1 池选 — 过热劣后·类别优先·资金流降序{ANSI['RESET']}")
     # 通用风险门清单（2026-09-16）：三个展示区共用一个实现（scanner/display_gates.py），
     # 故这里把「哪些门在起作用」显式打出来 —— 此前只有飙升/回捞两区写了脚注，
     # 主展示区什么都看不到，用户无从判断「这只票到底过没过风控」。
