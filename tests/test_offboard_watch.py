@@ -12,6 +12,7 @@ import sqlite3
 from datetime import date as _date
 from datetime import datetime, time
 from datetime import timedelta as _td
+from unittest.mock import patch
 
 import pytest
 
@@ -181,14 +182,19 @@ def db():
 
 
 @pytest.fixture(autouse=True)
-def _no_opening_silence(monkeypatch):
-    """默认关闭开盘静默窗口，防 flaky。
+def _offline_defaults(monkeypatch):
+    """单测离线默认值：关开盘静默窗口 + 关板块列 F10 补拉。
 
-    本文件绝大多数用例不关心这道门，但 `run_offboard_watch` 会按**真实时钟**判定 ——
-    测试若在 09:45 前跑，整批会返回 []（CI 在任意时刻触发，典型 flaky）。
-    窗口本身的边界由 `TestOpeningSilence` 显式开关来验。
+    ① 默认关闭开盘静默窗口，防 flaky：本文件绝大多数用例不关心这道门，但
+      `run_offboard_watch` 会按**真实时钟**判定 —— 测试若在 09:45 前跑，整批会
+      返回 []（CI 在任意时刻触发，典型 flaky）。窗口边界由 `TestOpeningSilence`
+      显式开关来验。
+    ② 关 `OFFBOARD_BOARD_FETCH`（2026-09-22，「板块」列）：生产默认开，但本文件
+      的库是内存库、无 `concept_cache` ⇒ ②级必然 miss ⇒ 不关就会真去打东财 F10
+      （慢，且让单测依赖外网）。关掉后降级链走③名称关键词，正是离线该有的行为。
     """
     monkeypatch.setattr("scanner.offboard_watch.OFFBOARD_OPENING_SILENCE_MIN", 0)
+    monkeypatch.setattr("scanner.offboard_watch.OFFBOARD_BOARD_FETCH", 0)
 
 
 class _FakeKlineAdapter:
@@ -1136,6 +1142,88 @@ def test_render_region_puts_b_segment_after_a_segment(capsys):
     _render_hot_watch_region([a], [b])
     out = capsys.readouterr().out
     assert out.index("300862") < out.index("榜外异动") <= out.index("300201")
+
+
+# ── 「板块」列（2026-09-22）────────────────────────────────────────────────
+
+
+def test_run_offboard_watch_fills_sector_from_cache(db):
+    """B 段**产出阶段**就填好 `sector`（渲染层只读不算）：②级缓存命中 → F10 首要板块。"""
+    from scanner.database import save_concepts_cache
+
+    db.execute("CREATE TABLE concept_cache (symbol TEXT, concepts TEXT, updated TEXT)")
+    save_concepts_cache(db, {"SZ300101": ["CPO概念", "光通信"]})
+    day = now_beijing().date().isoformat()
+    rows = run_offboard_watch(
+        None, db, [], klines={"SZ300101": _bars(_UP_SERIES, day)}, snapshot={"SZ300101": _payload()}
+    )
+    assert rows, "内置样本应产出 T1"
+    assert rows[0].sector == "CPO概念"
+
+
+def test_run_offboard_watch_sector_degrades_to_name_keyword(db):
+    """①②都落空 → ③名称关键词兜底，**不留空**（板块列不该整列 `—`）。"""
+    day = now_beijing().date().isoformat()
+    rows = run_offboard_watch(
+        None, db, [], klines={"SZ300101": _bars(_UP_SERIES, day)}, snapshot={"SZ300101": _payload()}
+    )
+    assert rows
+    assert rows[0].sector == "其他"  # 名称「自检样本」无关键词命中
+
+
+def test_run_offboard_watch_never_fetches_boards_when_switch_off(db, monkeypatch):
+    """开关关时②级不发任何 F10 请求（本文件 autouse 默认关，见 _offline_defaults）。"""
+    import scanner.concept as concept_mod
+
+    monkeypatch.setattr("scanner.offboard_watch.OFFBOARD_BOARD_FETCH", 0)
+    day = now_beijing().date().isoformat()
+    with patch.object(concept_mod, "_fetch_many") as mock_fetch:
+        rows = run_offboard_watch(
+            None, db, [], klines={"SZ300101": _bars(_UP_SERIES, day)}, snapshot={"SZ300101": _payload()}
+        )
+    mock_fetch.assert_not_called()  # 非空断言：开关传错（True）时必经 _collect_concepts → _fetch_many
+    assert rows
+
+
+def test_render_board_segment_shows_sector_column(capsys):
+    """B 段自带列头时含「板块」，行内值就位（A 段空 → 列头打在 B 段小标题之后）。"""
+    from scanner.view.render import render_offboard_standalone
+
+    c = _offboard_row(tier=T1, accum_5d=2.64, volume_ratio=2.0, main_pct=1.5)
+    c.sector = "CPO概念"
+    render_offboard_standalone([c])
+    out = capsys.readouterr().out
+    assert "板块" in out
+    assert "CPO概念" in out
+    assert out.index("榜外异动") < out.index("板块") < out.index("CPO概念")
+
+
+def test_render_region_shares_sector_column_header_across_segments(capsys):
+    """A/B 共用一份列头 ⇒「板块」只打一次，两段行落在同一列语义下（列集不分叉）。"""
+    from scanner.hot_watch import HotCandidate
+    from scanner.view.render import _render_hot_watch_region
+
+    a = HotCandidate(
+        symbol="SZ300862", code="300862", name="蓝盾光电", exchange="SZ",
+        current=50.10, percent=5.76, rank_change=1257, rank=3, sector="军工",
+    )
+    b = _offboard_row(tier=T2, code="300201", symbol="SZ300201", name="榜外样本", sector="CPO概念")
+    _render_hot_watch_region([a], [b])
+    out = capsys.readouterr().out
+    assert out.count("板块") == 1, "列头必须只打一份（A/B 列集不分叉）"
+    assert "军工" in out and "CPO概念" in out
+
+
+def test_render_shows_dash_when_sector_blank(capsys):
+    """板块取数失败（空）显 `—` 而非「其他」：两者语义不同（失败 ≠ 没匹配上）。"""
+    from scanner.view.render import render_offboard_standalone
+
+    c = _offboard_row(tier=T1, accum_5d=2.64, volume_ratio=2.0, main_pct=1.5)
+    c.sector = ""
+    render_offboard_standalone([c])
+    out = capsys.readouterr().out
+    assert "其他" not in out
+    assert "板块" in out
 
 
 def test_scan_view_offboard_rows_rendered_by_terminal(capsys):

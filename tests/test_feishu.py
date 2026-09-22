@@ -586,6 +586,8 @@ def test_hot_row_width_is_uniform():
             "streak": 999,
         },
         {"name": "超长名字啊"},  # 自由文本列超宽 → 必须截断而不是撑宽
+        {"sector": "长三角一体化经济带"},  # 板块名无上界 → 同样必须截断而非撑宽
+        {"sector": ""},  # 板块取数失败 → 「—」（宽字符，最易触发字符数/可见宽度混用）
     ]
     widths = {_vis_len(_fmt_hot_row_feishu(_fake_hot(**c), i)) for i, c in enumerate(cases, 1)}
     assert widths == {expected}, f"行宽参差：{sorted(widths)}（应恒为 {expected}）"

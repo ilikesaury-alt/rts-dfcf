@@ -50,6 +50,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
+from scanner.concept import attach_display_boards
 from scanner.config import (
     HOT_BEAUTY_GATE_ENABLED,
     HOT_DETAIL_TOP,
@@ -131,6 +132,12 @@ class HotCandidate:
     #   把门关掉（RTS_HOT_BEAUTY_GATE=0）后标记才重新有区分度。
     ff_pct: float | None = None
     beauty: str = ""
+    # ── 板块（2026-09-22）──
+    # 展示用板块名，由 `concept.attach_display_boards` 在返回前**就地填**（渲染层只读
+    # 不算）。取值与 v1 池选「板块」列同一条回退链 ⇒ 同一只票在两处显示同一个名字。
+    # 空 = 板块数据整体取不到（渲染为 —，不是「其他」：空是取数失败，「其他」是
+    # 确实没匹配上关键词，两者语义不同）。
+    sector: str = ""
 
 
 # ── 样本面与涨跌停价 ────────────────────────────────────────────────────────
@@ -632,6 +639,14 @@ def run_hot_watch(
                 c.limit_down = real_down
 
     top = passed[:top_n]
+    # 板块列（2026-09-22）：只对最终展示行取值。A 段传 fetch=False —— 榜内票已被主线
+    # 的 compute_driving_concepts 拉进 concept_cache（其覆盖面是「主线候选 ∪ 榜内票」），
+    # 本区不该再为它发 F10；缓存降级时回退名称关键词，见 config_hot_watch.OFFBOARD_BOARD_FETCH。
+    # 失败只让本列留空：板块拿不到不该把整段产出清空（与 B 段 _attach_boards 同边界）。
+    try:
+        attach_display_boards(conn, top, fetch=False)
+    except EXTERNAL_FAILURES as e:
+        logger.warning("A段板块列填充失败（本列留空）: %s", e)
     # 连击以「全部通过者」为基数统计（非仅 TOP N）——否则跌出前 N 但仍在结果中的票
     # 会被误判为「本轮未命中」而清零。update_streaks 会写回 passed 的 streak。
     _safe_persist(conn, passed)

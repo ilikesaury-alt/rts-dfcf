@@ -274,13 +274,19 @@ def _watch_tail_terminal(ff_pct, beauty: str) -> str:
 
 
 def _hot_row_cells(c, idx: int, *, board_segment: bool) -> list[str]:
-    """独立区一行 → `COLS_HOT` 的 14 个单元格（**A/B 两段共用**，列集不许分叉）。
+    """独立区一行 → `COLS_HOT` 的 15 个单元格（**A/B 两段共用**，列集不许分叉）。
 
     A 段（榜内飙升）带榜单专属量：「排名上升」= `+rank_change`、「连击」= streak（≥
     `HOT_HIGHLIGHT_STREAK` 标 ★）、「评分」= 本区复合分。
     B 段（榜外异动）**结构上**没有榜单排名与连击 ⇒ 显 `—`（不是 0：0 会被读成
     「排名没动/没连击」）；「评分」列改显分层标记（T1/T2）—— B 段没有复合分，
     该列硬填 0.0 是伪造一个不存在的量。
+
+    「板块」（2026-09-22，两段同列同源）：值在**产出阶段**已由
+    `concept.attach_display_boards` 填好，本层只成形 —— 与 v1 池选同一条回退链、
+    同一批数据源，故同一只票在两个区块显示同一个名字。空值显 `—`（取数失败）
+    而非「其他」（确实没匹配上关键词），两者语义不同。按可见宽度 `_trunc`：
+    F10 概念名无上界，不截会撑破定宽对齐（与主表 _print_priority_row 同处理）。
 
     量比/市值/成交额可能因快照缺字段而为 0 → 显示 —（不伪造为 0.00）。
     """
@@ -295,6 +301,7 @@ def _hot_row_cells(c, idx: int, *, board_segment: bool) -> list[str]:
         streak_str = "—"
         rank_str = "—"
         score_str = getattr(c, "tier", "") or "—"
+    sector = str(getattr(c, "sector", "") or "")
     return [
         str(idx),
         c.code,
@@ -308,6 +315,7 @@ def _hot_row_cells(c, idx: int, *, board_segment: bool) -> list[str]:
         f"{c.volume_ratio:.2f}" if c.volume_ratio > 0 else "—",
         f"{c.turnover_rate:.1f}" if c.turnover_rate > 0 else "—",
         f"{c.market_capital / 1e8:.0f}" if c.market_capital > 0 else "—",
+        _trunc(sector, COLS_HOT[12][1]) if sector else "—",
         score_str,
         streak_str,
     ]
@@ -319,8 +327,9 @@ def _render_hot_watch_region(rows, offboard_rows=None) -> None:
     A 段（榜内飙升，`hot_watch.HotCandidate`）与 **B 段（榜外异动，
     `offboard_watch.OffboardCandidate`）同区并列、不混排**：A 段的复合分里
     `rank_change` 独占 35/100，而榜外票结构上恒缺该项 ⇒ 混排必被永久压到最末。
-    两段共用 `COLS_HOT`（14 列，**不加列**）—— B 段仅「排名上升/连击」回落 `—`、
-    「评分」列改显分层标记。列头只打一份：A 段非空时打在 A 段行之前（B 段复用），
+    两段共用 `COLS_HOT`（15 列，**列集不分叉**）—— B 段仅「排名上升/连击」回落 `—`、
+    「评分」列改显分层标记；「板块」两段同列同源（`concept.attach_display_boards`，
+    与 v1 池选同名）。列头只打一份：A 段非空时打在 A 段行之前（B 段复用），
     A 段空时打在 B 段小标题之后 —— 见下方 `if rows` 的说明。
 
     形参取行列表而非 ScanView：本区与主线数据完全无关，取 view 会让独立运行
@@ -356,7 +365,7 @@ def _render_hot_watch_region(rows, offboard_rows=None) -> None:
             f"·开盘 {OFFBOARD_OPENING_SILENCE_MIN} 分内不产出(量比失真)"
             f"·{len(offboard_rows)} 只·观察段·未回测）"
         )
-        # A 段空时列头还没打过 —— B 段自带一份，否则 14 列数字整片没有列名，无从解读。
+        # A 段空时列头还没打过 —— B 段自带一份，否则 15 列数字整片没有列名，无从解读。
         if not rows:
             print(_table_header(COLS_HOT))
         for _bi, b in enumerate(offboard_rows, 1):

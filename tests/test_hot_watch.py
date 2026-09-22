@@ -553,6 +553,24 @@ class _FakeAdapter:
         return self._detail.get(symbol, {})
 
 
+def test_run_hot_watch_fills_sector_without_network(db):
+    """A 段**产出阶段**就填好 `sector`，且**绝不发 F10**（fetch=False）。
+
+    榜内票的概念归属由主线的 `compute_driving_concepts` 维护（覆盖面是「主线候选 ∪
+    榜内票」），本区不重复拉。断言 `_fetch_many` 未被调用是**非空断言**：一旦哪天
+    误传 fetch=True，`_collect_concepts` 必经 `_fetch_many`，本用例立刻变红。
+    """
+    from unittest.mock import patch
+
+    board = [_board_item("SZ300001", "半导体设备", rc=100)]
+    quotes = {"SZ300001": _quote("SZ300001", "300001", "半导体设备", current=20.0, percent=3.0, last_close=19.0)}
+    with patch("scanner.concept._fetch_many") as mock_fetch:
+        out = run_hot_watch(_FakeAdapter(quotes), db, board, top_n=1)
+    mock_fetch.assert_not_called()
+    assert out, "样本应产出"
+    assert out[0].sector == "半导体"  # ③名称关键词兜底（本库无 concept_cache）
+
+
 def test_run_hot_watch_returns_top_n_sorted(db):
     board = [_board_item("SZ300001", "A", rc=100), _board_item("SZ300002", "B", rc=5000)]
     quotes = {

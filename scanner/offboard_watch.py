@@ -74,6 +74,7 @@ from datetime import datetime
 from datetime import timedelta as _td
 from typing import Sequence
 
+from scanner.concept import attach_display_boards
 from scanner.config import (
     HOT_MAX_MARKET_CAP,
     HOT_MIN_PERCENT,
@@ -81,6 +82,7 @@ from scanner.config import (
     MOMENTUM_LAUNCH_ACCUM_MIN,
     MOMENTUM_LAUNCH_TODAY_MIN,
     MOMENTUM_LAUNCH_VOL,
+    OFFBOARD_BOARD_FETCH,
     OFFBOARD_DISPLAY_TOP,
     OFFBOARD_KLINE_DAYS,
     OFFBOARD_KLINE_FETCH_LIMIT,
@@ -155,6 +157,9 @@ class OffboardCandidate:
     streak: int | None = None
     ff_pct: float | None = None
     beauty: str = ""
+    # 板块（2026-09-22）：与 A 段 `HotCandidate.sector` 同义同源（`concept.attach_display_boards`
+    # 在返回前就地填），取值与 v1 池选「板块」列同一条回退链。空 = 取数失败 → 渲染 `—`。
+    sector: str = ""
     reasons: list[str] = field(default_factory=list)
 
 
@@ -756,7 +761,25 @@ def run_offboard_watch(
         backfill_next_day(conn, adapter)
     except EXTERNAL_FAILURES as e:
         logger.warning("B段次日收益回填失败（不影响本轮）: %s", e)
-    return passed[:top_n]
+
+    top = passed[:top_n]
+    # 板块列（2026-09-22）：只对最终展示行取值 —— ②级 F10 补拉的量因此被压到
+    # ≤ OFFBOARD_DISPLAY_TOP 只，且缓存命中时零请求（见 OFFBOARD_BOARD_FETCH 注释）。
+    _attach_boards(top, conn)
+    return top
+
+
+def _attach_boards(rows: list[OffboardCandidate], conn) -> None:
+    """B 段「板块」列填充（2026-09-22）：只对最终展示行取值。
+
+    榜外票按定义不进主线候选 ⇒ concept_cache 恒 miss ⇒ 必须允许 F10 补拉（默认开，
+    见 `OFFBOARD_BOARD_FETCH`）。开关关掉时只读缓存、miss 回退名称关键词 —— 单测与
+    离线路径靠它阻断外网。任何失败只让本列留空（渲染 `—`），不影响本段产出。
+    """
+    try:
+        attach_display_boards(conn, rows, fetch=bool(OFFBOARD_BOARD_FETCH))
+    except EXTERNAL_FAILURES as e:
+        logger.warning("B段板块列填充失败（本列留空）: %s", e)
 
 
 # ── 独立运行 CLI（python -m scanner.offboard_watch）────────────────────────

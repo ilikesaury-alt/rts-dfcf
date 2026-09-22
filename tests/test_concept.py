@@ -5,7 +5,14 @@ import tempfile
 import time
 from unittest.mock import patch
 
-from scanner.concept import _fetch_many, _is_noise_board, compute_driving_concepts, fetch_stock_boards
+from scanner.concept import (
+    _fetch_many,
+    _is_noise_board,
+    attach_display_boards,
+    compute_driving_concepts,
+    display_board_map,
+    fetch_stock_boards,
+)
 from scanner.database import get_concepts_cache, save_concepts_cache
 
 
@@ -157,6 +164,132 @@ def test_concepts_cache_expired():
         conn.close()
     finally:
         os.remove(path)
+
+
+# ── 展示行「板块」列取值单源（2026-09-22，飙升区 A/B 两段共用）────────────────
+# 需求原文是「复用 v1 里的板块名」。三级回退链各自的守卫如下；「同票同名」由
+# test_display_board_map_level1_matches_v1_entry_sector 钉死。
+
+
+def _board_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE concept_cache (symbol TEXT, concepts TEXT, updated TEXT)")
+    conn.commit()
+    return conn
+
+
+def test_display_board_map_level1_reads_same_source_as_v1():
+    """①级必须走 `get_today_recommendations` —— v1 池选 `_entry_sector` 的①级同源。
+
+    断言调用而非只断言取值：只看取值的话，换成任何一个碰巧返回同名的实现也会绿，
+    「复用 v1 板块名」这条约束就没了守卫。
+    """
+    conn = _board_conn()
+    rec = [{"symbol": "SZ300001", "concept": "华为概念"}]
+    with patch("scanner.concept.get_today_recommendations", return_value=rec) as mock_rec:
+        got = display_board_map(conn, ["SZ300001"], {"SZ300001": "特锐德"}, fetch=False)
+    mock_rec.assert_called_once_with(conn)
+    assert got["SZ300001"] == "华为概念"
+
+
+def test_display_board_map_level1_matches_v1_entry_sector():
+    """同票同名：同一条 entry 喂给 v1 的 `_entry_sector` 与本函数①级，结果必须一致。
+
+    这是「A/B 段与 v1 池选同屏并列时，同一只票不出现两个板块名」的可执行表述。
+    """
+    from scanner.view.model import _entry_sector
+
+    conn = _board_conn()
+    entry = {"symbol": "SZ300001", "name": "特锐德", "concept": "华为概念"}
+    with patch("scanner.concept.get_today_recommendations", return_value=[entry]):
+        got = display_board_map(conn, ["SZ300001"], {"SZ300001": "特锐德"}, fetch=False)
+    assert got["SZ300001"] == _entry_sector(entry)
+
+
+def test_display_board_map_level2_takes_first_cached_board():
+    """②级：concept_cache 命中 → 取**首个**板块（刻意不跑 `_driving_for` 共振聚合，
+    理由见 display_board_map docstring：B 段票恒不是推动成员，聚合对它也只到 boards[0]）。"""
+    conn = _board_conn()
+    save_concepts_cache(conn, {"SZ300002": ["CPO概念", "光通信"]})
+    with patch("scanner.concept.get_today_recommendations", return_value=[]):
+        got = display_board_map(conn, ["SZ300002"], {"SZ300002": "某票"}, fetch=False)
+    assert got["SZ300002"] == "CPO概念"
+
+
+def test_display_board_map_level3_name_keyword_last_resort():
+    """③级：两级都落空 → 名称关键词（v1 `_entry_sector` 末级同款），无命中给「其他」。"""
+    conn = _board_conn()
+    names = {"SZ300003": "半导体设备", "SZ300004": "毫无关键词"}
+    with patch("scanner.concept.get_today_recommendations", return_value=[]):
+        got = display_board_map(conn, list(names), names, fetch=False)
+    assert got["SZ300003"] == "半导体"
+    assert got["SZ300004"] == "其他"  # 不是「」也不是 —：确实没匹配上，与取数失败不同
+
+
+def test_display_board_map_fetch_false_never_touches_network():
+    """`fetch=False`（A 段路径）绝不发 F10 —— 榜内票的缓存由主线维护，本区不重复拉。
+
+    断言 `_fetch_many` 未被调用是**非空断言**：一旦哪天把 fetch 传成 True，
+    本用例会立刻变红（True 分支必经 `_collect_concepts` → `_fetch_many`）。
+    """
+    conn = _board_conn()
+    with (
+        patch("scanner.concept.get_today_recommendations", return_value=[]),
+        patch("scanner.concept._fetch_many") as mock_fetch,
+    ):
+        got = display_board_map(conn, ["SZ300005"], {"SZ300005": "某票"}, fetch=False)
+    mock_fetch.assert_not_called()
+    assert got["SZ300005"] == "其他"  # 降级链走完，不留空
+
+
+def test_display_board_map_empty_symbols_returns_empty():
+    conn = _board_conn()
+    assert display_board_map(conn, [], {}, fetch=False) == {}
+
+
+def test_display_board_map_survives_broken_recommendations_table():
+    """①级读取失败只降级、不抛（fail-open 契约）—— 本层失败不该让整区产出消失。"""
+    conn = sqlite3.connect(":memory:")  # 无任何表
+    got = display_board_map(conn, ["SZ300006"], {"SZ300006": "半导体设备"}, fetch=False)
+    assert got["SZ300006"] == "半导体"
+
+
+def test_attach_display_boards_writes_sector_in_place():
+    """就地写回（渲染层只读不算）：`sector` 空 → 有值。"""
+
+    class _Row:
+        symbol = "SZ300001"
+        name = "特锐德"
+        sector = ""
+
+    conn = _board_conn()
+    rows = [_Row()]
+    with patch("scanner.concept.get_today_recommendations", return_value=[{"symbol": "SZ300001", "concept": "华为概念"}]):
+        attach_display_boards(conn, rows, fetch=False)
+    assert rows[0].sector == "华为概念"
+
+
+def test_attach_display_boards_empty_input_is_noop():
+    conn = _board_conn()
+    attach_display_boards(conn, [], fetch=False)  # 不抛即可
+
+
+def test_attach_display_boards_leaves_sector_blank_on_total_failure():
+    """板块整体取不到 → 留空（渲染为 `—`），**不**伪装成「其他」。"""
+    conn = _board_conn()
+
+    class _Row:
+        symbol = "SZ300007"
+        name = ""
+        sector = "预置值"
+
+    rows = [_Row()]
+    with (
+        patch("scanner.concept.get_today_recommendations", return_value=[]),
+        patch("scanner.concept.classify_sector", return_value=""),
+    ):
+        attach_display_boards(conn, rows, fetch=False)
+    assert rows[0].sector == ""
 
 
 def test_fetch_many_deadline_returns_partial():

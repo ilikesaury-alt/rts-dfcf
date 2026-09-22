@@ -7,6 +7,10 @@
 概念归属低频变动，DB 缓存（concept_cache 表）按 CONCEPT_CACHE_TTL_DAYS 天复用；
 进程内再叠加短 TTL 缓存，避免同一轮扫描重复读 DB。
 本模块只影响展示，不参与任何打分逻辑。
+
+2026-09-22 追加 `display_board_map` / `attach_display_boards`：飙升区 A/B 两段
+「板块」列的取值单源，与 v1 池选的 `view.model._entry_sector` 同一条回退链、
+同一批数据源（同票同名），见两函数 docstring。
 """
 
 import logging
@@ -26,7 +30,7 @@ from scanner.config import (
     CONCEPT_NOISE_BOARDS,
     CONCEPT_PROCESS_TTL_SEC,
 )
-from scanner.database import get_concepts_cache, save_concepts_cache
+from scanner.database import get_concepts_cache, get_today_recommendations, save_concepts_cache
 from scanner.net import EASTMONEY_HEADERS
 from scanner.sector import classify_sector
 from scanner.utils import EXTERNAL_FAILURES
@@ -205,3 +209,120 @@ def compute_driving_concepts(conn, symbols: list[str], surge_pool: list) -> dict
             driving = classify_sector(s.name)
         result[sym] = driving or "其他"
     return result
+
+
+# ── 展示行「板块」列的取值单源（2026-09-22，飙升区 A/B 两段共用）────────────
+
+
+def display_board_map(
+    conn,
+    symbols: list[str],
+    names: dict[str, str],
+    *,
+    fetch: bool = True,
+) -> dict[str, str]:
+    """展示行用的板块名：与 `view.model._entry_sector` **同构**的回退链。
+
+    为什么不直接调 `_entry_sector`：它吃 `RecommendationRow | dict`，靠
+    `entry["concept"]` / `entry["_candidate"]` 取值；飙升区两段的行是
+    `hot_watch.HotCandidate` / `offboard_watch.OffboardCandidate`，没有那些键。
+    这里取的是**同一条链的同一批数据源**，不是把规则再抄一遍：
+
+      ① 当日 `recommendations.concept`
+         v1 池选「板块」列的第①级就是它，且两处都经 `get_today_recommendations`
+         读同一批行 ⇒ 同一只票若同时出现在 v1 池选与飙升 A 段，两处**必然显示同一个
+         名字**。这是本函数存在的主要理由（A/B 段与 v1 同屏并列，同票两种板块名会
+         被读成两个不同的判断）。①落空时 v1 那侧的行也不在（它就是靠 recommendations
+         出行的），故不存在「可比却不同名」的情形。
+      ② `concept_cache` → 东财 F10 **首要板块** `boards[0]`
+         不跑 `_driving_for` 的共振聚合 —— B 段票按定义「榜外」，不可能是任何概念的
+         推动成员，聚合对它恒退化到 `boards[0]`；A 段在 v1 池选里的票已由①覆盖。
+         `fetch=False` 时只读缓存不发 F10（A 段走这条：榜内票已被主线拉进缓存，
+         见 `config_hot_watch.OFFBOARD_BOARD_FETCH` 的说明）。
+      ③ `classify_sector(名称)` —— `_entry_sector` 末级同款，无关键词命中返回「其他」。
+
+    纯展示，不参与任何打分/排序（本模块既有契约）。fail-open：任一级失败只降级到
+    下一级，绝不抛出 —— 板块列拿不到值只该显示 `—`，不该拖垮本区产出。
+    """
+    if not symbols:
+        return {}
+    wanted = set(symbols)
+    out: dict[str, str] = {}
+
+    # ① 当日已落库的推动概念。降级按 debug 记：这一级本就可能整体落空（表里没有
+    # 今日行 / 该票未落库），②③ 是设计内的正常去处，不是异常。
+    if conn is not None:
+        try:
+            for row in get_today_recommendations(conn):
+                sym = str(row.get("symbol") or "")
+                if sym not in wanted:
+                    continue
+                concept = str(row.get("concept") or "").strip()
+                if concept:
+                    out[sym] = concept
+        except EXTERNAL_FAILURES as e:
+            logger.debug("展示板块①级(recommendations.concept)读取失败，转②: %s", e)
+
+    rest = [s for s in symbols if s not in out]
+    if not rest:
+        return out
+
+    # ② 概念归属缓存（fetch=False 时只读 DB/进程缓存，不发 F10）
+    if conn is not None:
+        try:
+            concepts_map = _collect_concepts(conn, rest) if fetch else _cached_concepts(conn, rest)
+        except EXTERNAL_FAILURES as e:
+            logger.warning("展示板块②级(concept)取数失败，转③: %s", e)
+            concepts_map = {}
+        for sym in rest:
+            boards = concepts_map.get(sym)
+            if boards:
+                out[sym] = str(boards[0])
+
+    # ③ 名称关键词兜底（classify_sector 无命中即返回「其他」，不会留空）
+    for sym in rest:
+        out.setdefault(sym, classify_sector(names.get(sym) or ""))
+    return out
+
+
+def _cached_concepts(conn, symbols: list[str]) -> dict[str, list[str]]:
+    """只读 concept_cache + 进程内缓存，**不发任何网络请求**（`fetch=False` 的②级）。"""
+    now = time.time()
+    result: dict[str, list[str]] = {}
+    missing: list[str] = []
+    for sym in set(symbols):
+        with _concept_lock:
+            hit = _concept_ttl_cache.get(sym)
+            if hit and now - hit[1] < CONCEPT_PROCESS_TTL_SEC:
+                result[sym] = list(hit[0])
+                continue
+        missing.append(sym)
+    if not missing:
+        return result
+    db_hit = get_concepts_cache(conn, missing, CONCEPT_CACHE_TTL_DAYS)
+    for sym, boards in db_hit.items():
+        if boards:
+            result[sym] = list(boards)
+            with _concept_lock:
+                _cache_put(_concept_ttl_cache, sym, (boards, now))
+    return result
+
+
+def attach_display_boards(conn, items, *, fetch: bool = True) -> None:
+    """就地为展示行填 `sector`（飙升区 A/B 两段共用入口，渲染层只读不算）。
+
+    只喂**最终展示行**（调用方切完 `top_n` 再调）⇒ ②级补拉的量被压到 ≤ 展示行数，
+    稳态下概念缓存已命中则零请求。
+    失败只留空（渲染为 `—`），绝不影响本区产出 —— 与两段的 fail-open 边界一致。
+    """
+    targets = [it for it in items if getattr(it, "symbol", "")]
+    if not targets:
+        return
+    board_map = display_board_map(
+        conn,
+        [it.symbol for it in targets],
+        {it.symbol: str(it.name or "") for it in targets},
+        fetch=fetch,
+    )
+    for it in targets:
+        it.sector = board_map.get(it.symbol, "")

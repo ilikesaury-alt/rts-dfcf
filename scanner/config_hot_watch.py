@@ -114,6 +114,18 @@ OFFBOARD_KLINE_DAYS = 60  # 单票取多少根日线
 OFFBOARD_KLINE_WORKERS = 8  # 补 K 线并发（实测 6→16 线程无收益，服务端受限）
 OFFBOARD_KLINE_FETCH_LIMIT = 80  # 单轮最多补 K 线的候选数（按量比降序取前 N）
 
+# ── 「板块」列的 F10 概念补拉开关（2026-09-22）──
+# 两段行新增「板块」列，取值回退链见 `concept.display_board_map`（与 v1 池选的
+# `_entry_sector` 同一批数据源）。②级读 concept_cache —— 而那张表由主线的
+# `compute_driving_concepts` 维护，其覆盖面是「主线候选 ∪ 榜内票」：
+#   · A 段（榜内飙升）票**必然在榜上** ⇒ 缓存必中，无需补拉（故 A 段恒 fetch=False）；
+#   · B 段（榜外异动）按定义不进主线候选 ⇒ 缓存恒 miss ⇒ 只读缓存会让本列
+#     恒为「其他」，等于没做这一列。
+# 故 B 段默认开补拉，但**只针对最终展示行**（≤ OFFBOARD_DISPLAY_TOP 只），且
+# DB/进程缓存命中时零请求 —— 稳态下每轮无额外开销，只有每天首批候选换人才发请求。
+# 1=开（默认）/ 0=关（纯离线：只读缓存，miss 回退名称关键词）。
+OFFBOARD_BOARD_FETCH = int(os.environ.get("RTS_OFFBOARD_BOARD_FETCH", "1"))
+
 __all__ = [
     "HOT_WATCH_ENABLED",
     "HOT_MAX_MARKET_CAP",
@@ -156,4 +168,5 @@ __all__ = [
     "OFFBOARD_KLINE_DAYS",
     "OFFBOARD_KLINE_WORKERS",
     "OFFBOARD_KLINE_FETCH_LIMIT",
+    "OFFBOARD_BOARD_FETCH",
 ]

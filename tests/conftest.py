@@ -12,6 +12,24 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _isolate_process_caches():
+    """清进程级缓存，防用例之间串味（每个用例开始前执行）。
+
+    `scanner.concept._concept_ttl_cache` 是**模块级 dict**（5 分钟 TTL，本意是同一
+    扫描进程内跨轮复用）。pytest 单进程连跑多个用例时它照样存活 ⇒ 2026-09-22 实测：
+    前一个用例往 `concept_cache` 写了「CPO概念」，后一个用例本该降级到③名称关键词，
+    却从进程缓存读回了「CPO概念」—— 用例结果取决于执行顺序（改名/加用例即红）。
+
+    只清缓存不动数据：生产语义（长驻进程 + TTL 复用）不受影响。
+    以后再有同款模块级缓存，一并加进来。
+    """
+    import scanner.concept as concept_mod
+
+    concept_mod._concept_ttl_cache.clear()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _isolate_log_dir(tmp_path, monkeypatch):
     """把日志落盘目录整体重定向到 pytest 的 tmp 目录（每个用例独立）。
 

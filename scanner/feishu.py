@@ -312,6 +312,9 @@ def _row_line(entry, view, rank=None, accum=None, score=None, is_new_entry: bool
 # 数值列的预算沿用 COLS_HOT 的同名列（那里已按输出上界定过），只在自由文本/低熵列上收窄：
 #   代码 12→8、名称 10→8、现价 8→7、涨幅 8→7、换手 7→6、市值 9→7、评分 6→5。
 # 成交量/成交额/连击**不收窄**（11/9/5 就是格式化上界，收窄即溢出）。
+# 「板块」14 也**不收窄**（2026-09-22）：与终端同宽，两出口在同一条截断线上 ——
+# 收窄会让同一只票在终端显示「长三角一体化」、手机上显示「长三角一体…」，
+# 同一张表两种口径（同 COLS_HIST「上次v1桶」不收窄的理由）。
 # 数值列溢出时**不截断**：宁可该行错列也不显示错值；宽度已按上界定，溢出即说明
 # 上界假设被改坏，tests/test_feishu.py::test_hot_row_width_is_uniform 会先红。
 _COLS_HOT_FEISHU: tuple[tuple[int, str], ...] = (
@@ -327,6 +330,7 @@ _COLS_HOT_FEISHU: tuple[tuple[int, str], ...] = (
     (5, "r"),  # 量比      "99.99"
     (6, "r"),  # 换手%     "999.9%"
     (7, "r"),  # 市值(亿)  "9999亿"（HOT_MAX_MARKET_CAP 已在筛选层过滤）
+    (14, "l"),  # 板块     F10 概念名（自由文本，超出 _trunc；与终端同宽）
     (5, "r"),  # 评分      "100.0"
     (5, "r"),  # 连击      "★" + streak（与 COLS_HOT 同宽）
 )
@@ -341,6 +345,8 @@ def _fmt_hot_row_feishu(c, idx: int, *, board_segment: bool = True) -> str:
 
     `board_segment=False` → B 段（榜外异动）行：与终端 `_hot_row_cells` 完全同口径 ——
     「排名上升/连击」榜外票结构上没有 → `—`；「评分」列改显分层标记（T1/T2）。
+    「板块」两段同列同源（2026-09-22，`concept.attach_display_boards` 在产出阶段填好），
+    与 v1 池选同一条回退链 ⇒ 同票同名；空值显 `—`（取数失败）而非「其他」。
     两出口必须同口径，否则同一张表在终端和手机上含义不同（守卫
     `tests/test_feishu.py::test_hot_row_columns_match_terminal` 只保列数，口径靠本注释）。
     """
@@ -354,6 +360,7 @@ def _fmt_hot_row_feishu(c, idx: int, *, board_segment: bool = True) -> str:
         rank_str = "—"
         score_str = getattr(c, "tier", "") or "—"
         streak_str = "—"
+    sector = str(getattr(c, "sector", "") or "")
     cells = (
         str(idx),
         c.code,
@@ -367,6 +374,7 @@ def _fmt_hot_row_feishu(c, idx: int, *, board_segment: bool = True) -> str:
         f"{c.volume_ratio:.2f}" if c.volume_ratio > 0 else "—",
         f"{c.turnover_rate:.1f}%" if c.turnover_rate > 0 else "—",
         f"{c.market_capital / 1e8:.0f}亿" if c.market_capital > 0 else "—",
+        _trunc(sector, _COLS_HOT_FEISHU[12][0]) if sector else "—",
         score_str,
         streak_str,
     )
