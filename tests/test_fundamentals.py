@@ -4,6 +4,8 @@
 覆盖：代码符号解析、进程缓存、DB 缓存、fail-open、超时兜底、
 THS 跨轮增量拉取、enhancer 标签集成。
 """
+
+import logging
 import sqlite3
 
 import pandas as pd
@@ -287,6 +289,59 @@ class TestThsFundRisk:
         assert hits2 == {"SZ300000": fb.FUND_RISK_REASON,
                          "SZ300100": fb.FUND_RISK_REASON}
         assert calls["vals"] == 3, "第 2 轮只应补拉失败的批 2（1 次），不得重拉批 1"
+
+    def test_ths_silent_failures_now_report_root_cause(self, monkeypatch, caplog):
+        """2026-09-22：`_fetch_fund_risk_ths` 两处 `return {}, False` **原本完全无痕**。
+
+        实测根因是**两个外部故障同时发生** —— THS `fetch_gem_codes` 被软限流 +
+        iwencai `get-robot-data` 端点 403 —— 而日志里只剩 pywencai `while_do` 裸
+        `except:` 吞剩的那条误导性 `AttributeError`，主源这层看不到，只能靠倒推。
+        本用例守住「主源失败必须自己开口」，且文案必须点明**后果**（硬过滤失效）
+        而非只报现象：运维要能直接判断是不是有资不抵债票正在漏进来。
+        """
+        fake = FakePywencai(_risk_df("300027.SZ"))
+        monkeypatch.setattr("pywencai.get", fake.get, raising=False)
+
+        def _msgs():
+            return [r.getMessage() for r in caplog.records]
+
+        # ── 路径 1：未配置 API Key ──
+        fb.reset_fund_risk_cache()
+        monkeypatch.setattr("scanner.ths_api.get_api_key", lambda: "")
+        with caplog.at_level(logging.WARNING, logger="scanner.fundamentals"):
+            assert fb.fetch_fund_risk_map() == {"SZ300027": "资不抵债"}  # 仍降级问财成功
+        assert any("HITHINK_FINANCE_API_KEY" in m for m in _msgs()), _msgs()
+        assert any("硬过滤本轮失效" in m for m in _msgs()), "必须点明后果，而非只报现象"
+
+        # ── 路径 2：fetch_gem_codes 返回空（2026-09-22 实测根因：软限流）──
+        caplog.clear()
+        fb.reset_fund_risk_cache()
+        monkeypatch.setattr("scanner.ths_api.get_api_key", lambda: "k")
+        monkeypatch.setattr("scanner.ths_api.fetch_gem_codes", lambda: None)
+        with caplog.at_level(logging.WARNING, logger="scanner.fundamentals"):
+            fb.fetch_fund_risk_map()
+        assert any("fetch_gem_codes" in m for m in _msgs()), _msgs()
+
+    def test_ths_warn_throttled_but_not_swallowed(self, monkeypatch, caplog):
+        """告警节流间隔 = `FUND_RISK_FAIL_TTL_SEC`：故障期不刷屏，TTL 过期后必须重新出现。
+
+        只钉前半会得到一个「把故障永久静音」的实现 —— 那比原来的完全静默更糟。
+        所以两个方向都要钉。
+        """
+
+        def _n():
+            return len([r for r in caplog.records if "硬过滤本轮失效" in r.getMessage()])
+
+        fb.reset_fund_risk_cache()
+        with caplog.at_level(logging.WARNING, logger="scanner.fundamentals"):
+            fb._warn_ths("no_api_key", "第 1 轮")
+            fb._warn_ths("no_api_key", "TTL 内第 2 轮")
+            assert _n() == 1, "TTL 内重复失败必须节流（外部故障期不刷屏）"
+
+            # 把上次告警时刻拨回 TTL 之前 ⇒ 模拟「下一轮扫描」
+            fb._ths_warn_at["no_api_key"] -= fb.FUND_RISK_FAIL_TTL_SEC + 1
+            fb._warn_ths("no_api_key", "TTL 过期后")
+            assert _n() == 2, "节流不得把故障永久静音（否则比原来更糟）"
 
 
 class TestCollectFundRisk:

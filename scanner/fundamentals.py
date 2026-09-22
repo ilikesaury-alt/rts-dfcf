@@ -59,19 +59,47 @@ _ths_progress_lock = threading.Lock()
 
 _logged_missing = False  # pywencai 未安装告警只打一次，避免每轮刷屏
 
+# THS 主源静默失败点的告警节流：{reason: 上次告警时刻}。
+# 节流间隔取 FUND_RISK_FAIL_TTL_SEC —— 与失败退避缓存同源，天然「每轮最多一条」，
+# 外部故障持续期间不会刷屏，故障恢复后下一次失败又能立刻重新出现。
+_ths_warn_at: dict[str, float] = {}
+
+
+def _warn_ths(reason: str, detail: str) -> None:
+    """THS 主源「无结果且未完成」的告警出口（带节流）。
+
+    2026-09-22 补：`_fetch_fund_risk_ths` 原有两处 `return {}, False` **完全无痕**，
+    于是「主源挂了」只能从下游那条「问财查询失败」倒推。而这两个外部故障是**同时
+    发生**的（实测：THS `fetch_gem_codes` 软限流 + iwencai `get-robot-data` 端点 403），
+    日志里却只剩一条误导性的 `AttributeError` —— 真因有两层，一层在 THS 侧被静默，
+    一层在 pywencai 的 `while_do` 裸 `except:` 里。本函数把 THS 那层补上，符合
+    AGENTS「必须留下痕迹，且能区分外部抖动与我们的 bug」的纪律。
+
+    reason 是节流键，detail 是给运维看的真因；两者都要具体到能直接定位。
+    """
+    now = time.time()
+    if now - _ths_warn_at.get(reason, 0.0) < FUND_RISK_FAIL_TTL_SEC:
+        return
+    _ths_warn_at[reason] = now
+    logger.warning(
+        "财务风险 THS 主源本轮无结果（%s）→ 降级问财兜底；若问财亦失败则硬过滤本轮失效，资不抵债票将照常进推荐",
+        detail,
+    )
+
 
 def _today_key() -> str:
     return now_beijing().date().strftime("%Y%m%d")
 
 
 def reset_fund_risk_cache():
-    """清空进程内缓存与增量进度（测试用）。"""
+    """清空进程内缓存、增量进度与告警节流（测试用）。"""
     global _logged_missing
     with _fund_risk_lock:
         _fund_risk_cache.clear()
         _logged_missing = False
     with _ths_progress_lock:
         _ths_progress.clear()
+    _ths_warn_at.clear()  # 节流状态同清，否则测试里第二次用例收不到日志
 
 
 def _warn_missing_pywencai():
@@ -168,6 +196,7 @@ def _fetch_fund_risk_ths() -> tuple[dict, bool]:
     from scanner import ths_api
 
     if not ths_api.get_api_key():
+        _warn_ths("no_api_key", "HITHINK_FINANCE_API_KEY 未配置")
         return {}, False
     key = _today_key()
     # ── 快照阶段（锁内）：读当前进度 ──
@@ -181,6 +210,9 @@ def _fetch_fund_risk_ths() -> tuple[dict, bool]:
     if codes is None:
         got_codes = ths_api.fetch_gem_codes()
         if not got_codes:
+            # 实测根因（2026-09-22）：连续调用时本步被 THS 软限流，返回空表。
+            # 此前完全静默 ⇒ 日志里只看得到下游问财的 AttributeError。
+            _warn_ths("gem_codes_failed", "fetch_gem_codes() 返回空（接口失败/软限流）")
             return {}, False
         with _ths_progress_lock:
             st = _ths_progress.get(key)
