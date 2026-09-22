@@ -68,6 +68,7 @@ def display(
     offboard_rows: list | None = None,
     hist_rows: list | None = None,
     market_idx_pct: float | None = None,
+    new_symbols: set[str] | None = None,
 ) -> "ScanView | None":
     """扫描主屏：头部摘要 + 展示视图（构建/渲染委托 display_priority）。
 
@@ -80,6 +81,9 @@ def display(
     today_pool：本轮候选池快照（symbol → Candidate），由调用方（scan_with_raw 的
     ScanResult）传入，display 不直接访问 orchestrator 内部状态。
     last_ranks: 上一轮扫描的榜单排名 {symbol: rank}，供「排名」列显示变化（+N 升 / -N 降）。
+    new_symbols：本轮**新进入**今日推荐池的票集，透传给 build_scan_view 作 v1 主表第 1
+    排序键与行尾「新」标记。由 unified_scanner 持有跨轮快照做差集（与 last_ranks 同款
+    循环态）；缺省 None ⇒ 不标记、排序还原（口径详见 build_scan_view docstring）。
     """
     clear_screen()
     now = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
@@ -108,6 +112,7 @@ def display(
         offboard_rows=offboard_rows,
         hist_rows=hist_rows,
         market_idx_pct=market_idx_pct,
+        new_symbols=new_symbols,
     )
 
 
