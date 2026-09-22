@@ -702,14 +702,14 @@ def test_prominence_no_longer_sorts(monkeypatch, capsys):
 
 
 def test_display_priority_tier_banner_separates_groups(capsys):
-    """v1 池选排序（2026-09-16 换键，2026-09-21 更正本文）：
-    档位(过热劣后 / composite 粗分档) → 类别展示优先级(策略语义) → 榜单排名升序(实时热度)
-    → 资金流降序(实时) → 形态标签加分。
+    """v1 池选排序（2026-09-22 现行键，沿革见 assemble.build_scan_view 注释块）：
+    新票优先 → 类别展示优先级(策略语义) → 榜单排名升序(实时热度) → 资金流降序(实时)
+    → 形态标签加分。
 
-    ⚠ 本文原写「用户决策：不依赖回测数据」，并把第 1 键说成纯「过热硬门劣后」—— 两点都不准：
-    `tier = composite_tier(...)` 只有前半段（accum≥50%）是实时安全阀，其余按 composite_score
-    阈值 6.0/4.0/2.0 分档，而 composite 的 cat_base 派生自类别 hit 先验（回测口径）。
-    `composite_score` **字段本身**只写不读（无渲染方），但它的派生量 tier 仍是排序第一主键。
+    沿革：2026-09-16~21 的键在类别前还有第 2 键 tier（composite_tier 过热劣后/composite
+    分档），2026-09-22 按用户决策删除 —— 它与类别键高度重合（kNF→tier1、MOM/NEW→tier2、
+    ST→tier3）且 composite 部分无法向用户解释。本用例的断言不依赖 tier：同类别内按榜单
+    排名、跨类别按类别优先级，两条都在现行键里。
 
     关键不变量：同类别内顺序由榜单排名决定，而非 raw score（score 是回测驱动的策略
     内部置信度，不能作为排序主键）。本例 SZ300001 评分 90 远高于 SZ300002 的 50，
@@ -718,7 +718,7 @@ def test_display_priority_tier_banner_separates_groups(capsys):
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "高分低排", "rebound", 90, 1.0)  # 评分高但榜单排名垫后
     _insert_rec_pct(conn, "SZ300002", "低分高排", "rebound", 50, 2.0)  # 评分低但榜单排名靠前
-    _insert_rec_pct(conn, "SZ300003", "动量", "momentum", 70, 3.0)  # 类别档位劣后 → 末
+    _insert_rec_pct(conn, "SZ300003", "动量", "momentum", 70, 3.0)  # 类别优先级劣后 → 末
     rank_map = {"SZ300001": 50, "SZ300002": 5, "SZ300003": 1}
     disp_mod.display_priority(conn, today_pool={}, rank_map=rank_map)
     out = capsys.readouterr().out
@@ -732,8 +732,8 @@ def test_display_priority_tier_banner_separates_groups(capsys):
 
     # 榜单排名升序：低分高排(5) 先于 高分低排(50)，证伪 score 排序
     assert _idx("SZ300002") < _idx("SZ300001"), f"榜单排名应优先于 score: {lines}"
-    # 类别档位：rebound(tier0) 整体先于 momentum(tier1)
-    assert _idx("SZ300003") == 2, f"momentum 应排最后(档位劣后): {lines}"
+    # 类别优先级：rebound 整体先于 momentum
+    assert _idx("SZ300003") == 2, f"momentum 应排最后(类别劣后): {lines}"
 
 
 def test_pool_pick_kept_out_of_v1_main_table(capsys):
@@ -742,7 +742,7 @@ def test_pool_pick_kept_out_of_v1_main_table(capsys):
     2026-09-14：v2 池选展示区已隐藏，故这里不再断言「存在 ◆ v2 池选 区块」，
     只守住仍然重要的隔离不变量 —— pool_pick 类别不得出现在 v1 主表里。
     2026-09-21：它作为终选参考区合池输入的身份也随该区删除而消失；本隔离仍然必需，
-    理由换成**桶语义**：pool_pick 的排序口径是「涨幅降序」，v1 主表是「档位→类别
+    理由换成**桶语义**：pool_pick 的排序口径是「涨幅降序」，v1 主表是「新票优先→类别
     展示优先级→榜单排名→资金流」，混表会让同一列在同一张表里代表两套排序。
     """
     conn = _rec_db()
@@ -918,14 +918,16 @@ def _insert_rec_sb(conn, symbol: str, name: str, category: str, score: int, perc
 # ── 档位 4 级（2026-08-17）：今日总结的选股规则全部编码进排序键 ──
 # 档0=🎯 次日画像 / 档1=rebound·comeback资金流≥3% / 档2=普通 / 档3=警示劣后
 # （超买·陷阱带·死区·累计≥50%过热·资金流出≤-8%）。跨类别全局生效，纯排序层不改评分。
+# ⚠ 2026-09-22：tier 已从 v1 排序键删除（用户决策，与类别键重合）——本组用例自此不再
+# 守「档位排序」，只守「档位不隐形过滤」这一不变量（该不变量与排序键口径无关）。
 def test_display_priority_tier4_sector_resonance_low(capsys):
     """档位**不过滤**主表：四只 short_term 即便落在 tier3 也全部展示。
 
-    本文原写「排序规则（2026-08-28）：榜上优先 → 涨幅升序 → 回调核心 → 排名升序 → 新面孔；
-    档位不再参与主排序」—— 那是 08-28 的旧键。2026-09-16 已换成（见 assemble.build_scan_view）：
-    过热劣后 → 类别优先级 → 榜单排名升序 → 资金流降序 → 形态加分，**档位回到第一主键**。
-    本用例守的不变量（档位既不隐形过滤、也不把票劣后到末尾）与排序键口径无关，故断言自
-    09-16 起只守该点，不随排序键变更而变。
+    沿革：08-28 旧键「榜上优先 → 涨幅升序 → 回调核心 → 排名升序 → 新面孔」→
+    09-16 换「过热劣后 → 类别优先级 → 榜单排名升序 → 资金流降序 → 形态加分」（档位第一）→
+    09-21 前置「新票优先」→ 09-22 删 tier 键（现行：新票优先 → 类别优先级 → 榜单排名
+    → 资金流 → 形态加分）。本用例守的不变量（档位不隐形过滤、票不因档位消失）与排序键
+    口径无关，故断言自 09-16 起只守该点，不随排序键变更而变。
     """
     conn = _rec_db()
     _insert_rec_pct(conn, "SZ300001", "普通超短", "short_term", 60, 6.0)  # 档2 无警示
@@ -947,9 +949,9 @@ def test_display_priority_tier4_sector_resonance_low(capsys):
     disp_mod.display_priority(conn, today_pool={})
     out = capsys.readouterr().out
     lines = [ln for ln in _main_lines(out) if "SZ3000" in ln]
-    # 2026-09-16：排序不再依赖 composite_score/raw score（非回测驱动）。四只 short_term
-    # 档位相同(均 tier3)且无榜单排名/资金流差异时按稳定顺序并列，不再按分数降序；
-    # 故不再断言「高分短差(80)排最前」，只守住核心不变量：档位不再过滤/劣后到末尾。
+    # 2026-09-16：排序不再依赖 composite_score/raw score（非回测驱动）；2026-09-22 起
+    # 连 tier 键也删了。四只 short_term 同类别且无榜单排名/资金流差异时按稳定顺序并列，
+    # 不再按分数降序；故只守核心不变量：档位不再过滤/劣后到末尾。
     assert len(lines) == 4, f"档位不应再过滤/劣后排序: {lines}"
     assert any("SZ300002" in ln for ln in lines), f"小板块共振仍应展示: {lines}"
     assert any("SZ300001" in ln for ln in lines), f"低分票不应被分数劣后隐藏: {lines}"
@@ -1326,7 +1328,7 @@ def test_entry_row_suffix_renders_beauty_tag():
 
 
 def test_v1_new_symbols_sorted_to_top(capsys):
-    """new_symbols 命中的票置顶 —— 即便它按其余 5 键该排最后（类别优先级最低）。"""
+    """new_symbols 命中的票置顶 —— 即便它按其余 4 键该排最后（类别优先级最低）。"""
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300001", "甲", "known_new_face", 90)  # 类别优先级最高
     _insert_rec_cat(conn, "SZ300002", "乙", "short_term", 10)  # 类别优先级最低

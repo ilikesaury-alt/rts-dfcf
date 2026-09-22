@@ -690,9 +690,10 @@ def _fund_flow_norm(entry: Any) -> float:
       （未做显著性检验，n 不对称）——**没有任何证据支持「强流入 > 流入」**。
       故取消 strong_in 独享的最高权，与 in 同权 +0.3。
 
-    ⚠ 五档量级整体**未过样本外验证**：本函数只进展示层 composite_score / 档位
-    （`composite_tier` 的 6.0/4.0/2.0 阈值），**不进最终排序键**。若要重估五档，
-    属权重变更，须走 `python -m scanner.rule_validate`（rescore 评估器可见 ranking）。
+    ⚠ 五档量级整体**未过样本外验证**：本函数只进展示层 composite_score 字段
+    （`composite_tier` 的 6.0/4.0/2.0 阈值曾把它折成排序键，2026-09-22 起 v1 排序键
+    删 tier —— composite 对顺序的影响就此归零，本函数只剩展示字段一个消费方）。
+    若要重估五档，属权重变更，须走 `python -m scanner.rule_validate`（rescore 评估器可见 ranking）。
     """
     flow = _entry_fund_flow_pct(entry)
     if flow is None:
