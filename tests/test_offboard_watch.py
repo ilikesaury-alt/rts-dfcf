@@ -21,22 +21,26 @@ from scanner.config import (
     HOT_MAX_PERCENT,
     HOT_MIN_PERCENT,
     MAX_MARKET_CAP,
-    MOMENTUM_LAUNCH_ACCUM_MAX,
     MOMENTUM_LAUNCH_ACCUM_MIN,
     MOMENTUM_LAUNCH_TODAY_MAX,
     MOMENTUM_LAUNCH_TODAY_MIN,
     MOMENTUM_LAUNCH_VOL,
+    OFFBOARD_ACCUM_MAX,
     OFFBOARD_KLINE_FETCH_LIMIT,
+    OFFBOARD_MAIN_PCT_MIN,
     OFFBOARD_MIN_AMOUNT,
     OFFBOARD_MIN_FLOAT_CAP,
     OFFBOARD_OPENING_SILENCE_MIN,
-    OFFBOARD_T1_MAIN_PCT_MIN,
     OFFBOARD_T1_TODAY_MAX,
     OFFBOARD_T2_TODAY_MAX,
     TREND_MARK_ENABLED,
     now_beijing,
 )
-from scanner.db.migrations import _OFFBOARD_KLINE_DDL, _OFFBOARD_LAUNCH_LOG_DDL
+from scanner.db.migrations import (
+    _OFFBOARD_KLINE_DDL,
+    _OFFBOARD_LAUNCH_LOG_DDL,
+    _OFFBOARD_REJECTIONS_DDL,
+)
 from scanner.display_gates import UNIVERSAL_GATES, beauty_marks_daily, common_hard_gate
 from scanner.offboard_watch import (
     T1,
@@ -176,6 +180,7 @@ def db():
     conn.execute("CREATE TABLE daily_kline (symbol TEXT, date TEXT, close REAL)")
     conn.execute(_OFFBOARD_KLINE_DDL)
     conn.execute(_OFFBOARD_LAUNCH_LOG_DDL)
+    conn.execute(_OFFBOARD_REJECTIONS_DDL)
     conn.commit()
     yield conn
     conn.close()
@@ -227,6 +232,13 @@ def test_tier_bands_are_derived_not_copied():
     assert OFFBOARD_T2_TODAY_MAX < MOMENTUM_LAUNCH_TODAY_MAX
     assert OFFBOARD_T2_TODAY_MAX == HOT_MAX_PERCENT
     assert MOMENTUM_LAUNCH_ACCUM_MIN == 0.0  # 5 日累计下界沿用启动定义
+    # ⚠ 上界**有意不沿用**：`MOMENTUM_LAUNCH_ACCUM_MAX` 被主线 analysis.py 的 momentum
+    # 桶消费，B 段单方面放宽它 = 动主线推荐池。故另立 OFFBOARD_ACCUM_MAX（B 段私有）。
+    # 这条断言是「有人图省事把两者合并回去」的哨兵。
+    from scanner.config_scoring import MOMENTUM_LAUNCH_ACCUM_MAX
+
+    assert OFFBOARD_ACCUM_MAX != MOMENTUM_LAUNCH_ACCUM_MAX  # 显式分叉，不是抄一份
+    assert OFFBOARD_ACCUM_MAX > MOMENTUM_LAUNCH_ACCUM_MAX  # B 段上界放宽（2026-09-22）
 
 
 def test_region_tightens_market_cap_relative_to_mainline():
@@ -445,29 +457,53 @@ def test_classify_tier_accum_out_of_range():
     tier, why = classify_tier(_cand(), _bars(_ACCUM_HIGH_SERIES, today), today)
     assert tier is None
     assert "5日累计" in why
-    assert f"[{MOMENTUM_LAUNCH_ACCUM_MIN:g},{MOMENTUM_LAUNCH_ACCUM_MAX:g})" in why
+    assert f"[{MOMENTUM_LAUNCH_ACCUM_MIN:g},{OFFBOARD_ACCUM_MAX:g})" in why
 
 
-def test_classify_tier_t2_ma_not_bullish(monkeypatch):
-    """T2 的 MA 完全多头门：非完全多头 → 不产出。
+def test_classify_tier_t2_uses_the_same_gate_as_t1(monkeypatch):
+    """T2 与 T1 **共用同一条 MA 门**（2026-09-22 取消 09-21 的按层分化）。
 
-    MA 计算本身是 `trend_beauty.ma_bullish` 的职责（另有单测），这里只验证本模块
-    对「明确非完全多头」的处理 —— 手搓一条「5 日累计在带内但 MA 非多头」的序列既脆又
-    与那个函数耦合，故直接桩掉判定结果。
+    两个方向的哨兵，缺一不可：
 
-    ⚠ 候选必须落在 **T2 涨幅带**（`percent >= MOMENTUM_LAUNCH_TODAY_MIN`）：
-    默认 `_cand()` 是 T1 带（percent=2.5），而 T1 走的是 `_ma_not_bearish`，
-    桩 `ma_bullish` 对那条路径毫无影响 —— 这正是本用例曾被写成「T1 却断言 T2 行为」
-    而误过的原因（2026-09-21 修）。
+    ① 门还在：桩 `_ma_not_bearish` → False，T1/T2 **都**不产出，且理由串**逐字相同**
+       —— 若有人给 T2 另开一条分支（恢复分化），两串会分叉，这里会红。
+    ② 门是「非空头」不是「完全多头」：见
+       `test_partial_bull_series_separates_the_two_ma_predicates`（单点区分力证明）与
+       离线自检 300120（端到端形态）。
+
+    曾经的写法是桩 `trend_beauty.ma_bullish` 并断言 `why == "MA未完全多头"` ——
+    该桩在两层统一后已**不再被调用**，桩掉它对结果毫无影响，用例会假绿。
     """
     import scanner.offboard_watch as ow
 
     today = now_beijing().date().isoformat()
-    monkeypatch.setattr(ow, "ma_bullish", lambda kline: False)
-    c = _cand(percent=MOMENTUM_LAUNCH_TODAY_MIN, volume_ratio=2.4)
-    tier, why = classify_tier(c, _bars(_UP_SERIES, today), today)
-    assert tier is None
-    assert why == "MA未完全多头"
+    bars = _bars(_UP_SERIES, today)
+
+    monkeypatch.setattr(ow, "_ma_not_bearish", lambda kline: False)
+    t1, r1 = classify_tier(_cand(percent=2.5), bars, today)
+    t2, r2 = classify_tier(_cand(percent=MOMENTUM_LAUNCH_TODAY_MIN, volume_ratio=2.4), bars, today)
+    assert (t1, r1) == (t2, r2), "两层的 MA 拒绝理由必须一致（说明是同一条门）"
+    assert (t1, r1) == (None, "MA空头排列(MA5<=MA10)")
+
+
+def test_partial_bull_series_separates_the_two_ma_predicates():
+    """「部分多头」样本必须对两条 MA 判据给出**相反结论** —— 否则「同门」这件事无从验证。
+
+    `_ma_not_bearish`（现用，MA5>MA10）= True；`trend_beauty.ma_bullish`（旧的完全
+    头门，MA5>MA10>MA20）= False。这是「T2 被改回完全多头」最有区分力的单点证据：
+    离线自检 300120 是它的端到端形态，这里做单点复核，把失败面缩到两个纯函数上。
+
+    若哪天两条判据在该样本上变得等价，说明**样本失去区分力** —— 应该换样本，
+    而不是删掉断言。
+    """
+    from scanner.offboard_watch import _DEMO_HIST_PARTIAL_BULL, _exclude_today, _ma_not_bearish
+    from scanner.trend_beauty import ma_bullish
+
+    today = now_beijing().date().isoformat()
+    hist = _exclude_today(_bars([*_DEMO_HIST_PARTIAL_BULL, 10.3], today), today)
+    assert len(hist) >= 20, "样本历史根数不足 → 两条判据都返回 None，断言会假绿"
+    assert _ma_not_bearish(hist) is True, "非空头门应放行部分多头"
+    assert ma_bullish(hist) is False, "完全多头门应拦下部分多头（否则本样本已无区分力）"
 
 
 def test_classify_tier_t1_ma_not_bearish_gate(monkeypatch):
@@ -504,15 +540,15 @@ def test_classify_tier_ma_uses_history_excluding_today(monkeypatch):
         seen.append([b.get("date") for b in kline])
         return True
 
-    monkeypatch.setattr(ow, "ma_bullish", _spy)
+    monkeypatch.setattr(ow, "_ma_not_bearish", _spy)
     c = _cand(percent=MOMENTUM_LAUNCH_TODAY_MIN, volume_ratio=2.4)
     classify_tier(c, _bars(_UP_SERIES, today), today)
-    assert seen, "ma_bullish 未被调用"
+    assert seen, "_ma_not_bearish 未被调用"
     assert today not in seen[0], "MA 判定收到了今日 bar（应剔除）"
 
 
 def test_classify_tier_ma_undecidable_when_bars_short():
-    """不足 20 根 → ma_bullish 返回 None → 按「不可判定」不产出（不当作空头，也不放过）。"""
+    """不足 20 根 → `_ma_not_bearish` 返回 None → 按「不可判定」不产出（不当作空头，也不放过）。"""
     today = now_beijing().date().isoformat()
     tier, why = classify_tier(_cand(), _bars(_SHORT_SERIES, today), today)
     assert tier is None
@@ -533,17 +569,27 @@ def test_classify_tier_t2_rejects_bear_divergence(monkeypatch):
     assert "顶背离" in why
 
 
-def test_classify_tier_t1_requires_main_inflow():
-    """T1 额外要求主力净占比 ≥ OFFBOARD_T1_MAIN_PCT_MIN；T2 不设该条（沿用启动口径）。"""
+def test_classify_tier_main_inflow_gate_applies_to_both_tiers():
+    """主力净占比 ≥ `OFFBOARD_MAIN_PCT_MIN` 是 **T1/T2 同门**（2026-09-22 起 T2 也设）。
+
+    旧口径 T2 不设该条，其理由（「加进来会变成同名不同义的第三种启动定义」）建立在
+    「T2 几乎不产出」的前提上（上线 3 日 31 行里 T2 仅 9 行）。T2 的 MA 门放宽后该
+    前提失效（同日实测 T2 0 → 12），不补这道门榜首就是主力净流出的票 —— 实测前二为
+    -6.61% / -3.97%，两者都高于 `common_hard_gate` 的 -8% 阈值，**通用门拦不住**。
+    """
     today = now_beijing().date().isoformat()
     bars = _bars(_UP_SERIES, today)
-    tier, why = classify_tier(_cand(percent=2.5, main_pct=OFFBOARD_T1_MAIN_PCT_MIN - 0.01), bars, today)
-    assert tier is None
-    assert "主力净占比" in why
+    outflow = OFFBOARD_MAIN_PCT_MIN - 0.01
 
-    # 同样净流出的票走 T2 带 → 不被该条拦（说明它不是通用门，只是 T1 的加严）
-    tier2, _ = classify_tier(_cand(percent=5.0, main_pct=-3.0), bars, today)
-    assert tier2 == T2
+    for pct in (2.5, MOMENTUM_LAUNCH_TODAY_MIN):  # T1 带 / T2 带
+        tier, why = classify_tier(_cand(percent=pct, main_pct=outflow), bars, today)
+        assert tier is None, f"涨幅 {pct}% 的主力净流出票未被拦（该门必须两层同设）"
+        assert "主力净占比" in why
+
+    # 净流入则两带都放行（证明拦的是资金流、不是顺手把某一带堵死了）
+    t1, _ = classify_tier(_cand(percent=2.5, main_pct=2.0), bars, today)
+    t2, _ = classify_tier(_cand(percent=MOMENTUM_LAUNCH_TODAY_MIN, main_pct=2.0), bars, today)
+    assert (t1, t2) == (T1, T2)
 
 
 def test_annotate_sets_tier_and_beauty_consistently():
@@ -791,8 +837,7 @@ def test_persist_round_freezes_signal_snapshot_and_refreshes_last_hit(db):
     c.volume_ratio = 4.4
     persist_round(db, [c])
     row = db.execute(
-        "SELECT first_time, last_hit_time, tier, percent, vol_ratio FROM offboard_launch_log"
-        " WHERE date=? AND symbol=?",
+        "SELECT first_time, last_hit_time, tier, percent, vol_ratio FROM offboard_launch_log WHERE date=? AND symbol=?",
         (day, c.symbol),
     ).fetchone()
     assert row[0] == "2000-01-01T00:00:00"  # 首见时刻不被覆盖
@@ -808,13 +853,82 @@ def test_persist_round_empty_is_noop(db):
     assert db.execute("SELECT COUNT(*) FROM offboard_launch_log").fetchone()[0] == 0
 
 
+# ── 拒绝留痕表 offboard_rejections（2026-09-22 / 迁移 m017）──────────────────
+
+
+def test_run_offboard_watch_records_gate_and_tier_rejections(db):
+    """两段拒绝都必须落库，且带出快照三列（percent / vol_ratio / main_pct）。
+
+    这是本用例存在的**全部理由**：`run_offboard_watch` 原先写的是
+    `cands, _rejects = build_candidates(...)` —— gate 段的 rejects 被就地丢弃，
+    分层段的理由也只写进 `c.reasons` 就地消失。于是「谁被哪道门杀了」只能靠手工
+    重建快照反推（2026-09-22 那次就是这么干的，跑完即失）。
+
+    没有留痕就只有幸存者样本 ⇒ 幸存者偏差 ⇒ 任何阈值调整无从证伪，而本区又是
+    `rule_validate` 三个评估器的盲区。哪天有人把留痕删掉，这里会红。
+    """
+    snapshot = {
+        "SZ300101": _payload(vol_ratio=1.6, percent=2.5, main_pct=2.0),  # 过门 → 无 K 线 → 分层拒
+        "SZ300103": _payload(vol_ratio=1.0, percent=2.5, main_pct=2.0),  # 量比不足 → 门槛拒
+    }
+    assert run_offboard_watch(None, db, [], klines={}, snapshot=snapshot) == []
+
+    rej = {
+        r[0]: r
+        for r in db.execute(
+            "SELECT symbol, name, reason, percent, vol_ratio, main_pct FROM offboard_rejections"
+        ).fetchall()
+    }
+    assert set(rej) == {"SZ300101", "SZ300103"}, "gate 段与分层段的拒绝都必须留痕"
+    assert "无K线数据" in rej["SZ300101"][2]
+    assert "量比不足" in rej["SZ300103"][2]
+    # 快照三列 = 「事后重放阈值」的输入，缺了就得手工重建（本表存在的动因）
+    assert rej["SZ300101"][3] == pytest.approx(2.5)
+    assert rej["SZ300103"][4] == pytest.approx(1.0)
+    # name 走「names → 快照 f14」回退链：内存库的 appearances 是空的，故取快照名
+    assert rej["SZ300101"][1] == "自检样本"
+    # 产出者不进留痕表（它进 offboard_launch_log）
+    assert db.execute("SELECT COUNT(*) FROM offboard_launch_log").fetchone()[0] == 0
+
+
+def test_save_offboard_rejections_upserts_hits_and_freezes_first_time(db):
+    """同 (date, symbol) 当日重复命中：hits 累加、reason/三列刷新、first_time 不动。"""
+    from scanner.db.dal import save_offboard_rejections
+
+    day = now_beijing().date().isoformat()
+    assert save_offboard_rejections(db, [("SZ300101", "自检样本", "量比不足(1.00<1.5)", 2.5, 1.0, 2.0)], day) == 1
+    first_time, hits = db.execute("SELECT first_time, hits FROM offboard_rejections").fetchone()
+    assert hits == 1
+
+    # 第二轮同票：理由漂了（盘中涨幅冲破上限）→ 取最新状态
+    save_offboard_rejections(db, [("SZ300101", "自检样本", "涨幅过高(9.00%>7%)", 9.0, 1.0, 2.0)], day)
+    reason, percent, hits2, first2 = db.execute(
+        "SELECT reason, percent, hits, first_time FROM offboard_rejections"
+    ).fetchone()
+    assert reason == "涨幅过高(9.00%>7%)"
+    assert percent == pytest.approx(9.0)
+    assert hits2 == hits + 1
+    assert first2 == first_time, "first_time 记的是「当日首次被拒」，不得被后续轮次改写"
+
+
+def test_save_offboard_rejections_fail_open(db):
+    """fail-open：表缺失 / 空输入都不许抛 —— 留痕是观测，出问题不能中断扫描。"""
+    from scanner.db.dal import save_offboard_rejections
+
+    row = ("SZ300101", "自检样本", "量比不足(1.00<1.5)", 2.5, 1.0, 2.0)
+    assert save_offboard_rejections(db, [], now_beijing().date().isoformat()) == 0
+
+    db.execute("DROP TABLE offboard_rejections")
+    db.commit()
+    assert save_offboard_rejections(db, [row], now_beijing().date().isoformat()) == 0  # 不抛即通过
+
+
 # ── 次日收益回填（两个防呆）──────────────────────────────────────────────────
 
 
 def _insert_signal(db, symbol: str, day: str, tier: str = T1) -> None:
     db.execute(
-        "INSERT INTO offboard_launch_log(date,symbol,name,tier,percent,first_time,updated)"
-        " VALUES(?,?,?,?,?,?,?)",
+        "INSERT INTO offboard_launch_log(date,symbol,name,tier,percent,first_time,updated) VALUES(?,?,?,?,?,?,?)",
         (day, symbol, "回填样本", tier, 2.5, "x", "x"),
     )
     db.commit()
@@ -829,9 +943,7 @@ def test_backfill_next_day_fills_pct(db):
     _insert_signal(db, sym, d0)
 
     assert backfill_next_day(db, None) == 1
-    pct = db.execute(
-        "SELECT next_day_pct FROM offboard_launch_log WHERE date=? AND symbol=?", (d0, sym)
-    ).fetchone()[0]
+    pct = db.execute("SELECT next_day_pct FROM offboard_launch_log WHERE date=? AND symbol=?", (d0, sym)).fetchone()[0]
     assert pct == pytest.approx(10.0)
 
 
@@ -853,9 +965,7 @@ def test_backfill_skips_today_signals(db):
     _save_klines(db, {sym: _bars(_UP_SERIES, today)}, today)
     _insert_signal(db, sym, today)
     assert backfill_next_day(db, None) == 0
-    assert (
-        db.execute("SELECT next_day_pct FROM offboard_launch_log WHERE date=?", (today,)).fetchone()[0] is None
-    )
+    assert db.execute("SELECT next_day_pct FROM offboard_launch_log WHERE date=?", (today,)).fetchone()[0] is None
 
 
 def test_backfill_skips_when_next_bar_too_far(db):
@@ -1082,9 +1192,7 @@ class TestOpeningSilence:
 
     @pytest.fixture(autouse=True)
     def _enable(self, monkeypatch):
-        monkeypatch.setattr(
-            "scanner.offboard_watch.OFFBOARD_OPENING_SILENCE_MIN", OFFBOARD_OPENING_SILENCE_MIN
-        )
+        monkeypatch.setattr("scanner.offboard_watch.OFFBOARD_OPENING_SILENCE_MIN", OFFBOARD_OPENING_SILENCE_MIN)
 
     def test_window_uses_config_constant(self):
         """守卫：本类确实把窗口打开了（否则下面几条会静默地全测成「不静默」）。"""
@@ -1166,8 +1274,14 @@ def test_render_region_column_header_printed_exactly_once(capsys):
     from scanner.view.render import _render_hot_watch_region
 
     a = HotCandidate(
-        symbol="SZ300862", code="300862", name="蓝盾光电", exchange="SZ",
-        current=50.10, percent=5.76, rank_change=1257, rank=3,
+        symbol="SZ300862",
+        code="300862",
+        name="蓝盾光电",
+        exchange="SZ",
+        current=50.10,
+        percent=5.76,
+        rank_change=1257,
+        rank=3,
     )
     b = _offboard_row(tier=T2, code="300201", symbol="SZ300201", name="榜外样本")
 
@@ -1196,8 +1310,14 @@ def test_render_region_puts_b_segment_after_a_segment(capsys):
     from scanner.view.render import _render_hot_watch_region
 
     a = HotCandidate(
-        symbol="SZ300862", code="300862", name="蓝盾光电", exchange="SZ",
-        current=50.10, percent=5.76, rank_change=1257, rank=3,
+        symbol="SZ300862",
+        code="300862",
+        name="蓝盾光电",
+        exchange="SZ",
+        current=50.10,
+        percent=5.76,
+        rank_change=1257,
+        rank=3,
     )
     b = _offboard_row(tier=T2, code="300201", symbol="SZ300201", name="榜外样本")
     _render_hot_watch_region([a], [b])
@@ -1265,8 +1385,15 @@ def test_render_region_shares_sector_column_header_across_segments(capsys):
     from scanner.view.render import _render_hot_watch_region
 
     a = HotCandidate(
-        symbol="SZ300862", code="300862", name="蓝盾光电", exchange="SZ",
-        current=50.10, percent=5.76, rank_change=1257, rank=3, sector="军工",
+        symbol="SZ300862",
+        code="300862",
+        name="蓝盾光电",
+        exchange="SZ",
+        current=50.10,
+        percent=5.76,
+        rank_change=1257,
+        rank=3,
+        sector="军工",
     )
     b = _offboard_row(tier=T2, code="300201", symbol="SZ300201", name="榜外样本", sector="CPO概念")
     _render_hot_watch_region([a], [b])
@@ -1395,9 +1522,14 @@ def test_demo_samples_cover_offboard_specific_branches(capsys):
     out = capsys.readouterr().out
     for keyword in ("量比不足", "成交额不足", "流通市值过小", "涨幅过高", "主力净流出", "ST"):
         assert keyword in out, f"自检样本未覆盖排除分支：{keyword}"
-    for keyword in ("5日累计", "MA空头排列", "MA未完全多头", "K线不足", "无K线数据", "主力净占比"):
+    for keyword in ("5日累计", "MA空头排列", "K线不足", "无K线数据", "主力净占比"):
         assert keyword in out, f"自检样本未覆盖分层分支：{keyword}"
+    assert "MA未完全多头" not in out, "两层已同门（2026-09-22），不该再出现完全多头的拒绝理由"
     assert sum(1 for e, *_ in _DEMO_CASES if e == "跳过") == 3  # 在榜 / 主板 / 已推荐
-    # MA 判据按层分化的两极哨兵：同一条「EMA 部分多头」序列在 T1 放行、在 T2 拦下。
+    # 两层 MA 同门的三路交叉验证（样本表里的注释有完整说明）：
+    #   部分多头序列在 T1/T2 两个带**都放行** —— 证明 T2 用的是「非空头」；
+    #   空头序列在 T2 带被拦 —— 证明 T2 的 MA 门还在，不是被整个删了。
     assert sum(1 for e, *_ in _DEMO_CASES if e == "T1") == 2
-    assert sum(1 for e, *_ in _DEMO_CASES if e == "T2") == 1
+    assert sum(1 for e, *_ in _DEMO_CASES if e == "T2") == 2
+    # T2 的主力净占比门（300122）与 T1 的（300118）是两条独立样本，各算各的
+    assert sum(1 for e, *_ in _DEMO_CASES if e == "主力净占比") == 2

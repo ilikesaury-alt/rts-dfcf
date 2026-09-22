@@ -547,6 +547,56 @@ def save_rejections(conn: sqlite3.Connection, rejected: list, today: str | None 
         return 0
 
 
+def save_offboard_rejections(
+    conn,
+    rows: list[tuple],
+    today: str | None = None,
+) -> int:
+    """记录 B 段（沪深飙升·榜外异动）被拒候选（审计表 `offboard_rejections`）。
+
+    `rows` = `offboard_watch._rejection_rows(...)` 产出的行元组，每条 6 个字段：
+    `(symbol, name, reason, percent, vol_ratio, main_pct)`。
+
+    为什么需要这张表（与 `save_rejections` 同一个理由）：`offboard_launch_log` 只存
+    **产出**行，被拒的候选原先完全不落库 ⇒ 只有幸存者样本，「某道门误杀了多少、
+    被杀的票次日涨得怎样」永远答不出来（幸存者偏差），本区任何阈值调整都无从证伪。
+    而 `rule_validate` 的三个评估器都看不见本模块 —— 这张表是唯一能积累的证据链。
+
+    同一 (date, symbol) 当日重复命中只累加 `hits` 并刷新 `reason` / 快照三列
+    （取最新一轮：被拒理由会随盘中漂移，最后状态才有复盘意义）。
+    fail-open：落库失败仅告警，不影响扫描主流程。
+    """
+    if not rows:
+        return 0
+    rec_date = today or now_beijing().date().isoformat()
+    now_t = now_beijing().isoformat(timespec="seconds")
+    payload = [(rec_date, *r[:6], now_t, now_t) for r in rows]
+    try:
+        conn.executemany(
+            "INSERT INTO offboard_rejections "
+            "(date, symbol, name, reason, percent, vol_ratio, main_pct, first_time, updated) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(date, symbol) DO UPDATE SET "
+            "name = excluded.name, "
+            "reason = excluded.reason, "
+            "percent = excluded.percent, "
+            "vol_ratio = excluded.vol_ratio, "
+            "main_pct = excluded.main_pct, "
+            "hits = offboard_rejections.hits + 1, "
+            "updated = excluded.updated",
+            payload,
+        )
+        conn.commit()
+        return len(payload)
+    except sqlite3.Error as e:
+        logger.warning(f"save_offboard_rejections 落库失败（B段拒绝留痕缺失，不影响扫描）: {e}")
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass  # 回滚失败无补救手段，外层已记录原始错误；仅捕获 sqlite3.Error，避免吞掉代码 bug
+        return 0
+
+
 def ensure_observation_schema(conn: sqlite3.Connection) -> None:
     """观测表幂等迁移（Phase 1/2）：补齐 scan_rejections 的 outcome 列 + 建 pool_log。
 

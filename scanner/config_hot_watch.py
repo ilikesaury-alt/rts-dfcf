@@ -94,11 +94,43 @@ OFFBOARD_MIN_FLOAT_CAP = 10 * YI  # 流通市值下限（元）：10 亿
 # 0 = 关闭窗口（离线自检 / 回放用）。
 OFFBOARD_OPENING_SILENCE_MIN = 15
 
-# T1（量先动·价未动）额外要求：主力净占比 ≥ 此值（0 = 至少不是净流出）。
-# T2 不设该条 —— 它复用既有 MOMENTUM_LAUNCH_* 口径（那里没有资金流项），
-# 加进来会变成「同名不同义」的第三种启动定义。
-OFFBOARD_T1_MAIN_PCT_MIN = 0.0
+# 主力净占比下限（0 = 至少不是净流出）。**T1/T2 同门**（2026-09-22 起 T2 也设此条）。
+# 旧注释写的是「T2 不设该条 —— 复用 MOMENTUM_LAUNCH_* 口径，加进来会变成同名不同义
+# 的第三种启动定义」，其隐含前提是「T2 几乎不产出」（上线 3 日 31 行里 T2 仅 9 行）。
+# 当日 T2 的 MA 门由「完全多头」放宽到「非空头」后该前提失效（同日同快照实测
+# T2 0 → 12）—— 不补这道门，榜首就是主力净流出的票：实测前二为 **-6.61% / -3.97%**，
+# 两者都高于 `common_hard_gate` 的 -8% 阈值（`FUND_OUTFLOW_NET_PCT`），通用门拦不住。
+# 与 A 段「资金流出统一口径、展示层单点过滤」(02ae8af) 及 T1 口径保持一致。
+OFFBOARD_MAIN_PCT_MIN = 0.0
 OFFBOARD_DISPLAY_TOP = 5  # 终端同区 B 段展示行数（与 A 段体量一致）
+
+# ── B 段 5 日累计上界（**B 段私有**，2026-09-22）──
+# 下沿仍取 `MOMENTUM_LAUNCH_ACCUM_MIN`(0)：与 momentum 同源，两边一致（近 5 天不能是
+# 跌的），不重复定义。
+# 上沿**不再共用** `MOMENTUM_LAUNCH_ACCUM_MAX`(7) —— 那个常量定义在 `config_scoring.py`
+# 并被主线 `analysis.py:593/:643` 的 momentum 桶消费，改它等于动**主线推荐池**。
+# 这里另立常量，故「B 段的启动」与「主线 momentum 的启动」自此上沿不同名不同值，
+# 属显式分叉而非同名不同义（名字不同、此处注明即可）。
+#
+# 放宽依据（2026-09-22 同快照实测：创业板 1410 → 过门 401 → 有 K 线 143）：
+#   ·「5日累计≥7」杀 63/143，是**第二大门**；被「涨幅>7%」挡掉的 18 只里 7 只死在此门；
+#   · 上沿 7 → 15：产出 11 → 28（T2 0 → 3）；
+#   · 与 T2 的 MA 放宽合用：11 → **37**（T2 0 → **12**），涨幅上限 3.15% → **6.93%**、
+#     量比上限 3.19 → **5.40**；前 10 由全 T1 变全 T2。
+#   · 单独放开涨幅带则**零效果**（7→8 与完全放开产出均为 11）—— 涨幅带不是瓶颈。
+#
+# ⚠ 无样本外证据：`rule_validate` 看不见 `scanner.offboard_watch`。2026-09-22 实跑两次：
+#   ① `--set scanner.config_hot_watch.OFFBOARD_ACCUM_MAX=15.0` → **退出码 3**（可见性
+#      硬校验：该模块不在 nextday-prob / rescore 任一可见集合内，stored-score 可见集为空）；
+#   ② 绕道 `--set scanner.config.OFFBOARD_ACCUM_MAX=15.0`（`scanner.config` 在 rescore
+#      可见集内，校验放行）→ **退出码 1**，但 Δ=0.0pp、**翻转 0/50 个交易日**、MDE=n/a，
+#      且工具自打提示「改动未产生任何输出差异」—— 传播只改写了 1 个模块
+#      （`scanner.config_hot_watch`），压根没摸到 `offboard_watch`。
+#   ⇒ ② 的「证据不足」是**结构上的空转**，不是「测了没效果」，绝不能当作通过/不通过的依据。
+#   本区唯一可积累的证据链是 `offboard_rejections` 留痕表，目标 D ≥ 47 交易日
+#   （按日 bootstrap 检出 10pp 需 47 日；D=3 时 MDE ±39.6pp）后再复盘。
+OFFBOARD_ACCUM_MAX = 15.0
+
 # B 段两层涨幅带（**派生**，不写字面量）：分界点就是既有启动定义的下沿 ——
 # 低于 MOMENTUM_LAUNCH_TODAY_MIN(3.5%) = 「价还没动」(T1)，达到它 = 「已启动」(T2)。
 # 整条带的上界取 `min(MOMENTUM_LAUNCH_TODAY_MAX, HOT_MAX_PERCENT)`：
@@ -161,7 +193,8 @@ __all__ = [
     "OFFBOARD_MIN_AMOUNT",
     "OFFBOARD_MIN_FLOAT_CAP",
     "OFFBOARD_OPENING_SILENCE_MIN",
-    "OFFBOARD_T1_MAIN_PCT_MIN",
+    "OFFBOARD_MAIN_PCT_MIN",
+    "OFFBOARD_ACCUM_MAX",
     "OFFBOARD_T1_TODAY_MAX",
     "OFFBOARD_T2_TODAY_MAX",
     "OFFBOARD_DISPLAY_TOP",

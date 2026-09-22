@@ -58,7 +58,7 @@ class TestLedgerSemantics:
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(mig, "MIGRATIONS", [m])
             applied = run_migrations(conn)
-        assert applied == []              # 不算"本轮新应用"
+        assert applied == []  # 不算"本轮新应用"
         assert _ledger(conn) == {"t002"}  # 但要记账，否则每轮都要探测
 
     def test_recorded_migration_is_skipped(self, tmp_path):
@@ -186,6 +186,7 @@ class TestMigrationCatalog:
             "m014_ranking_snapshot_drop_marked",
             "m015_offboard_tables",
             "m016_offboard_log_last_hit",
+            "m017_offboard_rejections",
         ]
 
     def test_every_migration_has_desc(self):
@@ -212,6 +213,7 @@ class TestInitDbIntegration:
             assert _ledger(conn) == {m.id for m in MIGRATIONS}
             assert "hot_watch_hits" in _tables(conn)
             assert "hot_watch_meta" in _tables(conn)
+            assert "offboard_rejections" in _tables(conn)  # m017：B 段拒绝留痕表
             assert _has_col(conn, "recommendations", "excluded_reason")
         finally:
             conn.close()

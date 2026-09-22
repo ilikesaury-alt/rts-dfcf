@@ -22,9 +22,12 @@ B 段把**项目已在手但从未被消费**的全市场快照（`market_extra_
   同一套阈值的第二个定义就是本仓最忌讳的「同名不同义」；
 - T1/T2 的分界点也取 `MOMENTUM_LAUNCH_TODAY_MIN`(3.5%)：低于它 = 「价还没动」，
   达到它 = 「已启动」。T1 不是新发明的语义，而是既有启动定义的**下沿延伸**；
-- MA 判据**按层分化**（2026-09-21 起）：T1「MA 非空头」= `features.ma_alignment_score > 0`
-  （经本模块 `_ma_not_bearish` 收口 None 语义）；T2「MA 完全多头」= `trend_beauty.ma_bullish`。
-  「顶背离」= `validator.mo_divergence`；「5 日累计」= `utils.accum_5d`；
+- **两层共用同一条 MA 判据**「MA 非空头」= `features.ma_alignment_score > 0`
+  （经本模块 `_ma_not_bearish` 收口 None 语义）—— 2026-09-22 起两层不再分化，
+  见 `classify_tier` docstring 里那段「为什么要取消分化」；
+  「顶背离」= `validator.mo_divergence`；「5 日累计」= `utils.accum_5d`（下沿
+  `MOMENTUM_LAUNCH_ACCUM_MIN` 同源，上沿 `OFFBOARD_ACCUM_MAX` **B 段私有**）；
+  「主力净占比 ≥ `OFFBOARD_MAIN_PCT_MIN`」= T1/T2 同门；
   「通用风险门」= `display_gates.common_hard_gate`。本模块不自造任何一条判定。
 
 ⚠ 尚未回测：T2 的常量是在**榜上**样本校准的，域迁移到榜外不保证成立。榜外 K 线池 +
@@ -78,19 +81,19 @@ from scanner.concept import attach_display_boards
 from scanner.config import (
     HOT_MAX_MARKET_CAP,
     HOT_MIN_PERCENT,
-    MOMENTUM_LAUNCH_ACCUM_MAX,
     MOMENTUM_LAUNCH_ACCUM_MIN,
     MOMENTUM_LAUNCH_TODAY_MIN,
     MOMENTUM_LAUNCH_VOL,
+    OFFBOARD_ACCUM_MAX,
     OFFBOARD_BOARD_FETCH,
     OFFBOARD_DISPLAY_TOP,
     OFFBOARD_KLINE_DAYS,
     OFFBOARD_KLINE_FETCH_LIMIT,
     OFFBOARD_KLINE_WORKERS,
+    OFFBOARD_MAIN_PCT_MIN,
     OFFBOARD_MIN_AMOUNT,
     OFFBOARD_MIN_FLOAT_CAP,
     OFFBOARD_OPENING_SILENCE_MIN,
-    OFFBOARD_T1_MAIN_PCT_MIN,
     OFFBOARD_T1_TODAY_MAX,
     OFFBOARD_T2_TODAY_MAX,
     TREND_MARK_ENABLED,
@@ -98,13 +101,14 @@ from scanner.config import (
     now_beijing,
 )
 from scanner.data_source import ak_to_xq
+from scanner.db.dal import save_offboard_rejections
 from scanner.db.queries import get_market_extra_snapshot, get_symbol_names
 from scanner.display_gates import beauty_marks_daily, code_of, common_hard_gate
 from scanner.features import ma_alignment_score
 from scanner.hot_watch import is_hot_universe
 from scanner.models import make_kline_bar
 from scanner.trading_session import trading_minutes_elapsed
-from scanner.trend_beauty import DAILY_BEAUTY_MIN_BARS, ma_bullish
+from scanner.trend_beauty import DAILY_BEAUTY_MIN_BARS
 from scanner.utils import EXTERNAL_FAILURES, accum_5d, to_float
 from scanner.validator import mo_divergence
 
@@ -315,40 +319,54 @@ def classify_tier(c: OffboardCandidate, klines: list | None, today: str) -> tupl
     """K 线相关的分层判定 → (tier | None, 理由)。
 
     None = **不产出**：既包含「条件不满足」，也包含「数据不足无法验证」——
-    两者对展示的后果相同（不显示），但理由串不同，便于事后归因。
+    两者对展示的后果相同（不显示），但理由串不同，便于事后归因（落 `offboard_rejections`）。
 
     判定顺序（先验不可得的条件，再分层；两层的涨幅带互斥且穷尽）：
-      1. 5 日累计（剔除今日）必须落在 `[MOMENTUM_LAUNCH_ACCUM_MIN, ACCUM_MAX)`；
-      2. MA 判据**按层不同**（见下）；
-      3. 涨幅带 → T2（`[TODAY_MIN, OFFBOARD_T2_TODAY_MAX]`，另需无顶背离）
-         或 T1（`(HOT_MIN_PERCENT, TODAY_MIN)`，另需主力净占比 ≥ `OFFBOARD_T1_MAIN_PCT_MIN`）。
+      1. 5 日累计（剔除今日）必须落在 `[MOMENTUM_LAUNCH_ACCUM_MIN, OFFBOARD_ACCUM_MAX)`；
+      2. MA 判据（**两层同一条**）：`_ma_not_bearish(hist)` = MA5 > MA10；
+      3. 涨幅带 → T2（`[TODAY_MIN, OFFBOARD_T2_TODAY_MAX]`，另需主力净占比
+         ≥ `OFFBOARD_MAIN_PCT_MIN` 且无顶背离）
+         或 T1（`(HOT_MIN_PERCENT, TODAY_MIN)`，另需主力净占比 ≥ `OFFBOARD_MAIN_PCT_MIN`）。
 
-    🔑 MA 判据按层分化（2026-09-21，与主线既有做法对齐）
-    ---------------------------------------------------
-    T1 要求「MA **非空头**」（MA5 > MA10），T2 仍要求「MA **完全多头**」
-    （MA5 > MA10 > MA20）。两侧都不是本模块发明的口径，各有单源：
+    🔑 两层 MA 判据已统一（2026-09-22）—— 取消 09-21 的按层分化
+    -----------------------------------------------------------------
+    09-21 的分化是「T1 非空头 / T2 完全多头」。取消的理由是**分化让 T2 的定义自相矛盾**：
 
-      - T1 取非空头 ← 对齐 `analysis.py` 的「首次启动」子模式（那里注释写明
-        「MA 多头排列**通常滞后于价格启动**，导致信号量过少」，故放宽至 score>=0）。
-        T1 的语义正是「价还没动」，要求价格已走出一段多头趋势**在逻辑上自相矛盾**
-        —— 实测（2026-09-21 池 215 只，剔除今日 bar）：MA 完全多头 36 只、
-        MA 非空头 92 只；当日实际产出 3 只（300793/300918/300389）在旧口径下
-        **全部为 False**、新口径下**全部为 True** ⇒ 确系放宽所得，非其他缺陷的副产物。
-      - T2 保持完全多头 ← T2 = 「启动首日」，与主线 momentum 池的启动口径同域
-        （该域已在榜上样本校准过），本模块不应单方面放宽它。
+      T2 = 「启动首日」，其前一道门 `5日累计 ∈ [0, X)` 要求**近 5 天不能涨**；
+      而「完全多头」要求 MA5 > MA10 > MA20，即**近 20 天一直涨**。两者交集只剩
+      「缓涨趋势股」—— 基底突破（盘整后今天跳）与超跌反弹这两类**最典型的启动形态
+      恰好同时被两边排除**。实测 2026-09-22 同快照：T2 带内有 K 线的 54 只候选，
+      `ma_bullish` 杀掉 30 只（56%），当日 T2 产出 **0**；统一到非空头后
+      T2 0 → 12，涨幅上限 3.15% → 6.93%、量比上限 3.19 → 5.40。
+
+    09-21 留下「T2 保持完全多头」的原始理由是「与主线 momentum 池同域、该域已在榜上
+    样本校准过，本模块不应单方面放宽」。但本模块自己的 docstring（「三条硬边界」之后
+    那段）同时写着「⚠ 尚未回测：T2 的常量是在**榜上**样本校准的，域迁移到榜外不保证
+    成立」—— **两句话互相打架**：既然域迁移不保证成立，「已在榜上校准」就不是保持
+    严格的依据，而是恰恰说明它需要在榜外重验。取消分化即按后一句执行。
+
+    为什么不反过来把 T1 收紧回「完全多头」：T1 的语义是「价还没动」，要求已走出
+    20 日多头趋势**在逻辑上自相矛盾**（见 `_ma_not_bearish` docstring 里
+    `analysis.py` 首次启动子模式的放宽背书），且收紧会把产出打回个位数。
 
     ⚠ 这是**放宽信号门**（扩大产出面），与风险门「只能收紧」的契约方向相反 ——
-    放宽的理由是「T1 未被 MA 门保护住任何东西」（旧口径下 36/215 的通过率不是筛选而是误杀），
-    且 T1 段**尚无历史背书**（`offboard_launch_log` 样本 2 日），属观察段的探索性调整。
-    回退方式：把 T1 分支的 `_ma_not_bearish(hist)` 改回 `ma_bullish(hist)` 即可。
+    且**没有样本外证据**：`rule_validate` 三个评估器都看不见本模块（`--set` 会被
+    可见性硬校验拦在退出码 3），D = 3 交易日、按日 bootstrap MDE ±39.6pp，支撑不了
+    任何阈值判断。属观察段的探索性调整，样本由 `offboard_rejections` 留痕表积累至
+    D ≥ 47 交易日后再复盘。
+
+    回退方式：T2 分支的 `_ma_not_bearish(hist)` 改回 `ma_bullish(hist)`
+    （需重新 `from scanner.trend_beauty import ma_bullish`），T1 不动 —— 即还原
+    09-21 的按层分化。`OFFBOARD_ACCUM_MAX` 与 `OFFBOARD_MAIN_PCT_MIN` 是独立开关，
+    各自回退只影响产出量级，不影响分层语义。
     """
     if not klines:
         return None, "无K线数据(榜外池未覆盖)"
     accum = accum_5d(klines, today)
     if accum is None:
         return None, "K线不足6根有效收盘"
-    if not (MOMENTUM_LAUNCH_ACCUM_MIN <= accum < MOMENTUM_LAUNCH_ACCUM_MAX):
-        return None, f"5日累计{accum:+.2f}%不在[{MOMENTUM_LAUNCH_ACCUM_MIN:g},{MOMENTUM_LAUNCH_ACCUM_MAX:g})"
+    if not (MOMENTUM_LAUNCH_ACCUM_MIN <= accum < OFFBOARD_ACCUM_MAX):
+        return None, f"5日累计{accum:+.2f}%不在[{MOMENTUM_LAUNCH_ACCUM_MIN:g},{OFFBOARD_ACCUM_MAX:g})"
 
     c.accum_5d = round(accum, 2)
 
@@ -361,11 +379,15 @@ def classify_tier(c: OffboardCandidate, klines: list | None, today: str) -> tupl
     hist = _exclude_today(klines, today)
 
     if MOMENTUM_LAUNCH_TODAY_MIN <= c.percent <= OFFBOARD_T2_TODAY_MAX:
-        ma = ma_bullish(hist)
+        ma = _ma_not_bearish(hist)
         if ma is None:
             return None, "K线不足20根(MA不可判定)"
         if ma is not True:
-            return None, "MA未完全多头"
+            return None, "MA空头排列(MA5<=MA10)"
+        # 2026-09-22 起 T2 与 T1 **同门**：旧注释的「T2 不设该条」建立在
+        # 「T2 几乎不产出」的前提上，MA 放宽后前提失效（见 config_hot_watch）。
+        if c.main_pct < OFFBOARD_MAIN_PCT_MIN:
+            return None, f"主力净占比{c.main_pct:+.2f}%<{OFFBOARD_MAIN_PCT_MIN:g}"
         closes = [to_float(k.get("close"), 0.0) or 0.0 for k in klines]
         div, div_detail = mo_divergence(closes, klines)
         if div == V_MO_DIVERGENCE_BEAR:
@@ -378,8 +400,8 @@ def classify_tier(c: OffboardCandidate, klines: list | None, today: str) -> tupl
             return None, "K线不足20根(MA不可判定)"
         if ma is not True:
             return None, "MA空头排列(MA5<=MA10)"
-        if c.main_pct < OFFBOARD_T1_MAIN_PCT_MIN:
-            return None, f"主力净占比{c.main_pct:+.2f}%<{OFFBOARD_T1_MAIN_PCT_MIN:g}"
+        if c.main_pct < OFFBOARD_MAIN_PCT_MIN:
+            return None, f"主力净占比{c.main_pct:+.2f}%<{OFFBOARD_MAIN_PCT_MIN:g}"
         return T1, f"量先动·价未动(累计{accum:+.2f}% 今日{c.percent:+.2f}% 量比{c.volume_ratio:.2f})"
 
     return None, f"今日涨幅{c.percent:.2f}%不在两层带内"
@@ -401,7 +423,7 @@ def _exclude_today(klines: list | None, today: str) -> list:
 
 
 def _ma_not_bearish(klines: list | None) -> bool | None:
-    """「MA 非空头」判定（T1 专用）：True / False；**数据不足返回 None**。
+    """「MA 非空头」判定（**T1/T2 共用**，2026-09-22 起两层同一门）：True / False；**数据不足返回 None**。
 
     定义 = `features.ma_alignment_score(closes) > 0`，即 MA5 > MA10（含完全多头）。
     与 `analysis.py` 首次启动子模式的 `ma_boost >= 0` 同源 —— 那里注释写明放宽理由：
@@ -415,7 +437,7 @@ def _ma_not_bearish(klines: list | None) -> bool | None:
     ⚠ 调用方须传**已剔除今日 bar** 的序列（见 `_exclude_today`）。这里的 `_MA_MIN_BARS`
     门槛补齐 `ma_alignment_score` 的一个口径缺口：后者在 `len<20` 时仍会算 EMA5/EMA10
     并返回 ±3（不返回 data_short），只有 `<10` 根才报 data_short —— 若不拦，
-    19 根也能过 T1 的 MA 门，与 `ma_bullish` 的 20 根门槛不一致。
+    19 根也能过 MA 门，与 `ma_bullish` 的 20 根门槛不一致。
     """
     if not klines or len(klines) < _MA_MIN_BARS:
         return None
@@ -600,9 +622,20 @@ def persist_round(conn, rows: Sequence[OffboardCandidate]) -> None:
                   updated=excluded.updated""",  # noqa: S608 - 常量表名
             [
                 (
-                    day, c.symbol, c.name, c.tier, round(c.percent, 3), round(c.accum_5d, 3),
-                    round(c.volume_ratio, 3), round(c.main_pct, 3), c.amount,
-                    c.float_market_capital, c.current, now, now, now,
+                    day,
+                    c.symbol,
+                    c.name,
+                    c.tier,
+                    round(c.percent, 3),
+                    round(c.accum_5d, 3),
+                    round(c.volume_ratio, 3),
+                    round(c.main_pct, 3),
+                    c.amount,
+                    c.float_market_capital,
+                    c.current,
+                    now,
+                    now,
+                    now,
                 )
                 for c in rows
             ],
@@ -739,19 +772,28 @@ def run_offboard_watch(
     gem_offboard = [s for s, p in snapshot.items() if p and code_of(s).startswith(("300", "301"))]
     names = get_symbol_names(conn, gem_offboard)
 
-    cands, _rejects = build_candidates(snapshot, board_items, names, exclude_symbols)
+    cands, gate_rejects = build_candidates(snapshot, board_items, names, exclude_symbols)
+    today = now_beijing().date().isoformat()
+
+    # 拒绝留痕（2026-09-22 / 迁移 m017）：gate 段的 rejects 原先被 `_rejects` 丢弃、
+    # 分层段的理由只写进 `c.reasons` 就地消失 ⇒ 只剩幸存者样本，任何阈值调整无从证伪。
+    # 两段互斥（过门才可能被分层拒），同一 symbol 不会重复入表。
     if not cands:
+        _save_rejections(conn, _rejection_rows(gate_rejects, (), snapshot, names), today)
         return []
 
     if klines is None:
         klines = load_offboard_klines(conn, adapter, [c.symbol for c in cands[:OFFBOARD_KLINE_FETCH_LIMIT]])
 
-    today = now_beijing().date().isoformat()
     passed: list[OffboardCandidate] = []
+    tier_rejects: list[tuple[str, str]] = []
     for c in cands:
         if annotate(c, klines.get(c.symbol), today) is None:
+            tier_rejects.append((c.symbol, c.reasons[0] if c.reasons else "不产出"))
             continue
         passed.append(c)
+
+    _save_rejections(conn, _rejection_rows(gate_rejects, tier_rejects, snapshot, names), today)
 
     passed.sort(key=sort_key)
     persist_round(conn, passed)
@@ -767,6 +809,52 @@ def run_offboard_watch(
     # ≤ OFFBOARD_DISPLAY_TOP 只，且缓存命中时零请求（见 OFFBOARD_BOARD_FETCH 注释）。
     _attach_boards(top, conn)
     return top
+
+
+def _rejection_rows(
+    gate_rejects: Sequence[tuple[str, str]],
+    tier_rejects: Sequence[tuple[str, str]],
+    snapshot: dict[str, dict],
+    names: dict[str, str],
+) -> list[tuple]:
+    """两段拒绝明细 → `offboard_rejections` 行 `(symbol, name, reason, %, 量比, 主占)`。
+
+    gate 段的候选对象在 `build_candidates` 内部就地丢弃（对外契约只有 (symbol, reason)），
+    故 percent / vol_ratio / main_pct 回**快照**取 —— 这三列正是「事后重放阈值」的输入
+    （2026-09-22 那次杠杆测量就得手工重建这一步，跑完即失）。快照缺行时留 None，
+    不阻断留痕：留痕存在的意义就是**下次不必再手工重建**。
+
+    `name` 优先用 `names`（`get_symbol_names` 的回退链），快照自 2026-09-18 起也带 f14。
+    """
+    rows: list[tuple] = []
+    for sym, reason in (*gate_rejects, *tier_rejects):
+        p = snapshot.get(sym) or {}
+        rows.append(
+            (
+                sym,
+                names.get(sym) or p.get("name") or "",
+                reason,
+                to_float(p.get("percent"), None),
+                to_float(p.get("vol_ratio"), None),
+                to_float(p.get("main_pct"), None),
+            )
+        )
+    return rows
+
+
+def _save_rejections(conn, rows: list[tuple], today: str) -> None:
+    """留痕写入的 fail-open 护栏：**任何失败都不能中断本轮扫描**。
+
+    DB 层（`dal.save_offboard_rejections`）已收窄到 `sqlite3.Error`；这里再套一层
+    `EXTERNAL_FAILURES`，是因为留痕是**观测**、不是产出 —— 它出问题时宁可少记一天，
+    也不能让 B 段整段空掉（这正是 `offboard_launch_log` 当初的 fail-open 约定）。
+    """
+    if not rows:
+        return
+    try:
+        save_offboard_rejections(conn, rows, today)
+    except EXTERNAL_FAILURES as e:  # pragma: no cover - 护栏路径
+        logger.warning("B段拒绝留痕失败（不影响本轮产出）: %s", e)
 
 
 def _attach_boards(rows: list[OffboardCandidate], conn) -> None:
@@ -798,13 +886,13 @@ def _lin(start: float, end: float, n: int) -> list[float]:
 
 # ⚠ 样本长度约定（2026-09-21 修）：`_demo_klines` 会在尾部**追加今日 bar**，
 # 而所有「历史态」判定（MA / 5 日累计）都**剔除今日**。故这里给的 hist 必须是
-# 「真正的历史根数」——要让 T2 的 `ma_bullish` 可判定（需 ≥20 根历史），hist 至少 20 根。
+# 「真正的历史根数」——要让 T2 的 `_ma_not_bearish` 可判定（需 ≥20 根历史），hist 至少 20 根。
 # 此前样本只有 19 根（+今日=20），剔除今日后恒为 19 → T2 永远「MA不可判定」，
 # 而当时的 `ma_bullish(klines)` 却因**含今日**而恰好过门 —— 自检一直在验证错误的口径。
 _DEMO_HIST_UP = _lin(9.0, 10.2, 20)  # 完全多头(EMA +6)、5 日累计 ≈ +3.2%
-_DEMO_HIST_ACCUM_HIGH = _lin(9.0, 9.0, 14) + _lin(9.0, 11.34, 7)  # 5 日累计 ≈ +26%（超上限）
-_DEMO_HIST_MA_BEAR = _lin(12.0, 10.0, 15) + _lin(10.2, 10.6, 5)  # 5 日累计 +6.0% 但 MA 空头(ma_none)
-_DEMO_HIST_PARTIAL_BULL = _lin(10.6, 9.8, 12) + _lin(9.8, 10.25, 8)  # EMA 部分多头(+3)：T1 放行 / T2 拦下
+_DEMO_HIST_ACCUM_HIGH = _lin(9.0, 9.0, 14) + _lin(9.0, 11.34, 7)  # 5 日累计 ≈ +26%（超上限 OFFBOARD_ACCUM_MAX=15）
+_DEMO_HIST_MA_BEAR = _lin(12.0, 10.0, 15) + _lin(10.2, 10.6, 5)  # 5 日累计 +6.0% 但 MA 空头（两层同门下都拦）
+_DEMO_HIST_PARTIAL_BULL = _lin(10.6, 9.8, 12) + _lin(9.8, 10.25, 8)  # EMA 部分多头(+3)：两层同门下都放行
 _DEMO_HIST_SHORT = _lin(10.0, 10.2, 11)  # 剔除今日后 <20 根 → MA 不可判定
 
 
@@ -869,11 +957,16 @@ _DEMO_CASES: list[tuple[str, str, bool, list[float] | None, float, dict]] = [
     ("K线不足", "300116", False, _DEMO_HIST_SHORT, 2.5, {}),
     ("无K线数据", "300117", False, None, 2.5, {}),
     ("主力净占比", "300118", False, _DEMO_HIST_UP, 2.5, {"main_pct": -3.0}),  # T1 需 ≥0
-    # —— MA 判据按层分化（T1 非空头 / T2 完全多头）—— 同一条 EMA 部分多头序列，
-    #    在 T1 带应放行、在 T2 带应被「MA未完全多头」拦下：这是两极分化的关键哨兵，
-    #    若哪天有人把两侧判据统一了，这两条会同时变红。
+    # —— 两层 MA **同门**（2026-09-22 起取消按层分化）—— 三条样本互为交叉验证：
+    #    ① 同一条「EMA 部分多头」序列在 T1/T2 两个涨幅带**都应放行** —— 这条同时证明
+    #       T2 用的是「非空头」而非「完全多头」（若被改回完全多头，T2 那条会红）；
+    #    ② 同一条「MA 空头」序列在两个带**都应被拦** —— 证明 T2 确实还有 MA 门，
+    #       不是被整个删掉了（若两层门都没了，②的两条会同时红）。
     ("T1", "300119", False, _DEMO_HIST_PARTIAL_BULL, 2.5, {}),
-    ("MA未完全多头", "300120", False, _DEMO_HIST_PARTIAL_BULL, 5.0, {"vol_ratio": 2.4, "main_pct": 0.5}),
+    ("T2", "300120", False, _DEMO_HIST_PARTIAL_BULL, 5.0, {"vol_ratio": 2.4, "main_pct": 0.5}),
+    ("MA空头排列", "300121", False, _DEMO_HIST_MA_BEAR, 5.0, {"vol_ratio": 2.4, "main_pct": 0.5}),
+    # —— T2 的主力净占比门（2026-09-22 新增，与 T1 同门；旧口径 T2 不设此条）——
+    ("主力净占比", "300122", False, _DEMO_HIST_UP, 5.0, {"vol_ratio": 2.4, "main_pct": -3.0}),
 ]
 
 
@@ -1065,5 +1158,3 @@ def main(argv: "list[str] | None" = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-

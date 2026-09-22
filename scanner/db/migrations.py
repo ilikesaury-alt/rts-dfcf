@@ -66,16 +66,12 @@ def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
 
 
 def _has_table(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
-    ).fetchone()
+    row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
     return row is not None
 
 
 def _has_index(conn: sqlite3.Connection, index: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (index,)
-    ).fetchone()
+    row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (index,)).fetchone()
     return row is not None
 
 
@@ -293,55 +289,118 @@ def _check_offboard_log_last_hit(conn: sqlite3.Connection) -> bool:
     return not _has_table(conn, "offboard_launch_log") or _has_column(conn, "offboard_launch_log", "last_hit_time")
 
 
+_OFFBOARD_REJECTIONS_DDL = """
+    CREATE TABLE IF NOT EXISTS offboard_rejections (
+        date TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
+        reason TEXT NOT NULL,          -- 最新一轮的拒绝理由（门槛串 / 分层理由串）
+        percent REAL,                  -- 被拒时的快照涨幅（%）
+        vol_ratio REAL,                -- 被拒时的量比
+        main_pct REAL,                 -- 被拒时的主力净占比
+        hits INTEGER DEFAULT 1,        -- 当日累计命中轮次（同票多轮被拒只累加）
+        first_time TEXT NOT NULL,
+        updated TEXT NOT NULL,
+        PRIMARY KEY(date, symbol)
+    )
+"""
+
+
+def _up_offboard_rejections(conn: sqlite3.Connection) -> None:
+    """v10（2026-09-22）：B 段（榜外异动）**拒绝留痕表**。
+
+    为什么需要它 —— 与 `scan_rejections`（m009）完全同一个理由，只是晚了 4 天：
+    `run_offboard_watch` 原先把 `build_candidates` 返回的 `_rejects` 直接丢弃
+    （`cands, _rejects = ...`），分层阶段的拒绝理由也只写进 `c.reasons` 就地消失 ——
+    于是「谁被哪道门杀了、为什么」**只能靠当场手工重建快照反推**。
+
+    2026-09-22 实测：创业板 1410 → 过门 401 → 有 K 线 143 → 产出 12；
+    **258 只无 K 线的候选静默消失**（占过门候选 64%），另有 5日累计杀 63、
+    T2 的 MA 杀 30 —— 这些数字全是事后用临时脚本重算出来的，跑完就没了。
+
+    没有留痕就只有幸存者样本（`offboard_launch_log` 只存**产出**行）= 典型幸存者偏差：
+    「某道门误杀了多少、被杀的票次日涨得怎样」永远答不出来，于是任何阈值调整
+    都无从证伪。而本区是 `rule_validate` 三个评估器的**盲区**（`--set` 会被可见性
+    硬校验拦在退出码 3），这张表是唯一能积累起来的证据链。
+
+    观察目标 D ≥ 47 交易日（按日 bootstrap 检出 10pp 需 47 日；D=3 时 MDE ±39.6pp）。
+    """
+    conn.execute(_OFFBOARD_REJECTIONS_DDL)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_obr_date ON offboard_rejections(date)")
+
+
+def _check_offboard_rejections(conn: sqlite3.Connection) -> bool:
+    return _has_table(conn, "offboard_rejections")
+
+
 # ── 迁移总表（顺序即执行顺序；只在末尾追加）──
 MIGRATIONS: list[Migration] = [
     add_column(
-        "daily_kline", "finalized", "INTEGER DEFAULT 1",
+        "daily_kline",
+        "finalized",
+        "INTEGER DEFAULT 1",
         "收盘定稿标记（0=盘中快照，收盘后未定稿会污染 next_day_pct）",
         "m001_daily_kline_finalized",
     ),
     add_column(
-        "recommendations", "source", "TEXT DEFAULT 'xueqiu'",
+        "recommendations",
+        "source",
+        "TEXT DEFAULT 'xueqiu'",
         "数据来源（雪球/THS 兜底）",
         "m002_rec_source",
     ),
     add_column(
-        "recommendations", "cum_2d", "REAL",
+        "recommendations",
+        "cum_2d",
+        "REAL",
         "T+0 收盘 → T+2 收盘累计涨幅（持有 2 天）",
         "m003_rec_cum_2d",
     ),
     add_column(
-        "recommendations", "cum_3d", "REAL",
+        "recommendations",
+        "cum_3d",
+        "REAL",
         "T+0 收盘 → T+3 收盘累计涨幅（持有 3 天）",
         "m004_rec_cum_3d",
     ),
     add_column(
-        "recommendations", "concept", "TEXT",
+        "recommendations",
+        "concept",
+        "TEXT",
         "推动概念（掉榜/重启后仍能展示「板块」列）",
         "m005_rec_concept",
     ),
     add_column(
-        "recommendations", "accumulated_pct", "REAL",
+        "recommendations",
+        "accumulated_pct",
+        "REAL",
         "5 日累计涨幅（综合排序展示用）",
         "m006_rec_accumulated_pct",
     ),
     add_column(
-        "recommendations", "excluded", "INTEGER DEFAULT 0",
+        "recommendations",
+        "excluded",
+        "INTEGER DEFAULT 0",
         "硬过滤落标（命中卖出/止损级标签置 1，综合排序排除）",
         "m007_rec_excluded",
     ),
     add_column(
-        "recommendations", "stale_kline", "INTEGER DEFAULT 0",
+        "recommendations",
+        "stale_kline",
+        "INTEGER DEFAULT 0",
         "评分所用 K 线是否缺今日 bar（数据血缘审计）",
         "m008_rec_stale_kline",
     ),
     add_column(
-        "recommendations", "excluded_reason", "TEXT",
+        "recommendations",
+        "excluded_reason",
+        "TEXT",
         "硬过滤原因（消除「无审计依据的误杀」盲点）",
         "m009_rec_excluded_reason",
     ),
     create_index(
-        "idx_rec_source", "CREATE INDEX IF NOT EXISTS idx_rec_source ON recommendations(source)",
+        "idx_rec_source",
+        "CREATE INDEX IF NOT EXISTS idx_rec_source ON recommendations(source)",
         "按来源查询推荐（回测/归因常用）",
         "m010_idx_rec_source",
     ),
@@ -380,6 +439,12 @@ MIGRATIONS: list[Migration] = [
         desc="offboard_launch_log 补 last_hit_time（updated 被回填补写，命中时刻需独立列）",
         check=_check_offboard_log_last_hit,
         up=_up_offboard_log_last_hit,
+    ),
+    Migration(
+        id="m017_offboard_rejections",
+        desc="B 段拒绝留痕表 offboard_rejections（谁被哪道门杀、为什么；反幸存者偏差）",
+        check=_check_offboard_rejections,
+        up=_up_offboard_rejections,
     ),
 ]
 
