@@ -24,8 +24,10 @@ def _isolate_process_caches():
     以后再有同款模块级缓存，一并加进来。
     """
     import scanner.concept as concept_mod
+    import scanner.kline_fetch as kf_mod
 
     concept_mod._concept_ttl_cache.clear()
+    kf_mod._neg_kline.clear()
     yield
 
 

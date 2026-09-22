@@ -810,6 +810,156 @@ class TestFetchAllKlinesTodayBarWarning:
         assert "今日K线缺失" not in captured
 
 
+class TestKlineNegativeCache:
+    """K 线负缓存（2026-09-22）：双源皆空且无 stale_cache 的票 600s 内不重拉、只告警一次。
+
+    背景：雪球飙升榜实为热度榜（type=10），未上市新股（鸿富诚 SZ301716/粤芯 SZ301660）
+    与废代码（SZ300361）以 percent=None 上榜，daily_kline 0 行且双源恒空 —— 修复前
+    每轮扫描都重拉 + 刷一条 [!] K线数据缺失（告警疲劳 + 白耗 KLINE_FETCH_DEADLINE）。
+    """
+
+    def _stock(self, symbol: str = "301716") -> StockInfo:
+        return StockInfo(symbol=symbol, name="鸿富诚", code=symbol,
+                         percent=5.0, current=10.0, value=10000,
+                         rank_change=1000, rank=1)
+
+    def _setup(self, monkeypatch, klines_by_sym=None, return_value=None):
+        """无缓存（daily_kline 0 行）+ 可控返回值的最小环境。返回 fetch 调用记录。"""
+        import scanner.orchestrator as o
+
+        monkeypatch.setattr(o, "is_trading_time", lambda *a, **k: True)
+        monkeypatch.setattr(kf, "is_trading_time", lambda *a, **k: True)
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: {})
+        monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
+        calls: list[str] = []
+
+        klines_by_sym = klines_by_sym or {}
+
+        class _Adapter:
+            def fetch_kline(self, symbol, days=15):
+                calls.append(symbol)
+                if symbol in klines_by_sym:
+                    return klines_by_sym[symbol]
+                return return_value
+
+        return calls, _Adapter()
+
+    def test_first_empty_fetch_warns_once_and_enters_neg_cache(self, monkeypatch, capsys):
+        calls, adapter = self._setup(monkeypatch, return_value=None)
+        stats: dict = {}
+
+        res = kf.fetch_all_klines(None, adapter, [self._stock()], stats=stats)
+
+        assert calls == ["301716"]          # 首轮真拉了一次
+        assert "301716" not in res          # 无数据 → 不进 result（下游跳过评分）
+        out = capsys.readouterr().out
+        assert "[~] K线双源皆空1只" in out   # 降噪为 [~]，含成因解释
+        assert "301716" in out
+        assert "600s 内不重拉" in out
+        assert "K线数据缺失" not in out       # 不再走 [!] 老告警
+        assert stats["fetch_failed"] == 1   # 首轮空返回计 1
+        assert "301716" in kf._neg_kline     # 已进负缓存
+
+    def test_neg_cache_skips_refetch_within_ttl(self, monkeypatch, capsys):
+        calls, adapter = self._setup(monkeypatch, return_value=None)
+        kf.fetch_all_klines(None, adapter, [self._stock()])
+        capsys.readouterr()                 # 清首轮输出
+        stats: dict = {}
+
+        res = kf.fetch_all_klines(None, adapter, [self._stock()], stats=stats)
+
+        assert calls == ["301716"]          # 负缓存期内不再重拉（关键回归点）
+        assert "301716" not in res
+        assert capsys.readouterr().out == ""  # 完全静默：不重复告警
+        assert stats["fetch_failed"] == 1   # neg_hit 计入 fetch_failed，指标不丢
+
+    def test_neg_cache_expiry_allows_refetch(self, monkeypatch, capsys):
+        calls, adapter = self._setup(monkeypatch, return_value=None)
+        kf.fetch_all_klines(None, adapter, [self._stock()])
+        # 拨过期：直接改写过期时间戳（不依赖真实时间推进）
+        kf._neg_kline["301716"] = kf.now_beijing().timestamp() - 1
+        capsys.readouterr()
+
+        res = kf.fetch_all_klines(None, adapter, [self._stock()])
+
+        assert calls == ["301716", "301716"]  # TTL 过期 → 恢复重拉
+        assert "301716" not in res
+        out = capsys.readouterr().out
+        assert "[~] K线双源皆空1只" in out     # 过期后仍空 → 再告一次（新窗口）
+
+    def test_successful_fetch_clears_neg_cache(self, monkeypatch, capsys):
+        fresh = [{"date": "2026-09-22", "open": 10.0, "close": 11.0,
+                  "high": 11.2, "low": 9.8, "volume": 1000, "percent": 5.0}]
+        calls, adapter = self._setup(monkeypatch, return_value=None)
+        kf.fetch_all_klines(None, adapter, [self._stock()])
+        assert "301716" in kf._neg_kline
+        # 上市后有数据了：TTL 过期重拉成功 → 解除负缓存
+        kf._neg_kline["301716"] = kf.now_beijing().timestamp() - 1
+        adapter2_calls: list[str] = []
+
+        class _NowHasData:
+            def fetch_kline(self, symbol, days=15):
+                adapter2_calls.append(symbol)
+                return fresh
+
+        res = kf.fetch_all_klines(None, _NowHasData(), [self._stock()])
+
+        assert adapter2_calls == ["301716"]   # 过期后重拉
+        assert res["301716"] == fresh
+        assert "301716" not in kf._neg_kline   # 成功即解除 → 后续正常补拉
+
+    def test_stale_cache_symbol_never_enters_neg_cache(self, monkeypatch, capsys):
+        """有 stale_cache 的票空返回不进负缓存 —— 每轮仍须重试拿今日 bar。"""
+        import scanner.orchestrator as o
+
+        stale = [{"date": "2026-09-21", "open": 10.0, "close": 10.0,
+                  "high": 10.2, "low": 9.8, "volume": 1000, "percent": 0.0}]
+        monkeypatch.setattr(o, "is_trading_time", lambda *a, **k: True)
+        monkeypatch.setattr(kf, "is_trading_time", lambda *a, **k: True)
+        monkeypatch.setattr(kf, "get_cached_klines",
+                            lambda conn, syms: dict.fromkeys(syms, stale))
+        monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
+        monkeypatch.setattr(kf, "merge_minute_today_bar",
+                            lambda *a, **k: None)  # 分时兜底也不可用
+        calls: list[str] = []
+
+        class _Adapter:
+            def fetch_kline(self, symbol, days=15):
+                calls.append(symbol)
+                return  # 双源皆空
+
+        res = kf.fetch_all_klines(None, _Adapter(), [self._stock("300361")])
+        assert calls == ["300361"]
+        assert "300361" not in kf._neg_kline   # 有旧缓存 → 不进负缓存
+        assert res["300361"] == stale          # 仍回退旧缓存
+
+        kf.fetch_all_klines(None, _Adapter(), [self._stock("300361")])
+        assert calls == ["300361", "300361"]   # 下轮仍重试（负缓存不拦它）
+
+    def test_hard_missing_keeps_loud_warning(self, monkeypatch, capsys):
+        """异常路径（非空返回失败）保持 [!] 每轮告警，不受负缓存降噪影响。"""
+        calls, adapter = self._setup(monkeypatch)
+        stats: dict = {}
+
+        # 让 fetch_kline 抛 EXTERNAL_FAILURES（ValueError ∈ EXTERNAL_FAILURES）
+        def _boom(symbol, days=15):
+            calls.append(symbol)
+            raise ValueError("kline endpoint 500")
+
+        adapter.fetch_kline = _boom
+
+        kf.fetch_all_klines(None, adapter, [self._stock()], stats=stats)
+        out = capsys.readouterr().out
+        assert "[!] K线获取失败 301716" in out  # 异常逐票 [!] 保留
+        assert "[!] K线数据缺失1只" in out       # 汇总仍 [!]（异常≠确定性空）
+        assert stats["fetch_failed"] == 1
+        assert "301716" not in kf._neg_kline    # 异常不进负缓存（可能是瞬时故障）
+
+        # 第二轮仍重试（异常不写负缓存）
+        kf.fetch_all_klines(None, adapter, [self._stock()], stats={})
+        assert calls == ["301716", "301716"]
+
+
 class TestFetchAllKlinesSharedDeadline:
     """回归：榜上票 + 回马枪两批 K 线补拉必须共用同一 deadline。
 

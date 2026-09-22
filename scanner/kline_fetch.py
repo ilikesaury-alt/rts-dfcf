@@ -13,6 +13,7 @@ from scanner.config import (
     CACHE_MAX_ENTRIES,
     KLINE_FETCH_DAYS,
     KLINE_FETCH_DEADLINE,
+    KLINE_NEG_TTL,
     KLINE_REFRESH_TTL,
     MINUTE_FALLBACK_PHASE_DEADLINE,
     now_beijing,
@@ -28,6 +29,14 @@ from scanner.utils import EXTERNAL_FAILURES
 # 300→120：缩短到 2 分钟，让盘中异动更快反映到 K 线打分（缓解"涨起来了才推"滞后）。
 # 常量已收敛至 config.KLINE_REFRESH_TTL（P2-12 单源）。
 _last_kline_fetch: dict[str, float] = {}
+
+# K 线负缓存（2026-09-22）：symbol → 过期时间戳。
+# 双源皆空且**无 stale_cache 兜底**的票（雪球飙升榜实为热度榜 type=10：未上市新股
+# SZ301716/SZ301660 以 percent=None 上榜、SZ300361 是 2014 暂缓发行的废代码）永远不会
+# 有序列 —— 每轮重拉只白耗 KLINE_FETCH_DEADLINE 预算并每轮刷一条重复告警（告警疲劳）。
+# TTL 见 config.KLINE_NEG_TTL；成功拉取即解除（新股上市后自动恢复补拉）。
+# 有 stale_cache 的票**不进**负缓存：其空返回走旧缓存+分时兜底，下轮仍须重试拿今日 bar。
+_neg_kline: dict[str, float] = {}
 
 
 def fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo],
@@ -79,6 +88,24 @@ def fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo],
     if not needs_fetch:
         return result
 
+    # 负缓存预筛（2026-09-22）：把 needs_fetch 分成 fetch_list（本轮真拉）/ neg_hit
+    # （负缓存期内跳过）。只拦「无 stale_cache 兜底」的票 —— 有旧缓存的票下轮仍须
+    # 重试拿今日 bar，不进负缓存。neg_hit 计入 fetch_failed（与「超时未拉取」同口径，
+    # 保持 scan_quality_log 指标语义连续，不做 schema 迁移）。
+    _now_ts = now_beijing().timestamp()
+    fetch_list: list[str] = []
+    neg_hit = 0
+    for sym in needs_fetch:
+        neg_exp = _neg_kline.get(sym)
+        if neg_exp is not None and _now_ts < neg_exp and sym not in stale_cache:
+            neg_hit += 1
+        else:
+            fetch_list.append(sym)
+    if neg_hit:
+        _stats["fetch_failed"] = _stats.get("fetch_failed", 0) + neg_hit
+    if not fetch_list:
+        return result
+
     # 拉取阶段：串行调 adapter（D4: AKShare 非线程安全，adapter 层统一串行）。
     # 雪球模式性能影响可接受——K 线有 KLINE_REFRESH_TTL=120s 缓存，多数周期命中缓存跳过拉取。
     # P-robust: KLINE_FETCH_DEADLINE 限时——API 故障时单只 15s×3 重试会让串行拉取假死数十分钟，
@@ -86,10 +113,11 @@ def fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo],
     deadline = deadline if deadline is not None else now_beijing().timestamp() + KLINE_FETCH_DEADLINE
     fetched: dict[str, list[KlineBar] | None] = {}
     deadline_skipped = 0
-    for i, sym in enumerate(needs_fetch):
+    neg_new: list[str] = []   # 本轮新进负缓存的票（首次双源皆空 → 告警一次）
+    for i, sym in enumerate(fetch_list):
         if now_beijing().timestamp() >= deadline:
             # 含当前这只在内，所有尚未拉取的票
-            deadline_skipped = len(needs_fetch) - i
+            deadline_skipped = len(fetch_list) - i
             break
         try:
             kline = adapter.fetch_kline(sym, KLINE_FETCH_DAYS)
@@ -99,6 +127,14 @@ def fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo],
             fetched[sym] = kline
             if not kline:
                 _stats["fetch_failed"] = _stats.get("fetch_failed", 0) + 1
+                if sym not in stale_cache:
+                    # 双源皆空且无旧缓存 → 进负缓存（600s 内不再重拉，见 _neg_kline 注释）
+                    _neg_kline[sym] = now_beijing().timestamp() + KLINE_NEG_TTL
+                    if len(_neg_kline) > CACHE_MAX_ENTRIES:
+                        _neg_kline.pop(next(iter(_neg_kline)))
+                    neg_new.append(sym)
+            else:
+                _neg_kline.pop(sym, None)   # 拉到数据即解除负缓存（新股上市后自动恢复）
         except EXTERNAL_FAILURES as e:
             _stats["fetch_failed"] = _stats.get("fetch_failed", 0) + 1
             print(f"  [!] K线获取失败 {sym}: {e}")
@@ -132,7 +168,7 @@ def fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo],
                 _stats["minute_fallback"] = _stats.get("minute_fallback", 0) + 1
             result[sym] = _merged if _merged is not None else stale_cache[sym]
 
-    for sym in needs_fetch:
+    for sym in fetch_list:
         if sym not in result and sym in stale_cache:
             # deadline 超时未轮到拉取：同样尝试分时今日 bar 兜底
             _merged = merge_minute_today_bar(adapter, stock_map.get(sym), today,
@@ -141,12 +177,21 @@ def fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo],
                 _stats["minute_fallback"] = _stats.get("minute_fallback", 0) + 1
             result[sym] = _merged if _merged is not None else stale_cache[sym]
 
-    # P1-3: K线数据缺失汇总（首次拉取失败且无 stale_cache 兜底的票）
-    missing = [sym for sym in needs_fetch if sym not in result]
-    if missing:
-        preview = ", ".join(missing[:5])
-        suffix = f" 等{len(missing)}只" if len(missing) > 5 else ""
-        print(f"  [!] K线数据缺失{len(missing)}只: {preview}{suffix}（已跳过评分，下次刷新重试）")
+    # P1-3: K线数据汇总，按成因分流（2026-09-22 负缓存降噪）：
+    #   [~] 双源皆空且无旧缓存（未上市新股/废代码）→ 每个 KLINE_NEG_TTL 窗口只报一次，
+    #       负缓存期内跳过重拉（neg_hit 已计入 fetch_failed，指标不丢）；
+    #   [!] 其余（异常 / deadline 跳过且无兜底）→ 保持每轮告警，语义不变。
+    neg_set = set(neg_new)
+    hard_missing = [sym for sym in fetch_list if sym not in result and sym not in neg_set]
+    if hard_missing:
+        preview = ", ".join(hard_missing[:5])
+        suffix = f" 等{len(hard_missing)}只" if len(hard_missing) > 5 else ""
+        print(f"  [!] K线数据缺失{len(hard_missing)}只: {preview}{suffix}（已跳过评分，下次刷新重试）")
+    if neg_new:
+        preview = ", ".join(neg_new[:5])
+        suffix = f" 等{len(neg_new)}只" if len(neg_new) > 5 else ""
+        print(f"  [~] K线双源皆空{len(neg_new)}只: {preview}{suffix}"
+              f"（未上市/无此代码，{KLINE_NEG_TTL}s 内不重拉，已跳过评分）")
 
     # C修复: 盘中已有 K 线但缺今日 bar 的票（静默回退旧缓存会基于昨日数据打分）。
     # 仅交易时段统计——收盘后缺今日 bar 属正常，避免噪音。下次周期 max_date<today 仍会强制补拉。

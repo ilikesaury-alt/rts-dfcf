@@ -40,6 +40,12 @@ MINUTE_DATA_CACHE_TTL_SEC = 60  # api 分时数据缓存（1 分钟刷新）
 INDEX_CACHE_TTL_SEC = 60  # api 大盘指数缓存（原内联 60）
 CONCEPT_PROCESS_TTL_SEC = 300  # concept 进程内短 TTL（5 分钟，避免同轮重复读 DB）
 KLINE_REFRESH_TTL = 120  # orchestrator K 线补拉节流间隔（刷新时机，非缓存 TTL）
+# K 线负缓存 TTL（秒，2026-09-22）：双源皆空且**无 stale_cache 兜底**的票（雪球飙升榜
+# 实为热度榜 type=10：未上市新股 SZ301716 鸿富诚 / SZ301660 粤芯以 percent=None 上榜，
+# SZ300361 奥赛康是 2014 暂缓发行的废代码）在此期间不重拉、不重复告警。这类票永远不会
+# 有序列——每轮重拉只白耗 KLINE_FETCH_DEADLINE 预算并每轮刷一条重复告警（告警疲劳）。
+# 600s 后重试一次：新股上市后首个成功拉取即解除负缓存（kline_fetch 自动 pop）。
+KLINE_NEG_TTL = 600
 # 单次拉取限时：AKShare 内部请求可能无 timeout（涨停池）或全市场分页很慢
 # （资金流约 53 页，6 线程并行实测 ~17s）。限时保护 60s 扫描循环不被外部 host 挂死。
 ZT_POOL_FETCH_TIMEOUT = 20  # 涨停池单次拉取上限（秒）
@@ -252,6 +258,7 @@ __all__ = [
     "INDEX_CACHE_TTL_SEC",
     "CONCEPT_PROCESS_TTL_SEC",
     "KLINE_REFRESH_TTL",
+    "KLINE_NEG_TTL",
     "ZT_POOL_FETCH_TIMEOUT",
     "FUND_FLOW_FETCH_TIMEOUT",
     "FUND_FLOW_MAIN_PCT_STRONG",
