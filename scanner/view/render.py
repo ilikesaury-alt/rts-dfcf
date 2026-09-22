@@ -3,7 +3,6 @@ from scanner.config import (
     FUND_OUTFLOW_NET_PCT,
     HIST_LOOKBACK_DAYS,
     HOT_HIGHLIGHT_STREAK,
-    OFFBOARD_OPENING_SILENCE_MIN,
     TOP40_THRESHOLD,
     now_beijing,
 )
@@ -359,12 +358,9 @@ def _render_hot_watch_region(rows, offboard_rows=None) -> None:
     if offboard_rows:
         # B 段小标题必须写明「候选来源 + 排序键 + 未回测」：不写清楚，最自然的误读
         # 就是「它和 A 段一样是热度跃升」，而两者的口径与证据强度完全不同。
-        print(
-            f"  {ANSI['CYAN']}— 榜外异动{ANSI['RESET']}"
-            f"（榜外创业板·非榜单来源·排序=T2 启动首日→T1 量先动→量比"
-            f"·开盘 {OFFBOARD_OPENING_SILENCE_MIN} 分内不产出(量比失真)"
-            f"·{len(offboard_rows)} 只·观察段·未回测）"
-        )
+        # 括号正文单源在 view.model.offboard_subtitle（2026-09-22 起与飞书逐字一致）：
+        # 此前两出口各写一份且都与 sort_key 不符，ANSI 只包标题、正文共用一份。
+        print(f"  {ANSI['CYAN']}— 榜外异动{ANSI['RESET']}{offboard_subtitle(len(offboard_rows))}")
         # A 段空时列头还没打过 —— B 段自带一份，否则 15 列数字整片没有列名，无从解读。
         if not rows:
             print(_table_header(COLS_HOT))

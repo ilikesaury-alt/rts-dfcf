@@ -589,6 +589,67 @@ def test_sort_key_orders_by_volume_ratio_then_main_pct():
     assert [x.code for x in sorted([a, b, c], key=sort_key)] == ["300103", "300102", "300101"]
 
 
+# ── B 段小标题单源（2026-09-22：终端/飞书曾各写一份，且**两份都与 sort_key 不符**）──
+
+
+def test_offboard_subtitle_sort_text_matches_sort_key_behavior():
+    """小标题声称的排序链必须与 `sort_key` 的**真实行为**逐级对应。
+
+    这是漂移的直接守卫：文案此前与代码各写各的（终端漏了「主力净占比」一整级，
+    飞书更是 09-21 层序翻转前的旧文案），而既有用例只断言 `"榜外异动" in out`、
+    从不看排序键内容 ⇒ 漂移长期无人拦。三级各用一个**反例**钉住 —— 任一级次序
+    被写反、或整级被删，对应断言必挂。
+    """
+    from scanner.view.model import offboard_subtitle
+
+    text = offboard_subtitle(1)
+
+    # ── 第 1 级：T2 启动首日 → T1 量先动（2026-09-21 层序翻转）──
+    assert text.index("T2 启动首日") < text.index("T1 量先动"), text
+    t1 = _cand(symbol="SZ300101", code="300101", tier=T1, volume_ratio=9.9)
+    t2 = _cand(symbol="SZ300102", code="300102", tier=T2, volume_ratio=1.6)
+    assert [c.code for c in sorted([t1, t2], key=sort_key)] == ["300102", "300101"]
+
+    # ── 第 2 级：同层内量比降序（且排在主力净占比之前）──
+    assert text.index("→量比") < text.index("→主力净占比"), text
+    vr_hi = _cand(symbol="SZ300103", code="300103", tier=T2, volume_ratio=5.0, main_pct=0.0)
+    vr_lo = _cand(symbol="SZ300104", code="300104", tier=T2, volume_ratio=2.0, main_pct=9.0)
+    assert [c.code for c in sorted([vr_lo, vr_hi], key=sort_key)] == ["300103", "300104"]
+
+    # ── 第 3 级：主力净占比（末位 tie-breaker —— 终端旧文案正是漏了这一级）──
+    assert "→主力净占比" in text, "漏掉末级 ⇒ 文案声称的排序链不完整"
+    mp_hi = _cand(symbol="SZ300105", code="300105", tier=T2, volume_ratio=3.0, main_pct=8.0)
+    mp_lo = _cand(symbol="SZ300106", code="300106", tier=T2, volume_ratio=3.0, main_pct=1.0)
+    assert [c.code for c in sorted([mp_lo, mp_hi], key=sort_key)] == ["300105", "300106"]
+
+
+def test_offboard_subtitle_silence_window_comes_from_config():
+    """静默窗数值与规模数必须取自 config / 入参，不写字面量（否则改配置文案不跟）。"""
+    from scanner.view.model import offboard_subtitle
+
+    assert f"开盘 {OFFBOARD_OPENING_SILENCE_MIN} 分内不产出" in offboard_subtitle(7)
+    assert "7 只" in offboard_subtitle(7)
+
+
+def test_terminal_offboard_subtitle_uses_single_source(capsys):
+    """终端出口的 B 段括号正文必须**逐字等于**单源（去 ANSI 后比对）。
+
+    两出口以单源为基准对齐：飞书侧的等价断言在 tests/test_feishu.py，
+    任一出口改回自持文案，两边各自那条用例都会挂。
+    """
+    from scanner.view.model import _ANSI_ESCAPE, offboard_subtitle
+    from scanner.view.render import render_offboard_standalone
+
+    c = _offboard_row(tier=T2, accum_5d=6.0, volume_ratio=2.5, main_pct=3.0)
+    render_offboard_standalone([c])
+    out = capsys.readouterr().out
+    line = next(ln for ln in out.splitlines() if "榜外异动" in ln)
+    plain = _ANSI_ESCAPE.sub("", line)
+    assert plain.endswith("— 榜外异动" + offboard_subtitle(1)), plain
+    # 旧的错误层序不得复活
+    assert "T1 量先动/T2" not in plain
+
+
 def test_offboard_candidate_has_no_board_only_fields():
     """B 段结构上没有榜单排名/连击（None，渲染为 —，不是 0）。"""
     c = _cand()

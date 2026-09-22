@@ -73,7 +73,7 @@ def test_should_push_ok_after_timeout(monkeypatch):
 # ── push_feishu 编排 ──
 
 
-def _fake_view(symbols, *, hot_rows=None, hist_rows=None):
+def _fake_view(symbols, *, hot_rows=None, hist_rows=None, offboard_rows=None):
     """构造最小 ScanView 替身，只含 _view_symbols / view_has_content / build_feishu_card 读取的字段。
 
     main_rows 项需有 .entry(dict) / .rank / .accum / .score；
@@ -87,6 +87,8 @@ def _fake_view(symbols, *, hot_rows=None, hist_rows=None):
     「该区为空」而假绿。
     2026-09-21：`final_pick_lines` 桩字段随终选参考区整体删除而移除 —— 卡片不再有该节，
     `view_has_content` 也不再认它（原先「仅终选参考有内容也推卡」的用例改用 hist_rows 表达）。
+    2026-09-22：新增 `offboard_rows`（默认 None = B 段为空）—— 同上理由：build_feishu_card
+    用 getattr 读它，桩不持有就会把「B 段小标题」用例静默成「该段不存在」而假绿。
     """
 
     class _Row:
@@ -104,6 +106,7 @@ def _fake_view(symbols, *, hot_rows=None, hist_rows=None):
             self.warnings = []
             self.hot_rows = hot_rows
             self.hist_rows = hist_rows
+            self.offboard_rows = offboard_rows
 
     # duck-typed 替身：结构上满足 push_feishu/_view_symbols/build_feishu_card 的读取面，
     # cast 仅为通过类型检查（测试桩不继承 ScanView）。
@@ -133,6 +136,33 @@ def _fake_hot(**over):
     }
     fields.update(over)
     return HotCandidate(**fields)
+
+
+def _fake_offboard(**over):
+    """构造一条 OffboardCandidate（B 段榜外行），默认值为「正常交易中的创业板票」。"""
+    from scanner.offboard_watch import T2, OffboardCandidate
+
+    fields = {
+        "symbol": "SZ300201",
+        "code": "300201",
+        "name": "榜外样本",
+        "tier": T2,
+        "exchange": "SZ",
+        "current": 10.0,
+        "percent": 5.0,
+        "accum_5d": 6.0,
+        "volume_ratio": 2.5,
+        "main_pct": 3.0,
+        "volume": 2.0e6,
+        "amount": 8.0e7,
+        "market_capital": 3.6e9,
+        "float_market_capital": 3.0e9,
+        "turnover_rate": 3.0,
+        "status": 1,
+        "ff_pct": 2.0,
+    }
+    fields.update(over)
+    return OffboardCandidate(**fields)
 
 
 def _fake_hist(**over):
@@ -459,6 +489,32 @@ def test_marks_tail_card_is_shared_by_both_watch_regions():
     # 成形口径本身（emoji 而非 ANSI 三角、中性档留空）由上面那条用例钉住
     assert _marks_tail_card(6.2, "美") == " 🟢 美"
     assert "▲" not in text, "卡片是 lark_md，不能出现终端那套 ANSI 三角"
+
+
+def test_offboard_subtitle_identical_to_terminal_source():
+    """B 段小标题的括号正文必须来自单源 `view.model.offboard_subtitle`。
+
+    2026-09-22：终端与本卡片此前各写一份，且**两份都与实际 sort_key 不符** ——
+    终端漏了「主力净占比」一整级；本卡片更是 09-21 层序翻转前的旧文案
+    （「排序=量比→主力净占比·T1 量先动/T2 启动首日」，层序与实际的 **T2 在前**
+    相反），且漏了「开盘静默窗」—— 而排序键的正确性正依赖那道窗口。
+    两出口以单源为基准逐字对齐；排序键内容是否正确由
+    tests/test_offboard_watch.py::test_offboard_subtitle_sort_text_matches_sort_key_behavior
+    从**真实排序行为**反查。本用例只管「卡片有没有走单源」。
+    """
+    from scanner.feishu import build_feishu_card
+    from scanner.view.model import offboard_subtitle
+
+    view = _fake_view([], offboard_rows=[_fake_offboard()])
+    text = str(build_feishu_card(view, gem_total=100))
+    tail = text.split("— 榜外异动", 1)
+    assert len(tail) == 2, f"卡片没有画 B 段小标题：{text}"
+    body = tail[1]
+    body = body[: body.index("）") + 1]
+    assert body == offboard_subtitle(1), "飞书卡片小标题未走单源（两出口会漂移）"
+    # 旧的错误层序不得复活
+    assert "T1 量先动/T2" not in text
+    assert "排序=量比→主力净占比" not in text
 
 
 def test_hist_category_column_fits_longest_bucket():

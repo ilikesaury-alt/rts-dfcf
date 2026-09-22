@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import wcwidth
 
 from scanner.config import (
+    OFFBOARD_OPENING_SILENCE_MIN,
     TREND_MARK_ENABLED,
 )
 from scanner.models import Candidate, RecommendationRow
@@ -99,6 +100,7 @@ __all__ = (
     "_v2_pool_sort_key",
     "_vis_len",
     "entry_display_quote",
+    "offboard_subtitle",
     "pct_colored",
 )
 
@@ -464,6 +466,39 @@ COLS_HOT: tuple = (
     ("评分", 6, "r"),
     ("连击", 5, "r"),
 )
+
+
+# B 段「榜外异动」小标题的**括号正文**（无 ANSI）—— 终端与飞书两个出口共用一份。
+# 单源动机（2026-09-22）：两处此前各写一份，且**两份都与实际排序行为不符** ——
+# 终端漏了「主力净占比」这一级；飞书更是 09-21 层序翻转前的旧文案（写成
+# 「排序=量比→主力净占比·T1 量先动/T2 启动首日」，层序与实际的 T2 在前**相反**）。
+# 而既有测试只断言 `"榜外异动" in out`、从不断言排序键内容 ⇒ 漂移长期无守卫。
+# 抽成单源后两出口逐字一致，文案与 offboard_watch.sort_key 的对应关系另由单测锁死。
+def offboard_subtitle(n: int) -> str:
+    """B 段小标题括号正文：候选来源 + 排序键 + 开盘静默窗 + 规模 + 证据强度。
+
+    五项缺一不可（顺序固定）：漏「排序键」→ 最自然的误读是「它和 A 段一样是热度
+    跃升」，而两者口径与证据强度完全不同；漏「未回测」→ 高估证据强度；漏「开盘
+    静默窗」→ 掩盖排序键自身的成立前提（`offboard_watch.sort_key` docstring：
+    量比失真与静默窗「是一组，不可只删其一」）。
+
+    排序键必须与 `offboard_watch.sort_key` 返回的元组**逐项同序**::
+
+        (_TIER_RANK[tier], -volume_ratio, -main_pct)
+        ⇒ T2 启动首日 → T1 量先动 → 量比降序 → 主力净占比降序
+
+    改 `sort_key` 必须同步改这里 —— 守卫见
+    `tests/test_offboard_watch.py::test_offboard_subtitle_sort_text_matches_sort_key_behavior`
+    （从**真实排序行为**反查，而非只比对字符串）。
+    """
+    return (
+        "（榜外创业板·非榜单来源·"
+        "排序=T2 启动首日→T1 量先动→量比→主力净占比"
+        f"·开盘 {OFFBOARD_OPENING_SILENCE_MIN} 分内不产出(量比失真)"
+        f"·{n} 只·观察段·未回测）"
+    )
+
+
 # 「v1 回捞」独立区（2026-09-16 上线）：列与本区口径对应（回调/量比/时效），
 # 与主线 COLS_POOL 无关 —— 本区不排涨跌幅榜上位置，只回答「回调到位了没」。
 COLS_HIST: tuple = (

@@ -46,6 +46,12 @@ from scanner.signals import fund_flow_signal, split_risk_flags
 from scanner.utils import EXTERNAL_FAILURES, to_float
 from scanner.view.assemble import _market_suggestion_text
 
+# B 段小标题括号正文单源（2026-09-22）：与终端 _render_hot_watch_region 逐字共用一份。
+# 此前本模块自持一份 09-21 层序翻转前的旧文案（写成「排序=量比→主力净占比·
+# T1 量先动/T2 启动首日」，与实际的 T2 在前**相反**），且漏了「开盘静默窗」——
+# 与上方 _pad/_trunc 同属本仓禁忌的复制，改为单源引用。
+from scanner.view.model import offboard_subtitle
+
 # ═══════════════════════════════════════════════════════════════════════════
 # ── 推送决策 ──
 # ═══════════════════════════════════════════════════════════════════════════
@@ -528,10 +534,7 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
         if offboard_rows:
             # B 段小标题与终端同款：候选来源 + 排序键 + 「未回测」一个都不能省 ——
             # 否则最自然的误读就是「它与 A 段一样是热度跃升」，而证据强度完全不同。
-            hot_lines.append(
-                f"— 榜外异动（榜外创业板·非榜单来源·排序=量比→主力净占比·"
-                f"T1 量先动/T2 启动首日·{len(offboard_rows)} 只·观察段·未回测）"
-            )
+            hot_lines.append(f"— 榜外异动{offboard_subtitle(len(offboard_rows))}")
             hot_lines += [
                 f"{_fmt_hot_row_feishu(c, i, board_segment=False)}{_marks_tail_card(c.ff_pct, c.beauty)}"
                 for i, c in enumerate(offboard_rows, 1)
