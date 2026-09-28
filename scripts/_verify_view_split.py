@@ -180,12 +180,15 @@ EXPECTED_BODY_DIVERGENCE = {
     "（决策层删除、终选参考改独立区块）、v2 池选区、核心方向低吸区；"
     "2026-09-21 再移除「终选参考」区块本身（终端只剩四区），"
     "同日把 v1 池选标题更正为「过热劣后·类别优先·资金流降序」（旧标题是 08-28 旧实现）；"
-    "2026-09-22 标题随排序键删 tier 改为「新票优先·类别优先·排名升序·资金流降序」",
+    "2026-09-22 标题随排序键删 tier 改为「新票优先·类别优先·排名升序·资金流降序」；"
+    "2026-09-28 末尾增调 _render_push_gate_region（飞书过门透明区）",
     # ⚠ `_build_summary` **不登记**（两个规则外的事实）：
     #   ① 它是拆分之后新增的函数，不在基线 display.py 里 —— 本工具只比对「基线里已有的
     #      定义」，登记一个基线里没有的名字会被判「表已过期」（2026-09-21 实测）；
     #   ② 它本身已在 2026-09-21 随「综合判断摘要」整块删除（用户决策：终端只留四区），
     #      删除也无需登记 —— 它从不在基线的 missing 集合里。
+    # 2026-09-28 同理：`_gate_names` / `_render_push_gate_region` 是拆分后新增的
+    # （飞书严格过滤门 `scanner/push_gate.py` 的终端透明区），同样**不登记**。
     # 2026-09-14 哑参清理：🎯 行尾渲染自 2026-09-04 停用后遗留的两个入参
     "_entry_row_suffix": "删除从未被读取的 marked 入参（🎯 行尾渲染已停用）",
     "_print_priority_row": "删除无任何调用方传入的 nextday_mark 入参",
@@ -200,7 +203,7 @@ EXPECTED_BODY_DIVERGENCE = {
     "2026-09-21 新增 new_symbols 入参并透传给 build_scan_view",
     "_beauty_mark_for": "docstring 口径更新（v2 池选展示区已隐藏，标记现状只落 v1 池选行）；"
     '2026-09-15 再更新为分档口径（日线定准入、分时定级别 → ""/"稳"/"稳★"）；'
-    '2026-09-28 用户可见字面量「美」→「稳」（断言强度降到与证据相称），模块名/常量名不动',
+    "2026-09-28 用户可见字面量「美」→「稳」（断言强度降到与证据相称），模块名/常量名不动",
     # 2026-09-11 飙升区合入后、拆分提交之前的脚注文案改动（commit 61631bc：
     # 「沪深主板+创业板」→「创业板」、「ST·科创板/北交所/ETF」→「非创业板」）。
     # 该改动发生在**拆分之前、基线之后**，与拆分等价性无关，但按本工具的规则必须登记
@@ -464,9 +467,7 @@ def main() -> int:
     if missing:
         failures.append(f"定义缺失 {len(missing)} 个：{missing}")
     if stale_removal:
-        failures.append(
-            f"EXPECTED_DEFINITION_REMOVAL 有 {len(stale_removal)} 项其实还在（表已过期）：{stale_removal}"
-        )
+        failures.append(f"EXPECTED_DEFINITION_REMOVAL 有 {len(stale_removal)} 项其实还在（表已过期）：{stale_removal}")
     if changed:
         failures.append(f"定义体被改动 {len(changed)} 个（未登记为有意分歧）：{changed}")
     if stale_div:
@@ -533,8 +534,7 @@ def main() -> int:
         + (f" {declared_cdiv}" if declared_cdiv else "")
     )
     print(
-        f"  已登记的有意删除（拆分后功能迭代）：{len(removed_decl)} 个"
-        + (f" {removed_decl}" if removed_decl else "")
+        f"  已登记的有意删除（拆分后功能迭代）：{len(removed_decl)} 个" + (f" {removed_decl}" if removed_decl else "")
     )
     if args.verbose and extra:
         print(f"  新增属性（无害）：{sorted(extra)}")

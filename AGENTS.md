@@ -6,6 +6,13 @@ A-share (创业板) stock scanner that watches the Xueqiu biaosheng (飙升) lea
 
 **输出形态（2026-09-21 定稿）**：终端与飞书**只有四个区块**，各自成表、互不排名、不给结论：
 `v1 池选`（榜上主线五桶）/ `v1 回捞`（前 N 日 v1 产出今日回调到位）/ `沪深飙升 · 极有可能大涨` A 段（榜内飙升）/ 同节 B 段（榜外异动）。
+⚠ **2026-09-28 起飞书多一道「严格过滤门」**（`scanner/push_gate.py`），**终端不套用**——
+终端仍是全量信息面，飞书是精选推送面。这是**故意打破**「两端区块一一对应」的不变式
+（用户决策：飞书信息量过大），代价是「终端有、飞书无」，故卡片**强制**打出剔除数。
+同时终端新增**「◆ 飞书过门」透明区**（`render._render_push_gate_region`，四区之后的
+1~4 行）显示本轮通过集合 —— ⚠ 它是「**下一张卡会推什么**」而**不是**「已推了什么」
+（终端每 60s 渲染、飞书最多 900s 一次且仅在集合变化时推），标题不可简化成「飞书推送」。
+详见下方「飞书推送过滤门」。
 其中**只有 `v1 池选` 有序**：**新票优先 → 类别优先级 → 榜单排名升序 → 资金流降序 → 形态加分**
 （实现在 `scanner/view/assemble.py::build_scan_view`；终端标题 = 前四键：
 `◆ v1 池选 — 新票优先·类别优先·排名升序·资金流降序`，形态加分是稀有 tie-breaker 不入题。
@@ -153,6 +160,34 @@ This rebuilds scores via `scanner/historical_rescan.py --rescore` (faithful to t
 
 > ⚠️ 排序/档位/🎯 画像校准于 `next_day`（次日≥7% hit），但回测默认 `--hold-days 3`。改权重/阈值前先确认优化哪个口径。
 
+## 飞书推送过滤门（`scanner/push_gate.py`，2026-09-28）
+
+**唯一出口 = 飞书卡片**；终端四区块**零改动**。纯展示层：不写库、不改 `excluded`、
+不落 `recommendations`、不影响回测/归因样本口径。开关 `RTS_PUSH_GATE=0` 整体回滚。
+
+```text
+通过(row) = ¬否决(row) ∧ 分级(row) ≥ 兜底档
+  分级 = CATEGORY_HIT_RATE[category]（**表外类别一律 C 档**）
+     A ≥ PUSH_TIER_A_MIN(0.10) · B ≥ PUSH_TIER_B_MIN(=CATEGORY_HIT_RATE_DEFAULT) · C < B
+  兜底(C 档) = 榜内热度：v1 池选 rank≤40 / 飙升A streak≥3 ∨ 排名跃升≥30 / 回捞·榜外 量比≥2
+  否决 = 资金流出≤FUND_OUTFLOW_NET_PCT ∨ 5日累计≥OVERHEAT_ACCUM_MAX ∨ 风险硬信号
+卡片级 = 通过数 ≥ PUSH_MIN_ROWS ∧ 通过票集变化 ∧ 距上次 ≥ PUSH_MIN_INTERVAL(900s)
+```
+
+**三条纪律（改前必读）**
+
+1. **主键只能是类别先验，不能是 `score`。** 实测 n=3543：score 与次日≥7% hit
+   **无单调关系**（score=118→4.2%、score=0→0.0%、score=54→21.1%，纯噪声）；
+   类别先验逐档吻合（rebound 17.9/17.9、kNF 12.5/12.7、pool_pick 3.7/2.1）。
+2. **否决阈值全部复用上游单源**，本模块不新造风险阈值。
+3. **表外类别必须判 C 档**——`comeback` 已从先验表删掉（实测 hit 2.8%，全场最差），
+   按「未知 → 默认值 0.078」放行会让它整批白拿 B 档（实测 64 只漏过，守卫
+   `test_out_of_table_categories_are_C_not_B`）。
+
+**离线影响**（`python scripts/push_gate_impact.py`，近 10 交易日）：
+现状 804 只 → 门后 97 只（**削减 88%**）；通过集 hit **12.5%** vs 剔除集 6.3%
+（**+6.2pp**）。根因是 `pool_pick` 桶 2026-09 起日产 60~110 只而实测 hit 仅 3.7%。
+
 ## 目标函数（2026-09-14 定稿，唯一口径）
 
 **次日≥7% hit 率**是系统唯一的类别先验口径 —— 排序、档位、🎯 画像、类别准入**全部**用它。
@@ -207,6 +242,7 @@ scanner/
   ths_api.py                # THS official finance API (K-line fallback)
   database.py               # SQLite CRUD: recommendations, appearances, daily_kline
   config.py                 # ALL thresholds, weights re-exports, env flags (single source)
+  config_push.py            # 飞书过滤门阈值（A/B 档边界、兜底、节流）
   categories.py             # Category registry (CATEGORY_REGISTRY): single truth for label/color/priority/suggest
   models.py                 # KlineBar, StockInfo, Candidate, ScanResult, RecommendationRow
   analysis.py               # K-line pattern analysis (new_face/momentum/rebound/short_term scoring)
@@ -223,6 +259,7 @@ scanner/
   rule_validate.py          # 规则/常数改动的样本外验证门（B1；改权重前必跑）
   prevday_perf.py           # (top-level) Multi-day performance summary
   hot_watch.py              # 沪深飙升·极可能大涨独立区（2026-09-11 合入，与主线口径解耦）
+  push_gate.py              # 飞书推送严格过滤门（2026-09-28，纯展示层，终端不套用）
   core_themes.py            # Core theme dip-buying opportunities
   comeback.py               # Comeback (回马枪) strategy
   concept.py                # Concept/theme board fetching (East Money F10)

@@ -13,6 +13,7 @@
 #   config_hot_watch       沪深飙升「极有可能大涨」独立区配置
 #   config_historical      「v1 回捞」独立区配置（前 N 交易日 v1 产出的回调筛选）
 #   config_tactics        盘中操作纪律(intraday tactics)参数
+#   config_push           飞书推送「严格过滤门」阈值（2026-09-28，纯展示层）
 #
 # 消费方若新增常量，请放到对应子模块并在其 __all__ 登记；本文件只负责聚合导出。
 
@@ -24,6 +25,7 @@ from scanner.config_categories import *  # noqa: F401,F403
 from scanner.config_core import *  # noqa: F401,F403
 from scanner.config_historical import *  # noqa: F401,F403
 from scanner.config_hot_watch import *  # noqa: F401,F403
+from scanner.config_push import *  # noqa: F401,F403
 from scanner.config_risk import *  # noqa: F401,F403
 from scanner.config_scoring import *  # noqa: F401,F403
 from scanner.config_sources import *  # noqa: F401,F403

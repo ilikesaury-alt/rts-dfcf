@@ -3,6 +3,7 @@ from scanner.config import (
     FUND_OUTFLOW_NET_PCT,
     HIST_LOOKBACK_DAYS,
     HOT_HIGHLIGHT_STREAK,
+    PUSH_GATE_ENABLED,
     TOP40_THRESHOLD,
     now_beijing,
 )
@@ -499,6 +500,77 @@ def render_hist_watch_standalone(rows) -> None:
     _render_hist_watch_region(rows)
 
 
+def _gate_names(rows) -> list[str]:
+    """一批行 → 名称列表（MainRow 走 entry，其余走 .name）。空行返回 []。"""
+    out = []
+    for r in rows or []:
+        entry = getattr(r, "entry", None)
+        if isinstance(entry, dict):
+            out.append(str(entry.get("name") or entry.get("symbol") or "?"))
+        else:
+            out.append(str(getattr(r, "name", None) or getattr(r, "symbol", None) or "?"))
+    return out
+
+
+def _render_push_gate_region(view: ScanView) -> None:
+    """「飞书过门」透明区（2026-09-28）：显示**本轮通过严格过滤门**的票。
+
+    ## 为什么要有这个区
+
+    飞书自 2026-09-28 起多了一道严格过滤门（`scanner/push_gate.py`），而终端仍是
+    全量信息面 —— 两端**故意分叉**。分叉的代价是「终端看到 40 只，飞书只推 6 只，
+    用户不知道推的是哪 6 只、也不知道自己开盘前有没有错过」。本区补的就是这个缺口。
+
+    ## 为什么**不是**第五张表
+
+    它是四个区的**子集**，复述成表就是把同样的名字再打一遍 —— 与用户「信息太多」
+    的原始诉求相反。故：一行一组、只打非空组、总高 ≤4 行。
+
+    ## ⚠ 标题为什么写「本轮过门」而不是「飞书推送」
+
+    终端每轮（约 60s）渲染，飞书最多 `PUSH_MIN_INTERVAL`(900s) 推一次且**仅在通过集
+    变化时**才推。两者不是同一件事：本区显示的是**下一张卡会推的集合**，**不是**
+    「已经推出去的集合」。写成「飞书推送」会在冷却期内说谎（终端显示 6 只，实际上一张
+    都没发）。要显示真实已推送集需要 `feishu.PushState` 状态穿透到视图层，那是另一件事，
+    本区不做。
+
+    ## 判定零重复
+
+    直接调 `push_gate.apply_push_gate`（飞书卡片用的**同一个**纯函数），不另写一套阈值。
+    `PUSH_GATE_ENABLED=False` 时整区跳过（门没开就没有「过门」这个概念）。
+    """
+    if not PUSH_GATE_ENABLED:
+        return
+    # 延迟导入：push_gate 只依赖 config/utils，理论上无环，但保持 view→push 单向更清晰
+    from scanner.push_gate import apply_push_gate
+
+    gate = apply_push_gate(view)
+    if gate.passed_total <= 0:
+        return
+
+    groups = (
+        ("池选", _gate_names(gate.main)),
+        ("回捞", _gate_names(gate.hist)),
+        ("飙升", _gate_names(gate.hot)),
+        ("榜外", _gate_names(gate.offboard)),
+    )
+    s = gate.stats
+    print()
+    print(
+        f"  {ANSI['BOLD']}{ANSI['CYAN']}◆ 飞书过门{ANSI['RESET']}"
+        f"（本轮 {gate.passed_total} 只通过严格过滤 · 下一张卡片将推此集合）"
+    )
+    for label, names in groups:
+        if not names:
+            continue
+        print(f"    {label}  {' '.join(names)}")
+    print(
+        f"    {ANSI['YELLOW']}严格过滤 {s.passed}/{s.total} 通过"
+        f"（A 档 {s.tier_a} · B 档 {s.tier_b} · 兜底 {s.tier_c_fallback}）"
+        f"｜剔除 {s.filtered}（类别先验不足 {s.dropped_no_fallback} · 否决 {s.vetoed}）{ANSI['RESET']}"
+    )
+
+
 def render_terminal(view: ScanView) -> None:
     """把 ScanView 渲染到终端（纯渲染：不读库、不重算标记）。
 
@@ -637,6 +709,11 @@ def render_terminal(view: ScanView) -> None:
     _render_hist_watch_region(view.hist_rows)
 
     _render_hot_watch_region(view.hot_rows, view.offboard_rows)
+
+    # ── 飞书过门透明区（2026-09-28）──
+    # 显示本轮通过严格过滤门的票（= 下一张飞书卡会推的集合）。不是第五张候选表，
+    # 是四个区的子集视图；判定直接复用 push_gate.apply_push_gate，与卡片同一函数。
+    _render_push_gate_region(view)
 
     # 综合判断摘要（2026-09-17 重写的「分区体检报告」）已于 2026-09-21 按用户决策整体
     # 删除：终端因此**只剩四个区块**（v1 池选 / v1 回捞 / 沪深飙升 A 段 / 榜外异动 B 段），

@@ -24,11 +24,12 @@ import requests
 
 from scanner.config import (
     FEISHU_KEYWORD,
-    FEISHU_MIN_INTERVAL,
     FEISHU_TOP_N,
     FEISHU_WEBHOOK,
     FUND_OUTFLOW_NET_PCT,
     HOT_HIGHLIGHT_STREAK,
+    PUSH_MIN_INTERVAL,
+    PUSH_MIN_ROWS,
     now_beijing,
 )
 
@@ -46,6 +47,7 @@ from scanner.display import ScanView, _fmt_hot_amount, _fmt_hot_volume_hand, _pa
 # 本文件不再 import 它；文案单源仍在 registry 里（scripts/label_audit.py 打印），挂回时
 # build_feishu_card 的三处 sections.append 都加 legend_line(section)，与终端同源。
 from scanner.log_utils import log_event
+from scanner.push_gate import apply_push_gate
 from scanner.signals import fund_flow_signal, split_risk_flags
 from scanner.utils import EXTERNAL_FAILURES, to_float
 from scanner.view.assemble import _market_suggestion_text
@@ -100,13 +102,21 @@ def should_push(state: PushState, symbols: set[str], now: float, *, has_content:
     与原 push_feishu 的节流/去重/空池语义等价：
       - webhook 缺失     → disabled
       - 无内容可画       → empty
-      - 票集未变且冷却中 → cooldown
-      - 其余（票集变化 / 超时后重推）→ ok
+      - 冷却中           → cooldown（**无条件**，不再仅在「票集未变」时查）
+      - 票集未变且已过冷却 → unchanged
+      - 其余（票集变化且已过冷却）→ ok
 
     两个入参回答**两个不同的问题**，不可混为一谈：
-      symbols     —— 去重键（「内容变了没」），只含**主线**票集（`_view_symbols`）。
-      has_content —— 卡片**是否有任何区块可画**（`view_has_content`）。
+      symbols     —— 去重键（「内容变了没」），= **严格过滤门通过集**（`_view_symbols`）。
+      has_content —— 过滤后卡片**是否还有任何区块可画**（`gate_has_content`）。
     默认 None = `bool(symbols)`，即「以票集判空」的旧行为，供不关心第三区的调用点沿用。
+
+    2026-09-28 收紧两处：
+    · 冷却从 `FEISHU_MIN_INTERVAL`(300s) 提到 `PUSH_MIN_INTERVAL`(900s)。旧值在
+      「票集每轮都变」的现实下等于没有 —— 2026-09-28 全天推了 ~50 张。
+    · 冷却期从「票集未变才查」改为**一律查**。旧逻辑下票集一变就绕过冷却直接推，
+      这才是量爆的机制；去重键改成通过集后已稳定，但**冷却本就该是无条件的时间闸**
+      （Lark 限流是按时间的，不是按内容的）。
 
     2026-09-15 修：此前只有 symbols 一个判据，于是「有推荐但被展示层门全剔 ⇒ main_rows 空，
     而终选参考/飙升区仍有内容」会落到 empty，**整张卡片不推** —— 而终端在**同一份 view** 上
@@ -124,8 +134,10 @@ def should_push(state: PushState, symbols: set[str], now: float, *, has_content:
         # 全空推荐时不推空卡片（无推荐时段会每 5 分钟刷一张空卡，2026-08-17 审查修复）。
         return Decision(False, "empty")
     has_change = symbols != state.last_symbols
-    if not has_change and (now - state.last_time) < FEISHU_MIN_INTERVAL:
+    if (now - state.last_time) < PUSH_MIN_INTERVAL:
         return Decision(False, "cooldown")
+    if not has_change:
+        return Decision(False, "unchanged")
     return Decision(True, "ok")
 
 
@@ -484,7 +496,11 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
     top_n 默认 FEISHU_TOP_N，与 _view_symbols 共用同一常量，去重集合与展示条数永不同源漂移。
     """
     now = now_beijing().strftime("%H:%M")
-    main = view.main_rows[:top_n]
+    # 严格过滤门（2026-09-28）：卡片只画**通过门**的行。与终端**故意分叉** ——
+    # 终端是全量信息面，飞书是精选推送面（用户 2026-09-28 决策：飞书信息量过大）。
+    # 分叉的代价是「终端有、飞书无」，故下方 `gate_note` 必须如实打出剔除数。
+    gate = apply_push_gate(view)
+    main = gate.main[:top_n]
 
     env_tag = " | 🔴大盘弱势·谨慎" if view.weak else ""
     _suggestion = _market_suggestion_text(
@@ -515,9 +531,9 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
     # 「◆ v2 池选」与「◆ 核心方向低吸」两个分节已于 2026-09-14 按用户决策隐藏
     # （与终端 render_terminal 同步移除）。需复原见 git 历史。
 
-    # ── v1 回捞 独立区（与终端 _render_hist_watch_region 同源）──
+    # ── v1 回捞 独立区（与终端 _render_hist_watch_region 同源；本门再过一道）──
     # 与 v1 池选区样本域互斥（默认剔除今日已推荐票），故两节并存不会出现「同票两种结论」。
-    hist_rows = getattr(view, "hist_rows", None)
+    hist_rows = gate.hist
     if hist_rows:
         hist_lines = [
             f"{_fmt_hist_row_feishu(c, i)}{_marks_tail_card(c.ff_pct, c.beauty)}" for i, c in enumerate(hist_rows, 1)
@@ -527,13 +543,14 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
     # ── 沪深飙升·极有可能大涨 独立区（与终端 _render_hot_watch_region 同源）──
     # 2026-09-18 起含两段：A 段榜内飙升（hot_rows）+ B 段榜外异动（offboard_rows），
     # 同节两段并列、不混排（成因见 model.ScanView.offboard_rows 的注释）。
-    hot_rows = getattr(view, "hot_rows", None)
-    offboard_rows = getattr(view, "offboard_rows", None)
+    hot_rows = gate.hot
+    offboard_rows = gate.offboard
     if hot_rows or offboard_rows:
         # 行尾标记（2026-09-16）：与 v1 回捞区共用 _marks_tail_card —— 标记是跨展示区
         # 通用的，此前只有回捞区画、飙升区不画，是同一条判定在两个出口给了两种待遇。
         hot_lines = [
-            f"{_fmt_hot_row_feishu(c, i)}{_marks_tail_card(c.ff_pct, c.beauty)}" for i, c in enumerate(hot_rows or [], 1)
+            f"{_fmt_hot_row_feishu(c, i)}{_marks_tail_card(c.ff_pct, c.beauty)}"
+            for i, c in enumerate(hot_rows or [], 1)
         ]
         if offboard_rows:
             # B 段小标题与终端同款：候选来源 + 排序键 + 「未回测」一个都不能省 ——
@@ -564,6 +581,11 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
     _flow_filtered = getattr(view, "flow_filtered", 0)
     if _flow_filtered:
         _notes.append(f"资金流出已剔除 {_flow_filtered} 只（主力净占比 ≤ {FUND_OUTFLOW_NET_PCT:.0f}%）")
+    # 严格过滤门的账（2026-09-28）。**门开着就不得静默少票** —— 这行是「终端与飞书
+    # 故意分叉」的对价：用户看到「10 只通过 / 剔了 95 只」才知道终端上的票去哪了。
+    _gate_note = gate.note()
+    if _gate_note:
+        _notes.append(_gate_note)
     if _notes:
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "⚠ " + "；".join(_notes)}})
 
@@ -591,37 +613,31 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
 
 
 def _view_symbols(view: ScanView) -> set[str]:
-    """推送**去重键**：卡片里「内容稳定」的那部分票集 == main_rows[:FEISHU_TOP_N]。
+    """推送**去重键**：卡片里「内容稳定」的那部分票集 == **严格过滤门通过集**。
 
-    取自 main_rows[:FEISHU_TOP_N]（与 build_feishu_card 的分节门控同源），避免
-    「卡片推了但去重没算到」的双处硬编码 drift；两者共用 FEISHU_TOP_N，改一处即两处同时生效。
+    ⚠ 2026-09-28 改口径：原先取 `main_rows[:FEISHU_TOP_N]`，实测是推送量的**真正
+    根因** —— 这 10 行每轮都在换（v1 池选本身按「新票优先」排，新票不断进场）⇒
+    `has_change` 几乎恒 True ⇒ `FEISHU_MIN_INTERVAL` 被完全击穿，2026-09-28
+    全天推了 ~50 张（`logs/feishu_push.log`）。改成**过滤门通过集**后，去重键
+    只对「真的要推的票」变化。
 
-    ⚠ 本函数只回答「内容变没变」，**不回答「有没有内容」** —— 后者是 view_has_content。
-    故凡是「卡片画得出、但变动频率与主线不同量级」的区块，必须与 build_feishu_card
-    同步**排除**；否则 should_push 会把「卡片画不出的票变了」判成票集变化，
-    每轮都返回 ok，把 FEISHU_MIN_INTERVAL 直接击穿（should_push 只在「票集未变」时查冷却）。
+    2026-09-28（第二批）**并入 hist_rows / hot_rows / offboard_rows** —— 与旧版
+    「三区都不进去重重键」相反，理由是：门已经把这三区砍到只剩最强的几只（回捞要量比、
+    飙升要连击/排名跃升、榜外要量比），它们的**变动频率不再是分钟级噪声**；
+    而旧口径下「只有飙升区有内容、票集恒空」⇒ `has_change` 恒 False ⇒ 严格按
+    冷却重推，反而会推出一张内容陈旧的卡。把三区计进去后，去重键与卡片实际画
+    出的内容**重新对齐**（这也是 `build_feishu_card` docstring 早就要求、
+    旧实现却没做到的那条不变式）。
 
-    2026-09-14：**移除 comeback 分支**（原先按 view.show_comeback 并入
-    view.comeback_rows）。回马枪自 ca91d21（2026-09-02）起终端与卡片两处展示区均已
-    移除（见 docs/CORE-FLOW.md §十-1），把它算进去会让「仅回马枪票变化」触发一次
-    内容毫无回马枪的推送。
+    沿革（保留供追溯）：2026-09-14 移除 comeback / pool_rows / core_dip 三分支
+    （对应展示区已删，算进去会触发一张内容对不上的卡）；2026-09-15~16 **刻意**
+    排除 hot_rows 与 hist_rows —— 那时它们未经任何门控、每轮换人，计入会把
+    `has_change` 打成恒真。2026-09-28 门上线后该前提消失，故反向收口。
 
-    2026-09-14（同日第二批）：**移除 pool_rows 与 core_dip 两分支** —— v2 池选与
-    核心方向低吸两个展示区按用户决策隐藏，卡片不再画这两节。
-
-    2026-09-15：**刻意不并入 hot_rows（飙升区）**。飙升区的涨幅/排名/量比是**分钟级**
-    刷新，且榜单本身每轮都可能换人 ⇒ 若计入，`symbols != state.last_symbols` 几乎每轮
-    成立 ⇒ should_push 绕过冷却、每轮（60s）推一张，把节流打回 5min 的 1/5。
-    飙升区因此只参与 view_has_content（决定「空池要不要推」），不参与去重（决定
-    「多久推一次」）—— 二者是两件事，见 should_push 的入参说明。
-
-    2026-09-16：**同样刻意不并入 hist_rows（v1 回捞区）**，理由与飙升区同构 ——
-    该区的「今日涨幅/量比」是分钟级刷新，且候选集来自前 N 个交易日的 v1 产出、
-    与 main_rows **样本域互斥**（`exclude_symbols` 默认剔除今日已推荐票）：
-    把它计入只会在主线票集不变时凭空制造 has_change，每轮（60s）推一张卡。
-    回捞区因此也只参与 view_has_content。
+    ⚠ 本函数只回答「内容变没变」，**不回答「有没有内容」** —— 后者是
+    `gate_has_content`（过滤后）。两者是不同的门。
     """
-    return {row.entry["symbol"] for row in view.main_rows[:FEISHU_TOP_N]}
+    return apply_push_gate(view).symbols()
 
 
 def view_has_content(view: ScanView) -> bool:
@@ -662,6 +678,20 @@ def view_has_content(view: ScanView) -> bool:
     if getattr(view, "offboard_rows", None):
         return True
     return bool(getattr(view, "hot_rows", None))
+
+
+def gate_has_content(view: ScanView) -> bool:
+    """**过滤门之后**卡片是否还有内容（判空的新单源，2026-09-28）。
+
+    与 `view_has_content` 的区别：后者答「视��里有没有内容」（终端口径），
+    本函数答「严格过滤后还剩不剩内容」（推送口径）。两者必须分开 —— 门把
+    80 只砍到 0 只时，`view_has_content=True` 而本函数 `False`，此时应
+    `empty`（不推空卡），而不是推一张只有「严格过滤 0/80」的卡。
+
+    门关闭（`RTS_PUSH_GATE=0`）时 `apply_push_gate` 原样放行 ⇒ 本函数退化为
+    `view_has_content`，旧行为逐字恢复。
+    """
+    return apply_push_gate(view).passed_total >= PUSH_MIN_ROWS
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -739,9 +769,9 @@ def push_feishu(
 
     now = time.time()
     current_symbols = _view_symbols(view)
-    # has_content 与 symbols 是两个问题：前者「卡片有没有东西可画」（决定空卡片是否推），
-    # 后者「内容变了没」（决定多久推一次）。飙升区只参与前者，见 _view_symbols 的成因说明。
-    decision = should_push(state, current_symbols, now, has_content=view_has_content(view))
+    # has_content 与 symbols 是两个问题：前者「过滤后卡片还有没有东西可画」
+    # （决定空卡片是否推），后者「内容变了没」（决定多久推一次）。
+    decision = should_push(state, current_symbols, now, has_content=gate_has_content(view))
     if not decision.push:
         return False
 

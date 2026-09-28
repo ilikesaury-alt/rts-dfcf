@@ -11,17 +11,24 @@
   8. v1 回捞区（hist_rows，2026-09-16）：与飙升区同款 —— 进去重键会击穿节流、
      参与「有内容」判据、行定宽、列数与终端 COLS_HIST 一致、分节在飙升区之前
 
-注意：should_push 是纯函数，依赖模块级 FEISHU_WEBHOOK / FEISHU_MIN_INTERVAL；
+注意：should_push 是纯函数，依赖模块级 FEISHU_WEBHOOK / PUSH_MIN_INTERVAL；
 PushState 可注入，避免原 _last_push_time/_last_push_symbols 散落 global 的 monkeypatch。
 日志目录由 conftest 的 autouse fixture `_isolate_log_dir` 重定向到 tmp，
 故本文件任何用例都不可能写到生产 logs/。
+
+⚠ 2026-09-28（严格过滤门）两处**故意**的行为变更，本文件已同步：
+  · 冷却常量 FEISHU_MIN_INTERVAL(300s) → PUSH_MIN_INTERVAL(900s)；
+  · 冷却从「票集未变才查」改为**一律查**（旧逻辑下票集一变就绕过冷却直接推，
+    这才是 2026-09-28 全天推 ~50 张的机制）；去重键同步从
+    `main_rows[:FEISHU_TOP_N]` 改为**过滤门通过集**。
+  过滤门本身的判定测试在 tests/test_push_gate.py。
 """
 
 from pathlib import Path
 from typing import Any, cast
 
+from scanner.config import PUSH_MIN_INTERVAL
 from scanner.feishu import (
-    FEISHU_MIN_INTERVAL,
     PushState,
     build_feishu_card,
     push_feishu,
@@ -45,29 +52,33 @@ def test_should_push_empty_pool(monkeypatch):
     assert d.push is False and d.reason == "empty"
 
 
-def test_should_push_cooldown_when_no_change(monkeypatch):
-    """票集未变且距上次推送不足 FEISHU_MIN_INTERVAL → cooldown。"""
+def test_should_push_cooldown_is_unconditional(monkeypatch):
+    """冷却**不再**以「票集未变」为前提（2026-09-28）。
+
+    旧语义：票集一变就绕过冷却直接推 —— 这正是推送量的真正机制。
+    Lark 限流是按时间的、不是按内容的，所以冷却必须是无条件的时间闸。
+    """
     monkeypatch.setattr("scanner.feishu.FEISHU_WEBHOOK", "https://example.com/hook")
     state = PushState(last_time=1000.0, last_symbols={"SZ300001"})
-    # +FEISHU_MIN_INTERVAL-1 秒：仍在冷却窗内
-    d = should_push(state, {"SZ300001"}, 1000.0 + FEISHU_MIN_INTERVAL - 1)
+    # 同一时刻、票集**变了** → 仍应被冷却拦住
+    d = should_push(state, {"SZ300001", "SZ300002"}, 1000.0)
     assert d.push is False and d.reason == "cooldown"
 
 
-def test_should_push_ok_when_changed(monkeypatch):
-    """票集变化（新增一只）→ ok，立即推送。"""
+def test_should_push_ok_when_changed_after_cooldown(monkeypatch):
+    """过冷却 + 票集变化 → ok。"""
     monkeypatch.setattr("scanner.feishu.FEISHU_WEBHOOK", "https://example.com/hook")
     state = PushState(last_time=1000.0, last_symbols={"SZ300001"})
-    d = should_push(state, {"SZ300001", "SZ300002"}, 1000.0)  # 同一时刻也推
+    d = should_push(state, {"SZ300001", "SZ300002"}, 1000.0 + PUSH_MIN_INTERVAL)
     assert d.push is True and d.reason == "ok"
 
 
-def test_should_push_ok_after_timeout(monkeypatch):
-    """票集未变但已超时（≥ FEISHU_MIN_INTERVAL）→ ok，重新推送。"""
+def test_should_push_unchanged_after_cooldown(monkeypatch):
+    """过冷却但**票集未变** → 不重推（避免每 15 分钟发一张内容相同的卡）。"""
     monkeypatch.setattr("scanner.feishu.FEISHU_WEBHOOK", "https://example.com/hook")
     state = PushState(last_time=1000.0, last_symbols={"SZ300001"})
-    d = should_push(state, {"SZ300001"}, 1000.0 + FEISHU_MIN_INTERVAL)
-    assert d.push is True and d.reason == "ok"
+    d = should_push(state, {"SZ300001"}, 1000.0 + PUSH_MIN_INTERVAL)
+    assert d.push is False and d.reason == "unchanged"
 
 
 # ── push_feishu 编排 ──
@@ -314,22 +325,21 @@ def test_post_card_non_json_response_keeps_retry_and_body(monkeypatch):
 # ── FEISHU_TOP_N 门控与去重同源 ──
 
 
-def test_view_symbols_uses_feishu_top_n(monkeypatch):
-    """回归：_view_symbols 取自 main_rows[:FEISHU_TOP_N]，与卡片展示条数同源。
+def test_view_symbols_matches_what_the_card_actually_shows(monkeypatch):
+    """去重键 == 卡片**实际画出的**行集（2026-09-28 口径变更）。
 
-    此前 cards 用 top_n=10 而去重用[:10] 双处硬编码，改一处忘另一处会
-    「卡片推了但去重没算到」。现两者共用同一常量。
+    旧契约是 `main_rows[:FEISHU_TOP_N]`（10 行），现已改为**严格过滤门通过集**且
+    单卡硬上限 `PUSH_MAX_ROWS`。本用例锁的不变式没变 —— **去重键与展示条数同源**，
+    杜绝「卡片推了但去重没算到」。变的只是那个数从 FEISHU_TOP_N 换成了 PUSH_MAX_ROWS。
     """
-    from scanner.feishu import FEISHU_TOP_N, _view_symbols
+    from scanner.config import PUSH_MAX_ROWS
+    from scanner.feishu import _view_symbols
 
-    # 超过 TOP_N 的票：前 TOP_N 只进 main_rows，其余仅存在候选但不在 main
-    syms = [f"SZ30000{i}" for i in range(FEISHU_TOP_N + 3)]
+    syms = [f"SZ30000{i}" for i in range(PUSH_MAX_ROWS + 3)]
     view = _fake_view(syms)
     view_syms = _view_symbols(view)
 
-    # 卡片实际展示条数必须等于 TOP_N（首节「v1 池选」）
     card = build_feishu_card(view, gem_total=100)
-    # 首节 div 的 text.content 以标题开头；元素序列为 header(hr+div) 交替，故按内容定位
     section_divs = [
         e
         for e in card["elements"]
@@ -337,29 +347,28 @@ def test_view_symbols_uses_feishu_top_n(monkeypatch):
     ]
     assert section_divs, "卡片应含「v1 池选」分节"
     first_section = section_divs[0]["text"]["content"]
-    assert first_section.startswith("**◆ v1 池选**")
     shown_lines = [ln for ln in first_section.splitlines() if ln.strip().startswith("`")]
-    assert len(shown_lines) == FEISHU_TOP_N
-    # 去重集合也应恰好覆盖被展示的 TOP_N 只
-    assert view_syms == set(syms[:FEISHU_TOP_N])
+    assert len(shown_lines) == PUSH_MAX_ROWS
+    # 去重集合恰好覆盖被展示的那些
+    assert view_syms == set(syms[:PUSH_MAX_ROWS])
 
 
 # ── v1 回捞区（hist_rows，2026-09-16）：与飙升区同款门控、分节在飙升之前 ──
 
 
-def test_hist_only_view_is_pushable_but_hist_is_not_a_dedup_key(monkeypatch):
-    """回捞区有行、主线空池 → 卡片有内容可推；且回捞票**不进**去重键。
+def test_hist_only_view_is_pushable_and_hist_is_a_dedup_key(monkeypatch):
+    """回捞区有行、主线空池 → 卡片有内容可推；且回捞票过门后**计入**去重键。
 
-    与飙升区同构（理由同 hot）：回捞的今日涨幅/量比是分钟级刷新，计入去重键会让
-    has_change 几乎每轮为真，把 FEISHU_MIN_INTERVAL 的节流打回 60s 一张卡。
-    同时钉死卡片确实画得出这一节 —— 该区 2026-09-16 前只进终端（本用例的回归点）。
+    2026-09-28 口径反转：旧版因「回捞的今日涨幅/量比是分钟级刷新」而排除它，
+    但那个前提在门上线后已不成立（门要求量比 ≥2 才放行，剩下的本就不是噪声）。
+    `_fake_hist` 的 `rec_category="momentum"`（先验 10.0% = A 档）⇒ 无需量比即过门。
     """
     from scanner.feishu import _view_symbols, view_has_content
 
     monkeypatch.setattr("scanner.feishu.FEISHU_WEBHOOK", "https://example.com/hook")
     view = _fake_view([], hist_rows=[_fake_hist()])
 
-    assert _view_symbols(view) == set(), "回捞票不是去重键"
+    assert _view_symbols(view) == {"SZ300750"}, "回捞票过门后应计入去重键"
     assert view_has_content(view) is True, "仅回捞区有内容时也必须可推"
 
     card = build_feishu_card(view, gem_total=100)
@@ -583,14 +592,14 @@ def test_hot_only_view_is_pushable_but_hot_is_not_a_dedup_key(monkeypatch):
 
     修复前 should_push 只按 symbols 判空 ⇒ 整卡不推，而终端 render_terminal 照画飙升区，
     与 build_feishu_card 声明的「与终端分节一一对应」直接矛盾。
-    同时钉死：**飙升票不进去重键**（分钟级变动，计入会让 has_change 每轮为真、击穿节流）。
+    2026-09-28：同时钉死**飙升票过门后计入去重键**（`streak=3` 达兜底线）。
     """
     from scanner.feishu import _view_symbols, view_has_content
 
     monkeypatch.setattr("scanner.feishu.FEISHU_WEBHOOK", "https://example.com/hook")
     view = _fake_view([], hot_rows=[_fake_hot()])
 
-    assert _view_symbols(view) == set(), "飙升票不是去重键"
+    assert _view_symbols(view) == {"SZ300001"}, "飙升票过门后应计入去重键"
     assert view_has_content(view) is True, "仅飙升区有内容时也必须可推"
 
     card = build_feishu_card(view, gem_total=100)
@@ -598,8 +607,9 @@ def test_hot_only_view_is_pushable_but_hot_is_not_a_dedup_key(monkeypatch):
 
     ok = should_push(PushState(), _view_symbols(view), 1000.0, has_content=view_has_content(view))
     assert ok.push is True and ok.reason == "ok"
-    # 缺省 has_content（= 旧口径「按票集判空」）会退化成 empty —— 写死以防回退
-    assert should_push(PushState(), _view_symbols(view), 1000.0).reason == "empty"
+    # 2026-09-28：缺省 has_content 不再退化为 empty —— 飙升票已计入去重键，
+    # 「按票集判空」与「按过滤后内容判空」本轮一致。写死以防口径再分叉。
+    assert should_push(PushState(), _view_symbols(view), 1000.0).reason == "ok"
 
 
 def test_should_push_empty_only_when_card_has_no_section(monkeypatch):
@@ -619,22 +629,24 @@ def test_should_push_empty_only_when_card_has_no_section(monkeypatch):
 
 
 def test_hot_only_push_keeps_min_interval(monkeypatch):
-    """仅飙升区有内容时按 FEISHU_MIN_INTERVAL 节流，而不是每轮（60s）一张卡。
+    """仅飙升区有内容时按 PUSH_MIN_INTERVAL 节流，而不是每轮（60s）一张卡。
 
-    这是「不并入去重键」的量化理由：symbols 恒空 ⇒ has_change 恒 False ⇒ 走冷却分支；
-    若把飙升票并进去，has_change 几乎每轮为真，should_push 会绕过冷却直接推。
+    2026-09-28 口径变更：飙升票**现在计入去重键**了（经严格过滤门），因为门已把
+    飙升区砍到只剩「连击≥3 ∨ 排名跃升≥30」的少数几只，变动不再是分钟级噪声。
+    本用例因此改为验证**无条件冷却**：同一时刻即便票集变了也不推。
     """
     from scanner.feishu import _view_symbols, view_has_content
 
     monkeypatch.setattr("scanner.feishu.FEISHU_WEBHOOK", "https://example.com/hook")
     view = _fake_view([], hot_rows=[_fake_hot()])
     syms, content = _view_symbols(view), view_has_content(view)
+    assert syms == {"SZ300001"}, "飙升票过门后应计入去重键"
     now = 1000.0
 
     inner = should_push(PushState(last_time=now - 1, last_symbols=set()), syms, now, has_content=content)
     assert inner.reason == "cooldown"
     timed_out = should_push(
-        PushState(last_time=now - FEISHU_MIN_INTERVAL, last_symbols=set()), syms, now, has_content=content
+        PushState(last_time=now - PUSH_MIN_INTERVAL, last_symbols=set()), syms, now, has_content=content
     )
     assert timed_out.push is True
 
@@ -649,7 +661,8 @@ def test_push_feishu_posts_hot_only_card(monkeypatch):
     assert push_feishu(_fake_view([], hot_rows=[_fake_hot()]), gem_total=10, state=state) is True
     assert posted, "应有卡片被推送"
     assert any("沪深飙升" in t for t in _section_titles(posted[0]))
-    assert state.last_symbols == set()  # 去重键仍为空（飙升区不参与）
+    # 2026-09-28：去重键改为「过滤门通过集」，飙升票过门后**要**计入
+    assert state.last_symbols == {"SZ300001"}
 
 
 # ── 飙升行定宽（2026-09-15 P2）──

@@ -493,9 +493,7 @@ def test_priority_row_rank_delta_from_last_ranks(capsys):
     for i, (sym, name, rank) in enumerate(
         [("SZ300001", "升名", 45), ("SZ300002", "降名", 48), ("SZ300003", "稳名", 46)], 1
     ):
-        disp_mod._print_priority_row(
-            _priority_entry(sym, name, live_rank=rank), i, {}, last_ranks=last_ranks
-        )
+        disp_mod._print_priority_row(_priority_entry(sym, name, live_rank=rank), i, {}, last_ranks=last_ranks)
     lines = _priority_rows(capsys.readouterr().out)
     assert "45+3" in lines["SZ300001"]
     assert "48-3" in lines["SZ300002"]
@@ -1477,3 +1475,103 @@ def test_v1_new_entry_renders_tail_mark(monkeypatch, capsys):
     # 加粗+品红：与 _force_ansi 注入的码一致；断言码而非裸字，避免命中票名里的「新」
     assert f"{vm.ANSI['BOLD']}{vm.ANSI['MAGENTA']}新" in _main_line(out, "SZ300001")
     assert "新" not in _main_line(out, "SZ300002")
+
+
+# ── 「◆ 飞书过门」透明区（2026-09-28）──
+
+
+def test_push_gate_region_lists_passed_names(capsys):
+    """本区显示**本轮通过严格过滤门**的票名，且只显示通过的那些。
+
+    守护的是「终端看得到飞书要推什么」这个缺口 —— 门把 40 只砍到 6 只后，
+    用户不看飞书卡片也必须知道推的是哪几只。
+    """
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "甲通过", "rebound", 90)  # A 档，先验 17.9%
+    _insert_rec_cat(conn, "SZ300002", "乙被剔", "pool_pick", 10)  # C 档 2.1%，无兜底
+    view = disp_mod.build_scan_view(conn, today_pool={})
+    assert view is not None
+
+    disp_mod.render_terminal(view)
+    out = capsys.readouterr().out
+    assert "◆ 飞书过门" in out
+    assert "甲通过" in out
+    assert "乙被剔" not in out.split("◆ 飞书过门")[1], "未过门的票不得出现在过门区"
+
+
+def test_push_gate_region_labels_are_honest_about_being_not_yet_pushed(capsys):
+    """⚠ 标题必须写「下一张卡片将推此集合」，不能简化成「飞书推送」。
+
+    终端每轮渲染、飞书最多 900s 推一次且仅在集合变化时推 —— 两者不是同一件事。
+    写成「已推送」会在冷却期内说谎。守卫文案里的限定词。
+    """
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "甲", "rebound", 90)
+    view = disp_mod.build_scan_view(conn, today_pool={})
+    assert view is not None
+    disp_mod.render_terminal(view)
+    out = capsys.readouterr().out
+    region = out.split("◆ 飞书过门")[1]
+    assert "下一张卡片将推此集合" in region
+    assert "已推送" not in region and "已推" not in region
+
+
+def test_push_gate_region_reports_the_ledger(capsys):
+    """过门区必须同时给出「过了几只 / 剔了多少 / 怎么剔的」—— 与卡片同一套账。
+
+    ⚠ 被剔的那只用 `short_term`（先验 6.2% = C 档）而**不是** pool_pick：
+    `build_scan_view` 早已把 pool_pick 排除在 v1 池选主表之外（它属 v2 池选），
+    拿它当样本会让本用例测不到门（它在进门前就没了）。
+    """
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "甲", "rebound", 90)  # A 档
+    _insert_rec_cat(conn, "SZ300002", "乙", "short_term", 10)  # C 档，rank 缺失 → 无兜底
+    view = disp_mod.build_scan_view(conn, today_pool={})
+    assert view is not None
+    disp_mod.render_terminal(view)
+    out = capsys.readouterr().out
+    region = out.split("◆ 飞书过门")[1]
+    assert "严格过滤 1/2 通过" in region
+    assert "A 档 1" in region
+    assert "类别先验不足 1" in region
+
+
+def test_push_gate_region_skipped_when_all_filtered(capsys):
+    """全被剔 ⇒ 整区跳过，不留空标题（与四个区的「无结果整区跳过」同一纪律）。"""
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "乙", "short_term", 10)  # C 档，rank 缺失 → 无兜底
+    view = disp_mod.build_scan_view(conn, today_pool={})
+    assert view is not None
+    disp_mod.render_terminal(view)
+    assert "◆ 飞书过门" not in capsys.readouterr().out
+
+
+def test_push_gate_region_absent_when_gate_disabled(monkeypatch, capsys):
+    """门关闭 ⇒ 整区不出现（没有「过门」这个概念）。
+
+    ⚠ 必须打在 `scanner.view.render` 上：`disp_mod` 是 `scanner.display` 聚合器，
+    它按 `__all__` 再导出名字，而 `PUSH_GATE_ENABLED` 不在其中（它是 render 的
+    模块级读取点，不是对外契约）。
+    """
+    import scanner.view.render as render_mod
+
+    monkeypatch.setattr(render_mod, "PUSH_GATE_ENABLED", False)
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "甲", "rebound", 90)
+    view = disp_mod.build_scan_view(conn, today_pool={})
+    assert view is not None
+    disp_mod.render_terminal(view)
+    assert "◆ 飞书过门" not in capsys.readouterr().out
+
+
+def test_push_gate_region_omits_empty_sections(capsys):
+    """只打非空分组 —— 一行一组，不为空的区块留行。"""
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "甲", "rebound", 90)
+    view = disp_mod.build_scan_view(conn, today_pool={})
+    assert view is not None
+    disp_mod.render_terminal(view)
+    region = capsys.readouterr().out.split("◆ 飞书过门")[1]
+    assert "池选" in region
+    for empty_label in ("回捞", "飙升", "榜外"):
+        assert empty_label not in region, f"空分组「{empty_label}」不应占行"
