@@ -101,27 +101,20 @@ python -m scanner.rule_validate --list-evaluators     # 各评估器能"看见"�
 > 只改 `scanner.config.X` 对消费方无效。工具会自动传播 override 并打印传播到的模块数，
 > 跑完自动回滚。若报告显示"传播改写 0 个模块"且改动未产生输出差异，先怀疑改错了模块。
 
-### 主通路黄金样本（拆 scan_with_raw 前必跑）
+### 主通路黄金样本 —— 已删除（2026-09-28）
 
-```
-python scripts/golden_scan.py                    # 跑最新交易日并与基线对比（离线·确定性）
-python scripts/golden_scan.py --date 2026-09-09  # 指定日期（各日期桶覆盖不同）
-python scripts/golden_scan.py --write            # （重新）生成基线
-python scripts/golden_scan.py --diff             # 打印首个不一致字段的上下文
-```
+`scripts/golden_scan.py` + `scripts/golden/*.json`（4 份基线）曾是「拆
+`scan_with_raw` 输出逐字段一致」的那把尺子，现已整体删除，**不要试图去跑它**。
+删除理由与复原方式见上方 Verification order 的同名告警。
 
-`orchestrator.scan_with_raw`（507 行 / CC 95）是**主数据通路**，但 `tests/test_orchestrator.py`
-对它**本身零覆盖**（只测辅助函数）。要把它拆成 `scanner/pipeline/` 纯函数，必须能证明
-「拆完输出逐字段一致」——本工具就是那把尺子：从 `scanner.db` 重建某天的真实榜单输入，
-用**离线桩 adapter + 断网**跑一遍，把 `ScanResult` 规范化成 JSON 快照后逐字段对比。
-
-- **退出码：0 一致 / 1 不一致（等价变换被破坏）/ 2 运行失败。**
-- 确定性靠三根钉子：钉死时间（覆盖**所有已加载 `scanner.*` 模块**的 `now_beijing`——
-  只改 `scanner.config.now_beijing` 对快照式导入的消费方无效）、断网（装 requests 总闸，
-  `EXTERNAL_FAILURES` 含 `RequestException` 所以 fail-open 分支照常跑）、复制 DB 到临时文件。
-- ⚠ **覆盖有缺口**：工具会打印空桶告警。`comeback` 在离线模式下恒为 0（依赖 adapter 实时
-  行情）；`new_face` / `momentum` 多数日期 0~1。**空桶对应的路径本基线保护不到**，
-  拆它们时必须另补针对性单测。
+现状（删之前要知道的两个事实）：
+- `orchestrator.scan_with_raw`（486 行 / CC 95）是**主数据通路**，
+  `tests/test_orchestrator.py` 对它**本身仍零覆盖**（只测辅助函数）——
+  这是**已知且接受**的缺口：第 3 步（继续拆）已决定不再做，
+  `scanner/pipeline/` 停在 2026-09-13 抽出的 9 个纯函数上。
+- 动 `scanner/pipeline/` 时真正的守护是 `pytest tests/test_pipeline.py`；
+  动 `scan_with_raw` 其余部分时**没有自动守护**，只能靠
+  `scripts/replay_source_swap.py` 的离线回放人工比对。
 
 ### Offline label / data-quality tooling
 
@@ -190,15 +183,16 @@ After **weight/threshold/constant** changes, additionally: `python -m scanner.ru
 (样本外验证门，见上)。改 `nextday_prob` 常数还要重写校准快照：
 `python -m scanner.nextday_calib --write`，否则 `tests/test_nextday_calib.py` 会 fail。
 
-After touching **`scanner/pipeline/`** (or anything in `scan_with_raw`): run the golden
-sample for all four dates — `python scripts/golden_scan.py --date 2026-09-08` … `09-11`.
-All four must exit 0 (逐字段一致). See 主通路黄金样本 below.
+After touching **`scanner/pipeline/`** (or anything in `scan_with_raw`):
+`pytest tests/test_pipeline.py`.
 
-> ⚠️ **黄金基线会随 `scanner.db` 生长而腐烂**（2026-09-14 实测）：输入是从**当前 DB** 重建的，
-> 脚本自己会打印 `输入指纹与基线不同（DB 或重建逻辑变了）—— 此时对比结果不可信`。
-> 该情形下 exit=1 **不代表等价性被破坏**；先确认自己没碰 `scripts/golden_scan.py` /
-> `scanner/pipeline/` / `scanner/orchestrator.py`（`git diff --quiet HEAD -- <这些>`），
-> 再决定是否 `--write` 重建基线。**别把「输入指纹变了」当成「重构改坏了输出」。**
+> ⚠️ **黄金样本工具已删除（2026-09-28）**：`scripts/golden_scan.py` + `scripts/golden/`
+> （4 份基线，1.8 MB）曾是「拆 `scan_with_raw` 输出逐字段一致」的那把尺子。第 3 步
+> （继续拆）已决定不再做，工具失去唯一用途；且基线输入从**当前 DB** 重建、随库生长
+> 结构性必腐，最后重建后四日期又全红（干净树复现 = 腐烂而非等价破坏）——
+> **常红的守卫等于没有守卫**。要复原查 git 历史：`git log --diff-filter=D --
+> scripts/golden_scan.py` 找到删除提交，再 `git show <sha>^:scripts/golden_scan.py`
+> 取回脚本、同法取回 `scripts/golden/*.json`。
 
 After touching **`scanner/db/`**: `pytest tests/test_migrations.py tests/test_schema_migration.py`.
 

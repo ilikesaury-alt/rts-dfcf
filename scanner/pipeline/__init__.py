@@ -12,19 +12,19 @@
 
 1. **每个函数抽出前后，输入输出必须逐字节一致**（含副作用：原地改写的字段、
    累加的计数器、打印的告警）。
-2. **证明手段是黄金样本**，不是"看起来对"：
-   ```
-   python scripts/golden_scan.py --date 2026-09-08   # 四个日期各跑一次
-   python scripts/golden_scan.py --date 2026-09-09
-   python scripts/golden_scan.py --date 2026-09-10
-   python scripts/golden_scan.py --date 2026-09-11
-   ```
-   全部退出码 0（逐字段一致）才算等价。**不一致就是破坏了等价，必须回退。**
-3. 已知覆盖缺口：黄金样本里 `comeback` 桶恒为 0、`new_face`/`momentum` 多数日期
-   0~1（原因见 `scripts/golden_scan.py` 的 `_coverage_warnings`）。**这些路径
-   黄金样本保护不到**，动到它们必须另补针对性单测。
-4. 本包只放**纯函数或近乎纯的函数**（输入 → 输出，不持有全局状态、不做 IO）。
-   需要 conn / adapter 的阶段暂留 orchestrator，等有了对应测试手段再搬。
+2. **证明手段是单测，不是"看起来对"**：`pytest tests/test_pipeline.py` 全绿。
+3. ⚠ **黄金样本工具已于 2026-09-28 删除**（`scripts/golden_scan.py` +
+   `scripts/golden/*.json`，1.8 MB）。它原本是「拆完逐字段一致」的那把尺子，
+   但第 3 步（继续拆 `scan_with_raw`）已决定不再做，工具失去唯一用途；且基线
+   输入从**当前 `scanner.db`** 重建、随库生长结构性必腐，2026-09-18 最后一次
+   重建后四日期又全红（干净树复现，非等价破坏）—— 常红的守卫等于没有守卫。
+   **要复原请查 git 历史**：脚本与 4 份基线都在删除它的那个提交的父版本里
+   （`git log --diff-filter=D -- scripts/golden_scan.py` 找到删除提交，再 `git show <sha>^:scripts/golden_scan.py`）。
+4. 已知覆盖缺口：`new_face` / `momentum` / `comeback` 在真实通路里分支稀疏，
+   本包单测只能覆盖纯函数部分 —— 需要 conn / adapter 的阶段仍在 orchestrator，
+   **动到它们必须另补针对性单测**（`tests/test_orchestrator.py` 对
+   `scan_with_raw` 本身仍零覆盖，这是已知且接受的缺口）。
+5. 本包只放**纯函数或近乎纯的函数**（输入 → 输出，不持有全局状态、不做 IO）。
 
 ## 当前已抽出
 

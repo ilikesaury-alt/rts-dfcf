@@ -43,7 +43,8 @@ def _isolate_log_dir(tmp_path, monkeypatch):
 
     ⚠ 必须打到 **`scanner.log_utils` 自己的命名空间**：它是快照式导入
     （`from scanner.config import LOG_DIR`），改 `scanner.config.LOG_DIR` 对它无效
-    （同 `rule_validate` override 传播、`golden_scan` 的 `now_beijing` 覆盖那两处坑）。
+    （同 `rule_validate` override 传播那处坑；`golden_scan` 的 `now_beijing` 覆盖
+    是同类坑的第二个例子，该工具 2026-09-28 已删除，原理仍适用）。
     今后若有模块再次快照 `LOG_DIR`，要一并加进来。
     """
     import scanner.log_utils as log_utils

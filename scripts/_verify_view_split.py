@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """视图层物理拆分的等价性证明（display.py → view/{model,assemble,render}.py）。
 
-为什么需要它：`scripts/golden_scan.py` 比对的是 `ScanResult`，**覆盖不到 display/view
+为什么需要它：`orchestrator.scan_with_raw` 的黄金样本（`scripts/golden_scan.py`，
+2026-09-28 已删除）比对的是 `ScanResult`，**覆盖不到 display/view
 这条渲染链**；`tests/test_display.py` 只测被显式写到的分支。物理拆分若漏搬一个函数、
 搬错一个常量、或漏 re-export 一个被消费的名字，两者都可能全绿。
 
@@ -153,6 +154,10 @@ EXPECTED_CONST_DIVERGENCE = {
     # 那由 tests/test_feishu.py::test_hot_row_columns_match_terminal /
     # test_hot_row_width_is_uniform 守，改列必须同时跑它们。
     "COLS_HOT": "列集变更（5efd8cb 插入「5日累计」列）：功能迭代，非拆分走样",
+    # 2026-09-28 commit a826bcb「资金流图标只画负向两档 —— 正流入撤下」：
+    # _FUND_FLOW_ICON 的键集由五档收窄到负向两档（正流入不再画图标）。
+    # 该改动当时**漏登记**，本工具红了一轮才被发现 —— 补登记于同日。
+    "_FUND_FLOW_ICON": "图标键集收窄到负向两档（a826bcb 正流入撤下）：功能迭代，非拆分走样",
 }
 
 # ── 拆分后**有意**改动的定义体白名单 ──
@@ -215,6 +220,15 @@ EXPECTED_BODY_DIVERGENCE = {
     # build_scan_view 的 new_symbols 入参（跨轮票集差集），**不读** recommendations.time
     # （后者会被提分覆盖，MIN(time) 是「最后一次提分」而非首次出现）。
     "MainRow": "新增 is_new_entry 字段（本轮新进池：v1 排序第 1 键 + 两出口行尾「新」标记）",
+    # 2026-09-28 commit a826bcb「资金流图标只画负向两档 —— 正流入撤下，证据改为可复算」：
+    # 展示层图标表从五档收窄到负向两档（正流入不再画 ▲/▲▲），判定源
+    # signals.fund_flow_signal 五档口径**不动**（那是权重链路，改它须过 rule_validate）。
+    # 该改动当时漏登记、本工具红了一轮才被发现 —— 补登记于同日。
+    # 受影响的消费方（feishu 卡片 / today_report._flow_icon / 三张形状表）由
+    # tests/test_fund_flow_mark_tables_stay_in_sync 守，本工具管不到那层。
+    "_fund_flow_icon_str": "图标表收窄到负向两档 + docstring 改为可达性口径（a826bcb）：功能迭代，非拆分走样",
+    "_market_extra_str": "docstring 同步：资金流中性与正流入不显示，指向 _FUND_FLOW_ICON（a826bcb）："
+    "2026-09-28 行尾美感字面量「美」→「稳」一并随全仓改名",
 }
 
 SKIP_MODULES = {

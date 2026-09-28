@@ -1,7 +1,7 @@
 """候选池构建阶段的纯函数（从 `orchestrator.scan_with_raw` 等价抽出，2026-09-13）。
 
 **等价纪律**：见 `scanner/pipeline/__init__.py`。改动本模块后必须跑
-`python scripts/golden_scan.py --date <四个日期>`，全部退出码 0 才算等价。
+`pytest tests/test_pipeline.py`（黄金样本工具已于 2026-09-28 删除，见包 docstring）。
 """
 
 from __future__ import annotations

@@ -5,8 +5,9 @@
 回答的问题：**如果飙升榜推送的不是实时飙升票，而是昨天筛出来的 v1 票，
 今天这套门会放行哪几只、拒掉哪几只、各死在哪个环节。**
 
-做法（与 `scripts/golden_scan.py` 同源的离线回放机制，注入点在 `scan_with_raw` 的
-第一个参数 `raw`——它就是飙升榜的原始输入）：
+做法（离线回放机制，注入点在 `scan_with_raw` 的
+第一个参数 `raw`——它就是飙升榜的原始输入；机制与已删除的 `scripts/golden_scan.py`
+同源，那份 2026-09-28 随黄金样本一并删除，本脚本自带一份不依赖它）：
 
 1. 从 `recommendations(from_date)` 取候选票（`--scope` 决定范围）
 2. 用腾讯批量行情取 `to_date` 的实时行情，充当榜单的 percent / current / turnover_rate
@@ -203,7 +204,8 @@ def build_raw(cands: list[dict], quotes: dict[str, dict], conn: sqlite3.Connecti
     return raw
 
 
-# ── 2. 离线确定性支撑（与 golden_scan 同款，避免跨脚本耦合这里自带一份）──
+# ── 2. 离线确定性支撑（原本与 golden_scan 同款；该脚本 2026-09-28 已删，
+#    这里本来就自带一份、不跨脚本耦合，故不受影响）──
 
 
 class OfflineAdapter:

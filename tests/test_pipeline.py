@@ -4,11 +4,13 @@
 **零测试覆盖**——`tests/test_orchestrator.py` 只测辅助函数，没有一个用例调用它。
 拆出来的每个纯函数在这里补上直接覆盖，让"主通路的组成部分"第一次有了单测。
 
-**与黄金样本的分工**（两者都要有，不可互相替代）：
-- `scripts/golden_scan.py` 证明**整体等价**（同一输入 → `ScanResult` 逐字段一致）；
-  但它有覆盖缺口（comeback 桶恒为 0、new_face/momentum 多数日期 0~1）。
-- 本文件证明**局部正确**，且能覆盖黄金样本走不到的分支（如大市值过滤、
-  现价超限、current<=0 剔除、各桶排序键）。
+**与黄金样本的分工**（历史，2026-09-28 起只剩本文件）：
+- `scripts/golden_scan.py` 原本证明**整体等价**（同一输入 → `ScanResult` 逐字段一致），
+  但基线随 `scanner.db` 生长结构性必腐、且第 3 步不再继续，已于 2026-09-28 删除
+  （复原查 git 历史）。
+- 本文件是 `scanner/pipeline/` **目前唯一的守护**，覆盖单测能直接构造的分支
+  （大市值过滤、现价超限、current<=0 剔除、各桶排序键）。
+  `scan_with_raw` 本身对 `tests/test_orchestrator.py` 仍零覆盖 —— 已知缺口，见包 docstring。
 
 全程离线，不读 scanner.db、不联网。
 """
