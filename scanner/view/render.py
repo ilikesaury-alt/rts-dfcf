@@ -6,6 +6,10 @@ from scanner.config import (
     TOP40_THRESHOLD,
     now_beijing,
 )
+
+# 「读法」图例（scanner/label_registry.legend_line）2026-09-28 按用户决策**双端整体移除**，
+# 本文件不再 import 它；文案单源仍在 registry 里（scripts/label_audit.py 打印），挂回时两端
+# 都调 legend_line(section)，不要另起第二份文案。
 from scanner.models import Candidate, RecommendationRow
 
 # 排序/画像纯逻辑单源在 scanner.ranking；display 只导入渲染所需子集。
@@ -253,7 +257,7 @@ def _fmt_hot_amount(amount: float) -> str:
 
 
 def _watch_tail_terminal(ff_pct, beauty: str) -> str:
-    """独立观察区（沪深飙升 / v1 回捞）的行尾标记：资金流 ▼/▼▼ + 日线美感「美」。
+    """独立观察区（沪深飙升 / v1 回捞）的行尾标记：资金流 ▼/▼▼ + 日线美感「稳」。
 
     与主表 `_entry_row_suffix` 同一分工 —— 判定单源（`signals.fund_flow_signal` /
     `display_gates.beauty_marks_daily`），本层只负责成形（ANSI）。两个独立区共用本函数，
@@ -263,7 +267,7 @@ def _watch_tail_terminal(ff_pct, beauty: str) -> str:
 
     可达性（两个区都有，都不是 bug）：正流入的 ▲/▲▲ **不画**（2026-09-28 撤下，
     依据见 view.model._FUND_FLOW_ICON）；▼▼ 不可达（≤-8% 已被通用门剔除）；
-    美★ 不可达（两区都不抓分时，`beauty_marks_daily` 只给日线档）。
+    稳★ 不可达（两区都不抓分时，`beauty_marks_daily` 只给日线档）。
     """
     tail = _fund_flow_icon_str(ff_pct)
     if tail:
@@ -385,9 +389,13 @@ def _render_hot_watch_region(rows, offboard_rows=None) -> None:
     #     print(
     #         f"  标记：{ANSI['GREEN']}▲▲/▲{ANSI['RESET']}=主力净流入(≥+8%/≥+5%)　"
     #         f"{ANSI['RED']}▼{ANSI['RESET']}=净流出(≤-5%；≤-8% 已被硬门剔除，故不出现 ▼▼)　"
-    #         f"{ANSI['GREEN']}美{ANSI['RESET']}=日线趋势漂亮（尾部回撤更小·非更易大涨；"
-    #         f"日线数据不足则不标；本区默认开日线美感门，无分时档故不出现美★）"
+    #         f"{ANSI['GREEN']}稳{ANSI['RESET']}=日线趋势稳（尾部回撤更小·非更易大涨；"
+    #         f"日线数据不足则不标；本区默认开日线美感门，无分时档故不出现稳★）"
     #     )
+    # ⚠ 2026-09-28 恢复的「一行反误读图例」同日按用户决策**再次移除**（「去掉显示读法」）：
+    #   双端都不再打图例行，只留行内标记。图例文案仍在 scanner/label_registry.legend_line
+    #   里维护（scripts/label_audit.py 打印），随时可挂回 —— 挂回时在本文件加一个调
+    #   legend_line(section) 的打印点、并在 feishu 对应位置加同一个调用，两端必须同源。
 
 
 def render_hot_watch_standalone(rows, offboard_rows=None) -> None:
@@ -430,9 +438,9 @@ def _render_hist_watch_region(rows) -> None:
     print(_table_header(COLS_HIST))
     for _hi, c in enumerate(rows, 1):
         # 行尾标记（2026-09-16；2026-09-28 起资金流只画 ▼/▼▼，正向不画）：
-        # 资金流 + 日线美感「美」，与飙升区共用
+        # 资金流 + 日线美感「稳」，与飙升区共用
         # `_watch_tail_terminal`（判定单源 signals / display_gates，本层只成形）。
-        # 本区结构上不会出现「美★」与「▼▼」，原因见 scanner/historical_watch
+        # 本区结构上不会出现「稳★」与「▼▼」，原因见 scanner/historical_watch
         # 与 scanner/display_gates 的模块 docstring。
         print(
             _table_row(
@@ -473,12 +481,13 @@ def _render_hist_watch_region(rows) -> None:
     #   （依据见 view.model._FUND_FLOW_ICON）。
     # 两档的分档语义必须在**本区就地**说清，否则最自然的读法都是错的：
     #   ▼ 只回答「-8% 以上这一段的强弱」（≤-8% 已被硬门剔除，故 ▼▼ 不可达）；
-    #   美 表示「尾部回撤更小」，不是「更可能大涨」（trend_beauty 分档实测 hit 低于基线）。
+    #   稳 表示「尾部回撤更小」，不是「更可能大涨」（trend_beauty 分档实测 hit 低于基线）。
     # print(
     #     f"  标记：{ANSI['GREEN']}▲▲/▲{ANSI['RESET']}=主力净流入(≥+8%/≥+5%)　"
     #     f"{ANSI['RED']}▼{ANSI['RESET']}=净流出(≤-5%；≤-8% 已被硬门剔除，故不出现 ▼▼)　"
-    #     f"{ANSI['GREEN']}美{ANSI['RESET']}=日线趋势漂亮（尾部回撤更小·非更易大涨；本区无分时档，不会出现美★）"
+    #     f"{ANSI['GREEN']}稳{ANSI['RESET']}=日线趋势稳（尾部回撤更小·非更易大涨；本区无分时档，不会出现稳★）"
     # )
+    # ⚠ 图例已按用户决策移除（2026-09-28「去掉显示读法」），见 render.py 顶部 hot 区注释。
 
 
 def render_hist_watch_standalone(rows) -> None:
@@ -534,7 +543,7 @@ def render_terminal(view: ScanView) -> None:
         )
         if row.is_new_entry:
             # 本轮新进池标记（2026-09-21）：与 v1 排序第 1 键 is_new 同源。
-            # 插在**行尾最前**（新 → ⚠风险 → 资金流 → ⚡ → 纪律标签 → 美），与飞书卡片
+            # 插在**行尾最前**（新 → ⚠风险 → 资金流 → ⚡ → 纪律标签 → 稳），与飞书卡片
             # _row_line 的插入位置一致 —— 同一条判定在两个出口必须给出同一种待遇。
             _suffix = f" {ANSI['BOLD']}{ANSI['MAGENTA']}新{ANSI['RESET']}" + _suffix
         print(
@@ -586,12 +595,14 @@ def render_terminal(view: ScanView) -> None:
     # )
     # 美感标记分档图例（2026-09-15）：仅在确有标记时打一行，避免常年占位。
     # ★ 必须就地解释成「回撤更小」——否则最自然的误读是「更可能大涨」，而数据不支持
-    # （美★ 与 美 的 next_day hit 无正向区分度，只有尾部回撤有差别，见 trend_beauty docstring）。
-    # 飞书卡片 build_feishu_card 有一份同义图例，两处须同步改（守卫见 test_display）。
+    # （稳★ 与 稳 的 next_day hit 无正向区分度，只有尾部回撤有差别，见 trend_beauty docstring）。
+    # ⚠ 2026-09-28 起本图例由 scanner/label_registry.legend_line 统一生成，
+    #   同日按用户决策「去掉显示读法」整行移除（飞书 build_feishu_card 同批移除），
+    #   下面这份旧注释块保留作历史 —— 当年「两处须同步改」的约束，现由 registry 单源承担。
     # if any((view.beauty_mark or {}).values()):
     #     print(
-    #         f"  {ANSI['GREEN']}美{ANSI['RESET']}=日线趋势漂亮　"
-    #         f"{ANSI['GREEN']}美★{ANSI['RESET']}=分时亦漂亮（尾部回撤更小·非更易大涨）"
+    #         f"  {ANSI['GREEN']}稳{ANSI['RESET']}=日线趋势稳　"
+    #         f"{ANSI['GREEN']}稳★{ANSI['RESET']}=分时亦稳（尾部回撤更小·非更易大涨）"
     #     )
     print(_table_header(COLS_POOL))
     for _si, row in enumerate(view.main_rows, 1):

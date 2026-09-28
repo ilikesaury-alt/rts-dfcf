@@ -1,12 +1,15 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""「美」走势标记分档的样本外裁决（离线 · 确定性 · 只读 scanner.db）。
+"""「稳」走势标记分档的样本外裁决（离线 · 确定性 · 只读 scanner.db）。
+
+（2026-09-09 上线时用户可见字面量叫「美」，2026-09-28 按用户决策改为「稳」——
+「美」最自然的误读是「更可能大涨」，而分档实测不支持。本脚本文案同步。）
 
 ## 为什么需要它
 
 `beauty_mark`（scanner/trend_beauty）是**纯展示层**：`rule_validate` 三个评估器
 （stored-score / nextday-prob / rescore）**都看不见它**，所以改它的口径不需要过样本外
-验证门 —— 但它有**用户可见语义**（行尾一个「美」直接参与"这只买不买"的判断），
+验证门 —— 但它有**用户可见语义**（行尾一个「稳」直接参与"这只买不买"的判断），
 属于「必须另证」的那类改动。
 
 2026-09-15 之前，这个证明只活在一次性的 heredoc 里，而 config 注释引用的
@@ -17,7 +20,7 @@
 
 - 日线：直接调 `trend_beauty.evaluate_daily_trend`（生产函数）
 - 分时：直接调 `trend_beauty.evaluate_intraday_beauty`（生产函数；0.0 = 未评分 = 缺失）
-- 分档：直接调 `trend_beauty.beauty_mark`（生产函数）→ "" / "美" / "美★"
+- 分档：直接调 `trend_beauty.beauty_mark`（生产函数）→ "" / "稳" / "稳★"
 - 旧口径（2026-09-15 之前的「日线 ∧ 分时」）生产已无此代码，**本地复刻**作对照，
   复刻源 = `git show HEAD:scanner/trend_beauty.py` 的 beauty_mark
 
@@ -68,8 +71,11 @@ from scanner.trend_beauty import (  # noqa: E402
     evaluate_intraday_beauty,
 )
 
-TIERS = ("美★", "美", "")  # 生产分档（""=未标记）
-TIER_LABEL = {"美★": "美★（日线漂亮 + 分时亦漂亮）", "美": "美 （日线漂亮·分时未确认）", "": "未标记（基线）"}
+# 2026-09-28 起用户可见字面量由「美」改为「稳」（断言强度降到与证据相称）。
+# ⚠ 本脚本的 TIERS 必须与生产 `trend_beauty.BEAUTY_MARK` / `BEAUTY_MARK_STRONG`
+# 逐字一致，否则分档统计会静默全落进「未标记」—— 守卫见 tests/test_trend_beauty.py。
+TIERS = ("稳★", "稳", "")  # 生产分档（""=未标记）
+TIER_LABEL = {"稳★": "稳★（日线漂亮 + 分时亦漂亮）", "稳": "稳 （日线漂亮·分时未确认）", "": "未标记（基线）"}
 
 
 def load_sample(conn: sqlite3.Connection):
@@ -194,7 +200,7 @@ def paired_hit_ci(rows: list[dict], sel_a, sel_b, n_iter: int, seed: int) -> tup
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="「美」走势标记分档的样本外裁决（只读 scanner.db）")
+    ap = argparse.ArgumentParser(description="「稳」走势标记分档的样本外裁决（只读 scanner.db）")
     ap.add_argument("--db", default=str(ROOT / "scanner.db"), help="数据库路径（默认仓库根 scanner.db）")
     ap.add_argument("--cutoff", choices=("t1", "t"), default="t1", help="日线截断：t1=严格早于信号日（默认，防前视）")
     ap.add_argument("--hit-pct", type=float, default=7.0, help="hit 阈值（%%），默认 7.0 = 项目唯一类别先验口径")
@@ -263,7 +269,7 @@ def main() -> int:
         "threshold_keep": {str(t): len(v) for t, v in thr_keep.items()},
         "bootstrap": {},
     }
-    for t in ("美★", "美"):
+    for t in ("稳★", "稳"):
         obs, lo, hi = paired_hit_ci(
             rows, lambda x, t=t: x["mark"] == t, lambda x: x["mark"] == "", args.bootstrap, args.seed
         )
@@ -301,16 +307,16 @@ def main() -> int:
     print("\n── 归因：旧标记为什么几乎为空（基数＝日线美）──")
     n_day = len(within)
     print(f"  日线美（可判定且 6 硬门全过）             {fmt_stats(stats(within))}")
-    for t in ("美★", "美"):
+    for t in ("稳★", "稳"):
         sub = tiers[t]
         print(
-            f"  ├ 其中分时{'亦漂亮 → 美★' if t == '美★' else '未确认 → 美 ':18} n={len(sub):>5}"
-            f"  占日线美 {len(sub) / max(1, n_day) * 100:5.1f}%"
+            f"  ├ 其中分时{'亦漂亮 → 稳★' if t == '稳★' else '未确认 → 稳 ':18} n={len(sub):>5}"
+            f"  占日线稳 {len(sub) / max(1, n_day) * 100:5.1f}%"
         )
-    print("  └ 若保留分时门、只调阈值（在日线美 内）：")
+    print("  └ 若保留分时门、只调阈值（在日线稳 内）：")
     for t, keep in thr_keep.items():
         print(
-            f"      阈值 {t:>3} → 保留 {len(keep):>4} 只（{len(keep) / max(1, n_day) * 100:5.1f}% 的日线美）"
+            f"      阈值 {t:>3} → 保留 {len(keep):>4} 只（{len(keep) / max(1, n_day) * 100:5.1f}% 的日线稳）"
             f" → 全样本标记率 {len(keep) / len(rows) * 100:5.1f}%"
         )
     print(
@@ -319,7 +325,7 @@ def main() -> int:
 
     print("\n── hit 差（按日聚簇 bootstrap 95% CI，含 0 = 不显著）──")
     for k, b in result["bootstrap"].items():
-        tag = {"美★": "美★ vs 未标记", "美": "美  vs 未标记", "old_vs_rest": "旧标记 vs 其余"}[k]
+        tag = {"稳★": "稳★ vs 未标记", "稳": "稳  vs 未标记", "old_vs_rest": "旧标记 vs 其余"}[k]
         ci = "n/a（--bootstrap 0）" if b["lo95"] != b["lo95"] else f"[{b['lo95']:+.1f}, {b['hi95']:+.1f}]pp"
         print(f"  {tag:16} Δ={b['delta_pp']:+5.1f}pp  95%CI={ci}")
 

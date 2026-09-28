@@ -341,14 +341,14 @@ def _entry_sector(entry: RecommendationRow | dict) -> str:
 
 
 def _beauty_mark_for(entry: RecommendationRow | dict, kline: list | None) -> str:
-    """v1 池选行尾走势标记（分档）："" / "美" / "美★"（不标丑，2026-09-09 用户口径）。
+    """v1 池选行尾走势标记（分档）："" / "稳" / "稳★"（不标丑，2026-09-09 用户口径）。
 
     判定单源在 trend_beauty.beauty_mark——**日线定准入、分时定级别**：日线不漂亮或
-    不足 → 不标；日线漂亮而分时未确认（走弱/缺失）→ "美"；日线漂亮且分时亦漂亮 → "美★"。
+    不足 → 不标；日线漂亮而分时未确认（走弱/缺失）→ "稳"；日线漂亮且分时亦漂亮 → "稳★"。
     fail-open 一致：数据缺失只降档、不判否。纯展示，不改过滤/排序/落库。
     2026-09-09 数据裁决后走势漂亮**从不作准入硬门**，本标记保留作买入体验
     参考（"稳而不爆"）；开关 RTS_TREND_MARK。
-    ⚠ ★ 的语义是**尾部回撤更小**，不是「更可能大涨」（美★/美 的 hit 无正向区分度）——
+    ⚠ ★ 的语义是**尾部回撤更小**，不是「更可能大涨」（稳★/稳 的 hit 无正向区分度）——
     分档依据与复现脚本见 trend_beauty 模块 docstring / scripts/beauty_mark_eval.py。
     2026-09-14：v2 池选展示区隐藏后，本标记现状只落在 v1 池选行。
     2026-09-21：原「终选美感门」（FINAL_PICK_BEAUTY_ENABLED，默认关）随终选参考区
@@ -407,7 +407,9 @@ def _entry_row_suffix(
         for tag in c.tactic_tags:
             parts.append(f" {ANSI['YELLOW']}{tag}{ANSI['RESET']}")
     # 走势美感标记（2026-09-09 上线 / 2026-09-15 分档，仅 v1/v2 池选行传入）：
-    # 分档标「美」/「美★」绿，不标丑。★ 的图例由 render_terminal / build_feishu_card 就地解释。
+    # 分档标「稳」/「稳★」绿，不标丑。★ 的语义（回撤更小·非更易大涨）只登记在
+    # scanner/label_registry 的 counter 里 —— 该图例 2026-09-28 按用户决策停用，
+    # 两端不再就地解释，挂回时改调 label_registry.legend_line。
     if beauty:
         parts.append(f" {ANSI['GREEN']}{beauty}{ANSI['RESET']}")
     return "".join(parts)
@@ -591,7 +593,7 @@ class ScanView:
     # 2026-09-21 按用户决策「终选参考区整体删除」移除的字段（需复原见 git 历史）：
     #   final_pick_lines              —— 终选参考区文本行（scanner/final_pick.py 整模块
     #                                    与 scanner/decision.py 同批删除）。
-    # 走势美感标记（2026-09-09 上线 / 2026-09-15 分档）：{(symbol, category): ""|"美"|"美★"}，
+    # 走势美感标记（2026-09-09 上线 / 2026-09-15 分档）：{(symbol, category): ""|"稳"|"稳★"}，
     # v1 池选行行尾渲染（_entry_row_suffix beauty 参数）。纯展示预判（判定单源
     # trend_beauty.beauty_mark：日线准入+分时分级），不改过滤/排序/落库。
     # 2026-09-14：v2 池选展示区已隐藏，故现状只服务 v1 池选行。

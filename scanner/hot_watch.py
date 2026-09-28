@@ -25,8 +25,8 @@
   本地 —— 它们需要昨收推算的涨跌停价，且「必须上涨」是本区取样定义而非风险门
   （回捞区的取样条件方向相反）。
 - **标记**与 v1 池选 / v1 回捞同源：资金流（`fund_flow_signal` → 终端 ▼/▼▼、卡片 🔴/🔴🔴）
-  与日线美感（`display_gates.beauty_marks_daily`）。因本区不抓分时，美感只有「美」一档，
-  结构上不会出现「美★」；同理资金流 ≤-8% 已被硬门剔除，图标不会出现「▼▼」；
+  与日线美感（`display_gates.beauty_marks_daily`）。因本区不抓分时，美感只有「稳」一档，
+  结构上不会出现「稳★」；同理资金流 ≤-8% 已被硬门剔除，图标不会出现「▼▼」；
   正流入的 ▲/🟢 自 2026-09-28 起**不再画**（无区分度，见 view.model._FUND_FLOW_ICON）。
 
 数据源与补全分工（2026-09-11 实测，勿互换）
@@ -59,8 +59,6 @@ from scanner.config import (
     HOT_ENRICH_LIMIT,
     HOT_FUND_FLOW_FILTER_ENABLED,
     HOT_LIMIT_DOWN_TOLERANCE,
-    HOT_LIMIT_PCT_GEM,
-    HOT_LIMIT_PCT_MAIN,
     HOT_LIMIT_UP_NEAR,
     HOT_MAX_MARKET_CAP,
     HOT_MAX_PERCENT,
@@ -83,7 +81,9 @@ from scanner.config import (
     now_beijing,
 )
 from scanner.display_gates import beauty_marks_daily, common_hard_gate
-from scanner.utils import EXTERNAL_FAILURES, accum_5d, is_gem, is_st, to_float
+from scanner.limit_rules import limit_pct_for as limit_pct_for  # noqa: F401 (re-export)
+from scanner.limit_rules import limit_prices as limit_prices  # noqa: F401 (re-export)
+from scanner.utils import EXTERNAL_FAILURES, accum_5d, is_st, to_float
 
 logger = logging.getLogger(__name__)
 
@@ -128,9 +128,9 @@ class HotCandidate:
     # ff_pct：主力净占比（DB 当日快照）。硬门已剔除 ≤ FUND_OUTFLOW_NET_PCT(-8%)，
     #   正向档 2026-09-28 起也不画 ⇒ 图标实际只可能落到「▼」或空（中性），
     #   「▲▲/▲」与「▼▼」在本区结构上都不可达。
-    # beauty：**只有日线档**（"美" / ""）。本区不抓分时数据，结构上不可能有「美★」。
+    # beauty：**只有日线档**（"稳" / ""）。本区不抓分时数据，结构上不可能有「稳★」。
     #   注意 `HOT_BEAUTY_GATE_ENABLED` 开启（默认）时，本区**所有**通过的行都满足日线
-    #   美感 → 整列恒为「美」。这不是 bug：它回答的是「这一行确实过了日线美感门」，
+    #   美感 → 整列恒为「稳」。这不是 bug：它回答的是「这一行确实过了日线美感门」，
     #   把门关掉（RTS_HOT_BEAUTY_GATE=0）后标记才重新有区分度。
     ff_pct: float | None = None
     beauty: str = ""
@@ -160,32 +160,21 @@ def is_hot_universe(exchange: str, code: str) -> bool:
 
 
 def _strip_code(code: str) -> str:
-    """去掉 SH/SZ/BJ 交易所前缀，取 6 位纯代码。"""
+    """去掉 SH/SZ/BJ 交易所前缀，取 6 位纯代码。
+
+    2026-09-28：`limit_pct_for`/`limit_prices` 已迁至 `scanner/limit_rules.py`，
+    但本函数仍被 `is_hot_universe` 与 `hard_exclude` 使用，故保留在本模块。
+    """
     if len(code) > 2 and code[:2] in ("SH", "SZ", "BJ"):
         return code[2:]
     return code
 
 
-def limit_pct_for(code: str) -> float:
-    """该代码的当日涨跌幅限制（%）：创业板 20%，主板 10%。
-
-    本区样本面已剔除科创板与 ST，故只需两档。ST 为 ±5% 但已被 is_st 过滤。
-    """
-    return HOT_LIMIT_PCT_GEM if is_gem(code) else HOT_LIMIT_PCT_MAIN
-
-
-def limit_prices(last_close: float, code: str) -> tuple[float, float]:
-    """由昨收推算涨停价 / 跌停价（A 股规则：昨收 ×(1±limit%)，四舍五入到分）。
-
-    batch 行情接口不返回 limit_up/limit_down，但返回 last_close —— 据此推算可与
-    接口值逐分对齐，硬排除不依赖可选的 detail 补拉（补拉失败时口径不变）。
-    last_close ≤ 0（脏值/缺失）时返回 (0.0, 0.0) —— 调用方按「无法判定」处理，
-    不做涨跌停排除（fail-open，宁可放过也不误杀）。
-    """
-    if last_close <= 0 or not math.isfinite(last_close):
-        return 0.0, 0.0
-    pct = limit_pct_for(code)
-    return round(last_close * (1 + pct / 100.0), 2), round(last_close * (1 - pct / 100.0), 2)
+# 涨跌停幅度判定**单源在 scanner/limit_rules.py**（2026-09-28 抽出）：
+# `intraday_tactics` 也要按板块制度判涨停，两处各写一份必然口径漂移 —— 它此前
+# 硬编码 `today_pct >= 9.8`（主板 10% 口径），而本仓样本面是创业板 20%，导致
+# 规则 6 在没涨停的票上误发「💰落袋」。上面两行 `as` 别名是 re-export，
+# 既有 `from scanner.hot_watch import limit_pct_for` 的调用方与测试不受影响。
 
 
 # ── 硬性排除 ────────────────────────────────────────────────────────────────
@@ -463,7 +452,7 @@ def build_candidates(
             continue
 
         # 美感门 + 美感标记（2026-09-16）：**同一次判定**同时供给门与标记
-        # （display_gates.beauty_marks_daily），故不存在「门放行却不标美」的错位。
+        # （display_gates.beauty_marks_daily），故不存在「门放行却不标稳」的错位。
         # 门 = 本区自有开关（HOT_BEAUTY_GATE_ENABLED）；标记 = 全局开关
         # TREND_MARK_ENABLED（与 v1 池选/回捞同一语义：全局关掉即整仓不标）。
         blocked, mark, detail = beauty_marks_daily(klines_map.get(symbol) if conn is not None else None)

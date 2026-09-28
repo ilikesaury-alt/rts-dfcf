@@ -32,6 +32,12 @@ TACTICS_SHRINK_VOL_RATIO = 0.7  # rule 7：缩量判定（当前量比 < 此值�
 TACTICS_AM_NOT_OVER_HIGH_MINS = 810  # rule 7：午盘段起点（13:30 后看冲高回落）
 TACTICS_MIDDAY_WINDOW_END = 870  # rule 7：午盘段终点（14:30，与尾盘跳水段衔接）
 TACTICS_LIMITUP_WINDOW_MINS = 30  # rule 6：14:00 涨停落袋窗口长度（14:00-14:30）
+# 「接近涨停」= 板块涨停幅度 × 此比例（**不写死百分点**）。
+# 0.98 → 主板 9.8%（沿用本模块原值）、创业板 19.6%。
+# 2026-09-28 修复：原实现硬编码 `today_pct >= 9.8`（主板口径），而本仓样本面是
+# 创业板 20% —— 涨 9.8% 远未涨停却被判成「已封板」，规则 6 因此误发「💰落袋」、
+# 规则 2/1 的「未封板」分支被压制。判定单源见 scanner/limit_rules.near_limit_pct。
+TACTICS_NEAR_LIMIT_PCT_RATIO = 0.98
 TACTICS_SPIKE_REDUCE_PCT = 3.0  # rule 1：早盘冲高减仓线（现涨幅 ≥ 此值且未封板）
 TACTICS_MORNING_CRASH_PCT = -3.0  # rule 12：早上大跌加仓线（现涨幅 ≤ 此值且无硬风险）
 TACTICS_STEADY_RATIO_MIN = 0.6  # rule 3：稳步走高判定（爬升采样占比 ≥ 此值）
@@ -87,6 +93,7 @@ __all__ = [
     "TACTICS_AM_NOT_OVER_HIGH_MINS",
     "TACTICS_MIDDAY_WINDOW_END",
     "TACTICS_LIMITUP_WINDOW_MINS",
+    "TACTICS_NEAR_LIMIT_PCT_RATIO",
     "TACTICS_SPIKE_REDUCE_PCT",
     "TACTICS_MORNING_CRASH_PCT",
     "TACTICS_STEADY_RATIO_MIN",

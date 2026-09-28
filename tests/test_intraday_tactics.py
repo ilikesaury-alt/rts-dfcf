@@ -247,6 +247,55 @@ class TestRule6LimitUp:
         assert "💰落袋" not in actions
 
 
+class TestLimitUpBoardAwareness:
+    """涨停判定按**板块涨跌幅制度**（S1）：创业板 ±20%、主板 ±10%。
+
+    2026-09-28 修复：原实现硬编码 `today_pct >= 9.8`（主板口径），而本仓样本面是
+    创业板 20% —— 涨 9.8% 远未涨停却被判成「已封板」，规则 6 因此误发「💰落袋」。
+    判定单源 scanner/limit_rules.near_limit_pct（比例制，随板块缩放）。
+    """
+
+    def test_gem_at_12pct_is_not_limit_up(self):
+        """创业板票涨 12%（远未涨停）→ 14:00-14:30 **不**发「💰落袋」。
+
+        这是被修的那个 bug：旧实现 12 >= 9.8 → 误判已封板 → 误发落袋清仓。
+        """
+        c = _cand(pct=12.0, lianban=0, zhaban=0)  # SZ300001 = 创业板
+        actions = stock_actions(c, _now(14, 10))
+        assert "💰落袋" not in actions, "创业板 12% 远未涨停，不应发落袋"
+
+    def test_gem_at_19_7pct_is_near_limit(self):
+        """创业板票涨 19.7%（≥ 20×0.98=19.6）→ 视为接近涨停 → 发「💰落袋」。"""
+        c = _cand(pct=19.7, lianban=0, zhaban=0)
+        actions = stock_actions(c, _now(14, 10))
+        assert "💰落袋" in actions, "创业板 19.7% 已接近涨停，应发落袋"
+
+    def test_main_board_at_9_8pct_is_near_limit(self):
+        """主板票涨 9.8%（= 10×0.98）→ 视为接近涨停（沿用原值，行为不变）。"""
+        stock = StockInfo(
+            symbol="SH600001", name="测试", code="600001", percent=9.8,
+            current=10.0, value=1e8, rank=1, rank_change=0,
+        )
+        kline = KlineSummary(
+            trend="up", accumulated_pct=5.0, volume_ratio=1.0,
+            bottom_confirmed=False, score=50, dimensions={},
+        )
+        kline.dimensions["zt_lianban"] = 0
+        kline.dimensions["zt_zhaban"] = 0
+        c = Candidate(
+            stock=stock, category="new_face", score=50, reason="test",
+            kline=kline, risk_flags=[],
+        )
+        actions = stock_actions(c, _now(14, 10))
+        assert "💰落袋" in actions, "主板 9.8% 已接近涨停，应发落袋"
+
+    def test_gem_at_12pct_no_false_reduce(self):
+        """创业板票涨 12% 高开封不住 → 应发「⬇减半」（旧实现被 9.8 误判压制）。"""
+        c = _cand(pct=12.0, lianban=0, zhaban=0)
+        actions = stock_actions(c, _now(9, 35), kline_bars=_bars(_now(9, 35), open_pct=6.0))
+        assert "⬇减半" in actions, "创业板 12% 高开封不住，应发减半"
+
+
 # ── 规则 7：午盘冲高回落+缩量 → ⬇减仓 ──
 
 class TestRule7MiddayFade:
@@ -381,7 +430,7 @@ class TestTagSingleSource:
         # 尾盘跳水勿接（规则 5）
         assert set(stock_actions(_cand(pct=2.0), _now(14, 35), high_pct=5.0)) <= known
         # 涨停落袋（规则 6）
-        assert set(stock_actions(_cand(pct=10.0), _now(14, 10))) <= known
+        assert set(stock_actions(_cand(pct=10.0, lianban=1, zhaban=0), _now(14, 10))) <= known
 
     def test_no_hardcoded_tag_literals_in_source(self):
         """源码中除 config_tactics.py 外不得出现标签字面量（docstring 说明除外）。"""

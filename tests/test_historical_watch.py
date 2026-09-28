@@ -338,17 +338,17 @@ def test_evaluate_beauty_blank_when_daily_not_beautiful():
 
 
 def test_evaluate_never_marks_strong_even_if_meta_carries_breakdown():
-    """结构守卫：本区**永不**产出「美★」，即使 meta 里带 score_breakdown。
+    """结构守卫：本区**永不**产出「稳★」，即使 meta 里带 score_breakdown。
 
     ★ 需要「分时确认漂亮」，而本区不抓分时。库里那份 score_breakdown 是**上次推荐当日**
     的分时 —— 一旦有人图省事把 meta 整个喂进 beauty_mark，evaluate_intraday_beauty 会把它
-    当成今日分时，把「美」静默升级成「美★」（用户会读成「分时也漂亮」）。
-    本用例故意喂一份 intraday_score=9.0 的 breakdown，断言结果仍是「美」。
+    当成今日分时，把「稳」静默升级成「稳★」（用户会读成「分时也漂亮」）。
+    本用例故意喂一份 intraday_score=9.0 的 breakdown，断言结果仍是「稳」。
     """
     m = _meta() | {"score_breakdown": '{"intraday_score": 9.0}'}
     rows = evaluate([m], {m["symbol"]: _quote()}, {m["symbol"]: _hist_up()}, {}, 240, TODAY)
 
-    assert rows[0].beauty == BEAUTY_MARK, "回捞区不得出现「美★」—— 它没有今日分时数据"
+    assert rows[0].beauty == BEAUTY_MARK, "回捞区不得出现「稳★」—— 它没有今日分时数据"
 
 
 def test_extreme_outflow_never_reaches_display_rows():

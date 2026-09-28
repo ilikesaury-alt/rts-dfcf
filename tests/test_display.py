@@ -1173,11 +1173,12 @@ def test_feishu_card_matches_terminal_selection(capsys):
     )
 
 
-# ── 走势美感标记（2026-09-15 分档：日线定准入、分时定级别 → ""/"美"/"美★"）──
+# ── 走势美感标记（2026-09-15 分档：日线定准入、分时定级别 → ""/"稳"/"稳★"）──
+# 2026-09-28 起用户可见字面量由「美」改为「稳」（断言强度降到与证据相称）。
 
 
 def test_beauty_mark_for_verdicts():
-    """日线漂亮+分时确认漂亮 → 美★；分时走弱/缺失 → 只降档到「美」；日线缺失 → 不标。"""
+    """日线漂亮+分时确认漂亮 → 稳★；分时走弱/缺失 → 只降档到「稳」；日线缺失 → 不标。"""
     from datetime import timedelta
     from types import SimpleNamespace
 
@@ -1215,23 +1216,27 @@ def test_beauty_mark_for_verdicts():
 
     entry: dict = {"symbol": "SZ300001", "category": "pool_pick"}
     entry["_candidate"] = cand(5.0)
-    assert _beauty_mark_for(entry, bars) == "美★"  # 日线+分时双维度确认
+    assert _beauty_mark_for(entry, bars) == "稳★"  # 日线+分时双维度确认
     assert _beauty_mark_for(entry, None) == ""  # 日线是准入：日线缺失不标
 
     entry_bad = {"symbol": "SZ300001", "category": "pool_pick", "_candidate": cand(-2.0)}
-    assert _beauty_mark_for(entry_bad, bars) == "美"  # 日线好、分时差 → 降档不淘汰
+    assert _beauty_mark_for(entry_bad, bars) == "稳"  # 日线好、分时差 → 降档不淘汰
 
     bare = {"symbol": "SZ300001", "category": "pool_pick"}  # 无候选无分时维度 = 缺失
-    assert _beauty_mark_for(bare, bars) == "美"  # fail-open 只降档
+    assert _beauty_mark_for(bare, bars) == "稳"  # fail-open 只降档
     assert _beauty_mark_for(bare, None) == ""  # 日线也缺 → 不标
 
 
 def test_hist_inline_marks_on_both_surfaces(capsys):
-    """回捞区行尾标记（资金流 ▲/▼ + 日线美感「美」）必须在终端与飞书两端都落地。
+    """回捞区行尾标记（资金流 ▲/▼ + 日线美感「稳」）必须在终端与飞书两端都落地。
 
     2026-09-16 起两端都不再打印冗长图例（飞书卡片按用户决策移除；终端同款图例亦已注释），
     只保留行内标记。图例冗余移除后，行内标记是用户唯一能读到的强弱信号，不能丢 ——
     本用例守护「标记两端都不丢」。
+
+    2026-09-28 起恢复**一行**极简「反误读」图例，同日再次按用户决策「去掉显示读法」
+    整行移除 —— 现在两端只留行内标记，图例文案单源 scanner/label_registry.legend_line
+    保留但不渲染（反向守卫见文末断言）。
     """
     from scanner.feishu import build_feishu_card
     from scanner.historical_watch import HistCandidate
@@ -1256,7 +1261,7 @@ def test_hist_inline_marks_on_both_surfaces(capsys):
             cum_pct=3.5,
             market_cap=8e11,
             ff_pct=-6.2,  # ≤-5% → 终端 ▼ / 卡片 🔴（2026-09-28 正流入不再画）
-            beauty="美",
+            beauty="稳",
             score=66.0,
         )
     ]
@@ -1264,16 +1269,28 @@ def test_hist_inline_marks_on_both_surfaces(capsys):
     terminal_out = capsys.readouterr().out
     card_text = str(build_feishu_card(view, gem_total=100))
     assert "本区无分时档" not in terminal_out, "冗长图例已移除，不应再出现"
-    assert "▼ 美" in terminal_out, f"终端行尾应带资金流 ▼ 与日线美感「美」：{terminal_out[:200]}"
-    assert "🔴 美" in card_text, f"卡片行尾应带 emoji 资金流与「美」：{card_text[:200]}"
+    assert "▼ 稳" in terminal_out, f"终端行尾应带资金流 ▼ 与日线美感「稳」：{terminal_out[:200]}"
+    assert "🔴 稳" in card_text, f"卡片行尾应带 emoji 资金流与「稳」：{card_text[:200]}"
+    # 2026-09-28 同日第二次决策：图例整行移除（「去掉显示读法」）→ 反向守卫。
+    # 文案单源 legend_line 本身仍在 registry 里（另见 test_label_registry），只是两端都不再打。
+    from scanner.label_registry import legend_line
+
+    hist_legend = legend_line("hist")
+    assert hist_legend.startswith("读法：")
+    assert hist_legend not in terminal_out, f"终端不应再打回捞区图例：{hist_legend}"
+    assert hist_legend not in card_text, f"卡片不应再打回捞区图例：{hist_legend}"
 
 
 def test_hot_inline_marks_on_both_surfaces(capsys):
-    """飙升区行尾标记（资金流 ▲/▼ + 日线美感「美」）必须在终端与飞书两端都落地。
+    """飙升区行尾标记（资金流 ▲/▼ + 日线美感「稳」）必须在终端与飞书两端都落地。
 
     2026-09-16 起两端都不再打印冗长图例（飞书卡片按用户决策移除；终端同款图例亦已注释），
     只保留行内标记。图例冗余移除后，行内标记是用户唯一能读到的强弱信号，不能丢 ——
     本用例守护「标记两端都不丢」。
+
+    2026-09-28 起恢复**一行**极简「反误读」图例，同日再次按用户决策「去掉显示读法」
+    整行移除 —— 现在两端只留行内标记，图例文案单源 scanner/label_registry.legend_line
+    保留但不渲染（反向守卫见文末断言）。
     """
     from scanner.feishu import build_feishu_card
     from scanner.hot_watch import HotCandidate
@@ -1301,15 +1318,22 @@ def test_hot_inline_marks_on_both_surfaces(capsys):
             score=70.0,
             streak=1,
             ff_pct=-6.2,  # ≤-5% → 终端 ▼ / 卡片 🔴（2026-09-28 正流入不再画）
-            beauty="美",
+            beauty="稳",
         )
     ]
     disp_mod.render_terminal(view)
     terminal_out = capsys.readouterr().out
     card_text = str(build_feishu_card(view, gem_total=100))
     assert "已被硬门剔除" not in terminal_out, "冗长图例已移除，不应再出现"
-    assert "▼ 美" in terminal_out, f"终端飙升行尾应带资金流 ▼ 与日线美感「美」：{terminal_out[:200]}"
-    assert "🔴 美" in card_text, f"卡片飙升行尾应带 emoji 资金流与「美」：{card_text[:200]}"
+    assert "▼ 稳" in terminal_out, f"终端飙升行尾应带资金流 ▼ 与日线美感「稳」：{terminal_out[:200]}"
+    assert "🔴 稳" in card_text, f"卡片飙升行尾应带 emoji 资金流与「稳」：{card_text[:200]}"
+    # 2026-09-28 同日第二次决策：图例整行移除（「去掉显示读法」）→ 反向守卫。
+    from scanner.label_registry import legend_line
+
+    hot_legend = legend_line("hot")
+    assert hot_legend.startswith("读法：")
+    assert hot_legend not in terminal_out, f"终端不应再打飙升区图例：{hot_legend}"
+    assert hot_legend not in card_text, f"卡片不应再打飙升区图例：{hot_legend}"
 
 
 def test_beauty_mark_disabled_when_gate_off(monkeypatch):
@@ -1326,13 +1350,56 @@ def test_beauty_mark_disabled_when_gate_off(monkeypatch):
 
 
 def test_entry_row_suffix_renders_beauty_tag():
-    """行尾 suffix：「美」绿色，未传不渲染。"""
+    """行尾 suffix：「稳」绿色，未传不渲染。"""
     from scanner.display import ANSI, _entry_row_suffix
 
     e = {"symbol": "SZ300001", "name": "票", "category": "pool_pick"}
-    out_ok = _entry_row_suffix(e, {}, beauty="美")
-    assert "美" in out_ok and ANSI["GREEN"] in out_ok
+    out_ok = _entry_row_suffix(e, {}, beauty="稳")
+    assert "稳" in out_ok and ANSI["GREEN"] in out_ok
     assert _entry_row_suffix(e, {}) == ""
+
+
+def test_pool_legend_not_printed_on_either_surface(capsys):
+    """v1 池选区不再打「读法」图例行（2026-09-28 同日第二次决策：去掉显示读法）。
+
+    图例文案单源 scanner/label_registry.legend_line 保留（test_label_registry 守护），
+    但终端与飞书两端都不再渲染它 —— 本用例做**反向守卫**，防止图例被悄悄挂回。
+    要挂回：两端都必须调 legend_line(section)，并把本用例与另两条反向守卫一起改回正向。
+    """
+    from scanner.feishu import build_feishu_card
+    from scanner.label_registry import legend_line
+    from scanner.view.model import MainRow
+
+    conn = _rec_db()
+    _insert_rec_cat(conn, "SZ300001", "股1", "momentum", 70)
+    view = disp_mod.build_scan_view(conn, today_pool={})
+    assert view is not None
+
+    view.main_rows = [
+        MainRow(
+            entry={"symbol": "SZ300750", "code": "300750", "name": "宁德时代", "category": "momentum"},
+            accum=3.5,
+            rank=3,
+            score=70,
+            composite_score=5.0,
+            current=180.5,
+            pct=4.2,
+            sector="电池",
+            core=False,
+            cat_label="MOM",
+            is_new_entry=True,
+        )
+    ]
+    disp_mod.render_terminal(view)
+    terminal_out = capsys.readouterr().out
+    card_text = str(build_feishu_card(view, gem_total=100))
+
+    pool_legend = legend_line("pool")
+    assert pool_legend.startswith("读法：")
+    assert pool_legend not in terminal_out, f"终端不应再打池选区图例：{pool_legend}"
+    assert pool_legend not in card_text, f"卡片不应再打池选区图例：{pool_legend}"
+    assert "读法：" not in terminal_out, f"终端不应出现任何「读法」行：{terminal_out}"
+    assert "读法：" not in card_text, f"卡片不应出现任何「读法」行：{card_text}"
 
 
 # ── 视图层零写库副作用（2026-09-13 测评 A2；决策层删除后的现状）──

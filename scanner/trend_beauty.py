@@ -33,8 +33,8 @@ intraday_score（-10~10：>0 平稳走高/高位不回落，<0 冲高回落/走�
 
 展示标记分级（beauty_mark，2026-09-15 定稿）：**日线定准入、分时定级别**——
   日线不漂亮 / 日线不足        → ""（不标）
-  日线漂亮，分时未确认漂亮      → "美"   （分时走弱 **或** 分时缺失，一律归此档）
-  日线漂亮，分时亦漂亮          → "美★"
+  日线漂亮，分时未确认漂亮      → "稳"   （分时走弱 **或** 分时缺失，一律归此档）
+  日线漂亮，分时亦漂亮          → "稳★"
 分时在这里是**分级维度**，不是准入硬门。（曾存在一个按「日线 ∧ 分时」判的硬门
 FINAL_PICK_BEAUTY_ENABLED，默认关、2026-09-21 随终选参考区删除；标记比那个门宽，
 见 config_sources 的历史说明。）
@@ -47,13 +47,13 @@ p90（可判定样本通过率 12%）再砍掉约 2/3。故只调阈值上限仅
 —— 日线完全无法判定却被标「美」；分级后要求日线可判定，该缺陷消失。
 
 分档实测（覆盖率 / hit / avg / 尾部≤-7%）：
-  美★  0.7%（17）  hit 5.9%  avg -0.14%  尾部 0.0%
-  美   6.3%（154） hit 5.2%  avg -0.67%  尾部 7.8%
+  稳★  0.7%（17）  hit 5.9%  avg -0.14%  尾部 0.0%
+  稳   6.3%（154） hit 5.2%  avg -0.67%  尾部 7.8%
   未标记 93.0%（2258）hit 7.1%  avg -0.38%  尾部 7.4%
 ⇒ **★ 表示「回撤更小」，不是「更可能大涨」**：两档 hit 都低于基线（7.1%），彼此无
-正向区分度；差别只在尾部（美★ ≤-5%/≤-7% = 5.9%/0.0%，美 = 9.7%/7.8%）。★ 的
+正向区分度；差别只在尾部（稳★ ≤-5%/≤-7% = 5.9%/0.0%，稳 = 9.7%/7.8%）。★ 的
 n=17 是**极小样本**（脚本就此告警：单只 ≤-7% 即把该比率推到 5.9%），且它的
-≤-5% 优势在「美」档就已大部分拿到。复现：`python scripts/beauty_mark_eval.py`。
+≤-5% 优势在「稳」档就已大部分拿到。复现：`python scripts/beauty_mark_eval.py`。
 """
 
 from __future__ import annotations
@@ -77,26 +77,32 @@ DAILY_INSUFFICIENT = "日线不足"
 INTRADAY_MISSING = "分时缺失"
 
 # 满足美感的行尾标记（2026-09-09 用户口径：只标「美」，不标丑）
-BEAUTY_MARK = "美"
+# 2026-09-28 按用户决策把**用户可见字面量**由「美」改为「稳」：
+# 「美」最自然的误读是「更可能大涨」，而分档实测不支持（见模块 docstring 与
+# scripts/beauty_mark_eval.py）—— 改成「稳」后断言强度降到与证据相称。
+# ⚠ 只改字面量，**模块名/函数名/常量名（beauty_*）一律不动**：改名会波及
+# display_gates / hot_watch / historical_watch / view.model 等 6 个模块的导入面，
+# 而它们读的是常量值、不是字面量。
+BEAUTY_MARK = "稳"
 # 强档标记（2026-09-15 分级）：日线漂亮 **且** 分时亦漂亮。
 # ★ 的语义是「尾部回撤更小」（买入体验），**不是**「更可能大涨」——
 # 见模块 docstring 的分档数据与 scripts/beauty_mark_eval.py 复现。
-BEAUTY_MARK_STRONG = "美★"
+BEAUTY_MARK_STRONG = "稳★"
 
 
 def beauty_mark(entry: Any, kline: list[Any] | None, candidate: Any = None) -> str:
     """走势标记（纯展示单源，2026-09-15 分级）：日线定准入、分时定级别。
 
-    日线不漂亮 / 日线不足 → ""；日线漂亮但分时未确认漂亮（走弱或缺失）→ "美"；
-    日线漂亮且分时亦漂亮 → "美★"。fail-open 语义不变：数据缺失不判否、只降档。
+    日线不漂亮 / 日线不足 → ""；日线漂亮但分时未确认漂亮（走弱或缺失）→ "稳"；
+    日线漂亮且分时亦漂亮 → "稳★"。fail-open 语义不变：数据缺失不判否、只降档。
     判定单源：日线用 evaluate_daily_trend（与 hot_watch 美感门同源），
-    分时用 evaluate_intraday_beauty（0.0 视为未评分 → 缺失 → 归「美」档）。
+    分时用 evaluate_intraday_beauty（0.0 视为未评分 → 缺失 → 归「稳」档）。
     """
     daily_fail, _score, daily_detail = evaluate_daily_trend(kline)
     if daily_fail or daily_detail == DAILY_INSUFFICIENT:
         return ""
     intraday_fail, intraday_detail = evaluate_intraday_beauty(entry, candidate)
-    # ★ 要求分时**确认**漂亮：缺失是 fail-open（不判否）但也不加分，只降档到「美」。
+    # ★ 要求分时**确认**漂亮：缺失是 fail-open（不判否）但也不加分，只降档到「稳」。
     strong = intraday_fail is None and intraday_detail != INTRADAY_MISSING
     return BEAUTY_MARK_STRONG if strong else BEAUTY_MARK
 

@@ -316,7 +316,7 @@ def build_scan_view(
     # 纯展示预判「这票的走势口径」（硬拦降级后仅作买入体验参考），不改过滤/排序/落库。
     # 仅 v1/v2 池选行渲染；回马枪/核心低吸区不标（日线门与低位类语义冲突）。
     # 批量取 K 线防 N+1；RTS_TREND_MARK=0 时标记整体为空。
-    beauty_mark: dict[tuple[str, str], str] = {}  # (symbol, category) → "" / "美" / "美★"
+    beauty_mark: dict[tuple[str, str], str] = {}  # (symbol, category) → "" / "稳" / "稳★"
     if TREND_MARK_ENABLED:
         # 只算 v1 主表行 —— 标记的唯一渲染出口是 v1 池选行行尾（_entry_row_suffix）。
         _beauty_entries = main_recs

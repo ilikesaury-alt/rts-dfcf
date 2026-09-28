@@ -41,6 +41,10 @@ from scanner.config import (
 #            本模块那份的 docstring 自承「与 render._fmt_hot_amount 同口径」= 本仓禁忌的复制，
 #            现改为单源引用（两处口径不可能再漂移）。
 from scanner.display import ScanView, _fmt_hot_amount, _fmt_hot_volume_hand, _pad, _trunc
+
+# 「读法」图例（scanner/label_registry.legend_line）2026-09-28 按用户决策**双端整体移除**，
+# 本文件不再 import 它；文案单源仍在 registry 里（scripts/label_audit.py 打印），挂回时
+# build_feishu_card 的三处 sections.append 都加 legend_line(section)，与终端同源。
 from scanner.log_utils import log_event
 from scanner.signals import fund_flow_signal, split_risk_flags
 from scanner.utils import EXTERNAL_FAILURES, to_float
@@ -286,7 +290,7 @@ def _row_line(entry, view, rank=None, accum=None, score=None, is_new_entry: bool
     """把一条推荐行渲染成卡片文本行（rank/accum/score 可由调用方直接给最终值）。
 
     is_new_entry：本轮新进入今日推荐池（MainRow.is_new_entry 透传），行尾打「新」标记。
-    位置与终端一致 —— 插在**美 标记之前**（终端里「新」也排在行尾最前，相对顺序同为「新 … 美」）。
+    位置与终端一致 —— 插在**稳 标记之前**（终端里「新」也排在行尾最前，相对顺序同为「新 … 稳」）。
     """
     snap = _extract_row(entry, view.flow_pct_map)
     if rank is not None:
@@ -299,7 +303,7 @@ def _row_line(entry, view, rank=None, accum=None, score=None, is_new_entry: bool
     # 本轮新进池标记（2026-09-21）：与终端 v1 池选行同位，判定单源 MainRow.is_new_entry。
     if is_new_entry:
         line += " 新"
-    # 走势美感标记（2026-09-09 上线 / 2026-09-15 分档）：v1 池选行尾 ""/"美"/"美★"，
+    # 走势美感标记（2026-09-09 上线 / 2026-09-15 分档）：v1 池选行尾 ""/"稳"/"稳★"，
     # 与终端同源（view.beauty_mark，判定单源 trend_beauty.beauty_mark）。
     bm = (getattr(view, "beauty_mark", None) or {}).get((entry.get("symbol"), entry.get("category")), "")
     if bm:
@@ -437,7 +441,7 @@ def _fmt_hist_row_feishu(c, idx: int) -> str:
 
 
 def _marks_tail_card(ff_pct, beauty: str) -> str:
-    """独立观察区（沪深飙升 / v1 回捞）的行尾标记（卡片成形）：资金流 emoji + 日线美感「美」。
+    """独立观察区（沪深飙升 / v1 回捞）的行尾标记（卡片成形）：资金流 emoji + 日线美感「稳」。
 
     与终端 `render._watch_tail_terminal` 是**同判定、不同形状**（终端 ▼/▼▼ 带 ANSI，
     卡片 🔴/🔴🔴）—— 与主线 `_entry_row_suffix` / `_fmt_row` 的分工完全一致，
@@ -447,7 +451,7 @@ def _marks_tail_card(ff_pct, beauty: str) -> str:
     追加位置在反引号**之外**，故不改变定宽块宽度（`_fmt_hot_row_feishu` / `_fmt_hist_row_feishu`
     仍各自恒宽，守卫 test_hot_row_width_is_uniform / test_hist_row_width_is_uniform 量的就是它们）。
 
-    结构性上限（两个区都有）：🔴🔴 不可达（≤-8% 已被通用门剔除）、美★ 不可达（无分时数据）。
+    结构性上限（两个区都有）：🔴🔴 不可达（≤-8% 已被通用门剔除）、稳★ 不可达（无分时数据）。
     """
     parts: list[str] = []
     if ff_pct is not None:

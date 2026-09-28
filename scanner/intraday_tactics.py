@@ -36,6 +36,7 @@ from scanner.config import (
     TACTICS_MORNING_CRASH_PCT,
     TACTICS_MORNING_SPIKE_MINS,
     TACTICS_MORNING_SPIKE_START,
+    TACTICS_NEAR_LIMIT_PCT_RATIO,
     TACTICS_SELL_WINDOW_END,
     TACTICS_SELL_WINDOW_START,
     TACTICS_SHRINK_VOL_RATIO,
@@ -55,6 +56,7 @@ from scanner.config import (
     TACTICS_TOP_WINDOW_2_START,
     now_beijing,
 )
+from scanner.limit_rules import near_limit_pct
 from scanner.trading_session import is_trading_time
 
 if TYPE_CHECKING:
@@ -133,7 +135,13 @@ def stock_actions(
     lianban_raw = dims.get("zt_lianban", 0)
     zhaban = int(zhaban_raw) if isinstance(zhaban_raw, (int, float)) else 0
     lianban = int(lianban_raw) if isinstance(lianban_raw, (int, float)) else 0
-    is_limit_up = today_pct >= 9.8 or lianban >= 1
+    # 涨停判定按**板块涨跌幅制度**（S1）：创业板 ±20%、主板 ±10%（2020-08-24 注册制）。
+    # 2026-09-28 修复：原实现硬编码 `today_pct >= 9.8`（主板口径），而本仓样本面是
+    # 创业板 20% —— 涨 9.8% 远未涨停却被判成「已封板」，于是规则 6 在没涨停的票上
+    # 误发「💰落袋清仓」，规则 2/1 的「未封板」分支被压制（该发的不发）。
+    # 判定单源 scanner/limit_rules.near_limit_pct（比例制，随板块缩放）；
+    # `lianban >= 1` 是涨停池给的「当前封板」事实，与涨幅推算互为补充。
+    is_limit_up = lianban >= 1 or today_pct >= near_limit_pct(cand.stock.symbol, TACTICS_NEAR_LIMIT_PCT_RATIO)
 
     # ── 规则 2：高开≥5% 封不住涨停 → 减半仓（最高优先级）──
     # 高开未知（今日 bar 缺失）→ 跳过，不猜（现价涨幅冒充高开会误杀平开现涨票）

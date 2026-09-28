@@ -243,7 +243,9 @@ DISPLAY_MAX_TODAY_PCT = _env_float("RTS_DISPLAY_MAX_TODAY_PCT", 8.0)
 #   2026-09-21：随终选参考区删除，原 FINAL_PICK_BEAUTY_ENABLED 硬拦开关一并移除
 #     ——该门默认即为关（数据裁决从未放行），删除不改变任何线上行为。
 # 走势展示标记（2026-09-09 上线 / 2026-09-15 分档）：v1 池选行行尾，纯展示。
-# 分档口径 = **日线定准入、分时定级别**（trend_beauty.beauty_mark）："" / "美" / "美★"。
+# 分档口径 = **日线定准入、分时定级别**（trend_beauty.beauty_mark）："" / "稳" / "稳★"。
+# （2026-09-28 起用户可见字面量由「美」改为「稳」—— 「美」最自然的误读是「更可能大涨」，
+#   而分档实测不支持；只改字面量，模块名/常量名/函数名一律不动。见 trend_beauty 模块 docstring。）
 # 关：RTS_TREND_MARK=0。
 # 【2026-09-15 分级裁决】旧标记（日线∧分时）标记率仅 1.8% ≈ 常年空白，归因**对半**：
 #   取消 AND 结构回收约一半，INTRADAY_BEAUTY_MIN=2.5 恰压在 intraday_score 的 p90
@@ -251,13 +253,13 @@ DISPLAY_MAX_TODAY_PCT = _env_float("RTS_DISPLAY_MAX_TODAY_PCT", 8.0)
 #   旧口径另有语义缺陷：determined 是 OR，44 只旧标记里 14 只（32%）是「日线不足 +
 #   分时美」（日线无法判定却标美），分级后要求日线可判定，缺陷消失。
 #   分档实测（n=(date,symbol) 去重 2429 / hit=次日≥7%）：
-#     美★ 0.7%(17)  hit 5.9%  尾部≤-5%/≤-7% = 5.9%/0.0%
-#     美  6.3%(154) hit 5.2%  尾部 = 9.7%/7.8%
+#     稳★ 0.7%(17)  hit 5.9%  尾部≤-5%/≤-7% = 5.9%/0.0%
+#     稳  6.3%(154) hit 5.2%  尾部 = 9.7%/7.8%
 #     未标记 93.0%(2258) hit 7.1%  尾部 = 14.2%/7.4%
 #   ⇒ **★ = 回撤更小，不是更易大涨**：两档 hit 均低于基线，差别只在尾部；且 ★ 的
 #     n=17 是极小样本（脚本告警）。复现：python scripts/beauty_mark_eval.py。
 TREND_MARK_ENABLED = _env_flag("RTS_TREND_MARK", True)
-INTRADAY_BEAUTY_MIN = 2.5  # intraday_score ≥ 此值判分时漂亮（-10~10）；同时是「美★」的分档线
+INTRADAY_BEAUTY_MIN = 2.5  # intraday_score ≥ 此值判分时漂亮（-10~10）；同时是「稳★」的分档线
 DAILY_BEAUTY_MIN_BARS = 20  # 缓存日线少于此根数 → 无法判定（fail-open 放行）
 DAILY_BEAUTY_MAX_CRASH_PCT = -5.0  # 近5日无单日跌幅 ≤ 此值的暴跌日
 DAILY_BEAUTY_MAX_PULLBACK_PCT = 3.0  # 近5日单日跌幅超过此值 = 回调失控（丑）

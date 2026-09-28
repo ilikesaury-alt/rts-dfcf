@@ -272,7 +272,7 @@ def _kline(n=25, *, rising=True):
 def test_beauty_marks_daily_passes_multi_head_trend():
     blocked, mark, detail = beauty_marks_daily(_kline(rising=True))
     assert blocked is False
-    assert mark == "美"
+    assert mark == "稳"
     assert detail == "多头排列"
 
 
@@ -291,10 +291,10 @@ def test_beauty_marks_daily_fails_open_on_insufficient_data():
 
 
 def test_beauty_marks_daily_never_returns_strong_mark():
-    """**结构上**只可能返回「美」，不可能返回「美★」（★ 需要分时，两区都没有）。
+    """**结构上**只可能返回「稳」，不可能返回「稳★」（★ 需要分时，两区都没有）。
 
     这条不是形式主义：库里 score_breakdown 存的是「上次推荐当日」的分时，一旦有人
     「顺手」把它喂进来，★ 就会静默出现，读者会误以为分时也漂亮。
     """
-    assert beauty_marks_daily(_kline(rising=True))[1] == "美"
+    assert beauty_marks_daily(_kline(rising=True))[1] == "稳"
     assert "★" not in beauty_marks_daily(_kline(rising=True))[1]

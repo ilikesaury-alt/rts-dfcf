@@ -458,11 +458,11 @@ def test_hist_tail_marks_stay_outside_the_fixed_width_block():
     from scanner.display import _vis_len
     from scanner.feishu import _fmt_hist_row_feishu, _marks_tail_card
 
-    c = _fake_hist(ff_pct=-6.0, beauty="美")
+    c = _fake_hist(ff_pct=-6.0, beauty="稳")
     base = _fmt_hist_row_feishu(c, 1)
     tail = _marks_tail_card(c.ff_pct, c.beauty)
 
-    assert tail == " 🔴 美"
+    assert tail == " 🔴 稳"
     assert _vis_len(base) == 77, "定宽块宽度不应受行尾标记影响"
     assert "🔴" not in base, "标记必须在块外"
 
@@ -486,13 +486,13 @@ def test_marks_tail_card_is_shared_by_both_watch_regions():
 
     view = _fake_view(
         [],
-        hot_rows=[_fake_hot(ff_pct=-6.2, beauty="美")],
-        hist_rows=[_fake_hist(ff_pct=-6.2, beauty="美")],
+        hot_rows=[_fake_hot(ff_pct=-6.2, beauty="稳")],
+        hist_rows=[_fake_hist(ff_pct=-6.2, beauty="稳")],
     )
     text = str(build_feishu_card(view, gem_total=100))
-    assert text.count("🔴 美") >= 2, f"两个区都应带行尾标记：{text}"
+    assert text.count("🔴 稳") >= 2, f"两个区都应带行尾标记：{text}"
     # 成形口径本身（emoji 而非 ANSI 三角、中性档留空）由上面那条用例钉住
-    assert _marks_tail_card(-6.2, "美") == " 🔴 美"
+    assert _marks_tail_card(-6.2, "稳") == " 🔴 稳"
     assert "▲" not in text, "卡片是 lark_md，不能出现终端那套 ANSI 三角"
 
 

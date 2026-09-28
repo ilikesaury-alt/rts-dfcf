@@ -53,7 +53,7 @@
 卡片画 emoji（`feishu._FUND_FLOW_EMOJI`），两份成形表各自单源、判定都回到
 `signals.fund_flow_signal`（资金流）与 `trend_beauty`（美感）——与主线行尾标记
 （`view.model._entry_row_suffix`）同一分工。各区共用 `beauty_marks_daily` 取标记，
-避免「同一个'美'字在三处各有一套准入条件」。
+避免「同一个'稳'字在三处各有一套准入条件」。
 """
 
 from __future__ import annotations
@@ -149,15 +149,15 @@ def beauty_marks_daily(kline: list | None) -> tuple[bool, str, str]:
 
     返回 (blocked, mark, detail)：
       blocked = 日线**可判定**且不漂亮（可判定的丑才拦；数据不足 fail-open 放行）；
-      mark    = ""（不漂亮或日线不足）/ "美"（日线漂亮）；
+      mark    = ""（不漂亮或日线不足）/ "稳"（日线漂亮）；
       detail  = 不漂亮的理由串（"MA未多头/长上影" 等）或 "多头排列" / "日线不足"，
                 供排除日志与落选理由使用。
 
     为什么合并成一个函数：门与标记的日线准入条件**必须同源**，否则会出现
-    「门放行了但这行不标美」或反之的错位；且两处各调一次 `evaluate_daily_trend`
+    「门放行了但这行不标稳」或反之的错位；且两处各调一次 `evaluate_daily_trend`
     会把同一份 K 线指标算两遍。
 
-    只有「美」一档，没有「美★」—— ★ 需要**分时**确认（`trend_beauty.beauty_mark`），
+    只有「稳」一档，没有「稳★」—— ★ 需要**分时**确认（`trend_beauty.beauty_mark`），
     飙升/回捞两区都不抓分时数据，结构上不可能有 ★。刻意不回落库 score_breakdown
     把 ★ 补出来：库里那份是「上次推荐当日」的分时，拿来冒充今日是错标。
     """
