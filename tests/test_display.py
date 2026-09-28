@@ -120,10 +120,20 @@ def test_fund_flow_signal_boundaries():
     assert disp_mod.fund_flow_signal(-8.0) == "strong_out"
 
 
-def test_market_extra_str_fund_flow_icon():
-    """资金流以图标替代原「资+x.x% ±xxx万」文本，纯图标展示。"""
-    s = disp_mod._market_extra_str(_candidate(8.5))
-    assert "▲▲" in s
+def test_market_extra_str_positive_flow_no_icon():
+    """正流入不再画图标，但同一行里的连板标记照常保留。
+
+    2026-09-28：图标收窄为**只画负向两档**（实测无区分度，依据与复算脚本见
+    view.model._FUND_FLOW_ICON 注释）。断言写成「有内容 + 无 ▲」而不是只查空串 ——
+    否则与相邻的 `test_market_extra_str_no_fund_flow_data` 一样在验空串，是空断言。
+    """
+    c = _candidate(6.0)
+    assert c.kline is not None
+    c.kline.dimensions["zt_lianban"] = 1
+    s = disp_mod._market_extra_str(c)
+    assert s, "连板段仍应产出内容（否则下面几条等于在验空串）"
+    assert "▲" not in s, "正流入不再画图标（2026-09-28 实证收窄）"
+    assert "连1板" in s, "资金流收窄不得误伤连板标记"
     assert "资" not in s
     assert "万" not in s
     assert "亿" not in s
@@ -135,14 +145,45 @@ def test_market_extra_str_no_fund_flow_data():
     assert s == ""
 
 
+def test_fund_flow_icon_asymmetric_negative_only():
+    """2026-09-28：图标语义从「双向强弱分级」收窄为「主力流出告警」。
+
+    负向两档仍画（规避语义有实证支撑）；正向两档与中性一律不画。
+    **判定单源 fund_flow_signal 仍返五档** —— 被 ranking._fund_flow_norm 消费并加权，
+    改它属权重变更。本测试锁的是「绘制层」这一条边界，防止有人顺手改回对称。
+    """
+    icon = disp_mod._fund_flow_icon_str
+    # 负向：画出
+    assert "▼" in icon(-5.0)
+    assert "▼▼" in icon(-8.0)
+    assert "▼▼" in icon(-20.0)
+    # 正向：一律不画（全市场 6 个交易日 n=30,676：corr(当日 flow, 当日涨幅) +0.29 同向，
+    #   上涨票内按 flow 分组的次日 Spearman 5/5 天为负 —— 复算 scripts/flow_mark_evidence.py）
+    assert icon(5.0) == ""
+    assert icon(8.0) == ""
+    assert icon(30.0) == ""
+    # 中性 / 缺数据：不画
+    assert icon(0.0) == ""
+    assert icon(4.9) == ""
+    assert icon(None) == ""
+
+    # 判定单源未被改动：五档语义保持（ranking._fund_flow_norm 依赖）
+    s = disp_mod.fund_flow_signal
+    assert s(8.0) == "strong_in"
+    assert s(5.0) == "in"
+    assert s(0.0) == "neutral"
+    assert s(-5.0) == "out"
+    assert s(-8.0) == "strong_out"
+
+
 def test_market_extra_str_zt_kept():
     """连板/炸板标记不受资金流图标改造影响。"""
-    c = _candidate(6.0)
+    c = _candidate(-6.0)
     assert c.kline is not None
     c.kline.dimensions["zt_lianban"] = 2
     c.kline.dimensions["zt_zhaban"] = 1
     s = disp_mod._market_extra_str(c)
-    assert "▲" in s
+    assert "▼" in s
     assert "连2炸1" in s
 
 
@@ -201,7 +242,7 @@ def test_display_priority_fund_flow_icon_from_db(capsys):
     )
     conn.execute(
         "INSERT INTO market_extra_cache (symbol, date, data_type, payload_json, updated) VALUES (?, ?, ?, ?, ?)",
-        ("SZ300001", today, "fund_flow", '{"main_pct": 6.0, "main_net": 1e7}', now_beijing().isoformat()),
+        ("SZ300001", today, "fund_flow", '{"main_pct": -6.0, "main_net": -1e7}', now_beijing().isoformat()),
     )
     conn.commit()
     disp_mod.display_priority(conn)
@@ -209,8 +250,8 @@ def test_display_priority_fund_flow_icon_from_db(capsys):
     # 用 _main_line 剥掉终选参考区（终选行也含资金流图标，直接取首行会误命中）
     line1 = _main_line(out, "SZ300001")
     line2 = _main_line(out, "SZ300002")
-    assert "▲" in line1
-    assert "▲" not in line2
+    assert "▼" in line1
+    assert "▼" not in line2
 
 
 # ── 显示门控工具（回马枪/动态推荐/次日大涨规则区已移除，2026-09-03）──
@@ -1214,7 +1255,7 @@ def test_hist_inline_marks_on_both_surfaces(capsys):
             rec_score=70,
             cum_pct=3.5,
             market_cap=8e11,
-            ff_pct=6.2,  # ≥+5% → 终端 ▲ / 卡片 🟢
+            ff_pct=-6.2,  # ≤-5% → 终端 ▼ / 卡片 🔴（2026-09-28 正流入不再画）
             beauty="美",
             score=66.0,
         )
@@ -1223,8 +1264,8 @@ def test_hist_inline_marks_on_both_surfaces(capsys):
     terminal_out = capsys.readouterr().out
     card_text = str(build_feishu_card(view, gem_total=100))
     assert "本区无分时档" not in terminal_out, "冗长图例已移除，不应再出现"
-    assert "▲ 美" in terminal_out, f"终端行尾应带资金流 ▲ 与日线美感「美」：{terminal_out[:200]}"
-    assert "🟢 美" in card_text, f"卡片行尾应带 emoji 资金流与「美」：{card_text[:200]}"
+    assert "▼ 美" in terminal_out, f"终端行尾应带资金流 ▼ 与日线美感「美」：{terminal_out[:200]}"
+    assert "🔴 美" in card_text, f"卡片行尾应带 emoji 资金流与「美」：{card_text[:200]}"
 
 
 def test_hot_inline_marks_on_both_surfaces(capsys):
@@ -1259,7 +1300,7 @@ def test_hot_inline_marks_on_both_surfaces(capsys):
             volume_ratio=1.2,
             score=70.0,
             streak=1,
-            ff_pct=6.2,  # ≥+5% → 终端 ▲ / 卡片 🟢
+            ff_pct=-6.2,  # ≤-5% → 终端 ▼ / 卡片 🔴（2026-09-28 正流入不再画）
             beauty="美",
         )
     ]
@@ -1267,8 +1308,8 @@ def test_hot_inline_marks_on_both_surfaces(capsys):
     terminal_out = capsys.readouterr().out
     card_text = str(build_feishu_card(view, gem_total=100))
     assert "已被硬门剔除" not in terminal_out, "冗长图例已移除，不应再出现"
-    assert "▲ 美" in terminal_out, f"终端飙升行尾应带资金流 ▲ 与日线美感「美」：{terminal_out[:200]}"
-    assert "🟢 美" in card_text, f"卡片飙升行尾应带 emoji 资金流与「美」：{card_text[:200]}"
+    assert "▼ 美" in terminal_out, f"终端飙升行尾应带资金流 ▼ 与日线美感「美」：{terminal_out[:200]}"
+    assert "🔴 美" in card_text, f"卡片飙升行尾应带 emoji 资金流与「美」：{card_text[:200]}"
 
 
 def test_beauty_mark_disabled_when_gate_off(monkeypatch):

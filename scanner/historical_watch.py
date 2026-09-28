@@ -133,7 +133,7 @@ class HistCandidate:
     # 与主线**同一判定源**（signals.fund_flow_signal / trend_beauty.beauty_mark），
     # 本区只负责取值，成形（ANSI 三角形 / 卡片 emoji）留给各出口。
     # ff_pct：主力净占比（DB 当日快照）。注意硬门已剔除 ≤ FUND_OUTFLOW_NET_PCT(-8%)，
-    #   故图标实际只可能落到 ▲▲ / ▲ / ▼ / 中性 四档，「▼▼」在本区结构上不可达。
+    #   正向档 2026-09-28 起也不画 ⇒ 图标只可能是「▼」或空，「▲▲ / ▲ / ▼▼」皆不可达。
     # beauty：**只有日线档**（"美" / ""）。本区没有分时数据，且**刻意不传** score_breakdown
     #   （库里那份是「上次推荐当日」的分时，拿来冒充今日会把「美」静默升级成「美★」）。
     ff_pct: float | None = None

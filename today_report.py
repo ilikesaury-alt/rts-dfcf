@@ -204,9 +204,7 @@ def _tier0_verdict(entry: Any, flow_pct_map: dict) -> dict:
         "new_face": "new_face hit 9.6% 接近基准",
     }.get(cat, "")
 
-    ff_icon = {"strong_in": "▲▲", "in": "▲", "neutral": "◇", "out": "▼", "strong_out": "▼▼"}.get(
-        fund_flow_signal(flow), ""
-    )
+    ff_icon = _flow_icon(flow)
 
     return {
         "symbol": sym,
@@ -407,13 +405,28 @@ def _build_report(conn: sqlite3.Connection, target_date: str, top_n: int | None)
 
 
 # ── 渲染 ──
+def _flow_icon(flow: float | None) -> str:
+    """主力净占比 → 图标（纯文本版，无 ANSI）。**只画负向两档**（2026-09-28）。
+
+    判定走 `fund_flow_signal` 单源；形状层与终端 `view.model._FUND_FLOW_ICON`、
+    卡片 `feishu._FUND_FLOW_EMOJI` **各自一张表** —— ANSI / emoji / 纯文本三种形状
+    没法共用一张，但**键集必须一致**（守卫
+    tests/test_feishu.py::test_fund_flow_mark_tables_stay_in_sync）。
+    本函数只是把**本文件内**两处内联的五档副本（`_tier0_verdict` 与 `_fmt_flow`）
+    收敛成一个，改它只影响 today_report，终端与卡片不动。
+
+    正流入不画的实证依据见 `view.model._FUND_FLOW_ICON`
+    （复算：`python scripts/flow_mark_evidence.py`）。
+    """
+    if flow is None:
+        return ""
+    return {"out": "▼", "strong_out": "▼▼"}.get(fund_flow_signal(flow), "")
+
+
 def _fmt_flow(flow: float | None) -> str:
     if flow is None:
         return "资金—"
-    icon = {"strong_in": "▲▲", "in": "▲", "neutral": "◇", "out": "▼", "strong_out": "▼▼"}.get(
-        fund_flow_signal(flow), ""
-    )
-    return f"{icon}主力{flow:+.1f}%"
+    return f"{_flow_icon(flow)}主力{flow:+.1f}%"
 
 
 def _verdict_color(verdict: int) -> str:

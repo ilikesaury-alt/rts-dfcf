@@ -241,13 +241,13 @@ def _extract_row(entry, flow_pct_map) -> RowSnapshot:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-# 资金流档位 → 卡片 emoji。终端那份是 **ANSI 三角**（display._FUND_FLOW_ICON，▲/▼），
+# 资金流档位 → 卡片 emoji。终端那份是 **ANSI 三角**（view.model._FUND_FLOW_ICON，▼/▼▼），
 # 这里必须是 emoji —— 卡片是 lark_md，ANSI 色码会原样显示成乱码。
 # 档位判定（fund_flow_signal）与阈值仍是**同一单源**，两份表只差「画成什么形状」。
 # 2026-09-16：抽成模块级常量，此前 v1 池选行内联了一份、回捞行若再内联就是复制（本仓禁忌）。
+# 2026-09-28：**与终端同步收窄为只画负向两档** 🟢/🟢🟢 撤下（正流入实测无区分度，
+# 实证依据见 view.model._FUND_FLOW_ICON 注释）。判定单源仍返五档不变。
 _FUND_FLOW_EMOJI = {
-    "strong_in": "🟢🟢",
-    "in": "🟢",
     "out": "🔴",
     "strong_out": "🔴🔴",
 }
@@ -439,8 +439,8 @@ def _fmt_hist_row_feishu(c, idx: int) -> str:
 def _marks_tail_card(ff_pct, beauty: str) -> str:
     """独立观察区（沪深飙升 / v1 回捞）的行尾标记（卡片成形）：资金流 emoji + 日线美感「美」。
 
-    与终端 `render._watch_tail_terminal` 是**同判定、不同形状**（终端 ▲/▼ 带 ANSI，
-    卡片 emoji）—— 与主线 `_entry_row_suffix` / `_fmt_row` 的分工完全一致，
+    与终端 `render._watch_tail_terminal` 是**同判定、不同形状**（终端 ▼/▼▼ 带 ANSI，
+    卡片 🔴/🔴🔴）—— 与主线 `_entry_row_suffix` / `_fmt_row` 的分工完全一致，
     判定源都是 `signals.fund_flow_signal` / `display_gates.beauty_marks_daily`，本函数不重算。
     两个独立区共用本函数，免得「同一个标记在两个节里各画一遍、其中一个少个空格」。
 

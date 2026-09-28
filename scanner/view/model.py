@@ -199,20 +199,44 @@ def pct_colored(pct: float | None, width: int = 8) -> str:
     return f"{c}{s:>{width}}{ANSI['RESET']}" if c else f"{s:>{width}}"
 
 
+# 档位 → 图标。**只画负向两档**（2026-09-28）——判定单源不动，只改「画不画」。
+# 每个数字都可离线复算：`python scripts/flow_mark_evidence.py`（改本注释先跑它）。
+#
+# 撤下正向 ▲/▲▲ 的依据：
+#   · 全市场面板 6 个交易日（2026-09-18~09-28；`price` 字段 09-18 起才有）n≈30,676：
+#     corr(当日主力净占比, 当日涨幅) Pearson **+0.29**（Spearman +0.45）——两者**同向**，
+#     正向图标很大程度在复述「今天涨」，不是涨幅之外的独立维度。
+#     ⚠ 本行首版写的「+0.058 / 近乎正交 / 涨幅列已覆盖」无法复现且推理反了：
+#     正交只说明信息**不重叠**，推不出「已覆盖」。已按脚本输出更正。
+#   · 同为上涨的票内按 flow 分 1/3 看次日：5 个交易日组内 Spearman **全负**
+#     （-0.107 ~ -0.000），高 1/3 vs 低 1/3 次日中位差 4/5 天为负 ⇒ 正向无正区分度。
+#   · 推荐池五档次日≥7% hit（同票同日去重，**截至 2026-09-28** n=1,554）：
+#     strong_in 4.8% / in 4.6%，全样本 4.7% ⇒ 正向两档与「无信息」基线无差别。
+#
+# 保留负向 ▼/▼▼ 的理由是**语义一致**而非预测力：它标的是 −8% 展示硬门与
+# 「资金流出」风险标签已经在用的同一阈值（`config_sources.FUND_OUTFLOW_NET_PCT`），
+# 即「一个生效中的过滤正在剔谁」的提示。证据是弱的（strong_out hit 3.2% 最低 n=156、
+# out 5.8% 最高 n=86，而中位次日% 五档彼此接近），所以它是**规避提示，不是选股信号**；
+# 引用时一律用 hit 率口径（`config_scoring.CATEGORY_HIT_RATE` 同源），不要引用中位数。
+# 另注：−8% 硬门开启（默认）时 `strong_out` 行根本进不了展示区，故 ▼▼ 多数时候不可达。
+#
+# ⚠ **只改展示，不改判定单源** `signals.fund_flow_signal`（仍返五档）：它同时被
+# `ranking._fund_flow_norm` 消费并给 composite_score 加权（in/strong_in 各 +0.3），
+# 那是权重口径，改它属权重变更、须走 rule_validate 样本外验证。
 _FUND_FLOW_ICON = {
-    "strong_in": f"{ANSI['GREEN']}▲▲{ANSI['RESET']}",
-    "in": f"{ANSI['GREEN']}▲{ANSI['RESET']}",
     "out": f"{ANSI['RED']}▼{ANSI['RESET']}",
     "strong_out": f"{ANSI['RED']}▼▼{ANSI['RESET']}",
 }
 
 
 def _fund_flow_icon_str(ff_pct) -> str:
-    """主力净占比 → 流向图标（ANSI 着色）；无数据或中性返回空串。
+    """主力净占比 → 流向图标（ANSI 着色）；**只画负向两档**，其余（流入/中性）返回空串。
 
-    2026-08-22 标记精简（用户反馈行尾杂乱）：中性档 ◇ 不再显示——(-5%,+5%)
-    覆盖大多数票且零信息，只在流向有意义（≥+5% 流入 / ≤-5% 流出）时显示。
-    fund_flow_signal 本身不动（feishu/bonus 逻辑仍用五档）。
+    历史沿革：
+    - 2026-08-22 中性档 ◇ 不再显示（(-5%,+5%) 覆盖大多数票且零信息）。
+    - 2026-09-28 **正向档 ▲/▲▲ 一并撤下**（实测无区分度，见 _FUND_FLOW_ICON 上方注释），
+      图标语义从「双向强弱分级」收窄为「主力大幅流出告警」，故飞书卡片侧同步只留 🔴/🔴🔴。
+      判定单源 fund_flow_signal 保持五档不动（ranking._fund_flow_norm 仍按五档加权）。
     """
     ff_pct = to_float(ff_pct, default=None)
     if ff_pct is None:
@@ -226,7 +250,7 @@ def _fund_flow_icon_str(ff_pct) -> str:
 def _market_extra_str(c: Candidate) -> str:
     """行情增强标记：主力资金流流向图标 + 连板/炸板（无数据返回空串）。
 
-    资金流用 fund_flow_signal 映射图标（中性不显示，见 _fund_flow_icon_str）；
+    资金流用 fund_flow_signal 映射图标（中性**与正流入**不显示，见 _fund_flow_icon_str）；
     展示型信息，追加在行尾可变区，不参与固定列对齐。
     """
     dims = c.kline.dimensions if c.kline else {}

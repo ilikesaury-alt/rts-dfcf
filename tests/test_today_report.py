@@ -30,15 +30,36 @@ def _entry(category="momentum", score=60, percent=1.0, accum=8.0, dims=None,
 
 # ── _tier0_verdict 纯函数 ──
 def test_verdict_rebound_sweet_band_strong():
-    """rebound 甜蜜带低吸 + 主力流入 → ★★★ 首选（类别 hit 28.6% 最强）。
-    注意：主力流入只展示图标，不参与正向加分（资金流 2026-08-10 归零规避语义）。"""
+    """rebound 甜蜜带低吸 + 主力净流出 → ★★★ 首选（类别 hit 28.6% 最强）。
+    注意：资金流**只展示、不参与打分**（2026-08-10 归零规避语义；2026-09-28 起正流入
+    连图标都不再画 —— 依据与复算脚本见 view.model._FUND_FLOW_ICON 注释）。
+    本用例改用负向 flow（-6.0 → ▼）以同时覆盖「flow 字段透传」与「负向图标」。"""
     a = _tier0_verdict(_entry(category="rebound", percent=1.5, accum=-8.0,
-                              dims={"fund_flow_main_pct": 6.0}), {})
+                              dims={"fund_flow_main_pct": -6.0}), {})
     assert a["verdict"] >= 2 and a["label"] == "首选"
     assert a["risks"] == []
-    assert a["flow"] == 6.0 and a["flow_icon"] == "▲"
+    assert a["flow"] == -6.0 and a["flow_icon"] == "▼"
     assert any("低吸带" in p for p in a["pos_detail"])
     assert "超跌反弹位" in a["pos"]
+
+
+def test_verdict_positive_flow_icon_suppressed():
+    """2026-09-28：正流入**不再画图标**（判定单源仍返 strong_in/in，只是形状层不画）。
+
+    实测依据（复算 `python scripts/flow_mark_evidence.py`）：全市场 6 个交易日
+    n=30,676，corr(当日主力净占比, 当日涨幅) Pearson +0.29 **同向** —— 正向图标基本在
+    复述「今天涨」；而同为上涨的票里 flow 高 1/3 的次日表现，组内 Spearman 5/5 天为负。
+    池内五档次日≥7% hit（去重，截至 2026-09-28 n=1,554）：strong_in 4.8% / in 4.6% vs 全样本 4.7%
+    ⇒ 正向两档 ≈ 无信息基线。负向 ▼/▼▼ 保留是**语义一致**（与 -8% 硬门同一阈值），
+    证据同样弱（strong_out 3.2% 最低 n=156、out 5.8% 最高 n=86），故只作规避提示。
+    """
+    a = _tier0_verdict(_entry(category="rebound", percent=1.5, accum=-8.0,
+                              dims={"fund_flow_main_pct": 6.0}), {})
+    assert a["flow"] == 6.0, "数值本身仍透传"
+    assert a["flow_icon"] == "", "正流入不画图标（2026-09-28 实证收窄）"
+    b = _tier0_verdict(_entry(category="rebound", percent=1.5, accum=-8.0,
+                              dims={"fund_flow_main_pct": 8.0}), {})
+    assert b["flow_icon"] == "", "强流入同样不画"
 
 
 def test_verdict_rebound_tail_pullback_demotes():

@@ -253,15 +253,16 @@ def _fmt_hot_amount(amount: float) -> str:
 
 
 def _watch_tail_terminal(ff_pct, beauty: str) -> str:
-    """独立观察区（沪深飙升 / v1 回捞）的行尾标记：资金流 ▲▼ + 日线美感「美」。
+    """独立观察区（沪深飙升 / v1 回捞）的行尾标记：资金流 ▼/▼▼ + 日线美感「美」。
 
     与主表 `_entry_row_suffix` 同一分工 —— 判定单源（`signals.fund_flow_signal` /
     `display_gates.beauty_marks_daily`），本层只负责成形（ANSI）。两个独立区共用本函数，
-    免得「同一个 ▲ 在两个区各画一遍、其中一个少了个空格」。
+    免得「同一个标记在两个区各画一遍、其中一个少了个空格」。
 
     追加位置在定宽列**之外**：塞进列内会撑破 `COLS_HOT` / `COLS_HIST` 的对齐。
 
-    结构性上限（不是 bug，两个区都有）：▼▼ 不可达（≤-8% 已被通用门剔除）；
+    可达性（两个区都有，都不是 bug）：正流入的 ▲/▲▲ **不画**（2026-09-28 撤下，
+    依据见 view.model._FUND_FLOW_ICON）；▼▼ 不可达（≤-8% 已被通用门剔除）；
     美★ 不可达（两区都不抓分时，`beauty_marks_daily` 只给日线档）。
     """
     tail = _fund_flow_icon_str(ff_pct)
@@ -378,6 +379,8 @@ def _render_hot_watch_region(rows, offboard_rows=None) -> None:
     # )
     # 行尾标记图例（2026-09-16）：飞书卡片有一份同义图例（build_feishu_card 的飙升节脚注），
     # 两处须同步改 —— 守卫 tests/test_display.py::test_hot_legend_printed_on_both_surfaces。
+    # ⚠ 整块已停用；若复用，先删掉下面那半句 ▲ —— 2026-09-28 起正流入不再画图标
+    #   （依据见 view.model._FUND_FLOW_ICON）。
     # if any((c.ff_pct is not None) or c.beauty for c in rows):
     #     print(
     #         f"  标记：{ANSI['GREEN']}▲▲/▲{ANSI['RESET']}=主力净流入(≥+8%/≥+5%)　"
@@ -426,7 +429,8 @@ def _render_hist_watch_region(rows) -> None:
     )
     print(_table_header(COLS_HIST))
     for _hi, c in enumerate(rows, 1):
-        # 行尾标记（2026-09-16）：资金流 ▲/▼ + 日线美感「美」，与飙升区共用
+        # 行尾标记（2026-09-16；2026-09-28 起资金流只画 ▼/▼▼，正向不画）：
+        # 资金流 + 日线美感「美」，与飙升区共用
         # `_watch_tail_terminal`（判定单源 signals / display_gates，本层只成形）。
         # 本区结构上不会出现「美★」与「▼▼」，原因见 scanner/historical_watch
         # 与 scanner/display_gates 的模块 docstring。
@@ -465,8 +469,10 @@ def _render_hist_watch_region(rows) -> None:
     # )
     # 行尾标记图例（2026-09-16）：飞书卡片有一份同义图例（build_feishu_card 的回捞节脚注），
     # 两处须同步改 —— 守卫 tests/test_display.py::test_hist_legend_printed_on_both_surfaces。
+    # ⚠ 整块已停用；若复用，先删掉下面那半句 ▲ —— 2026-09-28 起正流入不再画图标
+    #   （依据见 view.model._FUND_FLOW_ICON）。
     # 两档的分档语义必须在**本区就地**说清，否则最自然的读法都是错的：
-    #   ▲▼ 只回答「-8% 以上这一段的强弱」（≤-8% 已被硬门剔除，故 ▼▼ 不可达）；
+    #   ▼ 只回答「-8% 以上这一段的强弱」（≤-8% 已被硬门剔除，故 ▼▼ 不可达）；
     #   美 表示「尾部回撤更小」，不是「更可能大涨」（trend_beauty 分档实测 hit 低于基线）。
     # print(
     #     f"  标记：{ANSI['GREEN']}▲▲/▲{ANSI['RESET']}=主力净流入(≥+8%/≥+5%)　"

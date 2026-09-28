@@ -51,7 +51,7 @@ KLINE_NEG_TTL = 600
 ZT_POOL_FETCH_TIMEOUT = 20  # 涨停池单次拉取上限（秒）
 FUND_FLOW_FETCH_TIMEOUT = 30  # 资金流全市场分页拉取上限（秒，超时返回已收集部分）
 # 资金流评分阈值（主力净流入净占比 %）
-FUND_FLOW_MAIN_PCT_STRONG = 5.0  # 强流入分界（图标 ▲；仅作展示分级，不单独加分——见下方 2026-09-14 复核）
+FUND_FLOW_MAIN_PCT_STRONG = 5.0  # 强流入分界（判定档位用；▲ 图标 2026-09-28 撤下——见下方复核）
 FUND_FLOW_MAIN_PCT_WEAK = -5.0  # 主力净占比 ≤-5% → 扣分
 # FUND_FLOW_MAIN_PCT_EXTREME 定义见下方「风险标签阈值」——与 FUND_OUTFLOW_NET_PCT 同源，避免档位漂移
 # 2026-08-10: 正向加分（原 FUND_FLOW_BONUS_STRONG）回测证实反指已删除——强流入(≥5%)组 next_day 均
@@ -62,6 +62,30 @@ FUND_FLOW_MAIN_PCT_WEAK = -5.0  # 主力净占比 ≤-5% → 扣分
 # 好于有资金流数据的全样本 -0.880%；in 组(n=229) -1.178% 反而更差。
 # 裁定：不是反指（不该给负分），但也没有证据支持「强流入 > 流入」⇒ 展示层
 # ranking._fund_flow_norm 取消 strong_in 独享的 +0.5，与 in 同权 +0.3（第三处口径收口）。
+#
+# 2026-09-28 展示层复核（数字由 `python scripts/flow_mark_evidence.py` 离线复算，
+# 改本段先跑脚本；此前所有结论都只在推荐池上得出，因选择偏差而不可靠）：
+#   · 全市场面板 6 个交易日（2026-09-18~09-28，`price` 字段 09-18 起才有）n≈30,676：
+#     corr(当日主力净占比, 当日涨幅) Pearson **+0.29**（Spearman +0.45）——**同向**，
+#     「今日上涨且主力流入」很大程度只是在复述「今天涨」。
+#     ⚠ 本段首版写「+0.058 / 近乎正交 ⇒ 涨幅列已覆盖该信息」：数字复算不出来，
+#     而且推理方向反了（正交说的是信息**不**重叠）。已按脚本输出更正。
+#   · 同为上涨的票内按 flow 分 1/3 看次日：5 个交易日组内 Spearman **全负**
+#     （-0.107 ~ -0.000），高 1/3 vs 低 1/3 次日中位差 4/5 天为负
+#     （首版写「4 天里 3 天更弱」却列出 2 负 2 正的 Spearman，两件事混在一句里）。
+#   · 推荐池五档「次日≥7% hit」（同票同日取最后一轮，**截至 2026-09-28** n=1,554）：
+#     strong_in 4.8%(n=400) / in 4.6%(238) / neutral 4.9%(674) /
+#     out 5.8%(86) / strong_out 3.2%(156)，全样本 4.7%。
+#     ⇒ **正向两档 ≈ 无信息基线**，`▲/▲▲`（终端）与 `🟢/🟢🟢`（飞书）已撤下；
+#       图标语义收窄为「主力大幅流出告警」，绘制表见 view.model._FUND_FLOW_ICON
+#       与 feishu._FUND_FLOW_EMOJI。**判定单源 `signals.fund_flow_signal` 仍返五档不动**
+#       —— 它同时被 ranking._fund_flow_norm 消费并给 composite_score 加权（in/strong_in
+#       各 +0.3），那属权重口径，改动须先跑 `python -m scanner.rule_validate --evaluator rescore`。
+#   · 负向档保留靠的是**语义一致**（与 FUND_OUTFLOW_NET_PCT 硬门、「资金流出」标签同一阈值）
+#     而非预测力：hit 率上 strong_out 最低、out 最高，但 n=156/86 属弱证据，且中位次日%
+#     五档彼此接近 ⇒ 引用一律用 hit 率口径，别引用中位数排序。
+#   与 nextday_calib.json 记录的 OR_OUTFLOW 漂移 223.9%（"已失去区分度"）不矛盾：
+#   两段都在说**区分度弱**——正向弱到不画，负向弱到只作提示。
 FUND_FLOW_BONUS_WEAK = -3
 # ── 风险标签阈值 ──
 # 「资金流出」的**唯一阈值**（2026-09-14 收敛为单源）：全系统凡判定「主力净流出 →

@@ -451,23 +451,28 @@ def test_hist_tail_marks_stay_outside_the_fixed_width_block():
     2026-09-16：成形函数由 `_hist_tail_feishu` 改名为 `_marks_tail_card`（接收
     裸 ff_pct/beauty 而非候选对象），因为**飙升区也要用同一份** —— 标记是跨展示区
     通用的，不该只有回捞区画。
+
+    2026-09-28：断言改用**负向** flow —— 正流入 🟢/🟢🟢 已撤下（实测无区分度，
+    依据见 view.model._FUND_FLOW_ICON 注释），故本用例的样例数据改为 ff_pct=-6.0。
     """
     from scanner.display import _vis_len
     from scanner.feishu import _fmt_hist_row_feishu, _marks_tail_card
 
-    c = _fake_hist(ff_pct=6.0, beauty="美")
+    c = _fake_hist(ff_pct=-6.0, beauty="美")
     base = _fmt_hist_row_feishu(c, 1)
     tail = _marks_tail_card(c.ff_pct, c.beauty)
 
-    assert tail == " 🟢 美"
+    assert tail == " 🔴 美"
     assert _vis_len(base) == 77, "定宽块宽度不应受行尾标记影响"
-    assert "🟢" not in base, "标记必须在块外"
+    assert "🔴" not in base, "标记必须在块外"
 
     assert _marks_tail_card(None, "") == ""  # 无数据 → 不标
     assert _marks_tail_card(0.0, "") == ""  # 中性档不显示（与主线同一精简口径）
     assert _marks_tail_card(-6.0, "") == " 🔴"
-    assert _marks_tail_card(9.0, "") == " 🟢🟢"
-    assert _marks_tail_card(6.0, "") == " 🟢"
+    assert _marks_tail_card(-9.0, "") == " 🔴🔴"
+    # 正流入一律不画（2026-09-28 实测收窄）
+    assert _marks_tail_card(9.0, "") == ""
+    assert _marks_tail_card(6.0, "") == ""
 
 
 def test_marks_tail_card_is_shared_by_both_watch_regions():
@@ -481,14 +486,50 @@ def test_marks_tail_card_is_shared_by_both_watch_regions():
 
     view = _fake_view(
         [],
-        hot_rows=[_fake_hot(ff_pct=6.2, beauty="美")],
-        hist_rows=[_fake_hist(ff_pct=6.2, beauty="美")],
+        hot_rows=[_fake_hot(ff_pct=-6.2, beauty="美")],
+        hist_rows=[_fake_hist(ff_pct=-6.2, beauty="美")],
     )
     text = str(build_feishu_card(view, gem_total=100))
-    assert text.count("🟢 美") >= 2, f"两个区都应带行尾标记：{text}"
+    assert text.count("🔴 美") >= 2, f"两个区都应带行尾标记：{text}"
     # 成形口径本身（emoji 而非 ANSI 三角、中性档留空）由上面那条用例钉住
-    assert _marks_tail_card(6.2, "美") == " 🟢 美"
+    assert _marks_tail_card(-6.2, "美") == " 🔴 美"
     assert "▲" not in text, "卡片是 lark_md，不能出现终端那套 ANSI 三角"
+
+
+def test_fund_flow_mark_tables_stay_in_sync():
+    """终端 ANSI 表与卡片 emoji 表的**键集**必须一致：形状不同，覆盖范围不许分叉。
+
+    2026-09-28 把正向两档从两处同时撤下靠的是人眼同步（两份表、两个模块）。
+    本用例把「只画负向两档」这条边界钉死 —— 以后谁只在一侧加/删一个键，这里就红。
+    today_report 那份是第三张（纯文本）表，形状不同但键集同一，一并守住。
+    """
+    from scanner.feishu import _FUND_FLOW_EMOJI
+    from scanner.view.model import _FUND_FLOW_ICON
+    from today_report import _flow_icon
+
+    assert set(_FUND_FLOW_ICON) == set(_FUND_FLOW_EMOJI) == {"out", "strong_out"}
+    # 第三张表是函数而非 dict，按行为等价校验（键隐含在 dict 字面量里）
+    assert _flow_icon(-5.0) and _flow_icon(-8.0)
+    assert _flow_icon(5.0) == _flow_icon(8.0) == _flow_icon(0.0) == _flow_icon(None) == ""
+
+
+def test_fmt_row_pool_card_marks_only_outflow():
+    """v1 池选卡片行（`_fmt_row`）也只画负向 emoji —— 它与 `_marks_tail_card` 同表。
+
+    2026-09-28 收窄时补：`_fmt_row` 直接查 `_FUND_FLOW_EMOJI`（不经过 `_marks_tail_card`），
+    当时没有任何用例覆盖这条路径，表改了没人会知道。
+    """
+    from scanner.feishu import RowSnapshot, _fmt_row
+
+    def row(ff_pct):
+        return RowSnapshot(symbol="300001", name="测试票", pct=3.2, accum=5.0, score=70, ff_pct=ff_pct)
+
+    assert "🔴" in _fmt_row(row(-6.0)), "负向照常画"
+    assert _fmt_row(row(-9.0)).count("🔴") == 2, "强流出两枚"
+    pos = _fmt_row(row(6.0))
+    assert "🟢" not in pos and "🔴" not in pos, f"正流入不画 emoji：{pos}"
+    assert pos.startswith("`") and pos.endswith("`"), "不画时行结构完整、不留残缺标记"
+    assert pos == pos.rstrip(), "行尾不得残留空格"
 
 
 def test_offboard_subtitle_identical_to_terminal_source():
