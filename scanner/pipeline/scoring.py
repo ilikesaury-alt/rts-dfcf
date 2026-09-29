@@ -1,10 +1,10 @@
-"""终选阶段的评分累加 / 硬过滤 / 池选重建（从 `orchestrator.scan_with_raw` 等价抽出，2026-09-13）。
+"""终选阶段的评分累加 / 硬过滤（从 `orchestrator.scan_with_raw` 等价抽出，2026-09-13）。
 
 **等价纪律**：见 `scanner/pipeline/__init__.py`。改动本模块后必须跑
 `pytest tests/test_pipeline.py`（黄金样本工具已于 2026-09-28 删除，见包 docstring）。
 
-本模块的三个函数都涉及「**必须基于最新对象**」这一共同主题：加分循环用
-`dataclass_replace` 造了新对象，之后任何按旧引用重建列表的操作都会拿到过期 score。
+本模块原三个函数现为两个：`accumulate_final_scores` / `filter_excluded_by_risk`。
+第三个 `rebuild_pool_picks`（v2 池选区重建）随 v2 池管道于 2026-09-28 删除。
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ from dataclasses import replace as dataclass_replace
 
 from scanner.candidates import candidate_excluded_by_risk
 from scanner.enhancer import accumulate_final_score
-from scanner.models import V2_CATEGORY
 
 # 硬过滤提示最多展示几只票名（超出用「等 N 只」省略）
 _EXCLUDED_NAME_LIMIT = 8
@@ -37,18 +36,6 @@ def accumulate_final_scores(all_candidates: list, opening_scores: dict) -> None:
         all_candidates[i] = dataclass_replace(c, score=c.score + extra)
 
 
-def rebuild_pool_picks(all_candidates: list, v2_category: str = V2_CATEGORY) -> list:
-    """从 `all_candidates` 重建 v2 池选区并按**今日涨幅降序**。
-
-    必须重建而非沿用 `pool_picks` 旧列表：`accumulate_final_scores` 已用
-    `dataclass_replace` 造了新对象，旧列表持有的是未累加 extra 的过期对象
-    （与 v1 分类列表重建同理，这个坑踩过两次）。
-    """
-    picks = [c for c in all_candidates if c.category == v2_category]
-    picks.sort(key=lambda c: -(c.stock.percent or 0))
-    return picks
-
-
 def filter_excluded_by_risk(all_candidates: list) -> tuple[list, list]:
     """风险硬过滤：命中「卖出/止损」级标签的候选移出推荐列表。
 
@@ -62,9 +49,7 @@ def filter_excluded_by_risk(all_candidates: list) -> tuple[list, list]:
     excluded = [c for c in all_candidates if candidate_excluded_by_risk(c)]
     if not excluded:
         return all_candidates, []
-    names = "、".join(
-        f"{c.stock.name}({c.stock.symbol})" for c in excluded[:_EXCLUDED_NAME_LIMIT]
-    )
+    names = "、".join(f"{c.stock.name}({c.stock.symbol})" for c in excluded[:_EXCLUDED_NAME_LIMIT])
     more = f" 等{len(excluded)}只" if len(excluded) > _EXCLUDED_NAME_LIMIT else ""
     print(f"  [风险过滤] {len(excluded)} 只命中硬排除标签，已移出推荐：{names}{more}")
     excluded_ids = {id(c) for c in excluded}

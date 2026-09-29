@@ -37,8 +37,9 @@
 | `split_and_sort_categories` | L560-577 | `buckets.py` |
 | `accumulate_final_scores` | L480-482（加分循环原地替换） | `scoring.py` |
 | `filter_excluded_by_risk` | L492-498（风险硬过滤） | `scoring.py` |
-| `rebuild_pool_picks` | L576-577（v2 池选区重建） | `scoring.py` |
 | `attach_tactic_tags` | L544-552（盘中操作纪律） | `tactics.py` |
+
+注：`rebuild_pool_picks`（v2 池选区重建）随 v2 池管道于 2026-09-28 从本包移除。
 """
 
 from scanner.pipeline.buckets import split_and_sort_categories
@@ -51,7 +52,6 @@ from scanner.pipeline.pool import (
 from scanner.pipeline.scoring import (
     accumulate_final_scores,
     filter_excluded_by_risk,
-    rebuild_pool_picks,
 )
 from scanner.pipeline.tactics import attach_tactic_tags
 
@@ -63,7 +63,6 @@ __all__ = [
     "build_rps_inputs",
     "filter_by_market_cap",
     "filter_excluded_by_risk",
-    "rebuild_pool_picks",
     "report_market_cap_availability",
     "split_and_sort_categories",
 ]

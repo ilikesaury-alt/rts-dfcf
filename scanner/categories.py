@@ -15,6 +15,12 @@ pullback 策略 2026-07-30 下线后残留条目散落多处；新增类别（�
 pullback 保留为「已下线」条目（live_produced=False）：回测/归因仍需处理 DB
 中历史 pullback 行用于校准（test_backtest 断言），但实时扫描/展示路径通过
 LIVE_CATEGORIES / MAIN_TABLE_CATEGORIES 自动排除它。
+
+⚠ 已下线条目有两种，**不可混为一谈**（2026-09-28 pool_pick 退池时厘清）：
+  - pullback：历史行**仍要进归因样本**（用于校准）→ 留在 ATTRIBUTION_CATEGORIES。
+  - pool_pick：历史行**必须退出归因样本**（负超额桶，留着会稀释聚合 hit 率）→
+    故单列 ATTRIBUTION_EXCLUDED_CATEGORIES，与「已下线」解耦。
+判断标准是「该桶的历史行对度量还有没有价值」，不是「它是不是下线了」。
 """
 
 from dataclasses import dataclass
@@ -35,7 +41,15 @@ class CategoryInfo:
 
 
 CATEGORY_REGISTRY: dict[str, CategoryInfo] = {
-    "pool_pick": CategoryInfo("池选", "GREEN", 0, "\033[96m推荐\033[0m", True, True),
+    # 已退池的 pool_pick（2026-09-28）：v2 池选类别。in_main_table / live_produced 双 False。
+    # 该类别自 2026-09-14 展示区隐藏、2026-09-21 合池消费方删除后，**终端与飞书均无任何
+    # 呈现**，却仍日产 27~76 行落 recommendations（占全部行 47~65%），sym-day 去重口径
+    # hit≥7% 仅 3.0%（n=986）——低于 CATEGORY_HIT_RATE_DEFAULT 0.078，是唯一的负超额桶。
+    # 保留条目（而非删除键）的原因同 pullback：DB 里有 988 行存量，CAT_LABEL /
+    # SUGGEST_BY_CAT / CATEGORY_COLOR_KEYS 仍需能解析历史行，否则渲染路径 KeyError。
+    # ⚠ in_main_table 原为 True 但 assemble.py 早已硬编码把它排除出 main_recs —— 注册表
+    # 在说谎。置 False 是让注册表与实际渲染口径一致（该撒谎此前无消费方，属潜伏坑）。
+    "pool_pick": CategoryInfo("池选", "GREEN", 0, "\033[96m推荐\033[0m", False, False),
     "rebound": CategoryInfo("RBD", "CYAN", 1, "\033[96m推荐\033[0m", True, True),
     "known_new_face": CategoryInfo("kNF", "GREEN", 2, "\033[96m推荐\033[0m", True, True, score_descending=False),
     "momentum": CategoryInfo("MOM", "YELLOW", 3, "参考", True, True),
@@ -70,8 +84,15 @@ MAIN_TABLE_CATEGORIES: set[str] = {name for name, info in CATEGORY_REGISTRY.item
 # 组内分数键方向（ranking.score_sort_key 消费）：True = 评分降序在前。
 SCORE_DESCENDING_BY_CAT: dict[str, bool] = {name: info.score_descending for name, info in CATEGORY_REGISTRY.items()}
 
-# 回测/归因：处理 DB 中全部已知类别（含已下线 pullback，用于历史校准）。
+# 回测/归因：处理 DB 中全部已知类别（含已下线 pullback，用于历史校准），
+# **减去** ATTRIBUTION_EXCLUDED_CATEGORIES（已退池、负超额的历史桶）。
 ATTRIBUTION_CATEGORIES: set[str] = set(CATEGORY_REGISTRY.keys())
+
+# 已退池类别：DB 存量行仍在，但必须退出归因/回测样本口径。
+# 与「已下线」（live_produced=False）是**正交**的两个概念——pullback 下线但仍参与校准，
+# pool_pick 下线且必须剔除，故不能靠 live_produced 单字段表达。
+# 2026-09-28 新增：pool_pick 退池时引入。
+ATTRIBUTION_EXCLUDED_CATEGORIES: set[str] = {"pool_pick"}
 
 # 组合回测类别（剔除仅展示用、不入组合评分的 core_dip）。
 PORTFOLIO_CATEGORIES: set[str] = {

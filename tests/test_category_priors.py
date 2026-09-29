@@ -34,6 +34,10 @@ import math
 
 import pytest
 
+from scanner.categories import (
+    ATTRIBUTION_EXCLUDED_CATEGORIES,
+    CATEGORY_REGISTRY,
+)
 from scanner.config import (
     CATEGORY_HIT_RATE,
     CATEGORY_HIT_RATE_DEFAULT,
@@ -60,6 +64,8 @@ def test_single_source_keys_cover_all_live_categories():
     """单源必须覆盖全部在产类别（含已下线 pullback 供回测），否则下游会静默取兜底值。
 
     2026-09-16：`comeback` 随回马枪桶删除而移出（其 0.028 是全场最差 hit，桶已不产出）。
+    2026-09-28：`pool_pick` 随 v2 池管道退池而移出（0.021，全场最差；且它是**补集**而非
+    策略桶——定义就是「没被排雷的」，hit 3.0% 低于全体基准 0.078）。
     """
     expected = {
         "rebound",
@@ -68,12 +74,30 @@ def test_single_source_keys_cover_all_live_categories():
         "new_face",
         "core_dip",
         "short_term",
-        "pool_pick",
         "pullback",
     }
     assert expected <= set(CATEGORY_HIT_RATE)
     assert all(0.0 < v < 1.0 for v in CATEGORY_HIT_RATE.values())
     assert 0.0 < CATEGORY_HIT_RATE_DEFAULT < 1.0
+
+
+def test_retired_categories_are_absent_from_prior_table():
+    """已退池类别**不得**留在先验表里（2026-09-28 pool_pick 退池新增）。
+
+    这条是「同一条规则不能只对 comeback 执行」的守卫：comeback（0.028）当年因
+    「全场最差」被删出先验表，而更低的 pool_pick（0.021）却一直留着。守护它需要
+    显式断言，因为 ATTRIBUTION_EXCLUDED_CATEGORIES 与 CATEGORY_HIT_RATE 是两个独立
+    单源，靠人眼保持同步迟早会漏。
+    """
+    assert ATTRIBUTION_EXCLUDED_CATEGORIES & set(CATEGORY_HIT_RATE) == set()
+    # 且被剔除的桶必须确实是「负超额」，否则剔除本身没有依据。
+    # 参照：comeback 0.028 当年也低于基准 0.078，同一判据。
+    assert 0.0 < CATEGORY_HIT_RATE_DEFAULT < 1.0
+    # 退池类别仍在注册表里（供 DB 存量 988 行的标签解析），只是不再有先验。
+    assert ATTRIBUTION_EXCLUDED_CATEGORIES.issubset(CATEGORY_REGISTRY)
+    assert not any(CATEGORY_REGISTRY[c].live_produced for c in ATTRIBUTION_EXCLUDED_CATEGORIES), (
+        "已退池类别不得再由实时扫描产出"
+    )
 
 
 # ── 2. COMPOSITE_CAT_BASE 必须可由单源复算 ──

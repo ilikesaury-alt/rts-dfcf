@@ -178,15 +178,57 @@ This rebuilds scores via `scanner/historical_rescan.py --rescore` (faithful to t
 
 1. **主键只能是类别先验，不能是 `score`。** 实测 n=3543：score 与次日≥7% hit
    **无单调关系**（score=118→4.2%、score=0→0.0%、score=54→21.1%，纯噪声）；
-   类别先验逐档吻合（rebound 17.9/17.9、kNF 12.5/12.7、pool_pick 3.7/2.1）。
+   类别先验逐档吻合（rebound 17.9/17.9、kNF 12.5/12.7、core_dip 6.5/6.6）。
 2. **否决阈值全部复用上游单源**，本模块不新造风险阈值。
-3. **表外类别必须判 C 档**——`comeback` 已从先验表删掉（实测 hit 2.8%，全场最差），
-   按「未知 → 默认值 0.078」放行会让它整批白拿 B 档（实测 64 只漏过，守卫
-   `test_out_of_table_categories_are_C_not_B`）。
+3. **表外类别必须判 C 档**——`comeback`（实测 hit 2.8%，全场最差）与 `pool_pick`
+   （0.021，已退池）均已从先验表删掉，按「未知 → 默认值 0.078」放行会让它们整批
+   白拿 B 档（实测 64 只漏过，守卫 `test_out_of_table_categories_are_C_not_B`）。
 
-**离线影响**（`python scripts/push_gate_impact.py`，近 10 交易日）：
-现状 804 只 → 门后 97 只（**削减 88%**）；通过集 hit **12.5%** vs 剔除集 6.3%
-（**+6.2pp**）。根因是 `pool_pick` 桶 2026-09 起日产 60~110 只而实测 hit 仅 3.7%。
+> ⚠ **2026-09-28 修正：本节原有的「削减 88%」是测量口径错误，已作废。**
+> `scripts/push_gate_impact.py` 的样本总体是 `recommendations` 原始行（含 `pool_pick`），
+> 但**生产卡片的主体是 `view.main_rows`（已排除 pool_pick）+ `view.hist_rows`
+> （`historical_watch.V1_CATEGORIES` 也不含它）——pool_pick 在生产链路里 100% 到不了
+> push_gate**。故「804 → 97」是拿门去挡一个它见不到的总体。真实卡片总体只有 v1 五桶
+> （实测 30~62 只/日，非 80 只/日）。**这个门在真实总体上砍掉多少，目前未知**——
+> 需把 impact 脚本改用真实卡片总体后重跑才能判断，结论可能反过来（本门或许没必要存在）。
+> 另：`pool_pick` 已于 2026-09-28 整体退池（见下方「pool_pick 退池」）。
+
+## pool_pick 退池（2026-09-28，v2 池管道整体删除）
+
+**判据：以当前终端输出为准。** `pool_pick` 自 2026-09-14 展示区隐藏、2026-09-21
+合池消费方删除后，在终端四区块与飞书卡片里**均无任何呈现**，却仍日产 27~76 行落
+`recommendations`（占全部行 47~65%），而 sym-day 去重口径 hit≥7% 仅 **3.0%**（n=986），
+低于 `CATEGORY_HIT_RATE_DEFAULT` 0.078 —— 全表唯一负超额桶。
+
+**根因不是「阈值没调好」，是范畴错误**：`build_pool` 无条件收下榜上每个过市值准入的
+GEM，唯一筛选是 `¬danger`。它的选择性 ≈50%，语义是「**没被排雷的**」，不是「**满足某
+条件的**」。给一个补集配类别先验、配档位、配 A/B/C 分级，本身就不成立。
+
+**同一条规则此前只对 comeback 执行了**：comeback（0.028，全场最差）2026-09-16 被删出
+先验表，而更低的 `pool_pick`（0.021）一直留着。守卫
+`tests/test_category_priors.py::test_retired_categories_are_absent_from_prior_table`。
+
+**已删除**：v2 池管道（orchestrator 的 build_pool/evaluate_pool/二次排雷/pool_pick 候选）、
+`V2_CATEGORY`、`rebuild_pool_picks`、`v2_kline_summary`、`ScanResult.pool_picks`、
+`ENABLE_POOL_PIPELINE`/`pipeline_mode`（二者已无读取方）、`scripts/v2_backtest.py`、
+`scripts/run_v2_once.py`。**保留**：`scanner/pool.py`、`scanner/danger.py`、
+`scanner/matcher.py`、`pool_log` 表与 `save_pool_log`——研究原料，非推荐内容。
+
+**对 v1 五桶等价**（勿重开此论证）：`rps_baseline` 来自 `gem_stocks` 全监控集，与
+`all_candidates` 无关；`accum_map` 按 symbol 覆盖，双挂票同值重算无差异；
+`collect_market_extra`/`collect_fund_risk` 均为「全市场一次拉取 + 本批过滤」无批次上限。
+
+**⚠ 三处不能跟着删**（存量 988 行仍在 DB，退池当天当日也仍有行）：
+- `view/assemble.py` 的 `main_recs` 排除条件——**删掉会让 pool_pick 突然混进 v1 主表**；
+- `_stg_map` / `CAT_LABEL` 的标签映射——供存量行解析（故注册表**保留条目**，只翻 `live_produced`）；
+- `dal.save_recommendations` 的平分刷新例外已删（无候选后永不可达）。
+
+**净效果**：归因样本聚合 hit 由 **5.0% → 6.8%**（+1.8pp，同窗口只改过滤的对照测量）。
+
+**未决项**：剔除 pool_pick 后 `OR_SMALL_SECTOR` 实测 0.580→0.417（漂移 28.1%，越容差）
+——该 OR 因子此前是在**含 pool_pick 噪声的样本**上标定的。改常数属行为变更，须先过
+`python -m scanner.rule_validate`（§B1）。故本次**未**重写 `nextday_calib.json` 快照
+（`--write` 的规定触发条件是「改了常数之后」，本次未改）。
 
 ## 目标函数（2026-09-14 定稿，唯一口径）
 
@@ -288,7 +330,7 @@ scanner/
     pool.py                 #   市值过滤 / 现价行情组装
     features.py             #   RPS 基准 / 分时趋势挂载
     buckets.py              #   分类分桶与排序
-    scoring.py              #   加分累加 / 风险硬过滤 / v2 池选重建
+    scoring.py              #   加分累加 / 风险硬过滤（v2 池选重建已删）
     tactics.py              #   盘中操作纪律标签
   db/
     migrations.py           # 版本化 schema 迁移清单 + schema_migrations 账本

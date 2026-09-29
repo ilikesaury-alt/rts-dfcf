@@ -291,8 +291,16 @@ CATEGORY_HIT_RATE: dict[str, float] = {
     "core_dip": 0.065,
     "short_term": 0.062,
     "pullback": 0.056,  # 已下线，保留供回测
-    "pool_pick": 0.021,
 }
+# 2026-09-28：pool_pick（0.021，全场最差）随 v2 池管道一并退池。理由与上条 comeback 同款，
+# 且更强一档：pool_pick 的定义是**补集**（build_pool 无条件收下榜上每个过市值准入的
+# GEM，唯一筛选是 ¬danger），不是策略桶——给一个补集配类别先验本身是范畴错误。
+# 事实依据（scanner.db 近 10 交易日）：日产 27~76 行、占 recommendations 全部行
+# 47~65%，而 sym-day 去重口径 hit≥7% 仅 3.0%（n=986），低于 _DEFAULT 0.078。
+# 该类别自 2026-09-14 展示区隐藏、2026-09-21 合池消费方删除后已无任何终端/飞书呈现，
+# 仅污染归因样本与组合回测（PORTFOLIO_CATEGORIES 曾把它当可交易类别）。
+# ⚠ 删键只影响 pool_pick 自身：_CAT_BASE_SPREAD 取 max，恒为 rebound 0.179，
+# 故其余类别 COMPOSITE_CAT_BASE 取值逐位不变（已用前后快照核对）。
 # 2026-09-16：comeback（0.028，全场最差）随回马枪桶删除。注意本表是**先验单一事实
 # 源**，删键只影响 comeback 自身（_CAT_BASE_SPREAD 取 max，恒为 rebound 0.179），
 # 其余类别的 COMPOSITE_CAT_BASE 取值逐位不变。

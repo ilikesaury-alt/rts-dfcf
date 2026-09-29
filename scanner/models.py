@@ -232,11 +232,12 @@ class ScanResult:
     rebound: list[Candidate] = field(default_factory=list)
     short_term: list[Candidate] = field(default_factory=list)
     # （原 `comeback: list[Candidate]` 桶随回马枪于 2026-09-16 删除。）
-    pool_picks: list[Candidate] = field(default_factory=list)  # v2: pool→danger→matcher 统一输出
+    # （原 `pool_picks` 字段随 v2 池管道于 2026-09-28 删除——pool_pick 已退池，
+    #  终端/飞书无呈现、归因样本已剔除。复原见 git 51b80d8:scanner/models.py。）
     gem_stocks: list[StockInfo] = field(default_factory=list)
     filtered_large_cap: int = 0
     current_quotes: dict[str, dict] = field(default_factory=dict)
     today_pool: dict[str, Candidate] = field(default_factory=dict)
 
 
-V2_CATEGORY = "pool_pick"  # v2 管道统一 category
+# V2_CATEGORY（v2 管道统一 category）随 v2 池管道于 2026-09-28 一并删除。

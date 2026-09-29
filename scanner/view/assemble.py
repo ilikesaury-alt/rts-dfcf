@@ -17,7 +17,7 @@ from scanner.database import (
     get_fund_flow_pct_map,
     get_today_recommendations,
 )
-from scanner.models import V2_CATEGORY, Candidate, RecommendationRow
+from scanner.models import Candidate, RecommendationRow
 from scanner.nextday_rule import scan_rule
 
 # 排序/画像纯逻辑单源在 scanner.ranking；display 只导入渲染所需子集。
@@ -276,11 +276,16 @@ def build_scan_view(
     #   comeback  —— 回马枪桶已于 2026-09-16 删除，只剩历史行；
     #   core_dip  —— 核心低吸（DIP）：其展示区 2026-09-14 隐藏，唯一的合池消费方
     #                「终选参考区」2026-09-21 删除 ⇒ 现无任何消费方；
-    #   pool_pick —— v2 池选：展示区 2026-09-14 隐藏，合池消费方同上 2026-09-21 删除。
-    # ⚠ 两个「无消费方」的类别**仍从 main_recs 排除**：它们代表的是策略语义不同的桶，
+    #   pool_pick —— v2 池选：展示区 2026-09-14 隐藏、合池消费方 2026-09-21 删除，
+    #                2026-09-28 起更不再产出（退池）。
+    # ⚠ 三个「无消费方」的类别**仍从 main_recs 排除**：它们代表的是策略语义不同的桶，
     # 混进 v1 主表会同时破坏主表列语义与排序键（v1 档位序 vs v2 涨幅降序）。
+    # ⚠ pool_pick 的排除**不能随 v2 管道删除而删掉**：DB 里存有 988 行历史 pool_pick，
+    # 且退池当天（以及任何尚未清库的日子）当日仍有存量行——删掉排除条件会让它在终端
+    # 突然混进 v1 主表。故此处用字面量而非已删除的 V2_CATEGORY 常量，与 comeback /
+    # core_dip 同等待遇（它们同样只剩历史行）。
     # RTS_PIPELINE 不再影响显示层。
-    main_recs = [e for e in today_recs if e["category"] not in ("comeback", CORE_DIP_CATEGORY, V2_CATEGORY)]
+    main_recs = [e for e in today_recs if e["category"] not in ("comeback", CORE_DIP_CATEGORY, "pool_pick")]
 
     # 核心股高亮（2026-08-19）：综合排序/低吸列表里属于当前主线方向核心股的票，
     # 名称加粗高亮。**判定 = core_stock_symbols（核心主题成员 + 20日累计≥CORE_RUN_MIN

@@ -62,8 +62,10 @@ CONST_BASELINE: dict[str, object] = {
 
 # 类别注册表基线：键 -> (label, display_priority, live_produced)
 # 2026-09-16：`comeback`（"CB", 6, True）随回马枪桶与 🎯 画像一并从注册表删除。
+# 2026-09-28：`pool_pick` 随 v2 池管道退池，在注册表中**保留条目**但 live_produced
+# 翻为 False（同 pullback 先例）——故这里是改标志，不是删键。
 CATEGORY_BASELINE: dict[str, tuple[str, int, bool]] = {
-    "pool_pick": ("池选", 0, True),
+    "pool_pick": ("池选", 0, False),
     "rebound": ("RBD", 1, True),
     "known_new_face": ("kNF", 2, True),
     "momentum": ("MOM", 3, True),
@@ -117,9 +119,7 @@ def check_baseline_consistency() -> list[str]:
         doc_size = int(m.group(1).replace(",", ""))
         doc_hash = m.group(2)
         if doc_size != exp_size or doc_hash != exp_hash:
-            problems.append(
-                f"[自检] {rel} 脚本({exp_size:,}/{exp_hash}) 与文档({doc_size:,}/{doc_hash}) 不一致"
-            )
+            problems.append(f"[自检] {rel} 脚本({exp_size:,}/{exp_hash}) 与文档({doc_size:,}/{doc_hash}) 不一致")
     return problems
 
 
@@ -184,9 +184,7 @@ def update_doc() -> int:
         if not p.exists():
             continue
         size, h = _sha16(p)
-        pattern = re.compile(
-            r"(\|\s*`" + re.escape(rel) + r"`\s*\|\s*)([\d,]+)(\s*\|\s*`)([0-9a-f]+)(`\s*\|)"
-        )
+        pattern = re.compile(r"(\|\s*`" + re.escape(rel) + r"`\s*\|\s*)([\d,]+)(\s*\|\s*`)([0-9a-f]+)(`\s*\|)")
 
         def _repl(m: re.Match[str], _size: int = size, _hash: str = h) -> str:
             nonlocal changed
@@ -206,7 +204,11 @@ def git_show(path: str, rev: str) -> str | None:
     try:
         p = subprocess.run(  # noqa: S603 - 固定命令 + 仓库内路径 + 用户传入的 rev
             ["git", "show", f"{rev}:{path}"],
-            capture_output=True, text=True, encoding="utf-8", cwd=str(ROOT), check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=str(ROOT),
+            check=False,
         )
     except OSError:
         return None
@@ -238,7 +240,8 @@ def diff_against(rev: str) -> int:
             import difflib
 
             delta = sum(
-                1 for ln in difflib.unified_diff(old_lines, new_lines, n=0)
+                1
+                for ln in difflib.unified_diff(old_lines, new_lines, n=0)
                 if ln.startswith(("+", "-")) and not ln.startswith(("+++", "---"))
             )
             print(f"  [改动] {rel}  约 {delta} 行变化")

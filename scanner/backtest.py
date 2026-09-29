@@ -67,7 +67,10 @@ if sys.platform == "win32":
 # 当前有效策略类别（过滤已废弃的 old_face / early_momentum）。
 # 2026-08-20 收敛：类别宇宙单一事实来源见 scanner/categories.py；
 # 回测/归因处理 DB 中全部已知类别（含已下线的 pullback，用于历史校准）。
-from scanner.categories import ATTRIBUTION_CATEGORIES as ACTIVE_CATEGORIES  # noqa: E402
+from scanner.categories import (  # noqa: E402
+    ATTRIBUTION_CATEGORIES as ACTIVE_CATEGORIES,
+)
+from scanner.categories import ATTRIBUTION_EXCLUDED_CATEGORIES  # noqa: E402
 
 
 @dataclass
@@ -367,9 +370,16 @@ def load_attribution_rows(
     cols：附加列（逗号分隔，调用方传入内部字面量，不接受外部输入）。
     require_breakdown：为 True 时额外要求 score_breakdown IS NOT NULL。
     返回 sqlite3.Row 列表（含 date/symbol/category/score + cols + metric 列）。
+
+    2026-09-28（pool_pick 退池）：无条件减去 ATTRIBUTION_EXCLUDED_CATEGORIES。
+    DB 里 pool_pick 有 988 行存量、hit 3.0%（负超额），不剔除会把聚合 hit 率按
+    47~65% 的权重拖向噪声。**无条件**（而非「仅默认路径」）是刻意的：目前无任何生产
+    调用方传 categories，但若将来有人传入显式列表，默默放行会让污染复活且无迹可寻。
+    归因/回测一律不再消费已退池桶——它们的价值在 pool_log，不在 recommendations。
     """
     metric = _check_metric(metric)
     cats = list(categories if categories is not None else ACTIVE_CATEGORIES)
+    cats = [c for c in cats if c not in ATTRIBUTION_EXCLUDED_CATEGORIES]
     if not cats:
         return []
     # 统一行工厂：调用方（含单测内存库）未必设置 row_factory，本函数按列名取数。

@@ -32,7 +32,7 @@ from scanner.config import (
     now_beijing,
 )
 from scanner.db._common import n_trading_days_ago
-from scanner.models import V2_CATEGORY, KlineBar, RecommendationRow
+from scanner.models import KlineBar, RecommendationRow
 from scanner.trading_session import is_trading_time
 from scanner.utils import is_gem, to_float
 
@@ -424,9 +424,10 @@ def save_recommendations(conn: sqlite3.Connection, new_faces: list, rest: list, 
             excluded_reason = getattr(c, "excluded_reason", "") or ""
             if existing:
                 # 同日同股同策略已存在：新分更高时更新（保留当日最高分用于回测归因）。
-                # 例外：v2 pool_pick 分数恒 0，严格大于会让同日后续轮次的 percent/trend
-                # 永远不落库（冻结在首轮，掉榜行 🎯 判定与回测口径漂移）——平分也刷新。
-                if c.score > existing[1] or (c.score == existing[1] and c.category == V2_CATEGORY):
+                # 注：原此处有一个 v2 pool_pick 的平分刷新例外（其分数恒 0，严格大于会让
+                # 同日后续轮次的 percent/trend 冻结在首轮）——随 v2 池管道于 2026-09-28 删除。
+                # 依据：无 pool_pick 候选后该分支永不可达；DB 中 988 行存量 pool_pick 也不再更新。
+                if c.score > existing[1]:
                     conn.execute(
                         "UPDATE recommendations SET time = ?, score = ?, percent = ?, trend = ?, "
                         "score_breakdown = ?, source = ?, concept = ?, accumulated_pct = ?, "

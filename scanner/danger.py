@@ -117,8 +117,11 @@ def evaluate_pool(
     today 为评估基准日（信号日），必传：K 线"当日"信号（冲高回落/翻绿+高开回落）
     只认 date == today 的 bar——补拉失败导致序列缺今日 bar 时按无法度量 fail-open
     跳过，不得拿昨日 bar 冒充当日（2026-09-04 审查修复：此前 kl[-1] 无日期校验，
-    stale K 线会消费昨日形态误杀/漏杀；口径与 utils.today_kline_bar、
-    orchestrator.v2_kline_summary 统一）。
+    stale K 线会消费昨日形态误杀/漏杀；口径与 utils.today_kline_bar 统一）。
+    注：本函数原在 orchestrator.evaluate_pool 调用点随 v2 池管道于 2026-09-28 一并
+    失去生产调用方，但**函数本身保留**——它是 pool_log 排雷研究口径的单一实现，
+    scripts/ 仍可能复用。保留无人调用的函数不是遗留债务，而是刻意保留的研究原料
+    （同 scanner/pool.py、scanner/matcher.py）；它不产出任何终端可见内容。
     """
     out: dict[str, list[str]] = {}
     for row in pool_rows:

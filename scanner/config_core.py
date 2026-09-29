@@ -75,6 +75,7 @@ def resolve_db_path() -> str:
     """解析 DB 路径：默认仓库根 scanner.db；RTS_DB_PATH 可覆盖（分支隔离用）。"""
     return os.environ.get("RTS_DB_PATH") or os.path.join(BASE_DIR, "scanner.db")
 
+
 # 外来分支排除标记前缀（2026-09-03）：redesign-pick-gate 分支的 redesign_gate 会在
 # 共享主库写入 reason='redesign:*' 的 excluded=1 标记（L0 池窄→撤销当日全部推荐），
 # 切回 master 后这些标记会遮蔽核心低吸/回马枪区。master 启动（init_db）时自愈清除。
@@ -108,18 +109,11 @@ def _env_str(name: str, default: str) -> str:
     return v.strip() if v and v.strip() else default
 
 
-def pipeline_mode() -> str:
-    """管道模式（RTS_PIPELINE=v1|v2，默认 v2）。
-
-    2026-09-02 起双跑：v1 五桶与 v2 池管道在 scan_with_raw 内无条件都执行、各自
-    落库（recommendations 按 (date, symbol, category) 并存），显示层同屏双区输出
-    （v1 主表 + v2 池选区）——本开关不再切换任何行为，仅为兼容保留。
-    单独关闭 v2 管道（回滚杠杆）用 RTS_ENABLE_POOL=0。
-    """
-    return (os.environ.get("RTS_PIPELINE", "v2") or "v2").strip().lower()
-
-
-ENABLE_POOL_PIPELINE = _env_flag("RTS_ENABLE_POOL", True)  # v2 池管道开关（双跑下的回滚杠杆）
+# 2026-09-28：以下两个开关随 v2 池管道退池一并删除，二者均已无任何读取方——
+#   pipeline_mode()        —— 自身 docstring 早已写明「不再切换任何行为，仅为兼容保留」，
+#                            唯一调用方 scripts/run_v2_once.py 已随 v2 工具链删除；
+#   ENABLE_POOL_PIPELINE   —— RTS_ENABLE_POOL 的读取方只有 orchestrator，而 v2 管道已整体移除。
+# ⚠ 保留一个无人读取的开关比没有更危险：它会让人以为回滚杠杆还在。复原见 git 51b80d8。
 
 
 # 交易时段（用于 is_trading_time 判断盘中/盘后）
@@ -156,8 +150,6 @@ __all__ = [
     "_env_flag",
     "_env_float",
     "_env_str",
-    "pipeline_mode",
-    "ENABLE_POOL_PIPELINE",
     "MORNING_START",
     "MORNING_END",
     "AFTERNOON_START",

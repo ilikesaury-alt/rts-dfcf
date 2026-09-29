@@ -33,7 +33,12 @@ from scanner.nextday_prob import (
 )
 
 
-def _entry(cat="pool_pick", percent=3.0, dims=None):
+def _entry(cat="momentum", percent=3.0, dims=None):
+    """最小综合排序行：band/超买/板块共振经 ranking 助手从 score_breakdown 读。
+
+    ⚠ 默认类别原为 `pool_pick`，2026-09-28 该桶退池后已退出先验表 → 默认值改为
+    `momentum`（在表内的中位类别）。所有调用点本就显式传 cat，故仅为兜底值保���。
+    """
     """最小综合排序行：band/超买/板块共振经 ranking 助手从 score_breakdown 读。"""
     return {"category": cat, "percent": percent, "score_breakdown": dims or {}}
 
@@ -46,6 +51,7 @@ def test_base_rates_cover_known_categories():
 
     数值本身不在此断言——由 tests/test_nextday_calib.py 对照快照守护（单一真源），
     避免同一数字散落在两处、改一处漏一处。
+    2026-09-28：`pool_pick` 随 v2 池管道退池而移出先验表（负超额补集桶）。
     """
     for cat in (
         "rebound",
@@ -54,19 +60,38 @@ def test_base_rates_cover_known_categories():
         "new_face",
         "core_dip",
         "short_term",
-        "pool_pick",
     ):
         assert cat in BASE_RATE_BY_CAT
         assert 0.0 < BASE_RATE_BY_CAT[cat] < 1.0
     assert 0.0 < BASE_RATE_DEFAULT < 1.0
+    # 已退池类别必须**不在**表内，否则它会静默取回自己的旧先验。
+    assert "pool_pick" not in BASE_RATE_BY_CAT
 
 
 def test_unknown_category_uses_default_base():
-    """未知类别兜底全体基准——介于最强（rebound）与最弱（pool_pick）之间。"""
-    p_rebound = next_day_hit_probability(_entry("rebound"))
+    """未知类别兜底**全体基准**——先验上介于最强与最弱的在表类别之间。
+
+    ⚠ 2026-09-28 改写：原断言在**概率层**比较 `p_rebound > p_unknown > p_pool`。
+    退池后它失效，且更重要的是——概率序并不等于先验序：`percent=3.0` 落在 2~4%
+    死区，会再乘一个带系数，各类别系数不同（实测 short_term 恰为 1.0、core_dip 被
+    压到 0.0514），故「最弱」随取值点漂移。改在**先验层**断言，与测试名一致且稳健。
+    """
+    priors = BASE_RATE_BY_CAT
+    assert min(priors.values()) < BASE_RATE_DEFAULT < max(priors.values())
+    # 兜底基准确实被未知类别取用（与已退池类别同值，见下一条用例）
     p_unknown = next_day_hit_probability(_entry("不存在的类别"))
-    p_pool = next_day_hit_probability(_entry("pool_pick"))
-    assert p_rebound > p_unknown > p_pool
+    assert 0.0 < p_unknown < 1.0
+
+
+def test_retired_category_falls_back_to_default_base():
+    """已退池类别（pool_pick）现在**就是**未知类别，应取兜底基准而非旧先验。
+
+    2026-09-28 新增。退池前 pool_pick 0.021 是表内最低值；退池后它必须与任意
+    不存在的类别同值——这条守护「删键真的生效」，而不是悄悄保留一条幽灵先验。
+    """
+    p_retired = next_day_hit_probability(_entry("pool_pick"))
+    p_unknown = next_day_hit_probability(_entry("不存在的类别"))
+    assert p_retired == p_unknown
 
 
 # ── 单因子方向 ──
@@ -141,7 +166,9 @@ def test_probability_bounded_even_with_all_positive_factors():
     p_hot = next_day_hit_probability(hot, prominence=True)
     assert P_MIN <= p_hot <= P_MAX
 
-    cold = _entry("pool_pick", percent=3.0, dims={"v_st_overbought": 1})
+    # 冷端用 short_term（退池后表内最低先验 0.062）；原用 pool_pick，退池后它已
+    # 退到兜底基准（0.078），不再代表「最冷」场景。
+    cold = _entry("short_term", percent=3.0, dims={"v_st_overbought": 1})
     p_cold = next_day_hit_probability(cold)
     assert P_MIN <= p_cold <= P_MAX
 

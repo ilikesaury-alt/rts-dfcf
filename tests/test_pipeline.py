@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-from scanner.models import V2_CATEGORY, Candidate, KlineSummary, StockInfo
+from scanner.models import Candidate, KlineSummary, StockInfo
 from scanner.pipeline import (
     accumulate_final_scores,
     attach_minute_trends,
@@ -28,7 +28,6 @@ from scanner.pipeline import (
     build_rps_inputs,
     filter_by_market_cap,
     filter_excluded_by_risk,
-    rebuild_pool_picks,
     report_market_cap_availability,
     split_and_sort_categories,
 )
@@ -42,26 +41,39 @@ YI = 100_000_000
 
 def _stock(symbol: str, current: float = 10.0, market_cap: float = 0.0) -> StockInfo:
     return StockInfo(
-        symbol=symbol, name=f"N-{symbol}", code=symbol[2:] if len(symbol) > 6 else symbol,
-        percent=5.0, current=current, value=10_000, rank_change=0, rank=1,
+        symbol=symbol,
+        name=f"N-{symbol}",
+        code=symbol[2:] if len(symbol) > 6 else symbol,
+        percent=5.0,
+        current=current,
+        value=10_000,
+        rank_change=0,
+        rank=1,
         market_cap=market_cap,
     )
 
 
-def _cand(symbol: str, category: str = "new_face", score: int = 20,
-          kline_dims: dict | None = None) -> Candidate:
+def _cand(symbol: str, category: str = "new_face", score: int = 20, kline_dims: dict | None = None) -> Candidate:
     stock = _stock(symbol)
     return Candidate(
-        stock=stock, category=category, score=score, reason="t",
-        kline=KlineSummary(trend="t", accumulated_pct=2.0, volume_ratio=1.5,
-                           bottom_confirmed=True, score=score,
-                           dimensions=kline_dims or {}, avg_volume=1_000_000),
+        stock=stock,
+        category=category,
+        score=score,
+        reason="t",
+        kline=KlineSummary(
+            trend="t",
+            accumulated_pct=2.0,
+            volume_ratio=1.5,
+            bottom_confirmed=True,
+            score=score,
+            dimensions=kline_dims or {},
+            avg_volume=1_000_000,
+        ),
         first_seen="09:30",
     )
 
 
-def _klines(n: int = 8, today: str = "2026-09-11", base: float = 100.0,
-            step: float = 1.0) -> list[dict]:
+def _klines(n: int = 8, today: str = "2026-09-11", base: float = 100.0, step: float = 1.0) -> list[dict]:
     """构造 n 根 K 线：日期从 today 往前推（含 today），收盘价等差递增。"""
     from datetime import date, timedelta
 
@@ -69,8 +81,17 @@ def _klines(n: int = 8, today: str = "2026-09-11", base: float = 100.0,
     bars = []
     for i in range(n):
         d = (d0 - timedelta(days=n - 1 - i)).isoformat()
-        bars.append({"date": d, "open": base, "high": base, "low": base,
-                     "close": base + i * step, "volume": 1.0, "percent": 1.0})
+        bars.append(
+            {
+                "date": d,
+                "open": base,
+                "high": base,
+                "low": base,
+                "close": base + i * step,
+                "volume": 1.0,
+                "percent": 1.0,
+            }
+        )
     return bars
 
 
@@ -92,8 +113,7 @@ class TestFilterByMarketCap:
     def test_backfills_market_cap_in_yi_circ_first(self):
         """流通市值优先，且转成亿元。"""
         s = _stock("SZ300001")
-        filter_by_market_cap([s], {"SZ300001": {"circ_market_cap": 30 * YI,
-                                                "market_cap": 90 * YI}})
+        filter_by_market_cap([s], {"SZ300001": {"circ_market_cap": 30 * YI, "market_cap": 90 * YI}})
         assert s.market_cap == pytest.approx(30.0)
 
     def test_falls_back_to_total_market_cap(self):
@@ -164,8 +184,7 @@ class TestReportMarketCapAvailability:
 class TestBuildCurrentQuotes:
     def test_drops_entries_without_current(self):
         """current<=0（停牌/字段缺失强转 0）必须剔除——2026-08-14 fail-open 修复的口径。"""
-        quotes = build_current_quotes({"A": {"current": 0, "percent": 5.0},
-                                       "B": {"current": 12.0, "percent": 3.0}})
+        quotes = build_current_quotes({"A": {"current": 0, "percent": 5.0}, "B": {"current": 12.0, "percent": 3.0}})
         assert set(quotes) == {"B"}
 
     def test_missing_current_key_is_dropped(self):
@@ -230,8 +249,9 @@ class TestBuildRpsInputs:
 class TestAttachMinuteTrends:
     def test_writes_all_four_dimensions(self):
         c = _cand("A")
-        attach_minute_trends([c], {"A": {"steady_rise_ratio": 0.8, "day_high_pct": 5.0,
-                                         "am_high_pct": 3.0, "vol_trend": 1.4}})
+        attach_minute_trends(
+            [c], {"A": {"steady_rise_ratio": 0.8, "day_high_pct": 5.0, "am_high_pct": 3.0, "vol_trend": 1.4}}
+        )
         d = c.kline.dimensions
         assert d["minute_steady_rise"] == 0.8
         assert d["minute_day_high"] == 5.0
@@ -278,8 +298,8 @@ class TestAttachMinuteTrends:
         c = _cand("A")
         attach_minute_trends([c], {"A": trend})
         assert build_kline_dimension_patch(trend) == {
-            k: c.kline.dimensions[k] for k in
-            ("minute_steady_rise", "minute_day_high", "minute_am_high", "minute_vol_trend")
+            k: c.kline.dimensions[k]
+            for k in ("minute_steady_rise", "minute_day_high", "minute_am_high", "minute_vol_trend")
         }
 
 
@@ -292,11 +312,13 @@ class TestSplitAndSortCategories:
         assert [c.stock.symbol for c in b["new_faces"]] == ["A", "B"]
 
     def test_buckets_are_disjoint_and_complete(self):
-        cands = [_cand(f"SZ30000{i}", cat) for i, cat in enumerate(
-            ["new_face", "momentum", "rebound", "short_term", "pool_pick", "core_dip"])]
+        cands = [
+            _cand(f"SZ30000{i}", cat)
+            for i, cat in enumerate(["new_face", "momentum", "rebound", "short_term", "pool_pick", "core_dip"])
+        ]
         b = split_and_sort_categories(cands)
         covered = sum(len(v) for v in b.values())
-        # 四个桶；pool_pick（由 V2_CATEGORY 单独重建）与 core_dip（独立区）不在桶内
+        # 四个桶；pool_pick（已退池）与 core_dip（独立区）不在桶内
         assert covered == 4
 
     def test_score_buckets_sorted_descending(self):
@@ -310,8 +332,7 @@ class TestSplitAndSortCategories:
 
     def test_known_new_face_sorted_ascending_by_score(self):
         """known_new_face 分数**反指**：低分档收益更好 → 升序（与 new_face 相反）。"""
-        b = split_and_sort_categories([_cand("A", "known_new_face", 30),
-                                       _cand("B", "known_new_face", 10)])
+        b = split_and_sort_categories([_cand("A", "known_new_face", 30), _cand("B", "known_new_face", 10)])
         assert [c.score for c in b["new_faces"]] == [10, 30]
         # 与 new_face 的方向确实相反（用同一个键函数交叉验证）
         nf = split_and_sort_categories([_cand("A", "new_face", 30), _cand("B", "new_face", 10)])
@@ -357,8 +378,8 @@ class TestAccumulateFinalScores:
         c = _cand("A", "new_face", 20)
         lst = [c]
         accumulate_final_scores(lst, {})
-        assert lst[0] is not c          # 列表里换成了新对象
-        assert c.score == 20            # 旧对象不被就地修改
+        assert lst[0] is not c  # 列表里换成了新对象
+        assert c.score == 20  # 旧对象不被就地修改
         assert lst[0].score == 25
 
     def test_double_hung_candidates_compute_extra_independently(self, monkeypatch):
@@ -367,7 +388,8 @@ class TestAccumulateFinalScores:
         若复用同一 extra，short_term 桶会拿到 new_face 桶的 bonus，排名错位。
         """
         monkeypatch.setattr(
-            pm_scoring, "accumulate_final_score",
+            pm_scoring,
+            "accumulate_final_score",
             lambda c, _o: 3 if c.category == "new_face" else 11,
         )
         nf = _cand("A", "new_face", 20)
@@ -401,8 +423,7 @@ class TestFilterExcludedByRisk:
         assert kept is lst and excluded == []
 
     def test_hit_is_removed_and_reported(self, monkeypatch, capsys):
-        monkeypatch.setattr(pm_scoring, "candidate_excluded_by_risk",
-                            lambda c: c.stock.symbol == "B")
+        monkeypatch.setattr(pm_scoring, "candidate_excluded_by_risk", lambda c: c.stock.symbol == "B")
         a, b_ = _cand("A"), _cand("B")
         kept, excluded = filter_excluded_by_risk([a, b_])
         assert kept == [a] and excluded == [b_]
@@ -415,45 +436,20 @@ class TestFilterExcludedByRisk:
         _kept, excluded = filter_excluded_by_risk(cands)
         out = capsys.readouterr().out
         assert len(excluded) == 10
-        assert out.count("(SZ3") == 8        # 票名里 symbol 出现两次，按左括号计数
-        assert "SZ300009" not in out         # 第 10 只不列名
+        assert out.count("(SZ3") == 8  # 票名里 symbol 出现两次，按左括号计数
+        assert "SZ300009" not in out  # 第 10 只不列名
         assert "等10只" in out
 
     def test_identical_symbols_in_two_categories_filtered_separately(self, monkeypatch):
         """按「对象身份」而非 symbol 剔除：双挂票一个被杀另一个保留。"""
-        monkeypatch.setattr(pm_scoring, "candidate_excluded_by_risk",
-                            lambda c: c.category == "short_term")
+        monkeypatch.setattr(pm_scoring, "candidate_excluded_by_risk", lambda c: c.category == "short_term")
         nf = _cand("A", "new_face")
         st = _cand("A", "short_term")
         kept, excluded = filter_excluded_by_risk([nf, st])
         assert kept == [nf] and excluded == [st]
 
 
-class TestRebuildPoolPicks:
-    def test_keeps_only_v2_category(self):
-        picks = rebuild_pool_picks([_cand("A", "new_face"), _cand("B", V2_CATEGORY)])
-        assert [c.stock.symbol for c in picks] == ["B"]
-
-    def test_sorted_by_today_percent_descending(self):
-        cands = [_cand("A", V2_CATEGORY), _cand("B", V2_CATEGORY), _cand("C", V2_CATEGORY)]
-        for c, p in zip(cands, (1.0, 9.0, 5.0), strict=False):
-            c.stock.percent = p
-        assert [c.stock.percent for c in rebuild_pool_picks(cands)] == [9.0, 5.0, 1.0]
-
-    def test_none_percent_treated_as_zero(self):
-        """percent 为 None（缺行情）按 0 处理，不抛 TypeError。"""
-        c = _cand("A", V2_CATEGORY)
-        c.stock.percent = None
-        assert rebuild_pool_picks([c]) == [c]
-
-    def test_returns_new_list(self):
-        """必须返回新列表（重建语义），不能就地排序传入列表。"""
-        cands = [_cand("A", V2_CATEGORY)]
-        out = rebuild_pool_picks(cands)
-        assert out is not cands
-
-    def test_empty_when_no_v2(self):
-        assert rebuild_pool_picks([_cand("A", "new_face")]) == []
+# 注：TestRebuildPoolPicks（v2 池选区重建）随 v2 池管道于 2026-09-28 删除。
 
 
 # ── attach_tactic_tags ──
@@ -461,37 +457,34 @@ class TestRebuildPoolPicks:
 
 class TestAttachTacticTags:
     def test_writes_tags_from_stock_actions(self, monkeypatch):
-        monkeypatch.setattr(pm_tactics, "stock_actions",
-                            lambda c, **kw: ["减仓"])
+        monkeypatch.setattr(pm_tactics, "stock_actions", lambda c, **kw: ["减仓"])
         c = _cand("A")
         attach_tactic_tags([c], {}, {})
         assert c.tactic_tags == ["减仓"]
 
     def test_passes_high_pct_from_quote(self, monkeypatch):
         seen = {}
-        monkeypatch.setattr(pm_tactics, "stock_actions",
-                            lambda c, **kw: seen.update(kw) or [])
+        monkeypatch.setattr(pm_tactics, "stock_actions", lambda c, **kw: seen.update(kw) or [])
         c = _cand("A")
         attach_tactic_tags([c], {"A": {"high_pct": 7.5, "current": 10.0}}, {})
         assert seen["high_pct"] == 7.5
 
     def test_missing_quote_gives_none_high_pct(self, monkeypatch):
         seen = {}
-        monkeypatch.setattr(pm_tactics, "stock_actions",
-                            lambda c, **kw: seen.update(kw) or [])
+        monkeypatch.setattr(pm_tactics, "stock_actions", lambda c, **kw: seen.update(kw) or [])
         attach_tactic_tags([_cand("A")], {}, {})
         assert seen["high_pct"] is None  # 无数据 → 纪律内部 fail-open，不能填 0
 
     def test_passes_kline_bars_of_that_symbol(self, monkeypatch):
         seen = {}
-        monkeypatch.setattr(pm_tactics, "stock_actions",
-                            lambda c, **kw: seen.update(kw) or [])
+        monkeypatch.setattr(pm_tactics, "stock_actions", lambda c, **kw: seen.update(kw) or [])
         bars = [{"date": "2026-09-11", "close": 1.0}]
         attach_tactic_tags([_cand("A")], {}, {"A": bars})
         assert seen["kline_bars"] is bars
 
     def test_single_stock_failure_does_not_stop_others(self, monkeypatch, capsys):
         """逐票 try/except：一只票脏数据只跳过该票（2026-08-31 审查修复）。"""
+
         def boom(c, **kw):
             if c.stock.symbol == "A":
                 raise ValueError("脏数据")
@@ -500,7 +493,7 @@ class TestAttachTacticTags:
         monkeypatch.setattr(pm_tactics, "stock_actions", boom)
         a, b_ = _cand("A"), _cand("B")
         attach_tactic_tags([a, b_], {}, {})
-        assert a.tactic_tags == []       # 保留调用前的值
+        assert a.tactic_tags == []  # 保留调用前的值
         assert b_.tactic_tags == ["加仓"]
         assert "盘中操作纪律计算失败 A" in capsys.readouterr().out
 

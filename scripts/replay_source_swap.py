@@ -260,9 +260,11 @@ def stub_external_sources() -> None:
     def _no_net(*_a, **_kw):
         raise requests.exceptions.ConnectionError("replay_source_swap: 离线模式已断网")
 
-    requests.get = _no_net  # type: ignore[assignment]
-    requests.post = _no_net  # type: ignore[assignment]
-    requests.put = _no_net  # type: ignore[assignment]
+    # mypy unused-ignore: requests 的 .get/.post/.put 在 typeshed 里是可赋值属性，
+    # 早年的 type: ignore[assignment] 注释已多余（mypy 实测报 unused-ignore，2026-09-28 清理）。
+    requests.get = _no_net
+    requests.post = _no_net
+    requests.put = _no_net
 
 
 def _backup_db(src: Path, dst: Path) -> None:
@@ -441,14 +443,12 @@ def main() -> int:
     _backup_db(db_path, tmp_db)
     os.environ["RTS_DB_PATH"] = str(tmp_db)
 
-    # 本实验只回答「v1 筛选规则」：默认关掉 v2 池管道。v2 槽位（pool_pick）本身
-    # **不淘汰**（score 恒 0，只做语义标注），混进来会让「入选」虚高、归因串味；
-    # 且双跑模式下同一票在 v1/v2 各有一个独立 Candidate 对象、各自打风险标签，
-    # 把两边的分数并列展示会得到看似自相矛盾的结果（实测踩过：怡达股份 v1 域被
-    # 「主力出货」硬过滤、v2 域却留在池选里）。
-    # core_dip 同为附加桶，一并关闭——它与前一日推荐池耦合，属另一问题。
-    # （2026-09-16：comeback 桶已删除，无需再行关闭。）
-    os.environ["RTS_ENABLE_POOL"] = "1" if args.with_v2 else "0"
+    # 本实验只回答「v1 筛选规则」。
+    # 2026-09-28：v2 池管道已整体删除，`RTS_ENABLE_POOL` 不再被任何代码读取，
+    # 故此处不再设置它（设置一个无人读取的环境变量只会让人误以为开关仍生效）。
+    # 下方 `--with-v2` 分支（读 pool_log 的 danger_flags）同理失效：v2 不再写
+    # pool_log，pool_info 恒为空；为不改变本脚本的 CLI 契约，--with-v2 仍被接受，
+    # 但已**退化为无操作**（deprecated）。
     import scanner.orchestrator as _orch  # noqa: E402
     from scanner.data_source import get_adapter  # noqa: E402
     from scanner.database import init_db  # noqa: E402
@@ -483,16 +483,16 @@ def main() -> int:
             "momentum": [c.stock.symbol for c in result.momentum],
             "rebound": [c.stock.symbol for c in result.rebound],
             "short_term": [c.stock.symbol for c in result.short_term],
-            "pool_picks": [c.stock.symbol for c in result.pool_picks],
         }
         gems = {s.symbol for s in result.gem_stocks}
         rejects: dict[str, str] = {}
         for sym, reason in conn.execute("SELECT symbol, reason FROM scan_rejections WHERE date = ?", (to_date,)):
             rejects.setdefault(sym, reason or "（无原因）")
 
-        # v2 首轮排雷不写 scan_rejections（被剔除的票压根没进候选），只在 pool_log
-        # 的 danger_flags 留痕。v2 管道关闭时 pool_log 本次为空，不读（否则读到的是
-        # 生产当天的旧记录，归因串味）。
+        # v2 首轮排雷曾在 pool_log 留痕 danger_flags。v2 管道已于 2026-09-28 删除，
+        # 不再写 pool_log ⇒ pool_info 恒为空。保留分支仅为不改变 CLI 契约
+        # （--with-v2 现为无操作，deprecated）；pool_log 表与 scanner/danger.py 本身
+        # 作为研究原料仍在，未被删除。
         pool_info: dict[str, dict] = {}
         if args.with_v2:
             from scanner.danger import hard_flags
@@ -507,19 +507,11 @@ def main() -> int:
                     flags = []
                 pool_info[sym] = {"hard": hard_flags(flags), "bias20": bias20, "acc5": acc5}
 
-        scores = {}
-        for c in (
-            list(result.new_faces)
-            + list(result.momentum)
-            + list(result.rebound)
-            + list(result.short_term)
-            + list(result.pool_picks)
-        ):
+        scores: dict[str, dict[str, float]] = {}
+        for c in list(result.new_faces) + list(result.momentum) + list(result.rebound) + list(result.short_term):
             scores.setdefault(c.stock.symbol, {})[c.category] = c.score
 
         rows = classify(cands, gems, buckets, rejects, quotes, pool_info)
-        for r in rows:
-            r["final_scores"] = scores.get(r["symbol"], {})
         for r in rows:
             r["final_scores"] = scores.get(r["symbol"], {})
     finally:
