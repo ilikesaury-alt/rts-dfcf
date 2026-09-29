@@ -1,0 +1,113 @@
+/**
+ * 面板样式（T1.1 骨架 / design §7.1 §7.2）。
+ *
+ * 本任务只落地**版面骨架与设计变量**；表格/状态条/过门面板的细节样式
+ * 随 T1.4 / T1.5 / T5.3 各自补齐。颜色一律走 CSS 变量，避免在组件里
+ * 散落字面量（改配色只改这一处）。
+ */
+
+:root {
+  /* 涨跌色：红涨绿跌（A 股口径，**与欧美相反**）。T1.4 的数字单元格依赖它们。 */
+  --up: #ef232a;
+  --down: #14b143;
+  --flat: #8a8f99;
+
+  /* 状态条 */
+  --statusbar-h: 36px;
+  --lag-warn: #f5a623; /* 滞后 >1 轮变黄（T1.5 / FR-V1 S5） */
+  --err: #d93026; /* 云端无响应（E14） */
+
+  /* 版面 */
+  --bg: #0f1115;
+  --card: #171a21;
+  --border: #262b36;
+  --text: #e6e8ee;
+  --text-dim: #8a8f99;
+  --row-h: 28px; /* §7.2 行高 28px，单屏尽量容纳 60 行 */
+  --side-w: 320px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 13px;
+}
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 状态条：固定顶部（§7.2 用 position:sticky，随页面滚动不消失） */
+.statusbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  height: var(--statusbar-h);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+}
+
+.statusbar__slot {
+  color: var(--text-dim);
+}
+
+/* 主区 + 右侧固定侧栏（§7.1） */
+.layout {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--side-w);
+  gap: 12px;
+  padding: 12px;
+  align-items: start;
+}
+
+.regions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.side {
+  position: sticky;
+  top: calc(var(--statusbar-h) + 12px);
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.card__title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: pre; /* 区块标题含「·」分隔的多段文案，不折行 */
+}
+
+.card__empty {
+  margin: 0;
+  color: var(--text-dim);
+  line-height: var(--row-h);
+}
+
+.footer {
+  padding: 8px 12px;
+  color: var(--text-dim);
+  border-top: 1px solid var(--border);
+}

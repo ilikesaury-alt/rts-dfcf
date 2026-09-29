@@ -1,0 +1,12 @@
+# pnpm>=10 默认拦截依赖的 postinstall 脚本。
+# esbuild 必须跑它的 postinstall 才会把平台二进制装好，否则 vite 启动即失败。
+#
+# ⚠ 两个踩过的点：
+#  1. pnpm 12 **不再**读 package.json 的 "pnpm" 字段（会警告并静默忽略），
+#     设置的新位置就是本文件。
+#  2. 键名是 `allowBuilds`（map 形式），**不是** `onlyBuiltDependencies`（数组形式，
+#     那是 pnpm 10 的写法，pnpm 12 不认）。
+#     由 `pnpm approve-builds --all` 生成 —— 用它而非交互式 `pnpm approve-builds`，
+#     是为了让 CI 能无交互复现。
+allowBuilds:
+  esbuild: true

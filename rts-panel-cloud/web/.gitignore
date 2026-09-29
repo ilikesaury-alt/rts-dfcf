@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.local
+.vite/
+
+# ⚠ pnpm-lock.yaml **刻意不入本文件**：DR-8 要求锁文件入库，
+# 它是本工程唯一的依赖版本防线（云端依赖变化快）。
