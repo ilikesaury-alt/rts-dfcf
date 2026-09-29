@@ -1,0 +1,11 @@
+# 本地 wrangler dev 用的变量模板。**复制成 .dev.vars 后填写**；.dev.vars 必须 gitignore。
+#
+# 生产环境不要用文件：走 `wrangler secret put INGEST_SECRET`（加密存储）。
+# ⚠ 绝不要把 INGEST_SECRET 写进 wrangler.jsonc 的 `vars` —— vars 是明文可读的。
+#   这是 design §3.2 反模式清单的第 1 条。
+
+# 上报密钥：本地 .env 里的 RTS_PANEL_SECRET 必须是同一个值，否则上报会被 401 拒。
+INGEST_SECRET=dev-secret-change-me
+
+# CORS 白名单（逗号分隔）。生产同域部署后**留空**（前端 fetch('/api/...') 无跨域）。
+WEB_ORIGINS=http://localhost:5173

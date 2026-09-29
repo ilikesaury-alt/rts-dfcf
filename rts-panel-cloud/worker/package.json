@@ -1,0 +1,25 @@
+{
+  "name": "rts-panel-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "migrate:local": "wrangler d1 migrations apply rts-panel --local",
+    "migrate:remote": "wrangler d1 migrations apply rts-panel --remote",
+    "secret": "wrangler secret put INGEST_SECRET",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "hono": "^4.6.14"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.8.71",
+    "@cloudflare/workers-types": "^4.20250906.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.9",
+    "wrangler": "4.35.0"
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cf-panel-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-29",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // ⚠ 必须为 false（design §3.2 第 6 层 / 复核修 7）：
+  // Worker 默认同时暴露在 `cf-panel-api.<sub>.workers.dev`，而 Access 只挂在
+  // `panel.<域名>` 上 ⇒ 只配 Access 的话，`https://cf-panel-api.<sub>.workers.dev/api/regions`
+  // **不经过任何鉴权**就能读全部数据。关掉它，域拓扑收敛为单一同域入口。
+  "workers_dev": false,
+
+  "routes": [
+    {
+      "pattern": "panel.PANEL_DOMAIN/api/*",
+      "zone_name": "PANEL_DOMAIN"
+    }
+  ],
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "rts-panel",
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "triggers": {
+    // 保留策略每小时第 7 分钟跑一次（错开整点，design §3.5）。
+    "crons": ["7 * * * *"]
+  },
+
+  "vars": {
+    // ⚠ **只有** CORS 白名单能放 vars。INGEST_SECRET 必须走
+    //   `wrangler secret put INGEST_SECRET`（加密）—— vars 明文可被读取。
+    // ⚠ SCHEMA_VERSION 也不放这里：Cloudflare 的 vars 一律是字符串，
+    //   比较会变成 `2 !== "2"` → 每轮 400。硬编码在 src/serialize.ts（复核修 1）。
+    "WEB_ORIGINS": "http://localhost:5173"
+  },
+
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}
