@@ -336,7 +336,30 @@ def _new_rec_symbols(today_syms: set[str], prev_syms: set[str], prev_date: str, 
     return today_syms - prev_syms
 
 
-def run_scanner(interval: int, no_feishu: bool) -> None:
+def _panel_enabled(flag_off: bool) -> tuple[bool, str, str]:
+    """面板上报开关判定（design §3.1 三开关，**勿新增第四个**）。
+
+    返回 `(enabled, url, secret)`。`enabled=False` 时调用方**不得 import** 本模块 ——
+    验收 1「未配置时行为与当前版本一致、无新依赖」就靠这一条。
+
+    | 开关 | 语义 | 优先级 |
+    |---|---|---|
+    | `--no-panel` | 命令行关闭 | 最高 |
+    | `RTS_PANEL=0` | 即使配了 URL 也关闭 | 次之 |
+    | `RTS_PANEL_URL`/`RTS_PANEL_SECRET` 未配置 | 静默不启动 | 最低 |
+    """
+    if flag_off:
+        return False, "", ""
+    if os.environ.get("RTS_PANEL", "1").strip() in ("0", "false", "False", "no", "off"):
+        return False, "", ""
+    url = (os.environ.get("RTS_PANEL_URL") or "").strip()
+    secret = (os.environ.get("RTS_PANEL_SECRET") or "").strip()
+    if not url or not secret:
+        return False, "", ""
+    return True, url, secret
+
+
+def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
     """单进程扫描循环。"""
     conn = init_db()
     adapter = get_adapter()
@@ -356,6 +379,12 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
     # （口径取舍见 scanner/view/assemble.py 的 build_scan_view docstring）。
     prev_rec_syms: set[str] = set()
     prev_rec_date: str = ""
+    # 面板上报（2026-09-29 起，G3 旁路）：唯一改动是 render/push 之后的一次 report()。
+    # 未配置 URL/_SECRET 时 enabled=False 且**连模块都不导入**（验收 1）。
+    panel_on, panel_url, panel_secret = _panel_enabled(no_panel)
+    # 进程内单调轮号：仅供面板**展示**与幂等覆盖列，任何「取最新一轮」的判定都用
+    # (date, time) —— 重启后 seq 重排会读到旧轮（design §5.1 复核修 2）。
+    round_seq = 0
 
     try:
         while True:
@@ -595,6 +624,29 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
                     if not pushed and has_rows:
                         print("\r  📤 飞书推送跳过（冷却中/无变化）", end="", flush=True)
 
+                # ── 面板上报（D1 跨网，唯一挂点）──
+                # 位置硬性要求：**紧跟 render/push 之后**，且在此 try 之内
+                # （report() 自身不上抛，但兜底这层让挂点异常也走主循环续跑）。
+                # 顺序无关性无所谓：view 在此已是终稿，report() 只序列化不再改它。
+                if panel_on:
+                    try:
+                        from scanner.panel_reporter import report as _panel_report
+
+                        round_seq += 1
+                        _now = now_beijing()
+                        _panel_report(
+                            view,
+                            url=panel_url,
+                            secret=panel_secret,
+                            conn=conn,
+                            seq=round_seq,
+                            date=_now.date().isoformat(),
+                            time=_now.strftime("%H:%M:%S"),
+                            durationMs=int((time.monotonic() - _round_started) * 1000),
+                        )
+                    except Exception as e:
+                        print(f"    [!] 面板上报跳过: {type(e).__name__}: {e}", flush=True)
+
                 try:
                     n = backfill_outcomes(conn)
                     if n:
@@ -655,6 +707,7 @@ def main() -> int:
     parser.add_argument("interval", nargs="?", type=int, default=REFRESH_INTERVAL, help="刷新间隔（秒）")
     parser.add_argument("--no-feishu", action="store_true", help="禁用飞书推送")
     parser.add_argument("--no-lock", action="store_true", help="跳过单实例锁（仅供调试，慎用）")
+    parser.add_argument("--no-panel", action="store_true", help="禁用 Web 面板上报（优先级最高，覆盖 .env）")
     args = parser.parse_args()
 
     interval = max(60, args.interval)
@@ -677,7 +730,7 @@ def main() -> int:
         print(f"  🔒 已取得单实例锁：{lock.lock_path}（PID {os.getpid()}）")
 
     try:
-        run_scanner(interval, args.no_feishu)
+        run_scanner(interval, args.no_feishu, args.no_panel)
     except KeyboardInterrupt:
         print("\n  👋 扫描器已停止")
     finally:
