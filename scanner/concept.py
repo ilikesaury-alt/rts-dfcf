@@ -71,6 +71,12 @@ def fetch_stock_boards(symbol: str) -> list[str]:
         logger.warning("概念拉取失败 %s: %s", symbol, e)
         return []
     boards: list[str] = []
+    # 东财反爬可能返回 JSON 数组/字符串而非 dict（2026-09-29 审查修复）：
+    # 非 dict 时 data.get 抛 AttributeError——不在 EXTERNAL_FAILURES 内，
+    # 会穿透 _fetch_many 的捕获直达主循环。
+    if not isinstance(data, dict):
+        logger.warning("概念拉取失败 %s: 响应非 JSON 对象", symbol)
+        return []
     seen: set[str] = set()
     for item in data.get("ssbk", []) or []:
         name = item.get("BOARD_NAME", "")

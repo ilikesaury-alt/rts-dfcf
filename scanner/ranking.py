@@ -184,7 +184,12 @@ def build_accum_map(conn, entries: list[Any]) -> dict[str, float | None]:
     result: dict[str, float | None] = {}
     dropped: list[dict] = []
     for e in entries:
-        c = e.get("_candidate")
+        # 2026-09-29 审查修复：改走 fresh_candidate 单源助手，与同文件
+        # _nextday_entry_accum/entry_dims 的既定不变量对齐——stale 掉榜候选的
+        # 冻结快照（≠推荐时刻落库口径）与双挂票类别错位快照不得参与累计门槛，
+        # 否则过热门槛（OVERHEAT_ACCUM_MAX）与档位判定被污染。不可信时视同
+        # 无候选，落入下方掉榜行的 DB 回放分支。
+        c = fresh_candidate(e)
         if c and c.kline:
             incl = (c.kline.dimensions or {}).get("accumulated_incl_today")
             if incl is not None:

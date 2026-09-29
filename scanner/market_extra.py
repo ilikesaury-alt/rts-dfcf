@@ -73,7 +73,10 @@ def _get_ak():
     在长跑模式下污染日志）。
     """
     global _ak
-    if _ak is not None:
+    # 快路径必须同时排除失败哨兵 False（2026-09-29 审查修复）：akshare 未安装时
+    # _ak=False，此前的 `if _ak is not None` 会把 bool 返回给上层，fetch_zt_pool
+    # 只判 None → 对 bool 调 stock_zt_pool_em 抛 AttributeError 穿透 fail-soft。
+    if _ak is not None and _ak is not False:
         return _ak
     with _ak_lock:
         if _ak is None:
@@ -244,6 +247,12 @@ def _collect_fund_flow(box: dict, deadline: float) -> dict:
     if first:
         _absorb(first)
     box["value"] = dict(result)  # 首页后即可读到部分结果
+    # 首页整体失败（_page 吞异常/响应非 dict 时返回 ([], None)）不得当完整快照：
+    # 此前 total or len(first)=0 → total_pages=1 → done=True，空结果被当完整快照
+    # 按默认 300s TTL 缓存，TTL 内全市场资金流静默缺失（2026-09-29 审查修复）。
+    # 不置 done → 外层 fetch_fund_flow_rank 走 timed_out 部分路径（60s 短退避重试）。
+    if total is None and not first:
+        return result
     total = total or len(first)
     total_pages = max(1, -(-total // _FUND_FLOW_PAGE_SIZE))
     if total_pages <= 1:

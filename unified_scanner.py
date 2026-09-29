@@ -621,16 +621,25 @@ def run_scanner(interval: int, no_feishu: bool) -> None:
             except KeyboardInterrupt:
                 raise
             except requests.RequestException as e:
-                print(f"\n  [!] 网络错误: {e}")
+                # 处理器内 print 不可裸调：stdout 管道已断（tee 读端被杀/SSH 断连）
+                # 且本轮首个 print 前就抛网络异常时，此处再抛 BrokenPipeError 不会被
+                # 同级 handler 捕获 → 守护进程终止（2026-09-29 审查修复）。
                 _log_exception(f"网络错误: {e}")
+                try:
+                    print(f"\n  [!] 网络错误: {e}")
+                except OSError:
+                    _silence_stdout()
                 time.sleep(min(interval, 60))
             except (BrokenPipeError, OSError) as e:
                 _log_exception(f"输出异常（stdout 已降级）: {e}")
                 _silence_stdout()
                 time.sleep(min(interval, 30))
             except Exception as e:
-                print(f"\n  [!] 循环异常，已自动续跑: {type(e).__name__}: {e}")
                 _log_exception("循环异常", e)
+                try:
+                    print(f"\n  [!] 循环异常，已自动续跑: {type(e).__name__}: {e}")
+                except OSError:
+                    _silence_stdout()
                 time.sleep(min(interval, 60))
     finally:
         try:

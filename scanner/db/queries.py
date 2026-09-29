@@ -94,23 +94,26 @@ def get_cached_market_caps(conn: sqlite3.Connection, symbols: list[str], max_age
     uniq = list(dict.fromkeys(symbols))
     placeholders = ",".join("?" * len(uniq))
     today = now_beijing().date().isoformat()
-    if max_age_days > 0:
-        # 放宽到近 N 天（非交易时段批量接口滞后仍可兜底）
-        min_date = (now_beijing().date() - timedelta(days=max_age_days)).isoformat()
-        cur = conn.execute(
-            f"SELECT symbol, market_cap, circ_market_cap, turnover_rate, current, percent, source "  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
-            f"FROM market_cap_cache WHERE symbol IN ({placeholders}) AND updated >= ?",
-            (*uniq, min_date),
-        )
-    else:
-        # max_age_days=0：仅当日写入的缓存（最严格，盘中口径）
-        cur = conn.execute(
-            f"SELECT symbol, market_cap, circ_market_cap, turnover_rate, current, percent, source "  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
-            f"FROM market_cap_cache WHERE symbol IN ({placeholders}) AND updated = ?",
-            (*uniq, today),
-        )
     out: dict[str, dict] = {}
     try:
+        # 两个 conn.execute 同入 try（2026-09-29 审查修复）：此前只护 fetchall，
+        # 库锁/磁盘等瞬时 sqlite3.Error 从 execute 直接穿透——调用方 orchestrator
+        # 无本地 try，整轮扫描丢失而非仅市值兜底失效（违背本函数 fail-open 契约）。
+        if max_age_days > 0:
+            # 放宽到近 N 天（非交易时段批量接口滞后仍可兜底）
+            min_date = (now_beijing().date() - timedelta(days=max_age_days)).isoformat()
+            cur = conn.execute(
+                f"SELECT symbol, market_cap, circ_market_cap, turnover_rate, current, percent, source "  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
+                f"FROM market_cap_cache WHERE symbol IN ({placeholders}) AND updated >= ?",
+                (*uniq, min_date),
+            )
+        else:
+            # max_age_days=0：仅当日写入的缓存（最严格，盘中口径）
+            cur = conn.execute(
+                f"SELECT symbol, market_cap, circ_market_cap, turnover_rate, current, percent, source "  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
+                f"FROM market_cap_cache WHERE symbol IN ({placeholders}) AND updated = ?",
+                (*uniq, today),
+            )
         for sym, mc, cmc, tr, cur_, pct, src in cur.fetchall():
             out[sym] = {
                 "market_cap": mc,

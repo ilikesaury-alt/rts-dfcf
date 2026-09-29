@@ -489,7 +489,11 @@ def run_migrations(conn: sqlite3.Connection, *, verbose: bool = True) -> list[st
             print(f"  [schema] 应用迁移 {m.id}：{m.desc}")
         try:
             m.up(conn)  # type: ignore[operator]
-        except sqlite3.Error as exc:
+        except BaseException as exc:
+            # 2026-09-29 审查修复：原只捕 sqlite3.Error——迁移代码自身抛
+            # TypeError/KeyError 等时跳过 rollback 且事务保持打开上抛（get_conn
+            # 为隐式事务模式），上层宽捕获后复用同连接会持写锁阻塞主循环写入。
+            # 任何失败路径（含 KeyboardInterrupt）都先释放锁再上抛。
             conn.rollback()
             print(f"  [schema] 迁移 {m.id} 失败（已回滚，下轮重试）：{exc}")
             raise

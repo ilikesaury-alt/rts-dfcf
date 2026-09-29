@@ -245,7 +245,10 @@ def fetch_market_index(session: requests.Session) -> float | None:
             f"?symbol=SZ399006&begin={ts_ms - 86400 * 1000 * 3}&period=day&count=5&_={ts_ms}"
         )
         resp = _request_with_retry(session, url)
-        items = resp.json().get("data", {}).get("item", [])
+        # `(x or {})` 而非 `.get("data", {})`（2026-09-29 审查修复）：响应为
+        # {"data": null} 时后者返回 None，链上 .get 抛 AttributeError——
+        # 不在 EXTERNAL_FAILURES 内，穿透降级路径直达主循环兜底。
+        items = (resp.json().get("data") or {}).get("item", [])
         if items and len(items[-1]) > 7:
             pct_raw = items[-1][7]
             bar_date = _bar_date_of(items[-1])
@@ -324,14 +327,18 @@ def fetch_kline(session: requests.Session, symbol: str, days: int = 15) -> list[
     )
     try:
         resp = _request_with_retry(session, url)
+        # 解析段同入 try（2026-09-29 审查修复）：非法 JSON（反爬 HTML/截断响应）
+        # 抛 ValueError、顶层非 dict 抛 AttributeError——此前解析在 try 外，
+        # DATA_SOURCE="xueqiu" 单源模式下异常直传主循环丢整轮。
+        payload = resp.json()
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            return None
+        raw_items = data.get("item", [])
+        if not raw_items:
+            return None
     except EXTERNAL_FAILURES as e:
         logger.warning("K线获取失败 %s: %s", symbol, e)
-        return None
-    data = resp.json().get("data")
-    if not data:
-        return None
-    raw_items = data.get("item", [])
-    if not raw_items:
         return None
     result = []
     for item in raw_items:
@@ -699,7 +706,8 @@ def _fetch_minute_data(session: requests.Session, symbol: str) -> list[dict] | N
         url = f"https://stock.xueqiu.com/v5/stock/chart/minute.json?symbol={symbol}&period=1d&_={ts_ms}"
         resp = _request_with_retry(session, url)
         d = resp.json()
-        raw_items = d.get("data", {}).get("items", [])
+        # 同 fetch_market_index：`(x or {})` 防 {"data": null} 的 AttributeError（2026-09-29）
+        raw_items = (d.get("data") or {}).get("items", [])
         # 10→2：开盘前 ~9:40 前不足 10 根分时 bar，原硬门会令 opening_strength /
         # intraday / live_volume 在开盘关键窗口整体静默，错失早盘动量触发。
         # 放宽到 >=2 后 intraday(>=2) / live_volume(>=1) 约 9:32 起可用；
