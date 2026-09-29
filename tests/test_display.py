@@ -1516,12 +1516,10 @@ def test_push_gate_region_labels_are_honest_about_being_not_yet_pushed(capsys):
     assert "已推送" not in region and "已推" not in region
 
 
-def test_push_gate_region_reports_the_ledger(capsys):
-    """过门区必须同时给出「过了几只 / 剔了多少 / 怎么剔的」—— 与卡片同一套账。
+def test_push_gate_region_has_no_stats_ledger_line(capsys):
+    """过门区**不打印**「严格过滤 x/y 通过｜剔除 n」这类统计账（2026-09-28 用户决策）。
 
-    ⚠ 被剔的那只用 `short_term`（先验 6.2% = C 档）而**不是** pool_pick：
-    `build_scan_view` 早已把 pool_pick 排除在 v1 池选主表之外（它属 v2 池选），
-    拿它当样本会让本用例测不到门（它在进门前就没了）。
+    账只留在飞书卡片的 `gate_note`；终端过门区只列名字。
     """
     conn = _rec_db()
     _insert_rec_cat(conn, "SZ300001", "甲", "rebound", 90)  # A 档
@@ -1531,9 +1529,14 @@ def test_push_gate_region_reports_the_ledger(capsys):
     disp_mod.render_terminal(view)
     out = capsys.readouterr().out
     region = out.split("◆ 飞书过门")[1]
-    assert "严格过滤 1/2 通过" in region
-    assert "A 档 1" in region
-    assert "类别先验不足 1" in region
+    lines = [ln for ln in region.splitlines() if ln.strip()]
+    assert len(lines) >= 1
+    # 标题行只在说「本轮 N 只通过严格过滤 · 下一张卡片将推此集合」
+    assert "只通过严格过滤" in lines[0]
+    for ln in lines:
+        assert "A 档" not in ln and "B 档" not in ln
+        assert "剔除" not in ln and "类别先验不足" not in ln
+        assert "/2" not in ln
 
 
 def test_push_gate_region_skipped_when_all_filtered(capsys):

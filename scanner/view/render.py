@@ -554,7 +554,6 @@ def _render_push_gate_region(view: ScanView) -> None:
         ("飙升", _gate_names(gate.hot)),
         ("榜外", _gate_names(gate.offboard)),
     )
-    s = gate.stats
     print()
     print(
         f"  {ANSI['BOLD']}{ANSI['CYAN']}◆ 飞书过门{ANSI['RESET']}"
@@ -564,11 +563,6 @@ def _render_push_gate_region(view: ScanView) -> None:
         if not names:
             continue
         print(f"    {label}  {' '.join(names)}")
-    print(
-        f"    {ANSI['YELLOW']}严格过滤 {s.passed}/{s.total} 通过"
-        f"（A 档 {s.tier_a} · B 档 {s.tier_b} · 兜底 {s.tier_c_fallback}）"
-        f"｜剔除 {s.filtered}（类别先验不足 {s.dropped_no_fallback} · 否决 {s.vetoed}）{ANSI['RESET']}"
-    )
 
 
 def render_terminal(view: ScanView) -> None:
