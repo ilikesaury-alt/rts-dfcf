@@ -29,6 +29,65 @@ class TestIsTradingDay:
         d = date(2026, 2, 17)  # Spring Festival Eve
         assert not is_trading_day(d)
 
+    def test_mid_autumn_2026_not_trading(self):
+        """2026 中秋（2026-09-29 补登记）。
+
+        漏登记造成双重故障：is_trading_day 对休市日返回 True，且 backfill_kline
+        把它算进 expected 而 API 永不返回该日 K 线 → missing 永不收敛。
+        实证：2026-09-25 全表 368 只票零 K 线，而 09-24/09-28 均正常。
+        """
+        d = date(2026, 9, 25)  # 中秋节（周五）
+        assert not is_trading_day(d)
+
+
+class TestHolidayCalendarConsistency:
+    """日历自洽性：全表零 K 线的日子要么是休市日，要么是真实数据缺口。
+
+    这条守卫防的是**下一个**被漏登记的法定假日：只要某个工作日在 daily_kline 里
+    一行都没有，它就不该被 is_trading_day 判成交易日。数据库缺失时自动跳过。
+    """
+
+    def test_no_trading_day_with_zero_bars(self):
+        """枚举日历时逐日核：**不能**用 `GROUP BY date` 取零行（那只返回存在的日期）。"""
+        import os
+        import sqlite3
+        import sys
+        from datetime import timedelta
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from scanner.config import DB_PATH
+
+        if not os.path.exists(DB_PATH):
+            return  # 无真实库（CI/干净树）则不校验
+
+        try:
+            conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+            lo, hi = conn.execute("SELECT MIN(date), MAX(date) FROM daily_kline").fetchone()
+            present = {r[0] for r in conn.execute("SELECT DISTINCT date FROM daily_kline")}
+            conn.close()
+        except sqlite3.Error:
+            return
+
+        if not lo or not hi:
+            return
+
+        cur = date.fromisoformat(lo)
+        end = date.fromisoformat(hi)
+        offenders: list[str] = []
+        while cur <= end:
+            # 不变量：被判为交易日的工作日必须有 K 线。仅容忍末尾 2 天
+            # （当日/昨日盘中数据本就可能尚未落库）；再往前都是已收市的完整交易日，
+            # 零 K 线只能是节假日漏登记。is_trading_day 已含周末与假日判定。
+            if is_trading_day(cur) and cur.isoformat() not in present and (end - cur).days > 2:
+                offenders.append(cur.isoformat())
+            cur += timedelta(days=1)
+
+        assert not offenders, (
+            f"这些工作日 daily_kline 零 K 线却被判为交易日：{offenders} —— "
+            f"多半是节假日漏登记（见 holidays.py docstring 的双重故障说明）"
+        )
+
 
 class TestIsTradingTime:
     def test_morning_session(self):
