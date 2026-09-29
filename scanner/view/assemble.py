@@ -187,7 +187,7 @@ def build_scan_view(
     键怎么排都到第 1 行。选它的理由是主表是**观察名单**不是买入清单，而「新信息必须
     先看到」优先于「排序按质量读」；过热票仍带 ⚠超买 行尾标记。若要改回「桶内新票
     优先」，把 is_new 键从 x[0] 移到 x[1] 即可。
-    🎯（次日大涨画像）/⚡（蓄势突破观察）为行尾展示标记，不参与排序、不改评分、不落库。
+    🎯（次日大涨画像）/⚡（动量加速观察）为行尾展示标记，不参与排序、不改评分、不落库。
     """
     if conn is None:
         return None
@@ -300,9 +300,10 @@ def build_scan_view(
     # kNF 分数反指等组内分数键语义单源在 ranking.score_sort_key（today_report 归因复用
     # 同一实现）；v1 池选（下方 5 级排序键）不再使用它。
 
-    # 蓄势突破观察标记（2026-08-21，⚡）：新面孔/首推或重上榜 short_term + 横盘缩量回调位
-    # + MA 多头。纯展示层观察——不改排序/评分/落库（用户决策：先观察积累样本，达标后再评估
-    # 是否升级为排序因子）。仅主表五类参与判定；批量取 K 线防 N+1。
+    # 动量加速观察标记（2026-08-21 建，2026-09-29 重设计，⚡）：新面孔/首推或重上榜
+    # short_term + T-1 已连涨加速（前5日 > +20%）。纯展示层观察——不改排序/评分/落库。
+    # 仅主表五类参与判定；批量取 K 线防 N+1。结构门自算 T-1 口径，不收 accum_map
+    # （那条链含推荐日，不是「启动前」的量——旧实现的隐性前视）。
     breakout_kmap = build_breakout_kline_map(conn, main_recs)
     # 2026-08-22 标记精简：两个变体判定保留（样本统计需区分），渲染合并为单一 ⚡。
     # 键 (symbol, category)：nf∩st 双挂票两行类别门不同（⚡ vs ⚡R 按构造不相交），
@@ -312,7 +313,7 @@ def build_scan_view(
     breakout_mark: dict[tuple[str, str], bool] = {
         (e["symbol"], e["category"]): (
             _breakout_profile_key(e) is not None
-            and _breakout_structure_ok(e, conn, accum_map=accum_map, klines=breakout_kmap.get(e["symbol"]))
+            and _breakout_structure_ok(e, conn, klines=breakout_kmap.get((e["symbol"], (e["date"] or "")[:10])))
         )
         for e in main_recs
     }
@@ -346,8 +347,8 @@ def build_scan_view(
     #     正是它把 rank17 的义翘神州排在 rank43 的威尔高之前，并让这两只排在资金流更优的
     #     ▲▲ 行之前（纯排名假设无法解释该顺序）。
     #   · 形态加分该轮全 0，属稀有 tie-breaker（故不入终端标题）。
-    def _cb_core_pullback_ok(sym: str) -> bool:
-        kl = breakout_kmap.get(sym)
+    def _cb_core_pullback_ok(sym: str, rec_date: str = "") -> bool:
+        kl = breakout_kmap.get((sym, rec_date))
         if not kl or len(kl) < 20:
             return False
         h20 = max(b[1] for b in kl[-20:])

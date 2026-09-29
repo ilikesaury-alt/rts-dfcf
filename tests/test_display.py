@@ -1015,8 +1015,8 @@ def test_priority_row_breakout_mark_single_symbol(capsys):
 def test_display_priority_relist_hit_renders_bolt(capsys):
     """重上榜变体命中也走同一 ⚡ 标记（display_priority 接线锁定，样本积累路径）。
 
-    构造：short_term 非首推推荐 + 前 ≥21 根缩量回调 K 线（肯特股份形态）。
-    2026-09-17：表尾那行合并图例（「⚡ 蓄势突破观察…」）已随图例块整体下线，故只守标记本身。
+    构造：short_term 非首推推荐 + 末 5 根已连涨加速 >+20%（2026-09-29 重设计后的动量加速形态）。
+    2026-09-17：表尾那行合并图例（「⚡ 动量加速观察…」）已随图例块整体下线，故只守标记本身。
     本用例是**唯一**驱动 display_priority 真实重上榜判定链路的一条 ——
     test_priority_row_breakout_mark_single_symbol 直接传 breakout_mark=True，
     只覆盖渲染，不覆盖「行情+K线 → 判定出 ⚡」这一段。
@@ -1027,8 +1027,8 @@ def test_display_priority_relist_hit_renders_bolt(capsys):
         close REAL, high REAL, low REAL, volume REAL, percent REAL,
         PRIMARY KEY(symbol, date))""")
     today = now_beijing().date()
-    # 冲高 39 → 深回撤 -13%（距高点）→ 尾部缓慢修复（MA 多头），全程缩量；末根 = T-1。
-    # 尾部 6 根累计需 ≤5%（BREAKOUT_ACCUM_MAX，走真实回放链路而非显式 accum）。
+    # 冲高 39 → 回撤至 28 → 末 5 根连续加速 30.0→37.5（累计 +25% > BREAKOUT_ACCUM_MIN=20%）。
+    # 末根 = T-1；closes[-6] 与 closes[-1] 正是结构门读的两个下标。
     closes = [
         28.0,
         28.5,
@@ -1041,17 +1041,17 @@ def test_display_priority_relist_hit_renders_bolt(capsys):
         32.5,
         32.0,
         31.8,
-        31.5,
-        31.9,
-        32.3,
-        32.6,
-        33.0,
-        33.4,
-        33.7,
-        34.0,
-        34.15,
-        34.3,
-        34.45,
+        30.5,
+        29.5,
+        29.0,
+        28.8,
+        29.2,
+        30.0,  # ← closes[-6]
+        31.25,
+        32.5,
+        33.75,
+        35.0,
+        37.5,  # ← closes[-1]，(37.5/30.0-1)*100 = +25.0%
     ]
     n = len(closes)
     vol = 2_000_000.0

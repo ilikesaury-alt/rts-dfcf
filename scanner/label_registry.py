@@ -44,6 +44,7 @@
 测试仍守它单行、含披露关键词、与生产字面量一致；将来挂回渲染时，两端必须
 同源调本函数（不要另起第二份文案）。
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -140,10 +141,13 @@ LABEL_REGISTRY: dict[str, LabelSpec] = {
         labels=("⚡",),
         surfaces=("scanner/view/model.py",),
         where="v1 池选 行尾（view.model._entry_row_suffix 的 breakout_marked 分支）",
-        rule="蓄势突破观察：缩量回调蓄势位（含新面孔/重上榜两变体），样本收集中·非排序因子",
-        source="S5: 本仓样本收集中（n≈20），无外部依据",
+        rule="动量加速观察：截至 T-1 收盘前5日累计涨幅 > +20%（BREAKOUT_ACCUM_MIN）"
+        "+ 类别门 new_face/kNF 或首推（⚡）/ 非首推 short_term（⚡R）·样本收集中·非排序因子",
+        source="S5: 本仓样本外验证（2026-09-29 重设计；TEST 窗 n=914 次日≥7% 9.52% vs 基准 5.55%，"
+        "Δ=+4.45pp ≥ MDE=3.14pp）。旧口径「缩量蓄势」经同法检验方向相反，已作废",
         grade="E0",
-        counter="⚡=蓄势突破观察·样本约20·未校准·非排序因子",
+        counter="⚡=T-1已连涨加速·次日涨超7%概率9.5%（基准5.6%）·阈值未校准·"
+        "非排序因子·亏超5%比例翻倍(4.9%→10.3%)·非买入信号",
         sections=("pool",),
     ),
     "trend_steady": LabelSpec(

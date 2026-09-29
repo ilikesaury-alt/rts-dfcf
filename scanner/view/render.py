@@ -136,7 +136,7 @@ def _print_priority_row(
     拆分时的函数清单当契约（缺一个 top-level def 即报错）。要彻底清掉请连带处理该脚本。
 
     flow_pct_map: {symbol: 主力净占比} DB 快照回退（候选缺失/扫描失败时仍显示资金流图标）。
-    breakout_mark: 蓄势突破观察画像（⚡）——新面孔/首推或重上榜 short_term + 横盘缩量回调位
+    breakout_mark: 动量加速观察画像（⚡）——新面孔/首推或重上榜 short_term + T-1 已连涨加速
     （见 _is_breakout_setup / _is_relist_breakout_setup；2026-08-22 渲染合并为单一 ⚡，
     变体区分保留在判定函数供样本统计）。纯观察标记，不参与排序/评分/落库。
     视觉标记，不参与排序/评分/落库；行尾标记统一走 _entry_row_suffix（与优选池行同口径）。
@@ -674,11 +674,11 @@ def render_terminal(view: ScanView) -> None:
     for _si, row in enumerate(view.main_rows, 1):
         _emit_pool_table_row(view, row, _si)
 
-    # ── ⚡ 蓄势突破观察（动态推荐区已按需求移除，2026-09-03；其数据字段 adj_picks 亦
+    # ── ⚡ 动量加速观察（动态推荐区已按需求移除，2026-09-03；其数据字段 adj_picks 亦
     # 于 2026-09-16 随 🎯/回马枪删除——该序列的语义完全由这两个特性构成）──
     # if any(view.breakout_mark.values()):
     # print(
-    #     f"  {ANSI['CYAN']}⚡ 蓄势突破观察{ANSI['RESET']}（缩量回调蓄势位·含新面孔/重上榜两变体"
+    #     f"  {ANSI['CYAN']}⚡ 动量加速观察{ANSI['RESET']}（T-1 已连涨加速·含新面孔/重上榜两变体"
     #     f"·样本收集中·非排序因子）"
     # )
 
