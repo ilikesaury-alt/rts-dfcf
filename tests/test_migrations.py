@@ -187,6 +187,7 @@ class TestMigrationCatalog:
             "m015_offboard_tables",
             "m016_offboard_log_last_hit",
             "m017_offboard_rejections",
+            "m018_onboard_anomaly_log",
         ]
 
     def test_every_migration_has_desc(self):

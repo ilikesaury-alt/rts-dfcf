@@ -333,6 +333,39 @@ def _check_offboard_rejections(conn: sqlite3.Connection) -> bool:
     return _has_table(conn, "offboard_rejections")
 
 
+def _up_onboard_anomaly_log(conn: sqlite3.Connection) -> None:
+    """m018（2026-09-30）：榜内异动段逐日落库表。
+
+    为什么需要 —— 与 m015/m017（榜外那套）**同一个理由**：本区是 `rule_validate`
+    三个评估器的盲区（`--set` 会被可见性硬校验拦在退出码 3），而项目铁律是
+    observe-first。**没有逐日表就没有标签，没有标签就没有任何阈值能被证伪**，
+    调 `OFFBOARD_*` 那组常量等于无标签调参。
+
+    与榜外表的区别：K 线来源是 `daily_kline`（榜内票本就在其中 —— 它是「榜单衍生池」），
+    故**不需要** m015 那张 `offboard_kline_cache`，本段只落产出行。
+
+    `next_day_pct` 由回填写入，与 `offboard_launch_log` 同口径（次日涨幅 %）。
+
+    观察目标 D ≥ 47 交易日（按日 bootstrap 检出 10pp 需 47 日；参照 B 段）。
+
+    ⚠ DDL 写成**字面量**而非模块级常量拼接：动态 DDL 字符串会让 SQL 静态检查
+    无法判定其安全性（榜外 `_up_offboard_rejections` 用的 `_OFFBOARD_REJECTIONS_DDL`
+    常量正是因此被标记）。表名/列名均为本文件内写死的字面量，无外部输入。
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS onboard_anomaly_log ("
+        "date TEXT NOT NULL, symbol TEXT NOT NULL, name TEXT, tier TEXT, percent REAL, "
+        "accum_5d REAL, vol_ratio REAL, main_pct REAL, amount REAL, float_cap REAL, "
+        "price REAL, first_time TEXT, next_day_pct REAL, updated TEXT, "
+        "PRIMARY KEY (date, symbol))"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_oal_date ON onboard_anomaly_log(date)")
+
+
+def _check_onboard_anomaly_log(conn: sqlite3.Connection) -> bool:
+    return _has_table(conn, "onboard_anomaly_log")
+
+
 # ── 迁移总表（顺序即执行顺序；只在末尾追加）──
 MIGRATIONS: list[Migration] = [
     add_column(
@@ -445,6 +478,12 @@ MIGRATIONS: list[Migration] = [
         desc="B 段拒绝留痕表 offboard_rejections（谁被哪道门杀、为什么；反幸存者偏差）",
         check=_check_offboard_rejections,
         up=_up_offboard_rejections,
+    ),
+    Migration(
+        id="m018_onboard_anomaly_log",
+        desc="榜内异动段逐日落库表 onboard_anomaly_log（observe-first 的唯一证据来源）",
+        check=_check_onboard_anomaly_log,
+        up=_up_onboard_anomaly_log,
     ),
 ]
 

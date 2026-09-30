@@ -158,6 +158,21 @@ OFFBOARD_KLINE_FETCH_LIMIT = 80  # 单轮最多补 K 线的候选数（按量比
 # 1=开（默认）/ 0=关（纯离线：只读缓存，miss 回退名称关键词）。
 OFFBOARD_BOARD_FETCH = int(os.environ.get("RTS_OFFBOARD_BOARD_FETCH", "1"))
 
+# ── 榜内异动段（2026-09-30 新增，A 段与 B 段之间的中间档）──
+# 填的空档：A 段要求「已涨 + 热度跃升」，B 段要求「没上榜」⇒ **「刚上榜、涨幅还小、
+# 量已经动了」这一档两侧都没覆盖**。本段只做 T1（量先动·价未动）。
+# ⚠ **不做 T2**：T2「启动首日」带的下沿是 MOMENTUM_LAUNCH_TODAY_MIN(3.5%)，语义是
+# 「今天刚启动」；而榜内票按定义**已经启动过**（它就是为启动而上榜的），故 T2 在榜内
+# 几乎不可能命中 —— 做了是死代码。故 `allowed_tiers=(T1,)`，T2 分支不参与。
+# 口径一律**复用** B 段的门与分层单源（offboard_watch.offboard_gate / classify_tier），
+# 本模块不新造任何一条阈值（AGENTS 铁律：同名不同义是本仓最忌讳的）。
+# 唯一私有常量是「本段展示几行」与「K 线取多少根」——纯资源参数，非判定阈值。
+ONBOARD_ANOMALY_ENABLED = os.environ.get("RTS_ONBOARD_ANOMALY", "1") != "0"
+ONBOARD_DISPLAY_TOP = 5  # 终端同区本段展示行数（与 A/B 段体量一致）
+# K 线来源是 `daily_kline`（榜内票本就在该表覆盖内 —— 它是「榜单衍生池」），
+# 故本段**不需要**榜外那套补取与独立缓存；这里只声明回看根数。
+ONBOARD_KLINE_BARS = 60
+
 __all__ = [
     "HOT_WATCH_ENABLED",
     "HOT_MAX_MARKET_CAP",
@@ -202,4 +217,7 @@ __all__ = [
     "OFFBOARD_KLINE_WORKERS",
     "OFFBOARD_KLINE_FETCH_LIMIT",
     "OFFBOARD_BOARD_FETCH",
+    "ONBOARD_ANOMALY_ENABLED",
+    "ONBOARD_DISPLAY_TOP",
+    "ONBOARD_KLINE_BARS",
 ]

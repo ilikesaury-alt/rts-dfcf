@@ -70,6 +70,7 @@ def display(
     last_ranks: dict[str, int] | None = None,
     hot_rows: list | None = None,
     offboard_rows: list | None = None,
+    onboard_rows: list | None = None,
     hist_rows: list | None = None,
     market_idx_pct: float | None = None,
     new_symbols: set[str] | None = None,
@@ -114,6 +115,7 @@ def display(
         weak=weak,
         hot_rows=hot_rows,
         offboard_rows=offboard_rows,
+        onboard_rows=onboard_rows,
         hist_rows=hist_rows,
         market_idx_pct=market_idx_pct,
         new_symbols=new_symbols,
@@ -326,22 +328,33 @@ def _hot_row_cells(c, idx: int, *, board_segment: bool) -> list[str]:
     ]
 
 
-def _render_hot_watch_region(rows, offboard_rows=None) -> None:
-    """渲染「沪深飙升·极有可能大涨」独立区（两段都空时整区跳过，不留空表）。
+def _render_hot_watch_region(rows, offboard_rows=None, onboard_rows=None) -> None:
+    """渲染「沪深飙升·极有可能大涨」独立区（**三段**都空时整区跳过，不留空表）。
 
-    A 段（榜内飙升，`hot_watch.HotCandidate`）与 **B 段（榜外异动，
-    `offboard_watch.OffboardCandidate`）同区并列、不混排**：A 段的复合分里
-    `rank_change` 独占 35/100，而榜外票结构上恒缺该项 ⇒ 混排必被永久压到最末。
-    两段共用 `COLS_HOT`（15 列，**列集不分叉**）—— B 段仅「排名上升/连击」回落 `—`、
-    「评分」列改显分层标记；「板块」两段同列同源（`concept.attach_display_boards`，
-    与 v1 池选同名）。列头只打一份：A 段非空时打在 A 段行之前（B 段复用），
-    A 段空时打在 B 段小标题之后 —— 见下方 `if rows` 的说明。
+    A 段（榜内飙升，`hot_watch.HotCandidate`）、**榜内异动段**
+    （`onboard_anomaly.OffboardCandidate`，同样来自榜内但只看 T1「量先动·价未动」）
+    与 B 段（榜外异动）**同区并列、不混排**，但**两段不混排的理由不同**：
 
-    形参取行列表而非 ScanView：本区与主线数据完全无关，取 view 会让独立运行
-    （`python -m scanner.hot_watch` / `scanner.offboard_watch`）被迫构造一个满是
-    空字段的 ScanView。
+    · **B 段**（榜外）：结构上恒缺 `rank_change` —— A 段复合分里该项独占 35/100，
+      而榜外票按定义不在榜上 ⇒ 混排必被永久压到最末。**这是结构性缺失，不是排序偏好。**
+    · **榜内异动段**（榜内）：`rank_change` **是有的**（实测 T1 带内 22/22 可得），
+      混排不会因缺项而沉底。真正的理由是**两段量的不是一回事**：
+      A 段评分 = 排名跃升35/涨幅25/价格15/量能25，其中**涨幅独占 25/100**；
+      而 T1 的定义上界恰好是 3.5%（`MOMENTUM_LAUNCH_TODAY_MIN`）—— 涨幅越小分越低。
+      换算下来 T1 票在涨幅维度最多只能拿 12.1/25 分，**混排等于把「价未动」这一段
+      的全部票系统性压在 A 段之后**，而那正是本段存在的唯一理由。
+
+    ⚠ 不要把这两条理由合并成一句「另外两段结构上恒缺 rank_change」——对榜内异动段
+      是错的。2026-09-30 首版曾这样写，后经实测（rank_change 覆盖率 100%）修正。
+
+    三段共用 `COLS_HOT`（15 列，**列集不分叉**）。列头只打一份：A 段非空时打在 A 段行
+    之前（后两段复用），否则由第一个非空的后段自带一份。
+
+    ⚠ 三段口径两两不同的可见性：榜内异动段与 B 段同门同层（`offboard_gate` +
+    `classify_tier` 的 T1 分支），口径可比；A 段要求「已涨 + 热度跃升」，另两段要求
+    「价还没动」。放同一张表但分小标题，就是为了让「口径不同」这件事在屏幕上可见。
     """
-    if not rows and not offboard_rows:
+    if not rows and not offboard_rows and not onboard_rows:
         return
 
     print()
@@ -360,6 +373,19 @@ def _render_hot_watch_region(rows, offboard_rows=None) -> None:
                 _table_row(_hot_row_cells(c, _hi, board_segment=True), COLS_HOT)
                 # 行尾标记（2026-09-16）：与 v1 回捞区/主表同源（_watch_tail_terminal）。
                 + _watch_tail_terminal(c.ff_pct, c.beauty)
+            )
+    if onboard_rows:
+        # 榜内异动段（2026-09-30）：榜内票的 T1「量先动·价未动」，填 A/B 两段之间的空档。
+        # 小标题必须写明「榜内」来源与「未回测」——否则最自然的误读是它是 A 段的一部分
+        # （实际口径不同：A 段要求已涨）或它比 B 段可靠（实际同门同层，只是换了域）。
+        print(f"  {ANSI['CYAN']}— 榜内异动{ANSI['RESET']}{onboard_subtitle(len(onboard_rows))}")
+        # A 段空时列头还没打过 —— 本段自带一份，否则 15 列数字整片没有列名，无从解读。
+        if not rows:
+            print(_table_header(COLS_HOT))
+        for _oi, o in enumerate(onboard_rows, 1):
+            print(
+                _table_row(_hot_row_cells(o, _oi, board_segment=False), COLS_HOT)
+                + _watch_tail_terminal(o.ff_pct, o.beauty)
             )
     if offboard_rows:
         # B 段小标题必须写明「候选来源 + 排序键 + 未回测」：不写清楚，最自然的误读
@@ -399,13 +425,13 @@ def _render_hot_watch_region(rows, offboard_rows=None) -> None:
     #   legend_line(section) 的打印点、并在 feishu 对应位置加同一个调用，两端必须同源。
 
 
-def render_hot_watch_standalone(rows, offboard_rows=None) -> None:
+def render_hot_watch_standalone(rows, offboard_rows=None, onboard_rows=None) -> None:
     """只渲染「沪深飙升·极有可能大涨」区（供 `python -m scanner.hot_watch` 独立运行）。
 
     与主循环的 render_terminal 共用同一个 _render_hot_watch_region，避免两套渲染
     逻辑分叉（独立区行宽/配色/脚注只此一份）。
     """
-    _render_hot_watch_region(rows, offboard_rows)
+    _render_hot_watch_region(rows, offboard_rows, onboard_rows)
 
 
 def render_offboard_standalone(rows) -> None:
@@ -703,7 +729,7 @@ def render_terminal(view: ScanView) -> None:
     # 同一只票不可能同时出现在两边，不存在「同屏两种结论」的风险。
     _render_hist_watch_region(view.hist_rows)
 
-    _render_hot_watch_region(view.hot_rows, view.offboard_rows)
+    _render_hot_watch_region(view.hot_rows, view.offboard_rows, view.onboard_rows)
 
     # ── 飞书过门透明区（2026-09-28）──
     # 显示本轮通过严格过滤门的票（= 下一张飞书卡会推的集合）。不是第五张候选表，
@@ -725,6 +751,7 @@ def display_priority(
     weak: bool | None = None,
     hot_rows: list | None = None,
     offboard_rows: list | None = None,
+    onboard_rows: list | None = None,
     hist_rows: list | None = None,
     market_idx_pct: float | None = None,
     new_symbols: set[str] | None = None,
@@ -746,6 +773,7 @@ def display_priority(
         weak=weak,
         hot_rows=hot_rows,
         offboard_rows=offboard_rows,
+        onboard_rows=onboard_rows,
         hist_rows=hist_rows,
         market_idx_pct=market_idx_pct,
         new_symbols=new_symbols,

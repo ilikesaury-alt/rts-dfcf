@@ -315,7 +315,13 @@ def build_candidates(
 # ── T1 / T2 分层 ────────────────────────────────────────────────────────────
 
 
-def classify_tier(c: OffboardCandidate, klines: list | None, today: str) -> tuple[str | None, str]:
+def classify_tier(
+    c: OffboardCandidate,
+    klines: list | None,
+    today: str,
+    *,
+    allowed_tiers: tuple[str, ...] = (T2, T1),
+) -> tuple[str | None, str]:
     """K 线相关的分层判定 → (tier | None, 理由)。
 
     None = **不产出**：既包含「条件不满足」，也包含「数据不足无法验证」——
@@ -379,6 +385,11 @@ def classify_tier(c: OffboardCandidate, klines: list | None, today: str) -> tupl
     hist = _exclude_today(klines, today)
 
     if MOMENTUM_LAUNCH_TODAY_MIN <= c.percent <= OFFBOARD_T2_TODAY_MAX:
+        if T2 not in allowed_tiers:
+            # 2026-09-30：榜内异动段传 (T1,) 把 T2 关掉。**不是**新增阈值，
+            # 只是把「两层都产出」窄化为「只产 T1」——下面所有条件仍逐条照跑，
+            # 被关掉的那层返回理由串与其它不产出一致（调用方展示效果相同、归因不同）。
+            return None, f"T2在本段不启用(今日{c.percent:.2f}%≥{MOMENTUM_LAUNCH_TODAY_MIN:g})"
         ma = _ma_not_bearish(hist)
         if ma is None:
             return None, "K线不足20根(MA不可判定)"
@@ -395,6 +406,8 @@ def classify_tier(c: OffboardCandidate, klines: list | None, today: str) -> tupl
         return T2, f"启动首日(累计{accum:+.2f}% 今日{c.percent:+.2f}% 量比{c.volume_ratio:.2f})"
 
     if HOT_MIN_PERCENT < c.percent < OFFBOARD_T1_TODAY_MAX:
+        if T1 not in allowed_tiers:
+            return None, f"T1在本段不启用(今日{c.percent:.2f}%)"
         ma = _ma_not_bearish(hist)
         if ma is None:
             return None, "K线不足20根(MA不可判定)"
@@ -450,13 +463,22 @@ def _ma_not_bearish(klines: list | None) -> bool | None:
     return score > 0
 
 
-def annotate(c: OffboardCandidate, klines: list | None, today: str) -> str | None:
+def annotate(
+    c: OffboardCandidate,
+    klines: list | None,
+    today: str,
+    *,
+    allowed_tiers: tuple[str, ...] = (T2, T1),
+) -> str | None:
     """给候选打上 tier / 美感标记 / 理由串，返回 tier（None = 不产出）。
 
     **生产路径与离线自检共用**：自检说「通过」而生产实际不产出，是这类哨兵最坏的
     失效方式（守卫绿灯、线上空转）。故后处理只有这一份。
+
+    `allowed_tiers`（2026-09-30 新增，默认两层全开 = B 段原行为不变）：榜内异动段
+    传 `(T1,)` 关掉 T2。默认值保证既有调用方行为逐字节不变。
     """
-    tier, why = classify_tier(c, klines, today)
+    tier, why = classify_tier(c, klines, today, allowed_tiers=allowed_tiers)
     if tier is None:
         c.reasons = [why]
         return None

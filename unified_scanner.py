@@ -36,6 +36,8 @@ from scanner.config import (
     NEW_FACE_LOOKBACK_DAYS,
     OFFBOARD_DISPLAY_TOP,
     OFFBOARD_WATCH_ENABLED,
+    ONBOARD_ANOMALY_ENABLED,
+    ONBOARD_DISPLAY_TOP,
     REFRESH_INTERVAL,
     now_beijing,
 )
@@ -56,6 +58,7 @@ from scanner.hot_watch import run_hot_watch
 from scanner.log_utils import log_results
 from scanner.models import RecommendationRow
 from scanner.offboard_watch import run_offboard_watch
+from scanner.onboard_anomaly import run_onboard_anomaly
 from scanner.orchestrator import scan_with_raw
 from scanner.ranking_snapshot import persist_ranking_snapshot
 from scanner.single_instance import SingleInstanceError, SingleInstanceLock, stop_existing_scanners
@@ -548,6 +551,30 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                         _log_exception("offboard_watch 独立区异常", e)
                         offboard_rows = None
 
+                # ── 沪深飙升区「榜内异动」段（2026-09-30）──
+                # 填 A 段与 B 段之间的空档：A 段要求「已涨 + 热度跃升」，B 段要求
+                # 「没上榜」，而「刚上榜、涨幅还小、量已经动了」这一档两侧都没覆盖。
+                # 本段只看 T1「量先动·价未动」，门槛/分层/排序全部复用榜外段单源
+                # （offboard_gate + classify_tier 的 T1 分支），只把样本域从榜外
+                # 换成榜内 —— 不是新口径，是同口径换域。
+                # exclude 含 A 段已展示的票，避免同屏出现同一只票两次。
+                # 完全 fail-open（同 B 段）；落库只进本段自己的 onboard_anomaly_log。
+                onboard_rows = None
+                if ONBOARD_ANOMALY_ENABLED:
+                    try:
+                        _seen = today_syms | {c.symbol for c in (hot_rows or [])}
+                        onboard_rows = run_onboard_anomaly(
+                            conn,
+                            adapter,
+                            xq_raw,
+                            exclude_symbols=_seen,
+                            top_n=ONBOARD_DISPLAY_TOP,
+                        )
+                    except Exception as e:
+                        print(f"  [!] 榜内异动段跳过: {type(e).__name__}: {e}")
+                        _log_exception("onboard_anomaly 独立区异常", e)
+                        onboard_rows = None
+
                 # ── v1 回捞独立区（2026-09-16）──
                 # 动机：飙升榜天然滞后——好票等上榜单时已涨一截，追进去性价比差。本区把
                 # 「系统自己在前 N 个交易日认可过的票（v1 五桶产出）」拿出来，用一套**只
@@ -606,6 +633,7 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                     last_ranks=last_ranks,
                     hot_rows=hot_rows,
                     offboard_rows=offboard_rows,
+                    onboard_rows=onboard_rows,
                     hist_rows=hist_rows,
                     market_idx_pct=_market_pct,
                     new_symbols=new_syms,

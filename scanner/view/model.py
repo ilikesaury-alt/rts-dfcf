@@ -101,6 +101,7 @@ __all__ = (
     "_vis_len",
     "entry_display_quote",
     "offboard_subtitle",
+    "onboard_subtitle",
     "pct_colored",
 )
 
@@ -532,6 +533,25 @@ def offboard_subtitle(n: int) -> str:
     )
 
 
+def onboard_subtitle(n: int) -> str:
+    """榜内异动段小标题括号正文：来源 + 排序键 + 规模 + 证据强度。
+
+    与 `offboard_subtitle` 同款纪律：必须写明「候选来源」与「未回测」——本段的
+    候选是**榜内**（与 A 段同域但口径不同），不写清楚最自然的误读就是「它是 A 段的
+    一部分」或「它比 B 段更可靠」。实际上**两者都不对**：
+      · 它不是 A 段 —— A 段看热度跃升 + 已涨，本段只看 T1「量先动·价未动」；
+      · 它不比 B 段可靠 —— 本段与 B 段同门同层（`offboard_gate` + `classify_tier`
+        的 T1 分支逐条同源），**唯一差别是样本域从榜外换成榜内**。
+    排序键与 `offboard_watch.sort_key` 逐项同序；本段只有 T1 一层，故省略层序。
+    """
+    return (
+        "（榜内创业板·榜单来源·"
+        "排序=量比→主力净占比"
+        f"·开盘 {OFFBOARD_OPENING_SILENCE_MIN} 分内不产出(量比失真)"
+        f"·{n} 只·观察段·未回测·与榜外段同门同层）"
+    )
+
+
 # 「v1 回捞」独立区（2026-09-16 上线）：列与本区口径对应（回调/量比/时效），
 # 与主线 COLS_POOL 无关 —— 本区不排涨跌幅榜上位置，只回答「回调到位了没」。
 COLS_HIST: tuple = (
@@ -624,6 +644,13 @@ class ScanView:
     # （结构性缺失），混在一起会让摘要的判断条件直接 TypeError。
     # 与 hot_rows 同款：终端与飞书都画、不落主线库、不进去重键。
     offboard_rows: list | None = None
+    # 沪深飙升区 **「榜内异动」段**（2026-09-30）：OffboardCandidate 列表 —— 候选来自
+    # **榜内创业板**，只看 T1「量先动·价未动」（`onboard_anomaly`）。
+    # 填的是 A 段（要求「已涨+热度跃升」）与 B 段（要求「没上榜」）之间的空档：
+    # 「刚上榜、涨幅还小、量已经动了」这一档。与 A 段**同区不同段、不混排**（同 B 段理由）。
+    # 与 hot_rows/offboard_rows 同款：终端画、不落主线库、不进去重键；落库只进本段自己的
+    # `onboard_anomaly_log`（observe-first 的唯一证据来源）。
+    onboard_rows: list | None = None
     # 「v1 回捞」独立区（2026-09-16 上线）：HistCandidate 列表，回答「前 N 个交易日
     # 进过 v1 的票，今天回调到位了没」。与 v1 池选区**样本域互斥**（默认剔除今日已推荐票），
     # 与 hot_rows 同款：终端与飞书都画、不落库、不参与任何主线口径，也不进去重键。

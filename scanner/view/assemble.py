@@ -83,10 +83,16 @@ def _market_suggestion_text(weak: bool | None, market_idx_pct: float | None) -> 
 
     weak=True → 弱市（防御型板块）；weak=False → 强市（进攻型板块）；
     weak=None → 无指数数据，给通用建议。
+
+    ⚠ 2026-09-30 改写（原为 `weak is True` / `weak is False`）：`weak` 声明类型是
+    `bool | None`，故「真值」≡ True、「非 None」≡ False，两个分支的语义**逐位不变**
+    （True→弱市 / False→强市 / None→通用）。只是把恒等比较换成真值判断，消除
+    「与字面量做 is 比较」的写法。**若将来 weak 改成非 bool（如 0/1），
+    这段就不再等价** —— 届时须改回显式比较。
     """
-    if weak is True:
+    if weak:
         return "弱市·防御优先：银行/医药/消费红利"
-    if weak is False:
+    if weak is not None:
         return "强势·进攻优先：科技/AI/半导体/新能源"
     return "市况未知·均衡配置"
 
@@ -159,6 +165,7 @@ def build_scan_view(
     weak: bool | None = None,
     hot_rows: list | None = None,
     offboard_rows: list | None = None,
+    onboard_rows: list | None = None,
     hist_rows: list | None = None,
     market_idx_pct: float | None = None,
     new_symbols: set[str] | None = None,
@@ -519,6 +526,7 @@ def build_scan_view(
         guxing_mark=guxing_mark,
         hot_rows=hot_rows,
         offboard_rows=offboard_rows,
+        onboard_rows=onboard_rows,
         hist_rows=hist_rows,
         flow_filtered=flow_filtered,
         market_idx_pct=market_idx_pct,
