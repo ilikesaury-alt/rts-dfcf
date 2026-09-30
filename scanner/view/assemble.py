@@ -7,6 +7,7 @@ from scanner.config import (
     CORE_PULLBACK_MIN,
     DISPLAY_MAX_TODAY_PCT,
     FUND_FLOW_HARD_FILTER_ENABLED,
+    GUXING_ENABLED,
     TACTICS_SELL_TAGS,
     TREND_MARK_ENABLED,
 )
@@ -33,6 +34,9 @@ from scanner.ranking import (
     entry_fund_flow_pct,
     fresh_candidate,
     is_fund_outflow,
+)
+from scanner.ranking import (
+    guxing_mark as guxing_mark_str,
 )
 
 # 走势美感标记判定单源在 scanner.trend_beauty（日线定准入、分时定级别）——经下方
@@ -323,6 +327,13 @@ def build_scan_view(
     # 仅 v1/v2 池选行渲染；回马枪/核心低吸区不标（日线门与低位类语义冲突）。
     # 批量取 K 线防 N+1；RTS_TREND_MARK=0 时标记整体为空。
     beauty_mark: dict[tuple[str, str], str] = {}  # (symbol, category) → "" / "稳" / "稳★"
+    # 妖股名单标记（2026-09-30 新增，ranking.guxing_mark）：静态名单匹配，无统计计算。
+    # 形如「妖」——纯展示层，**不是预测信号**（名单内命中��中位~15% vs 基准 9.01%，
+    # walk-forward 0/17），故不进 push_gate、不改排序/评分/落库。仅主表行渲染。
+    guxing_mark: dict[tuple[str, str], str] = {}
+    if GUXING_ENABLED:
+        for e in main_recs:
+            guxing_mark[(e["symbol"], e["category"])] = guxing_mark_str(e.get("symbol"), e.get("name"))
     if TREND_MARK_ENABLED:
         # 只算 v1 主表行 —— 标记的唯一渲染出口是 v1 池选行行尾（_entry_row_suffix）。
         _beauty_entries = main_recs
@@ -505,6 +516,7 @@ def build_scan_view(
         warnings=warnings,
         rule_result=_rule_result,
         beauty_mark=beauty_mark,
+        guxing_mark=guxing_mark,
         hot_rows=hot_rows,
         offboard_rows=offboard_rows,
         hist_rows=hist_rows,

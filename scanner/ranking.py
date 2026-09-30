@@ -18,6 +18,9 @@ from scanner.config import (
     COMPOSITE_CAT_BASE,
     COMPOSITE_TIER_THRESHOLDS,
     FUND_OUTFLOW_NET_PCT,
+    GUXING_MATCH_BY_NAME,
+    GUXING_TICKER,
+    GUXING_WATCHLIST,
     NEXTDAY_SPIKE_MID_MAX,
     NEXTDAY_SPIKE_MID_MIN,
     NEXTDAY_SPIKE_SWEET_LOW,
@@ -648,6 +651,53 @@ def _is_relist_breakout_setup(
     if _breakout_profile_key(entry) != "relist":
         return False
     return _breakout_structure_ok(entry, conn, klines=klines)
+
+
+# ── 妖股名单展示标记（2026-09-30 新增）──────────────────────────────────────
+# 静态名单匹配（用户 2026-09-30 明确决策）：票在名单内（代码或名称）就打「妖」。
+# **不做任何统计计算** —— 名单是 config_scoring.GUXING_WATCHLIST 的静态快照，
+# 来源为外部调研名单 F:\\downloads\\yaogu_list.json（56 只，2022~2024）。
+#
+# ⚠ 本标记**不是预测器**：它回答「这票历史上是否当过妖股」，不回答「明天会不会涨」。
+#   本仓实测名单类推法 walk-forward 0/17；且公开研究显示妖股名单**随情绪周期整体换血**
+#   （2019 妖股 ∩ 2022 妖股 = ∅）。展示它的唯一作用 = 陈述「这票有妖股前科」这一事实。
+#   纯展示层：**不改排序/评分/落库，不进 push_gate**。收录 ≠ 会涨；没收录 ≠ 不是妖股。
+GUXING_BY_NAME: dict[str, str] = {v: k for k, v in GUXING_WATCHLIST.items() if v}
+
+
+def normalize_symbol(symbol: str | None) -> str:
+    """代码归一为名单键形（大写、带交易所前缀）。
+
+    名单键形 = ``SH600018`` / ``SZ000004``（雪球/Xueqiu 风格）。而上游可能出现裸 6 位
+    代码（调研名单原文件就是），故 6 位数字按首位判前缀：``6`` → SH，其余 → SZ。
+    已带前缀的原样上抬；其他形态（如带市场后缀 ``300641.SZ``）取前 6 位重判。
+    """
+    s = str(symbol or "").strip().upper()
+    if not s:
+        return ""
+    if s[:2] in ("SH", "SZ") and len(s) >= 8:
+        return s[:8]
+    digits = "".join(ch for ch in s if ch.isdigit())
+    if len(digits) >= 6:
+        d = digits[:6]
+        return ("SH" if d[0] == "6" else "SZ") + d
+    return s
+
+
+def is_guxing_watched(symbol: str | None, name: str | None = None) -> bool:
+    """票是否在妖股名单内。代码优先（自动归一），名称兼底（受 GUXING_MATCH_BY_NAME）。"""
+    if normalize_symbol(symbol) in GUXING_WATCHLIST:
+        return True
+    if GUXING_MATCH_BY_NAME and name:
+        key = "".join(str(name).split())
+        if key and key in GUXING_BY_NAME:
+            return True
+    return False
+
+
+def guxing_mark(symbol: str | None, name: str | None = None) -> str:
+    """在名单内 → 返回「妖」；否则空串。纯展示标记，不含任何统计量。"""
+    return GUXING_TICKER if is_guxing_watched(symbol, name) else ""
 
 
 # ── 统一复合评分（2026-09-08，v1+v2 合一）──

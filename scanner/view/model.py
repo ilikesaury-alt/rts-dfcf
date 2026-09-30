@@ -364,6 +364,7 @@ def _entry_row_suffix(
     flow_pct_map: dict[str, float],
     breakout_marked: bool = False,
     beauty: str = "",
+    guxing: str = "",
 ) -> str:
     """行尾可变区统一渲染：风险标记 → 资金流/连板 extra → ⚡ → 走势标记。
 
@@ -412,6 +413,12 @@ def _entry_row_suffix(
     # 两端不再就地解释，挂回时改调 label_registry.legend_line。
     if beauty:
         parts.append(f" {ANSI['GREEN']}{beauty}{ANSI['RESET']}")
+    # 妖股名单（2026-09-30 新增，ranking.guxing_mark 产出，形如「妖」）：
+    # **静态名单匹配，不是信号** —— 只标「这票在名单内」，不预测涨跌
+    # （名单无样本外预测力，见 config_scoring GUXING_WATCHLIST 注释）。
+    # 放最后：不与 ⚠/▼/⚡/稳 抢读；纯文本单字跟「稳」同风格，不用 emoji。
+    if guxing:
+        parts.append(f" {ANSI['MAGENTA']}{guxing}{ANSI['RESET']}")
     return "".join(parts)
 
 
@@ -598,6 +605,11 @@ class ScanView:
     # trend_beauty.beauty_mark：日线准入+分时分级），不改过滤/排序/落库。
     # 2026-09-14：v2 池选展示区已隐藏，故现状只服务 v1 池选行。
     beauty_mark: dict[tuple[str, str], str] | None = None
+    # 妖股名单标记（2026-09-30 新增）：{(symbol, category): "" | "妖"}。
+    # **静态名单匹配，不是信号** —— 该票是否在 config_scoring.GUXING_WATCHLIST 内。
+    # 实测名单无样本外预测力（walk-forward 0/17），故它不进 push_gate、不改排序/评分/
+    # 落库。幸存者偏差结构性存在：只能收录仍在监控池的票，名单随情绪周期整体换血。
+    guxing_mark: dict[tuple[str, str], str] | None = None
     # 沪深飙升·极有可能大涨独立区（2026-09-11 自 rts-xueqiu 合入）：HotCandidate 列表。
     # 与主线（创业板/next_day 口径）完全解耦——样本面更宽（沪深主板+创业板）、口径为
     # 「当日 momentum + 榜单热度跃升」，不参与主线评分/档位/🎯。

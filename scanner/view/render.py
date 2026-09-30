@@ -606,6 +606,7 @@ def render_terminal(view: ScanView) -> None:
             view.flow_pct_map,
             breakout_marked=_bolt,
             beauty=(view.beauty_mark or {}).get((_e["symbol"], _e["category"]), ""),
+            guxing=(view.guxing_mark or {}).get((_e["symbol"], _e["category"]), ""),
         )
         if row.is_new_entry:
             # 本轮新进池标记（2026-09-21）：与 v1 排序第 1 键 is_new 同源。

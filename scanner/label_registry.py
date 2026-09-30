@@ -150,6 +150,27 @@ LABEL_REGISTRY: dict[str, LabelSpec] = {
         "非排序因子·亏超5%比例翻倍(4.9%→10.3%)·非买入信号",
         sections=("pool",),
     ),
+    "guxing_archive": LabelSpec(
+        id="guxing_archive",
+        labels=("妖",),
+        surfaces=("scanner/view/model.py",),
+        where="v1 池选 行尾最末（view.model._entry_row_suffix 的 guxing 分支）",
+        rule="妖股名单匹配：**静态名单**（config_scoring.GUXING_WATCHLIST，代码↔名称双键录入）"
+        "内命中即打「妖」；代码自动归一（裸 6 位/SH/SZ 均支持），名称兼底"
+        "（GUXING_MATCH_BY_NAME）。**无任何统计计算**",
+        source="S5: 名单内容取自外部调研清单 F:\\downloads\\yaogu_list.json（56 只，"
+        "2022~2024，字段 code/name/year/theme），用户 2026-09-30 指定为准；"
+        "判定逻辑本身不含经验断言（纯名单成员测试）",
+        grade="E0",
+        counter="⚠ **不是买入信号**——「妖」只标「这票历史上当过妖股」，不说明下次会涨。"
+        "**本标记未过样本外验证**：名单类推法 walk-forward 17 次异动命中 0 次。"
+        "**名单随情绪周期整体换血**：公开研究按周期统计，2019 妖股 ∩ 2022 妖股 = ∅；"
+        "本名单止于 2024，新妖进不来、掉队的不出去，属未校准静态快照，需定期人工复核。"
+        "**板块覆盖不全**：v1 池选只监控创业板 300/301，名单 56 只里仅 13 只创业板票"
+        "可能被标到，主板 000/001/002/003/600/601/603/605 的 43 只会永不显示。"
+        "收录 ≠ 会涨；没收录 ≠ 不是妖股。·纯展示·不改排序/评分/落库/push_gate",
+        sections=("pool",),
+    ),
     "trend_steady": LabelSpec(
         id="trend_steady",
         labels=("稳", "稳★"),
