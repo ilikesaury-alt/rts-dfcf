@@ -805,16 +805,31 @@ def backfill_next_day(conn, adapter, signal_date: str | None = None) -> int:
     now = now_beijing().isoformat(timespec="seconds")
     for sym, dates in by_symbol.items():
         bars = load_offboard_klines(conn, adapter, [sym]).get(sym) or []
-        by_date = {k.get("date"): k for k in bars}
+        # ⚠ `None` 日期的 bar 不能进映射（否则 `by_date` 会出现 `None` 键）。
+        #   真实来源 `load_offboard_klines` 已清洗，但直连/回放路径未必。
+        by_date = {k["date"]: k for k in bars if isinstance(k.get("date"), str)}
         for d in dates:
-            later = sorted(x for x in by_date if isinstance(x, str) and x > d)
+            later = sorted(x for x in by_date if x > d)
             if not later:
                 continue
             nxt = later[0]
-            if (_date.fromisoformat(nxt) - _date.fromisoformat(d)).days > 4:
+            # 防呆 1 的日期差计算也可能抛（脏日期字符串），同样不能让整轮回填崩掉
+            try:
+                if (_date.fromisoformat(nxt) - _date.fromisoformat(d)).days > 4:
+                    continue
+            except ValueError:
                 continue
-            p0 = to_float((by_date[d] or {}).get("close"), 0.0) or 0.0
-            p1 = to_float((by_date[nxt] or {}).get("close"), 0.0) or 0.0
+            # 🔴 2026-10-08 修复 KeyError：`later` 只保证「有比 d 晚的 bar」，
+            #   **不保证 d 自己在 by_date 里** —— `by_date` 来自 `_clean_bars`，
+            #   它按 `make_kline_bar` 契约剔除脏 bar（close<=0 / 日期非法），故
+            #   信号日 bar 缺失是常态（当天没落库、停牌、脏数据）。
+            #   原先 `by_date[d]` 抛 KeyError，被 `run_offboard_watch` 的
+            #   `except EXTERNAL_FAILURES` 吞掉 ⇒ **该轮所有 symbol 的回填全废**，
+            #   标签静默停止积累。改为 `.get()` + 跳过（验不了就不产出）。
+            b0 = by_date.get(d)
+            b1 = by_date.get(nxt)
+            p0 = (to_float(b0.get("close"), 0.0) or 0.0) if b0 else 0.0
+            p1 = (to_float(b1.get("close"), 0.0) or 0.0) if b1 else 0.0
             if p0 <= 0 or p1 <= 0:
                 continue
             try:

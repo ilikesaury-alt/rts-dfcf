@@ -8,6 +8,7 @@ T1/T2 分层、排序键（T2 在前的实测依据 + A/B 不混排的结构性�
 全部为密封单测：不触网、不依赖真实 `scanner.db`（用内存库 + 假 adapter）。
 """
 
+import json
 import sqlite3
 from datetime import date as _date
 from datetime import datetime, time
@@ -998,6 +999,96 @@ def test_backfill_skips_when_no_next_bar(db):
     _save_klines(db, {sym: _bars_by_date([(d0, 10.0)])}, today.isoformat())
     _insert_signal(db, sym, d0)
     assert backfill_next_day(db, None) == 0
+
+
+def _bar(day: str, close: float, *, open_: float | None = None) -> dict:
+    """单根 bar（显式给 open/high/low，避免 `_bars_by_date` 的 prev 传导把相邻 bar 一起弄脏）。"""
+    o = close if open_ is None else open_
+    return {
+        "date": day,
+        "open": o,
+        "close": close,
+        "high": max(o, close) * 1.004,
+        "low": min(o, close) * 0.996,
+        "volume": 2.0e6,
+        "percent": 0.0,
+    }
+
+
+def test_backfill_survives_dirty_signal_day_bar(db):
+    """回归守卫：信号日当天的 bar 是**脏 bar**（close<=0）时不得崩。
+
+    ## 崩溃路径
+
+    `backfill_next_day` 里 `later = sorted(x for x in by_date if ... > d)` 只保证
+    「有比 d 晚的 bar」，**不保证 d 自己在 `by_date` 里**。而 `by_date` 来自
+    `load_offboard_klines` → `_read_cached_klines` → `_clean_bars`，后者按
+    `make_kline_bar` 契约**剔除脏 bar**（close<=0 / 日期非法）。
+
+    于是「信号日 bar 脏、次日 bar 正常」时 `by_date[d]` 抛 `KeyError`。
+    它被 `run_offboard_watch` 的 `except EXTERNAL_FAILURES` 吞掉 ⇒
+    **该轮所有待回填行全废**，且只有一行 warning —— 标签静默停止积累，
+    正是「没有标签就没有任何阈值能被证伪」那条纪律的隐形杀手。
+
+    正确行为：脏 bar ⇒ 无法验证信号日收盘价 ⇒ 跳过该行（返回 0），不崩。
+
+    ⚠ 数据必须**只让信号日那根脏**：若用 `_bars_by_date([(d0, 0.0), (d1, 11.0)])`，
+    次日 bar 的 open/low 会由 prev=0.0 传导成 0 而一并被剔除，整个池清空 ⇒
+    `later` 为空提前 continue ⇒ **测试会因错误的原因通过**（守卫失效）。
+    故这里显式构造两根独立 bar。
+    """
+    today = now_beijing().date()
+    d0 = (today - _td(days=3)).isoformat()
+    d1 = (today - _td(days=2)).isoformat()
+    sym = "SZ300201"
+    bars = [_bar(d0, 0.0), _bar(d1, 11.0)]  # 仅 d0 脏，d1 干净
+    # 前置断言：确认「d1 留存、d0 被剔除」，否则本测试没有意义
+    kept = {b["date"] for b in _clean_bars(bars)}
+    assert kept == {d1}, f"测试前提不成立：实际留存 {kept}"
+
+    _save_klines(db, {sym: bars}, today.isoformat())
+    _insert_signal(db, sym, d0)
+    assert backfill_next_day(db, None) == 0  # 不抛，且不产出标签
+
+
+def test_backfill_survives_missing_signal_day_bar(db):
+    """信号日 bar 整个不在池里（停牌/未落库）⇒ 跳过，不崩。
+
+    这是**生产上最常见**的触发形态：信号日那天的 bar 没落进榜外 K 线池
+    （票当天未进候选、或跨日后重取时池子按 `fetch_date` 分片），而次日 bar 在。
+    """
+    today = now_beijing().date()
+    d0 = (today - _td(days=3)).isoformat()
+    d1 = (today - _td(days=2)).isoformat()
+    sym = "SZ300201"
+    _save_klines(db, {sym: [_bar(d1, 11.0)]}, today.isoformat())  # 只有次日的 bar
+    _insert_signal(db, sym, d0)
+    assert backfill_next_day(db, None) == 0
+
+
+def test_one_bad_symbol_does_not_abort_the_whole_round(db):
+    """一只票的脏数据不得拖垮**同轮其他票**的回填。
+
+    这是本 bug 最实际危害的形态：KeyError 从内层循环抛出后，
+    整个 `backfill_next_day` 当轮返回，同批次的正常票也一起丢失标签。
+    """
+    today = now_beijing().date()
+    d0 = (today - _td(days=3)).isoformat()
+    d1 = (today - _td(days=2)).isoformat()
+    bad, good = "SZ300201", "SZ300202"
+    _save_klines(db, {bad: [_bar(d0, 10.0), _bar(d1, 11.0)]}, today.isoformat())
+    _save_klines(db, {good: [_bar(d0, 10.0), _bar(d1, 12.0)]}, today.isoformat())
+    # 只把 bad 的信号日 bar 从池里抠掉（等价于它当天没落库），good 完好
+    db.execute(
+        "UPDATE offboard_kline_cache SET payload_json=? WHERE symbol=?",
+        (json.dumps([_bar(d1, 11.0)]), bad),
+    )
+    db.commit()
+    _insert_signal(db, bad, d0)
+    _insert_signal(db, good, d0)
+    assert backfill_next_day(db, None) == 1  # 只有好的那只被回填
+    pct = db.execute("SELECT next_day_pct FROM offboard_launch_log WHERE date=? AND symbol=?", (d0, good)).fetchone()[0]
+    assert pct == pytest.approx(20.0)
 
 
 def test_backfill_already_filled_is_not_touched(db):
