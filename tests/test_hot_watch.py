@@ -2,9 +2,16 @@
 
 覆盖：样本面、涨跌停价推算、硬性排除各分支、打分与排序、预筛、连击跟踪、
 以及终端独立区渲染。全部为密封单测（不触网、不依赖真实 scanner.db）。
+
+⚠ 2026-10-08 修复 P1：量比改从 `market_extra_cache` fund_flow 快照取，
+  且**必须在打分前**赋值（原先依赖 detail 补拉，而补拉发生在打分排序之后
+  ⇒ `HOT_W_VOLUME` 里量比占的 15 分从不参与排序）。涉及排序的测试须用
+  `_with_snapshot` 建表，否则量比恒 0、排序维度退化成换手率单项。
 """
 
+import json
 import sqlite3
+from datetime import date, timedelta
 
 import pytest
 
@@ -13,6 +20,8 @@ from scanner.config import (
     HOT_MAX_MARKET_CAP,
     HOT_MAX_PERCENT,
     HOT_RANK_CHANGE_CAP,
+    HOT_VR_FULL,
+    HOT_W_VOLUME,
 )
 from scanner.hot_watch import (
     HotCandidate,
@@ -107,6 +116,96 @@ def db():
     conn.commit()
     yield conn
     conn.close()
+
+
+def _seed_klines(conn, symbols, bars_per_symbol: int = 30):
+    """塞温和上行日线（MA5>MA10），让候选能过 `HOT_BEAUTY_GATE_ENABLED` 美感门。
+
+    该门默认开，`beauty_marks_daily(None)` ⇒ blocked ⇒ **缺 K 线时全部候选被拒、
+    产出 0 行** —— 那会让排序断言退化成「空列表 == 空列表」的空断言。
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS daily_kline (symbol TEXT, date TEXT, close REAL,"
+        " high REAL, low REAL, open REAL, volume REAL, percent REAL, finalized INTEGER)"
+    )
+    today = date.today()
+    bars = []
+    for sym in symbols:
+        px = 10.0
+        for i in range(bars_per_symbol):
+            px *= 1.004
+            d = (today - timedelta(days=bars_per_symbol - 1 - i)).isoformat()
+            bars.append((sym, d, px, px * 1.01, px * 0.99, px, 1e6, 0.4, 1))
+    conn.executemany(
+        "INSERT INTO daily_kline(symbol, date, close, high, low, open, volume,"
+        " percent, finalized) VALUES(?,?,?,?,?,?,?,?,?)",
+        bars,
+    )
+    conn.commit()
+    return conn
+
+
+def _with_snapshot(conn, vol_ratios: dict[str, float]):
+    """给内存库加上 `market_extra_cache`（量比快照，A 段打分的真实来源）。
+
+    2026-10-08 修复 P1 后，A 段的量比**在打分前**取自 fund_flow 快照
+    （batch 行情结构上无 `volume_ratio`）。缺这张表的库 ⇒ 量比恒 0 ⇒
+    `score_volume` 退化为换手率单项 ⇒ 回归测试会退化成「测不到排序」。
+    故涉及排序的测试必须先过这个函数建表。
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS market_extra_cache (symbol TEXT, date TEXT,"
+        " data_type TEXT, payload_json TEXT, updated TEXT,"
+        " PRIMARY KEY(symbol, data_type, date))"
+    )
+    conn.commit()
+    _seed_klines(conn, list(vol_ratios))
+    today = date.today()
+    conn.executemany(
+        "INSERT OR REPLACE INTO market_extra_cache(symbol, date, data_type, payload_json, updated) VALUES(?,?,?,?,?)",
+        [
+            (sym, today.isoformat(), "fund_flow", json.dumps({"vol_ratio": vr}), f"{today.isoformat()}T10:00:00")
+            for sym, vr in vol_ratios.items()
+        ],
+    )
+    conn.commit()
+    return conn
+
+
+def _q(symbol, code, name, *, current=20.0, percent=5.0, turnover_rate=5.0):
+    """本文件 P1 回归测试用的行情行 —— **刻意不含** `volume_ratio`。
+
+    两个要点：
+    - 不含 `volume_ratio`：`api._HOT_QUOTE_FIELDS` 里本就没有该字段，模拟生产形态；
+    - `last_close` 跟着 `current` 走：`_quote` 的默认 last_close=47.37 与
+      current=20.0 不自洽，会推出跌停价 37.9 > 现价 ⇒ `hard_exclude` 判
+      「已触及跌停」⇒ 候选全被拒、排序断言退化成空列表比较。
+    """
+    return _quote(
+        symbol,
+        code,
+        name,
+        current=current,
+        percent=percent,
+        turnover_rate=turnover_rate,
+        last_close=current / (1 + percent / 100),
+    )
+
+
+def _memdb_no_snapshot():
+    """有 `market_extra_cache` **表**但无当日行 —— 等价于「快照没数据」。
+
+    与「没有这张表」不同：前者走 SQL 返回空（量比 map 为空），后者查询直接
+    fail-open 成空。两者都应让量比留 0；分开测是为了不把「表结构变了」误判成
+    「取值逻辑变了」。K 线仍需提供，否则美感门会把候选全拒（见 `_with_snapshot`）。
+    """
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE market_extra_cache (symbol TEXT, date TEXT, data_type TEXT,"
+        " payload_json TEXT, updated TEXT, PRIMARY KEY(symbol, data_type, date))"
+    )
+    conn.commit()
+    return _seed_klines(conn, ["SZ300001", "SZ300002"])
 
 
 # ── 样本面 ──────────────────────────────────────────────────────────────────
@@ -828,3 +927,101 @@ def test_cli_conn_is_isolated():
     conn.execute("INSERT INTO hot_watch_hits(symbol,name,streak,last_round) VALUES('SZ999999','测试',1,1)")
     assert conn.execute("SELECT COUNT(*) FROM hot_watch_hits").fetchone()[0] == 1
     conn.close()
+
+
+# ── P1 回归守卫：量比必须参与排序（2026-10-08）────────────────────────────────
+def test_snapshot_volume_ratio_reaches_candidate(db):
+    """量比从 fund_flow 快照取到候选上（batch 行情结构上无此字段）。
+
+    `api._HOT_QUOTE_FIELDS` 不含 `volume_ratio`，故修复前 `c.volume_ratio`
+    在打分时恒为 0.0。若有人把取值改回 `quotes`，本测试立刻失败。
+    """
+    _with_snapshot(db, {"SZ300001": 3.5})
+    quotes = {"SZ300001": _q("SZ300001", "300001", "甲")}
+    # 刻意不在 quotes 里放 volume_ratio —— 模拟生产通道的真实形态
+    assert "volume_ratio" not in quotes["SZ300001"]
+
+    passed, _ = build_candidates([_board_item("SZ300001", "甲", rc=5000)], quotes, db)
+    assert len(passed) == 1
+    assert passed[0].volume_ratio == pytest.approx(3.5)
+
+
+def test_volume_ratio_actually_changes_score(db):
+    """量比不同 ⇒ 分数不同（修复前两者分数**完全相同**）。
+
+    这是 P1 的核心断言：修复前 `score_volume` 恒走换手率单项回退，
+    两只换手率相同的候选**分数逐位相同**，排序无法区分它们。
+    """
+    _with_snapshot(db, {"SZ300001": 3.0, "SZ300002": 1.0})
+    quotes = {
+        "SZ300001": _q("SZ300001", "300001", "甲", turnover_rate=5.0),
+        "SZ300002": _q("SZ300002", "300002", "乙", turnover_rate=5.0),
+    }
+    passed, _ = build_candidates(
+        [_board_item("SZ300001", "甲", rc=5000), _board_item("SZ300002", "乙", rc=5000)],
+        quotes,
+        db,
+    )
+    assert len(passed) == 2
+    by_sym = {c.symbol: c for c in passed}
+    hi, lo = by_sym["SZ300001"], by_sym["SZ300002"]  # 量比 3.0 vs 1.0
+    assert hi.volume_ratio == pytest.approx(3.0)
+    assert lo.volume_ratio == pytest.approx(1.0)
+    # 换手率相同 ⇒ 修复前两者 score 完全相等；修复后量比高的必须更高
+    assert hi.score > lo.score
+    assert hi.score - lo.score == pytest.approx(HOT_W_VOLUME * 0.6 * (1.0 - 1.0 / HOT_VR_FULL))
+
+
+def test_volume_ratio_orders_the_sort(db):
+    """**排序结果**本身对量比有反应（不只是分数变了）。
+
+    构造一对「量比相反、换手率相反」的候选：修复前换手率高的在前，
+    修复后量比高的在前 —— 名次真的会翻转（2026-10-08 用真实快照实测确有
+    2 对这样的翻转样本）。
+    """
+    _with_snapshot(db, {"SZ300001": 3.0, "SZ300002": 1.0})
+    # 甲：量比 3.0 / 换手 2%（量比高、换手低）
+    # 乙：量比 1.0 / 换手 9%（量比低、换手高）
+    quotes = {
+        "SZ300001": _q("SZ300001", "300001", "甲", turnover_rate=2.0),
+        "SZ300002": _q("SZ300002", "300002", "乙", turnover_rate=9.0),
+    }
+    passed, _ = build_candidates(
+        [_board_item("SZ300001", "甲", rc=5000), _board_item("SZ300002", "乙", rc=5000)],
+        quotes,
+        db,
+    )
+    assert [c.symbol for c in passed] == ["SZ300001", "SZ300002"]  # 量比 3.0 的在前
+
+    # 同一对候选，**没有快照** ⇒ 量比恒 0 ⇒ 退化为换手率单项 ⇒ 乙在前
+    db2 = _memdb_no_snapshot()
+    passed2, _ = build_candidates(
+        [_board_item("SZ300001", "甲", rc=5000), _board_item("SZ300002", "乙", rc=5000)],
+        quotes,
+        db2,
+    )
+    assert [c.symbol for c in passed2] == ["SZ300002", "SZ300001"]  # 换手 9% 的在前
+
+
+def test_detail_no_longer_needed_for_ranking(db):
+    """detail 补拉失败**不再**影响排序（修复前它也不影响，只是原因不同）。
+
+    修复前：A 段量比只可能来自 detail，而 detail 在排序之后 ⇒ 排序永远用 0。
+    修复后：排序量比来自快照，detail 只管展示 ⇒ 抛异常时名次不变。
+    """
+    _with_snapshot(db, {"SZ300001": 3.0, "SZ300002": 1.0})
+    quotes = {
+        "SZ300001": _q("SZ300001", "300001", "甲", turnover_rate=2.0),
+        "SZ300002": _q("SZ300002", "300002", "乙", turnover_rate=9.0),
+    }
+
+    class _Boom(_FakeAdapter):
+        def fetch_hot_quote_detail(self, symbol):
+            raise OSError("network down")
+
+    out = run_hot_watch(
+        _Boom(quotes), db, [_board_item("SZ300001", "甲", rc=5000), _board_item("SZ300002", "乙", rc=5000)]
+    )
+    assert [c.symbol for c in out] == ["SZ300001", "SZ300002"]  # 快照量比决定名次
+    # detail 挂掉后量比仍保留快照值，不被清零
+    assert all(c.volume_ratio > 0 for c in out)

@@ -35,8 +35,14 @@
   `order_by=rank_change`），**直接复用主轮已抓的榜单**，不再单独发一次请求。
 - 批量补全 `batch/quote.json`：有 volume/amount/turnover_rate/market_capital/
   last_close，**无** volume_ratio/limit_up/limit_down（实测恒 None）。2 请求/100 票。
+- **量比（打分用）**：`market_extra_cache` 的 fund_flow 快照（东财 `f10`，
+  `_snapshot_vol_ratio_map`）。2026-10-08 起改由此取值 —— 此前依赖 detail 补拉，
+  但补拉发生在打分与排序**之后** ⇒ `HOT_W_VOLUME` 里量比占的 15 分从不参与排序
+  （详见该函数 docstring）。与 `main_pct` 同一响应行，`collect_market_extra`
+  刷新后即可读，**零额外请求**，且与榜外段/榜内异动段**同源同键**。
 - 单票 detail `quote.json?extend=detail`：额外有 volume_ratio/limit_up/limit_down，
-  1 请求/票 —— 故只对最终前 `HOT_DETAIL_TOP` 名调用。
+  1 请求/票 —— 故只对最终前 `HOT_DETAIL_TOP` 名调用。**职责已收窄**为
+  「真实涨跌停价 + 前 N 名展示精度」，排序不再依赖它。
 - 涨跌停价：batch 不给，由 `last_close` 按板块幅度推算（见 `limit_prices`），
   保证硬排除不依赖可选的 detail 补拉（补拉失败时排除口径不变）。
 
@@ -80,6 +86,7 @@ from scanner.config import (
     TREND_MARK_ENABLED,
     now_beijing,
 )
+from scanner.db.queries import get_market_extra_snapshot
 from scanner.display_gates import beauty_marks_daily, common_hard_gate
 from scanner.limit_rules import limit_pct_for as limit_pct_for  # noqa: F401 (re-export)
 from scanner.limit_rules import limit_prices as limit_prices  # noqa: F401 (re-export)
@@ -368,6 +375,63 @@ def prefilter_board(raw_items: Sequence[dict]) -> list[dict]:
     return prelim
 
 
+def _snapshot_vol_ratio_map(conn, symbols: Sequence[str]) -> dict[str, float]:
+    """全市场 fund_flow 快照 → `{symbol: vol_ratio}`（缺失/无该键则不出现）。
+
+    ## 为什么要改从快照取量比（2026-10-08 修复 P1）
+
+    `HOT_W_VOLUME`(25 分) 里量比维度占 `HOT_VR_WEIGHT`(0.6) ⇒ **15 分**，
+    但修复前这 15 分**从未参与排序**，原因是取数时序：
+
+        build_candidates(...)          ← score_volume 在这里算完，volume_ratio 恒 0
+        passed.sort(key=(-score, ...))  ← 排序在此定死
+        for c in passed[:HOT_DETAIL_TOP]: ← 补拉 detail 才拿到真量比，但**不重算分数**
+
+    根因是雪球 `batch/quote.json` 的字段集 `_HOT_QUOTE_FIELDS`（16 个）**不含**
+    `volume_ratio` —— 批量接口不提供，只有单票 `quote.json?extend=detail` 才有。
+    于是打分时 `score_volume` 永远走「只有换手率」的单项回退
+    （`tr_score * HOT_VOLUME_SINGLE_FACTOR`），实测同换手率的两只票**排序完全无法区分**
+    —— 表里显示的量比是真值，排序用的却不是。
+
+    ## 修法：改从 `market_extra_cache` 快照取
+
+    - 与 B 段（`offboard_watch._snapshot_row_to_candidate`）、榜内异动段
+      （`onboard_anomaly._snapshot_vol_ratio_map`）**同源同键** ⇒ 三段量比口径一致；
+    - `vol_ratio`（东财 `f10`）与 `main_pct` 在**同一响应行、同一落库路径**，
+      `run_hot_watch` 开头已调 `collect_market_extra` 刷新 ⇒ **零额外请求成本**；
+    - 实测快照覆盖全市场 1412 只创业板、100% 带 `vol_ratio`。
+
+    ⚠ 与 detail 补拉的关系：detail 仍在 `run_hot_watch` 里跑，但**只用于展示口径**
+      （`limit_up`/`limit_down` 真实涨跌停价）。它带回来的 `volume_ratio` 仍会写入
+      `c.volume_ratio`（覆盖快照值），这在两个方向上都无害：
+        · 排序：已用快照量比算完，detail 发生在排序之后，不影响名次；
+        · 展示：detail 是雪球原值，与快照同为「量比」定义，展示更精确；
+      且它只覆盖前 `HOT_DETAIL_TOP` 名 ⇒ **同一张表内可能出现「前 5 名用 detail
+      量比、其余用快照量比」的混合来源**。这是**可接受的**：两者定义相同，差异在
+      小数位级别，而排序口径（快照）是统一且确定的。
+
+    ⚠ 残留口径差：快照可能滞后于实时价（`collect_market_extra` 超时时只落当轮候选，
+      见 `offboard_watch._apply_live_quote` 的 docstring）。与 B 段同款问题，
+      显式记录而非假装没有。
+    """
+    if conn is None or not symbols:
+        return {}
+    try:
+        snapshot = get_market_extra_snapshot(conn, "fund_flow")
+    except EXTERNAL_FAILURES as e:
+        logger.warning("A 段量比快照取数失败（按无量比继续）: %s", e)
+        return {}
+    out: dict[str, float] = {}
+    for sym in symbols:
+        payload = snapshot.get(sym)
+        if not payload:
+            continue
+        vr = to_float(payload.get("vol_ratio"), None)
+        if vr is not None and vr > 0:
+            out[sym] = vr
+    return out
+
+
 def build_candidates(
     board_items: Sequence[dict],
     quotes: dict[str, dict],
@@ -394,11 +458,13 @@ def build_candidates(
     # 资金流供资金流门/**标记**（只画不拦时也需要），均 1 次查询。
     klines_map: dict = {}
     flow_pct_map: dict[str, float] = {}
+    vr_map: dict[str, float] = {}
     symbols = [str(it.get("symbol") or "") for it in board_items if it.get("symbol")]
     if (HOT_BEAUTY_GATE_ENABLED or TREND_MARK_ENABLED) and conn is not None:
         klines_map = get_cached_klines(conn, symbols)
     if conn is not None:
         flow_pct_map = get_fund_flow_pct_map(conn, symbols)
+        vr_map = _snapshot_vol_ratio_map(conn, symbols)
 
     # 「5日累计」需排除今日 bar（与主线「5日累计」列同口径），故取一次今日日期。
     # 与 scan_with_raw 同源（均为 now_beijing 的当日）；放在循环外，避免逐票重复求值。
@@ -429,6 +495,11 @@ def build_candidates(
             status=int(_num(q.get("status"), 1)),
             limit_up=limit_up,
             limit_down=limit_down,
+            # 量比（2026-10-08 修复 P1）：取自 fund_flow 快照，**必须在打分之前**赋值
+            # —— 否则 `score_volume` 走换手率单项回退，`HOT_W_VOLUME` 里量比占的
+            # 15 分永不参与排序。batch 行情结构上无此字段（见本模块 docstring
+            # 「数据源与补全分工」），故不能从 `q` 读。详见 `_snapshot_vol_ratio_map`。
+            volume_ratio=vr_map.get(symbol, 0.0),
         )
         # 资金流出：**门在通用门里**（2026-09-16 由原先此处那段
         # `ff_pct <= HOT_FUND_FLOW_FILTER_THRESHOLD` 独立判定并入，阈值仍派生自
@@ -607,7 +678,14 @@ def run_hot_watch(
         _safe_persist(conn, [])
         return []
 
-    # 仅对最终前 N 名补拉 detail（拿量比 / 真实涨跌停价）：1 请求/票，成本可控。
+    # 仅对最终前 N 名补拉 detail：**拿真实涨跌停价**（+ 量比展示精度）：1 请求/票。
+    #
+    # ⚠ 2026-10-08 修复 P1 后本块的职责**收窄**：排序所用的量比已在
+    #   `build_candidates` 里从 fund_flow 快照取好并算入分数，**不再依赖本块**。
+    #   下面这行 `c.volume_ratio = ...` 只影响**展示**（且只覆盖前 N 名），
+    #   发生在 `passed.sort(...)` 之后 ⇒ 对名次无影响。保留它是因为 detail 的
+    #   量比是雪球原值，比快照更贴近实时；混用两种来源的差异见
+    #   `_snapshot_vol_ratio_map` docstring 的「与 detail 补拉的关系」一节。
     if HOT_DETAIL_TOP > 0:
         fetch_detail = getattr(adapter, "fetch_hot_quote_detail", None)
         for c in passed[:HOT_DETAIL_TOP]:
@@ -620,7 +698,7 @@ def run_hot_watch(
                 continue
             if not detail:
                 continue
-            c.volume_ratio = _num(detail.get("volume_ratio"))
+            c.volume_ratio = _num(detail.get("volume_ratio")) or c.volume_ratio
             # 真实涨跌停价可用时覆盖推算值（仅用于展示口径校准，不回过头重判）
             real_up = _num(detail.get("limit_up"))
             real_down = _num(detail.get("limit_down"))
