@@ -458,7 +458,6 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                 short_term_list = res.short_term
                 all_gem = res.gem_stocks
                 filtered_large_cap = res.filtered_large_cap
-                current_quotes = res.current_quotes
                 # 各桶已在 scan_with_raw 内排序（new_face 用 candidates.new_face_sort_key，其余按 score 降序）
 
                 current_rank_map = {s.symbol: s.rank for s in all_gem}
@@ -475,17 +474,15 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                 # save_core_dips 单独落库）。复原见 git 51b80d8:unified_scanner.py。
                 save_recommendations(conn, new_faces, momentum + rebound_list + short_term_list)
 
-                # 为综合推荐补拉今日曾推荐但不在 current_quotes 中的票的实时行情
+                # 为综合推荐补拉今日所有推荐票的实时行情（全量刷新，防止 current_quotes 含陈旧缓存）
                 live_quotes: dict[str, dict] = {}
-                live_quotes.update(current_quotes)
                 today_recs: list[RecommendationRow] = []
                 today_syms: set[str] = set()
                 try:
                     today_recs = get_today_recommendations(conn)
                     today_syms = {r["symbol"] for r in today_recs}
-                    missing = list(today_syms - set(current_quotes.keys()))
-                    if missing:
-                        extra = adapter.fetch_market_caps_batch(missing)
+                    if today_syms:
+                        extra = adapter.fetch_market_caps_batch(list(today_syms))
                         for sym, d in extra.items():
                             # 行情降级条目（current<=0，如停牌/字段缺失被强转 0）不入
                             # live_quotes：0.00% 会被 mark_reversed 误当"已转负"、被
