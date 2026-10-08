@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from datetime import date as _date
 from typing import Sequence
 
 from scanner.config import (
@@ -58,7 +59,11 @@ from scanner.config import (
     ONBOARD_DISPLAY_TOP,
     now_beijing,
 )
-from scanner.db.queries import get_cached_klines, get_fund_flow_pct_map
+from scanner.db.queries import (
+    get_cached_klines,
+    get_fund_flow_pct_map,
+    get_market_extra_snapshot,
+)
 from scanner.hot_watch import is_hot_universe, is_st
 from scanner.models import KlineBar
 from scanner.offboard_watch import (
@@ -74,6 +79,55 @@ from scanner.utils import EXTERNAL_FAILURES, to_float
 logger = logging.getLogger(__name__)
 
 
+def _snapshot_vol_ratio_map(conn, symbols: Sequence[str]) -> dict[str, float]:
+    """全市场 fund_flow 快照 → `{symbol: vol_ratio}`（缺失/无该键则不出现）。
+
+    ## 为什么量比必须走这里，而不能走 `quotes`（2026-10-08 修复）
+
+    本段原先从 `quotes`（生产路径 = `api.fetch_hot_quotes_batch`）读量比，但该函数
+    只回传 `_HOT_QUOTE_FIELDS` 这 16 个字段，**其中没有 `volume_ratio`** ——
+    雪球的 `batch/quote.json` 批量接口不提供量比，只有单票 `quote.json?extend=detail`
+    才有（见 `api.fetch_hot_quote_detail` 的 docstring）。于是：
+
+        q.get("volume_ratio") -> None -> to_float(None, 0.0) -> **恒为 0.0**
+
+    而 `offboard_gate` 有 `volume_ratio < MOMENTUM_LAUNCH_VOL(1.5)` 硬门 ⇒
+    **全段候选 100% 被拒 ⇒ 本段恒定产出 0 行**。实测 `onboard_anomaly_log`
+    建表至今 0 行（2026-09-30 上线），确认这不是偶发而是结构性空转。
+
+    之所以一直没被发现：`tests/test_onboard_anomaly.py` 的 fixture **手工塞了**
+    `"volume_ratio": 2.0` 进 quotes dict，而真实生产通道永远不产出该键 ——
+    守卫绿灯、线上空转（AGENTS.md「避免空断言」纪律要防的正是这个）。
+
+    ## 修法与代价
+
+    改从 `market_extra_cache` 的 fund_flow 快照取量比 —— **与 B 段同源同键**
+    （`offboard_watch._snapshot_row_to_candidate` 读的也是 `payload["vol_ratio"]`），
+    实测该快照覆盖全市场 1412 只创业板、100% 带 `vol_ratio`，无额外请求成本。
+
+    ⚠ 与 B 段同款残留口径差：快照是「最近一次落库」的量比，可能滞后于实时价。
+      本段其余字段（现价/涨幅）仍走**实时** `quotes`，故「量比旧、价新」两种
+      时间戳并存。与 B 段一致，不假装没有 —— 彻底消除需为每票补 detail 接口
+      （1 请求/票），成本不可接受。
+    """
+    if conn is None or not symbols:
+        return {}
+    try:
+        snapshot = get_market_extra_snapshot(conn, "fund_flow")
+    except EXTERNAL_FAILURES as e:
+        logger.warning("榜内异动段量比快照取数失败（本段按无量比继续）: %s", e)
+        return {}
+    out: dict[str, float] = {}
+    for sym in symbols:
+        payload = snapshot.get(sym)
+        if not payload:
+            continue
+        vr = to_float(payload.get("vol_ratio"), None)
+        if vr is not None and vr > 0:
+            out[sym] = vr
+    return out
+
+
 def build_onboard_candidates(
     board_items: Sequence[dict],
     quotes: dict[str, dict],
@@ -86,16 +140,24 @@ def build_onboard_candidates(
     返回 (候选, 排除明细 [(symbol, 原因)])。明细只用于归因，不落库 —— 落库由
     `onboard_anomaly_log` 承担（只落**产出**行，与榜外段同款 observe-first 结构）。
 
-    零成本过滤前置：代码前缀（创业板）、A 段已展示、���日已推荐 —— 先滤再跑门，
+    零成本过滤前置：代码前缀（创业板）、A 段已展示、今日已推荐 —— 先滤再跑门，
     理由同 `offboard_watch.build_candidates`（门里有多个浮点比较，全榜跑一遍是浪费）。
 
     `exclude_symbols` 语义**双义**，调用方须明确：
       · A 段已展示的 symbol（避免同屏重复）
       · 今日已推荐票（与 v1 池选区 / 回捞区互斥，同 v1 回捞区先例）
+
+    ⚠ 量比来自 fund_flow 快照而非 `quotes`（2026-10-08 修复，理由见
+      `_snapshot_vol_ratio_map`）：`quotes` 结构上无 `volume_ratio`，读它恒得 0.0，
+      会让全段被 `offboard_gate` 的量比门拒掉 ⇒ 恒空。快照缺该票时量比留 0，
+      该票同样会被门拒（fail-closed，与「数据不足不产出」一致）。
     """
     skip = exclude_symbols or set()
     out: list[OffboardCandidate] = []
     rejects: list[tuple[str, str]] = []
+
+    # 量比一次性取数（快照覆盖全市场，1 次查询，与 B 段同源）。
+    vr_map = _snapshot_vol_ratio_map(conn, [str(it.get("symbol") or "") for it in board_items])
 
     for it in board_items:
         symbol = str(it.get("symbol") or "")
@@ -129,7 +191,7 @@ def build_onboard_candidates(
             current=to_float(q.get("current"), to_float(it.get("current"))) or 0.0,
             percent=to_float(q.get("percent"), to_float(it.get("percent"))) or 0.0,
             accum_5d=0.0,
-            volume_ratio=to_float(q.get("volume_ratio"), 0.0) or 0.0,
+            volume_ratio=vr_map.get(symbol, 0.0),
             main_pct=0.0,
             volume=to_float(q.get("volume"), 0.0) or 0.0,
             amount=to_float(q.get("amount"), 0.0) or 0.0,
@@ -156,7 +218,7 @@ def build_onboard_candidates(
             c.main_pct = flow_map.get(c.symbol, 0.0) or 0.0
             c.ff_pct = flow_map.get(c.symbol)
 
-    out.sort(key=lambda x: -x.volume_ratio)  # 决定 K 线取数与分层顺序
+    out.sort(key=lambda x: -x.volume_ratio)  # 决定 K 线取数与分层顺序（量比现为快照真值）
     return out, rejects
 
 
@@ -254,6 +316,15 @@ def run_onboard_anomaly(
 
     passed.sort(key=sort_key)
     persist_round(conn, passed, today)
+    # 顺手回填历史日的次日收益（与榜外段 `run_offboard_watch` 同一位置、同一理由）。
+    # 不放在这里的话，`onboard_anomaly_log.next_day_pct` 永远是 NULL ⇒ 本段
+    # **一行标签都没有** ⇒ 按本仓纪律「没有标签就没有任何阈值能被证伪」，
+    # 它连观察纪律都建立不起来（2026-10-08 修复：此前该回填无生产调用方）。
+    # 无待回填行时只是一条索引查询，代价可忽略。
+    try:
+        backfill_next_day_pct(conn)
+    except EXTERNAL_FAILURES as e:
+        logger.warning("榜内异动段次日收益回填失败（不影响本轮）: %s", e)
     top = passed[:top_n]
     _attach_boards(top, conn)
     return top
@@ -316,33 +387,102 @@ def persist_round(conn, rows: Sequence[OffboardCandidate], today: str) -> None:
         logger.warning("榜内异动段落库失败（不影响本轮展示）: %s", e)
 
 
-def backfill_next_day_pct(conn, daily_kline_rows: dict[str, tuple[float, float]]) -> int:
-    """用已知的次日开/收回填 `next_day_pct`，返回回填行数。
+def backfill_next_day_pct(conn, signal_date: str | None = None) -> int:
+    """回填 `onboard_anomaly_log.next_day_pct`（次日收益 %），返回**实际**回填行数。
 
-    入参 ``{symbol: (次日前收, 当日收盘)}`` —— **由调用方按日提供**，本模块不联网、
-    不自己取行情，与榜外段的 `backfill_next_day` 职责一致（取数在别处，标注在这里）。
+    口径与 `offboard_launch_log.next_day_pct` 对齐：``(次一交易日收盘 / 信号日收盘 - 1) × 100``。
 
-    口径与 `offboard_launch_log.next_day_pct` 对齐：``(次日收盘 / 当日收盘 - 1) × 100``。
+    ## 为什么重写（2026-10-08）
+
+    原实现要求调用方传入 ``{symbol: (次日前收, 当日收盘)}``，然后拿
+    **`now_beijing()` 当作 `WHERE date=?` 的值**去 UPDATE。三个问题：
+
+    1. **它没有任何生产调用方** —— 全仓只有 `tests/test_onboard_anomaly.py` 调它。
+       即 `next_day_pct` 永远不会被填 ⇒ 榜内异动段**永远没有标签** ⇒ 按本仓纪律
+       （「没有逐日表就没有标签，没有标签就没有任何阈值能被证伪」）该段**无法回测**。
+    2. **日期恒为今天**，所以只能更新「今天」的��。历史回放 / 隔日补数时，
+       UPDATE 命中 0 行，但函数仍 `return len(rows)` 报成功 —— **谎报回填数**。
+       `test_backfill_next_day_pct` 就是被这一点挡红的（写 `2026-09-30`、
+       按今天查 ⇒ 0 行，却返回 1）。
+    3. **无防呆**：没排除「下一根 bar 隔了整周」（停牌/长假），
+       也没排除「信号日 = 今天」（那样永远找不到次日 bar）。
+
+    ## 现实现：与榜外段 `offboard_watch.backfill_next_day` 同款
+
+    改成**自驱动**：查待回填行 → 从 `daily_kline` 取日线 → 找次一交易日 bar →
+    逐行 UPDATE。榜内票的日线本就在 `daily_kline`（本模块 docstring 已述），
+    故不需要榜外那套 `offboard_kline_cache`。
+
+    保留榜外段的两条防呆（docstring 见 `offboard_watch.backfill_next_day`）：
+      1. 次一 bar 与信号日相差 ≤4 个自然日（覆盖周末），否则跳过；
+      2. 信号日必须 `< today` —— 否则每轮都为当天信号去找「次日 bar」，
+         既永远找不到、又反复翻当天的 K 线。
+
+    `signal_date` 用于 CLI/回放指定某一天（与榜外段同名参数同义）。
     """
-    if conn is None or not daily_kline_rows:
+    if conn is None:
         return 0
     today = now_beijing().date().isoformat()
-    rows = []
-    for sym, (nxt_close, close) in daily_kline_rows.items():
-        if close and close > 0 and nxt_close and nxt_close > 0:
-            rows.append((round((nxt_close / close - 1.0) * 100.0, 2), today, sym))
+    sql = (
+        "SELECT date, symbol FROM onboard_anomaly_log "  # noqa: S608 - 常量表名 + 占位符
+        "WHERE next_day_pct IS NULL AND date < ?"
+    )
+    params: tuple = (today,)
+    if signal_date:
+        sql += " AND date = ?"
+        params = (today, signal_date)
+    try:
+        rows = conn.execute(sql, params).fetchall()
+    except EXTERNAL_FAILURES as e:
+        logger.warning("榜内异动段回填查询失败: %s", e)
+        return 0
     if not rows:
         return 0
-    try:
-        conn.executemany(
-            "UPDATE onboard_anomaly_log SET next_day_pct=? WHERE date=? AND symbol=?",
-            rows,
-        )
-        conn.commit()
-    except (sqlite3.Error, ValueError, KeyError) as e:
-        logger.warning("榜内异动段次日收益回填失败: %s", e)
-        return 0
-    return len(rows)
+
+    by_symbol: dict[str, list[str]] = {}
+    for d, sym in rows:
+        by_symbol.setdefault(sym, []).append(d)
+
+    filled = 0
+    now = now_beijing().isoformat(timespec="seconds")
+    for sym, dates in by_symbol.items():
+        bars = (get_cached_klines(conn, [sym]).get(sym)) or []
+        # ⚠ `get_cached_klines` 已按 `make_kline_bar` 契约剔除脏 bar（close<=0 / 日期非法），
+        #   故**信号日当天的 bar 可能根本不在 by_date 里** —— 必须用 `.get(d)` 而非
+        #   `by_date[d]`，否则脏 bar 直接把回填打成 KeyError 崩掉（2026-10-08 实测）。
+        by_date: dict[str, KlineBar] = {b["date"]: b for b in bars if b.get("date")}
+        for d in dates:
+            later = sorted(x for x in by_date if x > d)
+            if not later:
+                continue
+            nxt = later[0]
+            # 防呆 1：次一 bar 隔太久（停牌/长假）⇒ 不是「次日」，跳过。
+            try:
+                if (_date.fromisoformat(nxt) - _date.fromisoformat(d)).days > 4:
+                    continue
+            except ValueError:
+                continue
+            b0 = by_date.get(d)
+            b1 = by_date.get(nxt)
+            p0 = (to_float(b0.get("close"), 0.0) or 0.0) if b0 else 0.0
+            p1 = (to_float(b1.get("close"), 0.0) or 0.0) if b1 else 0.0
+            if p0 <= 0 or p1 <= 0:
+                continue
+            try:
+                conn.execute(
+                    "UPDATE onboard_anomaly_log SET next_day_pct=?, updated=? WHERE date=? AND symbol=?",
+                    (round((p1 / p0 - 1.0) * 100.0, 2), now, d, sym),
+                )
+            except EXTERNAL_FAILURES as e:
+                logger.warning("榜内异动段回填写入失败 %s %s: %s", d, sym, e)
+                continue
+            filled += 1
+    if filled:
+        try:
+            conn.commit()
+        except EXTERNAL_FAILURES as e:
+            logger.warning("榜内异动段回填提交失败: %s", e)
+    return filled
 
 
 __all__ = [
