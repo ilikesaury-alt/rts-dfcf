@@ -90,10 +90,13 @@ from scanner.config import (
     OFFBOARD_KLINE_DAYS,
     OFFBOARD_KLINE_FETCH_LIMIT,
     OFFBOARD_KLINE_WORKERS,
+    OFFBOARD_LIVE_QUOTE_LIMIT,
     OFFBOARD_MAIN_PCT_MIN,
     OFFBOARD_MIN_AMOUNT,
     OFFBOARD_MIN_FLOAT_CAP,
     OFFBOARD_OPENING_SILENCE_MIN,
+    OFFBOARD_PREFILTER_AMOUNT_RATIO,
+    OFFBOARD_PREFILTER_FLOAT_CAP_RATIO,
     OFFBOARD_T1_TODAY_MAX,
     OFFBOARD_T2_TODAY_MAX,
     TREND_MARK_ENABLED,
@@ -109,7 +112,7 @@ from scanner.hot_watch import is_hot_universe
 from scanner.models import make_kline_bar
 from scanner.trading_session import trading_minutes_elapsed
 from scanner.trend_beauty import DAILY_BEAUTY_MIN_BARS
-from scanner.utils import EXTERNAL_FAILURES, accum_5d, to_float
+from scanner.utils import EXTERNAL_FAILURES, accum_5d, is_st, to_float
 from scanner.validator import mo_divergence
 
 logger = logging.getLogger(__name__)
@@ -244,12 +247,111 @@ def offboard_gate(c: OffboardCandidate) -> str | None:
 # ── 候选构建（快照 → 榜外候选）────────────────────────────────────────────────
 
 
+# 实时报价 → 快照字段码的映射（`api._HOT_QUOTE_FIELDS` 的键 → `_FUND_FLOW_FIELDS` 的语义）。
+# 只映射**两源都有语义且都会展示/参与判定**的字段。两类字段**刻意不覆盖**：
+#   · `main_pct`（主力净占比）：雪球批量行情**不提供资金流**字段，整行替换会把它清零，
+#     进而让 T1/T2 的「主力净占比 ≥ 0」门恒过 —— 静默放宽信号门。故必须保留快照值。
+#   · `volume_ratio`（量比）：`batch/quote.json` **不提供**该字段（只有
+#     `quote.json?extend=detail` 单票接口才有，见 `api.fetch_hot_quote_detail`），
+#     故量比永远取自快照。它是 `sort_key` 的段内主键（见该函数 docstring），
+#     因此「排序用的量比可能是旧值」是本修复**未消除**的残留口径差，已在
+#     `run_offboard_watch` 的覆盖注释里显式标注。
+_LIVE_FIELD_MAP: tuple[tuple[str, str], ...] = (
+    # (实时报价键, 快照字段码)
+    ("current", "price"),
+    ("percent", "percent"),
+    ("volume", "volume"),
+    ("amount", "amount"),
+    ("turnover_rate", "turnover"),
+    ("market_capital", "total_cap"),
+    ("float_market_capital", "float_cap"),
+)
+
+
+def _apply_live_quote(payload: dict, quote: dict) -> bool:
+    """把**实时**报价就地覆盖进快照 payload，返回是否覆盖成功。
+
+    为什么需要（2026-10-08 修复）
+    --------------------------
+    本段的行情此前**只**来自 `market_extra_cache` 的当日快照，而该快照的写入侧
+    （`market_extra.collect_market_extra`）在全市场拉取**超时**时只落当轮候选那几十行
+    （`_last_ff_partial` 分支），其余 5000 行保持旧值；读侧 `get_market_extra_snapshot`
+    又**不过 TTL**。两者相乘的后果是：一只票只要没进过当轮候选，它的行就永久冻结在
+    上一轮成功拉取的时刻 —— 实测 300890 翔丰华在 13:40 显示的是 **11:29** 的
+    29.96/+3.74%，而实时价已是 29.20/+1.11%（同一时刻用户侧读到 29.17）。
+
+    本段的定位是「盘中异动」，门限（`MOMENTUM_LAUNCH_VOL=1.5`、T1/T2 涨幅带）全部按
+    **实时**价校准 —— 用冻结快照去判「量先动·价未动」本身自相矛盾。故在**判定之前**
+    用 `adapter.fetch_hot_quotes_batch` 补实时价，覆盖判定与展示共用的同一份数据
+    （口径自洽：判定即所见，不存在「判定用旧值、展示用新值」的漂移）。
+
+    覆盖是**逐字段**的（见 `_LIVE_FIELD_MAP` 的两类排除项），不是整行替换。
+
+    返回 False = 实时行情无该票/无有效字段，调用方保留快照值（fail-open）。
+    """
+    if not quote:
+        return False
+    applied = False
+    for q_key, snap_key in _LIVE_FIELD_MAP:
+        val = to_float(quote.get(q_key), None)
+        if val is not None and val > 0:
+            payload[snap_key] = val
+            applied = True
+    # 名称一并刷新（雪球批量行情带 name）：通用门的 ST 判定依赖名称，
+    # 用陈旧名称判 ST 与用陈旧价判涨幅是同一类错误。
+    nm = str(quote.get("name") or "").strip()
+    if nm:
+        payload["name"] = nm
+    return applied
+
+
+def _refresh_with_live_quotes(
+    adapter,
+    snapshot: dict[str, dict],
+    symbols: Sequence[str],
+) -> set[str]:
+    """对 `symbols` 补实时报价并就地覆盖 `snapshot`，返回成功覆盖的 symbol 集。
+
+    在**过门之前**调用，故 `symbols` 是「有机会过门」的集合而非最终展示的 TOP N ——
+    TOP N 是判定的产物（`sort_key` 依赖分层与量比），不可能先知道 TOP N 再拿实时价
+    去判定它。故调用方须**先用零成本的快照字段粗筛**出候选头部（见
+    `run_offboard_watch`），把请求量压到 1~2 个/轮：雪球 `batch/quote.json` 是
+    50 票/批（`api.fetch_hot_quotes_batch` 的 `batch_size`），实测创业板 1411 只
+    全量补需~29 请求/轮 —— 相对 60s 刷新周期不可接受，故必须粗筛。
+
+    fail-open：批量行情失败/返回空 → 返回空集，快照原样保留（本段退化为**旧口径**
+    而非整段消失）。这是刻意取舍：B 段的门限本按实时价校准，但宁可展示略旧的值，
+    也不要因为一次网络抖动让整段留空。
+    """
+    if not symbols:
+        return set()
+    fetch_batch = getattr(adapter, "fetch_hot_quotes_batch", None)
+    if fetch_batch is None:
+        return set()
+    try:
+        quotes = fetch_batch(list(symbols))
+    except EXTERNAL_FAILURES as e:
+        logger.warning("B 段实时行情补全失败（沿用快照值）: %s", e)
+        return set()
+    if not quotes:
+        return set()
+    ok: set[str] = set()
+    for sym, q in quotes.items():
+        payload = snapshot.get(sym)
+        if payload and _apply_live_quote(payload, q):
+            ok.add(sym)
+    return ok
+
+
 def _snapshot_row_to_candidate(symbol: str, payload: dict, names: dict[str, str]) -> OffboardCandidate:
     """全市场快照的一行 → `OffboardCandidate`（**未过门**）。
 
     字段名映射（东财 clist 字段码见 `market_extra._FUND_FLOW_FIELDS`）：
     price→现价、percent→今日涨幅、amount→成交额、float_cap→流通市值、
     total_cap→总市值、turnover→换手率、vol_ratio→量比、main_pct→主力净占比。
+
+    ⚠ `payload` 可能已被 `_apply_live_quote` 就地覆盖为实时值（见其docstring）——
+    本函数对「快照值」与「实时值」无感，同一套字段码解析，故覆盖对它是透明的。
     """
     code = code_of(symbol)
     return OffboardCandidate(
@@ -793,6 +895,43 @@ def run_offboard_watch(
     # （榜外 ≠ 从未上过榜）。名称不只用于展示 —— 通用门的 ST 判定依赖它。
     gem_offboard = [s for s, p in snapshot.items() if p and code_of(s).startswith(("300", "301"))]
     names = get_symbol_names(conn, gem_offboard)
+
+    # 🔴 实时价覆盖（2026-10-08）：**在过门之前**就地覆盖快照 —— 判定与展示共用同一份
+    # 数据，故口径自洽（判定即所见）。原因与实测见 `_apply_live_quote` docstring：
+    # 快照在拉取超时时只刷新当轮候选，其余行会永久冻结（300890 实测滞后 2h11m）。
+    #
+    # ⚠ 取数范围**不能**是全量 gem_offboard（实测 1411 只）：`batch/quote.json` 是
+    # 50 票/批，全量需 ~29 请求/轮，相对 60s 刷新周期不可接受。而 TOP N 是判定的
+    # **产物**（`sort_key` 依赖分层与量比），也不能反过来当取数范围。故先用**零成本的
+    # 快照字段**粗筛出「宽松过门」的候选头部再补实时价：
+    #   · 粗筛只保留「明显不可能被门拒掉」的票（成交额/流通市值/ST/涨幅带），
+    #     判**不完整**是故意的 —— 粗筛误纳的票补了实时价也仍会被精确门拒掉（只是白花
+    #     一个请求位），粗筛误删才会丢票，故各项一律取**比真门更宽**的阈值。
+    #   · 上限 `OFFBOARD_LIVE_QUOTE_LIMIT` 保证请求数有界（默认 100 ⇒ 2 请求/轮）。
+    #
+    # ⚠ 残留口径差（未消除）：`volume_ratio` 与 `main_pct` **恒取快照**（雪球批量行情
+    # 不提供，见 `_LIVE_FIELD_MAP`），而 `sort_key` 的段内主键正是量比 ⇒ 陈旧快照下
+    # 「排序用的量比」可能与实时不符。彻底消除需为每票补 detail 接口（1 请求/票），
+    # 成本不可接受，故显式记录而非假装没有。
+    prefilter = [
+        s
+        for s, p in ((s, snapshot[s]) for s in gem_offboard if snapshot.get(s))
+        if (
+            (to_float(p.get("amount"), 0.0) or 0.0) >= OFFBOARD_MIN_AMOUNT * OFFBOARD_PREFILTER_AMOUNT_RATIO
+            and (to_float(p.get("float_cap"), 0.0) or 0.0)
+            >= OFFBOARD_MIN_FLOAT_CAP * OFFBOARD_PREFILTER_FLOAT_CAP_RATIO
+            and not is_st(str(p.get("name") or names.get(s) or ""))
+            and HOT_MIN_PERCENT < (to_float(p.get("percent"), 0.0) or 0.0) <= OFFBOARD_T2_TODAY_MAX
+        )
+    ]
+    # 快照量比降序取头部（与 `build_candidates` 的候选排序同键，保证粗筛头部的选择
+    # 依据与真门的候选优先级一致 —— 否则会截掉真能过门的高量比票）。
+    prefilter.sort(key=lambda s: -(to_float(snapshot[s].get("vol_ratio"), 0.0) or 0.0))
+    live_ok = _refresh_with_live_quotes(adapter, snapshot, prefilter[:OFFBOARD_LIVE_QUOTE_LIMIT])
+    if live_ok:
+        # 覆盖后名称可能更新（`_apply_live_quote` 会刷 name），合并进names ——
+        # 通用门的 ST 判定与展示都读它。
+        names = {**names, **{s: snapshot[s]["name"] for s in live_ok if snapshot[s].get("name")}}
 
     cands, gate_rejects = build_candidates(snapshot, board_items, names, exclude_symbols)
     today = now_beijing().date().isoformat()

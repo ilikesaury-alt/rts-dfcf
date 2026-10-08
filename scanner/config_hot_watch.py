@@ -146,6 +146,20 @@ OFFBOARD_KLINE_DAYS = 60  # 单票取多少根日线
 OFFBOARD_KLINE_WORKERS = 8  # 补 K 线并发（实测 6→16 线程无收益，服务端受限）
 OFFBOARD_KLINE_FETCH_LIMIT = 80  # 单轮最多补 K 线的候选数（按量比降序取前 N）
 
+# ── B 段实时行情覆盖（2026-10-08）──
+# 背景：`market_extra_cache` 的当日快照在全市场拉取超时时只刷新当轮候选（见
+# `market_extra.collect_market_extra` 的 `_last_ff_partial` 分支），其余 5000 行
+# 冻结；读侧 `get_market_extra_snapshot` 又不过 TTL ⇒ 未进过当轮候选的票会一直显示
+# 旧价（实测 300890 滞后 2h11m）。修法是在**过门之前**用雪球批量行情补实时价。
+#
+# 为什么需要「粗筛 + 上限」而不是全量补：创业板 1411 只，`batch/quote.json` 是
+# 50 票/批（`api.fetch_hot_quotes_batch`）⇒ 全量需 ~29 请求/轮，60s 刷新周期扛不住。
+# 粗筛用**比真门更宽**的阈值先滤掉「明显过不了门」的票（误纳只是白花请求位，误删
+# 才丢票），再按量比降序截断。两个 RATIO 必须 ≤ 1.0 —— >1 会把真能过门的票滤掉。
+OFFBOARD_LIVE_QUOTE_LIMIT = 100  # 单轮最多补实时价的候选数（50 票/批 ⇒ 2 请求/轮）
+OFFBOARD_PREFILTER_AMOUNT_RATIO = 0.8  # 粗筛成交额阈值 = 真门 × 本系数
+OFFBOARD_PREFILTER_FLOAT_CAP_RATIO = 0.8  # 粗筛流通市值阈值 = 真门 × 本系数
+
 # ── 「板块」列的 F10 概念补拉开关（2026-09-22）──
 # 两段行新增「板块」列，取值回退链见 `concept.display_board_map`（与 v1 池选的
 # `_entry_sector` 同一批数据源）。②级读 concept_cache —— 而那张表由主线的
@@ -216,6 +230,9 @@ __all__ = [
     "OFFBOARD_KLINE_DAYS",
     "OFFBOARD_KLINE_WORKERS",
     "OFFBOARD_KLINE_FETCH_LIMIT",
+    "OFFBOARD_LIVE_QUOTE_LIMIT",
+    "OFFBOARD_PREFILTER_AMOUNT_RATIO",
+    "OFFBOARD_PREFILTER_FLOAT_CAP_RATIO",
     "OFFBOARD_BOARD_FETCH",
     "ONBOARD_ANOMALY_ENABLED",
     "ONBOARD_DISPLAY_TOP",
