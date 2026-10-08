@@ -92,7 +92,7 @@ def _rec_rank(scans: list[tuple[str, dict[str, int]]], sym: str, rec_time: str) 
 def _core_pullback_state(conn: sqlite3.Connection, dt: str, syms: list[str]) -> dict[str, str]:
     """核心股 T-1 距20日高点回撤分型 {sym: cb|shallow|no_kline|non_core}。
 
-    与 display._cb_core_pullback_ok 同窗口 [CORE_PULLBACK_MIN, CORE_PULLBACK_MAX]，
+    与（已删除的）display._cb_core_pullback_ok 同窗口 [CORE_PULLBACK_MIN, CORE_PULLBACK_MAX]，
     但用 daily_kline 目标日之前的 bar 重算（缓存含未来 bar，必须裁剪防泄漏）。
     """
     cores = core_stock_symbols(conn, today=dt)

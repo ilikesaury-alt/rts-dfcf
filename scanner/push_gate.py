@@ -73,6 +73,11 @@ from scanner.config import (
     PUSH_TIER_B_MIN,
     RISK_FLAGS_DISPLAY_HARD,
 )
+
+# is_fund_outflow（2026-10-08 修复 L2）：资金流出否决的单源判定 —— 与 assemble 的
+# 展示层硬门同一条回退链（行内 dims/score_breakdown → flow_pct_map 快照）。此前本模块
+# 只查 flow_pct_map，行内 dims 判出流出但快照缺行时会漏否决（终端剔了、推送放行的分叉）。
+from scanner.ranking import is_fund_outflow
 from scanner.utils import to_float
 
 TIER_A = "A"
@@ -227,20 +232,36 @@ def _candidate_of(entry):
 
 
 def gate_main_rows(view) -> tuple[list, GateStats]:
-    """v1 池选：兜底条件 = 榜内排名 ≤ PUSH_FALLBACK_MAX_RANK（rank 缺失 → 不兜底）。"""
+    """v1 池选：兜底条件 = 榜内排名 ≤ PUSH_FALLBACK_MAX_RANK（rank 缺失 → 不兜底）。
+
+    资金流出否决（2026-10-08 修复 L2）：先走 `ranking.is_fund_outflow` 单源（与
+    assemble 展示层硬门同一条回退链），命中即计否决并跳过 `_gate_one` —— `_gate_one`
+    内部的 ff_pct 快照判定保留作第二道防线，但不会重复计数（能走到它说明单源未判流出）。
+
+    过热否决输入（2026-10-08 修复 L3）：`accum_hist`（历史 5 日累计，排除今日）优先，
+    缺失才回退 `row.accum` —— `accum` 对 short_term 行含今日（策略语义），直接与
+    `OVERHEAT_ACCUM_MAX`（历史口径阈值）比较会系统性偏严一档。
+    """
     stats = GateStats()
     kept = []
+    flow_map = getattr(view, "flow_pct_map", None) or {}
     for row in getattr(view, "main_rows", None) or []:
         entry = row.entry
+        # 单源否决（L2）：与 assemble 同一判定，含行内 dims 回退链。
+        if is_fund_outflow(entry, flow_map):
+            stats.total += 1
+            stats.vetoed += 1
+            continue
         cand = _candidate_of(entry)
         rank = to_float(row.rank, default=None)
         fb = rank is not None and rank <= PUSH_FALLBACK_MAX_RANK
         cat = entry.get("category") if isinstance(entry, dict) else getattr(entry, "category", None)
+        accum_veto = row.accum_hist if getattr(row, "accum_hist", None) is not None else row.accum
         if _gate_one(
             stats,
             cat,
-            accum_5d=row.accum,
-            ff_pct=(getattr(view, "flow_pct_map", None) or {}).get(entry.get("symbol")),
+            accum_5d=accum_veto,
+            ff_pct=flow_map.get(entry.get("symbol")),
             risk_flags=getattr(cand, "risk_flags", None),
             fallback_ok=fb,
         ):

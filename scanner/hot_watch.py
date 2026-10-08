@@ -454,13 +454,16 @@ def build_candidates(
     passed: list[HotCandidate] = []
     rejected: list[HotCandidate] = []
 
-    # 预批量取数：K 线供美感门/美感标记（门或标记任一开启就需要），
-    # 资金流供资金流门/**标记**（只画不拦时也需要），均 1 次查询。
+    # 预批量取数：K 线供「美感门 / 美感标记 / 5日累计」三者（2026-10-08 修复 M3：
+    # 取数条件与美感开关**解耦** —— accum_5d 也从这里算，若仅在美感门或标记开启时
+    # 取数，两开关全关的配置下 accum_5d 恒 None，5日累计列全为 —，且 push_gate 的
+    # 过热否决（读 accum_5d）对 A 段整段静默失效）；资金流供资金流门/**标记**
+    # （只画不拦时也需要），均 1 次查询。
     klines_map: dict = {}
     flow_pct_map: dict[str, float] = {}
     vr_map: dict[str, float] = {}
     symbols = [str(it.get("symbol") or "") for it in board_items if it.get("symbol")]
-    if (HOT_BEAUTY_GATE_ENABLED or TREND_MARK_ENABLED) and conn is not None:
+    if conn is not None:
         klines_map = get_cached_klines(conn, symbols)
     if conn is not None:
         flow_pct_map = get_fund_flow_pct_map(conn, symbols)
@@ -639,13 +642,26 @@ def run_hot_watch(
       - detail 补拉失败 → 量比留 0（表格显示 —），排除与排序不受影响；
       - 连击落库失败 → 本轮仍返回结果（连击退化为 1，不丢主功能）。
     异常由调用方（unified_scanner 交易分支）兜底，本函数不吞编程错误。
+
+    连击边界（2026-10-08 修复 L1b）：榜单为空（熔断）与预筛全灭的轮**同样推进轮次并
+    清零连击**（`_safe_persist(conn, [])`），与下方「全员被排除」分支同语义 —— 否则
+    数据缺口两端的命中会被误读为连续命中，push_gate 兜底通道（streak ≥ 3）证据失真。
+
+    样本域口径声明（L8）：本区**不**排除今日已推荐票（`today_syms`）—— 与 B 段 /
+    回捞区 / 榜内异动段的互斥口径不同，这是**有意的**：A 段与 v1 池选是「同一批榜上
+    票的两个观察视角」（v1 看策略形态、A 段看热度跃升），同票同屏属预期而非重复。
+    若要改为互斥，须在调用方传 exclude 集并重新评估同屏信息量。
     """
     if not board_items:
+        # 空榜（熔断）轮也推进轮次并清零连击（2026-10-08 修复 L1b，理由见 docstring）。
+        _safe_persist(conn, [])
         return []
 
     prelim = prefilter_board(board_items)
     targets = prelim[:HOT_ENRICH_LIMIT]
     if not targets:
+        # 预筛全灭（全 ST / 全非创业板 / 全未上涨）= 本区无人命中，同语义打断连击链。
+        _safe_persist(conn, [])
         return []
 
     symbols = [str(t.get("symbol") or "") for t in targets if t.get("symbol")]
@@ -727,6 +743,12 @@ def _safe_persist(conn, all_hits: Sequence[HotCandidate]) -> None:
 
     update_streaks 直接写回 all_hits 各元素的 streak 字段，故调用方随后读
     top（all_hits 前缀切片）即可拿到正确的连击数，无需二次映射。
+
+    2026-10-08 修复 L1a：失败路径显式 `rollback`。`_next_round` 先自增轮号（未
+    commit），若 `update_streaks` 中途抛异常而不回滚，未提交的轮号自增会留在事务里
+    并最终被后续无关 commit 带入 —— 轮号已进、连击未写 ⇒ 下一轮
+    `prev_round == round_no - 1` 不成立，**全部存量连击归 1**（push_gate 兜底通道
+    的 streak ≥ 3 证据链随之断裂）。回滚后轮号恢复原值，下一轮重算，语义自洽。
     """
     if conn is None:
         return
@@ -737,6 +759,10 @@ def _safe_persist(conn, all_hits: Sequence[HotCandidate]) -> None:
         conn.commit()
     except EXTERNAL_FAILURES as e:
         logger.warning("hot_watch 连击落库失败（本轮结果不受影响）: %s", e)
+        try:
+            conn.rollback()
+        except EXTERNAL_FAILURES:
+            pass
 
 
 # ── 独立运行 CLI（python -m scanner.hot_watch）───────────────────────────────

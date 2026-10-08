@@ -592,6 +592,12 @@ class MainRow:
     # ⚠ 刻意**不叫** `is_new`：`new_face` 是「过去 N 天未出现」的**策略桶**，与本字段
     # （本轮新进池，不看历史）是两回事，同名会让人误以为二者同源。
     is_new_entry: bool = False
+    # 历史 5 日累计（排除今日，`build_accum_map` 单源；2026-10-08 修复 L3 新增）。
+    # 与 `accum` 的区别：`accum` 优先取候选引擎的 `kline.accumulated_pct`，short_term
+    # 桶按策略语义**含今日**；push_gate 的过热否决阈值（OVERHEAT_ACCUM_MAX）定义在
+    # 历史 5 日累计口径上 —— 否决输入必须用本字段（缺失时才回退 accum），否则
+    # short_term 行的过热判定系统性偏严一档。展示列仍读 accum，不受影响。
+    accum_hist: float | None = None
 
 
 @dataclass

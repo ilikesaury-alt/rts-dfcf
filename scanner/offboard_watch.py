@@ -97,6 +97,7 @@ from scanner.config import (
     OFFBOARD_OPENING_SILENCE_MIN,
     OFFBOARD_PREFILTER_AMOUNT_RATIO,
     OFFBOARD_PREFILTER_FLOAT_CAP_RATIO,
+    OFFBOARD_PREFILTER_PCT_BUFFER,
     OFFBOARD_T1_TODAY_MAX,
     OFFBOARD_T2_TODAY_MAX,
     TREND_MARK_ENABLED,
@@ -501,8 +502,12 @@ def classify_tier(
         # 「T2 几乎不产出」的前提上，MA 放宽后前提失效（见 config_hot_watch）。
         if c.main_pct < OFFBOARD_MAIN_PCT_MIN:
             return None, f"主力净占比{c.main_pct:+.2f}%<{OFFBOARD_MAIN_PCT_MIN:g}"
-        closes = [to_float(k.get("close"), 0.0) or 0.0 for k in klines]
-        div, div_detail = mo_divergence(closes, klines)
+        # 顶背离（2026-10-08 修复 M2）：与 MA 判据同一口径，吃**剔除今日**后的序列。
+        # 此前吃含今日的 klines —— K 线池末根是当日盘中 bar（当日一次性抓取、全天不更新），
+        # 拿它当「今日收盘」判背离会让判定随抓取时刻随机化（早盘抓的票全天用早盘价）。
+        # MA 门已保证此时 len(hist) ≥ 20 > mo_divergence 的 15 根下限，不会退化成 data_short。
+        closes = [to_float(k.get("close"), 0.0) or 0.0 for k in hist]
+        div, div_detail = mo_divergence(closes, hist)
         if div == V_MO_DIVERGENCE_BEAR:
             return None, f"顶背离({div_detail})"
         return T2, f"启动首日(累计{accum:+.2f}% 今日{c.percent:+.2f}% 量比{c.volume_ratio:.2f})"
@@ -529,8 +534,9 @@ def _exclude_today(klines: list | None, today: str) -> list:
     它不是「已收盘的历史」：拿它算 MA 会用还在变的收盘价判趋势，且判定随盘中漂移。
     MA 判据（T1/T2 两侧）都须先过本函数；`accum_5d` 内部自行剔除，不必再包。
 
-    ⚠ `mo_divergence`（顶背离）**未**改口径：它同时吃 closes 与 klines，
-    改动需单独评估，不在本次 MA 修复范围内。
+    2026-10-08 修复 M2：`mo_divergence`（顶背离）与美感标记也已切换到本函数的
+    剔除口径 —— 此前顶背离吃含今日的 klines（K 线池末根是当日盘中 bar，当日一次
+    抓取全天不更新），判定随抓取时刻漂移；美感标记同理。
     """
     if not klines:
         return []
@@ -585,7 +591,10 @@ def annotate(
         c.reasons = [why]
         return None
     c.tier = tier
-    blocked, mark, detail = beauty_marks_daily(klines)
+    # 美感标记（2026-10-08 修复 M2）：与 MA/顶背离同口径，吃剔除今日后的序列 ——
+    # K 线池末根是当日盘中 bar（当日一次性抓取、全天不更新），拿它当「今日收盘」
+    # 判美感会随抓取时刻漂移。本区美感只作标记不作门，偏差只影响展示列。
+    blocked, mark, detail = beauty_marks_daily(_exclude_today(klines, today))
     c.beauty = mark if TREND_MARK_ENABLED else ""
     c.reasons = [why] + ([f"美感:{detail}"] if blocked else [])
     return tier
@@ -923,11 +932,17 @@ def run_offboard_watch(
     #     判**不完整**是故意的 —— 粗筛误纳的票补了实时价也仍会被精确门拒掉（只是白花
     #     一个请求位），粗筛误删才会丢票，故各项一律取**比真门更宽**的阈值。
     #   · 上限 `OFFBOARD_LIVE_QUOTE_LIMIT` 保证请求数有界（默认 100 ⇒ 2 请求/轮）。
+    #   · 涨幅带同样加缓冲（2026-10-08 修复 H1）：粗筛读的是**快照** percent，快照可
+    #     滞后 2h+，一只票快照时在带外、实时已进带（恰恰是「价刚启动」的目标票）会
+    #     拿不到实时价补全而被系统性漏掉 —— 与两个 RATIO 同一「宽于真门」原则。
+    #     下限与 0.0 取 max：非上涨的票不可能是 T1/T2 候选，不值得花请求位。
     #
     # ⚠ 残留口径差（未消除）：`volume_ratio` 与 `main_pct` **恒取快照**（雪球批量行情
     # 不提供，见 `_LIVE_FIELD_MAP`），而 `sort_key` 的段内主键正是量比 ⇒ 陈旧快照下
-    # 「排序用的量比」可能与实时不符。彻底消除需为每票补 detail 接口（1 请求/票），
-    # 成本不可接受，故显式记录而非假装没有。
+    # 「排序用的量比」可能与实时不符（还会把实时高量比票挤出补价头部）。彻底消除需为
+    # 每票补 detail 接口（1 请求/票），成本不可接受，故显式记录而非假装没有。
+    _pct_low = max(0.0, HOT_MIN_PERCENT - OFFBOARD_PREFILTER_PCT_BUFFER)
+    _pct_high = OFFBOARD_T2_TODAY_MAX + OFFBOARD_PREFILTER_PCT_BUFFER
     prefilter = [
         s
         for s, p in ((s, snapshot[s]) for s in gem_offboard if snapshot.get(s))
@@ -936,7 +951,7 @@ def run_offboard_watch(
             and (to_float(p.get("float_cap"), 0.0) or 0.0)
             >= OFFBOARD_MIN_FLOAT_CAP * OFFBOARD_PREFILTER_FLOAT_CAP_RATIO
             and not is_st(str(p.get("name") or names.get(s) or ""))
-            and HOT_MIN_PERCENT < (to_float(p.get("percent"), 0.0) or 0.0) <= OFFBOARD_T2_TODAY_MAX
+            and _pct_low < (to_float(p.get("percent"), 0.0) or 0.0) <= _pct_high
         )
     ]
     # 快照量比降序取头部（与 `build_candidates` 的候选排序同键，保证粗筛头部的选择
@@ -950,6 +965,14 @@ def run_offboard_watch(
 
     cands, gate_rejects = build_candidates(snapshot, board_items, names, exclude_symbols)
     today = now_beijing().date().isoformat()
+
+    # 次日收益回填（2026-10-08 修复 L5）：移到「本轮是否产出」的所有提前返回**之前**
+    # —— 原先 `not cands` / 零候选轮会跳过回填，长期零产出的交易日标签停积，与
+    # 「影子期样本必须有标签」的目标相悖。无待回填行时只是一条索引查询，代价可忽略。
+    try:
+        backfill_next_day(conn, adapter)
+    except EXTERNAL_FAILURES as e:
+        logger.warning("B段次日收益回填失败（不影响本轮）: %s", e)
 
     # 拒绝留痕（2026-09-22 / 迁移 m017）：gate 段的 rejects 原先被 `_rejects` 丢弃、
     # 分层段的理由只写进 `c.reasons` 就地消失 ⇒ 只剩幸存者样本，任何阈值调整无从证伪。
@@ -973,12 +996,7 @@ def run_offboard_watch(
 
     passed.sort(key=sort_key)
     persist_round(conn, passed)
-    # 顺手回填历史日的次日收益（无待回填行时只是一条索引查询）。不放在这里的话，
-    # 影子期的样本永远没有标签，验收（§5.3）就无从谈起。
-    try:
-        backfill_next_day(conn, adapter)
-    except EXTERNAL_FAILURES as e:
-        logger.warning("B段次日收益回填失败（不影响本轮）: %s", e)
+    # （回填已前移至 build_candidates 之后：零候选轮也执行，见上方 L5 注释。）
 
     top = passed[:top_n]
     # 板块列（2026-09-22）：只对最终展示行取值 —— ②级 F10 补拉的量因此被压到

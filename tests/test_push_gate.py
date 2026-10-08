@@ -136,6 +136,10 @@ def test_veto_boundaries(ff, accum, expect_pass):
 def test_risk_hard_flags_veto():
     class C:
         risk_flags = ["超买"]  # ∈ RISK_FLAGS_DISPLAY_HARD
+        # 2026-10-08：gate_main_rows 的资金流出否决走 is_fund_outflow 单源后，
+        # 会经 entry_dims → fresh_candidate 读候选的 kline —— 桩必须带 kline=None
+        # （真实 Candidate 恒有该属性；None 走 DB score_breakdown 回退）。
+        kline = None
 
     r = _row("rebound")
     r.entry["_candidate"] = C()
@@ -143,6 +147,7 @@ def test_risk_hard_flags_veto():
     # 软信号不否决
     class C2:
         risk_flags = ["小板块共振"]  # ∉ RISK_FLAGS_DISPLAY_HARD
+        kline = None
 
     r2 = _row("rebound")
     r2.entry["_candidate"] = C2()

@@ -3,8 +3,6 @@ import statistics
 from scanner.config import (
     CAT_DISPLAY_PRIORITY,
     CORE_DIP_CATEGORY,
-    CORE_PULLBACK_MAX,
-    CORE_PULLBACK_MIN,
     DISPLAY_MAX_TODAY_PCT,
     FUND_FLOW_HARD_FILTER_ENABLED,
     GUXING_ENABLED,
@@ -365,16 +363,8 @@ def build_scan_view(
     #     正是它把 rank17 的义翘神州排在 rank43 的威尔高之前，并让这两只排在资金流更优的
     #     ▲▲ 行之前（纯排名假设无法解释该顺序）。
     #   · 形态加分该轮全 0，属稀有 tie-breaker（故不入终端标题）。
-    def _cb_core_pullback_ok(sym: str, rec_date: str = "") -> bool:
-        kl = breakout_kmap.get((sym, rec_date))
-        if not kl or len(kl) < 20:
-            return False
-        h20 = max(b[1] for b in kl[-20:])
-        t1_close = kl[-1][2]
-        if h20 <= 0 or t1_close <= 0:
-            return False
-        pb = t1_close / h20 - 1.0
-        return CORE_PULLBACK_MIN <= pb <= CORE_PULLBACK_MAX
+    # 2026-10-08 L6 清理：此处原有的 `_cb_core_pullback_ok`（核心回撤窗判定）为死代码
+    # ——定义后无任何调用方（其唯一潜在消费方「回马枪桶」已于 2026-09-16 删除），整段移除。
 
     _stg_map = {
         "rebound": "RBD",
@@ -424,7 +414,11 @@ def build_scan_view(
             # 理由见本函数 docstring 的 new_symbols 段（time 会被提分覆盖）。
             # new_symbols 缺省/空 ⇒ 本键恒 1 ⇒ 键序完全还原，输出逐字节不变。
             _is_new_key = 0 if (new_symbols and sym in new_symbols) else 1
-            _rk = e.get("live_rank") or e.get("rank")
+            # 与展示列同款 None 检查（2026-10-08 L6）：`or` 会把 live_rank=0 静默回退
+            # 到 rank —— 0 不是合法排名，缺失就该按缺失走 99999 兜底。
+            _rk = e.get("live_rank")
+            if _rk is None:
+                _rk = e.get("rank")
             _rank_key = _rk if isinstance(_rk, (int, float)) and _rk > 0 else 99999
             _flow = entry_fund_flow_pct(e, flow_pct_map)
             _fund_key = _flow if _flow is not None else 0.0
@@ -440,7 +434,9 @@ def build_scan_view(
         # 跨行复用会把上一只票的行情安到本行。
         for _ink, _cat_pri, _rank_key, _neg_fund, _neg_dip, _e, _ic, _av, _sc, _cs in _scored_rows:
             _fresh_c = fresh_candidate(_e)
-            _rk_disp = _e.get("live_rank") or _e.get("rank")
+            _rk_disp = _e.get("live_rank")
+            if _rk_disp is None:
+                _rk_disp = _e.get("rank")
             if _rk_disp is None and _fresh_c:
                 _rk_disp = _fresh_c.stock.rank
             _rk_val = _rk_disp if isinstance(_rk_disp, (int, float)) and _rk_disp > 0 else None
@@ -450,6 +446,8 @@ def build_scan_view(
                     entry=_e,
                     rank=_rk_val,
                     accum=_av,
+                    # 历史 5 日累计（排除今日）：push_gate 过热否决的输入（L3）。
+                    accum_hist=accum_map.get(_e["symbol"]),
                     score=_sc or 0,
                     composite_score=_cs,
                     core=_ic,

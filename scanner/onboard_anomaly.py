@@ -50,7 +50,6 @@ T2「启动首日」的下沿是 `MOMENTUM_LAUNCH_TODAY_MIN`(3.5%)，语义是�
 from __future__ import annotations
 
 import logging
-import sqlite3
 from datetime import date as _date
 from typing import Sequence
 
@@ -64,6 +63,7 @@ from scanner.db.queries import (
     get_fund_flow_pct_map,
     get_market_extra_snapshot,
 )
+from scanner.display_gates import code_of
 from scanner.hot_watch import is_hot_universe, is_st
 from scanner.models import KlineBar
 from scanner.offboard_watch import (
@@ -226,11 +226,12 @@ def _board_is_chinext(it: dict) -> bool:
     """榜单行是不是创业板（300/301）——用于补行情前的前置过滤。
 
     与 `build_onboard_candidates` 里的判断同源（代码前缀 + `is_hot_universe`）。
-    这里只看代码前缀：报价行上的 `exchange` 在预筛阶段可能缺失，而代码前缀
-    对本系统监控池（只含 300/301）是充分的。
+    2026-10-08 修复 L4：原先用子串匹配（`"300" in code`），会把 002300 这类
+    **代码中段恰好含 "300"** 的主板票误纳进预筛（白花一个请求位）；改为剥前缀后
+    `startswith` 精确判定，与同文件 `build_onboard_candidates` 的口径一致。
     """
-    code = str(it.get("code") or it.get("symbol") or "")
-    return "300" in code or "301" in code
+    code = code_of(str(it.get("code") or it.get("symbol") or ""))
+    return code.startswith(("300", "301"))
 
 
 def run_onboard_anomaly(
@@ -383,7 +384,10 @@ def persist_round(conn, rows: Sequence[OffboardCandidate], today: str) -> None:
             data,
         )
         conn.commit()
-    except (sqlite3.Error, ValueError, KeyError) as e:
+    except EXTERNAL_FAILURES as e:
+        # 2026-10-08 修复 L7：与全仓失败纪律对齐（原为 (sqlite3.Error, ValueError,
+        # KeyError) —— KeyError 属「响应结构」类数据异常，EXTERNAL_FAILURES 已覆盖；
+        # 收窄后编程错误（TypeError/AttributeError 等）照旧冒泡，不再被吞成一行告警）。
         logger.warning("榜内异动段落库失败（不影响本轮展示）: %s", e)
 
 

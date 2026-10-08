@@ -159,6 +159,16 @@ OFFBOARD_KLINE_FETCH_LIMIT = 80  # 单轮最多补 K 线的候选数（按量比
 OFFBOARD_LIVE_QUOTE_LIMIT = 100  # 单轮最多补实时价的候选数（50 票/批 ⇒ 2 请求/轮）
 OFFBOARD_PREFILTER_AMOUNT_RATIO = 0.8  # 粗筛成交额阈值 = 真门 × 本系数
 OFFBOARD_PREFILTER_FLOAT_CAP_RATIO = 0.8  # 粗筛流通市值阈值 = 真门 × 本系数
+# 涨幅带粗筛缓冲（2026-10-08 修复 H1）：粗筛涨幅带 = 真带 ± 本缓冲（pp）。
+# 真带是 `(HOT_MIN_PERCENT, OFFBOARD_T2_TODAY_MAX]`，而粗筛读的是**快照** percent ——
+# 快照可滞后 2h+（见上方背景），一只票快照时在带外、实时已进带（恰恰是「价刚启动」
+# 的目标票）会拿不到实时价补全而被系统性漏掉。误纳方向只是白花一个请求位，误删才
+# 丢票，故与两个 RATIO 同一「宽于真门」原则给涨幅带加缓冲。下限再与 0.0 取 max：
+# 非上涨的票不可能是 T1/T2 候选，不值得花请求位。
+# ⚠ 残留：缓冲只覆盖 ~1-2h 的典型漂移，漂移超过缓冲的票仍会漏（彻底消除需全量补价，
+#   ~29 请求/轮不可接受）。粗筛排序键 vol_ratio 同为快照值，陈旧量比会把「实时高量比」
+#   票挤出 OFFBOARD_LIVE_QUOTE_LIMIT 头部 —— 同根残留，显式记录。
+OFFBOARD_PREFILTER_PCT_BUFFER = 2.0  # 粗筛涨幅带 = 真带 ± 本缓冲（百分点）
 
 # ── 「板块」列的 F10 概念补拉开关（2026-09-22）──
 # 两段行新增「板块」列，取值回退链见 `concept.display_board_map`（与 v1 池选的
@@ -233,6 +243,7 @@ __all__ = [
     "OFFBOARD_LIVE_QUOTE_LIMIT",
     "OFFBOARD_PREFILTER_AMOUNT_RATIO",
     "OFFBOARD_PREFILTER_FLOAT_CAP_RATIO",
+    "OFFBOARD_PREFILTER_PCT_BUFFER",
     "OFFBOARD_BOARD_FETCH",
     "ONBOARD_ANOMALY_ENABLED",
     "ONBOARD_DISPLAY_TOP",
