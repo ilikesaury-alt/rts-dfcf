@@ -47,6 +47,7 @@ from scanner.offboard_watch import (
     T1,
     T2,
     OffboardCandidate,
+    _apply_live_fund_flow,
     _clean_bars,
     _read_cached_klines,
     _save_klines,
@@ -1167,6 +1168,85 @@ def test_run_offboard_watch_never_touches_mainline_tables(db):
     )
     assert len(rows) == 1
     assert db.execute("SELECT COUNT(*) FROM recommendations").fetchone()[0] == 0
+
+
+# ── M1 实时资金流覆盖（2026-10-08）──────────────────────────────────────────
+
+
+def test_apply_live_fund_flow_overrides_and_fails_open():
+    """新鲜 main_pct 覆盖快照；缺行/缺字段/空 ff 保留快照值（fail-open）。"""
+    snap = {
+        "SZ300101": {"main_pct": -9.0, "price": 10.0},
+        "SZ300102": {"main_pct": 1.0},
+        "SZ300103": None,  # 脏行跳过
+    }
+    ff = {"300101": {"main_pct": 3.2}, "300102": {}}  # 300102 无 main_pct 字段
+    n = _apply_live_fund_flow(snap, ff)
+    assert n == 1
+    assert snap["SZ300101"]["main_pct"] == pytest.approx(3.2)
+    assert snap["SZ300102"]["main_pct"] == pytest.approx(1.0)  # 保留快照
+    assert _apply_live_fund_flow(snap, {}) == 0
+
+
+def test_run_offboard_watch_injected_snapshot_skips_live_fund_flow(db, monkeypatch):
+    """snapshot 注入路径（测试/离线/CLI）**不得**触发实时资金流补拉（零联网纪律）。"""
+
+    def _boom():
+        raise AssertionError("snapshot 注入路径不应调用 fetch_fund_flow_rank")
+
+    monkeypatch.setattr("scanner.offboard_watch.fetch_fund_flow_rank", _boom)
+    day = now_beijing().date().isoformat()
+    rows = run_offboard_watch(
+        None,
+        db,
+        [],
+        top_n=5,
+        klines={"SZ300101": _bars(_UP_SERIES, day)},
+        snapshot={"SZ300101": _payload(vol_ratio=1.6, percent=2.5, main_pct=2.0)},
+    )
+    assert len(rows) == 1
+
+
+def test_run_offboard_watch_db_path_applies_live_fund_flow(db, monkeypatch):
+    """DB 快照路径（生产主循环）：T1/T2 门与产出行的 main_pct 用实时覆盖值。
+
+    快照里 main_pct=-9.0（陈旧，本会被主力净流出门拒掉），实时为 +5.5 ——
+    修复后应放行且产出行携带新鲜值。这正是 M1 描述的「应拒的票被静默放行 /
+    应过的票被静默拒掉」双向修正的后者。
+    """
+    day = now_beijing().date().isoformat()
+    sym = "SZ300101"
+    db.execute(
+        "INSERT INTO market_extra_cache VALUES (?,?,?,?)",
+        (sym, "fund_flow", day, json.dumps(_payload(vol_ratio=1.6, percent=2.5, main_pct=-9.0))),
+    )
+    db.commit()
+    monkeypatch.setattr(
+        "scanner.offboard_watch.fetch_fund_flow_rank",
+        lambda: {"300101": {"main_pct": 5.5}},
+    )
+    rows = run_offboard_watch(None, db, [], top_n=5, klines={sym: _bars(_UP_SERIES, day)})
+    assert len(rows) == 1
+    assert rows[0].main_pct == pytest.approx(5.5)
+
+
+def test_run_offboard_watch_db_path_fund_flow_fetch_failure_fails_open(db, monkeypatch):
+    """实时资金流补拉失败 → 退化为快照 main_pct，本轮照常判定（fail-open）。"""
+    day = now_beijing().date().isoformat()
+    sym = "SZ300101"
+    db.execute(
+        "INSERT INTO market_extra_cache VALUES (?,?,?,?)",
+        (sym, "fund_flow", day, json.dumps(_payload(vol_ratio=1.6, percent=2.5, main_pct=2.0))),
+    )
+    db.commit()
+
+    def _boom():
+        raise OSError("network down")
+
+    monkeypatch.setattr("scanner.offboard_watch.fetch_fund_flow_rank", _boom)
+    rows = run_offboard_watch(None, db, [], top_n=5, klines={sym: _bars(_UP_SERIES, day)})
+    assert len(rows) == 1
+    assert rows[0].main_pct == pytest.approx(2.0)
     assert db.execute("SELECT COUNT(*) FROM daily_kline").fetchone()[0] == 0
 
 
