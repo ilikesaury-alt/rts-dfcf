@@ -124,7 +124,7 @@ class HistCandidate:
     rec_days_ago: int  # 距该日的交易日数（1 = 昨天）
     rec_category: str  # 当时进的是哪个桶
     rec_score: int
-    cum_pct: float  # 自 v1 日收盘以来的累计涨跌幅（%）
+    cum_pct: float | None  # 自 v1 日收盘以来的累计涨跌幅（%）；缺 rec_date 收盘 bar → None（与真 0.00% 可区分）
     market_cap: float
     # ── 5日累计（2026-09-18）──
     # 从 daily_kline 缓存计算，排除今日 bar（与主线「5日累计」列同口径）
@@ -316,7 +316,7 @@ def build_reasons(c: HistCandidate) -> list[str]:
     """可读的入选理由（日志/JSON 消费，不参与排序）。"""
     rs = [f"{c.rec_days_ago}个交易日前进 v1（{c.rec_category}）"]
     rs.append(f"今日回调 {c.percent:+.2f}%")
-    if c.cum_pct:
+    if c.cum_pct is not None:
         rs.append(f"自 v1 日累计 {c.cum_pct:+.2f}%")
     rs.append(f"量比 {c.vol_ratio:.2f}（未缩量，有承接）")
     if c.ff_pct is not None:
@@ -432,7 +432,8 @@ def evaluate(
             continue
 
         current = _f(q.get("current"))
-        cum_pct = 0.0
+        # 缺 rec_date 收盘 bar 时保持 None：0.0 会与「真涨了 0.00%」混淆（2026-10-08 修复）。
+        cum_pct: float | None = None
         for k in hist:
             if k.get("date") == m["rec_date"]:
                 rc = _f(k.get("close"))
@@ -468,7 +469,7 @@ def evaluate(
             rec_days_ago=int(m["rec_days_ago"]),
             rec_category=m["rec_category"],
             rec_score=int(m["rec_score"]),
-            cum_pct=round(cum_pct, 2),
+            cum_pct=round(cum_pct, 2) if cum_pct is not None else None,
             market_cap=_f(q.get("market_capital")),
             accum_5d=accum_5d,
             ff_pct=None if flow_pct is None else _f(flow_pct),
