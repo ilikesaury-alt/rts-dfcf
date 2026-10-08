@@ -164,10 +164,13 @@ class TestDataHealth:
 
         conn = _memdb()
         today = _dt.date.today()
-        # 造 3 个交易日的 bar，故意跳过中间某个交易日
-        days = [today - _dt.timedelta(days=i) for i in range(8, 0, -1)]
+        # 造交易日的 bar，故意跳过中间某个交易日。
+        # ⚠ 窗口取 21 个日历日而非 8：A 股最长假期（国庆/春节 8 天）叠加前后周末
+        # 可产生 ~12 个连续非交易日，8 日窗口在长假期间只剩 0~1 个交易日，前提断言
+        # 必挂（2026-10 国庆实测）。21 日最坏情形仍有 ~9 个交易日。
+        days = [today - _dt.timedelta(days=i) for i in range(21, 0, -1)]
         trading = [d for d in days if is_trading_day(d)]
-        assert len(trading) >= 3, "测试前提：近 8 日至少 3 个交易日"
+        assert len(trading) >= 3, "测试前提：近 21 日至少 3 个交易日"
         for i, day in enumerate(trading):
             if i == len(trading) // 2:
                 continue  # 挖一个洞

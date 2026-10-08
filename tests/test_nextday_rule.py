@@ -7,13 +7,18 @@ get_cached_klines 会 SELECT 该列，缺列时内部吞异常返回空 map，�
 """
 
 import sqlite3
+from datetime import timedelta as _td
 
 import pytest
 
+from scanner.config import now_beijing
 from scanner.models import KlineBar
 from scanner.nextday_rule import compute_features, scan_rule
 
-TODAY = "2026-08-30"
+# 相对真实今日生成（勿改回硬编码日期）：get_cached_klines 只返回**最近 60 天**
+# 滚动窗口的 bar，硬编码日期会滚出窗口 —— 2026-08 的样本自 2026-09-30 起被裁到
+# 不足 24 根，三个 scan_rule 集成测试静默空转（rule_hit=0），2026-10-08 才被发现。
+TODAY = now_beijing().date().isoformat()
 
 
 # ── compute_features 单元测试 ──
@@ -33,8 +38,10 @@ def _make_bar(date: str, close: float, high: float = 0.0, low: float = 0.0, **kw
 
 
 def _seq_dates(n: int, start_day: int = 1):
-    """生成 n 个递增的 2026-08 日期字符串。"""
-    return [f"2026-08-{start_day + i:02d}" for i in range(n)]
+    """生成 n 个递增的日历日日期，**止于昨日**（日期值本身无语义，只需彼此递增
+    且整段落在 get_cached_klines 的 60 天滚动窗口内；scan_rule 不校验交易日）。"""
+    base = now_beijing().date() - _td(days=1)
+    return [(base - _td(days=n - 1 - i)).isoformat() for i in range(n)]
 
 
 def test_compute_features_insufficient_data():
