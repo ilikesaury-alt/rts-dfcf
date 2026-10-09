@@ -184,7 +184,7 @@ OFFBOARD_LIVE_QUOTE_LIMIT = 100  # 单轮最多补实时价的候选数（50 票
 #   · 留存行**不写** `offboard_launch_log` ⇒ 不刷新 `last_hit_time` —— 留存窗口自
 #     「最后一次严格过门」起算、自然到期，**不会自我续命**；
 #   · 留存行不占 `top_n` 名额（追加在严格行之后，单轮上限 `OFFBOARD_DWELL_MAX`）。
-OFFBOARD_DWELL_MIN = 10  # 留存窗口（分钟）：最后一次严格过门后多久内仍可展示
+OFFBOARD_DWELL_MIN = 5  # 留存窗口（分钟）：最后一次严格过门后多久内仍可展示
 OFFBOARD_DWELL_MAX = 5   # 单轮最多留存多少行（按量比降序取前 N，防表膨胀）
 OFFBOARD_PREFILTER_AMOUNT_RATIO = 0.8  # 粗筛成交额阈值 = 真门 × 本系数
 OFFBOARD_PREFILTER_FLOAT_CAP_RATIO = 0.8  # 粗筛流通市值阈值 = 真门 × 本系数
