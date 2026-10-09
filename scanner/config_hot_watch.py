@@ -157,6 +157,22 @@ OFFBOARD_KLINE_FETCH_LIMIT = 80  # 单轮最多补 K 线的候选数（按量比
 # 粗筛用**比真门更宽**的阈值先滤掉「明显过不了门」的票（误纳只是白花请求位，误删
 # 才丢票），再按量比降序截断。两个 RATIO 必须 ≤ 1.0 —— >1 会把真能过门的票滤掉。
 OFFBOARD_LIVE_QUOTE_LIMIT = 100  # 单轮最多补实时价的候选数（50 票/批 ⇒ 2 请求/轮）
+
+# ── B 段留存（dwell，2026-10-09）──
+# 背景：价/主占/量比改吃实时值后（2026-10-08 H1 / M1 / 量比扩展），在活跃度阈值
+# （量比 1.5 / 成交额下限）附近横跳的票会**反复进出** B 段（2026-10-09 用户实测）。
+# 修法是「短窗留存」：近 `OFFBOARD_DWELL_MIN` 分钟内**严格过门**（写入过
+# `offboard_launch_log`）的票，本轮若只挂在活跃度阈值上，仍以「留存」行继续展示
+# （见 `offboard_gate(retain=True)`），让观察者能看到「放量→回落」的完整过程而不是
+# 一闪一闪。
+#
+# 纪律（三条，缺一不可）：
+#   · **风险门与分层条件一律不放宽**（ST/资金流出/追高上限/市值/5日累计/MA/顶背离）；
+#   · 留存行**不写** `offboard_launch_log` ⇒ 不刷新 `last_hit_time` —— 留存窗口自
+#     「最后一次严格过门」起算、自然到期，**不会自我续命**；
+#   · 留存行不占 `top_n` 名额（追加在严格行之后，单轮上限 `OFFBOARD_DWELL_MAX`）。
+OFFBOARD_DWELL_MIN = 30  # 留存窗口（分钟）：最后一次严格过门后多久内仍可展示
+OFFBOARD_DWELL_MAX = 5   # 单轮最多留存多少行（按量比降序取前 N，防表膨胀）
 OFFBOARD_PREFILTER_AMOUNT_RATIO = 0.8  # 粗筛成交额阈值 = 真门 × 本系数
 OFFBOARD_PREFILTER_FLOAT_CAP_RATIO = 0.8  # 粗筛流通市值阈值 = 真门 × 本系数
 # 涨幅带粗筛缓冲（2026-10-08 修复 H1）：粗筛涨幅带 = 真带 ± 本缓冲（pp）。
@@ -237,6 +253,8 @@ __all__ = [
     "OFFBOARD_T1_TODAY_MAX",
     "OFFBOARD_T2_TODAY_MAX",
     "OFFBOARD_DISPLAY_TOP",
+    "OFFBOARD_DWELL_MAX",
+    "OFFBOARD_DWELL_MIN",
     "OFFBOARD_KLINE_DAYS",
     "OFFBOARD_KLINE_WORKERS",
     "OFFBOARD_KLINE_FETCH_LIMIT",

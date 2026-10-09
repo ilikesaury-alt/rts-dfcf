@@ -27,6 +27,7 @@ from scanner.config import (
     MOMENTUM_LAUNCH_TODAY_MIN,
     MOMENTUM_LAUNCH_VOL,
     OFFBOARD_ACCUM_MAX,
+    OFFBOARD_DWELL_MIN,
     OFFBOARD_KLINE_FETCH_LIMIT,
     OFFBOARD_MAIN_PCT_MIN,
     OFFBOARD_MIN_AMOUNT,
@@ -1238,6 +1239,77 @@ def test_run_offboard_watch_db_path_applies_live_fund_flow(db, monkeypatch):
     assert len(rows) == 1
     assert rows[0].main_pct == pytest.approx(5.5)
     assert rows[0].volume_ratio == pytest.approx(2.2)
+
+
+# ── 留存（dwell，2026-10-09）────────────────────────────────────────────────
+
+
+def test_offboard_gate_retain_relaxes_activity_only():
+    """retain 模式只放宽量比/成交额；涨幅上限（不追高）与风险门照严。"""
+    c = _snapshot_row_to_candidate("SZ300101", _payload(vol_ratio=1.0, amount=1.0e6), {})
+    assert offboard_gate(c) is not None  # 严格门：量比 1.0<1.5 先被拒
+    assert offboard_gate(c, retain=True) is None  # 留存门：活跃度阈值放宽后放行
+    # 涨幅上限不放宽：留存票冲过 OFFBOARD_T2_TODAY_MAX 仍拒（不追高）
+    hi = _snapshot_row_to_candidate(
+        "SZ300101", _payload(vol_ratio=1.0, amount=1.0e6, percent=9.9), {}
+    )
+    assert offboard_gate(hi, retain=True) is not None
+
+
+def _seed_log_row(db, sym: str, last_hit_time: str) -> None:
+    """向 offboard_launch_log 插一行「曾严格过门」的记录（date=今日）。"""
+    day = now_beijing().date().isoformat()
+    db.execute(
+        "INSERT INTO offboard_launch_log "
+        "(date,symbol,name,tier,percent,accum_5d,vol_ratio,main_pct,amount,float_cap,"
+        "price,first_time,last_hit_time,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (day, sym, "自检样本", "T1", 2.5, 1.0, 2.0, 2.0, 8.0e7, 3.0e9, 10.0, last_hit_time, last_hit_time, last_hit_time),
+    )
+    db.commit()
+
+
+def test_run_offboard_watch_dwell_retains_recent_member(db):
+    """留存窗口内：本轮只挂量比阈值的近期成员以「留存」行续展，且不写回 launch_log。
+
+    窗口语义自「最后一次严格过门」起算：本轮留存**不得**刷新 last_hit_time，
+    否则窗口自我续命、永不 expiry —— 这是本机制最关键的不变量。
+    """
+    sym = "SZ300101"
+    day = now_beijing().date().isoformat()
+    seeded_at = now_beijing().isoformat(timespec="seconds")
+    _seed_log_row(db, sym, seeded_at)
+    rows = run_offboard_watch(
+        None,
+        db,
+        [],
+        top_n=5,
+        klines={sym: _bars(_UP_SERIES, day)},
+        snapshot={sym: _payload(vol_ratio=0.5)},  # 量比 0.5 < 1.5，严格门挂掉
+    )
+    assert len(rows) == 1
+    assert any("留存" in r for r in rows[0].reasons)
+    # 留存行不刷新 last_hit_time（窗口不自我续命）—— 精确等于种子值
+    hit = db.execute(
+        "SELECT last_hit_time FROM offboard_launch_log WHERE symbol=?", (sym,)
+    ).fetchone()[0]
+    assert hit == seeded_at
+
+
+def test_run_offboard_watch_dwell_expires_after_window(db):
+    """窗口过期（last_hit_time 早于 OFFBOARD_DWELL_MIN）→ 不再留存，产出为空。"""
+    sym = "SZ300101"
+    day = now_beijing().date().isoformat()
+    stale = (now_beijing() - _td(minutes=OFFBOARD_DWELL_MIN + 5)).isoformat(timespec="seconds")
+    _seed_log_row(db, sym, stale)
+    rows = run_offboard_watch(
+        None,
+        db,
+        [],
+        top_n=5,
+        klines={sym: _bars(_UP_SERIES, day)},
+        snapshot={sym: _payload(vol_ratio=0.5)},
+    )
+    assert rows == []
 
 
 def test_run_offboard_watch_db_path_fund_flow_fetch_failure_fails_open(db, monkeypatch):

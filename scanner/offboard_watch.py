@@ -68,6 +68,16 @@ fail-open / fail-closed
 
 ⚠ 本段**筛选常量一个没动**：样本只有 2 个交易日 / 19 行 —— 够证伪「量比在开盘几分钟
 可用」（那是数学性质，不是统计推断），远不够支撑任何阈值调整（项目铁律 observe-first）。
+
+2026-10-09 留存（dwell）
+------------------------
+价 / 主占 / 量比改吃实时值后（数据通路第 4 条），在活跃度阈值（量比 1.5 / 成交额
+下限）附近横跳的票会**反复进出**本段（上线当日用户实测）。修法是短窗留存：近
+`OFFBOARD_DWELL_MIN` 分钟内严格过门的票，本轮只挂活跃度阈值时以「留存」行续展
+（`offboard_gate(retain=True)`，追加在严格行尾部、不占 `top_n` 名额）。三条纪律：
+风险门与 `classify_tier` 全部照严；留存行**不写** launch_log ⇒ 窗口自最后一次严格
+过门起算、不会自我续命；留存行带理由串标记，且因量比已回落，几乎必然过不了飞书
+推送门的量比兜底（≥2）—— 终端有连续性，推送面仍精选。
 """
 
 from __future__ import annotations
@@ -91,6 +101,8 @@ from scanner.config import (
     OFFBOARD_ACCUM_MAX,
     OFFBOARD_BOARD_FETCH,
     OFFBOARD_DISPLAY_TOP,
+    OFFBOARD_DWELL_MAX,
+    OFFBOARD_DWELL_MIN,
     OFFBOARD_KLINE_DAYS,
     OFFBOARD_KLINE_FETCH_LIMIT,
     OFFBOARD_KLINE_WORKERS,
@@ -205,7 +217,7 @@ def sort_key(c: OffboardCandidate) -> tuple:
 # ── 门槛 ────────────────────────────────────────────────────────────────────
 
 
-def offboard_gate(c: OffboardCandidate) -> str | None:
+def offboard_gate(c: OffboardCandidate, *, retain: bool = False) -> str | None:
     """B 段门槛：通用 8 门（单源）+ 本段专属条件。通过返回 None。
 
     分两类，**刻意放在一起**是因为两者的性质都是「这一票不该进候选集」，
@@ -222,6 +234,12 @@ def offboard_gate(c: OffboardCandidate) -> str | None:
          涨幅带（不追高、不接跌）；
        - 量比 ≥ `MOMENTUM_LAUNCH_VOL`：T1/T2 的**共性**条件，提前施加可避免为
          低量比的票白补 K 线（它同时是启动定义与 T1 的放量门）。
+
+    `retain=True`（2026-10-09 留存机制）：只放宽**活跃度类**两门 —— 量比、成交额。
+    适用对象是近 `OFFBOARD_DWELL_MIN` 分钟内严格过过门、本轮只在活跃度上回落的票
+    （消阈值横跳）。涨幅带上下限、通用风险门、创业板面**全部照跑** —— 「不追高、
+    不接跌」与风险否决不因留存松动。注意涨幅下限（percent > 0）不在此放宽之列：
+    `classify_tier` 的 T1 带会再拦一次，且「不接跌」是有意为之。
     """
     reason = common_hard_gate(
         name=c.name,
@@ -241,13 +259,64 @@ def offboard_gate(c: OffboardCandidate) -> str | None:
         return "当前非上涨状态"
     if c.percent > OFFBOARD_T2_TODAY_MAX:
         return f"涨幅过高({c.percent:.2f}%>{OFFBOARD_T2_TODAY_MAX:.0f}%)"
-    if c.volume_ratio < MOMENTUM_LAUNCH_VOL:
+    if not retain and c.volume_ratio < MOMENTUM_LAUNCH_VOL:
         return f"量比不足({c.volume_ratio:.2f}<{MOMENTUM_LAUNCH_VOL})"
-    if c.amount < OFFBOARD_MIN_AMOUNT:
+    if not retain and c.amount < OFFBOARD_MIN_AMOUNT:
         return f"成交额不足({c.amount / 1e4:.0f}万<{OFFBOARD_MIN_AMOUNT / 1e4:.0f}万)"
     if c.float_market_capital < OFFBOARD_MIN_FLOAT_CAP:
         return f"流通市值过小({c.float_market_capital / 1e8:.1f}亿<{OFFBOARD_MIN_FLOAT_CAP / 1e8:.0f}亿)"
     return None
+
+
+# ── 留存（dwell，2026-10-09）────────────────────────────────────────────────
+
+
+def _recent_dwell_symbols(conn, today: str) -> set[str]:
+    """近 `OFFBOARD_DWELL_MIN` 分钟内**严格**入过 B 段的 symbol 集合。
+
+    依据 `offboard_launch_log.last_hit_time` —— 该列只被 `persist_round`（严格过门
+    行）刷新，留存行刻意不写 ⇒ 留存窗口自最后一次严格过门起算、自然到期，不会
+    自我续命。表缺失 / 查询失败 → 空集（退化为无留存，与改动前行为一致，fail-open）。
+    """
+    try:
+        cutoff = (now_beijing() - _td(minutes=OFFBOARD_DWELL_MIN)).isoformat(timespec="seconds")
+        rows = conn.execute(
+            f"SELECT symbol FROM {_LOG_TABLE} WHERE date=? AND last_hit_time>=?",  # noqa: S608 - 常量表名
+            (today, cutoff),
+        ).fetchall()
+        return {str(r[0]) for r in rows}
+    except EXTERNAL_FAILURES as e:
+        logger.warning("B段留存窗口查询失败（本轮无留存）: %s", e)
+        return set()
+
+
+def _retain_candidates(
+    snapshot: dict[str, dict],
+    recent: set[str],
+    strict_syms: set[str],
+    board_codes: set[str],
+    skip: set[str],
+    names: dict[str, str],
+) -> list[OffboardCandidate]:
+    """近期成员中本轮未严格过门者 → 活跃度门放宽重评（`offboard_gate(retain=True)`）。
+
+    与 `build_candidates` 同款的零成本前置过滤（创业板前缀 / 榜内 / 已推荐）——
+    一只票早上以 B 段产出、中午冲进飙升榜，留存机制**不能**把它再捞回来。
+    返回按量比降序、截断到 `OFFBOARD_DWELL_MAX`。
+    """
+    out: list[OffboardCandidate] = []
+    for sym in recent - strict_syms:
+        payload = snapshot.get(sym)
+        if not payload:
+            continue
+        code = code_of(sym)
+        if not code.startswith(("300", "301")) or code in board_codes or sym in skip:
+            continue
+        c = _snapshot_row_to_candidate(sym, payload, names)
+        if offboard_gate(c, retain=True) is None:
+            out.append(c)
+    out.sort(key=lambda x: -x.volume_ratio)
+    return out[:OFFBOARD_DWELL_MAX]
 
 
 # ── 候选构建（快照 → 榜外候选）────────────────────────────────────────────────
@@ -1042,6 +1111,18 @@ def run_offboard_watch(
     cands, gate_rejects = build_candidates(snapshot, board_items, names, exclude_symbols)
     today = now_beijing().date().isoformat()
 
+    # 留存（dwell，2026-10-09）：量比/主占改吃实时值后，阈值附近横跳的票会反复进出。
+    # 近 OFFBOARD_DWELL_MIN 分钟内严格过门的票，本轮只挂活跃度阈值时以「留存」行
+    # 续展 —— 活跃度门放宽，风险门与分层条件照严；留存行不写 launch_log（不刷新
+    # last_hit_time ⇒ 窗口自最后一次严格过门起算，不自我续命）。
+    recent = _recent_dwell_symbols(conn, today)
+    retained: list[OffboardCandidate] = []
+    if recent:
+        _board_codes = {code_of(str(it.get("symbol") or "")) for it in board_items if it.get("symbol")}
+        retained = _retain_candidates(
+            snapshot, recent, {c.symbol for c in cands}, _board_codes, exclude_symbols or set(), names
+        )
+
     # 次日收益回填（2026-10-08 修复 L5）：移到「本轮是否产出」的所有提前返回**之前**
     # —— 原先 `not cands` / 零候选轮会跳过回填，长期零产出的交易日标签停积，与
     # 「影子期样本必须有标签」的目标相悖。无待回填行时只是一条索引查询，代价可忽略。
@@ -1053,12 +1134,15 @@ def run_offboard_watch(
     # 拒绝留痕（2026-09-22 / 迁移 m017）：gate 段的 rejects 原先被 `_rejects` 丢弃、
     # 分层段的理由只写进 `c.reasons` 就地消失 ⇒ 只剩幸存者样本，任何阈值调整无从证伪。
     # 两段互斥（过门才可能被分层拒），同一 symbol 不会重复入表。
-    if not cands:
+    if not cands and not retained:
         _save_rejections(conn, _rejection_rows(gate_rejects, (), snapshot, names), today)
         return []
 
     if klines is None:
-        klines = load_offboard_klines(conn, adapter, [c.symbol for c in cands[:OFFBOARD_KLINE_FETCH_LIMIT]])
+        # K 线补取额度优先给严格候选；留存票追加在额度之后（数量有 DWELL_MAX 封顶）。
+        kline_syms = [c.symbol for c in cands[:OFFBOARD_KLINE_FETCH_LIMIT]]
+        kline_syms += [c.symbol for c in retained if c.symbol not in kline_syms]
+        klines = load_offboard_klines(conn, adapter, kline_syms)
 
     passed: list[OffboardCandidate] = []
     tier_rejects: list[tuple[str, str]] = []
@@ -1070,11 +1154,23 @@ def run_offboard_watch(
 
     _save_rejections(conn, _rejection_rows(gate_rejects, tier_rejects, snapshot, names), today)
 
+    # 留存行过**同一套**分层条件（annotate 不放宽：涨幅带 / 5日累计 / MA / 顶背离 /
+    # 主占照严 —— 结构性条件与风险不因留存松动），过了的带「留存」标记追加在尾部。
+    kept_retained: list[OffboardCandidate] = []
+    for c in retained:
+        if annotate(c, klines.get(c.symbol), today) is None:
+            continue
+        c.reasons = [*(c.reasons or []), f"留存:近{OFFBOARD_DWELL_MIN}分钟曾过门,活跃度已回落"]
+        kept_retained.append(c)
+    kept_retained.sort(key=sort_key)
+
     passed.sort(key=sort_key)
+    # 🔴 只落严格行 —— 留存行若也刷新 last_hit_time，留存窗口会自我续命（永远不过期）。
     persist_round(conn, passed)
     # （回填已前移至 build_candidates 之后：零候选轮也执行，见上方 L5 注释。）
 
-    top = passed[:top_n]
+    # 留存行不占 top_n 名额：严格信号永远优先，续展的「已回落」票只作尾部上下文。
+    top = passed[:top_n] + kept_retained
     # 板块列（2026-09-22）：只对最终展示行取值 —— ②级 F10 补拉的量因此被压到
     # ≤ OFFBOARD_DISPLAY_TOP 只，且缓存命中时零请求（见 OFFBOARD_BOARD_FETCH 注释）。
     _attach_boards(top, conn)
