@@ -850,8 +850,13 @@ def backfill_next_day(conn, adapter, signal_date: str | None = None) -> int:
 
     filled = 0
     now = now_beijing().isoformat(timespec="seconds")
+    # 批量取数（2026-10-08 修复 N+1）：原先循环内逐票 `load_offboard_klines([sym])`，
+    # 每票一次 SQL 读缓存 + 一次线程池创建/销毁 + **串行**请求；该函数本就支持批量
+    # （缓存 400/批 + OFFBOARD_KLINE_WORKERS 并发补取），合并为一次调用后 N 个请求
+    # 并发跑、缓存读写各一次。请求总数不变（缓存命中票零请求），变的是并发度与开销。
+    bars_map = load_offboard_klines(conn, adapter, list(by_symbol))
     for sym, dates in by_symbol.items():
-        bars = load_offboard_klines(conn, adapter, [sym]).get(sym) or []
+        bars = bars_map.get(sym) or []
         # ⚠ `None` 日期的 bar 不能进映射（否则 `by_date` 会出现 `None` 键）。
         #   真实来源 `load_offboard_klines` 已清洗，但直连/回放路径未必。
         by_date = {k["date"]: k for k in bars if isinstance(k.get("date"), str)}
