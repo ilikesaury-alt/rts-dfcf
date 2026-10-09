@@ -131,6 +131,41 @@ python -m scanner.model_bucket              # v3 模型桶离线可行性（M3�
 python -m scanner.nextday_calib             # 概率模型校准漂移巡检（常数 vs 数据，漂移即退出码 1）
 ```
 
+### B 段「榜外异动」次日表现追踪（`scripts/offboard_nextday.py`，2026-10-09）
+
+B 段（`offboard_watch`）的**写侧**（`offboard_launch_log` 逐日落库 + `next_day_pct`
+自动回填）上线即有，**读侧一直缺** —— 终端/飞书只展示当轮信号，没有任何出口回答
+「B 段信号次日到底行不行」。本脚本是那个读侧，只读 `scanner.db`：
+
+```
+python scripts/offboard_nextday.py           # 全部有标签样本
+python scripts/offboard_nextday.py --days 20 # 只看近 N 个信号日
+python scripts/offboard_nextday.py --tier T2 # 只看某一层
+python scripts/offboard_nextday.py --json    # 机器可消费
+```
+
+口径 = `next_day_pct`（信号日**收盘** → 次一交易日收盘），与回填写入侧同源。
+守护 `tests/test_offboard_nextday.py`。
+
+**当前读数（2026-10-09，8 个有标签信号日 / 350 行）**：均值 **−0.54%**、
+中位 −0.91%、**次日 ≥7% 命中 2.9%**（T1 2.2% / T2 5.3%）；同窗口 `daily_kline`
+榜上票池横截面为均值 +0.01%、≥7% 4.76%，按日配对 bootstrap 差值
+**−0.77% 95% CI [−2.77%, +0.47%]**（8 天配对，跨 0 = 不可区分）。信号时的
+涨幅/量比/主占/5 日累计四个特征与次日收益的相关系数全部 |r| < 0.04。
+
+**为什么它刻意不给结论**：B 段是 `rule_validate` 三个评估器的**盲区**（`--set` 会被
+可见性硬校验拦在退出码 3），样本外裁决通道在这里不存在；阈值归属
+`config_hot_watch.py`，改动依据走该文件 docstring。一旦这个统计脚本顺口给出
+「建议」，它就成了项目的第二个结论源。`test_report_contains_no_verdict_wording`
+守住这条。
+
+> ⚠ **配对天数不足 3 天时脚本故意「不出区间」**（`MIN_PAIRED_DAYS`）。
+> bootstrap 的重采样单位是「逐日差值」这一个序列，长度 = 配对天数；n=1 时所有
+> 重采样都只有一个样本，CI 退化成宽度 0 的 `[d, d]`，打印出来像「区间不含 0 ⇒
+> 极显著」，实则是「样本量为一」。开发时真踩到：`--days 3` 打出
+> `均值差 -7.39%  95% CI [-7.39%, -7.39%]`。守卫
+> `test_paired_ci_refuses_to_report_when_days_below_min`。
+
 ### 沪深飙升独立区（hot_watch）—— 自检入口
 
 主循环内每轮自动执行，**通常无需手动跑**。此入口用于改规则后快速自检：
