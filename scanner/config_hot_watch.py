@@ -102,7 +102,20 @@ OFFBOARD_OPENING_SILENCE_MIN = 15
 # 两者都高于 `common_hard_gate` 的 -8% 阈值（`FUND_OUTFLOW_NET_PCT`），通用门拦不住。
 # 与 A 段「资金流出统一口径、展示层单点过滤」(02ae8af) 及 T1 口径保持一致。
 OFFBOARD_MAIN_PCT_MIN = 0.0
-OFFBOARD_DISPLAY_TOP = 5  # 终端同区 B 段展示行数（与 A 段体量一致）
+# B 段展示行数（2026-10-09 用户决策 5 → 8：实测单日过门 32 只，原值砍掉 84%）。
+# ⚠ 这纯粹是**展示层上限**，不是筛选门：候选池大小由 build_candidates/annotate 决定，
+# 放宽它不会让更多票过门，只是让已过门的票多显示几条。
+# ⚠ 两处连带成本，改前须知：
+#   ① `_attach_boards` 的 F10 板块补拉**只对最终展示行**发请求（`offboard_watch.py`
+#      的 `_attach_boards`），故本常量线性放大冷启动那轮的 F10 请求数
+#      （缓存命中时为零）。8 ≈ 5 的 1.6 倍。
+#   ② 飞书**不受本常量影响**：B 段在 push_gate 侧另有独立闸
+#      （`PUSH_FALLBACK_MIN_VOL_RATIO=2.0` 量比门槛 + `PUSH_MAX_ROWS=6` 单卡硬上限）。
+#      ⇒ 终端放宽后两端条数会不一致，这是**刻意的**：飞书是精选推送面、终端是全量观察面。
+# ⚠ 无样本外证据可依：影子期表 offboard_launch_log 当前 n=350 / D=7 个交易日，
+#   而 config 同段自注「目标 D ≥ 47」才够检出 10pp。按名次分桶的 hit 无单调性
+#   （1-3/4-5/6-8/9-12/13+ = 0%/0%/0%/3.6%/3.1%）⇒ 本值是**展示口味**，不是经证实的阈值。
+OFFBOARD_DISPLAY_TOP = 8
 
 # ── B 段 5 日累计上界（**B 段私有**，2026-09-22）──
 # 下沿仍取 `MOMENTUM_LAUNCH_ACCUM_MIN`(0)：与 momentum 同源，两边一致（近 5 天不能是
@@ -195,6 +208,8 @@ OFFBOARD_PREFILTER_PCT_BUFFER = 2.0  # 粗筛涨幅带 = 真带 ± 本缓冲（�
 #     恒为「其他」，等于没做这一列。
 # 故 B 段默认开补拉，但**只针对最终展示行**（≤ OFFBOARD_DISPLAY_TOP 只），且
 # DB/进程缓存命中时零请求 —— 稳态下每轮无额外开销，只有每天首批候选换人才发请求。
+# ⚠ 请求量随 `OFFBOARD_DISPLAY_TOP` **线性**增长（2026-10-09 该值 5 → 8，
+#    冷启动那轮的 F10 请求约 ×1.6）。若日后要再放宽，先看这里的成本。
 # 1=开（默认）/ 0=关（纯离线：只读缓存，miss 回退名称关键词）。
 OFFBOARD_BOARD_FETCH = int(os.environ.get("RTS_OFFBOARD_BOARD_FETCH", "1"))
 
