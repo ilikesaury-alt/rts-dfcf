@@ -1502,7 +1502,7 @@ def test_push_gate_region_lists_passed_names(capsys):
 def test_push_gate_region_labels_are_honest_about_being_not_yet_pushed(capsys):
     """⚠ 标题必须写「下一张卡片将推此集合」，不能简化成「飞书推送」。
 
-    终端每轮渲染、飞书最多 900s 推一次且仅在集合变化时推 —— 两者不是同一件事。
+    终端每轮渲染、飞书最多 PUSH_MIN_INTERVAL 推一次且仅在集合变化时推 —— 两者不是同一件事。
     写成「已推送」会在冷却期内说谎。守卫文案里的限定词。
     """
     conn = _rec_db()

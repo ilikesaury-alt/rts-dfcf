@@ -11,7 +11,7 @@ A-share (创业板) stock scanner that watches the Xueqiu biaosheng (飙升) lea
 （用户决策：飞书信息量过大），代价是「终端有、飞书无」，故卡片**强制**打出剔除数。
 同时终端新增**「◆ 飞书过门」透明区**（`render._render_push_gate_region`，四区之后的
 1~4 行）显示本轮通过集合 —— ⚠ 它是「**下一张卡会推什么**」而**不是**「已推了什么」
-（终端每 60s 渲染、飞书最多 900s 一次且仅在集合变化时推），标题不可简化成「飞书推送」。
+（终端每 60s 渲染、飞书最多 300s 一次且仅在集合变化时推），标题不可简化成「飞书推送」。
 详见下方「飞书推送过滤门」。
 其中**只有 `v1 池选` 有序**：**新票优先 → 类别优先级 → 榜单排名升序 → 资金流降序 → 形态加分**
 （实现在 `scanner/view/assemble.py::build_scan_view`；终端标题 = 前四键：
@@ -171,7 +171,7 @@ This rebuilds scores via `scanner/historical_rescan.py --rescore` (faithful to t
      A ≥ PUSH_TIER_A_MIN(0.10) · B ≥ PUSH_TIER_B_MIN(=CATEGORY_HIT_RATE_DEFAULT) · C < B
   兜底(C 档) = 榜内热度：v1 池选 rank≤40 / 飙升A streak≥3 ∨ 排名跃升≥30 / 回捞·榜外 量比≥2
   否决 = 资金流出≤FUND_OUTFLOW_NET_PCT ∨ 5日累计≥OVERHEAT_ACCUM_MAX ∨ 风险硬信号
-卡片级 = 通过数 ≥ PUSH_MIN_ROWS ∧ 通过票集变化 ∧ 距上次 ≥ PUSH_MIN_INTERVAL(900s)
+卡片级 = 通过数 ≥ PUSH_MIN_ROWS ∧ 通过票集变化 ∧ 距上次 ≥ PUSH_MIN_INTERVAL(300s)
 ```
 
 **三条纪律（改前必读）**

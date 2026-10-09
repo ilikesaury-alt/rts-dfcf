@@ -28,7 +28,7 @@
 
     卡片级 = 通过数 ≥ PUSH_MIN_ROWS
            ∧ 通过票集 ≠ 上次通过票集                       # 去重键改用「通过集」
-           ∧ 距上次 ≥ PUSH_MIN_INTERVAL                    # 900s
+           ∧ 距上次 ≥ PUSH_MIN_INTERVAL                    # 300s
 
 ## 三条纪律（改动本模块前必读）
 

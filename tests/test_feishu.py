@@ -17,7 +17,8 @@ PushState 可注入，避免原 _last_push_time/_last_push_symbols 散落 global
 故本文件任何用例都不可能写到生产 logs/。
 
 ⚠ 2026-09-28（严格过滤门）两处**故意**的行为变更，本文件已同步：
-  · 冷却常量 FEISHU_MIN_INTERVAL(300s) → PUSH_MIN_INTERVAL(900s)；
+  · 冷却常量 FEISHU_MIN_INTERVAL → PUSH_MIN_INTERVAL（2026-10-09 起取 300s，
+    与旧常量同值；用例一律引用常量本身，改秒数不必改测试）；
   · 冷却从「票集未变才查」改为**一律查**（旧逻辑下票集一变就绕过冷却直接推，
     这才是 2026-09-28 全天推 ~50 张的机制）；去重键同步从
     `main_rows[:FEISHU_TOP_N]` 改为**过滤门通过集**。
