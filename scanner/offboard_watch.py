@@ -42,9 +42,10 @@ B 段把**项目已在手但从未被消费**的全市场快照（`market_extra_
    它的回测基准与归因（portfolio_backtest / prevday_perf / 召回率口径）。
    按 (symbol, fetch_date) 缓存，当日抓一次当日复用（5 日累计/MA 只依赖抓取日之前的 bar）；
 3. 通用 8 门 + 两道**收紧**的榜外专属门（显式传参，见 `offboard_gate`）；
-4. **实时资金流补拉**（2026-10-08 修复 M1，**仅生产主循环路径**）：东财全市场
-   `fetch_fund_flow_rank`（与主循环同源同缓存）覆盖快照 main_pct。snapshot 注入
-   路径（测试/离线自检/CLI）不触发 —— 保持「测试与自检零联网」的纪律。
+4. **实时资金流补拉**（2026-10-08 修复 M1，2026-10-09 扩展量比；**仅生产主循环
+   路径**）：东财全市场 `fetch_fund_flow_rank`（与主循环同源同缓存，响应行自带
+   f10 量比）覆盖快照 main_pct / vol_ratio。snapshot 注入路径（测试/离线自检/CLI）
+   不触发 —— 保持「测试与自检零联网」的纪律。
 
 fail-open / fail-closed
 -----------------------
@@ -254,13 +255,11 @@ def offboard_gate(c: OffboardCandidate) -> str | None:
 
 # 实时报价 → 快照字段码的映射（`api._HOT_QUOTE_FIELDS` 的键 → `_FUND_FLOW_FIELDS` 的语义）。
 # 只映射**两源都有语义且都会展示/参与判定**的字段。两类字段**刻意不覆盖**：
-#   · `main_pct`（主力净占比）：雪球批量行情**不提供资金流**字段，整行替换会把它清零，
-#     进而让 T1/T2 的「主力净占比 ≥ 0」门恒过 —— 静默放宽信号门。故必须保留快照值。
-#   · `volume_ratio`（量比）：`batch/quote.json` **不提供**该字段（只有
-#     `quote.json?extend=detail` 单票接口才有，见 `api.fetch_hot_quote_detail`），
-#     故量比永远取自快照。它是 `sort_key` 的段内主键（见该函数 docstring），
-#     因此「排序用的量比可能是旧值」是本修复**未消除**的残留口径差，已在
-#     `run_offboard_watch` 的覆盖注释里显式标注。
+#   · `main_pct`（主力净占比）与 `volume_ratio`（量比）：雪球批量行情不提供
+#     （量比只有 `quote.json?extend=detail` 单票接口才有），整行替换会清掉它们。
+#     二者由东财资金流行（`_apply_live_fund_flow`，M1 + 2026-10-09 量比扩展）
+#     以**同口径**（快照的 vol_ratio/main_pct 本就来自东财 f10/f184）刷成新鲜值。
+#   · 上限 `OFFBOARD_LIVE_QUOTE_LIMIT` 保证请求数有界（默认 100 ⇒ 2 请求/轮）。
 _LIVE_FIELD_MAP: tuple[tuple[str, str], ...] = (
     # (实时报价键, 快照字段码)
     ("current", "price"),
@@ -311,24 +310,27 @@ def _apply_live_quote(payload: dict, quote: dict) -> bool:
 
 
 def _apply_live_fund_flow(snapshot: dict[str, dict], ff: dict[str, dict]) -> int:
-    """把**实时**资金流（东财全市场）的主力净占比就地覆盖进快照，返回覆盖行数。
+    """把**实时**资金流行（东财全市场）的 main_pct / vol_ratio 就地覆盖进快照，返回覆盖行数。
 
-    为什么需要（2026-10-08 修复 M1）
-    ------------------------------
+    为什么需要（2026-10-08 修复 M1 + 2026-10-09 扩展量比）
+    ----------------------------------------------------
     `main_pct`（主力净占比）是 T1/T2 信号门的输入（≥ `OFFBOARD_MAIN_PCT_MIN`），
-    雪球批量行情不提供 ⇒ 此前恒取快照（见 `_LIVE_FIELD_MAP`）。快照在拉取超时轮
-    只刷新当轮候选（`_last_ff_partial` 分支），其余行冻结在上一轮成功时刻 ——
-    门在陈旧的 main_pct 上判定，与实时价补全修复前的涨幅带是同一类错误
-    （应被「主力净流出」门拒掉的票被静默放行）。
+    `vol_ratio`（量比）是 `sort_key` 的段内主键 + T1「量先动」门的输入 —— 两者
+    雪球批量行情都不提供 ⇒ 此前恒取快照。快照在拉取超时轮只刷新当轮候选
+    （`_last_ff_partial` 分支），其余行冻结在上一轮成功时刻 —— 门在陈旧值上判定、
+    排序在陈旧量比上排座次，与实时价补全修复前的涨幅带是同一类错误。
 
     数据源用项目**既有**的东财全市场资金流（`market_extra.fetch_fund_flow_rank`，
-    push2delay）：与主循环 `collect_market_extra` 同源同进程缓存（TTL 300s）⇒
+    push2delay）：其响应行本就带 f10 量比（`_FUND_FLOW_FIELDS` 的报价快照段，
+    快照里的 vol_ratio 正是同一字段）—— 故覆盖是**同口径换新鲜值**，不引入
+    第二个量比定义。与主循环 `collect_market_extra` 同源同进程缓存（TTL 300s）⇒
     稳态下本调用是缓存命中、零额外请求；冷缓存时一次全市场分页拉取（有界
     `FUND_FLOW_FETCH_TIMEOUT=30s`，fail-soft 返回部分结果），并顺带给主循环预热。
 
     覆盖范围是**全快照**而非 prefilter 头部：ff 本就是 {6位代码: {...}} 全市场
-    映射，逐行覆盖只是字典查找 —— 让门判定、`sort_key` tie-break、拒绝留痕、
-    落库的 main_pct 全部同口径新鲜。缺行/缺字段 → 保留快照值（fail-open）。
+    映射，逐行覆盖只是字典查找 —— 让粗筛头部选择、门判定、`sort_key`、拒绝留痕、
+    落库的量比/主占全部同口径新鲜。缺行/缺字段 → 保留快照值（fail-open）；
+    量比 ≤0（停牌/脏值）不覆盖 —— 0 不是合法量比，覆盖会把可交易票误杀。
     """
     if not ff:
         return 0
@@ -337,9 +339,18 @@ def _apply_live_fund_flow(snapshot: dict[str, dict], ff: dict[str, dict]) -> int
         if not payload:
             continue
         row = ff.get(code_of(sym))
-        pct = to_float((row or {}).get("main_pct"), None)
+        if not row:
+            continue
+        hit = False
+        pct = to_float(row.get("main_pct"), None)
         if pct is not None:
             payload["main_pct"] = pct
+            hit = True
+        vr = to_float(row.get("vol_ratio"), None)
+        if vr is not None and vr > 0:
+            payload["vol_ratio"] = vr
+            hit = True
+        if hit:
             applied += 1
     return applied
 
@@ -967,6 +978,21 @@ def run_offboard_watch(
     gem_offboard = [s for s, p in snapshot.items() if p and code_of(s).startswith(("300", "301"))]
     names = get_symbol_names(conn, gem_offboard)
 
+    # 🔴 实时资金流覆盖（2026-10-08 修复 M1 / 2026-10-09 扩展量比）：main_pct 是
+    # T1/T2 信号门的输入，vol_ratio 是 `sort_key` 段内主键 + 粗筛头部选择的排序键，
+    # 两者雪球批量行情都不提供、此前恒取快照 —— 快照冻结时门在陈旧值上判定、高量比
+    # 票被挤出补价头部。数据源与主循环同源同缓存（fetch_fund_flow_rank，TTL 300s，
+    # 响应行自带 f10 量比 ⇒ 同口径换新鲜值），稳态零额外请求；仅 DB 快照路径（生产
+    # 主循环）触发，snapshot 注入路径不联网（见 docstring）。
+    # ⚠ 必须在**粗筛之前**：粗筛按量比降序取头部，覆盖放在粗筛后等于排序仍用旧值。
+    if snapshot_from_db:
+        try:
+            ff_map = fetch_fund_flow_rank()
+        except EXTERNAL_FAILURES as e:  # fetch 内部已 fail-soft，此处双保险
+            logger.warning("B段实时资金流补拉失败（退化为快照 main_pct/vol_ratio）: %s", e)
+            ff_map = {}
+        _apply_live_fund_flow(snapshot, ff_map)
+
     # 🔴 实时价覆盖（2026-10-08）：**在过门之前**就地覆盖快照 —— 判定与展示共用同一份
     # 数据，故口径自洽（判定即所见）。原因与实测见 `_apply_live_quote` docstring：
     # 快照在拉取超时时只刷新当轮候选，其余行会永久冻结（300890 实测滞后 2h11m）。
@@ -984,11 +1010,12 @@ def run_offboard_watch(
     #     拿不到实时价补全而被系统性漏掉 —— 与两个 RATIO 同一「宽于真门」原则。
     #     下限与 0.0 取 max：非上涨的票不可能是 T1/T2 候选，不值得花请求位。
     #
-    # ⚠ 残留口径差（M1 修复后收窄至量比）：`volume_ratio` **恒取快照**（雪球批量行情
-    # 不提供，见 `_LIVE_FIELD_MAP`），而 `sort_key` 的段内主键正是量比 ⇒ 陈旧快照下
-    # 「排序用的量比」可能与实时不符（还会把实时高量比票挤出补价头部）。彻底消除需为
-    # 每票补 detail 接口（1 请求/票），成本不可接受，故显式记录而非假装没有。
-    # `main_pct` 已不再属于残留：见下方 M1 实时资金流覆盖。
+    # ⚠ 残留口径差（M1 + 量比扩展后仅剩一处）：粗筛读的 percent/amount/float_cap
+    # 仍是**快照**（雪球批量行情 50 票/批，全量补价不可接受）—— 已按「宽于真门」
+    # 原则加缓冲兜住（H1），过粗筛的头部随后拿到雪球实时价。门判定与排序的关键
+    # 输入（price/percent/name/main_pct/vol_ratio）已全部新鲜：前四者来自雪球
+    # 实时补价 + f14 名称，量比/main_pct 来自东财资金流行内快照（见
+    # `_apply_live_fund_flow`）。
     _pct_low = max(0.0, HOT_MIN_PERCENT - OFFBOARD_PREFILTER_PCT_BUFFER)
     _pct_high = OFFBOARD_T2_TODAY_MAX + OFFBOARD_PREFILTER_PCT_BUFFER
     prefilter = [
@@ -1003,25 +1030,14 @@ def run_offboard_watch(
         )
     ]
     # 快照量比降序取头部（与 `build_candidates` 的候选排序同键，保证粗筛头部的选择
-    # 依据与真门的候选优先级一致 —— 否则会截掉真能过门的高量比票）。
+    # 依据与真门的候选优先级一致 —— 否则会截掉真能过门的高量比票）。量比已被上方
+    # 实时资金流覆盖刷成新鲜值（f10 同口径），故此排序消费的是实时量比。
     prefilter.sort(key=lambda s: -(to_float(snapshot[s].get("vol_ratio"), 0.0) or 0.0))
     live_ok = _refresh_with_live_quotes(adapter, snapshot, prefilter[:OFFBOARD_LIVE_QUOTE_LIMIT])
     if live_ok:
         # 覆盖后名称可能更新（`_apply_live_quote` 会刷 name），合并进names ——
         # 通用门的 ST 判定与展示都读它。
         names = {**names, **{s: snapshot[s]["name"] for s in live_ok if snapshot[s].get("name")}}
-
-    # 🔴 实时资金流覆盖（2026-10-08 修复 M1）：main_pct 是 T1/T2 信号门与 sort_key
-    # tie-break 的输入，却恒取快照 —— 快照冻结时门在陈旧值上判定（应拒的票被静默
-    # 放行）。数据源与主循环同源同缓存（fetch_fund_flow_rank，TTL 300s），稳态零额外
-    # 请求；仅 DB 快照路径（生产主循环）触发，snapshot 注入路径不联网（见 docstring）。
-    if snapshot_from_db:
-        try:
-            ff_map = fetch_fund_flow_rank()
-        except EXTERNAL_FAILURES as e:  # fetch 内部已 fail-soft，此处双保险
-            logger.warning("B段实时资金流补拉失败（退化为快照 main_pct）: %s", e)
-            ff_map = {}
-        _apply_live_fund_flow(snapshot, ff_map)
 
     cands, gate_rejects = build_candidates(snapshot, board_items, names, exclude_symbols)
     today = now_beijing().date().isoformat()
