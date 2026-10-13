@@ -1490,12 +1490,13 @@ class TestOpeningSilence:
 
 
 def test_render_offboard_standalone_prints_b_segment(capsys):
-    """独立渲染入口只画 B 段：列头与列规格与主屏同源，但**不打 A 段标题**。
+    """独立渲染入口只画榜外异动段：列头与列规格与主屏同源，**不打榜内飙升段标题**。
 
-    2026-09-21：`◆ 沪深飙升 · 极有可能大涨（创业板·当日动能+热度跃升…）` 描述的是
-    **A 段**口径；A 段空时不再打（用户决策「A 段空时不打标题与表头」）。本入口只喂 B 段，
-    故它现在自成一个完整表：B 段小标题 → 列头 → 行。
-    （旧断言 `"沪深飙升" in out` 守的是「与 A 段同区、同一张表」—— 该意图改由列规格守卫：
+    沿革：2026-09-21 区标题带榜内飙升段口径（「当日动能+热度跃升」），故该段空时
+    连区标题一起不打；2026-10-13 区标题中性化后（只说样本面 + 三段结构），口径下沉
+    到各段标题，于是「区标题随榜内飙升段有无而变」这条约束**失效**，区标题回到
+    「任一段非空就打」。本入口只喂榜外异动段，故形如：区标题 → 榜外段标题 → 列头 → 行。
+    （「与榜内飙升段同区、同一张表」的意图由列规格守卫承担：
       `test_hot_row_columns_match_terminal` + 下面的列头断言。）
     """
     from scanner.view.render import render_offboard_standalone
@@ -1506,25 +1507,32 @@ def test_render_offboard_standalone_prints_b_segment(capsys):
     assert "榜外异动" in out
     assert "300101" in out
     assert "自检样本" in out
-    assert "T1" in out  # 「评分」列改显分层标记
-    assert "未回测" in out  # 小标题必须声明证据强度
-    assert "—" in out  # 榜单专属列（排名上升/连击）显 —，不是 0
-    # A 段口径的区块标题不再出现（A 段没有数据）
-    assert "◆ 沪深飙升" not in out
-    # 但列头必须在（A 段没打，B 段自带一份）—— 否则 14 列数字没有列名，无从解读
+    assert "T1" in out  # 「层」列显分层标记
+    assert "未回测" in out  # 段标题必须声明证据强度
+    assert "—" in out  # 榜单专属列（排名上升/连击/评分）显 —，不是 0
+    assert "◆ 沪深飙升 · 极有可能大涨" in out, "区标题中性化 ⇒ 任一段非空就打"
+    assert "榜内飙升" not in out, "榜内飙升段没有数据 ⇒ 不打它的段标题"
+    # 但列头必须在（榜内飙升段没打，榜外段自带一份）—— 否则 16 列数字没有列名，无从解读
     assert "排名上升" in out
     assert "换手%" in out
-    assert out.index("榜外异动") < out.index("排名上升"), "列头应在 B 段小标题之后"
+    assert out.index("榜外异动") < out.index("排名上升"), "列头应在榜外段标题之后"
 
 
 def test_render_region_column_header_printed_exactly_once(capsys):
-    """两段共用一张表 ⇒ 列头只打一份，且总在该段第一行数据之前。
+    """三段共用一张表 ⇒ 列头只打一份，且总在该段第一行数据之前。
 
-    A 段非空：打在 A 段行之前，B 段复用（不重复）；
-    A 段为空：打在 B 段小标题之后（否则整表无列名）。
+    榜内飙升段非空：列头打在它行之前，后两段复用（不重复）；
+    榜内飙升段为空：列头由第一个非空的后段自带（否则整表无列名）。
+
+    ⚠ 断言必须数**列头行**而不是裸 `out.count("排名上升")`：2026-10-13 起榜内飙升段
+      有了自己的段标题，其排序键文案里也含「排名上升」（`排序=评分↓(排名上升35/…)`），
+      裸 count 会把段标题误计成第二、三份列头 —— 这正是本用例最初被写坏的方式。
     """
     from scanner.hot_watch import HotCandidate
+    from scanner.view.model import COLS_HOT, _pad
     from scanner.view.render import _render_hot_watch_region
+
+    header = " ".join(_pad(t, w, a) for t, w, a in COLS_HOT)
 
     a = HotCandidate(
         symbol="SZ300862",
@@ -1540,14 +1548,105 @@ def test_render_region_column_header_printed_exactly_once(capsys):
 
     _render_hot_watch_region([a], [b])
     both = capsys.readouterr().out
-    assert both.count("排名上升") == 1
-    assert both.index("排名上升") < both.index("300862") < both.index("榜外异动")
+    assert both.count(header) == 1
+    assert both.index(header) < both.index("300862") < both.index("榜外异动")
 
     _render_hot_watch_region([], [b])
     b_only = capsys.readouterr().out
-    assert b_only.count("排名上升") == 1
-    assert "◆ 沪深飙升" not in b_only
-    assert b_only.index("榜外异动") < b_only.index("排名上升") < b_only.index("300201")
+    assert b_only.count(header) == 1
+    # 区标题中性化后任一段非空就打（它不再描述榜内飙升段的口径）
+    assert "◆ 沪深飙升" in b_only
+    assert b_only.index("榜外异动") < b_only.index(header) < b_only.index("300201")
+
+
+# ── 「评分」/「层」拆列 + 三段段标题（2026-10-13）─────────────────────────
+
+
+def _hot_a_row(**kw):
+    from scanner.hot_watch import HotCandidate
+
+    return HotCandidate(
+        symbol="SZ300862",
+        code="300862",
+        name="榜内飙升样本",
+        exchange="SZ",
+        current=50.10,
+        percent=5.76,
+        rank_change=1257,
+        rank=3,
+        score=71.5,
+        streak=1,
+        **kw,
+    )
+
+
+def test_hot_cols_split_score_and_tier_into_separate_columns():
+    """`COLS_HOT` 必须同时有「评分」与「层」两列，且各自宽度容得下该列的取值上界。
+
+    合并成一列时的故障是：表头写「评分」，榜内异动段 / 榜外异动段的格子里却是 `T1`/`T2`
+    —— 表头与格子语义对不上。一列一名 ⇒ 两列必须同时存在，不能退回合并态。
+    """
+    from scanner.view.model import COLS_HOT, _vis_len
+
+    labels = [c[0] for c in COLS_HOT]
+    assert "评分" in labels and "层" in labels
+    assert labels.index("评分") < labels.index("层") < labels.index("连击")
+    widths = {c[0]: c[1] for c in COLS_HOT}
+    # 评分的上界 = 四权重和 100.0 → "100.0" 5 字符
+    assert _vis_len(f"{100.0:.1f}") <= widths["评分"]
+    # 「层」的取值只有 "T1"/"T2"/"—"，且表头「层」自身 2 列
+    assert max(_vis_len("T1"), _vis_len("层")) <= widths["层"]
+
+
+def test_hot_row_cells_put_score_on_a_segment_and_tier_on_b_segments():
+    """**每段只用自己那两列里的一列**，用不到的那列显 `—`（不是 0）。"""
+    from scanner.view.render import _hot_row_cells
+
+    a_cells = _hot_row_cells(_hot_a_row(), 1, board_segment=True)
+    b_cells = _hot_row_cells(_offboard_row(tier=T2), 1, board_segment=False)
+
+    assert a_cells[-3] == "71.5", "榜内飙升段：评分列显复合分"
+    assert a_cells[-2] == "—", "榜内飙升段无分层概念 ⇒ 层列显 —"
+    assert b_cells[-3] == "—", "榜外段没有复合分 ⇒ 评分列显 —（不是 0.0）"
+    assert b_cells[-2] == "T2", "榜外段：层列显分层标记"
+
+
+def test_render_region_three_segments_each_have_own_subtitle(capsys):
+    """三段名统一到「来源域·形态」同一维度，各自带段标题；区标题保持中性。
+
+    区标题此前把**榜内飙升段**的口径（「当日动能+热度跃升」）挂在**整区**标题上 ——
+    读者既判断不出榜内飙升段属榜内还是榜外，又在该段空时看到一张顶着区标题的空表。
+    故口径必须下沉到段标题，且区标题里不得残留任一段的口径词。
+    """
+    from scanner.view.render import _render_hot_watch_region
+
+    _render_hot_watch_region([_hot_a_row()], [_offboard_row(tier=T2)], [_offboard_row(tier=T1, code="300201")])
+    out = capsys.readouterr().out
+
+    for seg in ("榜内飙升", "榜内异动", "榜外异动"):
+        assert f"— {seg}" in out, f"{seg} 段必须有独立段标题"
+    region_line = next(ln for ln in out.splitlines() if "◆ 沪深飙升" in ln)
+    # 区标题只说样本面与结构，不得夹带任一段的口径
+    assert "当日动能" not in region_line
+    assert "量先动" not in region_line
+    assert "三段并列" in region_line
+
+
+def test_render_region_tier_glossary_present_in_every_tiered_segment(capsys):
+    """出现裸 `T1`/`T2` 的段，段标题里必须同时给出词表（T1=… / T2=…）。
+
+    此前榜内异动段的段标题**完全不提层**，屏幕上只有一个无从解读的 `T1`；榜外段虽有
+    排序键里的 `T1 量先动`，却没说明 T1 到底意味着什么。
+    """
+    from scanner.view.model import offboard_subtitle, onboard_subtitle
+    from scanner.view.render import _render_hot_watch_region
+
+    _render_hot_watch_region([], [_offboard_row(tier=T2)], [_offboard_row(tier=T1, code="300201")])
+    out = capsys.readouterr().out
+    assert "T1=量先动·价未动" in out, "榜内异动段段标题必须解释 T1"
+    assert "T1=量先动·价未动" in offboard_subtitle(1)
+    assert "T2=启动首日" in offboard_subtitle(1)
+    assert "T1=量先动·价未动" in onboard_subtitle(1)
 
 
 def test_render_region_skips_when_both_segments_empty(capsys):
@@ -1670,9 +1769,10 @@ def test_render_shows_dash_when_sector_blank(capsys):
 def test_scan_view_offboard_rows_rendered_by_terminal(capsys):
     """终端主屏：`view.offboard_rows` 透传到独立区（与 hot_rows 分开承载）。
 
-    2026-09-21：A 段（hot_rows）为空时不再打区块标题与 A 段列头 —— 否则终端留下一张
-    「只有列头、没有数据行」的空表，且标题（创业板·当日动能+热度跃升）描述的是 A 段口径，
-    与 B 段（榜外异动·非榜单来源）无关。B 段自带列头，见 _render_hot_watch_region。
+    2026-10-13：区标题中性化（只说样本面 + 三段结构，不描述榜内飙升段口径）后，
+    「榜内飙升段空 → 连区标题一起不打」这条 2026-09-21 决策失效 —— 它针对的故障是
+    「标题+列头孤悬在空表之上」，而标题一中性，该故障不复存在。仍不打的是**榜内飙升段
+    的段标题与列头**（那一段没有数据），列头由榜外段自带。
     """
     from scanner.display import ScanView, render_terminal
 
@@ -1690,8 +1790,9 @@ def test_scan_view_offboard_rows_rendered_by_terminal(capsys):
     out = capsys.readouterr().out
     assert "榜外异动" in out
     assert "300101" in out
-    assert "◆ 沪深飙升" not in out, "A 段空 → 不应打 A 段区块标题"
-    assert "排名上升" in out, "列头必须在（A 段没打则 B 段自带）"
+    assert "◆ 沪深飙升 · 极有可能大涨" in out, "区标题中性化 ⇒ 任一段非空就打"
+    assert "榜内飙升" not in out, "榜内飙升段无数据 ⇒ 不打它的段标题"
+    assert "排名上升" in out, "列头必须在（榜内飙升段没打则榜外段自带）"
 
 
 # ── 已删除的摘要断言（2026-09-21）─────────────────────────────────────────

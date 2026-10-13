@@ -281,15 +281,19 @@ def _watch_tail_terminal(ff_pct, beauty: str) -> str:
 
 
 def _hot_row_cells(c, idx: int, *, board_segment: bool) -> list[str]:
-    """独立区一行 → `COLS_HOT` 的 15 个单元格（**A/B 两段共用**，列集不许分叉）。
+    """独立区一行 → `COLS_HOT` 的 16 个单元格（**三段共用**，列集不许分叉）。
 
-    A 段（榜内飙升）带榜单专属量：「排名上升」= `+rank_change`、「连击」= streak（≥
-    `HOT_HIGHLIGHT_STREAK` 标 ★）、「评分」= 本区复合分。
-    B 段（榜外异动）**结构上**没有榜单排名与连击 ⇒ 显 `—`（不是 0：0 会被读成
-    「排名没动/没连击」）；「评分」列改显分层标记（T1/T2）—— B 段没有复合分，
-    该列硬填 0.0 是伪造一个不存在的量。
+    **列集统一、每列只承载一种量**（2026-10-13）。此前「评分」一列同时装榜内飙升段的
+    复合分与榜外两段的层级 `T1`/`T2`，表头与格子的语义对不上；现拆成
+    「评分」（恒为分数）与「层」（恒为 `T1`/`T2`），任一段用不到的那一列显 `—`。
 
-    「板块」（2026-09-22，两段同列同源）：值在**产出阶段**已由
+    榜内飙升段带榜单专属量：「排名上升」= `+rank_change`、「连击」= streak（≥
+    `HOT_HIGHLIGHT_STREAK` 标 ★）、「评分」= 本区复合分、「层」= `—`（本段无分层概念）。
+    榜内异动段 / 榜外异动段**结构上**没有榜单排名与连击，也没有复合分（排序键是
+    `offboard_watch.sort_key` 的元组，不引入复合权重）⇒ 「排名上升」「连击」「评分」
+    显 `—`（不是 0：0 会被读成「排名没动/没连击/评 0 分」），「层」显 `T1`/`T2`。
+
+    「板块」（2026-09-22，三段同列同源）：值在**产出阶段**已由
     `concept.attach_display_boards` 填好，本层只成形 —— 与 v1 池选同一条回退链、
     同一批数据源，故同一只票在两个区块显示同一个名字。空值显 `—`（取数失败）
     而非「其他」（确实没匹配上关键词），两者语义不同。按可见宽度 `_trunc`：
@@ -304,10 +308,12 @@ def _hot_row_cells(c, idx: int, *, board_segment: bool) -> list[str]:
             streak_str = f"{ANSI['RED']}★{streak}{ANSI['RESET']}"
         rank_str = f"+{c.rank_change}"
         score_str = f"{c.score:.1f}"
+        tier_str = "—"
     else:
         streak_str = "—"
         rank_str = "—"
-        score_str = getattr(c, "tier", "") or "—"
+        score_str = "—"
+        tier_str = getattr(c, "tier", "") or "—"
     sector = str(getattr(c, "sector", "") or "")
     return [
         str(idx),
@@ -324,6 +330,7 @@ def _hot_row_cells(c, idx: int, *, board_segment: bool) -> list[str]:
         f"{c.market_capital / 1e8:.0f}" if c.market_capital > 0 else "—",
         _trunc(sector, COLS_HOT[12][1]) if sector else "—",
         score_str,
+        tier_str,
         streak_str,
     ]
 
@@ -331,42 +338,68 @@ def _hot_row_cells(c, idx: int, *, board_segment: bool) -> list[str]:
 def _render_hot_watch_region(rows, offboard_rows=None, onboard_rows=None) -> None:
     """渲染「沪深飙升·极有可能大涨」独立区（**三段**都空时整区跳过，不留空表）。
 
-    A 段（榜内飙升，`hot_watch.HotCandidate`）、**榜内异动段**
-    （`onboard_anomaly.OffboardCandidate`，同样来自榜内但只看 T1「量先动·价未动」）
-    与 B 段（榜外异动）**同区并列、不混排**，但**两段不混排的理由不同**：
+    ## 三段并列、不混排（理由两段各不相同）
 
-    · **B 段**（榜外）：结构上恒缺 `rank_change` —— A 段复合分里该项独占 35/100，
-      而榜外票按定义不在榜上 ⇒ 混排必被永久压到最末。**这是结构性缺失，不是排序偏好。**
+    **榜内飙升段**（`hot_watch.HotCandidate`）、**榜内异动段**
+    （`onboard_anomaly.OffboardCandidate`，同样来自榜内但只看 T1「量先动·价未动」）
+    与**榜外异动段**同区并列：
+
+    · **榜外异动段**（榜外）：结构上恒缺 `rank_change` —— 榜内飙升段的复合分里该项
+      独占 35/100，而榜外票按定义不在榜上 ⇒ 混排必被永久压到最末。**这是结构性缺失，
+      不是排序偏好。**
     · **榜内异动段**（榜内）：`rank_change` **是有的**（实测 T1 带内 22/22 可得），
       混排不会因缺项而沉底。真正的理由是**两段量的不是一回事**：
-      A 段评分 = 排名跃升35/涨幅25/价格15/量能25，其中**涨幅独占 25/100**；
+      榜内飙升段评分 = 排名跃升35/涨幅25/价格15/量能25，其中**涨幅独占 25/100**；
       而 T1 的定义上界恰好是 3.5%（`MOMENTUM_LAUNCH_TODAY_MIN`）—— 涨幅越小分越低。
       换算下来 T1 票在涨幅维度最多只能拿 12.1/25 分，**混排等于把「价未动」这一段
-      的全部票系统性压在 A 段之后**，而那正是本段存在的唯一理由。
+      的全部票系统性压在榜内飙升段之后**，而那正是本段存在的唯一理由。
 
     ⚠ 不要把这两条理由合并成一句「另外两段结构上恒缺 rank_change」——对榜内异动段
       是错的。2026-09-30 首版曾这样写，后经实测（rank_change 覆盖率 100%）修正。
 
-    三段共用 `COLS_HOT`（15 列，**列集不分叉**）。列头只打一份：A 段非空时打在 A 段行
-    之前（后两段复用），否则由第一个非空的后段自带一份。
+    ## 区标题中性化（2026-10-13）
 
-    ⚠ 三段口径两两不同的可见性：榜内异动段与 B 段同门同层（`offboard_gate` +
-    `classify_tier` 的 T1 分支），口径可比；A 段要求「已涨 + 热度跃升」，另两段要求
-    「价还没动」。放同一张表但分小标题，就是为了让「口径不同」这件事在屏幕上可见。
+    区标题此前是「◆ 沪深飙升 · 极有可能大涨（创业板 · **当日动能+热度跃升** · 与上方
+    主线口径独立）」—— 括号里那半句描述的是**榜内飙升段**的口径，却挂在**整区**标题
+    上，由此产生两个具体故障：
+
+    1. **命名维度错位**：区标题「沪深飙升」是**市场名**（听着像沪深两市，实际样本面
+       只有创业板），另两段「榜内异动」「榜外异动」是**来源域名**。读者无法从名字判断
+       榜内飙升段属榜内还是榜外。
+    2. **空段时的幽灵表**：区标题与列头只在榜内飙升段非空时打（2026-09-21 用户决策，
+       因为标题带该段口径）。现在标题不再描述任何一段，三段任一非空即可打区标题。
+
+    故区标题改为**中性框架词**（只说样本面 + 三段结构），三段口径**各自下沉到段标题**
+    （`view.model.hot_subtitle` / `onboard_subtitle` / `offboard_subtitle`），
+    三段名统一到「**来源域·形态**」同一维度：榜内飙升 / 榜内异动 / 榜外异动。
+
+    ⚠ 段标题一律用 `—` 前缀、**不得**用 `◆`：`scripts/panel_m0_check.py` 的
+      `terminal_regions` 见到 `◆` 就重置当前区块，段标题带 `◆` 会把三段打散成三个
+      独立区块，破坏「沪深飙升 = 一个区块」的约定（云端 `regions.hot` 同理）。
+
+    ## 列
+
+    三段共用 `COLS_HOT`（16 列，**列集不分叉**；每列只承载一种量，见 `_hot_row_cells`
+    关于「评分 / 层」拆列的说明）。列头只打一份：榜内飙升段非空时打在它行之前
+    （后两段复用），否则由第一个非空的后段自带一份。
+
+    ⚠ 三段口径两两不同的可见性：榜内异动段与榜外异动段同门同层（`offboard_gate` +
+    `classify_tier` 的 T1 分支），口径可比；榜内飙升段要求「已涨 + 热度跃升」，另两段
+    要求「价还没动」。放同一张表但分段标题，就是为了让「口径不同」这件事在屏幕上可见。
     """
     if not rows and not offboard_rows and not onboard_rows:
         return
 
     print()
-    # A 段：**非空才打区块标题与列头**（2026-09-21 用户决策）。该标题描述的是 A 段口径
-    # （「创业板·当日动能+热度跃升」），B 段口径与它完全不同（见下方小标题）。A 段空时照打，
-    # 终端会留下一张只有列头、没有数据行的空表 —— 2026-09-21 实跑即此形（收盘后 A 段 0 只，
-    # 标题+列头孤悬在 B 段小标题之上，看起来像"本区有内容"，实际一行没有）。
+    # 区标题（2026-10-13 起中性化）：**任一段非空就打** —— 标题不再描述任何一段的
+    # 口径，故无「榜内飙升段空时标题悬在空表之上」的问题（那正是 2026-09-21 把它改成
+    # 条件打印的原因，标题一中性，该条件即失去依据）。
+    print(
+        f"{ANSI['BOLD']}{ANSI['CYAN']}◆ 沪深飙升 · 极有可能大涨{ANSI['RESET']}"
+        f"（创业板 · 三段并列·互不排名 · 与上方主线口径独立）"
+    )
     if rows:
-        print(
-            f"{ANSI['BOLD']}{ANSI['CYAN']}◆ 沪深飙升 · 极有可能大涨{ANSI['RESET']}"
-            f"（创业板 · 当日动能+热度跃升 · 与上方主线口径独立）"
-        )
+        print(f"  {ANSI['CYAN']}— 榜内飙升{ANSI['RESET']}{hot_subtitle(len(rows))}")
         print(_table_header(COLS_HOT))
         for _hi, c in enumerate(rows, 1):
             print(
@@ -375,11 +408,12 @@ def _render_hot_watch_region(rows, offboard_rows=None, onboard_rows=None) -> Non
                 + _watch_tail_terminal(c.ff_pct, c.beauty)
             )
     if onboard_rows:
-        # 榜内异动段（2026-09-30）：榜内票的 T1「量先动·价未动」，填 A/B 两段之间的空档。
-        # 小标题必须写明「榜内」来源与「未回测」——否则最自然的误读是它是 A 段的一部分
-        # （实际口径不同：A 段要求已涨）或它比 B 段可靠（实际同门同层，只是换了域）。
+        # 榜内异动段（2026-09-30）：榜内票的 T1「量先动·价未动」，填另两段之间的空档。
+        # 段标题必须写明「榜内」来源、层级词表与「未回测」——否则最自然的误读是它是榜内
+        # 飙升段的一部分（实际口径不同：那一段要求已涨）或它比榜外段可靠（实际同门同层，
+        # 只是换了域）。
         print(f"  {ANSI['CYAN']}— 榜内异动{ANSI['RESET']}{onboard_subtitle(len(onboard_rows))}")
-        # A 段空时列头还没打过 —— 本段自带一份，否则 15 列数字整片没有列名，无从解读。
+        # 榜内飙升段空时列头还没打过 —— 本段自带一份，否则 16 列数字整片没有列名，无从解读。
         if not rows:
             print(_table_header(COLS_HOT))
         for _oi, o in enumerate(onboard_rows, 1):
@@ -388,12 +422,13 @@ def _render_hot_watch_region(rows, offboard_rows=None, onboard_rows=None) -> Non
                 + _watch_tail_terminal(o.ff_pct, o.beauty)
             )
     if offboard_rows:
-        # B 段小标题必须写明「候选来源 + 排序键 + 未回测」：不写清楚，最自然的误读
-        # 就是「它和 A 段一样是热度跃升」，而两者的口径与证据强度完全不同。
+        # 榜外异动段小标题必须写明「候选来源 + 层级词表 + 排序键 + 未回测」：不写清楚，
+        # 最自然的误读就是「它和榜内飙升段一样是热度跃升」，而两者的口径与证据强度
+        # 完全不同；而屏幕上的 `T1`/`T2` 若无词表，读者的第一反应是「T 是什么的缩写」。
         # 括号正文单源在 view.model.offboard_subtitle（2026-09-22 起与飞书逐字一致）：
         # 此前两出口各写一份且都与 sort_key 不符，ANSI 只包标题、正文共用一份。
         print(f"  {ANSI['CYAN']}— 榜外异动{ANSI['RESET']}{offboard_subtitle(len(offboard_rows))}")
-        # A 段空时列头还没打过 —— B 段自带一份，否则 15 列数字整片没有列名，无从解读。
+        # 榜内飙升段空时列头还没打过 —— 本段自带一份，否则 16 列数字整片没有列名，无从解读。
         if not rows:
             print(_table_header(COLS_HOT))
         for _bi, b in enumerate(offboard_rows, 1):

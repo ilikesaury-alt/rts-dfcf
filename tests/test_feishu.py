@@ -714,3 +714,35 @@ def test_hot_row_columns_match_terminal():
     from scanner.feishu import _COLS_HOT_FEISHU
 
     assert len(_COLS_HOT_FEISHU) == len(COLS_HOT), "终端加/删了列，卡片压缩列规格没跟着改"
+
+
+def test_hot_row_score_and_tier_split_matches_terminal():
+    """卡片与终端**同**一纪律：榜内飙升段 评分=分数/层=—，榜外两段 评分=—/层=T1|T2。
+
+    2026-10-13 拆列。终端已改而卡片没改时，同一只票在手机上「评分」格显 `T2`、
+    在终端显 `—` —— 两端对不上，而 `test_hot_row_columns_match_terminal` 只保**列数**、
+    保不住**列含义**（这正是它长期没拦住这类漂移的原因），故单列一条。
+
+    断言走**列位**而非裸 `in`：行是定宽空格分隔的，裸 `in` 分不清 `71.5` 落在评分列
+    还是层列 —— 而「值落在错的列上」正是本条要拦的故障本身。
+    """
+    import re
+
+    from scanner.feishu import _COLS_HOT_FEISHU, _fmt_hot_row_feishu
+
+    score_pos, tier_pos = len(_COLS_HOT_FEISHU) - 3, len(_COLS_HOT_FEISHU) - 2
+    assert _COLS_HOT_FEISHU[score_pos] == (5, "r"), "倒数第 3 列必须是「评分」"
+    assert _COLS_HOT_FEISHU[tier_pos] == (3, "r"), "倒数第 2 列必须是「层」"
+
+    def cells(c, *, board: bool) -> list[str]:
+        line = _fmt_hot_row_feishu(c, 1, board_segment=board).strip("`")
+        # 每格非空（最窄也是 "—"）⇒ 按空白串切分恰好还原 16 格，顺序即列序
+        return re.split(r"\s+", line.strip())
+
+    a = cells(_fake_hot(score=71.5, streak=1), board=True)
+    assert a[score_pos] == "71.5", "榜内飙升段：评分列显复合分"
+    assert a[tier_pos] == "—", "榜内飙升段无分层概念 ⇒ 层列显 —"
+
+    b = cells(_fake_offboard(tier="T2"), board=False)
+    assert b[score_pos] == "—", "榜外段没有复合分 ⇒ 评分列显 —（不是 0.0）"
+    assert b[tier_pos] == "T2", "榜外段：层列显分层标记"

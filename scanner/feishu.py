@@ -52,11 +52,11 @@ from scanner.signals import fund_flow_signal, split_risk_flags
 from scanner.utils import EXTERNAL_FAILURES, to_float
 from scanner.view.assemble import _market_suggestion_text
 
-# B 段小标题括号正文单源（2026-09-22）：与终端 _render_hot_watch_region 逐字共用一份。
-# 此前本模块自持一份 09-21 层序翻转前的旧文案（写成「排序=量比→主力净占比·
-# T1 量先动/T2 启动首日」，与实际的 T2 在前**相反**），且漏了「开盘静默窗」——
-# 与上方 _pad/_trunc 同属本仓禁忌的复制，改为单源引用。
-from scanner.view.model import offboard_subtitle
+# 段小标题括号正文单源（2026-09-22 起与终端 _render_hot_watch_region 逐字共用一份；
+# 2026-10-13 榜内飙升段也下沉为段标题，故一并引用）。此前本模块自持一份 09-21 层序
+# 翻转前的旧文案（写成「排序=量比→主力净占比·T1 量先动/T2 启动首日」，与实际的 T2 在前
+# **相反**），且漏了「开盘静默窗」—— 与上方 _pad/_trunc 同属本仓禁忌的复制，改为单源引用。
+from scanner.view.model import hot_subtitle, offboard_subtitle
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ── 推送决策 ──
@@ -335,8 +335,12 @@ def _row_line(entry, view, rank=None, accum=None, score=None, is_new_entry: bool
 # 旧实现把宽度写进 f-string（`{x:>10}`），补的是**字符数**，而"万手/亿手/★"是双宽单元，
 # 于是同批输出行宽 93/97/97 参差。
 # 数值列的预算沿用 COLS_HOT 的同名列（那里已按输出上界定过），只在自由文本/低熵列上收窄：
-#   代码 12→8、名称 10→8、现价 8→7、涨幅 8→7、换手 7→6、市值 9→7、评分 6→5。
+#   代码 12→8、名称 10→8、现价 8→7、涨幅 8→7、换手 7→6、市值 9→7。
 # 成交量/成交额/连击**不收窄**（11/9/5 就是格式化上界，收窄即溢出）。
+# 评分 5 / 层 3（2026-10-13 拆列后）**不收窄**：评分的上界就是 "100.0"（四权重和 = 100，
+# `:.1f` 5 字符），收窄即溢出；「层」的取值只有 "T1"/"T2"/"—"（≤ 2 列），表头「层」
+# 自身 2 列，3 列给的是终端 COLS_HOT 同宽 + 1 列余量 —— 两出口同宽，同一张表两种口径
+# 的风险归零。
 # 「板块」14 也**不收窄**（2026-09-22）：与终端同宽，两出口在同一条截断线上 ——
 # 收窄会让同一只票在终端显示「长三角一体化」、手机上显示「长三角一体…」，
 # 同一张表两种口径（同 COLS_HIST「上次v1桶」不收窄的理由）。
@@ -356,7 +360,8 @@ _COLS_HOT_FEISHU: tuple[tuple[int, str], ...] = (
     (6, "r"),  # 换手%     "999.9%"
     (7, "r"),  # 市值(亿)  "9999亿"（HOT_MAX_MARKET_CAP 已在筛选层过滤）
     (14, "l"),  # 板块     F10 概念名（自由文本，超出 _trunc；与终端同宽）
-    (5, "r"),  # 评分      "100.0"
+    (5, "r"),  # 评分      "100.0"（四权重和 = 100）
+    (3, "r"),  # 层        "T1"/"T2"/"—"
     (5, "r"),  # 连击      "★" + streak（与 COLS_HOT 同宽）
 )
 
@@ -365,25 +370,28 @@ def _fmt_hot_row_feishu(c, idx: int, *, board_segment: bool = True) -> str:
     """飞书卡片单行：沪深飙升·极有可能大涨候选（lark_md 定宽块，无 ANSI）。
 
     单元格一律经 _pad 按**可见宽度**补位（成因见 _COLS_HOT_FEISHU 的宽度规则），
-    故每行可见宽度恒为 sum(宽度)+12 个分隔空格 = 97 列（含两侧反引号共 99）。
+    故每行可见宽度恒为 sum(宽度)+15 个分隔空格 = 100 列（含两侧反引号共 102）。
     名称是唯一自由文本列，先 _trunc 再补位——否则 5 字名（10 列）会撑破 8 列的列宽。
 
-    `board_segment=False` → B 段（榜外异动）行：与终端 `_hot_row_cells` 完全同口径 ——
-    「排名上升/连击」榜外票结构上没有 → `—`；「评分」列改显分层标记（T1/T2）。
+    `board_segment=False` → 榜内异动段 / 榜外异动段行：与终端 `_hot_row_cells` 完全
+    同口径 ——「排名上升/连击/评分」这两段结构上没有 → `—`；「层」显分层标记（T1/T2）。
     「板块」两段同列同源（2026-09-22，`concept.attach_display_boards` 在产出阶段填好），
     与 v1 池选同一条回退链 ⇒ 同票同名；空值显 `—`（取数失败）而非「其他」。
     两出口必须同口径，否则同一张表在终端和手机上含义不同（守卫
-    `tests/test_feishu.py::test_hot_row_columns_match_terminal` 只保列数，口径靠本注释）。
+    `tests/test_feishu.py::test_hot_row_columns_match_terminal` 只保列数，**列含义**由
+    `test_hot_row_score_and_tier_split_matches_terminal` 单独钉住）。
     """
     pct_str = f"+{c.percent:.1f}%" if c.percent >= 0 else f"{c.percent:.1f}%"
     accum_str = f"{c.accum_5d:+.1f}%" if c.accum_5d is not None else "—"
     if board_segment:
         rank_str = f"+{c.rank_change}"
         score_str = f"{c.score:.1f}"
+        tier_str = "—"
         streak_str = f"★{c.streak}" if c.streak >= HOT_HIGHLIGHT_STREAK else f"{c.streak}"
     else:
         rank_str = "—"
-        score_str = getattr(c, "tier", "") or "—"
+        score_str = "—"
+        tier_str = getattr(c, "tier", "") or "—"
         streak_str = "—"
     sector = str(getattr(c, "sector", "") or "")
     cells = (
@@ -401,6 +409,7 @@ def _fmt_hot_row_feishu(c, idx: int, *, board_segment: bool = True) -> str:
         f"{c.market_capital / 1e8:.0f}亿" if c.market_capital > 0 else "—",
         _trunc(sector, _COLS_HOT_FEISHU[12][0]) if sector else "—",
         score_str,
+        tier_str,
         streak_str,
     )
     body = " ".join(_pad(str(cell), width, align) for cell, (width, align) in zip(cells, _COLS_HOT_FEISHU, strict=True))
@@ -544,20 +553,26 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
         sections.append(("◆ v1 回捞", hist_lines))
 
     # ── 沪深飙升·极有可能大涨 独立区（与终端 _render_hot_watch_region 同源）──
-    # 2026-09-18 起含两段：A 段榜内飙升（hot_rows）+ B 段榜外异动（offboard_rows），
-    # 同节两段并列、不混排（成因见 model.ScanView.offboard_rows 的注释）。
+    # 两段并列、不混排（成因见 model.ScanView.offboard_rows 的注释）。**卡片不画榜内
+    # 异动段**（终端有、卡片无 —— 与「飞书过门」的取舍同性质：卡片宽度有限，且该段
+    # 与榜外异动段同门同层、无独立证据强度）。
     hot_rows = gate.hot
     offboard_rows = gate.offboard
     if hot_rows or offboard_rows:
         # 行尾标记（2026-09-16）：与 v1 回捞区共用 _marks_tail_card —— 标记是跨展示区
         # 通用的，此前只有回捞区画、飙升区不画，是同一条判定在两个出口给了两种待遇。
-        hot_lines = [
-            f"{_fmt_hot_row_feishu(c, i)}{_marks_tail_card(c.ff_pct, c.beauty)}"
-            for i, c in enumerate(hot_rows or [], 1)
-        ]
+        hot_lines: list[str] = []
+        if hot_rows:
+            # 段标题 + 括号正文与终端逐字同源（2026-10-13 区标题中性化后，两端标题层级
+            # 一致：区标题只说样本面与结构，口径下沉到段标题）。
+            hot_lines.append(f"— 榜内飙升{hot_subtitle(len(hot_rows))}")
+            hot_lines += [
+                f"{_fmt_hot_row_feishu(c, i)}{_marks_tail_card(c.ff_pct, c.beauty)}" for i, c in enumerate(hot_rows, 1)
+            ]
         if offboard_rows:
-            # B 段小标题与终端同款：候选来源 + 排序键 + 「未回测」一个都不能省 ——
-            # 否则最自然的误读就是「它与 A 段一样是热度跃升」，而证据强度完全不同。
+            # 榜外异动段小标题与终端同款：候选来源 + 层级词表 + 排序键 + 「未回测」一个
+            # 都不能省 —— 否则最自然的误读就是「它与榜内飙升段一样是热度跃升」，而证据
+            # 强度完全不同；且屏幕上的 `T1`/`T2` 无词表时无从判断它是什么。
             hot_lines.append(f"— 榜外异动{offboard_subtitle(len(offboard_rows))}")
             hot_lines += [
                 f"{_fmt_hot_row_feishu(c, i, board_segment=False)}{_marks_tail_card(c.ff_pct, c.beauty)}"
