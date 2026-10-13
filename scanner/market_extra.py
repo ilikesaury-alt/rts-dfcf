@@ -202,6 +202,16 @@ def _collect_fund_flow(box: dict, deadline: float) -> dict:
     }
     url = f"https://{FUND_FLOW_HOST}/api/qt/clist/get"
 
+    # 页级失败原因（最多留 3 条）。_page 吞掉异常后上层只看得到"0 只"，无法区分
+    # 网络不可达 / 代理拦截 / 接口无 data / 纯超时截断 —— 收集后随 box["err"] 传出。
+    errs: list[str] = []
+    err_lock = threading.Lock()
+
+    def _note_err(msg: str) -> None:
+        with err_lock:
+            if len(errs) < 3:
+                errs.append(msg)
+
     def _page(pn: int):
         p = dict(base)
         p["pn"] = str(pn)
@@ -210,9 +220,12 @@ def _collect_fund_flow(box: dict, deadline: float) -> dict:
             j = resp.json()
             data = j.get("data") if isinstance(j, dict) else None
             if not isinstance(data, dict):
+                _note_err(f"pn={pn} 响应无 data" if isinstance(j, dict)
+                          else f"pn={pn} 响应非 JSON 对象")
                 return [], None
             return data.get("diff") or [], data.get("total")
-        except EXTERNAL_FAILURES:
+        except EXTERNAL_FAILURES as e:
+            _note_err(f"pn={pn} {type(e).__name__}: {e}")
             return [], None
 
     def _absorb(diff):
@@ -252,10 +265,13 @@ def _collect_fund_flow(box: dict, deadline: float) -> dict:
     # 按默认 300s TTL 缓存，TTL 内全市场资金流静默缺失（2026-09-29 审查修复）。
     # 不置 done → 外层 fetch_fund_flow_rank 走 timed_out 部分路径（60s 短退避重试）。
     if total is None and not first:
+        box["err"] = "；".join(errs) or "首页无数据"
         return result
     total = total or len(first)
     total_pages = max(1, -(-total // _FUND_FLOW_PAGE_SIZE))
     if total_pages <= 1:
+        if errs:
+            box["err"] = "；".join(errs)
         box["done"] = True
         return result
     remaining = list(range(2, total_pages + 1))
@@ -279,15 +295,18 @@ def _collect_fund_flow(box: dict, deadline: float) -> dict:
         pool.shutdown(wait=False, cancel_futures=True)
     if completed_all:
         box["done"] = True
+    if errs:
+        box["err"] = "；".join(errs)
     return result
 
 
-def _fetch_fund_flow_bounded(timeout: float) -> tuple[dict, bool]:
-    """daemon 线程内执行并行拉取，join(timeout) 到点即返回 (已收集部分, 是否超时)。
+def _fetch_fund_flow_bounded(timeout: float) -> tuple[dict, bool, str]:
+    """daemon 线程内执行并行拉取，join(timeout) 到点即返回 (已收集部分, 是否超时, 失败原因)。
 
     不抛错：网络异常在 _page 内被吞掉 → 空/部分结果；超时由调用方按部分结果处理。
     判定"部分"的依据不只是线程是否仍在运行（线程可能在 join 超时前恰好跑完
     内部 deadline），还须看 _collect_fund_flow 是否显式标记完成（box["done"]）。
+    第三项是页级失败原因摘要（box["err"]），空串 = 没有页失败过（纯超时截断）。
     """
     box: dict = {"value": {}}
 
@@ -303,7 +322,7 @@ def _fetch_fund_flow_bounded(timeout: float) -> tuple[dict, bool]:
     if "error" in box:
         raise box["error"]
     timed_out = t.is_alive() or not box.get("done")
-    return box.get("value", {}), timed_out
+    return box.get("value", {}), timed_out, box.get("err", "")
 
 
 def fetch_fund_flow_rank() -> dict[str, dict]:
@@ -320,10 +339,16 @@ def fetch_fund_flow_rank() -> dict[str, dict]:
         return cached
     global _last_ff_partial
     try:
-        result, timed_out = _fetch_fund_flow_bounded(FUND_FLOW_FETCH_TIMEOUT)
+        result, timed_out, err = _fetch_fund_flow_bounded(FUND_FLOW_FETCH_TIMEOUT)
         if timed_out:
             _last_ff_partial = True
-            print(f"  [!] 个股资金流拉取超时，已获取 {len(result)} 只（部分数据），下一轮扫描重试补全")
+            if result:
+                print(f"  [!] 个股资金流拉取超时，已获取 {len(result)} 只（部分数据），下一轮扫描重试补全")
+            else:
+                # 0 只不是"部分数据"：首页请求失败（网络/代理/无 data）或线程连一页都没
+                # 跑完。2026-10-12 前两者共用同一文案，把真故障读成"少几只、下轮补"。
+                print(f"  [!] 个股资金流获取失败（0 只）"
+                      f"{'：' + err if err else ''}，下一轮扫描重试")
             _cache_put_all(_ff_cache, result, key, ttl=FUND_FLOW_PARTIAL_TTL_SEC)
         else:
             _last_ff_partial = False

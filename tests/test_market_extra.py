@@ -180,6 +180,21 @@ class TestFetchFundFlow:
         assert me.fetch_fund_flow_rank() == {}
         assert net.calls >= 1
 
+    def test_zero_result_not_reported_as_partial(self, monkeypatch, capsys):
+        """0 只必须报"获取失败"而非"超时（部分数据）"（2026-10-12）。
+
+        首页失败与"部分超时"共用同一文案时，真故障会被读成"少几只、下轮补"，
+        排查无从下手。失败原因须随告警打印出来。
+        """
+        import requests as _requests
+        net = _NetCounter(error=_requests.ConnectionError("host unreachable"))
+        monkeypatch.setattr(me._requests, "get", net.get)
+        assert me.fetch_fund_flow_rank() == {}
+        out = capsys.readouterr().out
+        assert "获取失败（0 只）" in out
+        assert "部分数据" not in out, "0 只不是部分数据，两种故障不得共用文案"
+        assert "host unreachable" in out, "失败原因必须可见，否则无法定位网络/代理问题"
+
     def test_empty_data_backoff(self, monkeypatch):
         # 接口返回空 data（非交易时段/无数据）→ {}，按失败短退避缓存不重复打网络
         net = _NetCounter(pages={1: {"rc": 0, "data": None}})
@@ -286,9 +301,10 @@ class TestFetchFundFlow:
             return box_["value"]  # 不置 box_["done"] → 模拟内部超时提前收工
 
         monkeypatch.setattr(me, "_collect_fund_flow", _collect_that_finishes_early)
-        value, timed_out = me._fetch_fund_flow_bounded(0.01)
+        value, timed_out, err = me._fetch_fund_flow_bounded(0.01)
         assert timed_out is True, "线程提前结束但未标记完成 → 仍应按部分结果处理"
         assert value == {"300001": {"main_net": 1.0, "main_pct": 2.0, "super_net": 0}}
+        assert err == ""
 
     def test_bounded_complete_not_timed_out(self, monkeypatch):
 
@@ -298,7 +314,7 @@ class TestFetchFundFlow:
             return box_["value"]
 
         monkeypatch.setattr(me, "_collect_fund_flow", _collect_done)
-        _, timed_out = me._fetch_fund_flow_bounded(0.01)
+        _, timed_out, _err = me._fetch_fund_flow_bounded(0.01)
         assert timed_out is False, "显式标记完成 → 判定为完整快照"
 
 
