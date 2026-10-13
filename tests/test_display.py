@@ -1225,16 +1225,11 @@ def test_beauty_mark_for_verdicts():
     assert _beauty_mark_for(bare, None) == ""  # 日线也缺 → 不标
 
 
-def test_hist_inline_marks_on_both_surfaces(capsys):
-    """回捞区行尾标记（资金流 ▲/▼ + 日线美感「稳」）必须在终端与飞书两端都落地。
+def test_hist_inline_marks_on_feishu_only(capsys):
+    """回捞区行尾标记（资金流 ▲/▼ + 日线美感「稳」）在飞书卡片落地。
 
-    2026-09-16 起两端都不再打印冗长图例（飞书卡片按用户决策移除；终端同款图例亦已注释），
-    只保留行内标记。图例冗余移除后，行内标记是用户唯一能读到的强弱信号，不能丢 ——
-    本用例守护「标记两端都不丢」。
-
-    2026-09-28 起恢复**一行**极简「反误读」图例，同日再次按用户决策「去掉显示读法」
-    整行移除 —— 现在两端只留行内标记，图例文案单源 scanner/label_registry.legend_line
-    保留但不渲染（反向守卫见文末断言）。
+    2026-09-28 用户决策：终端隐藏 v1 回捞区块，飞书卡片仍保留。
+    终端不再渲染该区，故不检查终端输出；飞书卡片仍应带行内标记。
     """
     from scanner.feishu import build_feishu_card
     from scanner.historical_watch import HistCandidate
@@ -1258,24 +1253,19 @@ def test_hist_inline_marks_on_both_surfaces(capsys):
             rec_score=70,
             cum_pct=3.5,
             market_cap=8e11,
-            ff_pct=-6.2,  # ≤-5% → 终端 ▼ / 卡片 🔴（2026-09-28 正流入不再画）
+            ff_pct=-6.2,  # ≤-5% → 卡片 🔴（2026-09-28 正流入不再画）
             beauty="稳",
             score=66.0,
         )
     ]
-    disp_mod.render_terminal(view)
-    terminal_out = capsys.readouterr().out
+    # 终端不再渲染 v1 回捞区，只检查飞书卡片
     card_text = str(build_feishu_card(view, gem_total=100))
-    assert "本区无分时档" not in terminal_out, "冗长图例已移除，不应再出现"
-    assert "▼ 稳" in terminal_out, f"终端行尾应带资金流 ▼ 与日线美感「稳」：{terminal_out[:200]}"
     assert "🔴 稳" in card_text, f"卡片行尾应带 emoji 资金流与「稳」：{card_text[:200]}"
-    # 2026-09-28 同日第二次决策：图例整行移除（「去掉显示读法」）→ 反向守卫。
-    # 文案单源 legend_line 本身仍在 registry 里（另见 test_label_registry），只是两端都不再打。
+    # 图例反向守卫：两端都不再打图例
     from scanner.label_registry import legend_line
 
     hist_legend = legend_line("hist")
     assert hist_legend.startswith("读法：")
-    assert hist_legend not in terminal_out, f"终端不应再打回捞区图例：{hist_legend}"
     assert hist_legend not in card_text, f"卡片不应再打回捞区图例：{hist_legend}"
 
 

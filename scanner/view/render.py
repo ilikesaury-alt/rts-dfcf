@@ -610,8 +610,9 @@ def render_terminal(view: ScanView) -> None:
 
     # 终选参考区（2026-09-08 起与决策层合并渲染；2026-09-14 决策层删除后本区独立；
     # 2026-09-21 按用户决策**整体删除**——连同 scanner/final_pick.py、scanner/decision.py
-    # 与 ScanView.final_pick_lines 字段）。终端现状只剩四个区块：
-    # v1 池选 / v1 回捞 / 沪深飙升（A 段） / 榜外异动（B 段），四区互不排名。
+    # 与 ScanView.final_pick_lines 字段）。终端现状只剩三个区块：
+    # v1 池选 / 沪深飙升（A 段） / 榜外异动（B 段），三区互不排名。
+    # v1 回捞于 2026-09-28 按用户决策隐藏。
     # 需复原见 git 历史。
 
     # ── 主表 / v2 池选区共用行渲染（同列 spec，行尾标记与回马枪/低吸区同源）──
@@ -727,7 +728,8 @@ def render_terminal(view: ScanView) -> None:
     # 候选来自 recommendations（前 N 个交易日的 v1 产出），与上方 v1 池选的「今日在榜票」
     # 样本域**互斥**（默认剔除今日已推荐票）—— 并列为两区而不是合并成一区，正是因为
     # 同一只票不可能同时出现在两边，不存在「同屏两种结论」的风险。
-    _render_hist_watch_region(view.hist_rows)
+    # 2026-09-28 用户决策：终端隐藏 v1 回捞区块
+    # _render_hist_watch_region(view.hist_rows)
 
     _render_hot_watch_region(view.hot_rows, view.offboard_rows, view.onboard_rows)
 
@@ -737,9 +739,9 @@ def render_terminal(view: ScanView) -> None:
     _render_push_gate_region(view)
 
     # 综合判断摘要（2026-09-17 重写的「分区体检报告」）已于 2026-09-21 按用户决策整体
-    # 删除：终端因此**只剩四个区块**（v1 池选 / v1 回捞 / 沪深飙升 A 段 / 榜外异动 B 段），
-    # 且四区互不排名、不给出任何买卖结论。需复原见 git 历史（_build_summary 与其
-    # ScanView.summary 字段同批移除）。
+    # 删除：终端因此**只剩三个区块**（v1 池选 / 沪深飙升 A 段 / 榜外异动 B 段），
+    # v1 回捞于 2026-09-28 按用户决策隐藏。三区互不排名、不给出任何买卖结论。
+    # 需复原见 git 历史（_build_summary 与其 ScanView.summary 字段同批移除）。
 
 
 def display_priority(
