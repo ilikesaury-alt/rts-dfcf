@@ -340,6 +340,13 @@ _LIVE_FIELD_MAP: tuple[tuple[str, str], ...] = (
     ("float_market_capital", "float_cap"),
 )
 
+# 🔴 `_LIVE_FIELD_MAP` 里**有符号**的字段（2026-10-14 修复 P1）：负值是合法行情
+# （今日跌幅），只有 None / 0 才是脏值。这些字段**不可**套用 `_apply_live_quote`
+# 对量纲字段的 `val > 0` 守卫 —— 见该函数 docstring 的实测故障。
+# 目前只有 `percent`：其余六项（price/volume/amount/turnover/两个市值）都是量纲，
+# 0 即停牌或脏值，沿用原守卫。改动本表须同步复核「有符号 vs 量纲」的归类。
+_SIGNED_LIVE_FIELDS: frozenset[str] = frozenset({"percent"})
+
 
 def _apply_live_quote(payload: dict, quote: dict) -> bool:
     """把**实时**报价就地覆盖进快照 payload，返回是否覆盖成功。
@@ -360,6 +367,25 @@ def _apply_live_quote(payload: dict, quote: dict) -> bool:
 
     覆盖是**逐字段**的（见 `_LIVE_FIELD_MAP` 的两类排除项），不是整行替换。
 
+    🔴 「有符号 vs 量纲」不可一刀切（2026-10-14 修复 P1，实测故障）
+    ---------------------------------------------------------
+    覆盖守卫曾对**所有**字段一律 `val > 0`。该守卫对量纲字段是对的（0 = 停牌/脏值，
+    覆盖会把可交易票误杀），但 **`percent` 是有符号的** —— 票一翻绿，实时 percent 就是
+    负数，被守卫挡在门外 ⇒ 快照里那个**陈旧的正涨幅永久留下**，而同一行的 price/
+    volume/amount/turnover 照常被刷成实时值。后果三重：
+
+      1. **展示的涨幅是假的**：2026-10-14 实测 300758 七彩化学 —— 快照冻结在 09:44:35
+         的 +2.85%（12.29/11.95），10:17 实时已是 **11.80/−1.26%**（last_close 11.95），
+         终端仍显示 **+2.85%**。用户看到的就是这一行。
+      2. **现价与涨幅自相矛盾**：同一行 price 是实时的、percent 是陈旧的，两者对不上
+         （11.80 对 +2.85%），比「整体略旧」更伤 —— 它看起来是**算错了**，而不是**旧了**。
+      3. **门也在陈旧值上判定**：`offboard_gate` 的 `percent > HOT_MIN_PERCENT(=0)`
+         与 `classify_tier` 的 T1/T2 涨幅带都读这列 ⇒ 一只**已经翻绿**的票持续以
+         「上涨异动」的身份留在榜外异动段里，直接违反本段「不接跌」的立段前提。
+
+    修法：有符号字段只挡 `None`，量纲字段仍挡 `<= 0`（`_SIGNED_LIVE_FIELDS`）。
+    修好后该票会被 `offboard_gate` 正常拒掉 —— 这才是「不接跌」。
+
     返回 False = 实时行情无该票/无有效字段，调用方保留快照值（fail-open）。
     """
     if not quote:
@@ -367,9 +393,14 @@ def _apply_live_quote(payload: dict, quote: dict) -> bool:
     applied = False
     for q_key, snap_key in _LIVE_FIELD_MAP:
         val = to_float(quote.get(q_key), None)
-        if val is not None and val > 0:
-            payload[snap_key] = val
-            applied = True
+        if val is None:
+            continue
+        # 有符号字段（今日涨幅）负值合法，只挡 None；量纲字段仍要挡 <= 0（停牌/脏值）。
+        # 一刀切 `val > 0` 会让翻绿的票永远刷不进实时涨幅 —— 见 docstring 的实测故障。
+        if q_key not in _SIGNED_LIVE_FIELDS and val <= 0:
+            continue
+        payload[snap_key] = val
+        applied = True
     # 名称一并刷新（雪球批量行情带 name）：通用门的 ST 判定依赖名称，
     # 用陈旧名称判 ST 与用陈旧价判涨幅是同一类错误。
     nm = str(quote.get("name") or "").strip()

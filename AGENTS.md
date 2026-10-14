@@ -433,6 +433,20 @@ tests/                      # pytest suite
   `last_close`；`quote.json?extend=detail`（单票）才有这三个字段。故 hot_watch 用
   batch 做排除与打分，涨跌停价由 `last_close` 推算（`limit_prices`），仅对最终前 N 名
   补拉 detail 拿量比。
+- **「实时行情覆盖」里量纲字段与有符号字段不可一刀切**（2026-10-14 实测故障，
+  `offboard_watch._apply_live_quote`）：覆盖守卫曾对所有字段一律 `val > 0` —— 对量纲
+  字段（price/volume/amount/turnover/市值，0 = 停牌或脏值）是对的，但 **`percent`
+  是有符号的**，票一翻绿就被挡在门外 ⇒ 快照里冻结的**陈旧正涨幅永远留下**，而同行的
+  price/volume/amount 照刷成实时值。实测 300758 七彩化学：快照 09:44:35 停在 +2.85%
+  （12.29），10:17 实时已 **11.80/−1.26%**（last_close 11.95），终端仍显示 **+2.85%** ——
+  同一行里现价是新的、涨幅是旧的，**两者对不上**，比「整体略旧」更伤：它看起来像
+  *算错了* 而不是 *旧了*。更糟的是门也读这列（`offboard_gate` 的 `percent > HOT_MIN_PERCENT`
+  = 0），已翻绿的票会持续以「上涨异动」身份留在榜外异动段，直接违反本段「不接跌」的立段前提。
+  修法：`_SIGNED_LIVE_FIELDS`（现只含 `percent`）只挡 `None`，量纲字段仍挡 `<= 0`；
+  守卫 `test_apply_live_quote_accepts_negative_percent_over_stale_positive` +
+  `test_apply_live_quote_still_rejects_nonpositive_magnitude_fields`（后者防**反向**过度放宽）。
+  ⚠ `offboard_launch_log.percent` 的**冻结**语义（同上，「信号值首次写入即冻结」）**不受本次
+  修复影响**，刻意不动 —— 那是「它当初以什么身份被推出」的存档，不是展示值。
 - **`.env`** file contains secrets (THS API key, Feishu webhook override). Never commit it.
 
 ## Testing notes

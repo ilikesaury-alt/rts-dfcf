@@ -49,6 +49,7 @@ from scanner.offboard_watch import (
     T2,
     OffboardCandidate,
     _apply_live_fund_flow,
+    _apply_live_quote,
     _clean_bars,
     _read_cached_klines,
     _save_klines,
@@ -218,6 +219,17 @@ class _FakeKlineAdapter:
         if symbol in self._fail:
             raise OSError("network down")
         return list(self._bars.get(symbol, []))
+
+
+class _FakeQuoteAdapter(_FakeKlineAdapter):
+    """假数据源：在 K 线能力之上补 `fetch_hot_quotes_batch`（B 段实时行情补全用）。"""
+
+    def __init__(self, quotes=None, bars=None, fail=()):
+        super().__init__(bars=bars, fail=fail)
+        self._quotes = quotes or {}
+
+    def fetch_hot_quotes_batch(self, symbols):
+        return {s: self._quotes[s] for s in symbols if s in self._quotes}
 
 
 # ── 单源派生（不许复制常量）──────────────────────────────────────────────────
@@ -1239,6 +1251,118 @@ def test_run_offboard_watch_db_path_applies_live_fund_flow(db, monkeypatch):
     assert len(rows) == 1
     assert rows[0].main_pct == pytest.approx(5.5)
     assert rows[0].volume_ratio == pytest.approx(2.2)
+
+
+# ── P1 实时涨幅覆盖：有符号字段不可套「val > 0」守卫（2026-10-14）─────────────
+#
+# 实测故障：2026-10-14 10:17，300758 七彩化学快照冻结在 09:44:35 的 +2.85%（12.29），
+# 实时已是 11.80/−1.26%（last_close 11.95），终端仍显示 **+2.85%**。守卫对量纲字段
+# （0 = 停牌/脏值）是对的，对有符号的 `percent` 是反的 —— 票一翻绿，实时涨幅就被
+# 挡在门外，陈旧正值永远留下，且同行的 price/volume/amount 照刷成实时值 ⇒ 屏幕上一行
+# 里「现价是新的、涨幅是旧的」，两者对不上，看起来像**算错了**而不是**旧了**。
+# 门也读这列 ⇒ 已翻绿的票继续以「上涨异动」留在本段，直接违反「不接跌」的立段前提。
+
+
+def test_apply_live_quote_accepts_negative_percent_over_stale_positive():
+    """有符号字段（今日涨幅）负值合法：必须覆盖掉陈旧的正涨幅，且与现价同批刷新。
+
+    用真实数值复刻 300758 七彩化学 2026-10-14 的那一行，便于对照排查。
+    """
+    payload = _payload(name="七彩化学", price=12.29, percent=2.85, volume=67388.0)
+    ok = _apply_live_quote(
+        payload,
+        {
+            "symbol": "SZ300758",
+            "name": "七彩化学",
+            "current": 11.80,
+            "percent": -1.26,
+            "volume": 13139600.0,
+            "amount": 158698935.0,
+            "turnover_rate": 3.65,
+            "market_capital": 4.9e9,
+            "float_market_capital": 4.4e9,
+        },
+    )
+    assert ok is True
+    # 涨幅不再停在陈旧正值，且与实时现价自洽（11.80 / 11.95 − 1 = −1.26%）
+    assert payload["percent"] == pytest.approx(-1.26)
+    assert payload["price"] == pytest.approx(11.80)
+    assert (payload["price"] / 11.95 - 1) * 100 == pytest.approx(payload["percent"], abs=0.02)
+
+
+def test_apply_live_quote_still_rejects_nonpositive_magnitude_fields():
+    """量纲字段的 `<= 0` 守卫**不许**被这次修复一并放宽：0 = 停牌/脏值，覆盖会误杀可交易票。"""
+    payload = _payload(price=10.0, volume=2.0e6, amount=8.0e7, total_cap=3.6e9)
+    _apply_live_quote(
+        payload,
+        {
+            "current": 10.5,  # 有效 → 覆盖
+            "volume": 0.0,  # 停牌 → 不覆盖
+            "amount": 0.0,
+            "market_capital": 0.0,
+            "float_market_capital": None,  # 缺字段 → 不覆盖
+        },
+    )
+    assert payload["price"] == pytest.approx(10.5)
+    assert payload["volume"] == pytest.approx(2.0e6)
+    assert payload["amount"] == pytest.approx(8.0e7)
+    assert payload["total_cap"] == pytest.approx(3.6e9)
+    assert payload["float_cap"] == pytest.approx(3.0e9)
+
+
+def _seed_stale_snapshot(db, sym: str, day: str, **payload_kw) -> None:
+    """往内存库塞一行**陈旧**快照（模拟全市场拉取超时、该行冻结在上一轮）。"""
+    db.execute(
+        "INSERT INTO market_extra_cache VALUES (?,?,?,?)",
+        (sym, "fund_flow", day, json.dumps(_payload(**payload_kw))),
+    )
+    db.commit()
+
+
+def test_run_offboard_watch_db_path_drops_stock_that_turned_red(db, monkeypatch):
+    """翻绿的榜外票必须被拒（「不接跌」），而不是拿着陈旧正涨幅继续展示。
+
+    修复前该票会以 +2.85% 留在榜外异动段里 —— 屏幕显示的是 09:44 的涨幅，
+    用户以为它在涨，实际早已翻绿。
+    """
+    day = now_beijing().date().isoformat()
+    sym = "SZ300758"
+    _seed_stale_snapshot(db, sym, day, name="七彩化学", price=12.29, percent=2.85)
+    monkeypatch.setattr("scanner.offboard_watch.fetch_fund_flow_rank", lambda: {})
+    adapter = _FakeQuoteAdapter(
+        quotes={
+            sym: {
+                "symbol": sym,
+                "name": "七彩化学",
+                "current": 11.80,
+                "percent": -1.26,  # 实时已翻绿
+                "volume": 1.31396e7,
+                "amount": 1.58698935e8,
+                "turnover_rate": 3.65,
+            }
+        }
+    )
+    rows = run_offboard_watch(adapter, db, [], top_n=5, klines={sym: _bars(_UP_SERIES, day)})
+    assert rows == [], "实时已翻绿的票不得留在榜外异动段"
+
+    # 对照：实时仍为正 ⇒ 放行，且产出行携带的是**实时**涨幅而非陈旧值
+    adapter2 = _FakeQuoteAdapter(
+        quotes={
+            sym: {
+                "symbol": sym,
+                "name": "七彩化学",
+                "current": 12.12,
+                "percent": 1.42,
+                "volume": 1.31396e7,
+                "amount": 1.58698935e8,
+                "turnover_rate": 3.65,
+            }
+        }
+    )
+    rows2 = run_offboard_watch(adapter2, db, [], top_n=5, klines={sym: _bars(_UP_SERIES, day)})
+    assert len(rows2) == 1
+    assert rows2[0].percent == pytest.approx(1.42)
+    assert rows2[0].current == pytest.approx(12.12)
 
 
 # ── 留存（dwell，2026-10-09）────────────────────────────────────────────────
