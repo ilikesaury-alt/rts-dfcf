@@ -4,9 +4,11 @@
 
 A-share (创业板) stock scanner that watches the Xueqiu biaosheng (飙升) leaderboard, scores candidates across 5 strategy buckets (rebound, known_new_face, momentum, new_face, short_term), and surfaces them for a "next-day big-rise" (次日大涨) read. SQLite-backed, dual data source (Xueqiu primary + THS fallback).
 
-**输出形态（2026-09-21 定稿，2026-10-13 名称/层级重整）**：终端与飞书**只有四个区块**，
-各自成表、互不排名、不给结论：`v1 池选`（榜上主线五桶）/ `v1 回捞`（前 N 日 v1 产出
-今日回调到位）/ `沪深飙升 · 极有可能大涨` 同节三段（榜内飙升 / 榜内异动 / 榜外异动）。
+**输出形态（2026-09-21 定稿，2026-10-13 名称/层级重整）**：各自成表、互不排名、不给结论。
+**终端三个区块**：`v1 池选`（榜上主线五桶）/ `沪深飙升 · 极有可能大涨` 同节三段（榜内飙升 /
+榜内异动 / 榜外异动）。**`v1 回捞`（前 N 日 v1 产出今日回调到位）自 2026-09-28 终端隐藏、
+飞书卡片保留**（用户决策）：`hist_rows` 链路照常计算，喂飞书回捞节与过门区「回捞」组；
+`python -m scanner.historical_watch` 独立运行仍可单独渲染该区。
 
 ⚠ **2026-10-13 名称与层级重整**（用户反馈「名称和层级好混乱」）。改这三条，任何一条
 都必须同批改另一个：
@@ -219,7 +221,7 @@ This rebuilds scores via `scanner/historical_rescan.py --rescore` (faithful to t
 
 ## 飞书推送过滤门（`scanner/push_gate.py`，2026-09-28）
 
-**唯一出口 = 飞书卡片**；终端四区块**零改动**。纯展示层：不写库、不改 `excluded`、
+**唯一出口 = 飞书卡片**；终端区块**零改动**。纯展示层：不写库、不改 `excluded`、
 不落 `recommendations`、不影响回测/归因样本口径。开关 `RTS_PUSH_GATE=0` 整体回滚。
 
 ```text
@@ -253,7 +255,7 @@ This rebuilds scores via `scanner/historical_rescan.py --rescore` (faithful to t
 ## pool_pick 退池（2026-09-28，v2 池管道整体删除）
 
 **判据：以当前终端输出为准。** `pool_pick` 自 2026-09-14 展示区隐藏、2026-09-21
-合池消费方删除后，在终端四区块与飞书卡片里**均无任何呈现**，却仍日产 27~76 行落
+合池消费方删除后，在终端各区块与飞书卡片里**均无任何呈现**，却仍日产 27~76 行落
 `recommendations`（占全部行 47~65%），而 sym-day 去重口径 hit≥7% 仅 **3.0%**（n=986），
 低于 `CATEGORY_HIT_RATE_DEFAULT` 0.078 —— 全表唯一负超额桶。
 

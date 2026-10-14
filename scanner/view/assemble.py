@@ -505,7 +505,8 @@ def build_scan_view(
     # 以及 scanner/decision.py、scanner/final_pick.py 两个模块全部移除。
     # 需复原见 git 历史。
     # ⚠ 展示通路现在**没有任何合池/短名单环节**：main_recs 直接渲染，
-    #   四区（v1 池选 / v1 回捞 / 沪深飙升 / 榜外异动）各自独立、互不排名。
+    #   四区（v1 池选 / v1 回捞 / 沪深飙升 / 榜外异动）各自独立、互不排名
+    #   （v1 回捞自 2026-09-28 终端隐藏、仅飞书卡片渲染；ScanView.hist_rows 仍照常产出）。
 
     # 综合判断摘要（2026-09-17 重写的那版「分区体检报告」）已于 2026-09-21 按用户决策
     # **整体删除** —— 连带 _build_summary 函数、SUMMARY_* 观察线常量、ScanView.summary

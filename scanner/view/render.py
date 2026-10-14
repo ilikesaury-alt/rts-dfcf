@@ -482,6 +482,9 @@ def render_offboard_standalone(rows) -> None:
 def _render_hist_watch_region(rows) -> None:
     """渲染「v1 回捞」独立区（无结果时整区跳过，不留空表）。
 
+    终端主屏自 2026-09-28 起不再调用（用户决策「终端隐藏、飞书卡片保留」）；
+    仅 `python -m scanner.historical_watch` 独立运行使用。
+
     行元素为 scanner.historical_watch.HistCandidate（主循环内已算好），本函数只做渲染
     —— 与 render_terminal 的「只画不算」纪律一致。形参取行列表而非 ScanView，理由同
     _render_hot_watch_region：独立运行（`python -m scanner.historical_watch`）不必构造

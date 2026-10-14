@@ -39,7 +39,8 @@ from scanner.view.assemble import build_scan_view  # noqa: E402
 from scanner.view.render import render_terminal  # noqa: E402
 
 SYM_RE = re.compile(r"\bS[ZH]\d{6}\b")
-# 区块标题：终端四区块的固定前缀。用来把一张大表切成四个区域分别比对。
+# 区块标题：各出口区块标题的固定前缀（终端 3 区 + 飞书回捞节/过门区，v1 回捞自
+# 2026-09-28 终端隐藏、仅飞书/面板渲染）。用来把一张大表切成各区域分别比对。
 REGION_RE = re.compile(r"^\s*◆\s*(v1 池选|v1 回捞|沪深飙升|榜外异动|飞书过门)")
 
 
