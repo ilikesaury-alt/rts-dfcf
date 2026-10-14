@@ -129,7 +129,7 @@ def _fake_hot(**over):
     """构造一条 HotCandidate（飙升区行），默认值为「正常交易中的创业板票」。"""
     from scanner.hot_watch import HotCandidate
 
-    fields = {
+    fields: dict[str, Any] = {
         "symbol": "SZ300001",
         "code": "300001",
         "name": "特锐德",
@@ -154,7 +154,7 @@ def _fake_offboard(**over):
     """构造一条 OffboardCandidate（B 段榜外行），默认值为「正常交易中的创业板票」。"""
     from scanner.offboard_watch import T2, OffboardCandidate
 
-    fields = {
+    fields: dict[str, Any] = {
         "symbol": "SZ300201",
         "code": "300201",
         "name": "榜外样本",
@@ -746,3 +746,20 @@ def test_hot_row_score_and_tier_split_matches_terminal():
     b = cells(_fake_offboard(tier="T2"), board=False)
     assert b[score_pos] == "—", "榜外段没有复合分 ⇒ 评分列显 —（不是 0.0）"
     assert b[tier_pos] == "T2", "榜外段：层列显分层标记"
+
+
+def test_offboard_repeat_rows_get_tail_marker_outside_code_block():
+    """🔁 尾标（2026-10-14）挂在定宽块（反引号）**之外**：块本体恒宽不受影响
+    （宽度守卫 test_hot_row_width_is_uniform 量的只是块本体）；达标行行尾
+    " 🔁"，未达标行与 A 段行（HotCandidate 无该字段）不标 —— 与终端粉名同判定不同形状。"""
+    from scanner.config import OFFBOARD_REPEAT_MIN_HITS
+    from scanner.feishu import _fmt_hot_row_feishu, _repeat_tail_card
+
+    c = _fake_offboard(repeat_days=OFFBOARD_REPEAT_MIN_HITS)
+    row = _fmt_hot_row_feishu(c, 1, board_segment=False)
+    assert row.startswith("`") and row.endswith("`")
+    assert "🔁" not in row, "尾标不得进定宽块（emoji 宽度会撑破对齐）"
+
+    assert _repeat_tail_card(c) == " 🔁"
+    assert _repeat_tail_card(_fake_offboard(repeat_days=OFFBOARD_REPEAT_MIN_HITS - 1)) == ""
+    assert _repeat_tail_card(_fake_hot()) == ""

@@ -3,6 +3,7 @@ from scanner.config import (
     FUND_OUTFLOW_NET_PCT,
     HIST_LOOKBACK_DAYS,
     HOT_HIGHLIGHT_STREAK,
+    OFFBOARD_REPEAT_MIN_HITS,
     PUSH_GATE_ENABLED,
     TOP40_THRESHOLD,
     now_beijing,
@@ -39,6 +40,7 @@ from scanner.view.model import *  # noqa: F401,F403
 __all__ = (
     "ANSI",
     "CAT_COLOR",
+    "console_safe",
     "_ANSI_ESCAPE",
     "_fmt_hot_amount",
     "_fmt_hot_volume_hand",
@@ -300,6 +302,15 @@ def _hot_row_cells(c, idx: int, *, board_segment: bool) -> list[str]:
     F10 概念名无上界，不截会撑破定宽对齐（与主表 _print_priority_row 同处理）。
 
     量比/市值/成交额可能因快照缺字段而为 0 → 显示 —（不伪造为 0.00）。
+
+    「反复出现」粉名（2026-10-14，**只有榜外异动段会命中**；同日用户反馈：颜色与
+    其他区域统一用粉红，不要五彩斑斓）：近 OFFBOARD_REPEAT_WINDOW_DAYS 个自然日内
+    ≥ OFFBOARD_REPEAT_MIN_HITS 个不同信号日进前十、或今日反复进前十
+    （计数由 `offboard_watch.recent_repeat_counts` 回填在 `repeat_days` 上）⇒
+    名称加粉+粗（MAGENTA，与主表核心行 / 回捞「稳」标同一把颜色）。榜内两段该注记
+    恒 0（A 段 HotCandidate 无此字段、榜内异动段不回填），getattr 兜底 ⇒ 三段共用
+    本函数不会误染。ANSI 由 `_table_row` 的 `_vis_len` 剥离后量宽，不影响定宽对齐
+    （与 pct_colored / ★ 同一机制）。
     """
     if board_segment:
         streak = c.streak
@@ -315,10 +326,13 @@ def _hot_row_cells(c, idx: int, *, board_segment: bool) -> list[str]:
         score_str = "—"
         tier_str = getattr(c, "tier", "") or "—"
     sector = str(getattr(c, "sector", "") or "")
+    name = c.name
+    if getattr(c, "repeat_days", 0) >= OFFBOARD_REPEAT_MIN_HITS:
+        name = f"{ANSI['BOLD']}{ANSI['MAGENTA']}{name}{ANSI['RESET']}"
     return [
         str(idx),
         c.code,
-        c.name,
+        name,
         pct_colored(c.percent),
         f"{c.accum_5d:+.2f}%" if c.accum_5d is not None else "—",
         f"{c.current:.2f}" if c.current else "—",
@@ -427,7 +441,11 @@ def _render_hot_watch_region(rows, offboard_rows=None, onboard_rows=None) -> Non
         # 完全不同；而屏幕上的 `T1`/`T2` 若无词表，读者的第一反应是「T 是什么的缩写」。
         # 括号正文单源在 view.model.offboard_subtitle（2026-09-22 起与飞书逐字一致）：
         # 此前两出口各写一份且都与 sort_key 不符，ANSI 只包标题、正文共用一份。
-        print(f"  {ANSI['CYAN']}— 榜外异动{ANSI['RESET']}{offboard_subtitle(len(offboard_rows))}")
+        # ⚠ 必须过 console_safe：段标题含 🔁（2026-10-14 重现标识），Windows GBK
+        # 控制台直接 print emoji 会 UnicodeEncodeError 崩掉整轮 —— 独立 CLI 入口
+        # （render_offboard_standalone / render_hot_watch_standalone）没有
+        # unified_scanner 入口的 reconfigure 保护，见 model.console_safe 说明。
+        print(f"  {ANSI['CYAN']}— 榜外异动{ANSI['RESET']}{console_safe(offboard_subtitle(len(offboard_rows)))}")
         # 榜内飙升段空时列头还没打过 —— 本段自带一份，否则 16 列数字整片没有列名，无从解读。
         if not rows:
             print(_table_header(COLS_HOT))

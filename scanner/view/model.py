@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 from dataclasses import dataclass
 
 import wcwidth
@@ -72,6 +73,26 @@ from scanner.categories import CATEGORY_COLOR_KEYS  # noqa: E402
 
 CAT_COLOR = {name: ANSI[key] for name, key in CATEGORY_COLOR_KEYS.items()}
 
+# stdout 编码兜底（2026-10-14）：Windows 控制台默认 GBK（936）代码页，段标题里的
+# emoji（🔁）不在其字符集内 ⇒ print 直接 UnicodeEncodeError 崩掉整轮渲染 ——
+# 而 `unified_scanner.py` 入口的 reconfigure(utf-8) 保护不到
+# `render_offboard_standalone` / `render_hot_watch_standalone`（CLI 走这两条）。
+# 修法在**终端层**（本模块）而非文案单源：`offboard_subtitle` 是两端逐字同源的
+# 单源，飞书不过 stdout、不需要兜底；改文案会破坏双端一致性。
+# ⚠ 只降级**在段标题/自由文本里出现**的 emoji；行尾标记的 ★/▼/稳 都在 GBK 字符集内，
+# 不经过本函数。
+_CONSOLE_SAFE_FALLBACK = {"🔁": "复"}
+
+
+def console_safe(text: str) -> str:
+    """stdout 编码不支持字符 → 等义 ASCII/中文替代（GBK 控制台不崩）。"""
+    try:
+        text.encode(sys.stdout.encoding or "utf-8")
+        return text
+    except (UnicodeEncodeError, LookupError):
+        return "".join(_CONSOLE_SAFE_FALLBACK.get(ch, ch) for ch in text)
+
+
 # 叶子辅助 + 视图模型（model 层，不依赖 assemble/render）
 
 __all__ = (
@@ -86,6 +107,7 @@ __all__ = (
     "_ANSI_ESCAPE",
     "_FUND_FLOW_ICON",
     "_beauty_mark_for",
+    "console_safe",
     "_entry_dip_labels",
     "_entry_row_suffix",
     "_entry_sector",
@@ -534,13 +556,15 @@ def hot_subtitle(n: int) -> str:
 
 
 def offboard_subtitle(n: int) -> str:
-    """**榜外异动段**小标题括号正文：候选来源 + 层级词表 + 排序键 + 开盘静默窗 + 规模 + 证据强度。
+    """**榜外异动段**小标题括号正文：候选来源 + 层级词表 + 排序键 + 开盘静默窗 + 重现标识 + 规模 + 证据强度。
 
-    六项缺一不可（顺序固定）：漏「排序键」→ 最自然的误读是「它和榜内飙升段一样是
+    七项缺一不可（顺序固定）：漏「排序键」→ 最自然的误读是「它和榜内飙升段一样是
     热度跃升」，而两者口径与证据强度完全不同；漏「层级词表」→ 屏幕上只剩裸的
     `T1`/`T2`，无任何上下文可推出它是什么（2026-10-13 用户反馈：名称与层级混乱）；
     漏「未回测」→ 高估证据强度；漏「开盘静默窗」→ 掩盖排序键自身的成立前提
-    （`offboard_watch.sort_key` docstring：量比失真与静默窗「是一组，不可只删其一」）。
+    （`offboard_watch.sort_key` docstring：量比失真与静默窗「是一组，不可只删其一」）；
+    漏「重现标识」（2026-10-14）→ 粉名/🔁 无从解读 —— 图例行已按用户决策双端移除
+    （2026-09-28「去掉显示读法」），段标题是标识含义的唯一出口。
 
     ⚠ 两处 `T1`/`T2` 出现**刻意不合并**：「层级 T1=… / T2=…」是 `=` 号的**词表**
     （这层是什么意思），「排序=T2 启动首日→T1 量先动→…」里的两层是**排序键的第一级**
@@ -562,6 +586,7 @@ def offboard_subtitle(n: int) -> str:
         "层级 T1=量先动·价未动 / T2=启动首日·"
         "排序=T2 启动首日→T1 量先动→量比→主力净占比"
         f"·开盘 {OFFBOARD_OPENING_SILENCE_MIN} 分内不产出(量比失真)"
+        f"·粉名/🔁=反复进前十"
         f"·{n} 只·观察段·未回测）"
     )
 

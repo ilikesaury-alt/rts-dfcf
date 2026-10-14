@@ -13,6 +13,7 @@ import sqlite3
 from datetime import date as _date
 from datetime import datetime, time
 from datetime import timedelta as _td
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -27,12 +28,15 @@ from scanner.config import (
     MOMENTUM_LAUNCH_TODAY_MIN,
     MOMENTUM_LAUNCH_VOL,
     OFFBOARD_ACCUM_MAX,
+    OFFBOARD_DISPLAY_TOP,
     OFFBOARD_DWELL_MIN,
     OFFBOARD_KLINE_FETCH_LIMIT,
     OFFBOARD_MAIN_PCT_MIN,
     OFFBOARD_MIN_AMOUNT,
     OFFBOARD_MIN_FLOAT_CAP,
     OFFBOARD_OPENING_SILENCE_MIN,
+    OFFBOARD_REPEAT_MIN_HITS,
+    OFFBOARD_REPEAT_WINDOW_DAYS,
     OFFBOARD_T1_TODAY_MAX,
     OFFBOARD_T2_TODAY_MAX,
     TREND_MARK_ENABLED,
@@ -63,6 +67,7 @@ from scanner.offboard_watch import (
     offboard_gate,
     opening_silence_active,
     persist_round,
+    recent_repeat_counts,
     run_offboard_watch,
     sort_key,
 )
@@ -73,7 +78,7 @@ from scanner.trading_session import is_trading_day
 
 def _cand(**kw) -> OffboardCandidate:
     """构造一个默认「各项健康」的榜外候选（创业板、放量、温和上涨、主力净流入）。"""
-    base = {
+    base: dict[str, Any] = {
         "symbol": "SZ300101",
         "code": "300101",
         "name": "自检样本",
@@ -692,6 +697,14 @@ def test_offboard_subtitle_silence_window_comes_from_config():
     assert "7 只" in offboard_subtitle(7)
 
 
+def test_offboard_subtitle_documents_repeat_marker():
+    """粉名/🔁 的判定含义必须写进段标题（图例行 2026-09-28 双端移除后，段标题是
+    标识含义的唯一出口）。文案用「进前十」表述（2026-10-14 用户需求收窄后口径）。"""
+    from scanner.view.model import offboard_subtitle
+
+    assert "粉名/🔁=反复进前十" in offboard_subtitle(1)
+
+
 def test_terminal_offboard_subtitle_uses_single_source(capsys):
     """终端出口的 B 段括号正文必须**逐字等于**单源（去 ANSI 后比对）。
 
@@ -866,6 +879,126 @@ def test_persist_round_freezes_signal_snapshot_and_refreshes_last_hit(db):
 def test_persist_round_empty_is_noop(db):
     persist_round(db, [])
     assert db.execute("SELECT COUNT(*) FROM offboard_launch_log").fetchone()[0] == 0
+
+
+# ── 反复出现标识（recent_repeat_counts，2026-10-14）────────────────────────
+
+
+def test_recent_repeat_counts_counts_top_ten_days_within_window(db):
+    """跨日分支：窗内「进过前十的不同信号日数」≥ OFFBOARD_REPEAT_MIN_HITS 达标；
+    top_hits>0 的 date 才算（过门但未进前十的不算，2026-10-14 收窄后口径）；
+    窗外行整行不进统计；m019 前的存量行（top_hits=NULL）不计。"""
+    today = now_beijing().date()
+    edge = (today - _td(days=OFFBOARD_REPEAT_WINDOW_DAYS - 1)).isoformat()  # 窗内最旧一日
+    outside = (today - _td(days=OFFBOARD_REPEAT_WINDOW_DAYS)).isoformat()  # 窗外最新一日
+
+    def _hit(d: str, sym: str, top: int) -> None:
+        db.execute(
+            "INSERT INTO offboard_launch_log(date,symbol,name,tier,first_time,top_hits,updated) VALUES(?,?,?,?,?,?,?)",
+            (d, sym, "样本", T1, d, top, d),
+        )
+
+    _hit(today.isoformat(), "SZ300100", 1)
+    _hit(edge, "SZ300100", 1)  # 窗内 2 个进前十的不同信号日 → 达标识门槛
+    _hit(today.isoformat(), "SZ300200", 1)  # 仅今日进过 1 日 → 未达跨日门槛
+    _hit(edge, "SZ300200", 0)  # 过门但未进前十 → 不算信号日
+    _hit(outside, "SZ300300", 1)  # 仅窗外 1 日 → 不得计入
+    _hit(today.isoformat(), "SZ300400", 3)  # 当日反复进前十 → 当日分支命中
+    _hit(today.isoformat(), "SZ300500", 0)  # 今日未进前十 → 不计
+    db.commit()
+
+    counts = recent_repeat_counts(db, today.isoformat())
+    assert counts["SZ300100"] == 2, "跨日分支：窗内 2 个进前十信号日"
+    assert counts["SZ300400"] == 3, "当日分支：今日反复进前十，取较大者"
+    assert counts["SZ300200"] == 1, "过门未进前十的日期不计，仅今日 1 次"
+    assert "SZ300300" not in counts, "窗外不计"
+    assert "SZ300500" not in counts, "未进前十不计"
+
+
+def test_persist_round_top_hits_only_for_top_n(db):
+    """top_hits（m019）：只有前 OFFBOARD_DISPLAY_TOP 行记 1，其后行记 0；
+    同票多轮 ON CONFLICT 累加（计数列，与信号冻结列相反）；跨日自然重置。"""
+    rows = [_cand(symbol=f"SZ3010{i:02d}", volume_ratio=10.0 - i) for i in range(OFFBOARD_DISPLAY_TOP + 2)]
+    persist_round(db, rows)
+    day = now_beijing().date().isoformat()
+    hits = dict(db.execute("SELECT symbol, top_hits FROM offboard_launch_log WHERE date=?", (day,)).fetchall())
+    assert sum(1 for v in hits.values() if v == 1) == OFFBOARD_DISPLAY_TOP, "只有前 N 行记 1"
+    top_syms = {c.symbol for c in rows[:OFFBOARD_DISPLAY_TOP]}
+    assert all(v == 0 for k, v in hits.items() if k not in top_syms), "前 N 名之外的行不得记 1"
+    # 同票第二轮：累加而非覆盖
+    persist_round(db, rows[:1])
+    assert (
+        db.execute(
+            "SELECT top_hits FROM offboard_launch_log WHERE date=? AND symbol=?", (day, rows[0].symbol)
+        ).fetchone()[0]
+        == 2
+    ), "同票多轮进前十 ⇒ top_hits 累加"
+
+
+def test_recent_repeat_counts_fails_open():
+    """着色是纯展示增强：conn 缺失 / 表缺失 → {}，不让本段挂掉
+    （与 `_recent_dwell_symbols` 同款 fail-open 纪律）。"""
+    assert recent_repeat_counts(None) == {}
+    conn = sqlite3.connect(":memory:")
+    try:
+        assert recent_repeat_counts(conn, "2026-10-14") == {}
+    finally:
+        conn.close()
+
+
+def test_run_offboard_watch_backfills_repeat_days(db):
+    """端到端回填守卫：`run_offboard_watch` 返回前必须把 `recent_repeat_counts`
+    结果写到展示行的 `repeat_days` 上 —— 渲染层只读该字段不重算，漏掉这步
+    黄名/🔁 在生产链路里永不出现（字段恒默认 0，单测却全部通过）。"""
+    sym = "SZ300101"
+    today = now_beijing().date()
+    prior = (today - _td(days=OFFBOARD_REPEAT_WINDOW_DAYS - 1)).isoformat()  # 窗内最旧一日
+    _seed_log_row(db, sym, now_beijing().isoformat(timespec="seconds"))
+    # 第二个不同信号日直接以窗内历史日落库（(date,symbol) 唯一，不能同日插两行）；
+    # 两行都必须 top_hits>0 才算「进过前十」（收窄后口径）
+    db.execute(
+        "INSERT INTO offboard_launch_log(date,symbol,name,tier,first_time,top_hits,updated) VALUES(?,?,?,?,?,?,?)",
+        (prior, sym, "自检样本", "T1", prior, 1, prior),
+    )
+    db.execute(
+        "UPDATE offboard_launch_log SET top_hits=1 WHERE symbol=? AND date=?",
+        (sym, today.isoformat()),
+    )
+    db.commit()
+
+    rows = run_offboard_watch(
+        None,
+        db,
+        [],
+        top_n=5,
+        klines={sym: _bars(_UP_SERIES, today.isoformat())},
+        snapshot={sym: _payload(vol_ratio=0.5)},  # 量比 0.5 < 1.5 ⇒ 严格门挂掉，走留存路径
+    )
+    assert len(rows) == 1
+    assert rows[0].repeat_days == 2, "窗内 2 个进前十信号日 ⇒ 必须回填，否则粉名/🔁 永不出现"
+
+
+def test_run_offboard_watch_repeat_days_covers_same_day_repeat(db):
+    """当日分支端到端：今日多轮进前十（top_hits≥门槛）即回填，不等明天。"""
+    sym = "SZ300102"
+    today = now_beijing().date().isoformat()
+    _seed_log_row(db, sym, now_beijing().isoformat(timespec="seconds"))
+    db.execute(
+        "UPDATE offboard_launch_log SET top_hits=? WHERE symbol=? AND date=?",
+        (OFFBOARD_REPEAT_MIN_HITS, sym, today),
+    )
+    db.commit()
+
+    rows = run_offboard_watch(
+        None,
+        db,
+        [],
+        top_n=5,
+        klines={sym: _bars(_UP_SERIES, today)},
+        snapshot={sym: _payload(vol_ratio=0.5)},
+    )
+    assert len(rows) == 1
+    assert rows[0].repeat_days >= OFFBOARD_REPEAT_MIN_HITS, "今日反复进前十 ⇒ 当场达标"
 
 
 # ── 拒绝留痕表 offboard_rejections（2026-09-22 / 迁移 m017）──────────────────
@@ -1374,9 +1507,7 @@ def test_offboard_gate_retain_relaxes_activity_only():
     assert offboard_gate(c) is not None  # 严格门：量比 1.0<1.5 先被拒
     assert offboard_gate(c, retain=True) is None  # 留存门：活跃度阈值放宽后放行
     # 涨幅上限不放宽：留存票冲过 OFFBOARD_T2_TODAY_MAX 仍拒（不追高）
-    hi = _snapshot_row_to_candidate(
-        "SZ300101", _payload(vol_ratio=1.0, amount=1.0e6, percent=9.9), {}
-    )
+    hi = _snapshot_row_to_candidate("SZ300101", _payload(vol_ratio=1.0, amount=1.0e6, percent=9.9), {})
     assert offboard_gate(hi, retain=True) is not None
 
 
@@ -1387,7 +1518,22 @@ def _seed_log_row(db, sym: str, last_hit_time: str) -> None:
         "INSERT INTO offboard_launch_log "
         "(date,symbol,name,tier,percent,accum_5d,vol_ratio,main_pct,amount,float_cap,"
         "price,first_time,last_hit_time,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (day, sym, "自检样本", "T1", 2.5, 1.0, 2.0, 2.0, 8.0e7, 3.0e9, 10.0, last_hit_time, last_hit_time, last_hit_time),
+        (
+            day,
+            sym,
+            "自检样本",
+            "T1",
+            2.5,
+            1.0,
+            2.0,
+            2.0,
+            8.0e7,
+            3.0e9,
+            10.0,
+            last_hit_time,
+            last_hit_time,
+            last_hit_time,
+        ),
     )
     db.commit()
 
@@ -1413,9 +1559,7 @@ def test_run_offboard_watch_dwell_retains_recent_member(db):
     assert len(rows) == 1
     assert any("留存" in r for r in rows[0].reasons)
     # 留存行不刷新 last_hit_time（窗口不自我续命）—— 精确等于种子值
-    hit = db.execute(
-        "SELECT last_hit_time FROM offboard_launch_log WHERE symbol=?", (sym,)
-    ).fetchone()[0]
+    hit = db.execute("SELECT last_hit_time FROM offboard_launch_log WHERE symbol=?", (sym,)).fetchone()[0]
     assert hit == seeded_at
 
 
@@ -1733,6 +1877,34 @@ def test_hot_row_cells_put_score_on_a_segment_and_tier_on_b_segments():
     assert a_cells[-2] == "—", "榜内飙升段无分层概念 ⇒ 层列显 —"
     assert b_cells[-3] == "—", "榜外段没有复合分 ⇒ 评分列显 —（不是 0.0）"
     assert b_cells[-2] == "T2", "榜外段：层列显分层标记"
+
+
+def test_hot_row_name_colored_when_recently_repeated(monkeypatch):
+    """「反复出现」粉名（2026-10-14）：判定只认 `repeat_days >= OFFBOARD_REPEAT_MIN_HITS`；
+    未达门槛的榜外行与没有该字段的 A 段行（HotCandidate）都不得染色（getattr 兜底 0）。
+    颜色用 MAGENTA（2026-10-14 用户反馈：与其他区域统一，不要五彩斑斓）。
+
+    测试环境可能非 TTY（ANSI 退化为空串 ⇒ `"" in s` 恒真、断言 vacuous），故显式
+    注入真 SGR 码后断言 —— 验证颜色分支确实执行，而非环境侥幸。
+    """
+    import scanner.view.render as render_mod
+    from scanner.view.render import _hot_row_cells
+
+    monkeypatch.setattr(
+        render_mod,
+        "ANSI",
+        {**render_mod.ANSI, "MAGENTA": "\x1b[95m", "BOLD": "\x1b[1m", "RESET": "\x1b[0m"},
+    )
+
+    hit = _hot_row_cells(_offboard_row(repeat_days=OFFBOARD_REPEAT_MIN_HITS), 1, board_segment=False)
+    assert "\x1b[95m" in hit[2], "达标行：名称列必须带粉红 ANSI（与其他区域同色）"
+    assert "自检样本" in hit[2], "染色包裹名称，不替换名称本体"
+
+    miss = _hot_row_cells(_offboard_row(repeat_days=OFFBOARD_REPEAT_MIN_HITS - 1), 1, board_segment=False)
+    assert miss[2] == "自检样本", "未达门槛：名称列保持原样"
+
+    a_cells = _hot_row_cells(_hot_a_row(), 1, board_segment=True)
+    assert "\x1b[95m" not in a_cells[2], "A 段行没有 repeat_days ⇒ 永不误染"
 
 
 def test_render_region_three_segments_each_have_own_subtitle(capsys):

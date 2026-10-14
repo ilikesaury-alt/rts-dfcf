@@ -240,6 +240,7 @@ _OFFBOARD_LAUNCH_LOG_DDL = """
         price REAL,                     -- 现价
         first_time TEXT,                -- 本区当日首次产出该行的时刻
         last_hit_time TEXT DEFAULT '',  -- 当日最后一次命中该行的时刻（v9 新增）
+        top_hits INTEGER DEFAULT 0,     -- 当日进入展示前 N 的轮次（v19 新增；反复进前十标识依据）
         next_day_pct REAL,              -- 次日收益（%，由 backfill 回填）
         updated TEXT DEFAULT '',
         PRIMARY KEY(date, symbol)
@@ -366,6 +367,22 @@ def _check_onboard_anomaly_log(conn: sqlite3.Connection) -> bool:
     return _has_table(conn, "onboard_anomaly_log")
 
 
+def _up_offboard_log_top_hits(conn: sqlite3.Connection) -> None:
+    """v19（2026-10-14）：`offboard_launch_log` 补 `top_hits`。
+
+    动机：B 段「反复进前十」粉名/🔁 标识（2026-10-14 用户需求）的落库依据。
+    此前表只记「严格过门」，过门行可能超过展示前 N（OFFBOARD_DISPLAY_TOP），
+    「进入前十」无从事后重建。列语义：**当日进入展示前 N 的轮次数**（persist_round
+    对前 N 行 +1，ON CONFLICT 累加 —— 与信号值冻结列相反，计数列每轮累加，
+    跨日因 (date,symbol) 主键自然重置）。存量行 DEFAULT 0 = 未进过前十，正确。
+    """
+    conn.execute("ALTER TABLE offboard_launch_log ADD COLUMN top_hits INTEGER DEFAULT 0")
+
+
+def _check_offboard_log_top_hits(conn: sqlite3.Connection) -> bool:
+    return not _has_table(conn, "offboard_launch_log") or _has_column(conn, "offboard_launch_log", "top_hits")
+
+
 # ── 迁移总表（顺序即执行顺序；只在末尾追加）──
 MIGRATIONS: list[Migration] = [
     add_column(
@@ -484,6 +501,12 @@ MIGRATIONS: list[Migration] = [
         desc="榜内异动段逐日落库表 onboard_anomaly_log（observe-first 的唯一证据来源）",
         check=_check_onboard_anomaly_log,
         up=_up_onboard_anomaly_log,
+    ),
+    Migration(
+        id="m019_offboard_log_top_hits",
+        desc="offboard_launch_log 补 top_hits（当日进入展示前 N 的轮次；反复进前十标识的落库依据）",
+        check=_check_offboard_log_top_hits,
+        up=_up_offboard_log_top_hits,
     ),
 ]
 

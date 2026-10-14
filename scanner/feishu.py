@@ -28,6 +28,7 @@ from scanner.config import (
     FEISHU_WEBHOOK,
     FUND_OUTFLOW_NET_PCT,
     HOT_HIGHLIGHT_STREAK,
+    OFFBOARD_REPEAT_MIN_HITS,
     PUSH_MIN_INTERVAL,
     PUSH_MIN_ROWS,
     now_beijing,
@@ -487,6 +488,18 @@ def _marks_tail_card(ff_pct, beauty: str) -> str:
     return (" " + " ".join(parts)) if parts else ""
 
 
+def _repeat_tail_card(c) -> str:
+    """「反复出现」尾标（卡片成形，2026-10-14）：近窗不同信号日数达标 ⇒ 🔁。
+
+    与终端 `render._hot_row_cells` 的黄名是**同判定不同形状** —— lark_md 定宽块内
+    无 ANSI，颜色只能在终端表达；判定源都是 `offboard_watch.recent_repeat_counts`
+    回填的 `repeat_days`，本函数不重算。getattr 兜底：A 段/回捞行没有该注记（恒 0）。
+    追加在反引号**之外**（与 _marks_tail_card 同位），不改变定宽块宽度
+    （test_hot_row_width_is_uniform 量的只是定宽块本体）。
+    """
+    return " 🔁" if getattr(c, "repeat_days", 0) >= OFFBOARD_REPEAT_MIN_HITS else ""
+
+
 def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 0, top_n: int = FEISHU_TOP_N) -> dict:
     """从 ScanView 构建飞书卡片（与终端共用同一份选择）。
 
@@ -576,7 +589,7 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
             # 强度完全不同；且屏幕上的 `T1`/`T2` 无词表时无从判断它是什么。
             hot_lines.append(f"— 榜外异动{offboard_subtitle(len(offboard_rows))}")
             hot_lines += [
-                f"{_fmt_hot_row_feishu(c, i, board_segment=False)}{_marks_tail_card(c.ff_pct, c.beauty)}"
+                f"{_fmt_hot_row_feishu(c, i, board_segment=False)}{_marks_tail_card(c.ff_pct, c.beauty)}{_repeat_tail_card(c)}"
                 for i, c in enumerate(offboard_rows, 1)
             ]
         sections.append(("◆ 沪深飙升 · 极有可能大涨", hot_lines))

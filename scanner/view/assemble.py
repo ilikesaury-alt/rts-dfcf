@@ -416,7 +416,9 @@ def build_scan_view(
             _is_new_key = 0 if (new_symbols and sym in new_symbols) else 1
             # 与展示列同款 None 检查（2026-10-08 L6）：`or` 会把 live_rank=0 静默回退
             # 到 rank —— 0 不是合法排名，缺失就该按缺失走 99999 兜底。
-            _rk = e.get("live_rank")
+            # （显式注解 object|None：live_rank 与 rank 两个键的值类型不同宽，让 mypy
+            # 接受第二次赋值；后续 isinstance 收窄不变，运行时零差异。）
+            _rk: object | None = e.get("live_rank")
             if _rk is None:
                 _rk = e.get("rank")
             _rank_key = _rk if isinstance(_rk, (int, float)) and _rk > 0 else 99999
@@ -434,7 +436,7 @@ def build_scan_view(
         # 跨行复用会把上一只票的行情安到本行。
         for _ink, _cat_pri, _rank_key, _neg_fund, _neg_dip, _e, _ic, _av, _sc, _cs in _scored_rows:
             _fresh_c = fresh_candidate(_e)
-            _rk_disp = _e.get("live_rank")
+            _rk_disp: object | None = _e.get("live_rank")
             if _rk_disp is None:
                 _rk_disp = _e.get("rank")
             if _rk_disp is None and _fresh_c:

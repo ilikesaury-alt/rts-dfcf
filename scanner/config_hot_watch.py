@@ -185,7 +185,7 @@ OFFBOARD_LIVE_QUOTE_LIMIT = 100  # 单轮最多补实时价的候选数（50 票
 #     「最后一次严格过门」起算、自然到期，**不会自我续命**；
 #   · 留存行不占 `top_n` 名额（追加在严格行之后，单轮上限 `OFFBOARD_DWELL_MAX`）。
 OFFBOARD_DWELL_MIN = 5  # 留存窗口（分钟）：最后一次严格过门后多久内仍可展示
-OFFBOARD_DWELL_MAX = 5   # 单轮最多留存多少行（按量比降序取前 N，防表膨胀）
+OFFBOARD_DWELL_MAX = 5  # 单轮最多留存多少行（按量比降序取前 N，防表膨胀）
 OFFBOARD_PREFILTER_AMOUNT_RATIO = 0.8  # 粗筛成交额阈值 = 真门 × 本系数
 OFFBOARD_PREFILTER_FLOAT_CAP_RATIO = 0.8  # 粗筛流通市值阈值 = 真门 × 本系数
 # 涨幅带粗筛缓冲（2026-10-08 修复 H1）：粗筛涨幅带 = 真带 ± 本缓冲（pp）。
@@ -212,6 +212,19 @@ OFFBOARD_PREFILTER_PCT_BUFFER = 2.0  # 粗筛涨幅带 = 真带 ± 本缓冲（�
 #    冷启动那轮的 F10 请求约 ×1.6）。若日后要再放宽，先看这里的成本。
 # 1=开（默认）/ 0=关（纯离线：只读缓存，miss 回退名称关键词）。
 OFFBOARD_BOARD_FETCH = int(os.environ.get("RTS_OFFBOARD_BOARD_FETCH", "1"))
+
+# ── 反复进前十标识（2026-10-14，纯展示层）──
+# 用户诉求：最近几天反复进入[榜外异动]前十、或今日盘中反复回前十的票，终端名称
+# 标粉红色（与其他区域统一，不要五彩斑斓）。判定只读 `offboard_launch_log`：
+#   (a) 近 `OFFBOARD_REPEAT_WINDOW_DAYS` 个自然日内有 ≥ `OFFBOARD_REPEAT_MIN_HITS`
+#       个「进过展示前 N」的不同信号日（`top_hits>0` 的 date 数，含当日）；
+#   (b) 今日 `top_hits` ≥ `OFFBOARD_REPEAT_MIN_HITS`（盘中反复回前十，当场达标）。
+# 「进前十」需要逐轮名次 ⇒ `persist_round` 对前 `OFFBOARD_DISPLAY_TOP` 行累加
+# `top_hits`（迁移 m019）；过门但未进前十的行不计。
+# ⚠ 只影响名称着色 / 🔁 尾标，不参与任何门 / 排序 —— 调这两个常数不会改变信号
+# 本身，也就不在 rule_validate 的可见性集合里（它管的是产出，不是展示）。
+OFFBOARD_REPEAT_WINDOW_DAYS = 5  # 回看自然日数（含当日；5 天 ≈ 一个交易周）
+OFFBOARD_REPEAT_MIN_HITS = 2  # 达标阈值：跨日分支=不同信号日数；当日分支=进前十轮次
 
 # ── 榜内异动段（2026-09-30 新增，A 段与 B 段之间的中间档）──
 # 填的空档：A 段要求「已涨 + 热度跃升」，B 段要求「没上榜」⇒ **「刚上榜、涨幅还小、
@@ -278,6 +291,8 @@ __all__ = [
     "OFFBOARD_PREFILTER_FLOAT_CAP_RATIO",
     "OFFBOARD_PREFILTER_PCT_BUFFER",
     "OFFBOARD_BOARD_FETCH",
+    "OFFBOARD_REPEAT_WINDOW_DAYS",
+    "OFFBOARD_REPEAT_MIN_HITS",
     "ONBOARD_ANOMALY_ENABLED",
     "ONBOARD_DISPLAY_TOP",
     "ONBOARD_KLINE_BARS",
