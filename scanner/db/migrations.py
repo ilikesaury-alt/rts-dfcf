@@ -240,7 +240,8 @@ _OFFBOARD_LAUNCH_LOG_DDL = """
         price REAL,                     -- 现价
         first_time TEXT,                -- 本区当日首次产出该行的时刻
         last_hit_time TEXT DEFAULT '',  -- 当日最后一次命中该行的时刻（v9 新增）
-        top_hits INTEGER DEFAULT 0,     -- 当日进入展示前 N 的轮次（v19 新增；反复进前十标识依据）
+        top_hits INTEGER DEFAULT 0,     -- (v19) 当日进入展示前 N 的轮次；v20 起不再作标识依据，列保留
+        gate_hits INTEGER DEFAULT 0,    -- 当日严格过门轮次（v20 新增；今日活跃标识= gate_hits/当日总轮数）
         next_day_pct REAL,              -- 次日收益（%，由 backfill 回填）
         updated TEXT DEFAULT '',
         PRIMARY KEY(date, symbol)
@@ -289,6 +290,14 @@ def _check_offboard_log_last_hit(conn: sqlite3.Connection) -> bool:
     # check 语义 = 「已满足」：表不存在（全新库，DDL 已含该列）或列已在 → 满足。
     return not _has_table(conn, "offboard_launch_log") or _has_column(conn, "offboard_launch_log", "last_hit_time")
 
+
+_OFFBOARD_ROUND_LOG_DDL = """
+    CREATE TABLE IF NOT EXISTS offboard_round_log (
+        date TEXT NOT NULL PRIMARY KEY,   -- 信号日
+        rounds INTEGER NOT NULL DEFAULT 0, -- 当日 B 段扫描轮数（每轮 +1；今日活跃标识的分母）
+        updated TEXT
+    )
+"""
 
 _OFFBOARD_REJECTIONS_DDL = """
     CREATE TABLE IF NOT EXISTS offboard_rejections (
@@ -381,6 +390,42 @@ def _up_offboard_log_top_hits(conn: sqlite3.Connection) -> None:
 
 def _check_offboard_log_top_hits(conn: sqlite3.Connection) -> bool:
     return not _has_table(conn, "offboard_launch_log") or _has_column(conn, "offboard_launch_log", "top_hits")
+
+
+def _up_offboard_active_metrics(conn: sqlite3.Connection) -> None:
+    """v20（2026-10-14）：「今日活跃」标识的落库依据（在场率口径，替代 top_hits）。
+
+    一版「反复进前十」（top_hits）实测无筛选力：过门池常年 ≤ 展示前 N（
+    2026-10-14 实测 21 轮里 19 轮 ≤8 只），「进前十」≈「过门」，出场几分钟即达标
+    ⇒ 前 8 名几乎全粉。二版改判**在场率** = gate_hits / rounds：
+      · `offboard_launch_log.gate_hits`：当日**严格过门**轮数（persist_round 对
+        **所有**过门行 +1，不再只前 N；ON CONFLICT 累加，跨日自然重置）；
+      · `offboard_round_log`：当日 B 段真实扫描轮数，每天**一行**（date 主键，
+        rounds 单列），**含零候选轮** —— 零候选轮也是一轮扫描，分母漏了它们，
+        午后过门池变小时在场率会被虚高。persist_round 每轮 UPSERT。
+    top_hits 列保留（m019 已发布，id 不得改名/删列；存量行照读，只是不再作
+    标识依据）。
+
+    ⚠ 两个子步骤各自判幂等：`_OFFBOARD_LAUNCH_LOG_DDL`（新库建表）已含
+    `gate_hits`，而 `offboard_round_log` 可能因中途失败单独缺失（up 分步执行、
+    账本不写 ⇒ 下轮重跑整个 up，此时再无条件 ALTER 会撞 duplicate column）。
+    """
+    if not _has_column(conn, "offboard_launch_log", "gate_hits"):
+        conn.execute("ALTER TABLE offboard_launch_log ADD COLUMN gate_hits INTEGER DEFAULT 0")
+    if not _has_table(conn, "offboard_round_log"):
+        # DDL 内联而非引 _OFFBOARD_ROUND_LOG_DDL 常量：与 m018 同款纪律 —— 动态 DDL
+        # 字符串（含常量变量引用）会让 SQL 静态检查无法判定安全性。表名/列名均为本
+        # 文件内写死的字面量，无外部输入。测试夹具另引常量（内存库，无静态检查诉求）。
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS offboard_round_log ("
+            "date TEXT NOT NULL PRIMARY KEY, rounds INTEGER NOT NULL DEFAULT 0, updated TEXT)"
+        )
+
+
+def _check_offboard_active_metrics(conn: sqlite3.Connection) -> bool:
+    return not _has_table(conn, "offboard_launch_log") or (
+        _has_column(conn, "offboard_launch_log", "gate_hits") and _has_table(conn, "offboard_round_log")
+    )
 
 
 # ── 迁移总表（顺序即执行顺序；只在末尾追加）──
@@ -507,6 +552,12 @@ MIGRATIONS: list[Migration] = [
         desc="offboard_launch_log 补 top_hits（当日进入展示前 N 的轮次；反复进前十标识的落库依据）",
         check=_check_offboard_log_top_hits,
         up=_up_offboard_log_top_hits,
+    ),
+    Migration(
+        id="m020_offboard_active_metrics",
+        desc="offboard_launch_log 补 gate_hits + 新增 offboard_round_log（今日活跃标识的在场率落库依据）",
+        check=_check_offboard_active_metrics,
+        up=_up_offboard_active_metrics,
     ),
 ]
 

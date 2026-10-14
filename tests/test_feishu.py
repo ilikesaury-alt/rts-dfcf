@@ -748,18 +748,19 @@ def test_hot_row_score_and_tier_split_matches_terminal():
     assert b[tier_pos] == "T2", "榜外段：层列显分层标记"
 
 
-def test_offboard_repeat_rows_get_tail_marker_outside_code_block():
-    """🔁 尾标（2026-10-14）挂在定宽块（反引号）**之外**：块本体恒宽不受影响
+def test_offboard_active_rows_get_tail_marker_outside_code_block():
+    """🔥 尾标（2026-10-14 二版）挂在定宽块（反引号）**之外**：块本体恒宽不受影响
     （宽度守卫 test_hot_row_width_is_uniform 量的只是块本体）；达标行行尾
-    " 🔁"，未达标行与 A 段行（HotCandidate 无该字段）不标 —— 与终端粉名同判定不同形状。"""
-    from scanner.config import OFFBOARD_REPEAT_MIN_HITS
+    " 🔥"，未达标行与 A 段行（HotCandidate 无该字段）不标 —— 与终端粉名同判定不同形状。"""
+    from scanner.config import OFFBOARD_ACTIVE_PRESENCE
     from scanner.feishu import _fmt_hot_row_feishu, _repeat_tail_card
 
-    c = _fake_offboard(repeat_days=OFFBOARD_REPEAT_MIN_HITS)
+    c = _fake_offboard(presence=OFFBOARD_ACTIVE_PRESENCE)
     row = _fmt_hot_row_feishu(c, 1, board_segment=False)
     assert row.startswith("`") and row.endswith("`")
-    assert "🔁" not in row, "尾标不得进定宽块（emoji 宽度会撑破对齐）"
+    assert "🔥" not in row, "尾标不得进定宽块（emoji 宽度会撑破对齐）"
 
-    assert _repeat_tail_card(c) == " 🔁"
-    assert _repeat_tail_card(_fake_offboard(repeat_days=OFFBOARD_REPEAT_MIN_HITS - 1)) == ""
+    assert _repeat_tail_card(c) == " 🔥"
+    assert _repeat_tail_card(_fake_offboard(presence=OFFBOARD_ACTIVE_PRESENCE - 0.01)) == ""
+    assert _repeat_tail_card(_fake_offboard()) == ""
     assert _repeat_tail_card(_fake_hot()) == ""

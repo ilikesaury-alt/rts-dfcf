@@ -213,18 +213,23 @@ OFFBOARD_PREFILTER_PCT_BUFFER = 2.0  # 粗筛涨幅带 = 真带 ± 本缓冲（�
 # 1=开（默认）/ 0=关（纯离线：只读缓存，miss 回退名称关键词）。
 OFFBOARD_BOARD_FETCH = int(os.environ.get("RTS_OFFBOARD_BOARD_FETCH", "1"))
 
-# ── 反复进前十标识（2026-10-14，纯展示层）──
-# 用户诉求：最近几天反复进入[榜外异动]前十、或今日盘中反复回前十的票，终端名称
-# 标粉红色（与其他区域统一，不要五彩斑斓）。判定只读 `offboard_launch_log`：
-#   (a) 近 `OFFBOARD_REPEAT_WINDOW_DAYS` 个自然日内有 ≥ `OFFBOARD_REPEAT_MIN_HITS`
-#       个「进过展示前 N」的不同信号日（`top_hits>0` 的 date 数，含当日）；
-#   (b) 今日 `top_hits` ≥ `OFFBOARD_REPEAT_MIN_HITS`（盘中反复回前十，当场达标）。
-# 「进前十」需要逐轮名次 ⇒ `persist_round` 对前 `OFFBOARD_DISPLAY_TOP` 行累加
-# `top_hits`（迁移 m019）；过门但未进前十的行不计。
-# ⚠ 只影响名称着色 / 🔁 尾标，不参与任何门 / 排序 —— 调这两个常数不会改变信号
+# ── 「今日活跃」标识（2026-10-14 二版，纯展示层）──
+# 用户诉求（二版收窄）：抓**今日异常活跃**的票 —— 当日几乎全天都严格过门的票。
+# 一版口径「反复进前十」（top_hits ≥ 2 即标）实测无筛选力：B 段过门池常年 ≤
+# OFFBOARD_DISPLAY_TOP（2026-10-14 实测 21 轮里 19 轮 ≤8 只），「进前十」≈「过门」，
+# 一只票出场几分钟攒满 2 轮就变粉 ⇒ 前 8 名几乎全粉。
+# 二版判定 = **在场率**：
+#   gate_hits（当日严格过门轮数，迁移 m020，每轮所有过门行 +1）
+#     ÷ rounds（当日 B 段真实扫描轮数，`offboard_round_log` 单行账，含零候选轮）
+#     ≥ `OFFBOARD_ACTIVE_PRESENCE` ⇒ 今日活跃。
+# 分母含零候选轮是刻意的：午后过门池变小时，「一直都在」和「趁稀出镜」才分得开。
+# `OFFBOARD_ACTIVE_MIN_ROUNDS` 防开盘前几轮 1/1=100% 的噪声。
+# ⚠ 只影响名称着色 / 🔥 尾标，不参与任何门 / 排序 —— 调这两个常数不会改变信号
 # 本身，也就不在 rule_validate 的可见性集合里（它管的是产出，不是展示）。
-OFFBOARD_REPEAT_WINDOW_DAYS = 5  # 回看自然日数（含当日；5 天 ≈ 一个交易周）
-OFFBOARD_REPEAT_MIN_HITS = 2  # 达标阈值：跨日分支=不同信号日数；当日分支=进前十轮次
+# （一版的 OFFBOARD_REPEAT_WINDOW_DAYS / OFFBOARD_REPEAT_MIN_HITS 随跨日/当日两分支
+# 一并移除：跨日分支答的是「最近几天常出现」，不是用户要的「今日活跃」。）
+OFFBOARD_ACTIVE_PRESENCE = 0.60  # 在场率阈值：当日过门轮数 ÷ 当日扫描轮数 ≥ 此值 ⇒ 标识
+OFFBOARD_ACTIVE_MIN_ROUNDS = 5  # 当日扫描轮数下限：不足则本轮不标（防开盘噪声）
 
 # ── 榜内异动段（2026-09-30 新增，A 段与 B 段之间的中间档）──
 # 填的空档：A 段要求「已涨 + 热度跃升」，B 段要求「没上榜」⇒ **「刚上榜、涨幅还小、
@@ -291,8 +296,8 @@ __all__ = [
     "OFFBOARD_PREFILTER_FLOAT_CAP_RATIO",
     "OFFBOARD_PREFILTER_PCT_BUFFER",
     "OFFBOARD_BOARD_FETCH",
-    "OFFBOARD_REPEAT_WINDOW_DAYS",
-    "OFFBOARD_REPEAT_MIN_HITS",
+    "OFFBOARD_ACTIVE_PRESENCE",
+    "OFFBOARD_ACTIVE_MIN_ROUNDS",
     "ONBOARD_ANOMALY_ENABLED",
     "ONBOARD_DISPLAY_TOP",
     "ONBOARD_KLINE_BARS",

@@ -449,18 +449,19 @@ tests/                      # pytest suite
   `test_apply_live_quote_still_rejects_nonpositive_magnitude_fields`（后者防**反向**过度放宽）。
   ⚠ `offboard_launch_log.percent` 的**冻结**语义（同上，「信号值首次写入即冻结」）**不受本次
   修复影响**，刻意不动 —— 那是「它当初以什么身份被推出」的存档，不是展示值。
-- **榜外段「反复进前十」标识（2026-10-14，纯展示层）**：两个分支——
-  (a) 近 `OFFBOARD_REPEAT_WINDOW_DAYS`（5）个自然日内在 `offboard_launch_log` 有 ≥
-  `OFFBOARD_REPEAT_MIN_HITS`（2）个**进过展示前 N 的不同信号日**（当日也在窗内）；
-  (b) **今日** `top_hits` ≥ 门槛（盘中反复回前十）。达标 ⇒ 终端名称粉+粗（`MAGENTA`，
-  2026-10-14 用户反馈：与其他区域统一用粉红，不要五彩斑斓；`render._hot_row_cells`，
-  榜内两段 `repeat_days` 恒 0 不误染）、飞书行尾 🔁（`feishu._repeat_tail_card`，
-  反引号外不破定宽）。计数单源 `offboard_watch.recent_repeat_counts`，只回填在
-  最终展示行的 `repeat_days` 字段上；不参与门/排序/推送门。「进前十」需要逐轮名次，
-  故 `persist_round` 对前 `OFFBOARD_DISPLAY_TOP` 行累加 `top_hits`（迁移 **m019**，
-  ON CONFLICT 累加、跨日自然重置；信号冻结列语义不受影响）——过门但未进前十的
-  行不计。标识含义写进 `offboard_subtitle`（图例行 2026-09-28 双端移除后段标题是
-  唯一出口），文案「粉名/🔁=反复进前十」。CLI（内存库）与离线自检恒无标识。
+- **榜外段「今日活跃」标识（2026-10-14 二版，纯展示层）**：一版「反复进前十」
+  （top_hits 两个分支）同日实测无筛选力 —— 过门池常年 ≤ 展示前 N（21 轮里 19 轮
+  ≤8 只），「进前十」≈「过门」，出场几分钟攒满 2 轮就变粉 ⇒ 前 8 名几乎全粉。
+  二版改判**在场率**：`gate_hits`（当日严格过门轮数，迁移 **m020**，persist_round
+  对**所有**过门行 +1）÷ `rounds`（当日扫描轮数，新表 `offboard_round_log` 单行账，
+  **含零候选轮** —— 分母漏了它们，午后过门池变小时在场率会被虚高）
+  ≥ `OFFBOARD_ACTIVE_PRESENCE`（0.60）且当日轮数 ≥ `OFFBOARD_ACTIVE_MIN_ROUNDS`（5，
+  防开盘 1/1=100% 噪声）。达标 ⇒ 终端名称粉+粗（`MAGENTA`；`render._hot_row_cells`，
+  榜内两段 `presence` 恒 None 不误染）、飞书行尾 🔥（`feishu._repeat_tail_card`，
+  反引号外不破定宽）。计数单源 `offboard_watch.today_presence`，只回填在
+  最终展示行的 `presence` 字段上；不参与门/排序/推送门。`top_hits` 照常累加
+  （m019 已发布，列不删）但不再作标识依据。标识含义写进 `offboard_subtitle`
+  （图例行 2026-09-28 双端移除后段标题是唯一出口），文案「粉名/🔥=今日活跃(过门≥六成轮)」。CLI（内存库）与离线自检恒无标识。
 - **`.env`** file contains secrets (THS API key, Feishu webhook override). Never commit it.
 
 ## Testing notes
