@@ -99,7 +99,6 @@ from scanner.config import (
     MOMENTUM_LAUNCH_TODAY_MIN,
     MOMENTUM_LAUNCH_VOL,
     OFFBOARD_ACCUM_MAX,
-    OFFBOARD_ACTIVE_MIN_ROUNDS,
     OFFBOARD_BOARD_FETCH,
     OFFBOARD_DISPLAY_TOP,
     OFFBOARD_DWELL_MAX,
@@ -115,6 +114,7 @@ from scanner.config import (
     OFFBOARD_PREFILTER_AMOUNT_RATIO,
     OFFBOARD_PREFILTER_FLOAT_CAP_RATIO,
     OFFBOARD_PREFILTER_PCT_BUFFER,
+    OFFBOARD_REPEAT_WINDOW_DAYS,
     OFFBOARD_T1_TODAY_MAX,
     OFFBOARD_T2_TODAY_MAX,
     TREND_MARK_ENABLED,
@@ -186,12 +186,14 @@ class OffboardCandidate:
     # 板块（2026-09-22）：与 A 段 `HotCandidate.sector` 同义同源（`concept.attach_display_boards`
     # 在返回前就地填），取值与 v1 池选「板块」列同一条回退链。空 = 取数失败 → 渲染 `—`。
     sector: str = ""
-    # 「今日活跃」在场率注记（0~1，v20 二版口径）。纯展示量：由 `run_offboard_watch`
-    # 返回前经 `today_presence` 回填在最终展示行上，供终端名称着色 / 飞书 🔥 尾标
-    # 判定；不参与门 / 排序 / 落库（榜内异动段共用本 dataclass 但不回填，恒 None ——
-    # 两段语义不同，不串标）。一版 repeat_days（反复进前十）已删：过门池常年 ≤ 展示
-    # 前 N ⇒ 「进前十」≈「过门」，几分钟就攒满阈值，前 8 名几乎全粉（实测）。
-    presence: float | None = None
+    # 「反复进前十」注记（跨日，2026-10-14 一版 → 三版回归）。纯展示量：由
+    # `run_offboard_watch` 返回前经 `recent_repeat_counts` 回填在最终展示行上，供
+    # 终端名称着色 / 飞书 🔥 尾标判定；不参与门 / 排序 / 落库（榜内异动段共用本
+    # dataclass 但不回填，恒 0 —— 两段语义不同，不串标）。值 = 窗内进过前十的
+    # 不同信号日数与今日进前十轮次的较大者（见 recent_repeat_counts docstring）。
+    # 沿革：m020 二版曾改判「今日活跃」在场率（presence 字段），2026-10-15 用户
+    # 反馈「基本都粉+标红疲劳」后回归跨日口径；跨日需要好几天才积累出一个标识。
+    repeat_days: int = 0
     reasons: list[str] = field(default_factory=list)
 
 
@@ -297,42 +299,56 @@ def _recent_dwell_symbols(conn, today: str) -> set[str]:
         return set()
 
 
-def today_presence(conn, today: str | None = None) -> dict[str, float]:
-    """每只票**今日**的「在场率」 = gate_hits ÷ 当日扫描轮数（2026-10-14 二版）。
+def recent_repeat_counts(conn, today: str | None = None) -> dict[str, int]:
+    """每只票在窗内的「反复进前十」命中数，供粉名/🔥 标识判定（三版，2026-10-15）。
 
-    一版「反复进前十」（top_hits 两个分支）实测无筛选力：B 段过门池常年 ≤ 展示
-    前 N（2026-10-14 实测 21 轮里 19 轮 ≤8 只），「进前十」≈「过门」，一只票出场
-    几分钟攒满 2 轮就变粉 ⇒ 前 8 名几乎全粉。二版直接量「活跃」本身：
-      分子 gate_hits = 当日**严格过门**轮数（persist_round 对所有过门行 +1，m020；
-      分母 rounds = 当日真实扫描轮数（`offboard_round_log` 单行账，**含零候选轮**
-      —— 零候选轮也是一轮扫描，分母漏了它们，午后过门池变小时在场率会被虚高）；
-      两者相除 ≥ `OFFBOARD_ACTIVE_PRESENCE` ⇒ 「今日活跃」。
-    `OFFBOARD_ACTIVE_MIN_ROUNDS` 轮数下限在本函数执行：不足 ⇒ 返回 {}（防开盘前
-    几轮 1/1=100% 的噪声）。top_hits 不再参与（列保留，存量行照读但不作依据）。
+    两个分支（2026-10-14 用户需求：反复**进前十**才算，不提票都标）：
+      · **跨日**：近 `OFFBOARD_REPEAT_WINDOW_DAYS` 个自然日内有 ≥
+        `OFFBOARD_REPEAT_MIN_HITS` 个**不同信号日**进过展示前 N
+        （top_hits>0 的 date 数）；
+      · **当日**：今日 `top_hits` ≥ `OFFBOARD_REPEAT_MIN_HITS`（盘中反复回前十）。
+    取两分支的较大者作标识值：跨日分支天然 ≥2（含当日也计一日）；当日分支让
+    盘中掉出前十又回前十的票当场变粉，不等明天。
 
-    读侧注记：不参与任何门 / 排序，只回填在最终展示行的 `presence` 上。
+    沿革：一版（m019）当日实测无筛选力（过门池常年 ≤ 展示前 N，「进前十」≈
+    「过门」，几分钟攒满）⇒ 二版改判「今日活跃」在场率（today_presence，m020）；
+    2026-10-15 用户反馈在场率标识「基本都粉+标红后疲劳」（全天在场标的是成熟
+    行情，与 B 段新鲜度定位相悖）⇒ 三版回归本口径。一版被否定的是**当日分支**
+    的筛选力，跨日分支需要好几天才积累一个标识，不受该批评影响。判定阈值归属
+    `config_hot_watch.py`（沿革全录在 OFFBOARD_REPEAT_WINDOW_DAYS 注释块）。
+
+    读侧注记：不参与任何门 / 排序，只回填在最终展示行的 `repeat_days` 上。
     口径与落库一致 —— 只数 `persist_round` 写入的严格过门行（留存行不落库、
-    天然不计）。**含当日**：`persist_round` 在返回展示行之前执行，本轮命中当场计入。
-    表缺失 / 读失败 → 返回 {}（fail-open：着色是增强，不该让本段挂掉 —— 与
-    `_recent_dwell_symbols` 同款纪律）。
+    天然不计；top_hits 由 persist_round 对前 N 行累加，m019，三版起重新作
+    标识依据）。**含当日**：`persist_round` 在返回展示行之前执行，本轮命中
+    当场计入。表缺失 / 读失败 → 返回 {}（fail-open：着色是增强，不该让本段
+    挂掉 —— 与 `_recent_dwell_symbols` 同款纪律）。
     """
     if conn is None:
         return {}
     day = today or now_beijing().date().isoformat()
+    cutoff = (_date.fromisoformat(day) - _td(days=OFFBOARD_REPEAT_WINDOW_DAYS - 1)).isoformat()
     try:
-        row = conn.execute("SELECT rounds FROM offboard_round_log WHERE date=?", (day,)).fetchone()
-        total = int(row[0]) if row else 0
-        if total < OFFBOARD_ACTIVE_MIN_ROUNDS:
-            return {}
+        # 跨日分支：top_hits>0 的不同信号日数（m019 前的存量行 top_hits=NULL/0 → 不计，正确）
         rows = conn.execute(
-            f"SELECT symbol, gate_hits FROM {_LOG_TABLE} "  # noqa: S608 - 常量表名
-            "WHERE date = ? AND gate_hits > 0",
+            f"SELECT symbol, COUNT(DISTINCT date) FROM {_LOG_TABLE} "  # noqa: S608 - 常量表名
+            "WHERE date >= ? AND top_hits > 0 GROUP BY symbol",
+            (cutoff,),
+        ).fetchall()
+        # 当日分支：今日进前十的轮次
+        today_rows = conn.execute(
+            f"SELECT symbol, top_hits FROM {_LOG_TABLE} "  # noqa: S608 - 常量表名
+            "WHERE date = ? AND top_hits > 0",
             (day,),
         ).fetchall()
     except EXTERNAL_FAILURES as e:
-        logger.warning("B段今日活跃统计失败（本轮不标色）: %s", e)
+        logger.warning("B段反复出现统计失败（本轮不标色）: %s", e)
         return {}
-    return {str(sym): min(int(n) / total, 1.0) for sym, n in rows if n}
+    counts = {str(sym): int(n) for sym, n in rows if n}
+    for sym, n in today_rows:
+        if int(n) > counts.get(str(sym), 0):
+            counts[str(sym)] = int(n)
+    return counts
 
 
 def _retain_candidates(
@@ -920,14 +936,15 @@ def persist_round(conn, rows: Sequence[OffboardCandidate]) -> None:
     vol_ratio / main_pct / amount / float_cap / price` 九列在 ON CONFLICT 时**不更新**，
     只有 `last_hit_time` 与 `updated` 每轮刷新。
 
-    `top_hits`（m019）：**前 `top_n` 行**每轮 +1 —— 一版「反复进前十」标识的落库
-    依据。2026-10-14 二版起不再作标识依据（实测无筛选力，见 `today_presence`
-    docstring），但**照常累加**：列已发布（id 不得改名/删列），且「进前十轮数」
-    作为研究原料仍有价值。
+    `top_hits`（m019）：**前 `top_n` 行**每轮 +1 —— 「反复进前十」标识的落库
+    依据。2026-10-14 二版（在场率）期间一度不作标识依据，2026-10-15 三版回归
+    后**重新作依据**：列已发布（id 不得改名/删列），ON CONFLICT 累加（计数列，
+    与信号冻结列相反），跨日因 (date, symbol) 主键自然重置。
 
-    `gate_hits`（m020，2026-10-14）：**所有过门行**每轮 +1（不只前 N）——「今日
-    活跃」在场率标识（`today_presence`）的分子。与 top_hits 同为计数列（ON
-    CONFLICT 累加，跨日因 (date, symbol) 主键自然重置）。留存行不入本表 ⇒ 不累。
+    `gate_hits`（m020，2026-10-14）：**所有过门行**每轮 +1（不只前 N）—— 曾是
+    「今日活跃」在场率标识（today_presence，已退场）的分子，现仅作研究原料。
+    与 top_hits 同为计数列（ON CONFLICT 累加，跨日因 (date, symbol) 主键自然
+    重置）。留存行不入本表 ⇒ 不累。
 
     同函数顺带记当日扫描轮数账（`offboard_round_log`，m020）：**每调用一次就是
     一轮**，与本轮过门行数无关 —— `rows` 为空也记账（run_offboard_watch 的
@@ -1240,7 +1257,8 @@ def run_offboard_watch(
     # 两段互斥（过门才可能被分层拒），同一 symbol 不会重复入表。
     if not cands and not retained:
         _save_rejections(conn, _rejection_rows(gate_rejects, (), snapshot, names), today)
-        # 过门池空也是一轮跑过门的扫描：记入轮数账（today_presence 分母完整性）。
+        # 过门池空也是一轮跑过门的扫描：记入轮数账（历史口径：today_presence 分母
+        # 完整性；三版起在场率退场，本账保留为研究原料）。
         persist_round(conn, [])
         return []
 
@@ -1277,14 +1295,15 @@ def run_offboard_watch(
 
     # 留存行不占 top_n 名额：严格信号永远优先，续展的「已回落」票只作尾部上下文。
     top = passed[:top_n] + kept_retained
-    # 「今日活跃」注记回填（2026-10-14 二版，纯展示层）：必须在 `persist_round` **之后**
-    # 统计 —— 当轮命中已落库才计入（与 `today_presence` docstring「含当日」一致），
-    # 否则首日出现的票要等到第二轮才可能被标。只回填最终展示行，不参与门 / 排序
-    # （本函数所有判定都发生在回填之前，结构上保证零影响）。
-    _presence = today_presence(conn, today)
-    if _presence:
+    # 「反复进前十」注记回填（2026-10-14 一版 → 三版回归，纯展示层）：必须在
+    # `persist_round` **之后**统计 —— 当轮命中已落库才计入（与
+    # `recent_repeat_counts` docstring「含当日」一致），否则首日出现的票要等到
+    # 第二轮才可能被标。只回填最终展示行，不参与门 / 排序（本函数所有判定都
+    # 发生在回填之前，结构上保证零影响）。
+    _repeat = recent_repeat_counts(conn, today)
+    if _repeat:
         for c in top:
-            c.presence = _presence.get(c.symbol)
+            c.repeat_days = _repeat.get(c.symbol, 0)
     # 板块列（2026-09-22）：只对最终展示行取值 —— ②级 F10 补拉的量因此被压到
     # ≤ OFFBOARD_DISPLAY_TOP 只，且缓存命中时零请求（见 OFFBOARD_BOARD_FETCH 注释）。
     _attach_boards(top, conn)

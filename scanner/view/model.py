@@ -7,6 +7,8 @@ import wcwidth
 
 from scanner.config import (
     OFFBOARD_OPENING_SILENCE_MIN,
+    OFFBOARD_REPEAT_MIN_HITS,
+    OFFBOARD_REPEAT_WINDOW_DAYS,
     TREND_MARK_ENABLED,
 )
 from scanner.models import Candidate, RecommendationRow
@@ -564,7 +566,8 @@ def offboard_subtitle(n: int) -> str:
     漏「未回测」→ 高估证据强度；漏「开盘静默窗」→ 掩盖排序键自身的成立前提
     （`offboard_watch.sort_key` docstring：量比失真与静默窗「是一组，不可只删其一」）；
     漏「活跃标识」（2026-10-14 二版）→ 粉名/🔥 无从解读 —— 图例行已按用户决策双端移除
-    （2026-09-28「去掉显示读法」），段标题是标识含义的唯一出口。
+    （2026-09-28「去掉显示读法」），段标题是标识含义的唯一出口。三版（2026-10-15）
+    判定 = 反复进前十（跨日），文案同步改。
 
     ⚠ 两处 `T1`/`T2` 出现**刻意不合并**：「层级 T1=… / T2=…」是 `=` 号的**词表**
     （这层是什么意思），「排序=T2 启动首日→T1 量先动→…」里的两层是**排序键的第一级**
@@ -586,7 +589,7 @@ def offboard_subtitle(n: int) -> str:
         "层级 T1=量先动·价未动 / T2=启动首日·"
         "排序=T2 启动首日→T1 量先动→量比→主力净占比"
         f"·开盘 {OFFBOARD_OPENING_SILENCE_MIN} 分内不产出(量比失真)"
-        f"·粉名/🔥=今日活跃(过门≥六成轮)"
+        f"·粉名/🔥=反复进前十(近{OFFBOARD_REPEAT_WINDOW_DAYS}日≥{OFFBOARD_REPEAT_MIN_HITS}次)"
         f"·{n} 只·观察段·未回测）"
     )
 

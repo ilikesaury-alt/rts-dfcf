@@ -3,7 +3,7 @@ from scanner.config import (
     FUND_OUTFLOW_NET_PCT,
     HIST_LOOKBACK_DAYS,
     HOT_HIGHLIGHT_STREAK,
-    OFFBOARD_ACTIVE_PRESENCE,
+    OFFBOARD_REPEAT_MIN_HITS,
     PUSH_GATE_ENABLED,
     TOP40_THRESHOLD,
     now_beijing,
@@ -303,12 +303,13 @@ def _hot_row_cells(c, idx: int, *, board_segment: bool) -> list[str]:
 
     量比/市值/成交额可能因快照缺字段而为 0 → 显示 —（不伪造为 0.00）。
 
-    「今日活跃」粉名（2026-10-14 二版，**只有榜外异动段会命中**；同日用户反馈：颜色与
-    其他区域统一用粉红，不要五彩斑斓）：当日严格过门轮数 ÷ 当日扫描轮数
-    ≥ OFFBOARD_ACTIVE_PRESENCE（在场率，计数由 `offboard_watch.today_presence`
-    回填在 `presence` 上，轮数下限在统计函数内执行）⇒
-    名称加粉+粗（MAGENTA，与主表核心行 / 回捞「稳」标同一把颜色）。榜内两段该注记
-    恒 None（A 段 HotCandidate 无此字段、榜内异动段不回填），getattr 兜底 ⇒ 三段共用
+    「反复进前十」粉名（三版 2026-10-15，**只有榜外异动段会命中**）：窗内 ≥
+    OFFBOARD_REPEAT_MIN_HITS 个信号日进过展示前 N（或今日反复回前十），计数由
+    `offboard_watch.recent_repeat_counts` 回填在 `repeat_days` 上（跨日+当日两
+    分支，见该函数 docstring）⇒ 名称加粉+粗（MAGENTA，与主表核心行 / 回捞「稳」
+    标同一把颜色）。沿革：m020 二版曾改判「今日活跃」在场率（presence ≥ 0.60），
+    2026-10-15 用户反馈「基本都粉+标红疲劳」后回归跨日口径。榜内两段该注记
+    恒 0（A 段 HotCandidate 无此字段、榜内异动段不回填），getattr 兜底 ⇒ 三段共用
     本函数不会误染。ANSI 由 `_table_row` 的 `_vis_len` 剥离后量宽，不影响定宽对齐
     （与 pct_colored / ★ 同一机制）。
     """
@@ -327,7 +328,7 @@ def _hot_row_cells(c, idx: int, *, board_segment: bool) -> list[str]:
         tier_str = getattr(c, "tier", "") or "—"
     sector = str(getattr(c, "sector", "") or "")
     name = c.name
-    if (getattr(c, "presence", None) or 0) >= OFFBOARD_ACTIVE_PRESENCE:
+    if (getattr(c, "repeat_days", 0) or 0) >= OFFBOARD_REPEAT_MIN_HITS:
         name = f"{ANSI['BOLD']}{ANSI['MAGENTA']}{name}{ANSI['RESET']}"
     return [
         str(idx),
