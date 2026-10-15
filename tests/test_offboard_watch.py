@@ -42,12 +42,7 @@ from scanner.config import (
     TREND_MARK_ENABLED,
     now_beijing,
 )
-from scanner.db.migrations import (
-    _OFFBOARD_KLINE_DDL,
-    _OFFBOARD_LAUNCH_LOG_DDL,
-    _OFFBOARD_REJECTIONS_DDL,
-    _OFFBOARD_ROUND_LOG_DDL,
-)
+from scanner.db.migrations import run_migrations
 from scanner.display_gates import UNIVERSAL_GATES, beauty_marks_daily, common_hard_gate
 from scanner.offboard_watch import (
     T1,
@@ -182,16 +177,13 @@ _TINY_SERIES = _lin(10.0, 10.1, 6)
 
 @pytest.fixture
 def db():
-    """内存库：B 段自己的两张表 + 被断言「不得被写入」的两张主线表。"""
+    """内存库：B 段四张表（生产迁移单源）+ 被断言「不得被写入」的两张主线表。"""
     conn = sqlite3.connect(":memory:")
     conn.execute("CREATE TABLE appearances (symbol TEXT, name TEXT, date TEXT)")
     conn.execute("CREATE TABLE market_extra_cache (symbol TEXT, data_type TEXT, date TEXT, payload_json TEXT)")
     conn.execute("CREATE TABLE recommendations (symbol TEXT, date TEXT)")
     conn.execute("CREATE TABLE daily_kline (symbol TEXT, date TEXT, close REAL)")
-    conn.execute(_OFFBOARD_KLINE_DDL)
-    conn.execute(_OFFBOARD_LAUNCH_LOG_DDL)
-    conn.execute(_OFFBOARD_REJECTIONS_DDL)
-    conn.execute(_OFFBOARD_ROUND_LOG_DDL)
+    run_migrations(conn, verbose=False)
     conn.commit()
     yield conn
     conn.close()
