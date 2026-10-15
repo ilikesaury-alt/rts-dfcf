@@ -303,8 +303,9 @@ def _hot_row_cells(c, idx: int, *, board_segment: bool) -> list[str]:
 
     量比/市值/成交额可能因快照缺字段而为 0 → 显示 —（不伪造为 0.00）。
 
-    「反复进前十」粉名（三版 2026-10-15，**只有榜外异动段会命中**）：窗内 ≥
-    OFFBOARD_REPEAT_MIN_HITS 个信号日进过展示前 N（或今日反复回前十），计数由
+    「反复进前十」粉名（四版 2026-10-15，**只有榜外异动段会命中**）：窗内进过展示
+    前 N 的总轮次 ≥ OFFBOARD_REPEAT_MIN_HITS（top_hits 求和，含今日；或今日反复回
+    前十），计数由
     `offboard_watch.recent_repeat_counts` 回填在 `repeat_days` 上（跨日+当日两
     分支，见该函数 docstring）⇒ 名称加粉+粗（MAGENTA，与主表核心行 / 回捞「稳」
     标同一把颜色）。沿革：m020 二版曾改判「今日活跃」在场率（presence ≥ 0.60），

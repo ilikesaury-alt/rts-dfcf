@@ -693,7 +693,7 @@ def test_offboard_subtitle_silence_window_comes_from_config():
 
 def test_offboard_subtitle_documents_active_marker():
     """粉名/🔥 的判定含义必须写进段标题（图例行 2026-09-28 双端移除后，段标题是
-    标识含义的唯一出口）。三版（2026-10-15）判定 = 反复进前十（跨日）。"""
+    标识含义的唯一出口）。四版（2026-10-15）判定 = 反复进前十（窗内总轮次）。"""
     from scanner.view.model import offboard_subtitle
 
     text = offboard_subtitle(1)
@@ -877,16 +877,18 @@ def test_persist_round_empty_is_noop(db):
     assert db.execute("SELECT COUNT(*) FROM offboard_launch_log").fetchone()[0] == 0
 
 
-# ── 反复出现标识（recent_repeat_counts，三版 2026-10-15 回归）──────────────
+# ── 反复出现标识（recent_repeat_counts，四版 2026-10-15）────────────────
 
 
 def test_recent_repeat_counts_counts_top_ten_days_within_window(db):
-    """跨日分支：窗内「进过前十的不同信号日数」≥ OFFBOARD_REPEAT_MIN_HITS 达标；
-    top_hits>0 的 date 才算（过门但未进前十的不算，2026-10-14 收窄后口径）；
-    窗外行整行不进统计；m019 前的存量行（top_hits=NULL）不计。
+    """四版（2026-10-15）：窗内「进过前十的总轮次」（top_hits 求和，含今日）
+    ≥ OFFBOARD_REPEAT_MIN_HITS 达标；top_hits>0 才算（过门但未进前十的不算，
+    2026-10-14 收窄后口径）；窗外行整行不进统计；m019 前的存量行（top_hits=NULL）
+    不计。⚠ 「次」按**轮次**计而非不同信号日数：3 日窗内不同信号日上限 3，
+    阈值 5 按日数读恒不可达。
 
-    三版（2026-10-15）回归此口径：二版在场率标识被用户反馈「基本都粉+标红疲劳」
-    否定（全天在场标的是成熟行情，与 B 段新鲜度定位相悖）。
+    沿革：三版（2026-10-15）回归跨日口径后，同日晚间四版改窗 5→3、阈值 2→5，
+    「次」的语义随之换成轮次（用户决策）。
     """
     today = now_beijing().date()
     edge = (today - _td(days=OFFBOARD_REPEAT_WINDOW_DAYS - 1)).isoformat()  # 窗内最旧一日
@@ -898,19 +900,19 @@ def test_recent_repeat_counts_counts_top_ten_days_within_window(db):
             (d, sym, "样本", T1, d, top, d),
         )
 
-    _hit(today.isoformat(), "SZ300100", 1)
-    _hit(edge, "SZ300100", 1)  # 窗内 2 个进前十的不同信号日 → 达标识门槛
-    _hit(today.isoformat(), "SZ300200", 1)  # 仅今日进过 1 日 → 未达跨日门槛
-    _hit(edge, "SZ300200", 0)  # 过门但未进前十 → 不算信号日
-    _hit(outside, "SZ300300", 1)  # 仅窗外 1 日 → 不得计入
-    _hit(today.isoformat(), "SZ300400", 3)  # 当日反复进前十 → 当日分支命中
+    _hit(today.isoformat(), "SZ300100", 3)
+    _hit(edge, "SZ300100", 2)  # 窗内 5 轮进前十 → 达标识门槛（轮次求和，跨日）
+    _hit(today.isoformat(), "SZ300200", OFFBOARD_REPEAT_MIN_HITS - 1)
+    _hit(edge, "SZ300200", 0)  # 过门但未进前十 → 不计；今日 4 轮 < 门槛 → 未达标
+    _hit(outside, "SZ300300", 9)  # 仅窗外 9 轮 → 不得计入
+    _hit(today.isoformat(), "SZ300400", 6)  # 当日反复进前十 → 当场达标
     _hit(today.isoformat(), "SZ300500", 0)  # 今日未进前十 → 不计
     db.commit()
 
     counts = recent_repeat_counts(db, today.isoformat())
-    assert counts["SZ300100"] == 2, "跨日分支：窗内 2 个进前十信号日"
-    assert counts["SZ300400"] == 3, "当日分支：今日反复进前十，取较大者"
-    assert counts["SZ300200"] == 1, "过门未进前十的日期不计，仅今日 1 次"
+    assert counts["SZ300100"] == 5, "跨日：窗内 5 轮进前十（top_hits 求和）"
+    assert counts["SZ300400"] == 6, "当日分支：今日反复进前十，取较大者"
+    assert counts["SZ300200"] == 4, "过门未进前十的轮不计，今日 4 轮未达标"
     assert "SZ300300" not in counts, "窗外不计"
     assert "SZ300500" not in counts, "未进前十不计"
 
@@ -949,20 +951,21 @@ def test_recent_repeat_counts_fails_open():
 def test_run_offboard_watch_backfills_repeat_days(db):
     """端到端回填守卫：`run_offboard_watch` 返回前必须把 `recent_repeat_counts`
     结果写到展示行的 `repeat_days` 上 —— 渲染层只读该字段不重算，漏掉这步
-    粉名/🔥 在生产链路里永不出现（字段恒默认 0，单测却全部通过）。"""
+    粉名/🔥 在生产链路里永不出现（字段恒默认 0，单测却全部通过）。四版（2026-10-15）
+    口径 = 窗内 top_hits 求和 ≥ 门槛。"""
     sym = "SZ300101"
     today = now_beijing().date()
     prior = (today - _td(days=OFFBOARD_REPEAT_WINDOW_DAYS - 1)).isoformat()  # 窗内最旧一日
     _seed_log_row(db, sym, now_beijing().isoformat(timespec="seconds"))
-    # 第二个不同信号日直接以窗内历史日落库（(date,symbol) 唯一，不能同日插两行）；
+    # 第二个窗内信号日直接以历史日落库（(date,symbol) 唯一，不能同日插两行）；
     # 两行都必须 top_hits>0 才算「进过前十」（收窄后口径）
     db.execute(
         "INSERT INTO offboard_launch_log(date,symbol,name,tier,first_time,top_hits,updated) VALUES(?,?,?,?,?,?,?)",
-        (prior, sym, "自检样本", "T1", prior, 1, prior),
+        (prior, sym, "自检样本", "T1", prior, OFFBOARD_REPEAT_MIN_HITS - 1, prior),
     )
     db.execute(
-        "UPDATE offboard_launch_log SET top_hits=1 WHERE symbol=? AND date=?",
-        (sym, today.isoformat()),
+        "UPDATE offboard_launch_log SET top_hits=? WHERE symbol=? AND date=?",
+        (1, sym, today.isoformat()),
     )
     db.commit()
 
@@ -975,7 +978,7 @@ def test_run_offboard_watch_backfills_repeat_days(db):
         snapshot={sym: _payload(vol_ratio=0.5)},  # 量比 0.5 < 1.5 ⇒ 严格门挂掉，走留存路径
     )
     assert len(rows) == 1
-    assert rows[0].repeat_days == 2, "窗内 2 个进前十信号日 ⇒ 必须回填，否则粉名/🔥 永不出现"
+    assert rows[0].repeat_days == OFFBOARD_REPEAT_MIN_HITS, "窗内 5 轮进前十 ⇒ 必须回填，否则粉名/🔥 永不出现"
 
 
 def test_run_offboard_watch_repeat_days_covers_same_day_repeat(db):
@@ -1880,7 +1883,7 @@ def test_hot_row_cells_put_score_on_a_segment_and_tier_on_b_segments():
 
 
 def test_hot_row_name_colored_when_repeat_top10(monkeypatch):
-    """「反复进前十」粉名（三版 2026-10-15）：判定只认 `repeat_days >= OFFBOARD_REPEAT_MIN_HITS`；
+    """「反复进前十」粉名（四版 2026-10-15）：判定只认 `repeat_days >= OFFBOARD_REPEAT_MIN_HITS`；
     未达门槛的榜外行与没有该字段的 A 段行（HotCandidate）都不得染色（getattr 兜底 0）。
     颜色用 MAGENTA（2026-10-14 用户反馈：与其他区域统一，不要五彩斑斓）。
 

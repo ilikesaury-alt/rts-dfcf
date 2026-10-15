@@ -749,7 +749,7 @@ def test_hot_row_score_and_tier_split_matches_terminal():
 
 
 def test_offboard_active_rows_get_tail_marker_outside_code_block():
-    """🔥 尾标（三版 2026-10-15）挂在定宽块（反引号）**之外**：块本体恒宽不受影响
+    """🔥 尾标（四版 2026-10-15）挂在定宽块（反引号）**之外**：块本体恒宽不受影响
     （宽度守卫 test_hot_row_width_is_uniform 量的只是块本体）；达标行行尾
     " 🔥"，未达标行与 A 段行（HotCandidate 无该字段）不标 —— 与终端粉名同判定不同形状。"""
     from scanner.feishu import _fmt_hot_row_feishu, _repeat_tail_card

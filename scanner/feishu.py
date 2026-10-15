@@ -489,8 +489,8 @@ def _marks_tail_card(ff_pct, beauty: str) -> str:
 
 
 def _repeat_tail_card(c) -> str:
-    """「反复进前十」尾标（卡片成形，三版 2026-10-15）：窗内 ≥2 个信号日进过前十（或
-    今日反复回前十）⇒ 🔥。
+    """「反复进前十」尾标（卡片成形，四版 2026-10-15）：窗内进过前十总轮次 ≥
+    OFFBOARD_REPEAT_MIN_HITS（top_hits 求和，含今日）⇒ 🔥。
 
     与终端 `render._hot_row_cells` 的粉名是**同判定不同形状** —— lark_md 定宽块内
     无 ANSI，颜色只能在终端表达；判定源都是 `offboard_watch.recent_repeat_counts`

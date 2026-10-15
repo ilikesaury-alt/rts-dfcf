@@ -472,9 +472,9 @@ tests/                      # pytest suite
   +2.75% vs <0.2 组 +1.97%），但用户反馈「基本都粉+标红后反而疲劳」：全天在场标的是
   **成熟行情**，与 B 段「榜外异动」的新鲜度定位相悖。三版（用户决策）：**保留粉名/🔥、
   判定改回跨日反复进前十** —— 一版被否定的是**当日分支**的筛选力，跨日分支从未被
-  否定且需要好几天才积累一个标识。判定 = 近 `OFFBOARD_REPEAT_WINDOW_DAYS`(5) 个
-  自然日内 ≥ `OFFBOARD_REPEAT_MIN_HITS`(2) 个**不同信号日**进过展示前 N（top_hits>0），
-  或今日 top_hits ≥ 2（盘中反复回前十）；计数单源
+  否定且需要好几天才积累一个标识。判定 = 近 `OFFBOARD_REPEAT_WINDOW_DAYS`(3) 个
+  自然日内进过展示前 N 的**总轮次**（`top_hits` 求和）≥ `OFFBOARD_REPEAT_MIN_HITS`(5)，
+  或今日 top_hits ≥ 5（盘中反复回前十）；计数单源
   `offboard_watch.recent_repeat_counts`，回填在最终展示行 `repeat_days` 字段
   （榜内两段恒 0 不误染）；阈值归属 `config_hot_watch.py`（沿革全录在其注释块）。
   标识含义写进 `offboard_subtitle`（段标题是唯一出口），文案

@@ -188,13 +188,14 @@ class OffboardCandidate:
     # 板块（2026-09-22）：与 A 段 `HotCandidate.sector` 同义同源（`concept.attach_display_boards`
     # 在返回前就地填），取值与 v1 池选「板块」列同一条回退链。空 = 取数失败 → 渲染 `—`。
     sector: str = ""
-    # 「反复进前十」注记（跨日，2026-10-14 一版 → 三版回归）。纯展示量：由
+    # 「反复进前十」注记（四版，2026-10-15）。纯展示量：由
     # `run_offboard_watch` 返回前经 `recent_repeat_counts` 回填在最终展示行上，供
     # 终端名称着色 / 飞书 🔥 尾标判定；不参与门 / 排序 / 落库（榜内异动段共用本
     # dataclass 但不回填，恒 0 —— 两段语义不同，不串标）。值 = 窗内进过前十的
-    # 不同信号日数与今日进前十轮次的较大者（见 recent_repeat_counts docstring）。
+    # 总轮次（top_hits 求和，含今日；见 recent_repeat_counts docstring）。
     # 沿革：m020 二版曾改判「今日活跃」在场率（presence 字段），2026-10-15 用户
-    # 反馈「基本都粉+标红疲劳」后回归跨日口径；跨日需要好几天才积累出一个标识。
+    # 反馈「基本都粉+标红疲劳」后回归跨日口径；同日晚间四版窗 5→3、阈值 2→5，
+    # 「次」改按轮次计（3 日窗内不同信号日数上限 3，按日读阈值 5 恒不可达）。
     repeat_days: int = 0
     reasons: list[str] = field(default_factory=list)
 
@@ -302,27 +303,25 @@ def _recent_dwell_symbols(conn, today: str) -> set[str]:
 
 
 def recent_repeat_counts(conn, today: str | None = None) -> dict[str, int]:
-    """每只票在窗内的「反复进前十」命中数，供粉名/🔥 标识判定（三版，2026-10-15）。
+    """每只票在窗内的「反复进前十」命中数，供粉名/🔥 标识判定（四版，2026-10-15）。
 
-    两个分支（2026-10-14 用户需求：反复**进前十**才算，不提票都标）：
-      · **跨日**：近 `OFFBOARD_REPEAT_WINDOW_DAYS` 个自然日内有 ≥
-        `OFFBOARD_REPEAT_MIN_HITS` 个**不同信号日**进过展示前 N
-        （top_hits>0 的 date 数）；
-      · **当日**：今日 `top_hits` ≥ `OFFBOARD_REPEAT_MIN_HITS`（盘中反复回前十）。
-    取两分支的较大者作标识值：跨日分支天然 ≥2（含当日也计一日）；当日分支让
-    盘中掉出前十又回前十的票当场变粉，不等明天。
+    判定 = 近 `OFFBOARD_REPEAT_WINDOW_DAYS` 个自然日内进过展示前 N 的**总轮次**
+    （top_hits 求和，含今日）≥ `OFFBOARD_REPEAT_MIN_HITS`，或今日 `top_hits`
+    ≥ 门槛（盘中反复回前十，取较大者）。⚠ 「次」按**轮次**计、不再按「不同
+    信号日」计：3 日窗内最多 3 个不同信号日，若按日数读阈值 5 恒不可达 ——
+    四版（2026-10-15 晚）窗 5→3、阈值 2→5 时「次」的语义随之换成轮次。
 
     沿革：一版（m019）当日实测无筛选力（过门池常年 ≤ 展示前 N，「进前十」≈
     「过门」，几分钟攒满）⇒ 二版改判「今日活跃」在场率（today_presence，m020）；
-    2026-10-15 用户反馈在场率标识「基本都粉+标红后疲劳」（全天在场标的是成熟
-    行情，与 B 段新鲜度定位相悖）⇒ 三版回归本口径。一版被否定的是**当日分支**
-    的筛选力，跨日分支需要好几天才积累一个标识，不受该批评影响。判定阈值归属
+    2026-10-15 用户反馈在场率标识「基本都粉+标红疲劳」（全天在场标的是成熟
+    行情，与 B 段新鲜度定位相悖）⇒ 三版回归跨日「不同信号日数」口径；同日
+    晚间用户再调窗与阈值（四版）⇒「次」改按轮次计（理由见上）。判定阈值归属
     `config_hot_watch.py`（沿革全录在 OFFBOARD_REPEAT_WINDOW_DAYS 注释块）。
 
     读侧注记：不参与任何门 / 排序，只回填在最终展示行的 `repeat_days` 上。
     口径与落库一致 —— 只数 `persist_round` 写入的严格过门行（留存行不落库、
-    天然不计；top_hits 由 persist_round 对前 N 行累加，m019，三版起重新作
-    标识依据）。**含当日**：`persist_round` 在返回展示行之前执行，本轮命中
+    天然不计；top_hits 由 persist_round 对前 N 行累加，m019，标识依据）。
+    **含当日**：`persist_round` 在返回展示行之前执行，本轮命中
     当场计入。表缺失 / 读失败 → 返回 {}（fail-open：着色是增强，不该让本段
     挂掉 —— 与 `_recent_dwell_symbols` 同款纪律）。
     """
@@ -331,13 +330,14 @@ def recent_repeat_counts(conn, today: str | None = None) -> dict[str, int]:
     day = today or now_beijing().date().isoformat()
     cutoff = (_date.fromisoformat(day) - _td(days=OFFBOARD_REPEAT_WINDOW_DAYS - 1)).isoformat()
     try:
-        # 跨日分支：top_hits>0 的不同信号日数（m019 前的存量行 top_hits=NULL/0 → 不计，正确）
+        # 窗内进前十总轮次：top_hits 求和（含今日；m019 前的存量行 top_hits=NULL → 不计，正确）
         rows = conn.execute(
-            f"SELECT symbol, COUNT(DISTINCT date) FROM {_LOG_TABLE} "  # noqa: S608 - 常量表名
+            f"SELECT symbol, SUM(top_hits) FROM {_LOG_TABLE} "  # noqa: S608 - 常量表名
             "WHERE date >= ? AND top_hits > 0 GROUP BY symbol",
             (cutoff,),
         ).fetchall()
-        # 当日分支：今日进前十的轮次
+        # 当日分支：今日进前十的轮次（今日已含在窗内 SUM 里；取较大者无实际差异，
+        # 保留分支只为了读侧语义明确）
         today_rows = conn.execute(
             f"SELECT symbol, top_hits FROM {_LOG_TABLE} "  # noqa: S608 - 常量表名
             "WHERE date = ? AND top_hits > 0",
@@ -1297,7 +1297,7 @@ def run_offboard_watch(
 
     # 留存行不占 top_n 名额：严格信号永远优先，续展的「已回落」票只作尾部上下文。
     top = passed[:top_n] + kept_retained
-    # 「反复进前十」注记回填（2026-10-14 一版 → 三版回归，纯展示层）：必须在
+    # 「反复进前十」注记回填（2026-10-14 一版 → 四版，纯展示层）：必须在
     # `persist_round` **之后**统计 —— 当轮命中已落库才计入（与
     # `recent_repeat_counts` docstring「含当日」一致），否则首日出现的票要等到
     # 第二轮才可能被标。只回填最终展示行，不参与门 / 排序（本函数所有判定都
