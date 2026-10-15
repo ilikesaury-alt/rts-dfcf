@@ -430,6 +430,20 @@ tests/                      # pytest suite
   「当日 momentum + 榜单热度跃升」（主线是 `next_day` 次日≥7% hit）。结果**不写
   `recommendations`**、不参与复合评分/档位/🎯 画像、不进飞书主卡片，连击只落
   `hot_watch_hits`。开关 `RTS_HOT_WATCH=0` 可整体关闭。
+- **个股资金流取数域收敛 + 接口换型（2026-10-15，`market_extra.py`）**：东财 clist
+  全市场分页接口被 WAF 按**路径**封锁（所有 host/协议/方法均握手后被断）→ 迁到
+  同 host 的 `ulist.np/get` 显式 secid 批量（500 码/批，1000 → 502；响应行与
+  clist 同字段码，`_absorb` 原样复用）。**取数域同时从全市场 5305 只收敛为
+  创业板全集（300000-302999 枚举，is_gem 全空间）∪ 注册码**（`register_fund_flow_codes`，
+  榜内主板票由 `collect_market_extra` 自动注册 —— A 段量比/榜内异动段读快照依赖
+  主板行）；进程缓存命中条件 = TTL 未过 **且** 注册码 ⊆ 上次拉取域（榜单换血
+  触发重拉）。非创业板非榜单的 ~3000 只主板票从无消费方，不再拉取。语义变化：
+  ①任一批失败不置 done（clist 时代缺页被当完整快照静默缓存 300s）；②批级重试
+  一次吸收瞬时断连；③「拉取完成但部分批次失败」显式告警。
+  ⚠ **push2 家族有 IP 级限频风险**：2026-10-15 验证时段探针密集触发后，
+  push2delay/push2/82.push2 的 ulist 也被断连（直连+代理同灭，持续 >10 分钟，
+  baidu/datacenter-web 正常）。生产节拍（6 批/300s）远低于触发闻值，但连续
+  手动调试后可能出现「ulist 也不通」，等待冷却即可恢复，勿误判为代码故障。
 - **雪球两个行情接口字段不同，勿互换**（2026-09-11 实测）：`batch/quote.json`（批量，
   2 请求/100 票）**没有** `volume_ratio`/`limit_up`/`limit_down`（恒 None），但有
   `last_close`；`quote.json?extend=detail`（单票）才有这三个字段。故 hot_watch 用

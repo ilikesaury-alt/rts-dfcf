@@ -3,10 +3,12 @@
 为什么要有这一段
 ----------------
 「沪深飙升」区（`hot_watch`）的候选**只来自雪球飙升榜** —— 榜内前 `HOT_ENRICH_LIMIT`
-个名额。榜单天然滞后（好票等上榜时已涨一截），而榜外近 4300 只票结构上永远进不来。
-B 段把**项目已在手但从未被消费**的全市场快照（`market_extra_cache` 的 fund_flow 行，
-5305 只，除资金流外还带价/涨幅/量比/换手/成交额/流通市值）拿来做**榜外创业板**的
-提前观察：T1「量先动·价未动」与 T2「启动首日」。
+个名额。榜单天然滞后（好票等上榜时已涨一截），而榜外票结构上永远进不来。
+B 段把**项目已在手但从未被消费**的资金流快照（`market_extra_cache` 的 fund_flow 行，
+创业板全集 ~2100 只 + 榜内主板票，除资金流外还带价/涨幅/量比/换手/成交额/流通市值）
+拿来做**榜外创业板**的提前观察：T1「量先动·价未动」与 T2「启动首日」。
+（2026-10-15 取数域收敛：原 clist 全市场 5305 只被 WAF 封锁后改 ulist 显式取数，
+非创业板非榜单的 ~3000 只主板票从无消费方，不再拉取。）
 
 三条硬边界（与 A 段一致，改动前先读）
 ------------------------------------
@@ -36,14 +38,14 @@ B 段把**项目已在手但从未被消费**的全市场快照（`market_extra_
 
 数据通路（三条，全部离线可得）
 ----------------------------
-1. `market_extra_cache`（date=today, data_type='fund_flow'）：全市场快照，零额外请求；
+1. `market_extra_cache`（date=today, data_type='fund_flow'）：全集快照，零额外请求；
 2. **榜外 K 线池** `offboard_kline_cache`：🔴 **独立于 `daily_kline`** —— 后者的既定
    语义是「榜单衍生池」（999 只里 982 只在 appearances），塞入榜外票会污染所有基于
    它的回测基准与归因（portfolio_backtest / prevday_perf / 召回率口径）。
    按 (symbol, fetch_date) 缓存，当日抓一次当日复用（5 日累计/MA 只依赖抓取日之前的 bar）；
 3. 通用 8 门 + 两道**收紧**的榜外专属门（显式传参，见 `offboard_gate`）；
 4. **实时资金流补拉**（2026-10-08 修复 M1，2026-10-09 扩展量比；**仅生产主循环
-   路径**）：东财全市场 `fetch_fund_flow_rank`（与主循环同源同缓存，响应行自带
+   路径**）：东财全集 `fetch_fund_flow_rank`（与主循环同源同缓存，响应行自带
    f10 量比）覆盖快照 main_pct / vol_ratio。snapshot 注入路径（测试/离线自检/CLI）
    不触发 —— 保持「测试与自检零联网」的纪律。
 
@@ -415,7 +417,7 @@ def _apply_live_quote(payload: dict, quote: dict) -> bool:
     为什么需要（2026-10-08 修复）
     --------------------------
     本段的行情此前**只**来自 `market_extra_cache` 的当日快照，而该快照的写入侧
-    （`market_extra.collect_market_extra`）在全市场拉取**超时**时只落当轮候选那几十行
+    （`market_extra.collect_market_extra`）在全集拉取**超时**时只落当轮候选那几十行
     （`_last_ff_partial` 分支），其余 5000 行保持旧值；读侧 `get_market_extra_snapshot`
     又**不过 TTL**。两者相乘的后果是：一只票只要没进过当轮候选，它的行就永久冻结在
     上一轮成功拉取的时刻 —— 实测 300890 翔丰华在 13:40 显示的是 **11:29** 的
@@ -471,7 +473,7 @@ def _apply_live_quote(payload: dict, quote: dict) -> bool:
 
 
 def _apply_live_fund_flow(snapshot: dict[str, dict], ff: dict[str, dict]) -> int:
-    """把**实时**资金流行（东财全市场）的 main_pct / vol_ratio 就地覆盖进快照，返回覆盖行数。
+    """把**实时**资金流行（东财全集）的 main_pct / vol_ratio 就地覆盖进快照，返回覆盖行数。
 
     为什么需要（2026-10-08 修复 M1 + 2026-10-09 扩展量比）
     ----------------------------------------------------
@@ -481,14 +483,14 @@ def _apply_live_fund_flow(snapshot: dict[str, dict], ff: dict[str, dict]) -> int
     （`_last_ff_partial` 分支），其余行冻结在上一轮成功时刻 —— 门在陈旧值上判定、
     排序在陈旧量比上排座次，与实时价补全修复前的涨幅带是同一类错误。
 
-    数据源用项目**既有**的东财全市场资金流（`market_extra.fetch_fund_flow_rank`，
+    数据源用项目**既有**的东财全集资金流（`market_extra.fetch_fund_flow_rank`，
     push2delay）：其响应行本就带 f10 量比（`_FUND_FLOW_FIELDS` 的报价快照段，
     快照里的 vol_ratio 正是同一字段）—— 故覆盖是**同口径换新鲜值**，不引入
     第二个量比定义。与主循环 `collect_market_extra` 同源同进程缓存（TTL 300s）⇒
-    稳态下本调用是缓存命中、零额外请求；冷缓存时一次全市场分页拉取（有界
+    稳态下本调用是缓存命中、零额外请求；冷缓存时一次全集批量拉取（有界
     `FUND_FLOW_FETCH_TIMEOUT=30s`，fail-soft 返回部分结果），并顺带给主循环预热。
 
-    覆盖范围是**全快照**而非 prefilter 头部：ff 本就是 {6位代码: {...}} 全市场
+    覆盖范围是**全快照**而非 prefilter 头部：ff 本就是 {6位代码: {...}} 全集
     映射，逐行覆盖只是字典查找 —— 让粗筛头部选择、门判定、`sort_key`、拒绝留痕、
     落库的量比/主占全部同口径新鲜。缺行/缺字段 → 保留快照值（fail-open）；
     量比 ≤0（停牌/脏值）不覆盖 —— 0 不是合法量比，覆盖会把可交易票误杀。
@@ -555,9 +557,9 @@ def _refresh_with_live_quotes(
 
 
 def _snapshot_row_to_candidate(symbol: str, payload: dict, names: dict[str, str]) -> OffboardCandidate:
-    """全市场快照的一行 → `OffboardCandidate`（**未过门**）。
+    """资金流快照的一行 → `OffboardCandidate`（**未过门**）。
 
-    字段名映射（东财 clist 字段码见 `market_extra._FUND_FLOW_FIELDS`）：
+    字段名映射（东财字段码见 `market_extra._FUND_FLOW_FIELDS`，ulist 与 clist 同码表）：
     price→现价、percent→今日涨幅、amount→成交额、float_cap→流通市值、
     total_cap→总市值、turnover→换手率、vol_ratio→量比、main_pct→主力净占比。
 
@@ -591,7 +593,7 @@ def build_candidates(
     names: dict[str, str],
     exclude_symbols: set[str] | None = None,
 ) -> tuple[list[OffboardCandidate], list[tuple[str, str]]]:
-    """全市场快照 → **榜外创业板**、已过 `offboard_gate` 的候选（按量比降序）。
+    """资金流快照 → **榜外创业板**、已过 `offboard_gate` 的候选（按量比降序）。
 
     返回 (候选, 排除明细 [(symbol, 原因)])。明细只用于日志/自检，不落库。
 
@@ -1150,7 +1152,7 @@ def run_offboard_watch(
     if conn is None:
         return []
 
-    # 第一道门：开盘静默窗口。**放在读任何数据之前** —— 否则要把 5305 行全市场快照
+    # 第一道门：开盘静默窗口。**放在读任何数据之前** —— 否则要把 ~2300 行全集快照
     # 读进来、跑完 5000 次门判定，再整批丢弃。窗口语义与实测见 opening_silence_active。
     if opening_silence_active():
         return []
@@ -1638,9 +1640,9 @@ def main(argv: "list[str] | None" = None) -> int:
     finally:
         prod.close()
     if not snapshot:
-        print("  [!] 全市场快照为空（主循环未落库？），无法运行 B 段")
+        print("  [!] 资金流快照为空（主循环未落库？），无法运行 B 段")
         return 1
-    print(f"  飙升榜 {len(board)} 条 / 全市场快照 {len(snapshot)} 只 | 数据源 {adapter.name}")
+    print(f"  飙升榜 {len(board)} 条 / 资金流快照 {len(snapshot)} 只 | 数据源 {adapter.name}")
 
     rows = run_offboard_watch(adapter, _cli_conn(), board, top_n=args.top, snapshot=snapshot)
     if not rows:

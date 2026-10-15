@@ -21,9 +21,10 @@ FEISHU_TOP_N = 10  # 飞书卡片精选池展示条数（去重/门控同源，�
 ENABLE_ZT_POOL = _env_flag("RTS_ENABLE_ZT_POOL", True)  # 涨停池
 ENABLE_FUND_FLOW = _env_flag("RTS_ENABLE_FUND_FLOW", True)  # 个股资金流
 
-# 资金流 API host：默认 push2delay（与 akshare 的 push2 相同 clist API）。
-# push2.eastmoney.com 在本机网络直连/代理均不可达（连接被重置），push2delay 可达
-# （数据可能延迟约15分钟）。网络可直连 push2 的环境可用 RTS_FUND_FLOW_HOST 切回。
+# 资金流 API host：默认 push2delay。2026-10-15 起接口从 clist 全市场分页迁到
+# ulist.np/get 显式 secid 批量（clist 被东财 WAF 按路径封锁，ulist 同 host 可达，
+# 取数域同步收敛为创业板全集 ∪ 注册码，见 market_extra 模块 docstring）。
+# host 可用 RTS_FUND_FLOW_HOST 覆盖。
 FUND_FLOW_HOST = _env_str("RTS_FUND_FLOW_HOST", "push2delay.eastmoney.com")
 # 盘中刷新间隔（进程内缓存 TTL + DB 缓存盘中新鲜度共用）：扫描期内数据
 # 过期后视为缺失，触发重拉，实现"盘中每 5 分钟更新"（而非全天冻结首次快照）

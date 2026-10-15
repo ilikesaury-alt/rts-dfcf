@@ -80,7 +80,7 @@ logger = logging.getLogger(__name__)
 
 
 def _snapshot_vol_ratio_map(conn, symbols: Sequence[str]) -> dict[str, float]:
-    """全市场 fund_flow 快照 → `{symbol: vol_ratio}`（缺失/无该键则不出现）。
+    """资金流快照 → `{symbol: vol_ratio}`（缺失/无该键则不出现）。
 
     ## 为什么量比必须走这里，而不能走 `quotes`（2026-10-08 修复）
 
@@ -103,7 +103,7 @@ def _snapshot_vol_ratio_map(conn, symbols: Sequence[str]) -> dict[str, float]:
 
     改从 `market_extra_cache` 的 fund_flow 快照取量比 —— **与 B 段同源同键**
     （`offboard_watch._snapshot_row_to_candidate` 读的也是 `payload["vol_ratio"]`），
-    实测该快照覆盖全市场 1412 只创业板、100% 带 `vol_ratio`，无额外请求成本。
+    实测该快照覆盖创业板全集、100% 带 `vol_ratio`，无额外请求成本。
 
     ⚠ 与 B 段同款残留口径差：快照是「最近一次落库」的量比，可能滞后于实时价。
       本段其余字段（现价/涨幅）仍走**实时** `quotes`，故「量比旧、价新」两种
@@ -156,7 +156,7 @@ def build_onboard_candidates(
     out: list[OffboardCandidate] = []
     rejects: list[tuple[str, str]] = []
 
-    # 量比一次性取数（快照覆盖全市场，1 次查询，与 B 段同源）。
+    # 量比一次性取数（快照覆盖全集，1 次查询，与 B 段同源）。
     vr_map = _snapshot_vol_ratio_map(conn, [str(it.get("symbol") or "") for it in board_items])
 
     for it in board_items:
