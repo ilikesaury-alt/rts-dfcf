@@ -481,31 +481,15 @@ tests/                      # pytest suite
   修法：在 `_absorb` 一次性 ×100 归一到股（那里是唯一知道 f5 单位的地方）。
   ⚠ A 段（`hot_watch`）与榜内异动段（`onboard_anomaly`）走雪球股口径，**本就正确**，
   本故障仅榜外段；改这条时不要顺手动那两处。守卫 `test_absorb_captures_quote_snapshot`。
-- **榜外段「反复进前十」标识（三版 2026-10-15，纯展示层）**：⚠ 同日三改，读沿革再动。
-  一版（m019）「反复进前十」（top_hits 跨日+当日两分支）当日实测无筛选力 —— 过门池
-  常年 ≤ 展示前 N（21 轮里 19 轮 ≤8 只），「进前十」≈「过门」，几分钟攒满 ⇒ 前 8 名
-  几乎全粉；二版（m020）改判「今日活跃」**在场率**（gate_hits ÷ rounds ≥ 0.60，
-  `OFFBOARD_ACTIVE_PRESENCE`/`OFFBOARD_ACTIVE_MIN_ROUNDS` 两常数 + `offboard_round_log`
-  轮数账，含零候选轮）—— 2026-10-15 实测粉票恰是当日最强（在场率 ≥0.6 组当日涨幅
-  +2.75% vs <0.2 组 +1.97%），但用户反馈「基本都粉+标红后反而疲劳」：全天在场标的是
-  **成熟行情**，与 B 段「榜外异动」的新鲜度定位相悖。三版（用户决策）：**保留粉名/🔥、
-  判定改回跨日反复进前十** —— 一版被否定的是**当日分支**的筛选力，跨日分支从未被
-  否定且需要好几天才积累一个标识。判定 = 近 `OFFBOARD_REPEAT_WINDOW_DAYS`(3) 个
-  自然日内进过展示前 N 的**总轮次**（`top_hits` 求和）≥ `OFFBOARD_REPEAT_MIN_HITS`(5)，
-  或今日 top_hits ≥ 5（盘中反复回前十）；计数单源
-  `offboard_watch.recent_repeat_counts`，回填在最终展示行 `repeat_days` 字段
-  （榜内两段恒 0 不误染）；阈值归属 `config_hot_watch.py`（沿革全录在其注释块）。
-  ⚠ **2026-10-16 修复计数口径**：`persist_round` 的 ON CONFLICT 原为 `top_hits=top_hits+1`
-  （**无条件 +1**，丢掉 INSERT 时算出的 `1 if i < OFFBOARD_DISPLAY_TOP else 0`），而它收到
-  的是**全部过门行** ⇒ 排在前 N 之外的行首插记 0、此后每轮仍 +1，计数实为「过门轮次 − 1」：
-  **从未进过展示前 N** 的票也能攒到门槛 —— 正是 m019 被否定的「进前十 ≈ 过门」。
-  现为 `top_hits=top_hits+excluded.top_hits`（前 N 之外**恒 0**）。守卫
-  `test_persist_round_top_hits_only_for_top_n`。
-  标识含义写进 `offboard_subtitle`（段标题是唯一出口），文案
-  「粉名/🔥=反复进前十(近3日≥5次)」（由 `OFFBOARD_REPEAT_WINDOW_DAYS` /
-  `OFFBOARD_REPEAT_MIN_HITS` 派生，此处仅记其现值）。CLI（内存库）与离线自检恒无标识。
-  m020 的 `gate_hits`/`offboard_round_log` 落库照常（列已发布不删，作研究原料），
-  `today_presence`/`OFFBOARD_ACTIVE_*` 已随二版退场。
+- **榜外段「反复进前十」粉名/🔥 标识 —— 已整体删除（2026-10-16，用户决策）**：
+  曾有四版沿革（m019 当日分支 → m020 在场率 → 三/四版跨日 top_hits 求和），
+  详见 git 历史（config_hot_watch.py 已删的注释块全录）。删除范围：
+  `OFFBOARD_REPEAT_*` 两常数、`recent_repeat_counts`、`repeat_days` 字段与回填、
+  终端 MAGENTA 粉名、飞书 🔥 尾标、`offboard_subtitle` 文案段。守卫改为反向：
+  `test_offboard_subtitle_has_no_repeat_marker` + `test_repeat_tail_card_removed_from_card`。
+  **刻意保留**：`offboard_launch_log.top_hits` 落库照常（`top_hits+excluded.top_hits`，
+  前 N 之外恒 0，2026-10-16 计数口径修复不受删除影响）与 m020 的
+  `gate_hits`/`offboard_round_log` —— 列已发布不删，作研究原料。
 - **`.env`** file contains secrets (THS API key, Feishu webhook override). Never commit it.
 
 ## Testing notes

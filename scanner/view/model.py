@@ -7,8 +7,6 @@ import wcwidth
 
 from scanner.config import (
     OFFBOARD_OPENING_SILENCE_MIN,
-    OFFBOARD_REPEAT_MIN_HITS,
-    OFFBOARD_REPEAT_WINDOW_DAYS,
     TREND_MARK_ENABLED,
 )
 from scanner.models import Candidate, RecommendationRow
@@ -558,17 +556,15 @@ def hot_subtitle(n: int) -> str:
 
 
 def offboard_subtitle(n: int) -> str:
-    """**榜外异动段**小标题括号正文：候选来源 + 层级词表 + 排序键 + 开盘静默窗 + 活跃标识 + 规模 + 证据强度。
+    """**榜外异动段**小标题括号正文：候选来源 + 层级词表 + 排序键 + 开盘静默窗 + 规模 + 证据强度。
 
-    七项缺一不可（顺序固定）：漏「排序键」→ 最自然的误读是「它和榜内飙升段一样是
+    六项缺一不可（顺序固定）：漏「排序键」→ 最自然的误读是「它和榜内飙升段一样是
     热度跃升」，而两者口径与证据强度完全不同；漏「层级词表」→ 屏幕上只剩裸的
     `T1`/`T2`，无任何上下文可推出它是什么（2026-10-13 用户反馈：名称与层级混乱）；
     漏「未回测」→ 高估证据强度；漏「开盘静默窗」→ 掩盖排序键自身的成立前提
-    （`offboard_watch.sort_key` docstring：量比失真与静默窗「是一组，不可只删其一」）；
-    漏「活跃标识」（2026-10-14 二版）→ 粉名/🔥 无从解读 —— 图例行已按用户决策双端移除
-    （2026-09-28「去掉显示读法」），段标题是标识含义的唯一出口。四版（2026-10-15）
-    判定 = 反复进前十（窗内总轮次，top_hits 求和含今日），文案同步改 —— 3 日窗内
-    不同信号日数上限 3，阈值 5 按「日数」读恒不可达，「次」的语义随之换成轮次。
+    （`offboard_watch.sort_key` docstring：量比失真与静默窗「是一组，不可只删其一」）。
+    （历史注记：2026-10-14~15 曾有「粉名/🔥=反复进前十」标识，四版沿革见
+    git 历史 / config_hot_watch.py 的已删注释块；2026-10-16 按用户决策整体删除。）
 
     ⚠ 两处 `T1`/`T2` 出现**刻意不合并**：「层级 T1=… / T2=…」是 `=` 号的**词表**
     （这层是什么意思），「排序=T2 启动首日→T1 量先动→…」里的两层是**排序键的第一级**
@@ -590,7 +586,6 @@ def offboard_subtitle(n: int) -> str:
         "层级 T1=量先动·价未动 / T2=启动首日·"
         "排序=T2 启动首日→T1 量先动→量比→主力净占比"
         f"·开盘 {OFFBOARD_OPENING_SILENCE_MIN} 分内不产出(量比失真)"
-        f"·粉名/🔥=反复进前十(近{OFFBOARD_REPEAT_WINDOW_DAYS}日≥{OFFBOARD_REPEAT_MIN_HITS}次)"
         f"·{n} 只·观察段·未回测）"
     )
 

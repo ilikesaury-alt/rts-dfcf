@@ -213,33 +213,6 @@ OFFBOARD_PREFILTER_PCT_BUFFER = 2.0  # 粗筛涨幅带 = 真带 ± 本缓冲（�
 # 1=开（默认）/ 0=关（纯离线：只读缓存，miss 回退名称关键词）。
 OFFBOARD_BOARD_FETCH = int(os.environ.get("RTS_OFFBOARD_BOARD_FETCH", "1"))
 
-# ── 「反复进前十」标识（四版，2026-10-15；纯展示层）──
-# 判定 = 近 `OFFBOARD_REPEAT_WINDOW_DAYS` 个自然日内进过展示前 N 的**总轮次**
-# （top_hits 求和，含今日）≥ `OFFBOARD_REPEAT_MIN_HITS`，或今日 top_hits ≥ 门槛
-# （盘中反复回前十，当场达标；今日已含在窗内 SUM 里，取较大者无实际差异）。
-# 沿革：
-#   一版（m019，2026-10-14 上午）：就是本口径（跨日+当日两分支），但当日实测
-#     无筛选力 —— 过门池常年 ≤ OFFBOARD_DISPLAY_TOP（21 轮里 19 轮 ≤8 只），
-#     「进前十」≈「过门」，出场几分钟攒满 2 轮就变粉 ⇒ 前 8 名几乎全粉。
-#   二版（m020，2026-10-14 下午）：改判「今日活跃」在场率（gate_hits ÷ rounds
-#     ≥ OFFBOARD_ACTIVE_PRESENCE(0.60)，OFFBOARD_ACTIVE_PRESENCE /
-#     OFFBOARD_ACTIVE_MIN_ROUNDS 两个常数随之存在）。当日 10-15 实测：粉票恰是
-#     当日最强（在场率 ≥0.6 组当日涨幅 +2.75% vs <0.2 组 +1.97%），但用户反馈
-#     「基本都粉 + 标红后反而疲劳」—— 全天在场标的是「成熟行情」，与 B 段
-#     「榜外异动」的新鲜度定位有内在张力。
-#   三版（2026-10-15，用户决策）：**保留标红、判定改回跨日反复进前十** ——
-#     一版被实测否定的是**当日分支**（几分钟攒满），跨日分支从未被否定且需要
-#     好几天才积累出一个标识，天然避开「全粉」；二版常数随判定一并退场。
-#   四版（2026-10-15 晚，用户决策）：窗 5→3 日、阈值 2→5 次，且「次」改按
-#     **轮次**计（top_hits 求和，含当日）—— 3 日窗内最多 3 个不同信号日，若仍按
-#     「不同信号日数」读，阈值 5 恒不可达。轮次口径重新引入「盘中反复回前十」的
-#     累积，但门槛 5 轮远高于一版被否定的 2 轮，非当日反复多轮进不了榜。
-# ⚠ 只影响名称着色 / 🔥 尾标，不参与任何门 / 排序 —— 调这两个常数不会改变信号
-# 本身，也就不在 rule_validate 的可见性集合里（它管的是产出，不是展示）。
-# m020 的 gate_hits / offboard_round_log 落库照常（列已发布不删，作研究原料）。
-OFFBOARD_REPEAT_WINDOW_DAYS = 3  # 回看自然日数（含当日）
-OFFBOARD_REPEAT_MIN_HITS = 5  # 达标阈值：窗内进前十总轮次（top_hits 求和，含当日）
-
 # ── 榜内异动段（2026-09-30 新增，A 段与 B 段之间的中间档）──
 # 填的空档：A 段要求「已涨 + 热度跃升」，B 段要求「没上榜」⇒ **「刚上榜、涨幅还小、
 # 量已经动了」这一档两侧都没覆盖**。本段只做 T1（量先动·价未动）。
@@ -305,8 +278,6 @@ __all__ = [
     "OFFBOARD_PREFILTER_FLOAT_CAP_RATIO",
     "OFFBOARD_PREFILTER_PCT_BUFFER",
     "OFFBOARD_BOARD_FETCH",
-    "OFFBOARD_REPEAT_WINDOW_DAYS",
-    "OFFBOARD_REPEAT_MIN_HITS",
     "ONBOARD_ANOMALY_ENABLED",
     "ONBOARD_DISPLAY_TOP",
     "ONBOARD_KLINE_BARS",

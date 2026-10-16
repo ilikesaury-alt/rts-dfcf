@@ -3,7 +3,6 @@ from scanner.config import (
     FUND_OUTFLOW_NET_PCT,
     HIST_LOOKBACK_DAYS,
     HOT_HIGHLIGHT_STREAK,
-    OFFBOARD_REPEAT_MIN_HITS,
     PUSH_GATE_ENABLED,
     TOP40_THRESHOLD,
     now_beijing,
@@ -303,16 +302,9 @@ def _hot_row_cells(c, idx: int, *, board_segment: bool) -> list[str]:
 
     量比/市值/成交额可能因快照缺字段而为 0 → 显示 —（不伪造为 0.00）。
 
-    「反复进前十」粉名（四版 2026-10-15，**只有榜外异动段会命中**）：窗内进过展示
-    前 N 的总轮次 ≥ OFFBOARD_REPEAT_MIN_HITS（top_hits 求和，含今日；或今日反复回
-    前十），计数由
-    `offboard_watch.recent_repeat_counts` 回填在 `repeat_days` 上（跨日+当日两
-    分支，见该函数 docstring）⇒ 名称加粉+粗（MAGENTA，与主表核心行 / 回捞「稳」
-    标同一把颜色）。沿革：m020 二版曾改判「今日活跃」在场率（presence ≥ 0.60），
-    2026-10-15 用户反馈「基本都粉+标红疲劳」后回归跨日口径。榜内两段该注记
-    恒 0（A 段 HotCandidate 无此字段、榜内异动段不回填），getattr 兜底 ⇒ 三段共用
-    本函数不会误染。ANSI 由 `_table_row` 的 `_vis_len` 剥离后量宽，不影响定宽对齐
-    （与 pct_colored / ★ 同一机制）。
+    （历史注记：2026-10-14~15 曾有「反复进前十」粉名标识（MAGENTA 染名），
+    2026-10-16 按用户决策整体删除；沿革见 git 历史。榜内两段该注记恒 0、
+    getattr 兜底的共用结构随标识一并退场。）
     """
     if board_segment:
         streak = c.streak
@@ -329,8 +321,6 @@ def _hot_row_cells(c, idx: int, *, board_segment: bool) -> list[str]:
         tier_str = getattr(c, "tier", "") or "—"
     sector = str(getattr(c, "sector", "") or "")
     name = c.name
-    if (getattr(c, "repeat_days", 0) or 0) >= OFFBOARD_REPEAT_MIN_HITS:
-        name = f"{ANSI['BOLD']}{ANSI['MAGENTA']}{name}{ANSI['RESET']}"
     return [
         str(idx),
         c.code,

@@ -28,7 +28,6 @@ from scanner.config import (
     FEISHU_WEBHOOK,
     FUND_OUTFLOW_NET_PCT,
     HOT_HIGHLIGHT_STREAK,
-    OFFBOARD_REPEAT_MIN_HITS,
     PUSH_MIN_INTERVAL,
     PUSH_MIN_ROWS,
     now_beijing,
@@ -494,16 +493,12 @@ def _marks_tail_card(ff_pct, beauty: str) -> str:
 
 
 def _repeat_tail_card(c) -> str:
-    """「反复进前十」尾标（卡片成形，四版 2026-10-15）：窗内进过前十总轮次 ≥
-    OFFBOARD_REPEAT_MIN_HITS（top_hits 求和，含今日）⇒ 🔥。
+    """已删除的「反复进前十」🔥 尾标占位（2026-10-16 按用户决策整体删除）。
 
-    与终端 `render._hot_row_cells` 的粉名是**同判定不同形状** —— lark_md 定宽块内
-    无 ANSI，颜色只能在终端表达；判定源都是 `offboard_watch.recent_repeat_counts`
-    回填的 `repeat_days`，本函数不重算。getattr 兜底：A 段/回捞行没有该注记（恒 0）。
-    追加在反引号**之外**（与 _marks_tail_card 同位），不改变定宽块宽度
-    （test_hot_row_width_is_uniform 量的只是定宽块本体）。
+    恒空串保留调用点形状，避免动卡片拼装；同名历史沿革见 git 历史。
     """
-    return " 🔥" if (getattr(c, "repeat_days", 0) or 0) >= OFFBOARD_REPEAT_MIN_HITS else ""
+    del c
+    return ""
 
 
 def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 0, top_n: int = FEISHU_TOP_N) -> dict:
