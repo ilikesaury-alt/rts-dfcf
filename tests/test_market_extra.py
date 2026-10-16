@@ -225,8 +225,12 @@ class TestFetchFundFlow:
         assert result["300001"]["super_net"] == 60000000.0
 
     def test_universe_is_gem_enumeration_and_batch_capped(self, monkeypatch):
-        """默认取数域 = 创业板全集（300000-302999），每批 ≤ _FUND_FLOW_BATCH_SIZE。"""
-        net = _NetCounter()
+        """默认取数域 = 创业板全集（300000-302999），每批 ≤ _FUND_FLOW_BATCH_SIZE。
+
+        伪服务端必须让**首批**有票：首批 0 行 = 整体失败，会快速失败不提交余批
+        （2026-10-16 语义，见 test_first_batch_empty_is_failure_not_complete）。
+        """
+        net = _NetCounter(rows_by_code=_ff_table("300001"))
         monkeypatch.setattr(me._requests, "get", net.get)
         me._collect_fund_flow({}, time.time() + 60)
         assert net.requests, "至少一批请求"
@@ -270,12 +274,27 @@ class TestFetchFundFlow:
         assert net.calls == 2
 
     def test_empty_data_backoff(self, monkeypatch):
-        # 接口返回空 data（非交易时段/无数据）→ {}，按失败短退避缓存不重复打网络
+        # 整批回空 data（rc=102；非交易时段/码段无票）→ 首批 0 行即整体失败 → {}，
+        # 按失败短退避缓存不重复打网络
         net = _NetCounter(raw={"rc": 0, "data": None})
         monkeypatch.setattr(me._requests, "get", net.get)
         assert me.fetch_fund_flow_rank() == {}
         assert me.fetch_fund_flow_rank() == {}
         assert net.calls == 2  # 首批失败含一次重试；短退避后第二次调用零请求
+
+    def test_first_batch_empty_is_failure_not_complete(self, monkeypatch):
+        """**首批** 0 行 = 整体不可用（2026-10-16 语义），不得当完整快照缓存。
+
+        首批含 300000-300499 一整段连号码，正常市况必有票；0 行只可能是主机/接口
+        整体不可用。不置 done ⇒ 外层 60s 短退避重试；也不提交余下批次（快速失败）。
+        """
+        net = _NetCounter(raw={"rc": 102, "data": None})
+        monkeypatch.setattr(me._requests, "get", net.get)
+        box = {}
+        assert me._collect_fund_flow(box, time.time() + 60) == {}
+        assert box.get("done") is not True, "首批 0 行不得当完整快照"
+        assert box["err"] == "首批无数据"
+        assert net.calls == 2, "首批（含一次重试）失败即收工，不对余下批次打请求"
 
     def test_deadline_expired_returns_empty(self, monkeypatch):
         # deadline 已过：一步不拉，直接返回 {}（调用方按软降级处理）
@@ -296,6 +315,29 @@ class TestFetchFundFlow:
         assert result["301001"]["main_pct"] == 8.5
         assert box["value"] == result
         assert box.get("done") is True, "完整拉取应标记完成（供外层区分完整/部分快照）"
+        assert "err" not in box
+
+    def test_tail_empty_batch_rc102_does_not_block_done(self, monkeypatch):
+        """枚举域尾部批（302500-302999 全为未发行码）回 rc=102/data=null ⇒ 0 行，正常。
+
+        2026-10-16 生产故障回归守卫：旧实现把"data 非 dict"当批级失败 ⇒ 末批恒
+        失败 ⇒ done 永不置位 ⇒ 快照全天只落当轮候选（实测 19 行 vs 5059 行）
+        ⇒ B 段/榜内异动段全天零产出。
+        """
+        table = _ff_table("300001")
+
+        def get(*a, **k):
+            codes = [s.split(".", 1)[1] for s in str(k.get("params", {}).get("secids", "")).split(",") if s]
+            diff = [table[c] for c in codes if c in table]
+            if not diff:
+                return FakeResp({"rc": 102, "data": None})  # 整批无有效码：东财实测应答
+            return FakeResp({"rc": 0, "data": {"total": len(diff), "diff": diff}})
+
+        monkeypatch.setattr(me._requests, "get", get)
+        box = {}
+        result = me._collect_fund_flow(box, time.time() + 60)
+        assert set(result) == {"300001"}
+        assert box.get("done") is True, "尾部批无上市票不得阻止 done 置位（否则快照塌缩成候选）"
         assert "err" not in box
 
     def test_batch_failure_prevents_done(self, monkeypatch):
@@ -326,7 +368,10 @@ class TestFetchFundFlow:
         # 报价快照字段全部落进 payload
         assert payload["price"] == 15.0
         assert payload["percent"] == 10.0
-        assert payload["volume"] == 1000.0
+        # ⚠ f5 是**手** ⇒ 落库时统一换算成**股**（×100），与雪球报价 / 展示层
+        # `render._fmt_hot_volume_hand` 同口径（2026-10-16 修复：榜外段「量」列
+        # 此前对未被实时价覆盖的行小 100×）。
+        assert payload["volume"] == 100000.0
         assert payload["amount"] == 15000000.0
         assert payload["turnover"] == 3.2
         assert payload["vol_ratio"] == 2.5
@@ -351,11 +396,15 @@ class TestFetchFundFlow:
     def test_deadline_partial_marks_not_done(self, monkeypatch):
         # 多批拉到一半超时：取消剩余任务，box["done"] 不置位 → 外层按部分快照处理
         # 第 2~6 批各放一个慢码，保证 deadline 到点时首批已收集、余批未完成。
-        slow = [f"300{base}01" for base in (5, 10, 15, 20, 25)]
+        # ⚠ deadline 不能取 ~0：`_collect_fund_flow` 入口有 `time.time() > deadline`
+        # 的早退检查，1ms 的窗口会与它赛跑（实测本机 3 次跑 2 次空手返回 → 常红，
+        # 2026-10-16 修）。取 0.05s：早退与首批有 ~10 倍余量，而慢批 delay=0.2s
+        # 保证它到点时仍未完成。
+        slow = ["300501", "301001", "301501", "302001", "302501"]
         net = _NetCounter(rows_by_code=_ff_table("300001"), slow_codes=slow, delay=0.2)
         monkeypatch.setattr(me._requests, "get", net.get)
         box = {}
-        result = me._collect_fund_flow(box, time.time() + 0.001)
+        result = me._collect_fund_flow(box, time.time() + 0.05)
         assert box.get("done") is not True, "超时部分拉取不得标记完成"
         assert set(result) == {"300001"}, "仅首批已收集，后续批被取消"
 
@@ -389,7 +438,8 @@ class TestRegistration:
     """注册码机制（2026-10-15 取数域收敛）：榜内主板票并入取数域。"""
 
     def test_registered_board_code_fetched_and_merged(self, monkeypatch):
-        net = _NetCounter(rows_by_code={"600519": _ff_rows("600519")[0]})
+        # 首批（创业板段）必须有票，否则首批 0 行整体失败、注册码批根本不会被提交
+        net = _NetCounter(rows_by_code={**_ff_table("300001"), "600519": _ff_rows("600519")[0]})
         monkeypatch.setattr(me._requests, "get", net.get)
         me.register_fund_flow_codes(["SH600519"])
         result = me.fetch_fund_flow_rank()
@@ -448,7 +498,8 @@ class TestCollect:
 
     def test_board_symbols_fetched_via_registration(self, monkeypatch):
         """榜内主板票（非创业板）→ 注册码 → 补拉落库（A 段量比/榜内异动段依赖）。"""
-        net = _NetCounter(rows_by_code={"600519": _ff_rows("600519")[0]})
+        # 首批（创业板段）必须有票，否则首批 0 行整体失败、注册码批根本不会被提交
+        net = _NetCounter(rows_by_code={**_ff_table("300001"), "600519": _ff_rows("600519")[0]})
         monkeypatch.setattr(me._requests, "get", net.get)
         monkeypatch.setattr(me, "get_market_extra_cache", lambda *a, **k: {})
         saved = {}
@@ -458,8 +509,14 @@ class TestCollect:
         assert saved.get("fund_flow", {}).get("SH600519", {}).get("main_net") == 123456789.0
         # 主板码不在创业板全集批内（全集批纯 0.3 开头），靠注册码补拉
 
-    def test_complete_fetch_saves_full_market(self, monkeypatch):
-        """完整拉取：保存全市场快照（含非当前候选），保证重启/掉榜后展示层可读。"""
+    def test_fetch_saves_all_fetched_rows_not_only_candidates(self, monkeypatch):
+        """落库广度 = 本次**取到的全部行**（2026-10-16 修改，含超时部分结果）。
+
+        旧实现只在完整拉取时存全集、超时部分结果只存当轮候选 —— 把一个瞬时的
+        取数不完整放大成读侧宇宙塌缩（B 段候选域 = 当日快照）。实测 2026-10-16
+        全天仅 19 行（完整 5059 行）、B 段/榜内异动段全天零产出。
+        现"部分"只由缓存 TTL（60s vs 300s）承担，落库一律写取到的行。
+        """
         monkeypatch.setattr(me, "get_market_extra_cache", lambda *a, **k: {})
         saved = {}
         monkeypatch.setattr(me, "save_market_extra_cache", lambda conn, m, dt: saved.update({dt: dict(m)}))
@@ -471,28 +528,9 @@ class TestCollect:
                 "300999": {"main_net": -1e7, "main_pct": -3.0, "super_net": 0},
             },
         )
-        monkeypatch.setattr(me, "_last_ff_partial", False)
         result = me.collect_market_extra(None, ["SZ300001"], include_zt=False)
         assert "SZ300001" in result
-        assert "SZ300999" in saved.get("fund_flow", {}), "完整拉取应保存全集快照（含非候选）"
-
-    def test_partial_fetch_saves_candidates_only(self, monkeypatch):
-        """超时部分结果：只保存当前缺失候选，不把不完整数据当快照冻结。"""
-        monkeypatch.setattr(me, "get_market_extra_cache", lambda *a, **k: {})
-        saved = {}
-        monkeypatch.setattr(me, "save_market_extra_cache", lambda conn, m, dt: saved.update({dt: dict(m)}))
-        monkeypatch.setattr(
-            me,
-            "fetch_fund_flow_rank",
-            lambda: {
-                "300001": {"main_net": 1e7, "main_pct": 8.5, "super_net": 0},
-                "300999": {"main_net": 1e7, "main_pct": 8.5, "super_net": 0},
-            },
-        )
-        monkeypatch.setattr(me, "_last_ff_partial", True)
-        me.collect_market_extra(None, ["SZ300001"], include_zt=False)
-        assert "SZ300999" not in saved.get("fund_flow", {}), "部分结果不应保存非候选快照"
-        assert "SZ300001" in saved.get("fund_flow", {})
+        assert "SZ300999" in saved.get("fund_flow", {}), "取到的非候选行同样落库（读侧宇宙不得塌缩）"
 
     def test_db_hit_skips_fetch(self, monkeypatch):
         fake = FakeAk()

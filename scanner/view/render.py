@@ -449,7 +449,9 @@ def _render_hot_watch_region(rows, offboard_rows=None, onboard_rows=None) -> Non
         # unified_scanner 入口的 reconfigure 保护，见 model.console_safe 说明。
         print(f"  {ANSI['CYAN']}— 榜外异动{ANSI['RESET']}{console_safe(offboard_subtitle(len(offboard_rows)))}")
         # 榜内飙升段空时列头还没打过 —— 本段自带一份，否则 16 列数字整片没有列名，无从解读。
-        if not rows:
+        # ⚠ 必须是「前两段都空」才补（2026-10-16 修复）：榜内异动段已自带一份时本段再打
+        # 就成了同一张表两份列头（区 docstring 承诺「列头只打一份」）。
+        if not rows and not onboard_rows:
             print(_table_header(COLS_HOT))
         for _bi, b in enumerate(offboard_rows, 1):
             print(

@@ -935,6 +935,21 @@ def test_persist_round_top_hits_only_for_top_n(db):
         ).fetchone()[0]
         == 2
     ), "同票多轮进前十 ⇒ top_hits 累加"
+    # ⚠ 2026-10-16 修复：前 N 之外的票**跨轮恒为 0**。此前 ON CONFLICT 是无条件
+    # `top_hits+1`（丢掉 INSERT 时算出的 0），于是从未进过展示前 N 的票也会攒到门槛
+    # —— 正是 m019 被否定的「进前十 ≈ 过门」，粉名/🔥 会被误染。
+    tail = rows[OFFBOARD_DISPLAY_TOP]
+    for _ in range(OFFBOARD_REPEAT_MIN_HITS + 1):
+        persist_round(db, rows)
+    tail_hits = db.execute(
+        "SELECT top_hits FROM offboard_launch_log WHERE date=? AND symbol=?", (day, tail.symbol)
+    ).fetchone()[0]
+    assert tail_hits == 0, "前 N 之外的行不得跨轮累加 top_hits"
+    # 对照：前 N 行同批照常每轮 +1
+    head_hits = db.execute(
+        "SELECT top_hits FROM offboard_launch_log WHERE date=? AND symbol=?", (day, rows[0].symbol)
+    ).fetchone()[0]
+    assert head_hits == 2 + OFFBOARD_REPEAT_MIN_HITS + 1, "前 N 行仍每轮 +1"
 
 
 def test_recent_repeat_counts_fails_open():
@@ -1828,6 +1843,36 @@ def test_render_region_column_header_printed_exactly_once(capsys):
     # 区标题中性化后任一段非空就打（它不再描述榜内飙升段的口径）
     assert "◆ 沪深飙升" in b_only
     assert b_only.index("榜外异动") < b_only.index(header) < b_only.index("300201")
+
+    # ⚠ 2026-10-16 修复：榜内飙升段空 + 榜内异动 + 榜外异动**都非空** ⇒ 列头仍只一份。
+    # 此前榜内异动段自带一份、榜外段又自带一份 ⇒ 同一张表出现两份 16 列列头。
+    onboard = _offboard_row(tier=T1, code="300301", symbol="SZ300301", name="榜内样本")
+    _render_hot_watch_region([], [b], [onboard])
+    ob = capsys.readouterr().out
+    assert ob.count(header) == 1
+    assert ob.index("榜内异动") < ob.index(header) < ob.index("榜外异动")
+
+
+def test_cli_conn_creates_every_table_the_persist_path_writes():
+    """CLI 内存库必须建全 persist_round / _save_rejections 用到的表。
+
+    2026-10-16 修复：此前只建 kline + launch_log，缺 offboard_round_log /
+    offboard_rejections ⇒ persist_round 里 `INSERT INTO offboard_round_log` 的
+    "no such table" 被 EXTERNAL_FAILURES 吞掉，连同一块里**已执行**的 launch_log
+    插入一起永不提交（CLI 路径零落库）。
+    """
+    from scanner.offboard_watch import _cli_conn
+
+    conn = _cli_conn()
+    try:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert {"offboard_round_log", "offboard_rejections"} <= tables
+        persist_round(conn, [_cand()])
+        assert conn.execute("SELECT COUNT(*) FROM offboard_launch_log").fetchone()[0] == 1
+        # 能查到这一行 ⇒ 同一 try 块未抛「缺表」⇒ 整块跑到 commit（缺表时此句直接报错）
+        assert conn.execute("SELECT rounds FROM offboard_round_log").fetchone()[0] == 1
+    finally:
+        conn.close()
 
 
 # ── 「评分」/「层」拆列 + 三段段标题（2026-10-13）─────────────────────────

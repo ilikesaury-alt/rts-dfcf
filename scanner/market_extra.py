@@ -9,6 +9,10 @@
            而同 host 的 ulist 接口全字段可用）。取数域 = 创业板全集
            （300000-302999）∪ register_fund_flow_codes 注册的榜内主板票，
            500 码/批、6 批并行 ~1.2s。host 可用 RTS_FUND_FLOW_HOST 覆盖。
+           ⚠ 枚举域**尾部批（302500-302999）全为未发行码** ⇒ 该批恒回
+           `rc=102 + data=null`；这是「确定的 0 行」，**不是**批级失败
+           （2026-10-16 生产故障修复，判定见 `_batch_once` / `_batch`）。
+           落库一律写**本次取到的全部行**（部分结果只影响缓存 TTL，不影响落库广度）。
            ⚠ 此处原记「数据可能延迟约15分钟」，2026-09-18 实测证伪：响应内 f124
            更新戳距本地时间仅 1~5s，且与雪球实时行情逐票一致（push2delay 只是域名，
            返回的是实时快照）。故本表可当**准实时快照**使用。
@@ -106,10 +110,6 @@ _extra_lock = threading.Lock()
 # 昨日榜单票今日掉榜后不再浪费请求位（快照里留有其最后值，读侧无 TTL 依赖）。
 _ff_extra_codes: set[str] = set()
 _ff_extra_codes_date = ""
-# 最近一次资金流拉取是否超时（部分结果）。完整拉取时把全集快照全部
-# 落库，保证重启/掉榜后任一 symbol 的资金流数据仍可读；部分结果只存候选，
-# 避免把不完整数据当快照冻结。
-_last_ff_partial: bool = False
 
 
 def register_fund_flow_codes(codes) -> None:
@@ -240,15 +240,19 @@ def _collect_fund_flow(box: dict, deadline: float, codes: list[str] | None = Non
     经 register_fund_flow_codes 并入）。切批 _FUND_FLOW_BATCH_SIZE=500，6 线程
     并行（全集 3000 码 → 6 批，实测 ~1.2s）。每批 timeout=10，批间检查 deadline，
     超时取消未开始任务并返回已收集部分。
-    首批**同步**执行：主机不可达时快速失败，不对余下批次打请求（clist 时代首页
-    同步的同款语义）；首批成功（即使 0 行，如非交易时段）才提交其余批次。
+    首批**同步**执行：主机不可达或首批 0 行时快速失败，不对余下批次打请求
+    （clist 时代首页同步的同款语义）；首批有行才提交其余批次。
+    "0 行"的两种含义不可混同（2026-10-16 修复）：**首批** 0 行 = 整体不可用
+    （该段含 300000-300499 连号码，正常市况必有票），**其余批** 0 行 = 该码段
+    无上市票（枚举域尾部 302500-302999，东财回 rc=102/data=null），属正常。
     返回 {6位代码: {main_net, main_pct, super_net, price, percent, volume, amount,
     turnover, vol_ratio, prev_close, total_cap, float_cap, name}} —— 前三个是资金流，
     其余是**同一响应行的报价快照**（不额外请求）。后者使榜外票获得当日价量，
     配合 PK(symbol,data_type,date) 的"当日最后一次写入即收盘值"语义，
     日积即成全集日频价量面板（daily_kline 只覆盖榜内 1022 只）。
-    完成全部批次且无批级失败时置 box["done"]=True；任一批失败不置 done
-    （外层按部分/失败路径短退避重试，不把缺批数据当完整快照缓存 300s）。
+    完成全部批次且无批级失败时置 box["done"]=True；任一批**硬失败**（异常/畸形
+    响应）不置 done（外层按部分/失败路径短退避重试，不把缺批数据当完整快照缓存
+    300s）。
     """
     result: dict[str, dict] = {}
     if codes is None:
@@ -270,7 +274,17 @@ def _collect_fund_flow(box: dict, deadline: float, codes: list[str] | None = Non
                 errs.append(msg)
 
     def _batch_once(idx: int, secids: list[str]):
-        """单次请求：成功返回行列表；失败返回 (None, 原因)（不记 errs）。"""
+        """单次请求：成功返回 (行列表, "")；失败返回 (None, 原因)（不记 errs）。
+
+        ⚠ `data is None`（`rc=102`）是**确定的 0 行**，不是批级失败
+        （2026-10-16 生产故障修复）：东财只在**整批 secids 均无有效码**时才这样回
+        （实测枚举域尾部 302500-302999 全为未发行码 ⇒ `rc=102/data=null`；
+        同批混入无效码不影响，有效码照回行；`ut` 填错也照常回 `rc=0` 带数据 ⇒
+        该 rc **不是**通用错误码，坏 token 不产生它）。旧实现把"data 非 dict"
+        一律判失败 ⇒ 末批恒失败 ⇒ `done` 永不置位 ⇒ 外层一律走部分快照路径
+        ⇒ 快照全天只落当轮候选（实测 2026-10-16 仅 19 行 vs 完整 5059 行），
+        B 段/榜内异动段随之全空。
+        """
         p = {
             "fltt": "2",
             "invt": "2",
@@ -282,9 +296,13 @@ def _collect_fund_flow(box: dict, deadline: float, codes: list[str] | None = Non
         try:
             resp = _requests.get(url, params=p, timeout=10, headers=EASTMONEY_HEADERS)
             j = resp.json()
-            data = j.get("data") if isinstance(j, dict) else None
+            if not isinstance(j, dict):
+                return None, f"批{idx} 响应非 JSON 对象"
+            data = j.get("data")
+            if data is None:
+                return [], ""
             if not isinstance(data, dict):
-                return None, (f"批{idx} 响应无 data" if isinstance(j, dict) else f"批{idx} 响应非 JSON 对象")
+                return None, f"批{idx} data 非对象（{type(data).__name__}）"
             diff = data.get("diff")
             if isinstance(diff, dict):  # 防御：个别网关把 diff 返回成 {序号: 行}
                 diff = list(diff.values())
@@ -296,8 +314,11 @@ def _collect_fund_flow(box: dict, deadline: float, codes: list[str] | None = Non
         # 单次重试（0.5s 退避）：push2 偶发瞬时断连（实测同参数连打 4 次三败一成），
         # 重试一次可吸收抖动；重试成功不记 errs（否则瞬时抖动会阻止 done 置位、
         # 每轮全量重拉）；仍失败才计入 errs。仅在 deadline 内重试。
+        # 重试条件：硬失败（None），以及**首批**的 0 行 —— 首批含 300000-300499
+        # 整段连号码，正常市况不可能整批无票，0 行只可能是上游瞬时异常；
+        # 其余批的 0 行是确定结论（该码段无上市票），重试无意义。
         rows, err = _batch_once(idx, secids)
-        if rows is None and time.time() + 0.5 < deadline:
+        if (rows is None or (idx == 0 and rows == [])) and time.time() + 0.5 < deadline:
             time.sleep(0.5)
             rows, err = _batch_once(idx, secids)
         if rows is None:
@@ -318,9 +339,15 @@ def _collect_fund_flow(box: dict, deadline: float, codes: list[str] | None = Non
                 # 报价快照（同一响应行，零额外请求）。用途：榜外票无 daily_kline，
                 # 收盘后最后一次写入即当日收盘价/涨幅/量比/换手，可累积成
                 # 全集日频价量面板，供日后验证"脱离榜单"的信号。
+                #
+                # ⚠ `volume`（f5）单位是**手**，本仓其余 volume（雪球报价 / 展示层
+                # `render._fmt_hot_volume_hand`）一律是**股** ⇒ 在此处一次性 ×100
+                # 换算，使快照与 `offboard_watch._apply_live_quote` 的实时覆盖同口径。
+                # 2026-10-16 修复：不换算会让榜外段「量」列对未被实时价覆盖的行
+                # （留存行 / 实时补价失败轮）小 100×，且同一列混两种单位。
                 "price": _num(row, "f2"),
                 "percent": _num(row, "f3"),
-                "volume": _num(row, "f5"),
+                "volume": _num(row, "f5") * 100,
                 "amount": _num(row, "f6"),
                 "turnover": _num(row, "f8"),
                 "vol_ratio": _num(row, "f10"),
@@ -333,11 +360,13 @@ def _collect_fund_flow(box: dict, deadline: float, codes: list[str] | None = Non
             }
 
     first = _batch(0, batches[0])
-    if first is None:
-        # 首批整体失败（_batch 吞异常/响应非 dict 时返回 None）不得当完整快照：
+    if not first:
+        # 首批硬失败（None）或首批 0 行（`[]`）都不得当完整快照：首批含
+        # 300000-300499 一整段连号码，正常市况**不可能**整批无票 ⇒ 0 行等价于
+        # "主机/接口整体不可用"，保持既有的**快速失败**语义（不再对余下批次打
+        # 请求，含一次重试共 2 次请求）与 60s 短退避重试（见 test_empty_data_backoff）。
         # 空结果若被当完整快照按默认 300s TTL 缓存，全集资金流会静默缺失
-        # （2026-09-29 审查修复的语义等价保留）。不置 done → 外层
-        # fetch_fund_flow_rank 走 timed_out 失败路径（60s 短退避重试）。
+        # （2026-09-29 审查修复的语义等价保留）。
         box["err"] = "；".join(errs) or "首批无数据"
         box["value"] = dict(result)
         return result
@@ -419,12 +448,10 @@ def fetch_fund_flow_rank() -> dict[str, dict]:
         univ = entry[3] if len(entry) > 3 else set(entry[0])
         if time.time() - entry[1] < eff_ttl and registered <= univ:
             return entry[0]
-    global _last_ff_partial
     codes = sorted(set(_gem_universe_codes()) | registered)
     try:
         result, timed_out, err = _fetch_fund_flow_bounded(FUND_FLOW_FETCH_TIMEOUT, codes)
         if timed_out:
-            _last_ff_partial = True
             if result:
                 print(f"  [!] 个股资金流拉取超时，已获取 {len(result)} 只（部分数据），下一轮扫描重试补全")
             else:
@@ -433,7 +460,6 @@ def fetch_fund_flow_rank() -> dict[str, dict]:
                 print(f"  [!] 个股资金流获取失败（0 只）{'：' + err if err else ''}，下一轮扫描重试")
             _cache_put(_ff_cache, key, (result, time.time(), FUND_FLOW_PARTIAL_TTL_SEC, set(codes)))
         else:
-            _last_ff_partial = False
             # 批级失败但整体完成：此前 errs 随 done=True 静默丢弃，缺批数据被当完整
             # 快照缓存 300s 无从排查 —— 显式打出来（一次拉取至多一条）。
             if err:
@@ -441,7 +467,6 @@ def fetch_fund_flow_rank() -> dict[str, dict]:
             _cache_put(_ff_cache, key, (result, time.time(), None, set(codes)))
         return result
     except EXTERNAL_FAILURES as e:
-        _last_ff_partial = True
         print(f"  [!] 个股资金流获取失败: {e}")
         # 短退避：失败空结果只冻结 FUND_FLOW_PARTIAL_TTL_SEC(60s) 而非默认 300s
         # （2026-08-20 修复，此前注释声称"短退避"实际 300s 内零重试）。
@@ -527,13 +552,15 @@ def collect_market_extra(
             fetched = fetch_fund_flow_rank()
             if fetched:
                 mapped = {ak_to_xq(code): payload for code, payload in fetched.items()}
-                # _last_ff_partial（超时部分结果）时只存当前缺失候选，避免把不完整数据
-                # 当快照冻结；否则是完整全集快照，全部落库——这样当日任一 symbol
-                # （含已掉榜/重启前推荐过的票）都能在展示层读到资金流数据，
-                # 而非只有当前候选有。
-                save_map = {sym: mapped[sym] for sym in miss_flow if sym in mapped} if _last_ff_partial else mapped
-                if save_map:
-                    save_market_extra_cache(conn, save_map, _FUND_FLOW)
+                # 本次**取到的所有行**一律落库（2026-10-16 修改）：部分结果与完整结果
+                # 的差别只在**缓存 TTL**（超时 60s vs 完整 300s，决定重试节奏），
+                # 不在落库广度。旧实现「部分结果只存当轮候选」把一个**瞬时的取数
+                # 不完整**放大成**读侧宇宙塌缩** —— B 段候选域 = 当日快照
+                # （offboard_watch 读 get_market_extra_snapshot），只落候选 ⇒ 快照
+                # ≈榜单票 ⇒ 榜外段 0 候选；2026-10-16 实测全天仅 19 行（完整
+                # 5059 行）、B 段/榜内异动段全天零产出。
+                if mapped:
+                    save_market_extra_cache(conn, mapped, _FUND_FLOW)
                 for sym in miss_flow:
                     if sym in mapped:
                         result.setdefault(sym, {})["fund_flow"] = mapped[sym]
@@ -548,11 +575,10 @@ def _xq_code6(symbol: str) -> str:
 
 def reset_extra_cache():
     """重置进程内缓存（仅用于测试）。"""
-    global _ak, _last_ff_partial, _ff_extra_codes_date
+    global _ak, _ff_extra_codes_date
     with _extra_lock:
         _zt_cache.clear()
         _ff_cache.clear()
         _ff_extra_codes.clear()
         _ff_extra_codes_date = ""
     _ak = None
-    _last_ff_partial = False

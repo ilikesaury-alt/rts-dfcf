@@ -440,6 +440,15 @@ tests/                      # pytest suite
   触发重拉）。非创业板非榜单的 ~3000 只主板票从无消费方，不再拉取。语义变化：
   ①任一批失败不置 done（clist 时代缺页被当完整快照静默缓存 300s）；②批级重试
   一次吸收瞬时断连；③「拉取完成但部分批次失败」显式告警。
+  ⚠ **2026-10-16 修复：枚举域尾部批「无上市票」曾被误判为批级失败** —— 302500-302999
+  全为未发行码 ⇒ 该批恒回 `rc=102 + data=null`（实测；`ut` 填错仍回 `rc=0` 带数据 ⇒
+  该 rc 不是通用错误码）⇒ 旧代码「data 非 dict 即失败」使**末批恒失败** ⇒ `done` 永不
+  置位 ⇒ 快照全天只落当轮候选（实测 19 行 vs 完整 5059 行）⇒ B 段/榜内异动段全天零
+  产出（当日终端 `v1 池选`/`沪深飙升` 三段全空的直接原因）。现语义：**首批** 0 行 =
+  整体不可用（该段含 300000-300499 连号码，正常市况必有票）→ 快速失败 + 60s 短退避；
+  **其余批** 0 行 = 该码段无上市票 → 正常。另：落库一律写**本次取到的全部行**
+  （旧实现「部分结果只存候选」把瞬时的取数不完整放大成读侧宇宙塌缩；"部分"现只由
+  缓存 TTL 60s/300s 承担，`_last_ff_partial` 已删）。
   ⚠ **push2 家族有 IP 级限频风险**：2026-10-15 验证时段探针密集触发后，
   push2delay/push2/82.push2 的 ulist 也被断连（直连+代理同灭，持续 >10 分钟，
   baidu/datacenter-web 正常）。生产节拍（6 批/300s）远低于触发闻值，但连续
@@ -463,6 +472,15 @@ tests/                      # pytest suite
   `test_apply_live_quote_still_rejects_nonpositive_magnitude_fields`（后者防**反向**过度放宽）。
   ⚠ `offboard_launch_log.percent` 的**冻结**语义（同上，「信号值首次写入即冻结」）**不受本次
   修复影响**，刻意不动 —— 那是「它当初以什么身份被推出」的存档，不是展示值。
+- **资金流快照的 `volume` 是「手」，本仓其余 volume 是「股」**（2026-10-16 修复，
+  `market_extra._absorb`）：东财 `f5` 单位是**手**，而雪球批量报价（经
+  `offboard_watch._LIVE_FIELD_MAP` 的 `("volume","volume")` 覆盖同一行 payload）与展示层
+  `render._fmt_hot_volume_hand`（÷100 后显「手」）都是**股**。单位不统一 ⇒ 未被实时价
+  覆盖的行（留存行、实时补价失败轮、排名 >100 的行）成交量列小 **100×**，且同一列里
+  两种单位混用。铁证：`scanner.db` 里 `SZ300001` 的 `amount/price/volume = 99.2`（≈100）。
+  修法：在 `_absorb` 一次性 ×100 归一到股（那里是唯一知道 f5 单位的地方）。
+  ⚠ A 段（`hot_watch`）与榜内异动段（`onboard_anomaly`）走雪球股口径，**本就正确**，
+  本故障仅榜外段；改这条时不要顺手动那两处。守卫 `test_absorb_captures_quote_snapshot`。
 - **榜外段「反复进前十」标识（三版 2026-10-15，纯展示层）**：⚠ 同日三改，读沿革再动。
   一版（m019）「反复进前十」（top_hits 跨日+当日两分支）当日实测无筛选力 —— 过门池
   常年 ≤ 展示前 N（21 轮里 19 轮 ≤8 只），「进前十」≈「过门」，几分钟攒满 ⇒ 前 8 名
@@ -477,8 +495,15 @@ tests/                      # pytest suite
   或今日 top_hits ≥ 5（盘中反复回前十）；计数单源
   `offboard_watch.recent_repeat_counts`，回填在最终展示行 `repeat_days` 字段
   （榜内两段恒 0 不误染）；阈值归属 `config_hot_watch.py`（沿革全录在其注释块）。
+  ⚠ **2026-10-16 修复计数口径**：`persist_round` 的 ON CONFLICT 原为 `top_hits=top_hits+1`
+  （**无条件 +1**，丢掉 INSERT 时算出的 `1 if i < OFFBOARD_DISPLAY_TOP else 0`），而它收到
+  的是**全部过门行** ⇒ 排在前 N 之外的行首插记 0、此后每轮仍 +1，计数实为「过门轮次 − 1」：
+  **从未进过展示前 N** 的票也能攒到门槛 —— 正是 m019 被否定的「进前十 ≈ 过门」。
+  现为 `top_hits=top_hits+excluded.top_hits`（前 N 之外**恒 0**）。守卫
+  `test_persist_round_top_hits_only_for_top_n`。
   标识含义写进 `offboard_subtitle`（段标题是唯一出口），文案
-  「粉名/🔥=反复进前十(近5日≥2次)」。CLI（内存库）与离线自检恒无标识。
+  「粉名/🔥=反复进前十(近3日≥5次)」（由 `OFFBOARD_REPEAT_WINDOW_DAYS` /
+  `OFFBOARD_REPEAT_MIN_HITS` 派生，此处仅记其现值）。CLI（内存库）与离线自检恒无标识。
   m020 的 `gate_hits`/`offboard_round_log` 落库照常（列已发布不删，作研究原料），
   `today_presence`/`OFFBOARD_ACTIVE_*` 已随二版退场。
 - **`.env`** file contains secrets (THS API key, Feishu webhook override). Never commit it.

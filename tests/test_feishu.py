@@ -763,3 +763,50 @@ def test_offboard_active_rows_get_tail_marker_outside_code_block():
     assert _repeat_tail_card(_fake_offboard(repeat_days=OFFBOARD_REPEAT_MIN_HITS - 1)) == ""
     assert _repeat_tail_card(_fake_offboard()) == ""
     assert _repeat_tail_card(_fake_hot()) == ""
+
+
+def test_row_percent_uses_the_same_fallback_chain_as_terminal():
+    """卡片涨幅必须与终端 `view.model.entry_display_quote` **同一条回退链**。
+
+    2026-10-16 修复：`_row_percent` 此前自持「live → DB」两级链，**漏掉候选快照一级**
+    ⇒ 一只无实时行情（批量补价漏批 / 停牌）但候选新鲜的票，终端显示盘中真值、卡片显示
+    陈旧的落库值（同一只票两个涨幅）—— 违反 `RowSnapshot` docstring 声明的「与终端同口径」。
+    """
+    from scanner.feishu import _row_percent
+    from scanner.models import Candidate, KlineSummary, StockInfo
+    from scanner.view.model import entry_display_quote
+
+    cand = Candidate(
+        stock=StockInfo(
+            symbol="SZ300099",
+            name="测试",
+            code="300099",
+            percent=2.5,
+            current=10.0,
+            value=1e8,
+            rank_change=0,
+            rank=1,
+        ),
+        category="momentum",
+        score=70,
+        reason="",
+        kline=KlineSummary(
+            trend="", accumulated_pct=8.0, volume_ratio=1.0, bottom_confirmed=False, score=70, dimensions={}
+        ),
+    )
+    # 无实时行情 + 候选新鲜 + DB 落库值陈旧 ⇒ 两端都必须取候选快照 2.5（不是 DB 的 1.0）
+    entry = {"symbol": "SZ300099", "name": "测试", "percent": 1.0, "_candidate": cand}
+    assert entry_display_quote(entry)[0] == 2.5, "终端取候选快照"
+    assert _row_percent(entry) == 2.5, "卡片必须与终端同链（修复前会给 DB 的 1.0）"
+
+    # live 0.00% 仍优先（合法涨幅，不得回退到候选 / DB）
+    live0 = {
+        "symbol": "SZ300099",
+        "name": "测试",
+        "percent": 1.0,
+        "live_quote_available": True,
+        "live_percent": 0.0,
+        "live_current": 10.0,
+        "_candidate": cand,
+    }
+    assert _row_percent(live0) == 0.0

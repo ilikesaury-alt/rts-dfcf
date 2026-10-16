@@ -57,7 +57,7 @@ from scanner.view.assemble import _market_suggestion_text
 # 2026-10-13 榜内飙升段也下沉为段标题，故一并引用）。此前本模块自持一份 09-21 层序
 # 翻转前的旧文案（写成「排序=量比→主力净占比·T1 量先动/T2 启动首日」，与实际的 T2 在前
 # **相反**），且漏了「开盘静默窗」—— 与上方 _pad/_trunc 同属本仓禁忌的复制，改为单源引用。
-from scanner.view.model import hot_subtitle, offboard_subtitle
+from scanner.view.model import entry_display_quote, hot_subtitle, offboard_subtitle
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ── 推送决策 ──
@@ -174,9 +174,14 @@ class RowSnapshot:
 
 
 def _row_percent(entry) -> float:
-    """涨幅：实时行情 > 推荐时落库值。live_percent=0.0 是合法的 0.00%，不能当缺失。"""
-    lp = entry.get("live_percent")
-    return to_float(lp) if lp is not None else to_float(entry.get("percent"))
+    """涨幅：与终端 `view.model.entry_display_quote` **同一条回退链**（单源）。
+
+    链路 = 实时行情 → 可信候选快照(`stock.percent`) → DB 落库值。此前本模块自持一条
+    「live → DB」两级链，**漏掉候选快照一级** ⇒ 一只无实时行情（批量补价漏批 / 停牌）
+    但候选新鲜的票，终端显示盘中真值、卡片显示陈旧的落库值 —— 违反 `RowSnapshot`
+    docstring 声明的「与终端同口径」（2026-10-16 修复）。改调单源后两端不可能再漂移。
+    """
+    return entry_display_quote(entry)[0]
 
 
 def _row_rank(entry):

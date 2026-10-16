@@ -160,9 +160,9 @@ OFFBOARD_KLINE_WORKERS = 8  # 补 K 线并发（实测 6→16 线程无收益，
 OFFBOARD_KLINE_FETCH_LIMIT = 80  # 单轮最多补 K 线的候选数（按量比降序取前 N）
 
 # ── B 段实时行情覆盖（2026-10-08）──
-# 背景：`market_extra_cache` 的当日快照在全集拉取超时时只刷新当轮候选（见
-# `market_extra.collect_market_extra` 的 `_last_ff_partial` 分支），其余 5000 行
-# 冻结；读侧 `get_market_extra_snapshot` 又不过 TTL ⇒ 未进过当轮候选的票会一直显示
+# 背景：`market_extra_cache` 的当日快照在全集拉取超时时只刷新取到的那些行
+# （见 `market_extra.collect_market_extra`），未取到的行冻结；
+# 读侧 `get_market_extra_snapshot` 又不过 TTL ⇒ 未进过当轮候选的票会一直显示
 # 旧价（实测 300890 滞后 2h11m）。修法是在**过门之前**用雪球批量行情补实时价。
 #
 # 为什么需要「粗筛 + 上限」而不是全量补：创业板 1411 只，`batch/quote.json` 是

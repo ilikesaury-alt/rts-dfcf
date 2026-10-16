@@ -410,8 +410,9 @@ def _snapshot_vol_ratio_map(conn, symbols: Sequence[str]) -> dict[str, float]:
       量比、其余用快照量比」的混合来源**。这是**可接受的**：两者定义相同，差异在
       小数位级别，而排序口径（快照）是统一且确定的。
 
-    ⚠ 残留口径差：快照可能滞后于实时价（`collect_market_extra` 超时时只落当轮候选，
-      见 `offboard_watch._apply_live_quote` 的 docstring）。与 B 段同款问题，
+    ⚠ 残留口径差：快照可能滞后于实时价（`collect_market_extra` 超时/失败轮里未取到的
+      行保持上一轮值；2026-10-16 起"取到多少落多少"，不再只落当轮候选），
+      见 `offboard_watch._apply_live_quote` 的 docstring。与 B 段同款问题，
       显式记录而非假装没有。
     """
     if conn is None or not symbols:
@@ -647,6 +648,10 @@ def run_hot_watch(
     清零连击**（`_safe_persist(conn, [])`），与下方「全员被排除」分支同语义 —— 否则
     数据缺口两端的命中会被误读为连续命中，push_gate 兜底通道（streak ≥ 3）证据失真。
 
+    ⚠ 2026-10-16 补齐同一不变式：**行情补全失败的三条分支**（无补全能力 / 批量抛异常 /
+    全批返回空）此前直接 `return []` 而不落库 ⇒ 缺口两侧的命中仍被算成连续（同一类证据
+    失真，只是路径不同）。现三条分支与上述分支一致，先 `_safe_persist(conn, [])` 再返回。
+
     样本域口径声明（L8）：本区**不**排除今日已推荐票（`today_syms`）—— 与 B 段 /
     回捞区 / 榜内异动段的互斥口径不同，这是**有意的**：A 段与 v1 池选是「同一批榜上
     票的两个观察视角」（v1 看策略形态、A 段看热度跃升），同票同屏属预期而非重复。
@@ -678,13 +683,22 @@ def run_hot_watch(
 
     fetch_batch = getattr(adapter, "fetch_hot_quotes_batch", None)
     if fetch_batch is None:
+        # 无本区补全能力（THS 等）也是一轮跑过本区的扫描：同样推进轮次并清零连击，
+        # 与上方「空榜 / 预筛全灭」同语义（否则缺口两侧的命中会被误读为连续命中）。
+        _safe_persist(conn, [])
         return []
     try:
         quotes = fetch_batch(symbols)
     except EXTERNAL_FAILURES as e:
         logger.warning("hot_watch 批量补全失败，本区留空: %s", e)
+        _safe_persist(conn, [])
         return []
     if not quotes:
+        # 补全全失败（`api.fetch_hot_quotes_batch` 全批失败返回 {}）同样是数据缺口轮。
+        # 2026-10-16 修复 L1b 补齐：这三条分支此前漏了 `_safe_persist(conn, [])`，
+        # 于是缺口前后的命中被判成连续命中（`prev_round == round_no - 1`），streak
+        # 虚高 —— push_gate 兜底通道（streak ≥ 3）与 ★ 高亮的证据因此失真。
+        _safe_persist(conn, [])
         return []
 
     passed, _rejected = build_candidates(targets, quotes, conn)

@@ -417,8 +417,9 @@ def _apply_live_quote(payload: dict, quote: dict) -> bool:
     为什么需要（2026-10-08 修复）
     --------------------------
     本段的行情此前**只**来自 `market_extra_cache` 的当日快照，而该快照的写入侧
-    （`market_extra.collect_market_extra`）在全集拉取**超时**时只落当轮候选那几十行
-    （`_last_ff_partial` 分支），其余 5000 行保持旧值；读侧 `get_market_extra_snapshot`
+    （`market_extra.collect_market_extra`）在全集拉取**超时**时曾只落当轮候选那几十行
+    （2026-10-16 起已改为"取到多少落多少"，但超时轮本身仍会有未刷新行），
+    其余 5000 行保持旧值；读侧 `get_market_extra_snapshot`
     又**不过 TTL**。两者相乘的后果是：一只票只要没进过当轮候选，它的行就永久冻结在
     上一轮成功拉取的时刻 —— 实测 300890 翔丰华在 13:40 显示的是 **11:29** 的
     29.96/+3.74%，而实时价已是 29.20/+1.11%（同一时刻用户侧读到 29.17）。
@@ -479,8 +480,8 @@ def _apply_live_fund_flow(snapshot: dict[str, dict], ff: dict[str, dict]) -> int
     ----------------------------------------------------
     `main_pct`（主力净占比）是 T1/T2 信号门的输入（≥ `OFFBOARD_MAIN_PCT_MIN`），
     `vol_ratio`（量比）是 `sort_key` 的段内主键 + T1「量先动」门的输入 —— 两者
-    雪球批量行情都不提供 ⇒ 此前恒取快照。快照在拉取超时轮只刷新当轮候选
-    （`_last_ff_partial` 分支），其余行冻结在上一轮成功时刻 —— 门在陈旧值上判定、
+    雪球批量行情都不提供 ⇒ 此前恒取快照。快照在拉取超时轮只刷新取到的那些行
+    （未取到的行冻结在上一轮成功时刻），门在陈旧值上判定、
     排序在陈旧量比上排座次，与实时价补全修复前的涨幅带是同一类错误。
 
     数据源用项目**既有**的东财全集资金流（`market_extra.fetch_fund_flow_rank`，
@@ -938,10 +939,18 @@ def persist_round(conn, rows: Sequence[OffboardCandidate]) -> None:
     vol_ratio / main_pct / amount / float_cap / price` 九列在 ON CONFLICT 时**不更新**，
     只有 `last_hit_time` 与 `updated` 每轮刷新。
 
-    `top_hits`（m019）：**前 `top_n` 行**每轮 +1 —— 「反复进前十」标识的落库
-    依据。2026-10-14 二版（在场率）期间一度不作标识依据，2026-10-15 三版回归
-    后**重新作依据**：列已发布（id 不得改名/删列），ON CONFLICT 累加（计数列，
-    与信号冻结列相反），跨日因 (date, symbol) 主键自然重置。
+    `top_hits`（m019）：**前 `OFFBOARD_DISPLAY_TOP` 行**每轮 +1 —— 「反复进前十」
+    标识的落库依据。2026-10-14 二版（在场率）期间一度不作标识依据，2026-10-15
+    三版回归后**重新作依据**：列已发布（id 不得改名/删列），计数列（ON CONFLICT
+    累加，与信号冻结列相反），跨日因 (date, symbol) 主键自然重置。
+
+    ⚠ 2026-10-16 修复（计数口径）：ON CONFLICT 原为 `top_hits=top_hits+1` ——
+    **无条件 +1**，把 INSERT 时算出的 `1 if i < OFFBOARD_DISPLAY_TOP else 0` 丢掉。
+    而本函数收到的是**全部过门行**（`run_offboard_watch` 只对展示做
+    `passed[:top_n]`）⇒ 排在前 N 之外的行首插记 0、此后每轮仍 +1，计数实为
+    「过门轮次 − 1」：一只**从未进过展示前 N** 的票也能攒到门槛，正是 m019 被
+    否定的「进前十 ≈ 过门」。现改为 `top_hits=top_hits+excluded.top_hits`
+    （`excluded.top_hits` 就是本次算出的 0/1）⇒ 前 N 之外的行**恒为 0**。
 
     `gate_hits`（m020，2026-10-14）：**所有过门行**每轮 +1（不只前 N）—— 曾是
     「今日活跃」在场率标识（today_presence，已退场）的分子，现仅作研究原料。
@@ -982,7 +991,7 @@ def persist_round(conn, rows: Sequence[OffboardCandidate]) -> None:
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(date, symbol) DO UPDATE SET
                   last_hit_time=excluded.last_hit_time,
-                  top_hits=top_hits+1,
+                  top_hits=top_hits+excluded.top_hits,
                   gate_hits=gate_hits+1,
                   updated=excluded.updated""",  # noqa: S608 - 常量表名
                 [
@@ -1573,11 +1582,21 @@ def _cli_conn():
     """CLI 专用内存库：DDL 与生产迁移同一份（不复制 SQL），但不碰 scanner.db。"""
     import sqlite3
 
-    from scanner.db.migrations import _OFFBOARD_KLINE_DDL, _OFFBOARD_LAUNCH_LOG_DDL
+    from scanner.db.migrations import (
+        _OFFBOARD_KLINE_DDL,
+        _OFFBOARD_LAUNCH_LOG_DDL,
+        _OFFBOARD_REJECTIONS_DDL,
+        _OFFBOARD_ROUND_LOG_DDL,
+    )
 
     conn = sqlite3.connect(":memory:")
     conn.execute(_OFFBOARD_KLINE_DDL)
     conn.execute(_OFFBOARD_LAUNCH_LOG_DDL)
+    # ⚠ 2026-10-16 修复：`persist_round` 还写 offboard_round_log、`_save_rejections`
+    # 还写 offboard_rejections。缺这两张表时 "no such table" 被 EXTERNAL_FAILURES
+    # 吞掉，连同一块里**已执行**的 launch_log 插入一起永不提交（CLI 路径零落库）。
+    conn.execute(_OFFBOARD_ROUND_LOG_DDL)
+    conn.execute(_OFFBOARD_REJECTIONS_DDL)
     conn.commit()
     return conn
 

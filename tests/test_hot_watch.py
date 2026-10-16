@@ -22,6 +22,7 @@ from scanner.config import (
     HOT_RANK_CHANGE_CAP,
     HOT_VR_FULL,
     HOT_W_VOLUME,
+    now_beijing,
 )
 from scanner.hot_watch import (
     HotCandidate,
@@ -152,6 +153,12 @@ def _with_snapshot(conn, vol_ratios: dict[str, float]):
     （batch 行情结构上无 `volume_ratio`）。缺这张表的库 ⇒ 量比恒 0 ⇒
     `score_volume` 退化为换手率单项 ⇒ 回归测试会退化成「测不到排序」。
     故涉及排序的测试必须先过这个函数建表。
+
+    ⚠ `updated` 必须取**当前北京时间**（2026-10-16 修）：`run_hot_watch` 开头的
+    `collect_market_extra` 按 `FUND_FLOW_TTL_SEC` 判新鲜度，此前硬编码
+    `T10:00:00` ⇒ 10:05 之后预置行即算过期 ⇒ 测试**真联网**重拉并用实时行情
+    覆盖本 fixture，断言随真实量比漂移（实测当日 300001/300002 真值 1.25/1.15
+    ⇒ 名次反转，本文件自称的「密封单测、不触网」也被破坏）。
     """
     conn.execute(
         "CREATE TABLE IF NOT EXISTS market_extra_cache (symbol TEXT, date TEXT,"
@@ -160,13 +167,11 @@ def _with_snapshot(conn, vol_ratios: dict[str, float]):
     )
     conn.commit()
     _seed_klines(conn, list(vol_ratios))
-    today = date.today()
+    now = now_beijing()
+    today = now.date().isoformat()
     conn.executemany(
         "INSERT OR REPLACE INTO market_extra_cache(symbol, date, data_type, payload_json, updated) VALUES(?,?,?,?,?)",
-        [
-            (sym, today.isoformat(), "fund_flow", json.dumps({"vol_ratio": vr}), f"{today.isoformat()}T10:00:00")
-            for sym, vr in vol_ratios.items()
-        ],
+        [(sym, today, "fund_flow", json.dumps({"vol_ratio": vr}), now.isoformat()) for sym, vr in vol_ratios.items()],
     )
     conn.commit()
     return conn
@@ -698,6 +703,50 @@ def test_run_hot_watch_adapter_without_method_returns_empty(db):
         pass
 
     assert run_hot_watch(_Bare(), db, [_board_item("SZ000001", "A")]) == []
+
+
+def test_run_hot_watch_quote_failure_paths_advance_round_and_break_streak(db, monkeypatch):
+    """三条「行情补全失败」分支都必须推进轮次并清零连击（2026-10-16 补齐 L1b）。
+
+    否则数据缺口两侧的命中被判成连续命中（`prev_round == round_no - 1`）⇒ streak
+    虚高 ⇒ ★ 高亮与 push_gate 兜底通道（streak ≥ 3）的证据链失真。三条分支：
+    无补全能力（THS）/ 批量抛异常 / 全批返回空（`api.fetch_hot_quotes_batch` 语义）。
+    """
+    # 隔离外网：本区开头会调 collect_market_extra 刷新快照
+    monkeypatch.setattr("scanner.market_extra.collect_market_extra", lambda *a, **k: {})
+    board = [_board_item("SZ300001", "A", rc=100)]
+
+    class _Bare:
+        pass
+
+    class _Boom:
+        def fetch_hot_quotes_batch(self, symbols):
+            raise OSError("network down")
+
+    class _Empty:
+        def fetch_hot_quotes_batch(self, symbols):
+            return {}
+
+    for n, adapter in enumerate((_Bare(), _Boom(), _Empty()), start=1):
+        db.execute("DELETE FROM hot_watch_hits")
+        db.execute("DELETE FROM hot_watch_meta")
+        # 上一轮命中：round_no=n、streak=3、last_seen=现在（避免被 _prune_stale 清掉）
+        db.execute(
+            "INSERT INTO hot_watch_hits"
+            "(symbol, name, streak, last_round, last_seen, last_percent, last_price, last_score)"
+            " VALUES('SZ300001','A',3,?,?,0,0,0)",
+            (n, now_beijing().isoformat()),
+        )
+        db.execute("INSERT INTO hot_watch_meta(key, value) VALUES('round_no', ?)", (str(n),))
+        db.commit()
+
+        assert run_hot_watch(adapter, db, board) == []
+        assert db.execute("SELECT value FROM hot_watch_meta WHERE key='round_no'").fetchone()[0] == str(n + 1), (
+            "缺口轮必须推进轮次"
+        )
+        assert db.execute("SELECT streak FROM hot_watch_hits WHERE symbol='SZ300001'").fetchone()[0] == 0, (
+            "缺口轮必须清零连击"
+        )
 
 
 def test_run_hot_watch_detail_bounded(db):
