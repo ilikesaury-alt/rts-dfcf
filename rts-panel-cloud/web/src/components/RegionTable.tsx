@@ -14,6 +14,7 @@
  */
 
 import type { ColSpec, Row } from "../api/types";
+import { cn } from "../lib/utils";
 import { cellsFor, rowMarks, rowSymbol, type Profile } from "../lib/cols";
 import { stockHref } from "../lib/router";
 
@@ -29,11 +30,19 @@ type Props = {
     beauty: Record<string, string>;
   };
   onNavigate?: (symbol: string) => void;
+  /**
+   * 冻结首列 + sticky 表头（2026-10 桌面 UI 现代化 · Slice 3，**纯展示**）。
+   *
+   * sticky 只作用于**表格自身横向滚动容器内**的单元格，与 `react-resizable-panels`
+   * 的分隔条正交（CONTEXT.md R3）。冻结的是 `specs[0]`（终端同款为 `#` 列）——
+   * 只改视觉，不改排序、不改取值口径。
+   */
+  frozen?: boolean;
 };
 
 const alignClass = (align: string) => (align === "r" ? "cell-r" : align === "c" ? "cell-c" : "cell-l");
 
-export default function RegionTable({ specs, rows, profile, marks, onNavigate }: Props) {
+export default function RegionTable({ specs, rows, profile, marks, onNavigate, frozen }: Props) {
   if (rows.length === 0) {
     return <div className="region-empty">{EMPTY_TEXT}</div>;
   }
@@ -49,8 +58,12 @@ export default function RegionTable({ specs, rows, profile, marks, onNavigate }:
       <table className="region-table">
         <thead>
           <tr>
-            {specs.map((spec) => (
-              <th key={spec.key} className={alignClass(spec.align)} style={{ minWidth: `${spec.width}ch` }}>
+            {specs.map((spec, i) => (
+              <th
+                key={spec.key}
+                className={cn(alignClass(spec.align), frozen && i === 0 && "sticky-col")}
+                style={{ minWidth: `${spec.width}ch` }}
+              >
                 {spec.label}
               </th>
             ))}
@@ -66,7 +79,7 @@ export default function RegionTable({ specs, rows, profile, marks, onNavigate }:
             return (
               <tr
                 key={`${symbol}-${index}`}
-                className={symbol ? "row row-clickable" : "row"}
+                className={cn("row", symbol && "row-clickable")}
                 tabIndex={symbol ? 0 : undefined}
                 onClick={() => open(symbol)}
                 onKeyDown={(e) => {
@@ -76,7 +89,12 @@ export default function RegionTable({ specs, rows, profile, marks, onNavigate }:
                 {cells.map((cell, i) => (
                   <td
                     key={specs[i].key}
-                    className={`${alignClass(specs[i].align)}${cell.tone ? ` tone-${cell.tone}` : ""}${cell.strong ? " cell-strong" : ""}`}
+                    className={cn(
+                      alignClass(specs[i].align),
+                      frozen && i === 0 && "sticky-col",
+                      cell.tone && `tone-${cell.tone}`,
+                      cell.strong && "cell-strong",
+                    )}
                   >
                     {cell.text}
                   </td>

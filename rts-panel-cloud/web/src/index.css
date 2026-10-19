@@ -1,0 +1,180 @@
+/**
+ * 面板设计系统（Tailwind v4 入口 + `@theme` 设计 token）。
+ *
+ * 2026-10 桌面 UI 现代化（`docs/features/desktop-ui-modernize/CONTEXT.md`）：
+ * 把原先手写在 `styles.css` 里的一批 CSS 变量**迁移成 Tailwind v4 的 `@theme`**，
+ * 让 `bg-card` / `text-dim` / `text-up` 这类工具类与「改配色只改一处」的口径同时成立。
+ *
+ * 三条纪律：
+ * 1. **涨跌色变量名原样保留**（`--up` / `--down` / `--flat`）：A 股口径红涨绿跌，
+ *    K 线 Canvas 认不得 CSS 变量，故 `pages/Stock.tsx` 的 `ASHARE_THEME` 仍单独
+ *    持有同一组字面值 —— 改这里要同步那一处（该文件注释已写）。
+ * 2. `@theme` 里的 token 名与旧变量**一一对应**（`--color-card` ↔ 旧 `--card` 等），
+ *    迁移期 `styles.css` 与工具类可短期共存，但最终只保留一套（防双套样式分叉）。
+ * 3. 暗色为唯一形态（终端/飞书/看板都是深底），不引入 light 模式 —— 本项目没有
+ *    「用户切主题」的需求，加了就是无人消费的死代码。
+ */
+
+@import "tailwindcss";
+
+/* ── 区块表格（原 styles.css 迁移）───────────────────────────────────────
+   这部分刻意**不用**工具类：它们依赖结构性选择器（`thead th` / `tbody tr:nth-child`）
+   与 `position: sticky` 的组合，写成工具类只会得到一堆重复 class 而读不出意图。
+   规则本身仍是「改配色只改 `@theme`」口径 —— 这里只出现结构，不出现颜色字面量。 */
+
+/* 表格外框：横向滚动容器。冻结首列（`.sticky-col`）就是在这个容器里 sticky 的。 */
+.table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.region-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+.region-table th,
+.region-table td {
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+
+.region-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  color: var(--color-text-dim);
+  font-weight: 600;
+  background: var(--color-card);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.region-table tbody tr {
+  border-bottom: 1px solid rgb(255 255 255 / 3%);
+}
+
+.region-table tbody tr:hover {
+  background: rgb(255 255 255 / 5%);
+}
+
+/* 空区块占位（`RegionTable` / `RegionCard` 共用）：dim 色 + 行高，与终端「无结果整段跳过」
+   同意图但面板是固定版面，故留一句占位而不是整块消失。 */
+.region-empty {
+  color: var(--color-text-dim);
+  font-size: 12px;
+  line-height: var(--spacing-row-h);
+}
+
+.row-clickable {
+  cursor: pointer;
+}
+
+.row-clickable:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: -2px;
+}
+
+/* 冻结首列：横向滚动时「#」列不离开视野（2026-10 UI 现代化 · Slice 3，纯展示）。
+   sticky 在纵向（top:0）给表头、横向（left:0）给首列 —— 两者叠加处即左上角单元格。
+   ⚠ 与 `react-resizable-panels` 的分隔条正交：它只作用于表格自身滚动容器内。 */
+.sticky-col {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--color-card);
+}
+
+.region-table thead .sticky-col {
+  z-index: 3; /* 左上角：既要压过行，也要压过列 */
+}
+
+.cell-l {
+  text-align: left;
+}
+
+.cell-r {
+  text-align: right;
+}
+
+.cell-c {
+  text-align: center;
+}
+
+.tone-up {
+  color: var(--color-up);
+}
+
+.tone-down {
+  color: var(--color-down);
+}
+
+.cell-strong {
+  font-weight: 700;
+}
+
+/* 行尾标记在定宽列之外（终端同款） */
+.marks-head,
+.marks-cell {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.mark {
+  margin-left: 6px;
+}
+
+.mark-new {
+  color: var(--color-mark-new);
+  font-weight: 700;
+}
+
+.mark-bolt {
+  color: var(--color-lag-warn);
+}
+
+.mark-steady {
+  color: var(--color-down);
+}
+
+.mark-outflow {
+  color: var(--color-up); /* ▼ 是**警示**不是跌色：与终端资金流图标同口径 */
+}
+
+/* 评分分解表的合计行（pages/Stock.tsx） */
+.kv-total th,
+.kv-total td {
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+@theme {
+  /* ── 涨跌色：红涨绿跌（A 股口径，**与欧美相反**）────────────────────── */
+  --color-up: #ef232a;
+  --color-down: #14b143;
+  --color-flat: #8a8f99;
+
+  /* ── 版面（深色唯一形态）──────────────────────────────────────────── */
+  --color-bg: #0f1115;
+  --color-card: #171a21;
+  --color-border: #262b36;
+  --color-text: #e6e8ee;
+  --color-text-dim: #8a8f99;
+
+  /* ── 状态条 / 告警 ────────────────────────────────────────────────── */
+  --color-lag-warn: #f5a623; /* 滞后 >1 轮 / 本地无响应变黄 */
+  --color-err: #d93026;
+
+  /* 焦点环（可访问性）：键盘导航时按钮/链接的可见轮廓，与设计系统其余部分同源 */
+  --color-ring: #3b82f6;
+
+  /* ── 行尾标记（与终端图标同色）────────────────────────────────────── */
+  --color-mark-new: #e062d0; /* 品红：与终端「新」同色 */
+
+  /* ── 版面尺寸（沿用旧变量，避免硬编码散落）────────────────────────── */
+  --spacing-row-h: 28px; /* §7.2 行高 28px，单屏尽量容纳 60 行 */
+  --spacing-sidebar-w: 320px;
+  --spacing-statusbar-h: 36px;
+}

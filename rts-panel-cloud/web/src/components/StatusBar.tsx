@@ -52,10 +52,13 @@ export default function StatusBar({ meta, snapshot, error, intervalMs, now }: Pr
   else if (!snapshot) note = "等待首轮上报";
 
   return (
-    <header className="statusbar" role="banner">
-      <span className="statusbar-title">创业板飙升榜看板</span>
-      <span className="statusbar-sub">本机 · 只读</span>
-      <span className="statusbar-round">
+    <header
+      className="sticky top-0 z-10 flex h-9 shrink-0 items-center gap-3 overflow-hidden whitespace-nowrap border-b border-border bg-card px-3"
+      role="banner"
+    >
+      <span className="font-semibold">创业板飙升榜看板</span>
+      <span className="text-text-dim">本机 · 只读</span>
+      <span className="text-text-dim">
         {snapshot ? (
           <>
             轮次 {snapshot.date} {snapshot.time} · seq {snapshot.seq} · {sessionLabel(snapshot.time)}
@@ -66,8 +69,11 @@ export default function StatusBar({ meta, snapshot, error, intervalMs, now }: Pr
           "—"
         )}
       </span>
-      <span className="statusbar-spacer" />
-      <span className={warn ? "statusbar-note statusbar-warn" : "statusbar-note"} role="status">
+      <span className="flex-1" />
+      <span
+        className={warn ? "font-semibold text-lag-warn" : "text-text-dim"}
+        role="status"
+      >
         {note}
       </span>
     </header>

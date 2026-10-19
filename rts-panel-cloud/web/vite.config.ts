@@ -1,4 +1,6 @@
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vite";
 
 /**
@@ -7,9 +9,21 @@ import { defineConfig } from "vite";
  * **不引状态库、不引 SSR**（design §2.2「不拆」理由）：面板状态只有
  * 「当前快照 + 滞后 + 路由」三项，`useState` + `useEffect` 足够；
  * 纯静态导出即可，不需要 SSR 框架。
+ *
+ * 2026-10 桌面 UI 现代化（`docs/features/desktop-ui-modernize/CONTEXT.md`）：
+ * 接入 Tailwind v4（`@tailwindcss/vite` 插件，零运行时）+ 设计 token 化的
+ * `src/index.css`（`@theme` 映射原有 CSS 变量，涨跌色名保留）。
+ * 走**插件**而非 postcss 链路：少一层配置、少一处 pnpm postinstall 坑。
  */
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
+  resolve: {
+    // `@/` → `src/`：shadcn/ui 组件的约定导入路径（`@/lib/utils` 等）。
+    // 与 tsconfig 的 `compilerOptions.paths` 必须同步，否则 tsc 过而 vite 找不到模块。
+    alias: {
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
+    },
+  },
   server: {
     port: 5173,
     strictPort: true, // 端口被占就报错，不静默跳 5174（否则代理目标对不上，易误判）

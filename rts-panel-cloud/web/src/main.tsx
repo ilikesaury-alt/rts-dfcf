@@ -2,7 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import App from "./App";
-import "./styles.css";
+import "./index.css";
 
 /**
  * 前端入口（T1.1 / design §2.3）。

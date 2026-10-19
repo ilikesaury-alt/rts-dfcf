@@ -104,71 +104,71 @@ export default function Stock({ symbol }: Props) {
   const { items, total } = useMemo(() => breakdownItems(data?.scoreBreakdown), [data]);
 
   return (
-    <div className="stock">
-      <div className="stock-head">
-        <a className="back" href={listHref}>
+    <div className="flex min-w-0 flex-col gap-3">
+      <div className="flex flex-wrap items-baseline gap-3">
+        <a className="text-text-dim no-underline hover:text-text" href={listHref}>
           ← 返回列表
         </a>
-        <h1 className="stock-title">
+        <h1 className="m-0 text-[15px] font-semibold">
           {symbol}
-          <span className="stock-sub">
+          <span className="text-[12px] font-normal text-text-dim">
             {data ? ` · K 线截至 ${data.klineDate}（日线 ${data.kline.length} 根）` : ""}
           </span>
         </h1>
       </div>
 
-      {loading ? <p className="stock-note">加载中…</p> : null}
-      {error ? <p className="stock-note stock-error">{errorText(error)}</p> : null}
+      {loading ? <p className="m-0 text-text-dim">加载中…</p> : null}
+      {error ? <p className="m-0 text-err">{errorText(error)}</p> : null}
 
       {data ? (
         <>
-          <section className="stock-section">
+          <section className="flex min-w-0 flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-sm">
             {klineData.length > 0 ? (
-              <div className="kline-box" style={{ height: CHART_HEIGHT }}>
+              <div className="w-full rounded bg-[#1a1a2e]" style={{ height: CHART_HEIGHT }}>
                 <KLineChart data={klineData} theme={ASHARE_THEME} indicators={["MA", "VOL", "MACD"]} />
               </div>
             ) : (
-              <p className="stock-note">该票无本地日线数据</p>
+              <p className="m-0 text-text-dim">该票无本地日线数据</p>
             )}
           </section>
 
-          <section className="stock-section">
-            <h2>评分分解</h2>
+          <section className="flex min-w-0 flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-sm">
+            <h2 className="m-0 text-[13px] font-semibold">评分分解</h2>
             {items.length === 0 ? (
-              <p className="stock-note">无评分分解</p>
+              <p className="m-0 text-text-dim">无评分分解</p>
             ) : (
-              <table className="kv">
+              <table className="border-collapse text-[12px] tabular-nums">
                 <tbody>
                   {items.map((item) => (
                     <tr key={item.key}>
-                      <th>{item.key}</th>
-                      <td className="cell-r">{item.text}</td>
+                      <th className="pl-0 text-left font-normal text-text-dim">{item.key}</th>
+                      <td className="text-right">{item.text}</td>
                     </tr>
                   ))}
                   <tr className="kv-total">
                     <th>合计</th>
-                    <td className="cell-r">{total === null ? "—" : total.toFixed(2)}</td>
+                    <td className="text-right">{total === null ? "—" : total.toFixed(2)}</td>
                   </tr>
                 </tbody>
               </table>
             )}
-            {items.length > 0 ? <p className="stock-hint">合计为各分项之和；面板不做评分判断。</p> : null}
+            {items.length > 0 ? <p className="mt-1.5 mb-0 text-[12px] text-text-dim">合计为各分项之和；面板不做评分判断。</p> : null}
           </section>
 
-          <section className="stock-section">
-            <h2>出现史（最近 {data.appearances.length} 条）</h2>
+          <section className="flex min-w-0 flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-sm">
+            <h2 className="m-0 text-[13px] font-semibold">出现史（最近 {data.appearances.length} 条）</h2>
             {data.appearances.length === 0 ? (
-              <p className="stock-note">无出现记录</p>
+              <p className="m-0 text-text-dim">无出现记录</p>
             ) : (
-              <div className="table-scroll">
-                <table className="region-table">
+              <div className="max-w-full overflow-x-auto">
+                <table className="w-full border-collapse text-[12px] tabular-nums">
                   <thead>
                     <tr>
-                      <th className="cell-l">日期</th>
-                      <th className="cell-l">时间</th>
-                      <th className="cell-l">类别</th>
-                      <th className="cell-r">评分</th>
-                      <th className="cell-r">涨幅</th>
+                      <th className="text-left">日期</th>
+                      <th className="text-left">时间</th>
+                      <th className="text-left">类别</th>
+                      <th className="text-right">评分</th>
+                      <th className="text-right">涨幅</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -176,11 +176,11 @@ export default function Stock({ symbol }: Props) {
                       const pct = num(row.percent);
                       return (
                         <tr key={`${String(row.date)}-${String(row.time)}-${i}`}>
-                          <td className="cell-l">{String(row.date ?? "")}</td>
-                          <td className="cell-l">{String(row.time ?? "")}</td>
-                          <td className="cell-l">{String(row.category ?? "")}</td>
-                          <td className="cell-r">{num(row.score)?.toFixed(0) ?? "—"}</td>
-                          <td className={`cell-r${pct === null ? "" : pct > 0 ? " tone-up" : " tone-down"}`}>{fmtPct(pct)}</td>
+                          <td className="text-left">{String(row.date ?? "")}</td>
+                          <td className="text-left">{String(row.time ?? "")}</td>
+                          <td className="text-left">{String(row.category ?? "")}</td>
+                          <td className="text-right">{num(row.score)?.toFixed(0) ?? "—"}</td>
+                          <td className={`text-right${pct === null ? "" : pct > 0 ? " text-up" : " text-down"}`}>{fmtPct(pct)}</td>
                         </tr>
                       );
                     })}

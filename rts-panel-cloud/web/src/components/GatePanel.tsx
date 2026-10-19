@@ -1,5 +1,6 @@
 /**
- * 飞书过门区（验收 4）。
+ * 飞书过门区（验收 4）。2026-10 桌面 UI 现代化：改用 Tailwind 工具类
+ * （`styles.css` 已删，设计 token 见 `src/index.css`）。
  *
  * ⚠ 标题**不得简化成「飞书推送」**：它回答的是「**下一张卡会推什么**」，
  * 而卡片最多 300s 一次、且只在通过集合变化时才推；终端（此处=面板）每轮都刷新。
@@ -18,6 +19,7 @@ import { useState } from "react";
 
 import type { Gate, GateStats, Row } from "../api/types";
 import { rowSymbol } from "../lib/cols";
+import { Tabs, TabsList, TabsTrigger } from "./ui/tabs";
 
 /** 卡片标题固定串（改这句要连同 `scanner/view/render.py` 的过门区标题一起看）。 */
 const TITLE = "◆ 飞书过门 — 下一张卡会推什么（非已推内容）";
@@ -55,22 +57,28 @@ export default function GatePanel({ gate, regions }: Props) {
   };
 
   return (
-    <aside className="gatepanel" aria-label="飞书过门">
-      <h2 className="gatepanel-title">{TITLE}</h2>
-      <div className="gatepanel-toggle" role="group" aria-label="门内门外">
-        <button type="button" className={inside ? "toggle on" : "toggle"} aria-pressed={inside} onClick={() => setInside(true)}>
-          门内（会推）
-        </button>
-        <button type="button" className={inside ? "toggle" : "toggle on"} aria-pressed={!inside} onClick={() => setInside(false)}>
-          门外（不推）
-        </button>
-      </div>
+    <aside
+      id="anchor-gate"
+      className="flex flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-sm"
+      aria-label="飞书过门"
+    >
+      <h2 className="text-[13px] leading-5 font-semibold text-text">{TITLE}</h2>
 
-      <dl className="gate-stats">
+      <Tabs value={inside ? "inside" : "outside"} onValueChange={(v) => setInside(v === "inside")}>
+        <TabsList className="w-full">
+          <TabsTrigger value="inside" className="flex-1">门内（会推）</TabsTrigger>
+          <TabsTrigger value="outside" className="flex-1">门外（不推）</TabsTrigger>
+        </TabsList>
+        {/* 两组内容各自内联渲染在下方（不用 TabsContent）：切页签时标题与
+            `gate.stats` 必须**保持不动**（验收 4 / FR-V3），若把列表搬进
+            TabsContent 会连带 unmount 计数区，标题随之闪烁。 */}
+      </Tabs>
+
+      <dl className="m-0 grid grid-cols-2 gap-x-2 gap-y-0.5 text-[12px]">
         {STAT_FIELDS.map((f) => (
-          <div className="gate-stat" key={f.key}>
-            <dt>{f.label}</dt>
-            <dd>{gate.stats[f.key]}</dd>
+          <div key={f.key} className="flex items-center justify-between gap-2">
+            <dt className="text-text-dim">{f.label}</dt>
+            <dd className="m-0 tabular-nums text-text">{gate.stats[f.key]}</dd>
           </div>
         ))}
       </dl>
@@ -78,18 +86,18 @@ export default function GatePanel({ gate, regions }: Props) {
       {GROUPS.map((g) => {
         const rows = rowsFor(g.key);
         return (
-          <section className="gate-group" key={g.key}>
-            <h3>
-              {g.title} <span className="gate-count">{rows.length}</span>
+          <section key={g.key} className="flex flex-col gap-0.5">
+            <h3 className="m-0 text-[11px] leading-4 font-semibold text-text-dim">
+              {g.title} <span className="tabular-nums">{rows.length}</span>
             </h3>
             {rows.length === 0 ? (
-              <p className="gate-empty">—</p>
+              <p className="m-0 text-[12px] leading-7 text-text-dim">—</p>
             ) : (
-              <ul className="gate-list">
+              <ul className="m-0 max-h-56 list-none overflow-y-auto p-0">
                 {rows.map((row, i) => (
-                  <li key={`${rowSymbol(row)}-${i}`}>
-                    <span className="gate-symbol">{rowSymbol(row)}</span>
-                    <span className="gate-name">{typeof row.name === "string" ? row.name : ""}</span>
+                  <li key={`${rowSymbol(row)}-${i}`} className="flex gap-1.5 text-[12px] leading-7">
+                    <span className="tabular-nums text-text-dim">{rowSymbol(row)}</span>
+                    <span className="text-text-dim">{typeof row.name === "string" ? row.name : ""}</span>
                   </li>
                 ))}
               </ul>
