@@ -1,0 +1,11 @@
+# pnpm>=10 默认拦截依赖的 postinstall 脚本；本文件是白名单的新家
+# （pnpm 12 起**不再**读 package.json 的 "pnpm" 字段，会警告并静默忽略）。
+#
+# ⚠ 键名是 `allowBuilds`（map 形式），**不是** `onlyBuiltDependencies`（数组，pnpm 10 的写法）。
+# 与 `rts-panel-cloud/web/pnpm-workspace.yaml` 同款（那边只放 esbuild）。
+#
+#   electron            —— postinstall 下载 Electron 二进制；不跑它 = `electron .` 报缺 exe
+#   electron-winstaller —— electron-builder 的 Squirrel 目标会用到（我们只用 `--dir`）
+allowBuilds:
+  electron: true
+  electron-winstaller: true

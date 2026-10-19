@@ -63,12 +63,26 @@ HEADERS = {
 }
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 # DB 路径：默认仓库根 scanner.db；环境变量 RTS_DB_PATH 可覆盖（分支隔离用）。
 # 实验分支（如 redesign-pick-gate）可设 RTS_DB_PATH 指向独立库，避免其改动
 # （excluded 标记/新表/新列）写入主库后切回 master 时污染展示与回测口径。
 # 解析逻辑留在 config_core（子模块），但绑定 DB_PATH 在 config 聚合层（见 config.py），
 # 以便 reload scanner.config 时重新读取 RTS_DB_PATH 环境变量（测试/分支隔离依赖此语义）。
-LOG_DIR = os.path.join(BASE_DIR, "logs")
+def resolve_log_dir() -> str:
+    """解析日志目录：默认仓库根 `logs`；`RTS_LOG_DIR` 可覆盖（桌面版打包用，2026-10-19）。
+
+    与 `resolve_db_path` 同款：解析逻辑留在这里，**绑定**在 `scanner.config` 聚合层 ——
+    这样 reload `scanner.config` 能重读环境变量（`tests/test_config.py` 依赖该语义）。
+
+    ⚠ 为什么需要这个开关：安装态 `resources/` 可能只读，而扫描器的**全部运行时落盘**
+    （CSV / 单实例锁 / 各类 .log / K 线指纹）都走本目录（`log_utils` /
+    `single_instance` / `panel_reporter` / `local_panel_server`），故与 `RTS_DB_PATH`
+    同理需要一个可写目录覆盖；Electron 打包态指向 `userData/logs`。
+    不设时行为与改前逐字节相同（默认仍是仓库根 `logs/`）。
+    """
+    return os.environ.get("RTS_LOG_DIR") or os.path.join(BASE_DIR, "logs")
 
 
 def resolve_db_path() -> str:
@@ -130,6 +144,12 @@ LATE_TRADE_START = 14 * 60  # 14:00
 EARLY_BONUS = -2
 LATE_BONUS = 3
 
+# ── 桌面版本地看板（2026-10-19，Issue A）──
+# `scanner/local_panel_server` 的默认监听端口。开关与端口覆盖都在 unified_scanner
+# 读取（`RTS_LOCAL_PANEL` / `RTS_LOCAL_PANEL_PORT`），与 `RTS_PANEL`（云端上报）
+# **两个独立开关**（design D3）：可并存、可互斥；未显式开启时连模块都不导入。
+LOCAL_PANEL_PORT = 8899
+
 __all__ = [
     "BEIJING_TZ",
     "now_beijing",
@@ -144,8 +164,9 @@ __all__ = [
     "MINUTE_FALLBACK_PHASE_DEADLINE",
     "HEADERS",
     "BASE_DIR",
+    "LOCAL_PANEL_PORT",
     "resolve_db_path",
-    "LOG_DIR",
+    "resolve_log_dir",
     "FOREIGN_EXCLUDED_PREFIXES",
     "_env_flag",
     "_env_float",

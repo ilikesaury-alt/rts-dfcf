@@ -1,0 +1,7 @@
+# Electron 壳的构建产物与自带运行时（都不入库）
+node_modules/
+dist/
+resources/python/
+resources/_python*.tar.gz
+resources/*.tar.gz
+logs/

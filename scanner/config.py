@@ -43,3 +43,7 @@ from scanner.weights import (  # noqa: F401  (re-export)
 # DB_PATH 在 import 时求值（分支隔离 RTS_DB_PATH 覆盖）；置于聚合层末尾以便 reload
 # scanner.config 时重新读取环境变量（test_database.test_env_override_takes_effect 依赖此语义）。
 DB_PATH = resolve_db_path()  # noqa: F405  (来自 config_core 的 `import *`)
+# LOG_DIR 同理绑定在聚合层（2026-10-19，桌面版打包的 RTS_LOG_DIR 覆盖）：
+# `from scanner.config_core import *` 只带出**已加载**的 config_core 常量，
+# 单 reload scanner.config 不会重求值 —— 与 DB_PATH 同一条坑（上面那句注释的由来）。
+LOG_DIR = resolve_log_dir()  # noqa: F405  (来自 config_core 的 `import *`)

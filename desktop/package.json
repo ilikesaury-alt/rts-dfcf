@@ -1,0 +1,66 @@
+{
+  "name": "rts-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "创业板飙升榜 · 桌面看板（Electron 壳：开窗口 + 拉起本机 Python 扫描器，数据走 127.0.0.1 只读 HTTP）",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "node prepare.mjs && electron-builder --win --dir",
+    "dist:installer": "node prepare.mjs && electron-builder --win",
+    "fetch-python": "node fetch-python.mjs"
+  },
+  "build": {
+    "appId": "com.rts.scanner.desktop",
+    "productName": "RTSPanel",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/python",
+        "to": "python"
+      },
+      {
+        "from": "../",
+        "to": "repo",
+        "filter": [
+          "**/*",
+          "!.git/**",
+          "!.github/**",
+          "!.openchamber/**",
+          "!.workbuddy/**",
+          "!.pytest_cache/**",
+          "!.mypy_cache/**",
+          "!.ruff_cache/**",
+          "!node_modules/**",
+          "!desktop/**",
+          "!logs/**",
+          "!**/__pycache__/**",
+          "!**/node_modules/**",
+          "!rts-panel-cloud/worker/**",
+          "!.env",
+          "!.env.*",
+          "!scanner.db-wal",
+          "!scanner.db-shm",
+          "!scanner.db.bak*",
+          "!*.bak-pre*",
+          "!nul"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        "dir"
+      ]
+    }
+  },
+  "devDependencies": {
+    "electron": "^44.9.0",
+    "electron-builder": "^26.15.3"
+  }
+}

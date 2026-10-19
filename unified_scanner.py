@@ -20,7 +20,14 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()  # 从 .env 加载环境变量（飞书 webhook 等）
+# `.env` 的位置：默认走 python-dotenv 自己的向上查找（开发态 = 仓库根那个）。
+# `RTS_ENV_FILE` 显式指定 —— 桌面版打包态需要它：`.env` **不进包**（密钥不该躺在
+# 安装目录里，且安装目录会被升级覆盖），改指用户目录下那份。
+_ENV_FILE = os.environ.get("RTS_ENV_FILE")
+if _ENV_FILE:
+    load_dotenv(_ENV_FILE)
+else:
+    load_dotenv()  # 从 .env 加载环境变量（飞书 webhook 等）
 
 from scanner.backtest import backfill_outcomes
 from scanner.config import (
@@ -32,6 +39,7 @@ from scanner.config import (
     HOT_WATCH_ENABLED,
     KLINE_FETCH_DAYS,
     KLINE_FETCH_DEADLINE,
+    LOCAL_PANEL_PORT,
     LOG_DIR,
     NEW_FACE_LOOKBACK_DAYS,
     OFFBOARD_DISPLAY_TOP,
@@ -362,6 +370,34 @@ def _panel_enabled(flag_off: bool) -> tuple[bool, str, str]:
     return True, url, secret
 
 
+def _local_panel_enabled() -> tuple[bool, int]:
+    """桌面版**本地看板**开关（Issue A，2026-10-19）。返回 `(enabled, port)`。
+
+    | 开关 | 语义 |
+    |---|---|
+    | `RTS_LOCAL_PANEL` | **缺省即关**（`0`/空/其他 → 关）：关闭时行为与改前**逐字节相同**，连模块都不导入 |
+    | `RTS_LOCAL_PANEL_PORT` | 端口覆盖（默认 `config.LOCAL_PANEL_PORT`）；非法/越界值回退默认 |
+
+    ⚠ 与 `_panel_enabled`（云端上报 `RTS_PANEL`）是**两个独立开关**（design D3）：
+    可并存（既推云端又本地 serve），也可互斥。桌面版由 Electron 注入 `=1`；
+    既有云端面板用户不设置本开关 ⇒ 零影响。
+
+    ⚠ **不做 CLI 参数**（design §6.3 明文：开关与 CLI 无关）—— `unified_scanner.py`
+    的 `--no-panel` 只关云端上报，**不得**顺手把本地看板一起关掉。
+    """
+    raw = (os.environ.get("RTS_LOCAL_PANEL") or "").strip().lower()
+    if raw not in ("1", "true", "yes", "on"):
+        return False, LOCAL_PANEL_PORT
+    port = LOCAL_PANEL_PORT
+    try:
+        candidate = int((os.environ.get("RTS_LOCAL_PANEL_PORT") or "").strip())
+    except ValueError:
+        candidate = 0
+    if 1 <= candidate <= 65535:
+        port = candidate
+    return True, port
+
+
 def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
     """单进程扫描循环。"""
     conn = init_db()
@@ -385,6 +421,26 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
     # 面板上报（2026-09-29 起，G3 旁路）：唯一改动是 render/push 之后的一次 report()。
     # 未配置 URL/_SECRET 时 enabled=False 且**连模块都不导入**（验收 1）。
     panel_on, panel_url, panel_secret = _panel_enabled(no_panel)
+    # 桌面版本地看板（Issue A，2026-10-19）：与云端上报**并列且独立**（D3）。
+    # 关闭时（缺省）连模块都不导入 —— 验收 8「行为与改前一致」靠这一条。
+    local_on, local_port = _local_panel_enabled()
+    if local_on:
+        try:
+            from scanner import local_panel_server
+            from scanner.local_view_cache import cache_latest, load_latest
+
+            local_panel_server.start_server(local_port)
+            # 重启回放（m021）：本轮尚未跑完时先亮出上次已知的一轮，避免白屏。
+            _restored = load_latest(conn)
+            if _restored:
+                cache_latest(_restored)
+            print(f"  🖥  本地看板: http://{local_panel_server.BIND_HOST}:{local_port}/ （只读·仅本机）")
+        except Exception as e:
+            # 端口冲突等只告警、不阻断扫描（fail-open，与 panel_reporter 同纪律）
+            print(f"  [!] 本地看板启动失败（扫描不受影响）: {type(e).__name__}: {e}")
+            local_on = False
+    # 本地看板的进程内轮号（仅供展示；「取最新一轮」从不按它排序，同 panel seq 口径）。
+    local_seq = 0
     # 进程内单调轮号：仅供面板**展示**与幂等覆盖列，任何「取最新一轮」的判定都用
     # (date, time) —— 重启后 seq 重排会读到旧轮（design §5.1 复核修 2）。
     round_seq = 0
@@ -674,6 +730,31 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                         )
                     except Exception as e:
                         print(f"    [!] 面板上报跳过: {type(e).__name__}: {e}", flush=True)
+
+                # ── 桌面版本地看板缓存（Issue A 挂点）──
+                # 与上面的云端上报**互相独立**：本地侧只需要 `serialize_view` 的
+                # 幂等序列化（无网络、无 collect_stocks），故不共用同一次调用 ——
+                # 复用会让「面板上报」的行为随本地开关变化，破坏 M0 已验证链路。
+                if local_on:
+                    try:
+                        from scanner.local_view_cache import cache_latest, persist_latest
+                        from scanner.panel_serialize import serialize_view as _serialize
+
+                        local_seq += 1
+                        _lnow = now_beijing()
+                        _payload = _serialize(
+                            view,
+                            extra={
+                                "seq": local_seq,
+                                "date": _lnow.date().isoformat(),
+                                "time": _lnow.strftime("%H:%M:%S"),
+                                "durationMs": int((time.monotonic() - _round_started) * 1000),
+                            },
+                        )
+                        cache_latest(_payload)
+                        persist_latest(conn, _payload)
+                    except Exception as e:
+                        print(f"    [!] 本地看板缓存跳过: {type(e).__name__}: {e}", flush=True)
 
                 try:
                     n = backfill_outcomes(conn)

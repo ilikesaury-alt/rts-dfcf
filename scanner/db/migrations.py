@@ -428,6 +428,34 @@ def _check_offboard_active_metrics(conn: sqlite3.Connection) -> bool:
     )
 
 
+def _up_view_snapshot(conn: sqlite3.Connection) -> None:
+    """m021（2026-10-19）：桌面版本地看板的**最近一轮载荷**落盘副本。
+
+    动机（唯一）：`local_panel_server` 只服务进程内缓存（design D1），进程重启后
+    （Electron 关窗重开、崩溃恢复）在首个交易轮跑完前，面板拿不到任何东西。落一份
+    最近载荷让 `start_server` 启动时能回放「上次已知的一轮」——非交易时段启动也
+    有内容可看，符合「桌面版应显非交易时段而非空白」的既定要求。
+
+    ⚠ 与云端 D1 的 `snapshots` 表**同构但不同库**：本表**不是**上报通道，只是本地
+    缓存的落盘副本。写侧唯一 = 主循环的 `local_view_cache.persist_latest`；
+    读侧唯一 = `local_panel_server`（启动回填）。两处都不参与任何评分/筛选口径。
+
+    ⚠ DDL 写成**字面量**而非模块级常量拼接（与 m018/m020 同款纪律）：动态 DDL
+    字符串会让 SQL 静态检查无法判定其安全性。表名/列名均为本文件内写死的字面量。
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS view_snapshot ("
+        "date TEXT NOT NULL, time TEXT NOT NULL, seq INTEGER NOT NULL DEFAULT 0, "
+        "payload TEXT NOT NULL, updated_at TEXT NOT NULL, "
+        "PRIMARY KEY (date, time))"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_view_snapshot_round ON view_snapshot(date DESC, time DESC)")
+
+
+def _check_view_snapshot(conn: sqlite3.Connection) -> bool:
+    return _has_table(conn, "view_snapshot")
+
+
 # ── 迁移总表（顺序即执行顺序；只在末尾追加）──
 MIGRATIONS: list[Migration] = [
     add_column(
@@ -558,6 +586,12 @@ MIGRATIONS: list[Migration] = [
         desc="offboard_launch_log 补 gate_hits + 新增 offboard_round_log（今日活跃标识的在场率落库依据）",
         check=_check_offboard_active_metrics,
         up=_up_offboard_active_metrics,
+    ),
+    Migration(
+        id="m021_view_snapshot",
+        desc="新增 view_snapshot（桌面版本地看板的最近一轮载荷落盘副本，重启回放用）",
+        check=_check_view_snapshot,
+        up=_up_view_snapshot,
     ),
 ]
 

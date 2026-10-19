@@ -11,8 +11,14 @@
 # 下方仅为**直接生产依赖**的精确版本 —— 已能消除 akshare 跨 minor 漂移这一主要风险。
 # 若需全量（含传递依赖）锁定，可在干净虚拟环境中跑
 #   pip install -r requirements.txt && pip freeze > requirements.lock
+#
+# ⚠ 2026-10-19：补 `python-dotenv`。它被 `unified_scanner.py:21` **硬导入**，却长期
+# 只存在于「本机碰巧装过」的状态 —— 打包桌面版时才炸（自带解释器第一行 import 就
+# ModuleNotFoundError）。教训：口头「可选」的包若在入口处裸 import，就是硬依赖。
+python-dotenv==1.0.1
 
 requests==2.34.2
 wcwidth==0.2.13
 psutil==7.2.2
+python-dotenv==1.0.1
 akshare==1.18.64
