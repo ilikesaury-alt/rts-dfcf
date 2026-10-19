@@ -20,5 +20,4 @@ python-dotenv==1.0.1
 requests==2.34.2
 wcwidth==0.2.13
 psutil==7.2.2
-python-dotenv==1.0.1
 akshare==1.18.64

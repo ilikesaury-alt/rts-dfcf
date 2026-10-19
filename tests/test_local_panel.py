@@ -168,6 +168,45 @@ def test_static_route_404s_when_dist_missing(server):
     assert _get(server.port, "/api/health")[0] == 200
 
 
+def _get_raw(port: int, path: str) -> tuple[int, bytes]:
+    """原始响应（静态路由可能回 HTML，不保证是 JSON 信封）。"""
+    url = f"http://127.0.0.1:{port}{path}"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:  # noqa: S310 - 测试内固定回环地址
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
+def test_static_route_blocks_path_traversal(tmp_path):
+    """⛔ 静态托管的路径遍历守卫（2026-10-19 对抗审查补测）：normpath 后必须仍
+    落在静态根内，`..` / 绝对盘符穿越一律 404 —— 这是安全边界，回归（比如把
+    normpath 换成字符串拼接）必须有测试变红。"""
+    root = tmp_path / "dist"
+    root.mkdir()
+    (root / "index.html").write_text("<html>ok</html>", encoding="utf-8")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOPSECRET", encoding="utf-8")
+    lps.stop_server()
+    srv = lps.start_server(0, static_dir=str(root))
+    try:
+        # 这些路径经 normpath 会逃出静态根 ⇒ 必须被 startswith 守卫拦成 404
+        for path in ("/../secret.txt", "/../../secret.txt", "/C:/secret.txt"):
+            status, body = _get_raw(srv.port, path)
+            assert b"TOPSECRET" not in body, f"{path} 穿透了静态根"
+            assert status == 404, f"{path} 应被守卫拦成 404，实际 {status}"
+        # 编码变体（%5C 不解码，按字面文件名处理）⇒ 落不进任何文件，
+        # 要么 404 要么 SPA 回退 index.html —— 无论哪种都不得泄露根外内容
+        for path in ("/..%5Csecret.txt", "/%2e%2e/secret.txt"):
+            status, body = _get_raw(srv.port, path)
+            assert b"TOPSECRET" not in body, f"{path} 穿透了静态根"
+        # 合法文件不受影响
+        status, body = _get_raw(srv.port, "/index.html")
+        assert status == 200 and b"ok" in body
+    finally:
+        lps.stop_server()
+
+
 def test_unknown_api_route_is_not_found(server):
     status, body = _get(server.port, "/api/nope")
     assert status == 404 and body["error"]["code"] == "NOT_FOUND"
@@ -361,14 +400,22 @@ def test_cache_latest_roundtrip_and_replace():
     assert lvc.get_latest() is None
 
 
+_SNAPSHOT_DDL = (
+    "CREATE TABLE view_snapshot (date TEXT NOT NULL, time TEXT NOT NULL, seq INTEGER NOT NULL DEFAULT 0, "
+    "payload TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (date, time))"
+)
+
+
 def test_persist_and_load_latest_roundtrip(tmp_path):
-    conn = sqlite3.connect(str(tmp_path / "v.db"))
-    conn.execute(
-        "CREATE TABLE view_snapshot (date TEXT NOT NULL, time TEXT NOT NULL, seq INTEGER NOT NULL DEFAULT 0, "
-        "payload TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (date, time))"
-    )
-    lvc.persist_latest(conn, _payload(seq=1, time="10:00:00"))
-    lvc.persist_latest(conn, _payload(seq=2, time="10:01:00"))
+    """roundtrip 同时守「persist 自管事务」：persist 走**自己的短连接**写并 commit，
+    这里的读连接（另一条）能看到数据 ⇒ 不依赖任何调用方的 commit
+    （2026-10-19 对抗审查：禁止在主循环共享连接上 commit）。"""
+    db = str(tmp_path / "v.db")
+    conn = sqlite3.connect(db)
+    conn.execute(_SNAPSHOT_DDL)
+    conn.commit()
+    lvc.persist_latest(_payload(seq=1, time="10:00:00"), db)
+    lvc.persist_latest(_payload(seq=2, time="10:01:00"), db)
     restored = lvc.load_latest(conn)
     assert restored is not None and restored["seq"] == 2, "取最新一轮：按 (date,time)，不是 seq"
     conn.close()
@@ -376,19 +423,18 @@ def test_persist_and_load_latest_roundtrip(tmp_path):
 
 def test_persist_prunes_to_recent_rounds(tmp_path):
     """表只留最近 N 轮（防长跑无限增长）；N 行以内时不得误删。"""
-    conn = sqlite3.connect(str(tmp_path / "v2.db"))
-    conn.execute(
-        "CREATE TABLE view_snapshot (date TEXT NOT NULL, time TEXT NOT NULL, seq INTEGER NOT NULL DEFAULT 0, "
-        "payload TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (date, time))"
-    )
+    db = str(tmp_path / "v2.db")
+    conn = sqlite3.connect(db)
+    conn.execute(_SNAPSHOT_DDL)
+    conn.commit()
     for i in range(lvc._SNAPSHOT_LIMIT):
-        lvc.persist_latest(conn, _payload(seq=i, time=f"10:{i:02d}:00"))
+        lvc.persist_latest(_payload(seq=i, time=f"10:{i:02d}:00"), db)
     assert conn.execute("SELECT COUNT(*) FROM view_snapshot").fetchone()[0] == lvc._SNAPSHOT_LIMIT
     # 再多 7 轮（时间递增 ⇒ 最早 7 轮被剪掉）
     for i in range(lvc._SNAPSHOT_LIMIT + 7):
         if i < 20:
             continue
-        lvc.persist_latest(conn, _payload(seq=i, time=f"11:{i:02d}:00"))
+        lvc.persist_latest(_payload(seq=i, time=f"11:{i:02d}:00"), db)
     n = conn.execute("SELECT COUNT(*) FROM view_snapshot").fetchone()[0]
     assert n == lvc._SNAPSHOT_LIMIT
     newest = lvc.load_latest(conn)
@@ -398,8 +444,9 @@ def test_persist_prunes_to_recent_rounds(tmp_path):
 
 def test_persist_on_missing_table_is_fail_open(tmp_path):
     """缺表（迁移未跑）只告警，不打断扫描（`persist_latest` 不上抛）。"""
-    conn = sqlite3.connect(str(tmp_path / "empty.db"))
-    lvc.persist_latest(conn, _payload())  # 不抛即通过
+    db = str(tmp_path / "empty.db")
+    conn = sqlite3.connect(db)
+    lvc.persist_latest(_payload(), db)  # 不抛即通过
     assert lvc.load_latest(conn) is None
     conn.close()
 

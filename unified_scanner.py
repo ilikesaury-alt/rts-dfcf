@@ -752,7 +752,9 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                             },
                         )
                         cache_latest(_payload)
-                        persist_latest(conn, _payload)
+                        # 2026-10-19 审查修复：persist 自开短连接（不在主循环共享
+                        # 连接上 commit，避免把本轮未打算提交的写提前落库）
+                        persist_latest(_payload)
                     except Exception as e:
                         print(f"    [!] 本地看板缓存跳过: {type(e).__name__}: {e}", flush=True)
 

@@ -55,32 +55,45 @@ def clear_cache() -> None:
         _latest = None
 
 
-def persist_latest(conn: sqlite3.Connection, payload: dict[str, Any]) -> None:
+def persist_latest(payload: dict[str, Any], db_path: str | None = None) -> None:
     """把本轮载荷落 `view_snapshot`（m021）。**fail-open**：失败只告警。
 
     落库动机只有一个：进程重启后、首个交易轮完成前面板不白屏（`server` 启动时
     用 `load_latest` 回填）。因此这里**不是**上报通道，也不参与任何口径。
+
+    ⚠ **自开短连接、自管事务**（2026-10-19 对抗审查修复）：不在主循环的共享连接上
+    写 —— 早期版本接收调用方 `conn` 并无条件 `commit()`，会把挂点时刻主连接上
+    **未打算本轮提交**的写一并提前落库，破坏轮内原子性（当时逐点核对无实害，
+    但属无守卫的跨模块隐式契约）。现与 `local_panel_server._connect()` 同口径：
+    每次落库独立连接，用完即关；`db_path` 缺省时调用时读 `config.DB_PATH`
+    （测试可 patch），传入则用于测试隔离。
     """
+    from scanner.db.schema import get_conn
+
     try:
-        conn.execute(
-            "INSERT INTO view_snapshot(date, time, seq, payload, updated_at) VALUES(?,?,?,?,?) "
-            "ON CONFLICT(date, time) DO UPDATE SET "
-            "seq=excluded.seq, payload=excluded.payload, updated_at=excluded.updated_at",
-            (
-                str(payload.get("date") or ""),
-                str(payload.get("time") or ""),
-                int(payload.get("seq") or 0),
-                json.dumps(payload, ensure_ascii=False),
-                now_beijing().isoformat(),
-            ),
-        )
-        # 只留最近 N 轮（≤N 行时子查询返回全部 rowid，DELETE 天然为空转）
-        conn.execute(
-            "DELETE FROM view_snapshot WHERE rowid NOT IN "
-            "(SELECT rowid FROM view_snapshot ORDER BY date DESC, time DESC LIMIT ?)",
-            (_SNAPSHOT_LIMIT,),
-        )
-        conn.commit()
+        conn = get_conn(db_path)
+        try:
+            conn.execute(
+                "INSERT INTO view_snapshot(date, time, seq, payload, updated_at) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(date, time) DO UPDATE SET "
+                "seq=excluded.seq, payload=excluded.payload, updated_at=excluded.updated_at",
+                (
+                    str(payload.get("date") or ""),
+                    str(payload.get("time") or ""),
+                    int(payload.get("seq") or 0),
+                    json.dumps(payload, ensure_ascii=False),
+                    now_beijing().isoformat(),
+                ),
+            )
+            # 只留最近 N 轮（≤N 行时子查询返回全部 rowid，DELETE 天然为空转）
+            conn.execute(
+                "DELETE FROM view_snapshot WHERE rowid NOT IN "
+                "(SELECT rowid FROM view_snapshot ORDER BY date DESC, time DESC LIMIT ?)",
+                (_SNAPSHOT_LIMIT,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
     except sqlite3.Error as e:
         _log.warning("view_snapshot 落库失败（不影响扫描）: %r", e)
 

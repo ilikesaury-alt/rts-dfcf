@@ -175,3 +175,33 @@ pnpm run dist                             # → desktop/dist/win-unpacked/RTSPan
 2. **打包目标只做 Windows**：`desktop/` 只按 Windows 写（`python.exe` / `resourcesPath`
    / `win-unpacked`）。macOS 要另取 `aarch64-apple-darwin` 的 standalone Python 并过
    签名/公证 —— 需要时另立一项，本期不做。
+
+## 8. 交叉对抗审查记录（2026-10-19，dev-task Step 5）
+
+独立审查代理对 `e651fff` 全部改动按固定顺序审查（验收抽查 → 测试覆盖复核 → 高风险
+路径 → 奥卡姆剃刀）。**结论：无阻断项**，10 条验收证据链成立；修复 4 处、记录不修 3 处。
+
+**已修复**（本节同批改代码）：
+1. **`persist_latest` 不再在主循环共享连接上 commit**（主要）：原实现接收主循环
+   `conn` 并无条件 `commit()`，若挂点时刻主连接上有未打算本轮提交的写会被提前落库
+   （逐点核对当前无实害，但属无守卫的跨模块隐式契约）。改为自开短连接、自管事务，
+   与 `_connect()` 同口径；签名从 `(conn, payload)` 改为 `(payload, db_path=None)`。
+2. **`desktop/main.js` 端口脏值回退 8899**（次要）：`RTS_LOCAL_PANEL_PORT=abc` → NaN
+   会探活死等且无提示，而 Python 侧已兜底到 8899，两端分叉。加整数/范围校验，与
+   `_local_panel_enabled` 同口径。
+3. **静态路由穿越守卫补测试**（次要）：`_static` 的 normpath+startswith 守卫本身
+   正确但零用例，补 `test_static_route_blocks_path_traversal`（`..`、绝对盘符 404；
+   `%5C`/`%2e%2e` 编码变体不泄露根外内容；合法文件不受影响）。
+4. **`requirements.lock` 去重**：`python-dotenv==1.0.1` 出现两行（§6 的补声明与
+   既有列表撞车），pip 无害但应删一处。
+
+**记录不修**（建议级，留待后续按需处理）：
+- Electron 异常死亡（崩溃/`taskkill /F`）时 python 子进程成孤儿 —— 正常关窗路径
+  已覆盖（验收 7），单实例「杀旧」语义下下次启动可接管；
+- m021 的 `idx_view_snapshot_round` 索引冗余（表硬剪 50 行、PK 即 `(date,time)`）——
+  无害，删它要动迁移，不值得；
+- `useSnapshot.ts` 渲染期 mutate ref（React 反模式，当前无实害）。
+
+复验：`ruff check` 全过；`pytest tests/test_local_panel.py tests/test_desktop_shell.py
+tests/test_panel_web_cols.py tests/test_config.py tests/test_migrations.py
+tests/test_single_instance.py` → **116 passed**。

@@ -33,8 +33,13 @@ const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 
-/** 与 `scanner.config.LOCAL_PANEL_PORT` 同值（改一处要同步另一处）。 */
-const LOCAL_PORT = Number(process.env.RTS_LOCAL_PANEL_PORT || 8899);
+/** 与 `scanner.config.LOCAL_PANEL_PORT` 同值（改一处要同步另一处）。
+ * 脏值（非整数/越界，如 `RTS_LOCAL_PANEL_PORT=abc` → NaN）回退 8899 —— 与 Python 侧
+ * `_local_panel_enabled` 的回退同口径。不校验的话探活会打在 NaN 上永远失败，
+ * 而子进程已被 Python 侧兜底拉到 8899，两端分叉、窗口死等无提示。 */
+const _rawPort = Number(process.env.RTS_LOCAL_PANEL_PORT || 8899);
+const LOCAL_PORT =
+  Number.isInteger(_rawPort) && _rawPort >= 1 && _rawPort <= 65535 ? _rawPort : 8899;
 const HOST = "127.0.0.1";
 /** 等 Python 起服的上限：首轮扫描要联网，起服本身只 DU 到几百毫秒，给足 40s。 */
 const SERVER_WAIT_MS = 40_000;
