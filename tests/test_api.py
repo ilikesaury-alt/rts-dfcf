@@ -637,9 +637,16 @@ class TestSessionExpirySelfHeal:
     class _FakeCookies:
         def __init__(self):
             self.cleared = False
+            self.jar: dict[str, str] = {}
 
         def clear(self):
             self.cleared = True
+            self.jar.clear()
+
+        def get(self, name, default=None):
+            # 2026-10-21：`_has_auth_cookie` 用 cookies.get("xq_a_token") 作握手唯一判据，
+            # 假件必须能表达“握手到底有没有拿到 token”，否则新逻辑在测试里恒判失败。
+            return self.jar.get(name, default)
 
     class _FakeResp:
         def __init__(
@@ -666,16 +673,21 @@ class TestSessionExpirySelfHeal:
                 raise requests.HTTPError(f"HTTP {self.status_code}")
 
     class _FakeSession:
-        def __init__(self, responses):
+        def __init__(self, responses, handshake_token=True):
             self.responses = list(responses)
             self.cookies = TestSessionExpirySelfHeal._FakeCookies()
             self.calls = []
+            # True：握手成功（写入 xq_a_token）；False：模拟 567 反爬挑战拿不到 token
+            self.handshake_token = handshake_token
 
-        def get(self, url, timeout=None):
+        def get(self, url, timeout=None, headers=None):
             self.calls.append(url)
             if "xueqiu.com/hq" in url:
                 # 重建握手请求单独返回（不消耗 API 响应队列）
-                return TestSessionExpirySelfHeal._FakeResp(200)
+                if self.handshake_token:
+                    self.cookies.jar["xq_a_token"] = "fake-token"
+                    return TestSessionExpirySelfHeal._FakeResp(200)
+                return TestSessionExpirySelfHeal._FakeResp(567, content_type="text/html; charset=utf-8")
             if not self.responses:
                 # 2026-08-29：队列耗尽时原实现抛 IndexError，会被误当成"重试逻辑异常"。
                 # 真实 HTTP 客户端不会因"调用次数超出脚本预期"而崩，而是继续返回最后一次
@@ -755,6 +767,47 @@ class TestSessionExpirySelfHeal:
         assert resp.status_code == 200
         assert sess.cookies.cleared
         assert any("xueqiu.com/hq" in u for u in sess.calls)
+
+    def test_567_waf_challenge_triggers_rebuild(self):
+        """回归（2026-10-21）：雪球 WAF 对 GET /hq 返回 HTTP 567「请求异常已被安全策略
+        拦截」挑战页（不写 xq_a_token）时，后续所有 /v5/ 接口恒 400016。
+
+        线上症状：`_refresh_session` 自己也用被拦的 UA 握手 ⇒ 永远拿不到 token ⇒
+        "重建 cookie 后重试"自愈路径空转，飙升榜恒空、终端只打
+        `[!] 飙升榜数据为空，等待刷新...`。
+        567 必须被识别为失效信号（触发换 UA 档位重建），而不是当普通 4xx 重试。
+        """
+        from scanner.api import _is_session_expired
+
+        assert _is_session_expired(self._FakeResp(567, content_type="text/html; charset=utf-8"))
+
+    def test_handshake_returns_false_when_no_token(self):
+        """握手判据是 xq_a_token，不是 HTTP 200。全部 UA 档位都被 567 挡住时
+        `_refresh_session` 必须返回 False（供上层告警"反爬挑战"而非"cookie 过期"）。
+
+        `_FakeSession` 的 handshake_token=False 模拟持续 567，故重建必然失败。
+        """
+        from scanner.api import _XUEQIU_HANDSHAKE_PROFILES, _refresh_session
+
+        sess = self._FakeSession([], handshake_token=False)
+        assert _refresh_session(sess) is False
+        # 每次重建都必须试满所有 UA 档位（单档失败不等于雪球全站不可用）
+        assert sess.calls.count("https://xueqiu.com/hq") == len(_XUEQIU_HANDSHAKE_PROFILES)
+
+    def test_handshake_accepts_token_not_just_200(self):
+        """反向守卫：握手拿到 200 但**没有** xq_a_token 时必须判失败。
+
+        只认状态码的实现会在此失效：雪球只给 acw_tc、不给 token 的会话调任何
+        /v5/ 接口都是 400016（实测），把 200 当成功会让自愈白跑一轮。
+        """
+        from scanner.api import _has_auth_cookie
+
+        class _Sess:
+            def __init__(self, jar):
+                self.cookies = type("C", (), {"get": lambda self, k, d=None: jar.get(k, d)})()
+
+        assert _has_auth_cookie(_Sess({"acw_tc": "x"})) is False  # 只有 WAF cookie
+        assert _has_auth_cookie(_Sess({"xq_a_token": "t"})) is True
 
     def test_4xx_caught_and_retried(self, monkeypatch):
         """回归（2026-08-29）：4xx 经 raise_for_status() 抛出的 HTTPError 必须被

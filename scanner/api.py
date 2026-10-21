@@ -60,6 +60,10 @@ def _is_session_expired(resp: requests.Response) -> bool:
     """
     if resp.status_code in (401, 403):
         return True
+    # 567 = 雪球 WAF 的「请求异常已被安全策略拦截」挑战页（2026-10-21 实测：桌面
+    # Chrome UA 握手即得 567，页面无 token）。归入失效信号，让自愈重建换 UA 档位。
+    if resp.status_code == 567:
+        return True
     if resp.status_code == 400:
         # token 过期信号（400016）—— 只对真正的失效签名触发重建，普通 400
         # 业务错误（参数错等）不误伤。
@@ -76,15 +80,85 @@ def _is_session_expired(resp: requests.Response) -> bool:
     return resp.status_code == 200 and "text/html" in ct.lower()
 
 
-def _refresh_session(session: requests.Session) -> None:
-    """原地重建雪球 cookie：清空旧 cookie 后重新 GET /hq 握手。
+# ── 雪球握手 UA 兜底（2026-10-21）──
+# 故障：`GET https://xueqiu.com/hq` 用 config.HEADERS 里那条桌面 Chrome UA 请求时，
+# 雪球 WAF 返回 **HTTP 567** 的「请求异常已被安全策略拦截」页面 —— 不写 xq_a_token，
+# 只留一个 acw_tc。没 token 之后所有 /v5/ 接口一律 400 + error_code=400016，
+# 于是「重建 cookie 后重试」这条自愈路径自身也永远拿不到 token：每轮都 400016，
+# 飙升榜恒空、终端只剩「[!] 飙升榜数据为空，等待刷新...」。
+# 实测（同机同 IP，逐条间隔 8~20s）：
+#   桌面 Chrome UA                                   → 567，无 token
+#   'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' 短 UA → 200，有 token
+#   'Xueqiu/13.20 (iPhone; iOS 17.0; Scale/3.00)'    → 200，有 token
+#   iPhone MicroMessenger UA                         → 200，有 token
+# 且带 token 后**同一 Chrome UA** 调 new_list/kline/batch/minute/quotec 全部 200 ——
+# 即 API 侧只认 token、不校验 UA，坏的仅是握手这一步。故按序试下面几档 UA，
+# 任一档拿到 xq_a_token 即成功；全失败才放弃（并明确告警是反爬挑战而非 cookie 过期）。
+_XUEQIU_HANDSHAKE_PROFILES: tuple[dict[str, str], ...] = (
+    {"User-Agent": "Xueqiu/13.20 (iPhone; iOS 17.0; Scale/3.00)", "Accept": "application/json"},
+    {
+        "User-Agent": (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) MicroMessenger/8.0.44"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    },
+    {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Accept": "application/json"},
+)
+
+XUEQIU_HANDSHAKE_URL = "https://xueqiu.com/hq"
+
+
+def _has_auth_cookie(session: requests.Session) -> bool:
+    """会话里是否已有雪球鉴权 cookie（xq_a_token）。
+
+    这是握手的**唯一判据**：HTTP 200 不代表成功 —— 567 页面也可能被某些网关
+    包成 200 HTML，而只留 acw_tc 的会话调任何 /v5/ 接口都是 400016。
+    """
+    try:
+        return bool(session.cookies.get("xq_a_token"))
+    except (AttributeError, TypeError, KeyError):
+        return False
+
+
+def _handshake(session: requests.Session) -> bool:
+    """清空旧 cookie 后按 UA 兜底列表握手，返回是否拿到 xq_a_token。
+
+    调用方持有 session 引用不变；失败不抛错（由调用方决定告警/降级）。
+    """
+    session.cookies.clear()
+    for profile in _XUEQIU_HANDSHAKE_PROFILES:
+        try:
+            resp = session.get(XUEQIU_HANDSHAKE_URL, timeout=REQUEST_TIMEOUT, headers=profile)
+        except EXTERNAL_FAILURES as e:
+            logger.warning("  雪球握手请求失败(%s): %s", profile["User-Agent"][:32], e)
+            continue
+        if _has_auth_cookie(session):
+            return True
+        logger.warning(
+            "  雪球握手未取得 token(HTTP %s, UA=%s)，换下一档 UA 重试",
+            resp.status_code,
+            profile["User-Agent"][:32],
+        )
+    return False
+
+
+def _refresh_session(session: requests.Session) -> bool:
+    """原地重建雪球 cookie（清空旧 cookie 后按 UA 兜底列表握手）。
 
     调用方持有的 session 引用不变（thread-local / adapter 单例均无感）。
     并发重建用锁串行，避免 intraday_fetch.parallel_fetch 多线程同时清 cookie 竞态。
+
+    返回是否拿到鉴权 token（False = 被反爬挑战拦在握手这一步，后续接口必然 400016）。
     """
     with _session_refresh_lock:
-        session.cookies.clear()
-        session.get("https://xueqiu.com/hq", timeout=REQUEST_TIMEOUT)
+        ok = _handshake(session)
+    if not ok:
+        logger.error(
+            "  雪球握手全部 UA 档位均未取得 token：疑似反爬挑战（HTTP 567「请求异常已被安全策略拦截」），"
+            "非 cookie 过期 —— 期间所有 /v5/ 接口都会返回 400016"
+        )
+    return ok
 
 
 def _request_with_retry(
@@ -309,10 +383,23 @@ def compute_surge_sentiment(raw_items: list[dict]) -> dict:
 
 
 def make_session() -> requests.Session:
+    """建雪球会话并握手取 token。
+
+    握手失败**不抛错**：留一个无 token 的会话返回，让首次 API 调用的
+    `_is_session_expired`（400016/567）触发一次带 UA 兜底的 `_refresh_session` 自愈 ——
+    抛错会让 `_build_adapter` 在 THS 未配置时直接 RuntimeError 起不来，
+    而「起来后自愈成功」比「起不来」好。
+    """
     s = requests.Session()
     s.trust_env = False
     s.headers.update(HEADERS)
-    s.get("https://xueqiu.com/hq", timeout=REQUEST_TIMEOUT)
+    with _session_refresh_lock:
+        ok = _handshake(s)
+    if not ok:
+        logger.error(
+            "  雪球会话握手未取得 token（疑似反爬挑战 567），首轮 API 调用将再自愈重试一次 %s",
+            XUEQIU_HANDSHAKE_URL,
+        )
     return s
 
 

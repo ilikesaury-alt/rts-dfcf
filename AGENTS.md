@@ -490,6 +490,23 @@ tests/                      # pytest suite
   **刻意保留**：`offboard_launch_log.top_hits` 落库照常（`top_hits+excluded.top_hits`，
   前 N 之外恒 0，2026-10-16 计数口径修复不受删除影响）与 m020 的
   `gate_hits`/`offboard_round_log` —— 列已发布不删，作研究原料。
+- **雪球 cookie 握手会被反爬挑战挡掉（2026-10-21 实测，`scanner/api.py`）**：`GET
+  https://xueqiu.com/hq` 用 `config.HEADERS` 里那条桌面 Chrome 120 UA 请求时，雪球 WAF
+  返回 **HTTP 567「请求异常已被安全策略拦截」** 页面，**只写 `acw_tc`、不写 `xq_a_token`**。
+  没有 token 的会话调任何 `/v5/` 接口都回 400 + `error_code=400016` ⇒ 症状是终端
+  「雪球 session 疑似失效(HTTP 400)...飙升榜数据为空」——**看着像 cookie 过期，其实是握手
+  第一步就被拦**，故旧版「重建 cookie 后重试」自愈会自己空转（重建用的还是同一个被拦 UA）。
+  修法：`_XUEQIU_HANDSHAKE_PROFILES` 按序试多档 UA（雪球 App / iPhone 微信 / 裸短 UA），
+  **判据是 `xq_a_token` 是否拿到（`_has_auth_cookie`），不是 HTTP 200**；567 已并入
+  `_is_session_expired` 的失效信号。实测带 token 后**同一 Chrome UA** 调
+  new_list/kline/batch/minute/quotec 全部 200 ⇒ API 侧只认 token、不校验 UA。
+  ⚠ **入口只能是 `/hq`**：「行情中心」的另一写法 `https://xueqiu.com/S/`（及
+  `/S/SZ300750`、站点首页）**永远不发 `xq_a_token`**，只写 `acw_tc`（纯 WAF cookie），
+  任何 UA 都一样（2026-10-21 实测矩阵）。故「换个入口绕过去」是死路 —— 换入口
+  拿到的是 200 + 无 token，比 567 更难识别。
+  守卫 `tests/test_api.py::TestSessionExpirySelfHeal`（567 触发重建 / 无 token 判失败 /
+  试满全部 UA 档位）。**别再对着「cookie 过期」方向查**：先 `print(session.cookies.get_dict())`
+  看有没有 `xq_a_token`，没有就是握手被拦，与登录状态无关。
 - **`.env`** file contains secrets (THS API key, Feishu webhook override). Never commit it.
 
 ## Testing notes
