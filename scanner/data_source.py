@@ -21,7 +21,7 @@ import requests
 from scanner import api
 from scanner.config import BEIJING_TZ, DATA_SOURCE
 from scanner.models import KlineBar
-from scanner.net import EASTMONEY_HEADERS, EASTMONEY_UT_TOKEN
+from scanner.net import EASTMONEY_HEADERS, EASTMONEY_UT_TOKEN, eastmoney_no_proxy
 from scanner.utils import EXTERNAL_FAILURES, to_float
 
 logger = logging.getLogger(__name__)
@@ -223,11 +223,14 @@ class ThsAdapter:
                 "ut": EASTMONEY_UT_TOKEN,
             }
             headers = EASTMONEY_HEADERS
+            # proxies=eastmoney_no_proxy()：同 host push2delay 直连，必须绕开系统
+            # HTTP(S)_PROXY —— 否则本机午后代理抖动即 ProxyError（2026-10-22 同源故障）。
             resp = requests.get(
                 "https://push2delay.eastmoney.com/api/qt/ulist.np/get",
                 params=params,
                 timeout=10,
                 headers=headers,
+                proxies=eastmoney_no_proxy(),
             )
             data = resp.json().get("data") or {}
             rows = data.get("diff") or []

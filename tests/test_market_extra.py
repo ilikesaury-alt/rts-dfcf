@@ -393,6 +393,33 @@ class TestFetchFundFlow:
         assert payload["percent"] == 0.0
         assert payload["vol_ratio"] == 0.0
 
+    def test_get_bypasses_system_proxy(self, monkeypatch):
+        """直连东财 ulist 必须绕开系统代理（2026-10-22 午后 ProxyError 故障）。
+
+        现场：本机 HTTP(S)_PROXY 午后健康度下降/间歇断连，`requests` 默认读系统代理，
+        把「本应直连」的 ulist 调用错误路由到它 → `ProxyError: RemoteDisconnected`
+        → 整取 0 只 → 每轮重试死循环。修复 = 请求显式携带
+        `proxies={"http": None, "https": None}` 强制直连（与 api.py:394 /
+        panel_reporter.py:52 的 trust_env=False 同一意图）。
+        """
+        import requests as _requests
+
+        net = _NetCounter(rows_by_code=_ff_table("300001"))
+        captured = {}
+
+        def spy_get(url, **kwargs):
+            captured["proxies"] = kwargs.get("proxies")
+            if kwargs.get("proxies") != {"http": None, "https": None}:
+                # 未禁用系统代理 ⇒ 请求被发往不可达代理（现场即此症状）
+                raise _requests.exceptions.ProxyError("Unable to connect to proxy")
+            return net.get(url, **kwargs)
+
+        monkeypatch.setattr(me._requests, "get", spy_get)
+        box = {}
+        result = me._collect_fund_flow(box, time.time() + 60, codes=["300001"])
+        assert "300001" in result, "绕开系统代理后首批应正常解析出票（不再 0 只）"
+        assert captured["proxies"] == {"http": None, "https": None}, "请求必须强制直连"
+
     def test_deadline_partial_marks_not_done(self, monkeypatch):
         # 多批拉到一半超时：取消剩余任务，box["done"] 不置位 → 外层按部分快照处理
         # 第 2~6 批各放一个慢码，保证 deadline 到点时首批已收集、余批未完成。

@@ -51,7 +51,7 @@ from scanner.config import (
 )
 from scanner.data_source import ak_to_xq
 from scanner.database import get_market_extra_cache, save_market_extra_cache
-from scanner.net import EASTMONEY_HEADERS, EASTMONEY_UT_TOKEN, bounded_call
+from scanner.net import EASTMONEY_HEADERS, EASTMONEY_UT_TOKEN, bounded_call, eastmoney_no_proxy
 from scanner.utils import EXTERNAL_FAILURES, _strip_exchange, to_float
 from scanner.utils import cache_put as _cache_put
 
@@ -294,7 +294,12 @@ def _collect_fund_flow(box: dict, deadline: float, codes: list[str] | None = Non
             "fields": _FUND_FLOW_FIELDS,
         }
         try:
-            resp = _requests.get(url, params=p, timeout=10, headers=EASTMONEY_HEADERS)
+            # proxies=eastmoney_no_proxy()：强制直连东财，绕开系统 HTTP(S)_PROXY。
+            # 不绕开时，本机午后代理抖动会把该请求打成 ProxyError（2026-10-22 故障：
+            # 整取 0 只 + 每轮重试死循环，见 net.eastmoney_no_proxy 说明）。
+            resp = _requests.get(
+                url, params=p, timeout=10, headers=EASTMONEY_HEADERS, proxies=eastmoney_no_proxy()
+            )
             j = resp.json()
             if not isinstance(j, dict):
                 return None, f"批{idx} 响应非 JSON 对象"

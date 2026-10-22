@@ -34,6 +34,26 @@ EASTMONEY_PUSH2DELAY_HOST = "push2delay.eastmoney.com"
 # 原 data_source / market_extra 各硬编码一份，收敛单源防漂移。
 EASTMONEY_UT_TOKEN = "b2884a393a59ad64002292a3e90d46a5"  # noqa: S105 - 非密钥：东财网页端公开的固定参数
 
+def eastmoney_no_proxy() -> dict[str, Any]:
+    """直连东财（push2delay 等）用的显式「无代理」参数 —— **每次调用返回新 dict**。
+
+    本机若设了系统代理（Windows 注册表 / HTTP(S)_PROXY），requests 默认把请求路由到
+    代理；该代理午后健康度下降/间歇断连时，会把「本应直连」的调用打成
+    `ProxyError: RemoteDisconnected` —— 2026-10-22 个股资金流「获取失败（0 只）」
+    生产故障的根因。与 api.py:394 / panel_reporter.py:52 的 `Session.trust_env=False`
+    同一意图（东财直连不经系统代理）。
+
+    ⚠ 值必须是 None（不是删键、也不是空 dict）：requests 的
+    `merge_environment_settings` 对环境代理走 `setdefault` —— 空 dict 会让 env 代理
+    **合并回来**，显式 None 才真正对该 scheme 关闭代理。
+
+    ⚠ 必须**每次新建**、不得复用模块级常量：`setdefault` 会就地写入 env 代理里
+    `http`/`https` 之外的键（实测 `ftp`），共享对象会被永久污染；且 `_collect_fund_flow`
+    在 6 线程池内并发调用，共享可变 dict 有竞态。typeshed 把 proxies 标注为
+    `dict[str, str] | None`，故用 Any 承载 None 值。
+    """
+    return {"http": None, "https": None}
+
 
 def bounded_call(fn: Callable[[], Any], timeout: float, label: str = "网络调用") -> Any:
     """带限时执行网络调用：超时抛 TimeoutError，调用方按失败降级。

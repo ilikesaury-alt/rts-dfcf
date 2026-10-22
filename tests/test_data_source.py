@@ -204,6 +204,19 @@ class TestThsAdapter:
         adapter = ThsAdapter()
         assert adapter.fetch_market_caps_batch([]) == {}
 
+    def test_fetch_market_caps_batch_bypasses_system_proxy(self):
+        """直连 push2delay 必须绕开系统代理（2026-10-22 午后 ProxyError 同源故障）。
+
+        与 market_extra 资金流同根因：requests 默认读 HTTP(S)_PROXY，午后代理抖动
+        ⇒ ProxyError。修复 = 请求显式携带 proxies={"http": None, "https": None}。
+        """
+        adapter = ThsAdapter()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"data": {"diff": [{"f12": "300001", "f2": 10.0}]}}
+        with patch("scanner.data_source.requests.get", return_value=mock_resp) as m:
+            adapter.fetch_market_caps_batch(["SZ300001"])
+        assert m.call_args.kwargs["proxies"] == {"http": None, "https": None}
+
     def _fake_ak_module(self, df=None, error=None):
         fake = MagicMock()
         if error:
