@@ -1,7 +1,7 @@
 /**
- * 侧边导航（2026-10 桌面 UI 现代化 · Slice 2）。
+ * 侧边导航（2026-10 UI 重构：行数徽章 + 更紧凑的项高）。
  *
- * 两个设计要点：
+ * 两个设计要点（不变）：
  *
  * 1. **导航项文案一律用区块/段标题**（「v1 池选」「沪深飙升」…），**不用列名**。
  *    `tests/test_panel_web_hygiene.py::test_table_components_have_no_hardcoded_column_labels`
@@ -14,8 +14,9 @@
  *    （`assemble.build_scan_view` 已排好，前端不另行排序）。加一个「页面级」路由
  *    会制造「面板自行决定区块集合」的口径，违反只读镜像纪律（G5）。
  *
- * 面板**不新增**任何结论：没有「最值得看的票」「推荐先看哪区」这类排序，
- *    导航顺序 = 区块在页面里的物理顺序，一一对应。
+ * 2026-10 新增：**行数徽章**。每项右侧显示该区块本轮行数（`v1 池选 10`），
+ * 数字是**纯计数事实**（来自载荷行集合 / `gate.stats.passed`），零重算、零评价 ——
+ * 盘中最常回答的问题是「这一轮哪里有东西」，徽章让它不用滚动就可见。
  */
 
 import { cn } from "@/lib/utils";
@@ -36,18 +37,22 @@ export const NAV_ITEMS: NavItem[] = [
   { key: "gate", label: "飞书过门", hint: "下一张卡会推什么（非已推内容）" },
 ];
 
+/** 各区块的行数徽章值（`App.tsx` 从载荷行集合算好传入；纯计数，不评价）。 */
+export type NavCounts = { pool: number; hist: number; hot: number; gate: number };
+
 type Props = {
-  /** 当前所在区块（用于高亮）。由 `App.tsx` 用 IntersectionObserver 维护。 */
+  /** 当前所在区块（用于高亮）。由 `App.tsx` 按滚动位置维护。 */
   active: string | null;
   onNavigate: (key: string) => void;
+  counts?: NavCounts;
 };
 
-export default function Sidebar({ active, onNavigate }: Props) {
+export default function Sidebar({ active, onNavigate, counts }: Props) {
   return (
-    <nav className="flex h-full flex-col gap-1 overflow-y-auto p-2" aria-label="区块导航">
-      <div className="px-2 py-1 text-[11px] tracking-wide text-text-dim uppercase">区块</div>
+    <nav className="flex h-full flex-col gap-0.5 overflow-y-auto p-2" aria-label="区块导航">
       {NAV_ITEMS.map((item) => {
         const isActive = active === item.key;
+        const n = counts ? counts[item.key as keyof NavCounts] : undefined;
         return (
           <button
             key={item.key}
@@ -55,12 +60,22 @@ export default function Sidebar({ active, onNavigate }: Props) {
             aria-current={isActive ? "true" : undefined}
             onClick={() => onNavigate(item.key)}
             className={cn(
-              "flex flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              "flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
               isActive ? "bg-white/8 text-text" : "text-text-dim hover:bg-white/5 hover:text-text",
             )}
           >
-            <span className="text-[13px] font-medium">{item.label}</span>
-            {item.hint ? <span className="text-[11px] leading-4 opacity-70">{item.hint}</span> : null}
+            <span className="min-w-0">
+              <span className="block truncate text-[13px] font-medium leading-5">{item.label}</span>
+              {item.hint ? <span className="block truncate text-[11px] leading-4 opacity-60">{item.hint}</span> : null}
+            </span>
+            {typeof n === "number" && n > 0 ? (
+              <span
+                className="shrink-0 rounded-full bg-white/8 px-1.5 py-px text-[11px] tabular-nums leading-4 text-text-dim"
+                aria-label={`${n} 只`}
+              >
+                {n}
+              </span>
+            ) : null}
           </button>
         );
       })}

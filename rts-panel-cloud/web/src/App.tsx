@@ -15,7 +15,7 @@
  *   「列表 / 个股详情」两个页面，`lib/router.ts`）；
  * - 主区与过门侧栏改为 **`react-resizable-panels` 可拖拽分栏**（窄屏仍堆叠）；
  * - 区块包进 `RegionCard`（表头 sticky + 横向滚动冻结首列，纯 CSS）；
- * - 新增 `StatsCharts`：**只消费已下发字段**的只读计数图，零新增 fetch。
+ * - ~~新增 `StatsCharts`~~（2026-10 重构已删，见下方 `App` 上方注释）。
  *
  * ⚠ 已知口径差异（不是 bug，但必须让人看见）：载荷的 `regions` 只有
  * `main / hist / hot / offboard` 四个键，**终端的「榜内异动」段不在契约里**
@@ -23,7 +23,7 @@
  * 「三段并列」—— 面板确实只有两段，标题不能替不存在的东西作保。
  */
 
-import { useCallback, useEffect, useMemo, useState, lazy, Suspense } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Group as PanelGroup, Panel, Separator as PanelResizeHandle, useDefaultLayout } from "react-resizable-panels";
 
 import type { ColSpec, RegionsResponse } from "./api/types";
@@ -35,11 +35,16 @@ import { useSnapshot } from "./lib/useSnapshot";
 import { useRoute } from "./lib/router";
 import Stock from "./pages/Stock";
 
-/** 区块标题（设计规定文案；`—` 前缀的段标题见下方 build 函数，不得改用 `◆`）。 */
+/**
+ * 区块标题（设计规定文案，逐字守卫：`test_panel_web_cols.py::test_region_titles_match_terminal_wording`）。
+ *
+ * 2026-10 UI 重构：卡片头**两级化** —— `short` 作视觉锚点、`full` 逐字渲染在弱化副行
+ * （守卫 grep 的是完整串，必须原样在此出现，不重措辞；`RegionCard` 会剥去 `◆ ` 前缀）。
+ */
 const TITLES = {
-  pool: "◆ v1 池选 — 新票优先·类别优先·排名升序·资金流降序",
-  hist: "◆ v1 回捞",
-  hot: "◆ 沪深飙升 · 极有可能大涨",
+  pool: { short: "v1 池选", full: "◆ v1 池选 — 新票优先·类别优先·排名升序·资金流降序" },
+  hist: { short: "v1 回捞", full: "◆ v1 回捞" },
+  hot: { short: "沪深飙升", full: "◆ 沪深飙升 · 极有可能大涨" },
 } as const;
 
 /** 段标题的括号正文：与 `scanner/view/model.py` 的 `hot_subtitle` / `offboard_subtitle` 逐字一致。 */
@@ -62,7 +67,7 @@ function RegionList({ snapshot }: { snapshot: RegionsResponse }) {
   const warnings = snapshot.ctx?.warnings ?? [];
 
   return (
-    <div className="flex flex-col gap-2.5">
+    <div className="flex flex-col gap-3">
       {warnings.length > 0 ? (
         <ul className="m-0 list-disc pl-4 text-lag-warn">
           {warnings.map((w) => (
@@ -76,31 +81,37 @@ function RegionList({ snapshot }: { snapshot: RegionsResponse }) {
 
       <RegionCard
         anchorId={NAV_ITEMS[0].key}
-        title={TITLES.pool}
+        title={TITLES.pool.short}
+        fullTitle={TITLES.pool.full}
         specs={colsOf(snapshot, "pool")}
         rows={main}
         profile="pool"
         marks={marks}
+        count={main.length}
       />
 
       <RegionCard
         anchorId={NAV_ITEMS[1].key}
-        title={TITLES.hist}
+        title={TITLES.hist.short}
+        fullTitle={TITLES.hist.full}
         sub="（前若干交易日进过 v1 · 今日回调到位 · 与上方口径独立）"
         specs={colsOf(snapshot, "hist")}
         rows={hist}
         profile="hist"
         marks={marks}
+        count={hist.length}
       />
 
       <RegionCard
         anchorId={NAV_ITEMS[2].key}
-        title={TITLES.hot}
+        title={TITLES.hot.short}
+        fullTitle={TITLES.hot.full}
         sub="（创业板 · 分段并列·互不排名 · 与上方主线口径独立）"
         specs={colsOf(snapshot, "hot")}
         rows={hot}
         profile="hot"
         marks={marks}
+        count={hot.length + offboard.length}
         segments={[
           { title: `— 榜内飙升${hotSubtitle(hot.length)}`, rows: hot, profile: "hot" },
           { title: `— 榜外异动${offboardSubtitle(offboard.length)}`, rows: offboard, profile: "offboard" },
@@ -111,27 +122,17 @@ function RegionList({ snapshot }: { snapshot: RegionsResponse }) {
 }
 
 const MAIN_SCROLL_SELECTOR = "[data-scroll-root='main']";
-const SIDE_SCROLL_SELECTOR = "[data-scroll-root='side']";
-
-/** 找到**真正装有**该锚点的滚动容器。 */
-function scrollContainerFor(el: HTMLElement): HTMLElement | null {
-  for (const sel of [MAIN_SCROLL_SELECTOR, SIDE_SCROLL_SELECTOR]) {
-    const box = document.querySelector<HTMLElement>(sel);
-    if (box && box.contains(el)) return box;
-  }
-  return null;
-}
 
 function scrollMainTo(key: string) {
   const el = document.getElementById(`anchor-${key}`);
   if (!el) return;
-  const box = scrollContainerFor(el);
+  const box = document.querySelector<HTMLElement>(MAIN_SCROLL_SELECTOR);
   if (!box) return;
-  // ⚠ 四个坑（2026-10-19 实测，Electron 44 / Chromium）：
+  // ⚠ 四个坑（2026-10-19 实测，Electron 44 / Chromium；沿革见 git）：
   // 1. **不要**用 `box.scrollTo({behavior:"smooth"})`：这个环境里平滑滚动会被静默
   //    丢弃（`scrollTop` 一动不动、无报错）。瞬移赋值才可靠。
-  // 2. **不要**用 rect 差值：点击那一刻容器可能还没布局完（右栏图表懒加载会改变
-  //    高度），测出来的 delta 偏小，滚到半路就停（实测 249 而非 426）。
+  // 2. **不要**用 rect 差值：点击那一刻容器可能还没布局完（右栏懒加载会改变
+  //    高度），测出来的 delta 偏小，滚到半路就停。
   //    改用 `offsetTop` 沿 offsetParent 链累加到容器 —— 这是**布局坐标**，
   //    不受「当前滚到哪」影响，也不需要容器已滚动稳定。
   // 3. **不要**再叠 `scrollIntoView`：它会盖掉上面算好的 `scrollTop`。
@@ -220,14 +221,14 @@ function useActiveSection(keys: string[]): string | null {
 const PANEL_GROUP_ID = "rts-panel-main";
 
 /**
- * 只读统计图（Slice 4）**懒加载**。
+ * 右侧「过门」侧栏（2026-10 UI 重构）。
  *
- * 为什么拆出去：Recharts 连带 d3 打点库，压缩后仍占主 bundle 的一半以上，而面板的
- * 核心价值是四区块表格（首屏就要看到）。懒加载后表格先行、图表随后，首屏 JS 从
- * ~700KB 降到 ~400KB。它消费的仍是已下发字段（零新增 fetch，G5 不变）。
+ * **删掉了 `StatsCharts`**（Recharts 懒加载那块）：它把 `gate.stats` 的同一组七个
+ * 数字用「条形图 + 饼图 + 明细表」画了三遍，右栏本来就窄，三重冗余只是消耗纵向
+ * 空间；且它为了占位饼图把 bundle 拖大 330KB（gzip 99KB）。同一组数字在
+ * `GatePanel` 的紧凑账目区一处展示，不再重复。复原方式：git 历史
+ * `StatsCharts.tsx` + `lazy()` 引入两行。
  */
-const StatsCharts = lazy(() => import("./components/StatsCharts"));
-
 export default function App() {
   const route = useRoute();
   const { snapshot, meta, error } = useSnapshot();
@@ -252,6 +253,17 @@ export default function App() {
   // 进 gate 时直接置高亮，避免「滚到了却不高亮」。
   const [gateActive, setGateActive] = useState(false);
 
+  // 导航计数徽章：四个区块的行数（纯计数事实，来自载荷本身，零重算）。
+  const counts = useMemo(() => {
+    const r = snapshot?.regions;
+    return {
+      pool: r?.main.length ?? 0,
+      hist: r?.hist.length ?? 0,
+      hot: (r?.hot.length ?? 0) + (r?.offboard.length ?? 0),
+      gate: r?.gate.stats.passed ?? 0,
+    };
+  }, [snapshot]);
+
   const scrollToSection = useCallback(
     (key: string) => {
       if (key === "gate") setGateActive(true);
@@ -272,9 +284,9 @@ export default function App() {
         </main>
       ) : (
         <div className="flex min-h-0 flex-1">
-          {/* ── 侧边导航（可折叠）────────────────────────────────────────── */}
+          {/* ── 侧边导航（可折叠，带行数徽章）────────────────────────────────── */}
           <aside
-            className={`flex shrink-0 flex-col border-r border-border ${collapsed ? "w-11" : "w-52"}`}
+            className={`flex shrink-0 flex-col border-r border-border ${collapsed ? "w-11" : "w-44"}`}
             aria-label="侧边导航"
           >
             <div className="flex h-8 items-center justify-end border-b border-border px-1">
@@ -308,7 +320,7 @@ export default function App() {
                 ))}
               </nav>
             ) : (
-              <Sidebar active={activeKey} onNavigate={scrollToSection} />
+              <Sidebar active={activeKey} onNavigate={scrollToSection} counts={counts} />
             )}
           </aside>
 
@@ -323,28 +335,17 @@ export default function App() {
             >
               {/* Panel 自身是 flex 容器：内层 `<main>` 必须 `min-h-0` 才会被高度约束，
                   否则它会「内容多高就多高」地把 Panel 撑高、页面整体滚（分栏就废了）。 */}
-              <Panel id="main-table" minSize={45} defaultSize={72} className="overflow-hidden">
+              <Panel id="main-table" minSize={45} defaultSize={74} className="overflow-hidden">
                 <main className="h-full min-h-0 overflow-y-auto p-3" data-scroll-root="main">
                   <RegionList snapshot={snapshot} />
                 </main>
               </Panel>
               <PanelResizeHandle className="w-1 shrink-0 cursor-col-resize bg-border transition-colors hover:bg-text-dim" />
-              <Panel id="side-stats" minSize={20} defaultSize={28} className="overflow-hidden">
+              <Panel id="side-stats" minSize={18} defaultSize={26} className="overflow-hidden">
                 <aside
                   className="flex h-full min-h-0 flex-col gap-2.5 overflow-y-auto p-3"
                   data-scroll-root="side"
                 >
-                  <Suspense fallback={<div className="h-40 rounded-lg border border-border bg-card" aria-hidden />}>
-                    <StatsCharts
-                      stats={snapshot.regions.gate.stats}
-                      counts={{
-                        main: snapshot.regions.main.length,
-                        hist: snapshot.regions.hist.length,
-                        hot: snapshot.regions.hot.length,
-                        offboard: snapshot.regions.offboard.length,
-                      }}
-                    />
-                  </Suspense>
                   <GatePanel
                     gate={snapshot.regions.gate}
                     regions={{

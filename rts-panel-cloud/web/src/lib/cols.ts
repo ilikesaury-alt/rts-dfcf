@@ -38,6 +38,11 @@ export type Cell = {
   tone?: Tone;
   /** 强调（核心股加粗；榜内飙升段的连击 ★ 另由 `strong` 走同一路径）。 */
   strong?: boolean;
+  /**
+   * 排序用的**原始数值**（格式化前的值；无值的列/行不给）。
+   * 只服务于 FR-V2 允许的「临时排序」（见 `SORTABLE`），展示层不消费它。
+   */
+  val?: number;
 };
 
 export type RowContext = {
@@ -104,24 +109,24 @@ export function fmtAmount(v: number | null): string {
 
 type CellFn = (row: Row, ctx: RowContext) => Cell;
 
-/** 涨跌格：按符号着色（红涨绿跌，验收 2）。 */
+/** 涨跌格：按符号着色（红涨绿跌，验收 2）。|v|≥5 时加粗（两级强调：表格长列表里的重复单元格不逐格喊）。 */
 function pctCell(v: number | null, asText?: string): Cell {
   if (v === null) return { text: DASH };
-  return { text: asText ?? fmtPct(v), tone: v > 0 ? "up" : v < 0 ? "down" : undefined };
+  return { text: asText ?? fmtPct(v), tone: v > 0 ? "up" : v < 0 ? "down" : undefined, val: v, strong: Math.abs(v) >= 5 };
 }
 
 function accumCell(v: number | null): Cell {
-  return v === null ? { text: DASH } : { text: fmtPct(v) };
+  return v === null ? { text: DASH } : { text: fmtPct(v), val: v };
 }
 
 function priceCell(v: number | null): Cell {
-  return v === null || v === 0 ? { text: DASH } : { text: v.toFixed(2) };
+  return v === null || v === 0 ? { text: DASH } : { text: v.toFixed(2), val: v };
 }
 
 /** 评分格：pool 取整（终端 `{row.score:.0f}`）、hot 一位小数（`{c.score:.1f}`）、hist 取整。 */
 function scoreCell(v: number | null, digits: number): Cell {
   if (v === null || v === 0) return { text: DASH };
-  return { text: v.toFixed(digits) };
+  return { text: v.toFixed(digits), val: v };
 }
 
 /** 榜内飙升段专属量（其余段结构上没有 → `—`，不是 0）。 */
@@ -169,7 +174,7 @@ const HOT_CELLS: Record<string, CellFn> = {
   "成交额": (row) => ({ text: fmtAmount(num(row.amount)) }),
   "量比": (row) => {
     const vr = num(row.volume_ratio);
-    return { text: vr === null || vr <= 0 ? DASH : vr.toFixed(2) };
+    return { text: vr === null || vr <= 0 ? DASH : vr.toFixed(2), val: vr === null ? undefined : vr };
   },
   "换手%": (row) => {
     const tr = num(row.turnover_rate);
@@ -201,7 +206,7 @@ const HIST_CELLS: Record<string, CellFn> = {
   "现价": (row) => priceCell(num(row.current)),
   "量比": (row) => {
     const vr = num(row.vol_ratio);
-    return { text: vr === null || vr <= 0 ? DASH : vr.toFixed(2) };
+    return { text: vr === null || vr <= 0 ? DASH : vr.toFixed(2), val: vr === null ? undefined : vr };
   },
   "距v1": (row) => {
     const days = num(row.rec_days_ago);
@@ -220,6 +225,19 @@ const TABLES: Record<Profile, Record<string, CellFn>> = {
   hot: HOT_CELLS,
   offboard: OFFBOARD_CELLS,
   hist: HIST_CELLS,
+};
+
+/**
+ * 允许「临时排序」的列（FR-V2：仅 评分 / 涨幅 / 量比，且界面必须标「临时排序」）。
+ *
+ * ⚠ 本文件是 `lib/`，可以出现列名字面量；`components/**` 由 hygiene 守卫禁写列名，
+ *   故这张表只能放这里、由 `RegionTable` 经 props 消费。
+ */
+export const SORTABLE: Record<Profile, string[]> = {
+  pool: ["评分", "涨幅"],
+  hot: ["评分", "涨幅", "量比"],
+  offboard: ["涨幅", "量比"],
+  hist: ["评分", "涨幅", "量比"],
 };
 
 /**

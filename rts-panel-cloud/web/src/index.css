@@ -1,23 +1,24 @@
 /**
  * 面板设计系统（Tailwind v4 入口 + `@theme` 设计 token）。
  *
- * 2026-10 桌面 UI 现代化（`docs/features/desktop-ui-modernize/CONTEXT.md`）：
- * 把原先手写在 `styles.css` 里的一批 CSS 变量**迁移成 Tailwind v4 的 `@theme`**，
- * 让 `bg-card` / `text-dim` / `text-up` 这类工具类与「改配色只改一处」的口径同时成立。
+ * 2026-10 UI 重构（简洁 + 易交互）：把「全页 12px 等灰度」改成**有层级**的版面 ——
+ * - 卡片头部两级标题：短主标题（15px semibold）+ 完整口径串（11px dim 副行）；
+ * - 行密度不变（28px），但**涨跌色两级强调**：|v|≥5% 才加粗（`cols.ts` `pctCell`）；
+ * - 可排列表头（`.sort-head`）+ 「临时排序」标注（`.region-sortnote`）；
+ * - 过门区紧凑账目（`.gate-stat*`）与可点行（`.gate-row`）。
  *
- * 三条纪律：
+ * 三条纪律（不变）：
  * 1. **涨跌色变量名原样保留**（`--up` / `--down` / `--flat`）：A 股口径红涨绿跌，
  *    K 线 Canvas 认不得 CSS 变量，故 `pages/Stock.tsx` 的 `ASHARE_THEME` 仍单独
  *    持有同一组字面值 —— 改这里要同步那一处（该文件注释已写）。
- * 2. `@theme` 里的 token 名与旧变量**一一对应**（`--color-card` ↔ 旧 `--card` 等），
- *    迁移期 `styles.css` 与工具类可短期共存，但最终只保留一套（防双套样式分叉）。
- * 3. 暗色为唯一形态（终端/飞书/看板都是深底），不引入 light 模式 —— 本项目没有
- *    「用户切主题」的需求，加了就是无人消费的死代码。
+ * 2. `@theme` 里的 token 名与工具类一一对应（`--color-card` ↔ `bg-card` 等），
+ *    改配色只改 `@theme` 一处。
+ * 3. 暗色为唯一形态（终端/飞书/看板都是深底），不引入 light 模式。
  */
 
 @import "tailwindcss";
 
-/* ── 区块表格（原 styles.css 迁移）───────────────────────────────────────
+/* ── 区块表格 ────────────────────────────────────────────────────────────
    这部分刻意**不用**工具类：它们依赖结构性选择器（`thead th` / `tbody tr:nth-child`）
    与 `position: sticky` 的组合，写成工具类只会得到一堆重复 class 而读不出意图。
    规则本身仍是「改配色只改 `@theme`」口径 —— 这里只出现结构，不出现颜色字面量。 */
@@ -37,7 +38,7 @@
 
 .region-table th,
 .region-table td {
-  padding: 3px 8px;
+  padding: 4px 8px;
   white-space: nowrap;
 }
 
@@ -46,7 +47,9 @@
   top: 0;
   z-index: 2;
   color: var(--color-text-dim);
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
   background: var(--color-card);
   border-bottom: 1px solid var(--color-border);
 }
@@ -77,8 +80,7 @@
 }
 
 /* 冻结首列：横向滚动时「#」列不离开视野（2026-10 UI 现代化 · Slice 3，纯展示）。
-   sticky 在纵向（top:0）给表头、横向（left:0）给首列 —— 两者叠加处即左上角单元格。
-   ⚠ 与 `react-resizable-panels` 的分隔条正交：它只作用于表格自身滚动容器内。 */
+   sticky 在纵向（top:0）给表头、横向（left:0）给首列 —— 两者叠加处即左上角单元格。 */
 .sticky-col {
   position: sticky;
   left: 0;
@@ -148,6 +150,173 @@
   border-top: 1px solid var(--color-border);
   color: var(--color-text);
   font-weight: 600;
+}
+
+/* ── 2026-10 UI 重构：卡片 / 标题层级 / 临时排序 / 过门区 ──────────────── */
+
+/* 区块卡片：比旧版更轻的框（低对比描边 + 更小圆角），头部不再挤占数据纵向空间 */
+.region-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-card);
+  padding: 10px 12px;
+}
+
+.region-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 卡片头短主标题：区块的视觉锚点（唯一 14px+ 层级） */
+.region-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text);
+  line-height: 20px;
+}
+
+/* 行数徽章：紧贴主标题的纯计数事实 */
+.region-count {
+  min-width: 20px;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 6%);
+  padding: 0 7px;
+  font-size: 11px;
+  line-height: 17px;
+  color: var(--color-text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 「临时排序」标注（FR-V2：排序状态必须显式可见） */
+.region-sortnote {
+  border: 1px solid rgb(245 166 35 / 45%);
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 10.5px;
+  line-height: 16px;
+  color: var(--color-lag-warn);
+}
+
+.region-sortreset {
+  align-self: flex-start;
+  border: 0;
+  background: none;
+  padding: 0;
+  font-size: 11px;
+  color: var(--color-lag-warn);
+  cursor: pointer;
+}
+
+.region-sortreset:hover {
+  text-decoration: underline;
+}
+
+/* 完整口径标题（设计规定文案逐字渲染）：弱化副行，不再与数据争视觉权重 */
+.region-fulltitle {
+  margin: 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-text-dim);
+  opacity: 0.85;
+}
+
+.region-sub {
+  margin: 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-text-dim);
+}
+
+.region-segtitle {
+  margin: 4px 0 0;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+  color: var(--color-text-dim);
+}
+
+/* 可排列表头：整格可点，激活列提亮 */
+.sort-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.sort-head:hover {
+  color: var(--color-text);
+}
+
+.sort-head .sort-arrow {
+  font-size: 10px;
+  opacity: 0.5;
+}
+
+.sort-head.sort-active {
+  color: var(--color-text);
+}
+
+.sort-head.sort-active .sort-arrow {
+  opacity: 1;
+  color: var(--color-lag-warn);
+}
+
+/* 过门区：关键账目三数（通过 / 否决 / 丢弃） */
+.gate-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border-radius: 8px;
+  background: rgb(255 255 255 / 4%);
+  padding: 6px 10px;
+}
+
+.gate-stat-num {
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 22px;
+  color: var(--color-text);
+}
+
+.gate-stat-label {
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--color-text-dim);
+}
+
+/* 过门行：整行可点进详情 */
+.gate-row {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  border: 0;
+  background: none;
+  padding: 0 4px;
+  font-size: 12px;
+  line-height: 24px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.gate-row:hover {
+  background: rgb(255 255 255 / 5%);
+  color: var(--color-text);
+}
+
+.gate-row:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: -2px;
 }
 
 @theme {
