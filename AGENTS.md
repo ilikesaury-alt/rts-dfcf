@@ -50,7 +50,8 @@ python scripts/offboard_nextday.py [--days N] [--tier T2] [--json]
 python scripts/offboard_nextday.py --repair-next-day [--apply]   # 修历史错标签，默认 dry-run
 
 # B 段 AI 分析（手动触发，不轮询，不挂主循环）
-python -m scanner.ai_digest                  # analyze：综合分析+候选（不过红线词表，过幻觉巡检）
+python -m scanner.ai_digest                  # research（默认）：模型自己调工具查真实数据后给判断
+python -m scanner.ai_digest --mode analyze      # 按项目自己的历史分层命中率（948 条标签）算账
 python -m scanner.ai_digest --mode transcribe    # 纯转述（过全部红线；exit 3 = 被拦）
 python -m scanner.ai_digest --materials | --demo | --json
 # 退出码 0/1未配置凭据/2上游失败/3触红线/4读库失败/5幻觉巡检发现编造数字
@@ -179,6 +180,17 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
   历史基准率（`source.load_baseline_stats`）是素材一部分，标签文本自带「本项目实测、
   非市场先验」与 n；`BASELINE_BUCKETS` 的 cuts 与 scale 必须同单位。analyze 模式是
   用户决策的「无第二结论源」纪律的**有意例外**（输出不落库/不进计算/不进飞书）。
+- **research 模式（ai_digest 默认，2026-11-03）= 模型自己查真实市场数据再判断**：
+  网关**支持 tool-calling**（实测 `finish_reason=tool_calls`）⇒ 工具箱
+  `ai_digest/research.py`（8 个：K线/实时报价/资金流/概念/板块热力图/市场概览/飙升榜/
+  系统历史）+ 循环 `ai_digest/agent.py::run_research`（≤8 轮/≤20 次调用）。
+  幻觉巡检的比对基准随之升级为**全部工具输出全文**。三个坑（都实测踩过）：
+  ① **必须流式**（非流式被上游 CDN 以 524 掐断 100s，流式 5s）；② **SSE 必须显式 UTF-8
+  解码**（requests 对无 charset 的 text/* 默认 ISO-8859-1 ⇒ 整篇 mojibake）；
+  ③ **工具输出必须给人读单位**（元→万/亿、量→万股），否则模型自己换算的数字会被巡检
+  判成编造。工具的列名/字段名**必须实测**（`daily_kline.percent` 不是 `pct`；
+  `appearances` 无 category/score/excluded；东财是 `main_net`/`super_net`/`turnover`）——
+  猜错会 OperationalError ⇒ 工具**静默失效**。
 - **push_gate「削减 88%」口径已作废**（测量总体错了：recommendations 原始行含 pool_pick，
   生产卡片到不了）；真实削减量未知，需用真实卡片总体重测。
 - **pool_pick 退池后三处不能跟着删**（存量 988 行仍在 DB）：`view/assemble.py` 的
