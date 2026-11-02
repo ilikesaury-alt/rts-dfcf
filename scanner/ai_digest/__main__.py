@@ -50,6 +50,7 @@ from scanner.config import OFFBOARD_DISPLAY_TOP, resolve_db_path
 
 #: 每种模式的标签（命令侧保证，**不是模型给的**）。
 LABELS = {
+    "research": "AI 市场调研 · 模型自行查真实数据后的判断 · 含主观成分，不构成投资建议",
     "analyze": "AI 综合分析 · 含模型主观判断 · 非系统结论，不构成投资建议",
     "transcribe": "仅解读，非投资建议",
 }
@@ -133,10 +134,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     p.add_argument(
         "--mode",
-        choices=("analyze", "transcribe"),
-        default="analyze",
-        help="analyze=综合分析+筛选候选（默认）；transcribe=纯转述（过全部红线）",
+        choices=("research", "analyze", "transcribe"),
+        default="research",
+        help="research=模型自己查真实市场数据后给判断（默认）；analyze=按历史基准率算账；transcribe=纯转述",
     )
+    p.add_argument("--max-rounds", type=int, default=8, help="research 模式最多几轮工具调用（默认 8）")
+    p.add_argument("--max-calls", type=int, default=20, help="research 模式最多几次工具调用（默认 20）")
     p.add_argument(
         "--source",
         choices=("auto", "view", "log"),
@@ -287,11 +290,43 @@ def main(argv: list[str] | None = None) -> int:
             print(render_materials_block(mats))
         return 1
 
+    tool_summary = ""
     try:
-        # 真实网关后面是推理模型：一句话就要 25s+，全段素材可达 1~2 分钟。
-        # 提示写 stderr（不污染 --json 的 stdout），否则用户会以为卡死。
-        print(f"[i] 已发出请求（模式 {args.mode} · 模型 {cfg.model}；实测单次 10~90s，请稍等）…", file=sys.stderr)
-        text = transcribe(cfg, mats, mode=args.mode)
+        if args.mode == "research":
+            # research 模式：模型自己调工具查真实数据（agent.run_research），
+            # 幻觉巡检的比对基准 = **全部工具输出全文**（不再只是素材）。
+            from scanner.ai_digest.agent import run_research
+            from scanner.ai_digest.research import ResearchContext
+
+            print(
+                f"[i] 调研模式：模型将自行调用工具查市场数据（模型 {cfg.model}，最多 {args.max_calls} 次调用）…",
+                file=sys.stderr,
+            )
+            conn = connect_readonly(resolve_db_path())
+            try:
+                # ⚠ 工具自己懒加载雪球 session（`ResearchContext.get_session`）——
+                #   适配器没有公开 session 属性，取 `.session` 会 AttributeError。
+                ctx = ResearchContext(conn=conn)
+                result = run_research(
+                    cfg,
+                    [dict(r) for r in info["rows"]],
+                    ctx,
+                    max_rounds=args.max_rounds,
+                    max_calls=args.max_calls,
+                )
+            finally:
+                conn.close()
+            text = result.text
+            tool_summary = result.tool_summary()
+            tool_blob = result.tool_output_blob
+            print(
+                f"[i] 调研完成：{len(result.tool_calls)} 次工具调用 / {result.rounds} 轮",
+                file=sys.stderr,
+            )
+        else:
+            tool_blob = ""
+            print(f"[i] 已发出请求（模式 {args.mode} · 模型 {cfg.model}；实测单次 10~90s，请稍等）…", file=sys.stderr)
+            text = transcribe(cfg, mats, mode=args.mode)
     except AIUpstreamError as e:
         if args.json:
             _emit({"ok": False, "error": {"code": "AI_UPSTREAM", "message": str(e)}})
@@ -313,7 +348,9 @@ def main(argv: list[str] | None = None) -> int:
     from scanner.ai_digest.llm import build_messages
 
     user_prompt = build_messages(mats, args.mode)[1]["content"]
-    unverified = unverified_numbers(text, user_prompt)
+    # research 模式的比对基准 = 全部工具输出（模型能引用的一切真实数据）
+    check_blob = (user_prompt + chr(10) + tool_blob) if args.mode == "research" else user_prompt
+    unverified = unverified_numbers(text, check_blob)
 
     if args.json:
         _emit(
@@ -326,6 +363,7 @@ def main(argv: list[str] | None = None) -> int:
                 "redlined": redlined,
                 "cached": False,
                 "unverified_numbers": unverified,
+                "tool_summary": tool_summary,
                 "materials": [{"id": i.id, "label": i.label, "value": i.value} for i in mats.items],
                 "missing": list(mats.missing),
                 "generatedFrom": {
@@ -349,8 +387,11 @@ def main(argv: list[str] | None = None) -> int:
     if unverified:
         print()
         print(f"[!] 幻觉巡检：以下数字在素材里找不到（模型编造或换算，请勿采信）：{'、'.join(unverified)}")
+    if tool_summary:
+        print()
+        print(f"模型自己查了这些（{tool_summary}）：")
     print()
-    print("素材核对（模型只看得到这些；逐行可对）：")
+    print("素材核对（模型看到的初始数据；逐行可对）：")
     print(render_materials_block(mats))
     if mats.missing:
         print(f"\n缺失项（素材里是「暂无数据」，模型不得补）：{'、'.join(mats.missing)}")

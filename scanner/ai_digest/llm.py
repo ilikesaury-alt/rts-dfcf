@@ -18,6 +18,7 @@ import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from scanner.ai_digest.material import OffboardMaterials
 from scanner.utils import EXTERNAL_FAILURES
@@ -28,6 +29,7 @@ __all__ = [
     "SYSTEM_PROMPT_ANALYZE",
     "SYSTEM_PROMPT_TRANSCRIBE",
     "build_messages",
+    "chat",
     "magpie_config",
     "transcribe",
 ]
@@ -131,36 +133,46 @@ def build_messages(m: OffboardMaterials, mode: str = "analyze") -> list[dict[str
     ]
 
 
-def transcribe(
-    cfg: MagpieConfig, materials: OffboardMaterials, *, timeout: float = TIMEOUT_S, mode: str = "analyze"
-) -> str:
-    """调用模型，返回文本。任何失败一律抛 `AIUpstreamError`（CLI 转退出码 2）。"""
+def chat(
+    cfg: MagpieConfig,
+    messages: list[dict[str, Any]],
+    *,
+    tools: list[dict[str, Any]] | None = None,
+    timeout: float = TIMEOUT_S,
+) -> dict[str, Any]:
+    """底层聊天调用（支持 tool-calling）。
+
+    → `{"content": str|None, "tool_calls": [{"id","name","arguments"}]}`。
+
+    ⚠ 网关**支持** tool-calling（实测 `finish_reason="tool_calls"`，参数 JSON 正确解析），
+    这是「让模型自己取真实市场数据」得以实现的唯一前提（见 `agent.run_research`）。
+    """
     try:
         import requests
     except ImportError:  # pragma: no cover - 环境相关
         raise AIUpstreamError("缺少 requests 依赖，无法调用模型服务。") from None
 
-    body = {
+    body: dict[str, Any] = {
         "model": cfg.model,
-        # temperature 0：只为减少随机性，**不保证「同一素材 → 同一文案」**（实测 2026-11-03：
-        # 同一素材跑两次，措辞与分句完全不同，但抽出的数字集合逐项相同 ⇒ 事实稳定、表述不稳）。
-        # 因此人工核对应该看**数字对不对**，而不是看文案两次是否相同。
         "temperature": 0,
-        # ⚠ **显式关闭流式**（照抄 `fde-agent-delivery/product1/lib/llm.ts` 的踩坑结论）：
-        #   若中转默认走 SSE，响应体不是单个 JSON，`resp.json()` 会解析失败并被误报成
-        #   「服务不可用」—— 那是把协议协商问题伪装成故障，最难查。
-        "stream": False,
-        "messages": build_messages(materials, mode),
+        # ⚠ 走**流式**：非流式会被上游 CDN 以 524 掐断（100s 无字节），
+        #   而同一请求流式只要 5s（实测 2026-11-03）。流式解析见下方注释。
+        "stream": True,
+        "messages": messages,
     }
+    if tools:
+        body["tools"] = tools
+        body["tool_choice"] = "auto"
+
     try:
         resp = requests.post(
             f"{cfg.base_url}/chat/completions",
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {cfg.api_key}"},
             data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
             timeout=timeout,
+            stream=True,
         )
     except EXTERNAL_FAILURES as e:
-        # 只记异常类型：URL/响应体可能含内部信息，不进用户可见输出、也不进日志详情。
         raise AIUpstreamError(f"模型服务调用失败（{type(e).__name__}），请稍后重试。") from None
 
     if resp.status_code in (401, 403):
@@ -168,17 +180,64 @@ def transcribe(
     if resp.status_code == 429:
         raise AIUpstreamError("模型服务限流（HTTP 429），请稍后重试。")
     if resp.status_code != 200:
-        # 只回状态码：上游响应体可能含内部信息。
         raise AIUpstreamError(f"模型服务返回 HTTP {resp.status_code}，请稍后重试。")
 
+    # ⚠ **必须走流式**（2026-11-03 实测）：非流式时同一个请求被上游 CDN 以
+    #   **HTTP 524** 掐断（100s 无字节即断），而同一请求改流式只要 5s。
+    #   推理模型的完整响应可能超过 100s，此时「等全部字节」= 必被 524；
+    #   流式持续有字节 ⇒ 不触发，且能顺带拿到首字节延迟。
+    content_parts: list[str] = []
+    calls_by_index: dict[int, dict[str, Any]] = {}
+    # ⚠ **必须显式按 UTF-8 解码**：`requests` 对 `text/*` 且无 charset 的响应默认按
+    #   ISO-8859-1 解码 ⇒ SSE 里的中文全是乱码（实测：正文整篇变「è¯´æå®…」）。
+    #   2026-11-03 踩到过：流式解析全对，但内容是 mojibake。
+    #   这里**不用** `resp.encoding`（会被 requests 的默认猜法带偏），自己 decode。
     try:
-        payload = resp.json()
-        text = payload["choices"][0]["message"]["content"]
-    except EXTERNAL_FAILURES:
-        raise AIUpstreamError("模型服务返回体形状异常（不是预期的 chat/completions 结构）。") from None
-    except (TypeError, IndexError, AttributeError):
-        raise AIUpstreamError("模型服务返回体形状异常（不是预期的 chat/completions 结构）。") from None
+        for raw_bytes in resp.iter_lines(decode_unicode=False):
+            if not raw_bytes:
+                continue
+            raw_line = raw_bytes.decode("utf-8", errors="replace") if isinstance(raw_bytes, bytes) else raw_bytes
+            if raw_line.startswith("data:"):
+                raw_line = raw_line[5:].strip()
+            if raw_line in ("", "[DONE]"):
+                if raw_line == "[DONE]":
+                    break
+                continue
+            try:
+                chunk = json.loads(raw_line)
+            except json.JSONDecodeError:
+                continue
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") or {}
+            piece = delta.get("content")
+            if isinstance(piece, str):
+                content_parts.append(piece)
+            for tc in delta.get("tool_calls") or []:
+                idx = int(tc.get("index") or 0)
+                slot = calls_by_index.setdefault(idx, {"id": None, "name": None, "arguments": ""})
+                if tc.get("id"):
+                    slot["id"] = tc["id"]
+                fn = tc.get("function") or {}
+                if fn.get("name"):
+                    slot["name"] = fn["name"]
+                if fn.get("arguments"):
+                    slot["arguments"] += fn["arguments"]
+    except EXTERNAL_FAILURES as e:
+        raise AIUpstreamError(f"模型服务流式读取中断（{type(e).__name__}），请稍后重试。") from None
 
+    calls = [v for _k, v in sorted(calls_by_index.items())]
+    content = "".join(content_parts) if content_parts else None
+    return {"content": content, "tool_calls": calls}
+
+
+def transcribe(
+    cfg: MagpieConfig, materials: OffboardMaterials, *, timeout: float = TIMEOUT_S, mode: str = "analyze"
+) -> str:
+    """调用模型，返回文本。任何失败一律抛 `AIUpstreamError`（CLI 转退出码 2）。"""
+    resp = chat(cfg, build_messages(materials, mode), timeout=timeout)
+    text = resp.get("content")
     if not isinstance(text, str) or not text.strip():
         raise AIUpstreamError("模型服务返回空内容。")
     # 只去**行尾空白**：实测 2026-11-03 真实模型会输出 Markdown 硬换行的「行尾双空格」

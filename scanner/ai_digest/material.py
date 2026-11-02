@@ -304,14 +304,21 @@ def unverified_numbers(text: str, user_prompt: str) -> list[str]:
     """`text` 里出现、但 `user_prompt`（模型实际看到的素材）里找不到的数字（升序去重）。
 
     非空 = 模型至少编了一个数 —— 输出侧必须把它**显式打出来**，而不是悄悄当没看见。
+
+    ⚠ **容差**：允许 1% 相对误差（33.4 ≙ 33.35 这类四舍五入不算编造）。
+    没有容差时，「模型把 33.35 写成 33.4」会被误报，久了就没人看这个告警了 ——
+    守卫一旦变成噪声，就等于没有守卫（AGENTS.md 同款纪律）。
+    单位换算（元↔万↔亿）**不算容差**：那是模型自己做的算术，工具已直接给人读单位
+    （`research._money`），模型照抄即可。
     """
-    material_values = {float(s) for s in _NUM_RE.findall(user_prompt or "")}
+    material_values = sorted({float(s) for s in _NUM_RE.findall(user_prompt or "")})
     out: set[str] = set()
     for token in _NUM_RE.findall(text or ""):
         try:
             v = float(token)
         except ValueError:  # pragma: no cover - 正则已保证是数字
             continue
-        if v not in material_values:
-            out.add(token)
+        if any(abs(v - b) <= max(0.01, abs(b) * 0.01) for b in material_values):
+            continue
+        out.add(token)
     return sorted(out, key=lambda s: (len(s), s))

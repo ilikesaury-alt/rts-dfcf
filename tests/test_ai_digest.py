@@ -241,12 +241,62 @@ def test_renderers_are_pure_strings_and_cover_every_symbol():
 
 
 class _FakeResp:
+    """假响应（流式）：把 payload 拆成 SSE chunk 行。
+
+    2026-11-03 起 `llm.chat` 走**流式**（非流式会被上游 CDN 以 524 掐断），
+    所以桩必须支持 `iter_lines()`。
+    """
+
     def __init__(self, status_code=200, payload=None):
         self.status_code = status_code
         self._payload = payload
 
     def json(self):
         return self._payload
+
+    def iter_lines(self, decode_unicode=False):
+        if not self._payload:
+            yield "data: [DONE]"
+            return
+        message = self._payload["choices"][0]["message"]
+        # content 分片
+        content = message.get("content")
+        if content is not None:
+            yield f"data: {json.dumps({'choices': [{'delta': {'content': content}}]}, ensure_ascii=False)}"
+        # tool_calls 分片（模拟增量：id/name 一片，arguments 一片）
+        for tc in message.get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            yield "data: " + json.dumps(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": tc.get("id"),
+                                        "function": {"name": fn.get("name"), "arguments": ""},
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+            yield "data: " + json.dumps(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [{"index": 0, "function": {"arguments": fn.get("arguments") or "{}"}}]
+                            }
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        yield "data: [DONE]"
 
 
 def _patch_post(monkeypatch, resp, sink):
@@ -283,7 +333,7 @@ def test_transcribe_request_shape(monkeypatch):
     assert call["headers"]["Authorization"] == "Bearer k-test"
     assert call["timeout"] <= 180  # 推理模型实测 25~90s；但仍不该无限挂着
     body = json.loads(call["data"].decode("utf-8") if isinstance(call["data"], bytes) else call["data"])
-    assert body["stream"] is False
+    assert body["stream"] is True  # 非流式会被上游 CDN 以 524 掐断（实测）
     assert body["temperature"] == 0
     assert body["model"] == "m-test"
     # 模型只看得到素材：prompt 里必须带素材 id 与段口径，且带缺失项披露
@@ -435,8 +485,12 @@ def test_unverified_numbers_detection():
     from scanner.ai_digest.material import unverified_numbers
 
     prompt = "信号日：2026-11-02\nsb.X.vol_ratio | 量比 | 2.31\nsb.X.accum_5d | 5日 | +6.20%\n第1只"
+    # 完全对得上
     assert unverified_numbers("量比 2.31、5日累计 6.2%，第1只。", prompt) == []
-    assert unverified_numbers("目标价 18.5，涨幅 2.3%", prompt) == ["2.3", "18.5"]
+    # 四舍五入（33.4 ≙ 33.35 这类）不算编造 —— 1% 容差
+    assert unverified_numbers("量比 2.3（2.31 四舍五入）", prompt) == []
+    # 真的编的：18.5 与 2.5 都不在素材里
+    assert unverified_numbers("目标价 18.5，涨幅 2.5%", prompt) == ["2.5", "18.5"]
     assert unverified_numbers("", prompt) == []
 
 
@@ -658,6 +712,129 @@ def test_baseline_item_only_in_analyze_mode():
     assert next(i for i in a.items if i.id == "baseline.stats").value == "基准率文本"
     t = build_materials("2026-11-02", rows, mode="transcribe", baseline="基准率文本")
     assert not [i for i in t.items if i.id == "baseline.stats"]
+
+
+# ── 6. 调研工具箱（research，2026-11-03）──────────────────────────────────────
+
+
+def test_research_tools_exist_and_are_wired():
+    """8 个工具必须齐全 —— 少一个，模型就少一条调研路径（且是静默少）。"""
+    from scanner.ai_digest.research import build_tools
+
+    names = {t.name for t in build_tools()}
+    assert names == {
+        "get_kline",
+        "get_realtime_quote",
+        "get_fund_flow",
+        "get_concepts",
+        "get_sector_heatmap",
+        "get_market_overview",
+        "get_board_rank",
+        "get_stock_record",
+    }
+    for spec in build_tools():
+        sch = spec.schema()
+        assert sch["type"] == "function" and sch["function"]["name"] == spec.name
+        assert sch["function"]["parameters"]["type"] == "object"
+
+
+def test_research_tools_use_real_local_data(digest_db):
+    """工具必须能用**本地真实数据**跑通（列名写错会 OperationalError ⇒ 工具静默失效）。"""
+    from scanner.ai_digest.research import ResearchContext, build_tools, run_tool
+
+    conn = sqlite3.connect(str(digest_db))
+    try:
+        conn.execute(
+            "INSERT INTO daily_kline (symbol, date, open, close, high, low, volume, percent) "
+            "VALUES ('SZ300770','2026-11-02',38.15,40.33,40.46,37.50,16304308,6.44)"
+        )
+        conn.execute(
+            "INSERT INTO concept_cache (symbol, concepts, updated) VALUES ('SZ300770','[\"传媒\",\"影视概念\"]','2026-11-02')"
+        )
+        conn.execute(
+            "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, excluded) "
+            "VALUES ('2026-11-02','10:00:00','SZ300770','新媒股份','short_term',72,6.44,1)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    conn = connect_readonly(str(digest_db))
+    try:
+        ctx = ResearchContext(conn=conn)
+        tools = {t.name: t for t in build_tools()}
+
+        k = run_tool(tools["get_kline"], {"symbol": "SZ300770", "n": 5}, ctx)
+        assert "2026-11-02" in k and "40.33" in k
+        assert "1630万股" in k, "成交量必须给人读单位（模型照抄，不自己换算）"
+
+        heat = run_tool(tools["get_sector_heatmap"], {"concept": "传媒"}, ctx)
+        assert "SZ300770" in heat and "+6.44%" in heat
+
+        rec = run_tool(tools["get_stock_record"], {"symbol": "SZ300770"}, ctx)
+        assert "short_term" in rec and "score=72" in rec
+
+        ov = run_tool(tools["get_market_overview"], {}, ctx)
+        assert "本地 K 线样本" in ov  # 即使指数/涨停池取不到，本地那部分也必须出得来
+    finally:
+        conn.close()
+
+
+def test_tool_failure_returns_human_text_not_exception(digest_db):
+    """工具失败必须返回一句人话（模型要能区分「查不到」与「查了没有」）。"""
+    from scanner.ai_digest.research import ResearchContext, ToolSpec, run_tool
+
+    def boom(args, ctx):
+        raise ValueError("坏了")
+
+    spec = ToolSpec(name="t", description="", parameters={"type": "object"}, handler=boom)
+    out = run_tool(spec, {}, ResearchContext(conn=connect_readonly(str(digest_db))))
+    assert "失败" in out and "ValueError" in out
+
+
+def test_money_helper_gives_readable_units():
+    """金额必须换算成人读单位 —— 模型自己换算会被幻觉巡检判成编造。"""
+    from scanner.ai_digest.research import _money
+
+    assert _money(641890989.56) == "6.42亿"
+    assert _money(22384640.0) == "2238.46万"
+    assert _money(1234.5) == "1234.50"
+    assert _money(None) == "—"
+
+
+def test_research_agent_loop_calls_tools_then_answers(monkeypatch):
+    """调研循环：模型先要工具 → 我们执行回灌 → 再问才拿到最终结论。"""
+    import scanner.ai_digest.agent as agent_mod
+    from scanner.ai_digest.llm import MagpieConfig
+    from scanner.ai_digest.research import ResearchContext, build_tools
+
+    calls = {"n": 0}
+
+    def fake_chat(cfg, messages, tools=None, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {
+                "content": None,
+                "tool_calls": [{"id": "c1", "name": "get_kline", "arguments": '{"symbol":"SZ300770","n":5}'}],
+            }
+        return {"content": "最终结论：量价配合最干净的是第一只。", "tool_calls": []}
+
+    monkeypatch.setattr(agent_mod, "chat", fake_chat)
+    from scanner.db.schema import get_conn
+
+    prod = get_conn()
+    try:
+        res = agent_mod.run_research(
+            MagpieConfig("https://x/v1", "k", "m"),
+            [{"symbol": "SZ300770", "name": "新媒股份", "tier": "T2", "percent": 6.44}],
+            ResearchContext(conn=prod),
+            tools=build_tools(),
+        )
+    finally:
+        prod.close()
+    assert "最终结论" in res.text
+    assert len(res.tool_calls) == 1 and res.tool_calls[0]["name"] == "get_kline"
+    assert res.tool_output_blob  # 工具输出全文 = 幻觉巡检的比对基准
 
 
 # ── 6. 包级纪律（零写 / 不用裸 except）─────────────────────────────────────────
