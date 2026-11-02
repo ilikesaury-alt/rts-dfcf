@@ -221,6 +221,52 @@ python scripts/offboard_nextday.py --json    # 机器可消费
 > `均值差 -7.39%  95% CI [-7.39%, -7.39%]`。守卫
 > `test_paired_ci_refuses_to_report_when_days_below_min`。
 
+### B 段 AI 转述（`scanner/ai_digest/`，2026-11-03）—— **手动触发，不轮询**
+
+读 `offboard_launch_log` 当日的榜外异动行，让模型把素材转成中文，然后把**素材逐行打出来**
+供人核对。回答的问题是「这 8 行我一眼看不出是什么」，**不是**「该买谁」。
+
+```
+python -m scanner.ai_digest                  # 最新信号日 → 转述（出网一次）
+python -m scanner.ai_digest --date 2026-11-02
+python -m scanner.ai_digest --materials      # 只打素材，不出网（无凭据也能跑）
+python -m scanner.ai_digest --demo           # 内置样例，零库零网（自检）
+python -m scanner.ai_digest --json           # 结构与云端 /api/ai-explain 对齐
+```
+
+退出码：**0 成功 / 1 未配置凭据 / 2 上游失败 / 3 触红线被拦 / 4 读库失败或无数据**。
+凭据：`MAGPIE_BASE_URL` / `MAGPIE_API_KEY` / `MAGPIE_MODEL`（放 `.env`，勿提交；
+CLI 自己 `load_dotenv()`，与 `unified_scanner.py` 同款）。
+
+**四条边界（改前必读）**
+
+1. **只转述，不产生第二结论源**。素材由 `material.build_materials` 从 `offboard_launch_log`
+   只读确定性组装（零 I/O / 零时钟 / 零随机，同输入字节级同输出）；输出**不落库、不进任何
+   计算路径、不进终端主循环、不进飞书**。
+2. **手动触发，不挂主循环**。那边 60s 一轮、单线程串行渲染 ⇒ 自动出网会让
+   「刷新频率 = 计费频率」，且一次 20s 外呼会把扫描节拍整体拖慢。
+3. **只做榜外异动段（B 段）**。B 段结构上没有排名/连击/复合分（那是 A 段榜单专属量），
+   素材面窄，是全段一次转述成本可控的唯一一段。v1 池选 / 回捞 / 榜内飙升三区的整区转述
+   **未开** —— 整区对比式描述正好落进 ADR 0001 修订 1 登记的「隐含建议」逃逸区。
+4. **红线守卫双端同源、单向包含**。`scanner/ai_digest/guard.py` 是 worker 侧
+   `explain/guard.ts` 的移植 + 一批整段转述专属槽位（比较/取优/排序：`更值得`/`优于`/
+   `首选`/`相比之下`…）—— 这类话**不带任何买卖动词**，动作槽位一条都拦不住，但它已经是
+   结论。漂移守卫 `test_ts_slot_vocabulary_is_covered_by_python_guard` 解析 TS 槽位并逐条
+   要求 Python 侧存在（Python 允许是**超集**，因为多了比较槽位）：**只改一侧即红**。
+
+> ⚠ **素材口径三件事**：① 值取自 `offboard_launch_log`「信号值首次写入即冻结」的快照 ⇒
+> 「信号时涨幅」是**当初以什么身份被推出**的涨幅，不是当前价（列名就这么写，不美化）；
+> ② 段内顺序直接用 `offboard_watch.sort_key`（T2 在前 → 量比降序），不写第二份排序口径；
+> ③ **`next_day_pct` 刻意不进素材** —— 它是绩效读数，模型一转述就成了「信号有效/无效」的
+> 判断，而那正是 `scripts/offboard_nextday.py` 拒绝下结论的东西。
+
+> ⚠ **已知边界**：① 本表存的是**全部过门行**而非终端展示的那几行（实测 2026-11-02：17 行
+> 过门 / 终端展示 8 行）⇒ CLI 按 `OFFBOARD_DISPLAY_TOP` 截断并如实打出「过门 17 只 · 本次
+> 转述前 8 只」；② **留存行（`retain=True`）不入本表** ⇒ 某一轮屏幕上有、当日从未严格过门的
+> 票本命令看不到；③ 词表挡不住槽位外说法/拼音/隐含倾向（ADR 修订 1 的承诺降级同样适用）。
+> 守卫 `tests/test_ai_digest.py`（42 例：红线对抗 17 + 素材确定性/降级/顺序 + 只读库 +
+> 包级零写 SQL / 禁裸 `except Exception`）。
+
 ### 沪深飙升独立区（hot_watch）—— 自检入口
 
 主循环内每轮自动执行，**通常无需手动跑**。此入口用于改规则后快速自检：

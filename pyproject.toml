@@ -25,7 +25,7 @@ dependencies = { file = ["requirements.txt"] }
 # 2026-09-20 补上 scanner.view：此前漏声明，`pip install .` 装出来的包不含该子包，
 # 而 view/assemble.py 与 view/render.py 是展示层核心（ScannerView 消费方）⇒
 # 安装后必然 ImportError。源码直跑时被 sys.path 兜住，所以一直没暴露。
-packages = ["scanner", "scanner.db", "scanner.pipeline", "scanner.view"]
+packages = ["scanner", "scanner.ai_digest", "scanner.db", "scanner.pipeline", "scanner.view"]
 
 [tool.ruff]
 line-length = 120
