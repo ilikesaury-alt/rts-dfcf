@@ -352,6 +352,178 @@ def _tool_get_stock_record(args: dict[str, Any], ctx: ResearchContext) -> str:
     return f"{symbol} 最近 {len(rows)} 条系统记录（v1 推荐池）：" + chr(10).join(lines)
 
 
+def _tool_get_announcements(args: dict[str, Any], ctx: ResearchContext) -> str:
+    """最近公告（东财公开接口）—— 公司层面的真实事件。"""
+    symbol = str(args.get("symbol") or "").strip().upper()
+    if not symbol:
+        return "参数错误：需要 symbol"
+    n = max(3, min(int(args.get("n") or 8), 30))
+    try:
+        from scanner.ai_digest.em_data import fetch_announcements
+
+        items = ctx.cached(f"ann:{symbol}:{n}", lambda: fetch_announcements(symbol, n))
+    except EXTERNAL_FAILURES as e:
+        return f"公告查询失败（{type(e).__name__}）"
+    if not items:
+        return f"{symbol}：最近无公告可查（接口空或该票无公告）"
+    lines = [f"{it['date']} {it['title']}" + (f"［{it['type']}］" if it.get("type") else "") for it in items]
+    return f"{symbol} 最近 {len(items)} 条公告（仅标题与日期，**未经核实其利好/利空**）：\n" + chr(10).join(lines)
+
+
+def _tool_get_intraday_fund_flow(args: dict[str, Any], ctx: ResearchContext) -> str:
+    """当日分时资金流曲线（东财）—— 主力/超大单/大单/中单/小单的分钟级累计净流入。
+
+    看的是**节奏**：早盘冲高回落、尾盘拉升、全天单边流入。
+    """
+    symbol = str(args.get("symbol") or "").strip().upper()
+    if not symbol:
+        return "参数错误：需要 symbol"
+    try:
+        from scanner.ai_digest.em_data import fetch_intraday_fund_flow
+
+        pts = ctx.cached(f"fflow:{symbol}", lambda: fetch_intraday_fund_flow(symbol))
+    except EXTERNAL_FAILURES as e:
+        return f"分时资金流查询失败（{type(e).__name__}）"
+    if not pts:
+        return f"{symbol}：当日分时资金流为空（非交易日或接口无数据）"
+
+    # 关键时点：开盘/10:30/午盘/14:00/收盘 + 尾盘 30 分钟增量
+    def near(hhmm: str):
+        return min(pts, key=lambda p: abs(_hhmm(p["time"]) - _hhmm(hhmm)))
+
+    marks = ["09:30", "10:30", "11:30", "14:00", pts[-1]["time"]]
+    lines = []
+    for m in marks:
+        p = near(m)
+        lines.append(
+            f"{p['time']} 主力 {_money(p['main'])} | 超大单 {_money(p['xl'])} | 大单 {_money(p['large'])}"
+            f" | 中单 {_money(p['medium'])} | 小单 {_money(p['small'])}"
+        )
+    tail = pts[-1]
+    last30 = [p for p in pts if _hhmm(p["time"]) >= _hhmm(tail["time"]) - 30]
+    first30 = [p for p in pts if _hhmm(p["time"]) <= _hhmm(pts[0]["time"]) + 30]
+    tail_delta = tail["main"] - (last30[0]["main"] if last30 else tail["main"])
+    head_delta = (first30[-1]["main"] if first30 else 0) - (pts[0]["main"] if pts else 0)
+    lines.append(
+        f"节奏：早盘30分钟主力增量 {_money(head_delta)}；尾盘30分钟主力增量 {_money(tail_delta)}"
+        f"（全天主力净额 {_money(tail['main'])}）"
+    )
+    return f"{symbol} 当日分时资金流（累计净额，单位元→万/亿）：\n" + chr(10).join(lines)
+
+
+def _hhmm(s: str) -> int:
+    """'09:30' → 570（分钟数，用于就近取样与区间比较）。"""
+    try:
+        h, m = str(s).split(":")[:2]
+        return int(h) * 60 + int(m)
+    except (ValueError, AttributeError):
+        return 0
+
+
+def _tool_get_dragon_tiger(args: dict[str, Any], ctx: ResearchContext) -> str:
+    """龙虎榜历史（东财）：上榜原因、买卖净额、**D1/D2/D5/D10 后续涨幅**。
+
+    D* 是「上榜后第 N 个交易日收盘涨跌幅」—— 游资参与 + 事后涨幅，硬证据。
+    """
+    symbol = str(args.get("symbol") or "").strip().upper()
+    if not symbol:
+        return "参数错误：需要 symbol"
+    try:
+        from scanner.ai_digest.em_data import fetch_dragon_tiger
+
+        rows = ctx.cached(f"dtb:{symbol}", lambda: fetch_dragon_tiger(symbol, 5))
+    except EXTERNAL_FAILURES as e:
+        return f"龙虎榜查询失败（{type(e).__name__}）"
+    if not rows:
+        return f"{symbol}：无龙虎榜记录（该票历史上没上过榜）"
+    lines = []
+    for r in rows:
+        lines.append(
+            f"{r['date']} 上榜原因：{r['reason'] or '—'} | 榜单净额 {_money(r['net'])}"
+            f" | 成交占比 {_pct(r['deal_ratio'])} | 当日涨跌 {_pct(r['change'])}"
+            f" | 后续 D1 {_pct(r['d1'])} D2 {_pct(r['d2'])} D5 {_pct(r['d5'])} D10 {_pct(r['d10'])}"
+        )
+    return f"{symbol} 龙虎榜历史（{len(rows)} 次）：\n" + chr(10).join(lines)
+
+
+def _tool_get_fund_flow_trend(args: dict[str, Any], ctx: ResearchContext) -> str:
+    """多日资金流趋势（东财日频序列，近 121 个交易日）—— 主力是在持续流入还是持续流出。
+
+    ⚠ 这是**日频**不是分时（`klt=101` 实测返回 121 个交易日）；日内节奏由
+    `get_intraday_minute`（雪球分时）负责。
+    """
+    symbol = str(args.get("symbol") or "").strip().upper()
+    if not symbol:
+        return "参数错误：需要 symbol"
+    try:
+        from scanner.ai_digest.em_data import fetch_intraday_fund_flow
+
+        pts = ctx.cached(f"fflow_trend:{symbol}", lambda: fetch_intraday_fund_flow(symbol))
+    except EXTERNAL_FAILURES as e:
+        return f"资金流趋势查询失败（{type(e).__name__}）"
+    if not pts:
+        return f"{symbol}：无资金流序列数据"
+    lines = [f"覆盖 {len(pts)} 个交易日（{pts[0]['date']} ~ {pts[-1]['date']}）"]
+    for n, label in ((5, "近5日"), (20, "近20日"), (60, "近60日"), (len(pts), "全部")):
+        window = pts[-n:] if n <= len(pts) else pts
+        main = sum(p["main"] for p in window)
+        xl = sum(p["xl"] for p in window)
+        pos = sum(1 for p in window if p["main"] > 0)
+        lines.append(f"{label}：主力净额合计 {_money(main)}（净流入天数 {pos}/{len(window)}）｜超大单合计 {_money(xl)}")
+    lines.append("最近5日主力净额：" + "、".join(f"{p['date'][5:]} {_money(p['main'])}" for p in pts[-5:]))
+    return f"{symbol} 资金流趋势（日频累计净额）：\n" + chr(10).join(lines)
+
+
+def _tool_get_intraday_minute(args: dict[str, Any], ctx: ResearchContext) -> str:
+    """当日分时（雪球 minute.json）—— 日内节奏：开盘强度、量能分布、均价线、尾盘拉升。"""
+    symbol = str(args.get("symbol") or "").strip().upper()
+    if not symbol:
+        return "参数错误：需要 symbol"
+    try:
+        from scanner.api import _fetch_minute_data
+
+        session = ctx.get_session()
+        items = ctx.cached(f"minute:{symbol}", lambda: _fetch_minute_data(session, symbol) or [])
+    except EXTERNAL_FAILURES as e:
+        return f"分时查询失败（{type(e).__name__}）"
+    items = [i for i in (items or []) if i.get("current")]
+    if len(items) < 5:
+        return f"{symbol}：无分时数据（非交易时段或接口无数据）"
+
+    first = items[0]
+    last = items[-1]
+    highs = max(items, key=lambda i: i.get("high") or i["current"])
+    lows = min(items, key=lambda i: (i.get("low") or i["current"]) if i.get("low") else i["current"])
+    total_vol = sum(i.get("volume") or 0 for i in items)
+
+    # 尾盘 30 分钟量占比（分钟 bar 的时间戳是毫秒）
+    def hhmm(item):
+        ts = item.get("timestamp") or 0
+        try:
+            from datetime import datetime
+
+            from scanner.config import BEIJING_TZ
+
+            return datetime.fromtimestamp(float(ts) / 1000, tz=BEIJING_TZ).strftime("%H:%M")
+        except (TypeError, ValueError, OSError):
+            return "00:00"
+
+    tail_items = [i for i in items if hhmm(i) >= "14:30"]
+    tail_vol = sum(i.get("volume") or 0 for i in tail_items)
+    tail_share = (tail_vol / total_vol * 100) if total_vol else 0.0
+    avg = last.get("avg_price") or 0.0
+    close = last.get("current") or 0.0
+    lines = [
+        f"分时点数 {len(items)}｜开盘 {first['current']:.2f}｜最新 {close:.2f}"
+        f"｜日内最高 {highs.get('high') or highs['current']:.2f}｜最低 {lows.get('low') or lows['current']:.2f}"
+        f"｜均价 {avg:.2f}",
+        f"收盘/均价 {'高于' if close >= avg else '低于'}均价（{close:.2f} vs {avg:.2f}）",
+        f"全天成交量 {total_vol / 1e4:.0f}万股｜尾盘(14:30后)量占比 {tail_share:.1f}%",
+        f"最新时间 {hhmm(last)}｜尾盘量占比高说明资金在收盘前集中进场",
+    ]
+    return f"{symbol} 当日分时（雪球）：\n" + chr(10).join(lines)
+
+
 def build_tools() -> list[ToolSpec]:
     """工具清单（顺序 = 给模型看到的顺序，先便宜后贵）。"""
     return [
@@ -415,6 +587,45 @@ def build_tools() -> list[ToolSpec]:
             parameters=_p({"symbol": {"type": "string"}}, ["symbol"]),
             handler=_tool_get_stock_record,
         ),
+        ToolSpec(
+            name="get_announcements",
+            description="取该票最近的上市公司公告（标题+日期）。用于判断近期有没有实质公司事件（业绩预告/重组/增减持等）。",
+            parameters=_p(
+                {
+                    "symbol": {"type": "string"},
+                    "n": {"type": "integer", "description": "取几条，默认 8，最多 30"},
+                },
+                ["symbol"],
+            ),
+            handler=_tool_get_announcements,
+        ),
+        ToolSpec(
+            name="get_fund_flow_trend",
+            description=(
+                "取该票近 121 个交易日的资金流日频序列汇总（主力/超大单净额合计、净流入天数）。"
+                "用于判断主力资金是在持续流入还是持续流出。"
+            ),
+            parameters=_p({"symbol": {"type": "string"}}, ["symbol"]),
+            handler=_tool_get_fund_flow_trend,
+        ),
+        ToolSpec(
+            name="get_intraday_minute",
+            description=(
+                "取该票当日分时（雪球分钟 bar）：开盘价、日内高低、均价、成交量、尾盘半小时量占比。"
+                "用于看日内节奏：开盘冲高回落、尾盘拉升、收盘是否站上均价。"
+            ),
+            parameters=_p({"symbol": {"type": "string"}}, ["symbol"]),
+            handler=_tool_get_intraday_minute,
+        ),
+        ToolSpec(
+            name="get_dragon_tiger",
+            description=(
+                "取该票龙虎榜历史：上榜原因、榜单买卖净额、成交占比，以及 D1/D2/D5/D10 后续涨幅。"
+                "用于看游资参与痕迹，以及「以前上榜后到底涨没涨」的硬证据（该票没上过榜会返回空）。"
+            ),
+            parameters=_p({"symbol": {"type": "string"}}, ["symbol"]),
+            handler=_tool_get_dragon_tiger,
+        ),
     ]
 
 
@@ -424,8 +635,11 @@ def run_tool(spec: ToolSpec, args: dict[str, Any], ctx: ResearchContext) -> str:
         raw = spec.handler(args, ctx)
     except EXTERNAL_FAILURES as e:
         raw = f"工具 {spec.name} 查询失败：{type(e).__name__}（该数据本轮不可用）"
-    except (KeyError, TypeError, ValueError) as e:
-        raw = f"工具 {spec.name} 参数/数据异常：{type(e).__name__}"
+    except (KeyError, TypeError, ValueError, AttributeError, IndexError) as e:
+        # ⚠ 工具边界上**显式列出**常见数据形状错误，而不是「捕获所有异常」：
+        #   一个工具挂掉不该让整轮调研作废（模型会看到「该工具不可用」并继续用别的），
+        #   但也不能吞掉一切 —— 异常类型会写进返回文本。
+        raw = f"工具 {spec.name} 数据形状异常：{type(e).__name__}（该数据本轮不可用）"
     if not isinstance(raw, str):
         raw = json.dumps(raw, ensure_ascii=False, default=str)
     return _truncate(raw)

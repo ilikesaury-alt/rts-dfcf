@@ -184,13 +184,20 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
   网关**支持 tool-calling**（实测 `finish_reason=tool_calls`）⇒ 工具箱
   `ai_digest/research.py`（8 个：K线/实时报价/资金流/概念/板块热力图/市场概览/飙升榜/
   系统历史）+ 循环 `ai_digest/agent.py::run_research`（≤8 轮/≤20 次调用）。
-  幻觉巡检的比对基准随之升级为**全部工具输出全文**。三个坑（都实测踩过）：
+  幻觉巡检的比对基准随之升级为**全部工具输出全文**。工具箱共 **11 个**（8 + 3）：
+  K线 / 实时报价 / 资金流快照 / 概念 / 板块热力图 / 市场概览 / 飙升榜 / 系统历史 /
+  **公告**（东财 `np-anotice-stock`，公司层面真实事件）/ **分时**（雪球 minute.json，日内节奏：
+  均价线、尾盘半小时量占比）/ **多日资金流趋势**（东财 fflow `klt=101`，121 个交易日的
+  主力/超大单净额合计与净流入天数）/ **龙虎榜**（东财 `RPT_DAILYBILLBOARD_DETAILSNEW`，
+  含 D1/D2/D5/D10 后续涨幅）。三个坑（都实测踩过）：
   ① **必须流式**（非流式被上游 CDN 以 524 掐断 100s，流式 5s）；② **SSE 必须显式 UTF-8
   解码**（requests 对无 charset 的 text/* 默认 ISO-8859-1 ⇒ 整篇 mojibake）；
   ③ **工具输出必须给人读单位**（元→万/亿、量→万股），否则模型自己换算的数字会被巡检
   判成编造。工具的列名/字段名**必须实测**（`daily_kline.percent` 不是 `pct`；
   `appearances` 无 category/score/excluded；东财是 `main_net`/`super_net`/`turnover`）——
   猜错会 OperationalError ⇒ 工具**静默失效**。
+  ④ **东财 fflow `klt=101` 是日频不是分时**（121 个交易日；`klt=1` 本环境取不到 0 点）⇒
+  工具名为 `get_fund_flow_trend`；东财公告的 `columns` 是**字符串列表**（不是 dict 列表）。
 - **push_gate「削减 88%」口径已作废**（测量总体错了：recommendations 原始行含 pool_pick，
   生产卡片到不了）；真实削减量未知，需用真实卡片总体重测。
 - **pool_pick 退池后三处不能跟着删**（存量 988 行仍在 DB）：`view/assemble.py` 的

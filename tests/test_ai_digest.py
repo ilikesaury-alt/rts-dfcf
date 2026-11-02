@@ -731,6 +731,11 @@ def test_research_tools_exist_and_are_wired():
         "get_market_overview",
         "get_board_rank",
         "get_stock_record",
+        # 2026-11-03 新增三类硬数据（消息面 / 日内节奏 / 多日资金趋势）
+        "get_announcements",
+        "get_intraday_minute",
+        "get_fund_flow_trend",
+        "get_dragon_tiger",
     }
     for spec in build_tools():
         sch = spec.schema()
@@ -778,6 +783,100 @@ def test_research_tools_use_real_local_data(digest_db):
         assert "本地 K 线样本" in ov  # 即使指数/涨停池取不到，本地那部分也必须出得来
     finally:
         conn.close()
+
+
+class _FakeEmResp:
+    """东财接口桩（与上面 worker 流式桩同名会互相覆盖，故独立命名）。"""
+
+    def __init__(self, payload):
+        self._payload = payload
+        self.status_code = 200
+
+    def json(self):
+        return self._payload
+
+
+def _fake_requests(payload):
+    class _Mod:
+        @staticmethod
+        def get(url, params=None, timeout=None):
+            return _FakeEmResp(payload)
+
+    return _Mod
+
+
+def test_announcement_columns_are_string_list_not_dict(monkeypatch):
+    """东财公告的 `columns` 实测是**字符串列表**（['公司公告']）—— 当 dict 列表解析会 AttributeError。"""
+    from scanner.ai_digest import em_data
+
+    payload = {
+        "data": {
+            "list": [
+                {"notice_date": "2026-10-30 00:00:00", "title": "2026年三季度报告", "columns": ["公司公告"]},
+                {
+                    "notice_date": "2026-09-22 00:00:00",
+                    "title": "权益分派实施",
+                    "columns": [{"column_name": "分配方案"}],
+                },
+            ]
+        }
+    }
+    monkeypatch.setattr(em_data, "_requests", lambda: _fake_requests(payload))
+    items = em_data.fetch_announcements("SZ300770", 5)
+    assert [i["date"] for i in items] == ["2026-10-30", "2026-09-22"]
+    assert items[0]["type"] == "公司公告"  # 字符串形态
+    assert items[1]["type"] == "分配方案"  # dict 形态也要兼容
+
+
+def test_fund_flow_series_is_daily_not_intraday(monkeypatch):
+    """东财 fflow `klt=101` 是**日频**（121 个交易日）—— 不能当分时曲线用。"""
+    from scanner.ai_digest import em_data
+
+    payload = {
+        "data": {
+            "klines": [
+                "2026-11-02,22384640.0,-33582973.0,11198334.0,6268338.0,16116302.0",
+                "2026-10-30,16245600.0,-1000.0,2000.0,3000.0,4000.0",
+            ]
+        }
+    }
+    monkeypatch.setattr(em_data, "_requests", lambda: _fake_requests(payload))
+    pts = em_data.fetch_intraday_fund_flow("SZ300770")
+    assert len(pts) == 2
+    assert pts[0]["date"] == "2026-11-02"  # 日期不是时间
+    assert pts[0]["main"] == 22384640.0
+    assert pts[0]["xl"] == 16116302.0
+
+
+def test_dragon_tiger_returns_subsequent_returns(monkeypatch):
+    """龙虎榜必须带上 D1/D2/D5/D10 后续涨幅 —— 这是「上榜后到底涨没涨」的硬证据。"""
+    from scanner.ai_digest import em_data
+
+    payload = {
+        "result": {
+            "data": [
+                {
+                    "TRADE_DATE": "2020-07-01 00:00:00",
+                    "EXPLAIN": "2家机构卖出",
+                    "BILLBOARD_NET_AMT": -87477909,
+                    "ACCUM_AMOUNT": 797676534,
+                    "DEAL_AMOUNT_RATIO": 39.29,
+                    "TURNOVERRATE": 4.8,
+                    "CLOSE_PRICE": 202,
+                    "CHANGE_RATE": -9.68,
+                    "D1_CLOSE_ADJCHRATE": 2.22,
+                    "D2_CLOSE_ADJCHRATE": 2.37,
+                    "D5_CLOSE_ADJCHRATE": 7.25,
+                    "D10_CLOSE_ADJCHRATE": 17.66,
+                }
+            ]
+        }
+    }
+    monkeypatch.setattr(em_data, "_requests", lambda: _fake_requests(payload))
+    rows = em_data.fetch_dragon_tiger("SZ300770")
+    assert rows[0]["date"] == "2020-07-01"  # 带时间戳的日期要截断
+    assert rows[0]["d1"] == 2.22 and rows[0]["d10"] == 17.66
+    assert rows[0]["reason"] == "2家机构卖出"
 
 
 def test_tool_failure_returns_human_text_not_exception(digest_db):

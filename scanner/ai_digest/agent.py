@@ -35,6 +35,8 @@ RESEARCH_SYSTEM_PROMPT = "\n".join(
         "1. 先看工具能查什么，然后**主动调用**：每只票至少查 K 线（形态/位置/量能）与资金流（资金方向），",
         "   再查它的概念板块、以及该板块当日谁在领涨（板块共振 vs 个股孤军）、当日市场概览与飙升榜（情绪与热度）。",
         "2. 查询要有目的：拿到数据后要能说清「这只票凭什么可能涨」，而不是把工具输出复述一遍。",
+        "2b. 想看游资痕迹/历史上这类信号涨没涨 → 查 get_dragon_tiger（该票没上过榜会返回空）；"
+        "想看日内节奏 → 查 get_intraday_minute；想看公司有无实质事件 → 查 get_announcements。",
         "3. 你可以多查几轮（例如对最看好的票再查日线细节、查它在系统里的出现史），但要有节制。",
         "",
         "输出要求：",
@@ -78,7 +80,7 @@ def run_research(
     ctx: ResearchContext,
     *,
     max_rounds: int = 8,
-    max_calls: int = 20,
+    max_calls: int = 30,
     tools: list[ToolSpec] | None = None,
 ) -> ResearchResult:
     """跑一轮「模型自己调研」。返回最终文本 + 工具调用记录 + 工具输出全文。"""

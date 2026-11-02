@@ -139,7 +139,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="research=模型自己查真实市场数据后给判断（默认）；analyze=按历史基准率算账；transcribe=纯转述",
     )
     p.add_argument("--max-rounds", type=int, default=8, help="research 模式最多几轮工具调用（默认 8）")
-    p.add_argument("--max-calls", type=int, default=20, help="research 模式最多几次工具调用（默认 20）")
+    p.add_argument("--max-calls", type=int, default=30, help="research 模式最多几次工具调用（默认 30）")
     p.add_argument(
         "--source",
         choices=("auto", "view", "log"),
@@ -386,7 +386,9 @@ def main(argv: list[str] | None = None) -> int:
     print(text)
     if unverified:
         print()
-        print(f"[!] 幻觉巡检：以下数字在素材里找不到（模型编造或换算，请勿采信）：{'、'.join(unverified)}")
+        print(
+            f"[!] 幻觉巡检：以下数字在素材/工具输出里没有逐字出现（可能是概括、四舍五入或自造，请自行核对）：{'、'.join(unverified)}"
+        )
     if tool_summary:
         print()
         print(f"模型自己查了这些（{tool_summary}）：")
