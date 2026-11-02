@@ -221,28 +221,40 @@ python scripts/offboard_nextday.py --json    # 机器可消费
 > `均值差 -7.39%  95% CI [-7.39%, -7.39%]`。守卫
 > `test_paired_ci_refuses_to_report_when_days_below_min`。
 
-### B 段 AI 转述（`scanner/ai_digest/`，2026-11-03）—— **手动触发，不轮询**
+### B 段 AI 分析（`scanner/ai_digest/`，2026-11-03）—— **手动触发，不轮询**
 
-读 `offboard_launch_log` 当日的榜外异动行，让模型把素材转成中文，然后把**素材逐行打出来**
-供人核对。回答的问题是「这 8 行我一眼看不出是什么」，**不是**「该买谁」。
+**2026-11-03 用户决策：默认 `analyze` 模式 = 综合分析 + 筛选值得关注/买入候选。**
+这是**有意打破**本项目「无第二结论源」纪律的产物（个人使用；云端 `/api/ai-explain`
+**不变**，仍是纯转述 + 全红线）。代价写死在实现里：analyze 模式**不过红线词表**
+（拦了就没法给候选），输出标签如实写「含模型主观判断 · 非系统结论」；唯一保留的
+确定性闸是**幻觉巡检**（正文每个数字都必须能在素材里找到，`unverified_numbers`
+非空 → 当场标出 + 退出码 5）。回纯转述：`--mode transcribe`（过全部红线）。
 
 ```
-python -m scanner.ai_digest                  # 最新信号日 → 转述（出网一次）
-python -m scanner.ai_digest --date 2026-11-02
+python -m scanner.ai_digest                  # analyze 模式：最新数据 → 综合分析+候选
+python -m scanner.ai_digest --mode transcribe    # 纯转述（过全部红线，exit 3 = 被拦）
 python -m scanner.ai_digest --materials      # 只打素材，不出网（无凭据也能跑）
 python -m scanner.ai_digest --demo           # 内置样例，零库零网（自检）
-python -m scanner.ai_digest --json           # 结构与云端 /api/ai-explain 对齐
+python -m scanner.ai_digest --json           # 含 unverified_numbers / mode / source
 ```
 
-退出码：**0 成功 / 1 未配置凭据 / 2 上游失败 / 3 触红线被拦 / 4 读库失败或无数据**。
+数据源 `--source auto`（默认）：取**更新的**那个 ——
+`view` = `view_snapshot` 最近一轮**终端打印**的载荷（含**留存行**、实时值、入选理由、
+板块、市况 ctx；视图键名 `volume_ratio`/`float_market_capital`/`current` 在
+`source._normalize_view_row` 收口成素材口径）；`log` = `offboard_launch_log` 最新信号日
+（信号值冻结快照，无留存行）。扫描器今天跑过 ⇒ view 就是「刚才终端上那份」；
+没跑过 ⇒ 自动回退 log（视图快照保留 50 轮）。
+
+退出码：**0 成功 / 1 未配置凭据 / 2 上游失败 / 3 触红线被拦（仅 transcribe）/ 4 读库失败
+或无数据 / 5 幻觉巡检发现编造数字（结果已打印）**。
 凭据：`MAGPIE_BASE_URL` / `MAGPIE_API_KEY` / `MAGPIE_MODEL`（放 `.env`，勿提交；
 CLI 自己 `load_dotenv()`，与 `unified_scanner.py` 同款）。
 
 **四条边界（改前必读）**
 
-1. **只转述，不产生第二结论源**。素材由 `material.build_materials` 从 `offboard_launch_log`
-   只读确定性组装（零 I/O / 零时钟 / 零随机，同输入字节级同输出）；输出**不落库、不进任何
-   计算路径、不进终端主循环、不进飞书**。
+1. **转述模式不产生第二结论源；analyze 模式是用户决策的例外**。素材由
+   `material.build_materials` 只读确定性组装（零 I/O / 零时钟 / 零随机，同输入字节级同输出）；
+   输出**不落库、不进任何计算路径、不进终端主循环、不进飞书**。
 2. **手动触发，不挂主循环**。那边 60s 一轮、单线程串行渲染 ⇒ 自动出网会让
    「刷新频率 = 计费频率」，且一次 20s 外呼会把扫描节拍整体拖慢。
 3. **只做榜外异动段（B 段）**。B 段结构上没有排名/连击/复合分（那是 A 段榜单专属量），
@@ -253,6 +265,7 @@ CLI 自己 `load_dotenv()`，与 `unified_scanner.py` 同款）。
    `首选`/`相比之下`…）—— 这类话**不带任何买卖动词**，动作槽位一条都拦不住，但它已经是
    结论。漂移守卫 `test_ts_slot_vocabulary_is_covered_by_python_guard` 解析 TS 槽位并逐条
    要求 Python 侧存在（Python 允许是**超集**，因为多了比较槽位）：**只改一侧即红**。
+   ⚠ 词表只在 `--mode transcribe` 生效；analyze 模式不过词表（见顶注）。
 
 > ⚠ **素材口径三件事**：① 值取自 `offboard_launch_log`「信号值首次写入即冻结」的快照 ⇒
 > 「信号时涨幅」是**当初以什么身份被推出**的涨幅，不是当前价（列名就这么写，不美化）；

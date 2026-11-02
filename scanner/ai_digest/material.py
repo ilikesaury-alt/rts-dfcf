@@ -16,6 +16,15 @@
    「这个信号有效 / 无效」的判断 —— 而那正是 `scripts/offboard_nextday.py` 刻意
    拒绝下结论的东西（那份报告连「建议」二字都不许出现）。要做绩效复盘请跑那个脚本。
 
+## 两种模式（2026-11-03 用户决策）
+
+- `transcribe`：纯转述（云端 `/api/ai-explain` 同款纪律，过全部红线槽位）；
+- `analyze`（**默认**）：综合分析 + 筛选值得关注/买入候选。这是用户明确要求打破
+  「第二结论源」纪律后的产物（个人使用；决策记录见 AGENTS.md），因此：① 字段表
+  多给板块/资金流/换手/形态/入选理由；② **不过红线词表**（拦了就没法给候选）；
+  ③ 保留唯一一道确定性检查 —— **幻觉巡检**（正文数字必须能在素材里找到，
+  `unverified_numbers` 非空就明打出来）。
+
 ## 缺失即「暂无数据」
 
 拿不到的字段写 `暂无数据`，**不让模型补**（「不得编造」的落地点）。缺失项同时登记进
@@ -24,6 +33,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -37,7 +47,9 @@ __all__ = [
     "MaterialItem",
     "OffboardMaterials",
     "build_materials",
+    "render_material_items",
     "render_materials_block",
+    "unverified_numbers",
 ]
 
 NA = "暂无数据"
@@ -68,6 +80,15 @@ _FIELDS: tuple[tuple[str, str, str], ...] = (
     ("float_cap", "流通市值(亿)", "yi"),
     ("price", "价格", "price"),
     ("first_time", "首次入选", "time"),
+)
+
+#: analyze 模式附加字段：视图行才有的量（launch_log 源没有时显「暂无数据」）。
+_ANALYZE_EXTRA: tuple[tuple[str, str, str], ...] = (
+    ("sector", "板块", "text"),
+    ("ff_pct", "主力净占比(实时)", "pct"),
+    ("turnover_rate", "换手%", "dec2"),
+    ("beauty", "形态标签", "text"),
+    ("reasons", "入选理由", "text"),
 )
 
 
@@ -164,19 +185,39 @@ def build_materials(
     rows: Sequence[Mapping[str, Any]],
     *,
     limit: int | None = None,
+    mode: str = "analyze",
+    market: Mapping[str, Any] | None = None,
 ) -> OffboardMaterials:
-    """`offboard_launch_log` 行 → 素材（纯函数）。
+    """源行 → 素材（纯函数）。
 
     `limit` 在**排序之后**截断（保证截出来的是终端会显示的前 N 行，而不是数据库前 N 行）。
+    `mode`：`analyze`（默认）附加板块/资金流/形态/入选理由；`transcribe` 只用冻结信号字段。
+    `market`：analyze 模式下附一条当轮市况（来自同一份快照的 `ctx`，不是模型自己猜的）。
     """
     ordered = sorted(rows, key=_order_key)
     if limit is not None:
         ordered = ordered[: max(limit, 0)]
 
+    fields = _FIELDS + (_ANALYZE_EXTRA if mode == "analyze" else ())
+
     items: list[MaterialItem] = [
         MaterialItem(id="segment.note", label="本段口径", value=SEGMENT_NOTE),
         MaterialItem(id="segment.count", label="本次只数", value=f"{len(ordered)} 只"),
     ]
+    if mode == "analyze" and market is not None:
+        idx = market.get("market_idx_pct")
+        weak = market.get("weak")
+        items.append(
+            MaterialItem(
+                id="ctx.market",
+                label="当轮市况",
+                value=(
+                    f"创业板指 {idx:+.2f}%；市况标记：{'弱市' if weak else '非弱市'}"
+                    if isinstance(idx, int | float)
+                    else NA
+                ),
+            )
+        )
     missing: list[str] = []
     symbols: list[str] = []
 
@@ -186,7 +227,7 @@ def build_materials(
             # 没有代码的行无法被核对，也不该进素材（正常库里不可能出现）。
             continue
         symbols.append(symbol)
-        for key, label, kind in _FIELDS:
+        for key, label, kind in fields:
             value = _fmt(kind, row.get(key))
             if value == NA:
                 missing.append(f"{symbol}.{key}")
@@ -235,3 +276,30 @@ def render_materials_block(m: OffboardMaterials) -> str:
 def render_material_items(m: OffboardMaterials) -> str:
     """素材的逐项原样视图（`--materials`）：与发给模型的 `id | label | value` 完全一致。"""
     return "\n".join(f"  {i.id} | {i.label} | {i.value}" for i in m.items)
+
+
+# ── 幻觉巡检（analyze 模式的唯一确定性闸，2026-11-03）────────────────────────────
+#
+# 红线词表在 analyze 模式被刻意关掉（拦了就没法给候选），但「编造数字」必须仍然拦 ——
+# 手段是事后核对：正文里出现的**每一个数字**都必须能在「模型实际看到的提示词」里找到。
+# 按浮点值比对（素材里是 +6.20%，模型写 6.2 算同一个数）；比对基准是**完整 user 消息**
+# 而不是 items —— 这样日期、「第N只」序号、缺失项披露这些提示词里的合法数字不会误报。
+
+_NUM_RE = re.compile(r"\d+(?:\.\d+)?")
+
+
+def unverified_numbers(text: str, user_prompt: str) -> list[str]:
+    """`text` 里出现、但 `user_prompt`（模型实际看到的素材）里找不到的数字（升序去重）。
+
+    非空 = 模型至少编了一个数 —— 输出侧必须把它**显式打出来**，而不是悄悄当没看见。
+    """
+    material_values = {float(s) for s in _NUM_RE.findall(user_prompt or "")}
+    out: set[str] = set()
+    for token in _NUM_RE.findall(text or ""):
+        try:
+            v = float(token)
+        except ValueError:  # pragma: no cover - 正则已保证是数字
+            continue
+        if v not in material_values:
+            out.add(token)
+    return sorted(out, key=lambda s: (len(s), s))

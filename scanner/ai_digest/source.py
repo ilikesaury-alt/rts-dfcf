@@ -72,3 +72,67 @@ def load_offboard_rows(conn: sqlite3.Connection, date: str) -> list[dict]:
     except sqlite3.Error as e:
         raise OffboardSourceError(f"读取 offboard_launch_log 失败：{e}") from None
     return [dict(zip(_COLUMNS, r, strict=True)) for r in rows]
+
+
+# ── 视图快照源（2026-11-03，用户需求：拿「最近一次终端打印」的数据分析）─────────
+#
+# `view_snapshot` 存的是主循环每轮 `serialize_view` 的完整载荷（m021，保留 50 轮）——
+# 与终端渲染、云端上报是**同一份**。B 段行在这里比 launch_log 多三样东西：
+# **留存行**（终端有、launch_log 无）、**实时值**（percent/量比是打印那刻的，不是冻结值）、
+# **入选理由/板块/形态标签**（analyze 模式的关键素材）。
+
+
+def _normalize_view_row(r: dict) -> dict:
+    """视图行键名 → 素材口径键名（两张表对同一个量的叫法不同，必须在这里收口）。"""
+    reasons = r.get("reasons")
+    if isinstance(reasons, list):
+        reasons = "；".join(str(x) for x in reasons if str(x).strip())
+    elif not isinstance(reasons, str):
+        reasons = ""
+    return {
+        "symbol": r.get("symbol") or r.get("code") or "",
+        "name": r.get("name"),
+        "tier": r.get("tier"),
+        "percent": r.get("percent"),
+        "accum_5d": r.get("accum_5d"),
+        # 视图行键是 `volume_ratio`（`OffboardCandidate` 字段名），launch_log 列是 `vol_ratio`
+        "vol_ratio": r.get("volume_ratio", r.get("vol_ratio")),
+        "main_pct": r.get("main_pct"),
+        "amount": r.get("amount"),
+        # 同上：视图 `float_market_capital` / `current` ↔ launch_log `float_cap` / `price`
+        "float_cap": r.get("float_market_capital", r.get("float_cap")),
+        "price": r.get("current", r.get("price")),
+        "first_time": None,  # 视图行没有这个量（那是 launch_log 的「首次入选」）
+        # analyze 模式附加（transcribe 模式不消费，字段表里不列即可）
+        "sector": r.get("sector"),
+        "ff_pct": r.get("ff_pct"),
+        "turnover_rate": r.get("turnover_rate"),
+        "beauty": r.get("beauty"),
+        "reasons": reasons or None,
+    }
+
+
+def load_latest_view_offboard(conn: sqlite3.Connection) -> tuple[str, str, list[dict], dict] | None:
+    """最近一轮终端打印的 B 段行 → `(date, time, rows, market)`；无快照/无行返回 None。
+
+    `rows` 保持载荷里的顺序（= 终端显示顺序，`_flat_row` 不重排）；`market` 是当轮
+    市况（`ctx.marketIdxPct` / `weak`），供 analyze 模式交代环境。
+    """
+    from scanner.local_view_cache import load_latest
+
+    payload = load_latest(conn)
+    if not payload:
+        return None
+    regions = payload.get("regions") or {}
+    raw = regions.get("offboard") or []
+    if not isinstance(raw, list):
+        return None
+    rows = [_normalize_view_row(r) for r in raw if isinstance(r, dict) and (r.get("symbol") or r.get("code"))]
+    if not rows:
+        return None
+    ctx = payload.get("ctx") or {}
+    market = {
+        "market_idx_pct": ctx.get("marketIdxPct"),
+        "weak": ctx.get("weak"),
+    }
+    return str(payload.get("date") or ""), str(payload.get("time") or ""), rows, market

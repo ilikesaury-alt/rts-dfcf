@@ -25,7 +25,8 @@ from scanner.utils import EXTERNAL_FAILURES
 __all__ = [
     "AIUpstreamError",
     "MagpieConfig",
-    "SYSTEM_PROMPT",
+    "SYSTEM_PROMPT_ANALYZE",
+    "SYSTEM_PROMPT_TRANSCRIBE",
     "build_messages",
     "magpie_config",
     "transcribe",
@@ -61,8 +62,8 @@ def magpie_config(env: Mapping[str, str] | None = None) -> MagpieConfig | None:
     return MagpieConfig(base_url=base_url, api_key=api_key, model=model)
 
 
-#: 系统提示词：**剥夺模型的结论能力**，只留转述。
-SYSTEM_PROMPT = "\n".join(
+#: 系统提示词（transcribe 模式）：**剥夺模型的结论能力**，只留转述。
+SYSTEM_PROMPT_TRANSCRIBE = "\n".join(
     [
         "你是股票扫描器的「信号转述器」，不是分析师。",
         "用户给你一段「榜外异动」观察段的素材（每行：编号 | 项目 | 值）。",
@@ -80,8 +81,29 @@ SYSTEM_PROMPT = "\n".join(
     ]
 )
 
+#: 系统提示词（analyze 模式，默认）：允许比较、排序、筛选候选 —— 这是 2026-11-03 用户
+#: 决策打破「第二结论源」纪律后的产物（决策记录见 AGENTS.md）。但**编造仍然禁止**：
+#: 每一个理由都必须指向素材里的字段；素材撑不起的量（目标价/止损位/后续走势）不许给。
+SYSTEM_PROMPT_ANALYZE = "\n".join(
+    [
+        "你是股票扫描器的分析助手。用户给你一段「榜外异动」观察段的素材（每行：编号 | 项目 | 值）。",
+        "你的任务：综合分析这段素材，筛选出**值得重点关注/买入候选**的票，并给出排序和理由。",
+        "硬性规则：",
+        "1. 每一条理由都必须指向素材里出现的字段（量比/主力净占比/涨幅/5日累计/层/板块/资金流/换手/形态标签/入选理由），",
+        "   说不清楚为什么入选的票不要选。",
+        "2. 只许使用素材里出现的字段与数值，一个数字都不许新增、估算、换算、求平均或求和——事后有机器核对，编了必被标出。",
+        "3. 素材写「暂无数据」的项目就说明该项缺失，绝不猜测、绝不用常识补齐。",
+        "4. 给出排序（第1/第2…），并明确说出你把某只排在前面的字段依据；证据不足以区分时直说「无法区分」，不要硬排。",
+        "5. 同时给出主要风险：从素材能看到的劣势（如 5日累计已高/流通盘过小/换手异常/主力占比低）也要写，不许只报喜。",
+        "6. 禁止给出目标价、止损位、仓位建议——素材无法支撑这些数字，给了就是编造。",
+        "7. 「层级」只有 T1（量先动·价未动）与 T2（启动首日）两种；T2 当日势能强于 T1，但 T1 的「价未动」样本是另一类观察。",
+        "8. 市况素材（若给了创业板指/弱市标记）可以用来解释整体环境，但不要预测大盘。",
+        "9. 不要用 Markdown：不要列表符号、不要加粗、不要行尾双空格；需要分段就用单个换行。",
+    ]
+)
 
-def build_messages(m: OffboardMaterials) -> list[dict[str, str]]:
+
+def build_messages(m: OffboardMaterials, mode: str = "analyze") -> list[dict[str, str]]:
     """素材 → 提示词消息（纯函数，便于测试断言「模型只看得到素材」）。"""
     lines = "\n".join(f"{i.id} | {i.label} | {i.value}" for i in m.items)
     user = "\n".join(
@@ -93,14 +115,17 @@ def build_messages(m: OffboardMaterials) -> list[dict[str, str]]:
             f"缺失项：{'、'.join(m.missing) if m.missing else '无'}",
         ]
     )
+    system = SYSTEM_PROMPT_ANALYZE if mode == "analyze" else SYSTEM_PROMPT_TRANSCRIBE
     return [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
 
 
-def transcribe(cfg: MagpieConfig, materials: OffboardMaterials, *, timeout: float = TIMEOUT_S) -> str:
-    """调用模型，返回转述文本。任何失败一律抛 `AIUpstreamError`（CLI 转退出码 2）。"""
+def transcribe(
+    cfg: MagpieConfig, materials: OffboardMaterials, *, timeout: float = TIMEOUT_S, mode: str = "analyze"
+) -> str:
+    """调用模型，返回文本。任何失败一律抛 `AIUpstreamError`（CLI 转退出码 2）。"""
     try:
         import requests
     except ImportError:  # pragma: no cover - 环境相关
@@ -116,7 +141,7 @@ def transcribe(cfg: MagpieConfig, materials: OffboardMaterials, *, timeout: floa
         #   若中转默认走 SSE，响应体不是单个 JSON，`resp.json()` 会解析失败并被误报成
         #   「服务不可用」—— 那是把协议协商问题伪装成故障，最难查。
         "stream": False,
-        "messages": build_messages(materials),
+        "messages": build_messages(materials, mode),
     }
     try:
         resp = requests.post(

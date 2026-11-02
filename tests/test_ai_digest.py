@@ -27,7 +27,13 @@ from scanner.ai_digest.material import (
     render_material_items,
     render_materials_block,
 )
-from scanner.ai_digest.source import OffboardSourceError, connect_readonly, latest_signal_date, load_offboard_rows
+from scanner.ai_digest.source import (
+    OffboardSourceError,
+    connect_readonly,
+    latest_signal_date,
+    load_latest_view_offboard,
+    load_offboard_rows,
+)
 
 PKG_DIR = Path(__file__).resolve().parents[1] / "scanner" / "ai_digest"
 TS_GUARD = Path(__file__).resolve().parents[1] / "rts-panel-cloud" / "worker" / "src" / "explain" / "guard.ts"
@@ -154,12 +160,26 @@ def test_materials_are_deterministic():
 
 
 def test_missing_field_becomes_na_and_is_registered():
-    m = build_materials("2026-11-02", [_row(accum_5d=None)])
+    m = build_materials("2026-11-02", [_row(accum_5d=None)], mode="transcribe")
     item = next(i for i in m.items if i.id == "sb.SZ300758.accum_5d")
     assert item.value == NA
     assert "SZ300758.accum_5d" in m.missing
     # 未缺的项不得进 missing（否则「缺失披露」本身失真）
     assert not [x for x in m.missing if not x.endswith(".accum_5d")]
+
+
+def test_analyze_mode_adds_view_only_fields_and_market_ctx():
+    """analyze（默认）多给板块/资金流/换手/形态/入选理由 + 当轮市况；transcribe 不给。"""
+    rows = [_row(sector="化工", ff_pct=5.6, reasons="启动首日；美感:暴跌日")]
+    a = build_materials("2026-11-02", rows, market={"market_idx_pct": 1.24, "weak": False})
+    ids = [i.id for i in a.items]
+    assert "sb.SZ300758.reasons" in ids and "ctx.market" in ids
+    reasons = next(i for i in a.items if i.id == "sb.SZ300758.reasons")
+    assert "美感" in reasons.value
+    assert "创业板指 +1.24%" in next(i for i in a.items if i.id == "ctx.market").value
+
+    t = build_materials("2026-11-02", rows, mode="transcribe")
+    assert not [i for i in t.items if i.id == "ctx.market" or ".reasons" in i.id]
 
 
 def test_dirty_numeric_strings_degrade_to_na_not_zero():
@@ -303,11 +323,11 @@ def test_transcribe_strips_trailing_whitespace_only(monkeypatch):
         sink,
     )
 
-    from scanner.ai_digest.llm import SYSTEM_PROMPT, MagpieConfig, transcribe
+    from scanner.ai_digest.llm import SYSTEM_PROMPT_TRANSCRIBE, MagpieConfig, transcribe
 
-    out = transcribe(MagpieConfig("https://magpie.test/v1", "k-test", "m-test"), _materials())
+    out = transcribe(MagpieConfig("https://magpie.test/v1", "k-test", "m-test"), _materials(), mode="transcribe")
     assert out == "第一句。\n第二句。"
-    assert "不要行尾双空格" in SYSTEM_PROMPT
+    assert "不要行尾双空格" in SYSTEM_PROMPT_TRANSCRIBE
 
 
 def test_magpie_config_requires_all_three():
@@ -404,7 +424,135 @@ def test_cli_without_credentials_exits_1_and_still_prints_materials(capsys, monk
     assert "[素材]" in out and "SZ300758" in out  # 素材照打
 
 
-# ── 5. 包级纪律（零写 / 不用裸 except）─────────────────────────────────────────
+# ── 5. view 源 / 数据源选择 / analyze 模式 ───────────────────────────────────
+
+
+def test_unverified_numbers_detection():
+    """幻觉巡检：正文数字必须能在提示词里找到；按浮点值比对（6.2 ≡ 6.20）。"""
+    from scanner.ai_digest.material import unverified_numbers
+
+    prompt = "信号日：2026-11-02\nsb.X.vol_ratio | 量比 | 2.31\nsb.X.accum_5d | 5日 | +6.20%\n第1只"
+    assert unverified_numbers("量比 2.31、5日累计 6.2%，第1只。", prompt) == []
+    assert unverified_numbers("目标价 18.5，涨幅 2.3%", prompt) == ["2.3", "18.5"]
+    assert unverified_numbers("", prompt) == []
+
+
+def test_view_source_normalizes_keys(digest_db):
+    """视图行键名（volume_ratio/float_market_capital/current）必须收口成素材口径。"""
+    payload = {
+        "date": "2026-11-03",
+        "time": "10:31:00",
+        "seq": 1,
+        "regions": {
+            "offboard": [
+                {
+                    "symbol": "SZ300758",
+                    "code": "300758",
+                    "name": "七彩化学",
+                    "tier": "T2",
+                    "percent": 4.1,
+                    "volume_ratio": 2.31,
+                    "main_pct": 3.2,
+                    "amount": 3.2e8,
+                    "float_market_capital": 2.53e9,
+                    "current": 15.2,
+                    "sector": "化工",
+                    "ff_pct": 5.6,
+                    "turnover_rate": 8.3,
+                    "beauty": "深回调",
+                    "reasons": ["启动首日", "美感:深回调"],
+                }
+            ],
+            "main": [],
+        },
+        "ctx": {"marketIdxPct": 1.24, "weak": False},
+    }
+    conn_w = sqlite3.connect(str(digest_db))
+    try:
+        conn_w.execute(
+            "INSERT INTO view_snapshot(date, time, seq, payload, updated_at) VALUES(?,?,?,?,?)",
+            ("2026-11-03", "10:31:00", 1, json.dumps(payload, ensure_ascii=False), "now"),
+        )
+        conn_w.commit()
+    finally:
+        conn_w.close()
+
+    conn = connect_readonly(str(digest_db))
+    try:
+        snap = load_latest_view_offboard(conn)
+    finally:
+        conn.close()
+    assert snap is not None
+    date, tm, rows, market = snap
+    assert (date, tm) == ("2026-11-03", "10:31:00")
+    row = rows[0]
+    assert row["vol_ratio"] == 2.31 and row["float_cap"] == 2.53e9 and row["price"] == 15.2
+    assert row["reasons"] == "启动首日；美感:深回调"
+    assert market == {"market_idx_pct": 1.24, "weak": False}
+
+    m = build_materials(date, rows, market=market)
+    assert next(i for i in m.items if i.id == "sb.SZ300758.vol_ratio").value == "2.31"
+    assert "第1只·入选理由" in [i.label for i in m.items]
+
+
+def test_auto_source_prefers_newer_terminal_snapshot(digest_db, monkeypatch):
+    """auto：view 快照更新（= 最近一次终端打印）就用它；log 更新则回退 log。"""
+    import scanner.ai_digest.__main__ as cli
+
+    monkeypatch.setattr(cli, "resolve_db_path", lambda: str(digest_db))
+    args = cli._parse_args(["--demo"])
+    args.demo = False
+    args.source = "auto"
+    args.date = None
+    info = cli._resolve_rows(args)
+    # digest_db 里 view 快照（2026-11-03，上一用例插入）比 launch_log（2026-11-02）新
+    assert info["source"] == "view" and info["date"] == "2026-11-03"
+
+
+def test_cli_analyze_mode_accepts_advice_but_transcribe_refuses_it(capsys, monkeypatch):
+    """同一个含建议的输出：analyze（默认）放行并打「非系统结论」标签；transcribe 整段拦下。"""
+    import scanner.ai_digest.__main__ as cli
+    import scanner.ai_digest.llm as llm
+
+    monkeypatch.setattr(cli, "_load_env", lambda: None)
+    monkeypatch.setenv("MAGPIE_BASE_URL", "https://magpie.test/v1")
+    monkeypatch.setenv("MAGPIE_API_KEY", "k-test")
+    monkeypatch.setenv("MAGPIE_MODEL", "m-test")
+    advice = "建议重点关注第1只，量比最高。"
+    monkeypatch.setattr(llm, "transcribe", lambda cfg, mats, mode="analyze", timeout=None: advice)
+
+    code = cli.main(["--demo", "--mode", "analyze"])
+    out = capsys.readouterr().out
+    assert code == 0 and "建议重点关注第1只" in out
+    assert "非系统结论" in out  # analyze 的标签必须如实
+
+    code = cli.main(["--demo", "--mode", "transcribe"])
+    out = capsys.readouterr().out
+    assert code == 3 and advice not in out and "触及红线" in out
+
+
+def test_cli_flags_fabricated_number_and_exits_5(capsys, monkeypatch):
+    """analyze 模式唯一的确定性闸：编造数字必须被标出，且退出码 5 可被脚本拦截。"""
+    import scanner.ai_digest.__main__ as cli
+    import scanner.ai_digest.llm as llm
+
+    monkeypatch.setattr(cli, "_load_env", lambda: None)
+    monkeypatch.setenv("MAGPIE_BASE_URL", "https://magpie.test/v1")
+    monkeypatch.setenv("MAGPIE_API_KEY", "k-test")
+    monkeypatch.setenv("MAGPIE_MODEL", "m-test")
+    monkeypatch.setattr(
+        llm,
+        "transcribe",
+        lambda cfg, mats, mode="analyze", timeout=None: "第1只量比 2.31，目标价 18.5 元。",
+    )
+
+    code = cli.main(["--demo", "--mode", "analyze"])
+    out = capsys.readouterr().out
+    assert code == 5
+    assert "幻觉巡检" in out and "18.5" in out
+
+
+# ── 6. 包级纪律（零写 / 不用裸 except）─────────────────────────────────────────
 
 
 def _py_sources() -> list[Path]:
