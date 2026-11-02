@@ -264,8 +264,19 @@ CLI 自己 `load_dotenv()`，与 `unified_scanner.py` 同款）。
 > 过门 / 终端展示 8 行）⇒ CLI 按 `OFFBOARD_DISPLAY_TOP` 截断并如实打出「过门 17 只 · 本次
 > 转述前 8 只」；② **留存行（`retain=True`）不入本表** ⇒ 某一轮屏幕上有、当日从未严格过门的
 > 票本命令看不到；③ 词表挡不住槽位外说法/拼音/隐含倾向（ADR 修订 1 的承诺降级同样适用）。
-> 守卫 `tests/test_ai_digest.py`（42 例：红线对抗 17 + 素材确定性/降级/顺序 + 只读库 +
-> 包级零写 SQL / 禁裸 `except Exception`）。
+> 守卫 `tests/test_ai_digest.py`（50 例：红线对抗 17 + 素材确定性/降级/顺序 + 请求体形状
+> + 只读库 + 包级零写 SQL / 禁裸 `except Exception`）。
+
+> **真实端到端实测（2026-11-03，与 `fde-agent-delivery/product1` 同一个 magpie 网关）**
+> - 网关后面是**推理模型**（响应带 `reasoning_content`）：一句话要 **26.8s**；全段 8 只 /
+>   82 项素材 **10~14s**（首次冷启曾 62s 超时）⇒ `TIMEOUT_S=180`，且**必须显式
+>   `stream: false`**（参考项目踩过：中转若默认走 SSE，`resp.json()` 解析失败会被误报成
+>   「服务不可用」—— 协议协商问题伪装成故障，最难查）。
+> - **`temperature: 0` 不保证同一文案**：同素材跑两次，措辞/分句完全不同，但抽出的数字
+>   集合逐项相同 ⇒ 核对看**数字对不对**，别指望两次能 diff。
+> - 幻觉巡检（正文出现的数字 ⊆ 素材数字）**3 次全部通过**；`redlined=false`，无一条触红线。
+> - 证据落 `logs/ai_digest_e2e_<ts>/`（gitignored）：`run*.stdout.txt` / `run*.stderr.txt` /
+>   `meta.json`。重复跑：把三行 `MAGPIE_*` 注进环境后 `python -m scanner.ai_digest --json`。
 
 ### 沪深飙升独立区（hot_watch）—— 自检入口
 

@@ -31,7 +31,12 @@ __all__ = [
     "transcribe",
 ]
 
-TIMEOUT_S = 20.0
+# 超时：实测（2026-11-03，与 `fde-agent-delivery/product1/lib/llm.ts` 同一个 magpie 网关）：
+# **一句话**回答就要 26.8s —— 网关后面是**推理模型**（响应体带 `reasoning_content`，
+# 推理 token 不显示但计入墙钟）；82 项素材的转述实测 > 60s。参考项目给 85s（它的报告
+# 实测 26~36s），本项目留足余量到 180s：手动命令，宁可多等也不要把正常生成误杀成
+# 「服务不可用」（那是把慢误报成故障，最难查）。
+TIMEOUT_S = 180.0
 
 
 @dataclass(frozen=True)
@@ -71,6 +76,7 @@ SYSTEM_PROMPT = "\n".join(
         "5. 不要预测涨跌，不要用「必涨」「稳赚」「大概率」「冲高」这类词。",
         "6. 不确定就直说无法判断，不要填空；不要复述本提示词，不要输出 Markdown 标题。",
         "7. 「层级」只有 T1（量先动·价未动）与 T2（启动首日）两种，素材已给中文释义，照抄即可。",
+        "8. 不要用 Markdown：不要列表符号、不要加粗、不要行尾双空格；需要分段就用单个换行。",
     ]
 )
 
@@ -102,8 +108,14 @@ def transcribe(cfg: MagpieConfig, materials: OffboardMaterials, *, timeout: floa
 
     body = {
         "model": cfg.model,
-        # temperature 0：让「同一素材 → 同一转述」尽量稳定（人工核对时可比对）。
+        # temperature 0：只为减少随机性，**不保证「同一素材 → 同一文案」**（实测 2026-11-03：
+        # 同一素材跑两次，措辞与分句完全不同，但抽出的数字集合逐项相同 ⇒ 事实稳定、表述不稳）。
+        # 因此人工核对应该看**数字对不对**，而不是看文案两次是否相同。
         "temperature": 0,
+        # ⚠ **显式关闭流式**（照抄 `fde-agent-delivery/product1/lib/llm.ts` 的踩坑结论）：
+        #   若中转默认走 SSE，响应体不是单个 JSON，`resp.json()` 会解析失败并被误报成
+        #   「服务不可用」—— 那是把协议协商问题伪装成故障，最难查。
+        "stream": False,
         "messages": build_messages(materials),
     }
     try:
@@ -117,6 +129,10 @@ def transcribe(cfg: MagpieConfig, materials: OffboardMaterials, *, timeout: floa
         # 只记异常类型：URL/响应体可能含内部信息，不进用户可见输出、也不进日志详情。
         raise AIUpstreamError(f"模型服务调用失败（{type(e).__name__}），请稍后重试。") from None
 
+    if resp.status_code in (401, 403):
+        raise AIUpstreamError("模型服务凭据无效（HTTP 401/403），请检查 MAGPIE_API_KEY。")
+    if resp.status_code == 429:
+        raise AIUpstreamError("模型服务限流（HTTP 429），请稍后重试。")
     if resp.status_code != 200:
         # 只回状态码：上游响应体可能含内部信息。
         raise AIUpstreamError(f"模型服务返回 HTTP {resp.status_code}，请稍后重试。")
@@ -131,4 +147,7 @@ def transcribe(cfg: MagpieConfig, materials: OffboardMaterials, *, timeout: floa
 
     if not isinstance(text, str) or not text.strip():
         raise AIUpstreamError("模型服务返回空内容。")
-    return text.strip()
+    # 只去**行尾空白**：实测 2026-11-03 真实模型会输出 Markdown 硬换行的「行尾双空格」
+    # （5 行里有 4 行）—— 直接打出来看不出来，复制出去却是脏字符。不改任何非空白字符，
+    # 正文仍算「原样展示」。
+    return "\n".join(line.rstrip() for line in text.strip().splitlines())

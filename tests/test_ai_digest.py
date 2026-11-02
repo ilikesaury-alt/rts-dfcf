@@ -214,7 +214,115 @@ def test_renderers_are_pure_strings_and_cover_every_symbol():
         assert f"sb.{sym}.name" in items
 
 
-# ── 3. 读侧：只读、最新日、无副作用 ────────────────────────────────────────────
+# ── 3. LLM 调用形状（照抄 fde-agent-delivery/product1/lib/llm.ts 的踩坑结论）───────────
+
+
+class _FakeResp:
+    def __init__(self, status_code=200, payload=None):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+def _patch_post(monkeypatch, resp, sink):
+    import requests
+
+    def fake_post(url, **kwargs):
+        sink.append({"url": url, **kwargs})
+        return resp
+
+    monkeypatch.setattr(requests, "post", fake_post)
+
+
+def _materials():
+    return build_materials("2026-11-02", [_row(), _row(symbol="SZ301171", tier="T1")])
+
+
+def test_transcribe_request_shape(monkeypatch):
+    """`stream: false` 必须显式发。
+
+    参考项目实测：若中转默认走 SSE，响应体不是单个 JSON ⇒ `resp.json()` 解析失败，
+    被误报成「服务不可用」—— 协议协商问题伪装成故障，最难查。
+    """
+    sink: list[dict] = []
+    _patch_post(monkeypatch, _FakeResp(200, {"choices": [{"message": {"content": "本段共 2 只票。"}}]}), sink)
+
+    from scanner.ai_digest.llm import MagpieConfig, transcribe
+
+    out = transcribe(MagpieConfig("https://magpie.test/v1", "k-test", "m-test"), _materials())
+    assert out == "本段共 2 只票。"
+
+    assert len(sink) == 1
+    call = sink[0]
+    assert call["url"] == "https://magpie.test/v1/chat/completions"
+    assert call["headers"]["Authorization"] == "Bearer k-test"
+    assert call["timeout"] <= 180  # 推理模型实测 25~90s；但仍不该无限挂着
+    body = json.loads(call["data"].decode("utf-8") if isinstance(call["data"], bytes) else call["data"])
+    assert body["stream"] is False
+    assert body["temperature"] == 0
+    assert body["model"] == "m-test"
+    # 模型只看得到素材：prompt 里必须带素材 id 与段口径，且带缺失项披露
+    user = body["messages"][1]["content"]
+    assert "sb.SZ300758.vol_ratio" in user and "榜外异动段" in user and "缺失项" in user
+
+
+@pytest.mark.parametrize(
+    ("status", "expect"),
+    [(401, "凭据无效"), (403, "凭据无效"), (429, "限流"), (500, "HTTP 500")],
+)
+def test_transcribe_maps_http_status_to_user_facing_error(monkeypatch, status, expect):
+    sink: list[dict] = []
+    _patch_post(monkeypatch, _FakeResp(status), sink)
+
+    from scanner.ai_digest.llm import AIUpstreamError, MagpieConfig, transcribe
+
+    with pytest.raises(AIUpstreamError) as ei:
+        transcribe(MagpieConfig("https://magpie.test/v1", "k-test", "m-test"), _materials())
+    assert expect in str(ei.value)
+    assert "k-test" not in str(ei.value)  # 密钥永不进用户可见文案
+
+
+def test_transcribe_rejects_empty_content(monkeypatch):
+    sink: list[dict] = []
+    _patch_post(monkeypatch, _FakeResp(200, {"choices": [{"message": {"content": "   "}}]}), sink)
+
+    from scanner.ai_digest.llm import AIUpstreamError, MagpieConfig, transcribe
+
+    with pytest.raises(AIUpstreamError):
+        transcribe(MagpieConfig("https://magpie.test/v1", "k-test", "m-test"), _materials())
+
+
+def test_transcribe_strips_trailing_whitespace_only(monkeypatch):
+    """行尾空白必须去掉（Markdown 硬换行产物），但**不得改任何非空白字符**。"""
+    sink: list[dict] = []
+    _patch_post(
+        monkeypatch,
+        _FakeResp(200, {"choices": [{"message": {"content": "第一句。  \n第二句。\t"}}]}),
+        sink,
+    )
+
+    from scanner.ai_digest.llm import SYSTEM_PROMPT, MagpieConfig, transcribe
+
+    out = transcribe(MagpieConfig("https://magpie.test/v1", "k-test", "m-test"), _materials())
+    assert out == "第一句。\n第二句。"
+    assert "不要行尾双空格" in SYSTEM_PROMPT
+
+
+def test_magpie_config_requires_all_three():
+    from scanner.ai_digest.llm import magpie_config
+
+    full = {"MAGPIE_BASE_URL": "https://x/v1", "MAGPIE_API_KEY": "k", "MAGPIE_MODEL": "m"}
+    assert magpie_config(full) is not None
+    for drop in full:
+        partial = {k: v for k, v in full.items() if k != drop}
+        assert magpie_config(partial) is None, f"缺 {drop} 时不该被当成已配置"
+    # 末尾斜线归一化（否则会拼出 //chat/completions）
+    assert magpie_config({**full, "MAGPIE_BASE_URL": "https://x/v1///"}).base_url == "https://x/v1"
+
+
+# ── 4. 读侧：只读、最新日、无副作用 ────────────────────────────────────────────
 
 
 @pytest.fixture(scope="module")
@@ -296,7 +404,7 @@ def test_cli_without_credentials_exits_1_and_still_prints_materials(capsys, monk
     assert "[素材]" in out and "SZ300758" in out  # 素材照打
 
 
-# ── 4. 包级纪律（零写 / 不用裸 except）─────────────────────────────────────────
+# ── 5. 包级纪律（零写 / 不用裸 except）─────────────────────────────────────────
 
 
 def _py_sources() -> list[Path]:

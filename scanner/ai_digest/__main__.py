@@ -180,6 +180,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
+        # 真实网关后面是推理模型：一句话就要 25s+，全段素材可达 1~2 分钟。
+        # 提示写 stderr（不污染 --json 的 stdout），否则用户会以为卡死。
+        print(f"[i] 已发出请求（模型 {cfg.model}；推理模型实测单次 25~90s，请稍等）…", file=sys.stderr)
         text = transcribe(cfg, mats)
     except AIUpstreamError as e:
         if args.json:
