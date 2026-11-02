@@ -922,3 +922,92 @@ def save_market_extra_cache(conn: sqlite3.Connection, data_map: dict[str, dict],
             conn.rollback()
         except sqlite3.Error:
             pass  # 回滚/清理失败无补救手段，外层已记录原始错误；仅捕获 sqlite3.Error，避免吞掉代码 bug
+
+
+def save_offboard_print_snapshot(
+    conn,
+    rows: list,
+    *,
+    today: str | None = None,
+    print_seq: int,
+) -> int:
+    """落「终端这一轮实际打印的榜外异动行」（m022 表 `offboard_print_snapshot`）。
+
+    与 `offboard_launch_log` 的口径差异是**本函数存在的唯一理由**：
+
+    - `offboard_launch_log` = 当日**过门的全部票**（`(date, symbol)` 主键，信号值首次
+      写入即冻结）。实测 2026-11-02 有 17 行，而终端那一轮只打印 8 行、更晚的轮次可能
+      只剩 3 行 —— 「过门过谁」不等于「屏幕上最后显示的是谁」。
+    - `view_snapshot`（m021）能记每轮，但被 `RTS_LOCAL_PANEL` 门控（只有 Electron 壳
+      会注入）⇒ 纯命令行跑扫描器时**一条都不落**（实测库里最新快照停在 10-28，而
+      11-02/11-03 都跑过）。拿它当「终端打印」真源会长期静默失效。
+
+    故本表**只回答一个问题**：`(date, print_seq)` 那一轮，终端渲染了哪几行、按什么顺序、
+    各自的量是多少。`print_seq` 单调递增 ⇒ 读侧 `ORDER BY print_seq DESC` 取最新一轮。
+
+    ⚠ **留存行也要落**：终端上它们确实打印了（带「留存」尾标），而它们**不入**
+    `offboard_launch_log`。用户看到什么，分析就该分析什么。
+
+    fail-open：落库失败仅告警，绝不影响本轮扫描（与 `save_offboard_rejections` 同纪律）。
+    """
+    if not rows:
+        return 0
+    from scanner.config import now_beijing
+
+    rec_date = today or now_beijing().date().isoformat()
+    now_t = now_beijing().isoformat(timespec="seconds")
+    now_hms = now_beijing().strftime("%H:%M:%S")
+
+    payload = []
+    for idx, c in enumerate(rows):
+        reasons = getattr(c, "reasons", None) or []
+        payload.append(
+            (
+                rec_date,
+                now_hms,
+                int(print_seq),
+                getattr(c, "symbol", "") or "",
+                getattr(c, "name", "") or "",
+                getattr(c, "tier", "") or "",
+                getattr(c, "percent", None),
+                getattr(c, "accum_5d", None),
+                getattr(c, "volume_ratio", None),
+                getattr(c, "main_pct", None),
+                getattr(c, "amount", None),
+                getattr(c, "float_market_capital", None),
+                getattr(c, "current", None),
+                getattr(c, "sector", "") or "",
+                getattr(c, "turnover_rate", None),
+                getattr(c, "ff_pct", None),
+                getattr(c, "beauty", "") or "",
+                "；".join(str(x) for x in reasons if str(x).strip()),
+                idx,
+                now_t,
+            )
+        )
+    try:
+        conn.executemany(
+            "INSERT INTO offboard_print_snapshot "
+            "(date, time, print_seq, symbol, name, tier, percent, accum_5d, vol_ratio, main_pct, "
+            "amount, float_cap, price, sector, turnover_rate, ff_pct, beauty, reasons, "
+            "rank_in_print, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(date, print_seq, symbol) DO UPDATE SET "
+            "time = excluded.time, name = excluded.name, tier = excluded.tier, "
+            "percent = excluded.percent, accum_5d = excluded.accum_5d, "
+            "vol_ratio = excluded.vol_ratio, main_pct = excluded.main_pct, "
+            "amount = excluded.amount, float_cap = excluded.float_cap, price = excluded.price, "
+            "sector = excluded.sector, turnover_rate = excluded.turnover_rate, "
+            "ff_pct = excluded.ff_pct, beauty = excluded.beauty, reasons = excluded.reasons, "
+            "rank_in_print = excluded.rank_in_print, updated_at = excluded.updated_at",
+            payload,
+        )
+        conn.commit()
+        return len(payload)
+    except sqlite3.Error as e:
+        logger.warning(f"save_offboard_print_snapshot 落库失败（终端打印快照缺失，不影响扫描）: {e}")
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass  # 回滚失败无补救手段；仅捕 sqlite3.Error，避免吞掉代码 bug
+        return 0

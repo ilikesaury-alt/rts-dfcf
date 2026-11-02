@@ -238,12 +238,21 @@ python -m scanner.ai_digest --demo           # 内置样例，零库零网（自
 python -m scanner.ai_digest --json           # 含 unverified_numbers / mode / source
 ```
 
-数据源 `--source auto`（默认）：取**更新的**那个 ——
-`view` = `view_snapshot` 最近一轮**终端打印**的载荷（含**留存行**、实时值、入选理由、
-板块、市况 ctx；视图键名 `volume_ratio`/`float_market_capital`/`current` 在
-`source._normalize_view_row` 收口成素材口径）；`log` = `offboard_launch_log` 最新信号日
-（信号值冻结快照，无留存行）。扫描器今天跑过 ⇒ view 就是「刚才终端上那份」；
-没跑过 ⇒ 自动回退 log（视图快照保留 50 轮）。
+**数据源 `--source print`（默认）= 终端最后一次实际打印的那几行**（m022 表
+`offboard_print_snapshot`）。三级回退：`print` → `view` → `log`。
+
+> 🔴 **为什么必须是新表 m022**（2026-11-03 用户口径「今日最后一次打印只有 3 只」暴露的）：
+> - `offboard_launch_log` 是**整日累加**（`(date,symbol)` 主键、信号值首写冻结）：实测
+>   2026-11-02 有 17 行，而终端那一轮只打印 8 行、更晚轮次可能只剩 3 行。
+>   「当日过门过谁」≠「屏幕上最后显示的是谁」。
+> - `view_snapshot`（m021）能记每轮，但**被 `RTS_LOCAL_PANEL` 门控**（只有 Electron 壳
+>   注入）⇒ 纯命令行跑扫描器时**一条都不落**（实测库里最新快照停在 10-28，而 11-02/11-03
+>   都跑过扫描）。拿它当「终端打印」真源会长期静默失效。
+>
+> 写侧 = `offboard_watch.run_offboard_watch` 末尾 `save_offboard_print_snapshot`
+> （落 `top` 含**留存行** —— 终端确实打印了它们，而它们不入 launch_log）；
+> `print_seq` = 当轮 `%H%M%S` 单调序，读侧 `ORDER BY print_seq DESC` 取最新一轮。
+> 迁移 `m022_offboard_print_snapshot`；守卫 `test_print_snapshot_is_the_terminal_rows_not_daily_accumulation`。
 
 退出码：**0 成功 / 1 未配置凭据 / 2 上游失败 / 3 触红线被拦（仅 transcribe）/ 4 读库失败
 或无数据 / 5 幻觉巡检发现编造数字（结果已打印）**。
@@ -279,6 +288,40 @@ CLI 自己 `load_dotenv()`，与 `unified_scanner.py` 同款）。
 > 票本命令看不到；③ 词表挡不住槽位外说法/拼音/隐含倾向（ADR 修订 1 的承诺降级同样适用）。
 > 守卫 `tests/test_ai_digest.py`（50 例：红线对抗 17 + 素材确定性/降级/顺序 + 请求体形状
 > + 只读库 + 包级零写 SQL / 禁裸 `except Exception`）。
+
+> ### 历史基准率是素材的一部分（2026-11-03 用户决策，`source.load_baseline_stats`）
+>
+> 「让模型自己调研」在进程内**做不到**：`/chat/completions` 是纯文本补全，无联网、
+> 无 tool-calling 面（该 magpie 网关只暴露这一个端点）。替代实现 = **把项目自己的标签
+> 统计当素材喂进去**（`baseline.stats` 一条，`render_baseline_text` 确定性渲染）。
+>
+> 实测（948 条 `next_day_pct` 标签，口径 = 信号日收盘→次一交易日收盘，命中 = 次日 ≥7%）：
+>
+> | 维度 | 桶 | n | 命中 |
+> |---|---|---|---|
+> | 层 | T1 | 750 | 3.9% |
+> | 层 | **T2** | 198 | **7.1%** |
+> | 成交额 | <0.8亿 | 446 | 2.5% |
+> | 成交额 | 0.8~1.5亿 | 228 | 4.4% |
+> | 成交额 | **1.5~3亿** | 169 | **9.5%** |
+> | 成交额 | 3~6亿 | 85 | **3.5%（最差桶）** |
+> | 成交额 | ≥6亿 | 20 | 15.0%（样本少） |
+> | 5日累计 | 0~3% | 261 | **1.9%（最差桶）** |
+> | 5日累计 | **8~15%** | 273 | **8.1%** |
+> | 量比 | ≥10 | 101 | 7.9% |
+> | 主力净占比 | ≥10% | 191 | 6.3% |
+>
+> 整体基线：均值 **−0.79%**、≥7% 命中 **4.8%** ⇒ 这批信号**大概率是跌的**，
+> 模型必须把这点说出来，而不是只报喜。
+>
+> 提示词**强制对齐**：排序理由必须引用桶名与命中率数字；落进已知最差桶必须写进风险；
+> `n<30` 的桶标注「样本少」只能当参考。守卫 `test_analyze_prompt_requires_baseline_alignment`。
+> ⚠ 素材里这组数是**本区样本内统计**，不是市场先验 —— 标签文本自带「本项目 948 条标签实测，
+> 非市场先验」与 n，避免被当成外部事实引用。
+>
+> ⚠ **单位坑**（开发时真踩到）：`BASELINE_BUCKETS` 的 `cuts` 与 `scale` 必须同单位
+> （比较式 `lo <= 原值/scale < hi`）。写成 `(0.0, 0.8e8, ...)` + `scale=1e8` ⇒ 948 行
+> 全落进第一桶，打印出「<0.8亿 4.5%（n=948）」这种明显失真的读数。
 
 > **真实端到端实测（2026-11-03，与 `fde-agent-delivery/product1` 同一个 magpie 网关）**
 > - 网关后面是**推理模型**（响应带 `reasoning_content`）：一句话要 **26.8s**；全段 8 只 /

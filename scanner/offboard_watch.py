@@ -123,7 +123,7 @@ from scanner.config import (
     now_beijing,
 )
 from scanner.data_source import ak_to_xq
-from scanner.db.dal import save_offboard_rejections
+from scanner.db.dal import save_offboard_print_snapshot, save_offboard_rejections
 from scanner.db.queries import get_market_extra_snapshot, get_symbol_names
 from scanner.display_gates import beauty_marks_daily, code_of, common_hard_gate
 from scanner.features import ma_alignment_score
@@ -1492,6 +1492,18 @@ def run_offboard_watch(
     # 板块列（2026-09-22）：只对最终展示行取值 —— ②级 F10 补拉的量因此被压到
     # ≤ OFFBOARD_DISPLAY_TOP 只，且缓存命中时零请求（见 OFFBOARD_BOARD_FETCH 注释）。
     _attach_boards(top, conn)
+
+    # 终端打印快照（2026-11-03，m022）：落**这一轮实际要渲染的那几行**（含留存行）。
+    # 与 `persist_round`（整日累加的过门账）刻意分开：AI 分析要的是「屏幕上最后显示
+    # 的是哪几只」，而不是「当日过门过谁」。`print_seq` 用当前时刻的秒数做单调序，
+    # 读侧 `ORDER BY print_seq DESC` 即得最后一轮。
+    try:
+        _print_seq = int(now_beijing().strftime("%H%M%S"))
+        save_offboard_print_snapshot(conn, top, today=today, print_seq=_print_seq)
+    except EXTERNAL_FAILURES as e:
+        # 观测旁路，失败只告警（与 _save_rejections 同纪律）。
+        logger.warning("B段终端打印快照落库失败（不影响本轮产出）: %s", e)
+
     return top
 
 

@@ -187,12 +187,16 @@ def build_materials(
     limit: int | None = None,
     mode: str = "analyze",
     market: Mapping[str, Any] | None = None,
+    baseline: str | None = None,
 ) -> OffboardMaterials:
     """源行 → 素材（纯函数）。
 
     `limit` 在**排序之后**截断（保证截出来的是终端会显示的前 N 行，而不是数据库前 N 行）。
     `mode`：`analyze`（默认）附加板块/资金流/形态/入选理由；`transcribe` 只用冻结信号字段。
     `market`：analyze 模式下附一条当轮市况（来自同一份快照的 `ctx`，不是模型自己猜的）。
+    `baseline`：analyze 模式下附一条**本区历史分层命中率**（`source.render_baseline_text`
+    的产物，948 条标签实测）。这是「模型自己调研」的替代实现 —— 进程内的模型没有联网、
+    没有 tool，唯一能给它真证据的方式就是把项目自己的统计当素材喂进去。
     """
     ordered = sorted(rows, key=_order_key)
     if limit is not None:
@@ -204,6 +208,14 @@ def build_materials(
         MaterialItem(id="segment.note", label="本段口径", value=SEGMENT_NOTE),
         MaterialItem(id="segment.count", label="本次只数", value=f"{len(ordered)} 只"),
     ]
+    if mode == "analyze" and baseline:
+        items.append(
+            MaterialItem(
+                id="baseline.stats",
+                label="本区历史分层命中率（本项目 948 条标签实测，非市场先验）",
+                value=baseline,
+            )
+        )
     if mode == "analyze" and market is not None:
         idx = market.get("market_idx_pct")
         weak = market.get("weak")

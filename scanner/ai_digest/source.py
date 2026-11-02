@@ -19,8 +19,19 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from typing import TypedDict
 
-__all__ = ["OffboardSourceError", "connect_readonly", "latest_signal_date", "load_offboard_rows"]
+__all__ = [
+    "BaselineStats",
+    "OffboardSourceError",
+    "connect_readonly",
+    "latest_print_snapshot",
+    "latest_signal_date",
+    "load_baseline_stats",
+    "load_offboard_rows",
+    "load_latest_view_offboard",
+    "render_baseline_text",
+]
 
 _COLUMNS = (
     "symbol",
@@ -74,7 +85,207 @@ def load_offboard_rows(conn: sqlite3.Connection, date: str) -> list[dict]:
     return [dict(zip(_COLUMNS, r, strict=True)) for r in rows]
 
 
-# ── 视图快照源（2026-11-03，用户需求：拿「最近一次终端打印」的数据分析）─────────
+# ── 终端打印快照源（m022，2026-11-03）─────────────────────────────────────────
+#
+# 用户口径：「拿最近一次榜外异动的**终端打印**数据」—— 这是屏幕上最后显示的那几行
+# （可能是 3 只），不是 `offboard_launch_log` 的整日累加（可能是 17 只），也不是
+# `view_snapshot`（被 `RTS_LOCAL_PANEL` 门控，命令行跑扫描器时一条都不落）。
+
+_PRINT_COLUMNS = (
+    "symbol",
+    "name",
+    "tier",
+    "percent",
+    "accum_5d",
+    "vol_ratio",
+    "main_pct",
+    "amount",
+    "float_cap",
+    "price",
+    "sector",
+    "turnover_rate",
+    "ff_pct",
+    "beauty",
+    "reasons",
+    "time",
+    "print_seq",
+)
+
+
+def latest_print_snapshot(conn: sqlite3.Connection) -> tuple[str, str, list[dict], int] | None:
+    """最近一次终端打印 → `(date, time, rows, print_seq)`；无数据/表缺失返回 None。
+
+    排序取 `print_seq DESC`（秒级单调序），**不按 `time` 字符串比** —— 两者同源，
+    但 `print_seq` 是整数，跨日比较不会出现字符串排序的坑。
+    """
+    try:
+        latest = conn.execute(
+            "SELECT date, print_seq FROM offboard_print_snapshot ORDER BY date DESC, print_seq DESC LIMIT 1"
+        ).fetchone()
+    except sqlite3.Error:
+        return None  # 表缺失（老库未迁移）→ 当作没有，让 auto 回退到 log
+    if not latest:
+        return None
+    date, print_seq = latest
+    sql = (
+        f"SELECT {', '.join(_PRINT_COLUMNS)} FROM offboard_print_snapshot "  # noqa: S608 - 列名是常量元组
+        "WHERE date = ? AND print_seq = ? ORDER BY rank_in_print"
+    )
+    try:
+        rows = conn.execute(sql, (date, print_seq)).fetchall()
+    except sqlite3.Error:
+        return None
+    if not rows:
+        return None
+    out = [dict(zip(_PRINT_COLUMNS, r, strict=True)) for r in rows]
+    tm = str(out[0].get("time") or "")
+    return str(date), tm, out, int(print_seq)
+
+
+# ── 历史基准率（喂给模型真证据，2026-11-03 用户决策）──────────────────────────
+#
+# 「模型自己调研」在进程内做不到（`/chat/completions` 是纯文本补全，无联网、无 tool）。
+# 故改为**把项目自己的标签统计当素材**喂进去：模型不需要知道外部世界，它只需要知道
+# 「这个信号段历史上什么桶的次日命中率更高」——那是本项目 948 条 `next_day_pct`
+# 标签能给的全部证据。⚠ 这组数字**不是**市场先验，是本区自己的样本内统计，
+# 必须连同样本量一起给出（n=20 的桶不能当结论用）。
+
+#: 分桶定义：`(列名, 中文标签, [(下界, 上界, 桶名)], 单位换算)`
+BASELINE_BUCKETS: tuple[tuple[str, str, tuple[tuple[float, float, str], ...], float], ...] = (
+    (
+        "vol_ratio",
+        "量比",
+        ((1.5, 2.0, "1.5~2"), (2.0, 3.0, "2~3"), (3.0, 5.0, "3~5"), (5.0, 10.0, "5~10"), (10.0, 1e9, "≥10")),
+        1.0,
+    ),
+    (
+        "main_pct",
+        "主力净占比",
+        ((0.0, 2.0, "0~2%"), (2.0, 5.0, "2~5%"), (5.0, 10.0, "5~10%"), (10.0, 1e9, "≥10%")),
+        1.0,
+    ),
+    (
+        "accum_5d",
+        "5日累计",
+        ((0.0, 3.0, "0~3%"), (3.0, 8.0, "3~8%"), (8.0, 15.0, "8~15%"), (15.0, 1e9, "≥15%")),
+        1.0,
+    ),
+    (
+        "amount",
+        "成交额",
+        # ⚠ `scale` 与 `cuts` 必须**同单位**：比较式是 `lo <= 原值/scale < hi`，
+        #   故 cuts 用「亿」时 scale=1e8。2026-11-03 实测踩过一次反例：cuts 写成
+        #   `(0.0, 0.8e8, ...)` + scale=1e8 ⇒ 原值/1e8 与 0.8e8 比，948 行全落进
+        #   第一桶，打印出「<0.8亿 4.5%（n=948）」这种明显失真的读数。
+        (
+            (0.0, 0.8, "<0.8亿"),
+            (0.8, 1.5, "0.8~1.5亿"),
+            (1.5, 3.0, "1.5~3亿"),
+            (3.0, 6.0, "3~6亿"),
+            (6.0, 1e12, "≥6亿"),
+        ),
+        1e8,
+    ),
+)
+
+#: 桶样本量低于该值时标注「样本少」，避免把 n=20 的 15% 当成结论。
+_MIN_BUCKET_N = 30
+
+
+class BucketStat(TypedDict):
+    name: str
+    n: int
+    hit: float
+    mean: float
+
+
+class TierStat(TypedDict):
+    n: int
+    hit: float
+    mean: float
+
+
+class BaselineStats(TypedDict):
+    """`load_baseline_stats` 的返回结构（供 `render_baseline_text` 与测试共用）。"""
+
+    n: int
+    tiers: dict[str, TierStat]
+    buckets: dict[str, list[BucketStat]]
+
+
+def load_baseline_stats(conn: sqlite3.Connection) -> BaselineStats:
+    """B 段历史分层命中率（本项目自己的标签，**不是**市场先验）。
+
+    → `{"n": 总数, "tiers": {...}, "buckets": {列名: [(桶名, n, 命中率%), ...]}}`
+
+    口径与 `scripts/offboard_nextday.py` 同源：`next_day_pct` 非空的行；命中 = 次日 ≥7%
+    （系统唯一目标函数）。⚠ 这里**只统计**，不下结论、不给建议 —— 结论由模型在素材内做。
+    """
+    import statistics as st
+
+    try:
+        rows = conn.execute(
+            "SELECT tier, vol_ratio, main_pct, accum_5d, amount, next_day_pct "
+            "FROM offboard_launch_log WHERE next_day_pct IS NOT NULL"
+        ).fetchall()
+    except sqlite3.Error:
+        return {"n": 0, "tiers": {}, "buckets": {}}
+
+    total = len(rows)
+    tiers: dict[str, dict[str, float]] = {}
+    for tier in ("T1", "T2"):
+        vals = [float(r[5]) for r in rows if r[0] == tier]
+        if vals:
+            tiers[tier] = {
+                "n": len(vals),
+                "hit": round(sum(1 for v in vals if v >= 7) / len(vals) * 100, 1),
+                "mean": round(st.mean(vals), 2),
+            }
+
+    buckets: dict[str, list[dict[str, object]]] = {}
+    for col, _label, cuts, scale in BASELINE_BUCKETS:
+        idx = {"vol_ratio": 1, "main_pct": 2, "accum_5d": 3, "amount": 4}[col]
+        out = []
+        for lo, hi, name in cuts:
+            vals = [float(r[5]) for r in rows if r[idx] is not None and lo <= float(r[idx]) / scale < hi]
+            if not vals:
+                continue
+            out.append(
+                {
+                    "name": name,
+                    "n": len(vals),
+                    "hit": round(sum(1 for v in vals if v >= 7) / len(vals) * 100, 1),
+                    "mean": round(st.mean(vals), 2),
+                }
+            )
+        buckets[col] = out
+
+    return {"n": total, "tiers": tiers, "buckets": buckets}  # type: ignore[typeddict-item]
+
+
+def render_baseline_text(stats: BaselineStats, *, label_map: dict[str, str]) -> str:
+    """基准率 → 一条素材文本（确定性、无 locale 依赖）。"""
+    n = int(stats.get("n") or 0)
+    if n == 0:
+        return "暂无数据（本区还没有带次日标签的样本）"
+    parts = [f"本区历史 {n} 条带标签样本（口径：信号日收盘→次一交易日收盘；命中=次日涨幅≥7%）"]
+    tiers = stats.get("tiers") or {}
+    if tiers:
+        seg = "；".join(f"{t} {v['hit']}%（n={v['n']}，均值{v['mean']:+.2f}%）" for t, v in tiers.items())
+        parts.append(f"分层命中：{seg}")
+    buckets = stats.get("buckets") or {}
+    for col, _label, _cuts, _scale in BASELINE_BUCKETS:
+        items = buckets.get(col) or []
+        if not items:
+            continue
+        seg = "，".join(
+            f"{b['name']} {b['hit']}%（n={b['n']}{'·样本少' if b['n'] < _MIN_BUCKET_N else ''}）" for b in items
+        )
+        parts.append(f"{label_map.get(col, col)}：{seg}")
+    return "｜".join(parts)
+
+
+# ── 视图快照源（旧口径，auto 回退用）─────────────────────────────────────────
 #
 # `view_snapshot` 存的是主循环每轮 `serialize_view` 的完整载荷（m021，保留 50 轮）——
 # 与终端渲染、云端上报是**同一份**。B 段行在这里比 launch_log 多三样东西：

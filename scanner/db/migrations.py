@@ -456,6 +456,43 @@ def _check_view_snapshot(conn: sqlite3.Connection) -> bool:
     return _has_table(conn, "view_snapshot")
 
 
+def _up_offboard_print_snapshot(conn: sqlite3.Connection) -> None:
+    """m022（2026-11-03）：`offboard_print_snapshot` —— **终端最后一次打印的榜外异动行**。
+
+    为什么必须单独一张表（而不是复用现有两张）：
+
+    - `offboard_launch_log` 是**整日累加**（`(date, symbol)` 主键，信号值首次写入即冻结）：
+      实测 2026-11-02 有 17 行，而终端那一轮只打印 8 行（更晚的轮次可能只有 3 行）。
+      「当日过门过哪些票」≠「屏幕上最后显示的是哪几只」。
+    - `view_snapshot` 能记录每轮，但它被 `RTS_LOCAL_PANEL` 门控（只有桌面壳 Electron
+      注入该开关）⇒ 纯命令行跑扫描器时**一条都不落**（实测：库里最新快照停在 10-28，
+      而 11-02/11-03 都跑过扫描）。把它当「终端打印」的真源会长期静默失效。
+
+    故本表只记**一个量**：某日最后一轮终端实际渲染的 B 段行（`print_seq` 单调递增，
+    新行 `print_seq` 更大）。写侧 = `offboard_watch.persist_print_snapshot`（每轮覆盖式
+    追加，按 `print_seq` 取最新）；读侧 = `scanner.ai_digest` 的 view 源与
+    `python -m scanner.offboard_watch --print-latest`。
+
+    ⚠ 与 `offboard_launch_log` 的**口径差异必须保留**：本表存的是「屏幕上的那几只」，
+    可能是**留存行**（`retain=True`，不入 launch_log）；launch_log 存的是「当日过门的
+    全部票」。两者不可互换 —— AI 分析要的是前者（用户看到什么就分析什么）。
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS offboard_print_snapshot ("
+        "date TEXT NOT NULL, time TEXT NOT NULL, print_seq INTEGER NOT NULL, "
+        "symbol TEXT NOT NULL, name TEXT, tier TEXT, percent REAL, accum_5d REAL, "
+        "vol_ratio REAL, main_pct REAL, amount REAL, float_cap REAL, price REAL, "
+        "sector TEXT, turnover_rate REAL, ff_pct REAL, beauty TEXT, reasons TEXT, "
+        "rank_in_print INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, "
+        "PRIMARY KEY (date, print_seq, symbol))"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ops_latest ON offboard_print_snapshot(date DESC, print_seq DESC)")
+
+
+def _check_offboard_print_snapshot(conn: sqlite3.Connection) -> bool:
+    return _has_table(conn, "offboard_print_snapshot")
+
+
 # ── 迁移总表（顺序即执行顺序；只在末尾追加）──
 MIGRATIONS: list[Migration] = [
     add_column(
@@ -592,6 +629,12 @@ MIGRATIONS: list[Migration] = [
         desc="新增 view_snapshot（桌面版本地看板的最近一轮载荷落盘副本，重启回放用）",
         check=_check_view_snapshot,
         up=_up_view_snapshot,
+    ),
+    Migration(
+        id="m022_offboard_print_snapshot",
+        desc="新增 offboard_print_snapshot（终端最后一次打印的榜外异动行；与 launch_log 的整日累加口径分开）",
+        check=_check_offboard_print_snapshot,
+        up=_up_offboard_print_snapshot,
     ),
 ]
 

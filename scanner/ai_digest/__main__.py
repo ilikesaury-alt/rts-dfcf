@@ -39,9 +39,12 @@ from scanner.ai_digest.material import (
 from scanner.ai_digest.source import (
     OffboardSourceError,
     connect_readonly,
+    latest_print_snapshot,
     latest_signal_date,
+    load_baseline_stats,
     load_latest_view_offboard,
     load_offboard_rows,
+    render_baseline_text,
 )
 from scanner.config import OFFBOARD_DISPLAY_TOP, resolve_db_path
 
@@ -154,7 +157,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def _resolve_rows(args: argparse.Namespace) -> dict[str, Any]:
-    """→ {"date", "rows", "source", "time", "market"}。读库失败/无数据抛 `OffboardSourceError`。"""
+    """→ {"date", "rows", "source", "time", "market"}。读库失败/无数据抛 `OffboardSourceError`。
+
+    源优先级（`--source print` 默认）：`print`（终端最后一次打印）→ `view`（桌面版快照）
+    → `log`（launch_log 整日累加）。逐级回退是为了「今天没跑扫描器」时仍能出结果，
+    但**默认永远优先屏幕上的那几只** —— 用户的口径就是「我看到什么就分析什么」。
+    """
     if args.demo:
         return {
             "date": "（内置样例）",
@@ -165,41 +173,55 @@ def _resolve_rows(args: argparse.Namespace) -> dict[str, Any]:
         }
 
     conn = connect_readonly(resolve_db_path())
-    snap: tuple[str, str, list[dict[str, Any]], dict[str, Any]] | None = None
+    baseline = render_baseline_text(
+        load_baseline_stats(conn),
+        label_map={"vol_ratio": "量比", "main_pct": "主力净占比", "accum_5d": "5日累计", "amount": "成交额"},
+    )
     try:
-        if args.source in ("auto", "view"):
-            snap = load_latest_view_offboard(conn)
+        # ① print 源：终端最后一次打印的那几行（含留存行，顺序即屏幕顺序）
+        if args.source in ("print", "auto"):
+            snap = latest_print_snapshot(conn)
+            if snap is not None:
+                date, time_str, rows, _seq = snap
+                return {
+                    "date": date,
+                    "rows": rows,
+                    "source": "print",
+                    "time": time_str,
+                    "market": None,
+                    "baseline": baseline,
+                }
+            if args.source == "print":
+                raise OffboardSourceError(
+                    "offboard_print_snapshot 里没有数据（终端还没跑过榜外异动段，或库里是未迁移的老库）。"
+                    " 加 --source log 可直接读当日过门账。"
+                )
 
-        if args.source == "view":
-            if snap is None:
-                raise OffboardSourceError("view_snapshot 里没有可用的榜外异动行（扫描器一轮都没跑过？）")
-        elif args.source == "auto" and snap is not None:
-            # auto：视图快照更新（= 最近一次终端打印）就用它；否则回退 log。
-            log_date = latest_signal_date(conn)
-            if log_date and log_date > snap[0]:
-                snap = None
-
-        if args.source != "log" and snap is not None:
-            date, time_str, rows, market = snap
+        # ② view 源（桌面版快照）
+        view_snap = load_latest_view_offboard(conn)
+        if args.source in ("view", "auto") and view_snap is not None:
+            date, time_str, rows, market = view_snap
             return {
                 "date": date,
                 "rows": rows,
                 "source": "view",
                 "time": time_str,
                 "market": market,
+                "baseline": baseline,
             }
+        if args.source == "view":
+            raise OffboardSourceError("view_snapshot 里没有可用的榜外异动行（扫描器一轮都没跑过？）")
 
-        # log 源（或 auto 回退）
+        # ③ log 源（launch_log 整日累加）
         log_date = args.date or latest_signal_date(conn)
         if not log_date:
-            raise OffboardSourceError("offboard_launch_log 与 view_snapshot 都没有数据（扫描器未跑过？）")
-        date = log_date
-        rows = load_offboard_rows(conn, date)
+            raise OffboardSourceError("offboard_print_snapshot / view_snapshot / offboard_launch_log 都没有数据")
+        rows = load_offboard_rows(conn, log_date)
+        if not rows:
+            raise OffboardSourceError(f"{log_date} 没有过门行（该日榜外段可能整段为空）")
+        return {"date": log_date, "rows": rows, "source": "log", "time": "", "market": None, "baseline": baseline}
     finally:
         conn.close()
-    if not rows:
-        raise OffboardSourceError(f"{date} 没有过门行（该日榜外段可能整段为空）")
-    return {"date": date, "rows": rows, "source": "log", "time": "", "market": None}
 
 
 def _force_utf8_stdout() -> None:
@@ -231,11 +253,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[!] {e}")
         return 4
 
-    mats = build_materials(info["date"], info["rows"], limit=args.limit, mode=args.mode, market=info.get("market"))
+    mats = build_materials(
+        info["date"],
+        info["rows"],
+        limit=args.limit,
+        mode=args.mode,
+        market=info.get("market"),
+        baseline=info.get("baseline"),
+    )
     shown, total = len(mats.symbols), len(info["rows"])
     source_desc = {
-        "view": f"view_snapshot {info['date']} {info['time']}（最近一轮终端打印 · 含留存行/实时值）",
-        "log": f"offboard_launch_log {info['date']}（信号值冻结快照）",
+        "print": f"offboard_print_snapshot {info['date']} {info['time']}（终端最后一次打印的行，顺序即屏幕顺序）",
+        "view": f"view_snapshot {info['date']} {info['time']}（桌面版快照 · 含留存行/实时值）",
+        "log": f"offboard_launch_log {info['date']}（整日过门账 · 信号值冻结快照）",
         "demo": "内置样例",
     }[info["source"]]
 

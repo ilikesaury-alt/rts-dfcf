@@ -452,10 +452,15 @@ def test_persist_on_missing_table_is_fail_open(tmp_path):
 
 
 def test_m021_view_snapshot_is_registered_and_applies(tmp_path):
-    """m021 在迁移表**末尾**（末尾追加纪律），且在新库上建出该表。"""
+    """m021 已登记（末尾追加纪律：新增迁移只能追加，故它不再是末尾），且建出该表。
+
+    ⚠ 原断言是 `MIGRATIONS[-1].id == "m021_view_snapshot"` —— 那是「当前最后一条」的
+    快照，m022 追加后必然红。断言改成「m021 在表里」才是真正要守的纪律
+    （id 已发布不得改名/删除），否则每加一条迁移都要改一次测试，守卫退化为绊脚石。
+    """
     from scanner.db.migrations import MIGRATIONS, run_migrations
 
-    assert MIGRATIONS[-1].id == "m021_view_snapshot"
+    assert "m021_view_snapshot" in [m.id for m in MIGRATIONS]
     conn = sqlite3.connect(str(tmp_path / "m.db"))
     conn.execute("CREATE TABLE daily_kline (symbol TEXT PRIMARY KEY, finalized INTEGER DEFAULT 1)")
     conn.execute("CREATE TABLE recommendations (symbol TEXT PRIMARY KEY)")

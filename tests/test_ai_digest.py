@@ -30,9 +30,12 @@ from scanner.ai_digest.material import (
 from scanner.ai_digest.source import (
     OffboardSourceError,
     connect_readonly,
+    latest_print_snapshot,
     latest_signal_date,
+    load_baseline_stats,
     load_latest_view_offboard,
     load_offboard_rows,
+    render_baseline_text,
 )
 
 PKG_DIR = Path(__file__).resolve().parents[1] / "scanner" / "ai_digest"
@@ -550,6 +553,111 @@ def test_cli_flags_fabricated_number_and_exits_5(capsys, monkeypatch):
     out = capsys.readouterr().out
     assert code == 5
     assert "幻觉巡检" in out and "18.5" in out
+
+
+# ── 6. 终端打印快照源 + 历史基准率（2026-11-03 用户决策）─────────────────────────
+
+
+def test_print_snapshot_is_the_terminal_rows_not_daily_accumulation(digest_db):
+    """`print` 源 = 终端最后一轮打印的那几行，**不是**当日过门累加（launch_log）。
+
+    用户口径：「今日最后一次终端打印只有 3 只」—— 而 launch_log 那天有 17 行。
+    两者必须能分辨，否则分析的是「当日过门过谁」而不是「屏幕上显示谁」。
+    """
+    import dataclasses
+
+    from scanner.db.dal import save_offboard_print_snapshot
+
+    @dataclasses.dataclass
+    class _C:
+        symbol: str
+        name: str = "票"
+        tier: str = "T2"
+        percent: float = 4.0
+        accum_5d: float = 5.0
+        volume_ratio: float = 2.0
+        main_pct: float = 1.0
+        amount: float = 1e8
+        float_market_capital: float = 1e9
+        current: float = 10.0
+        sector: str = ""
+        turnover_rate: float = 3.0
+        ff_pct: float | None = None
+        beauty: str = ""
+        reasons: list = dataclasses.field(default_factory=list)
+
+    conn = sqlite3.connect(str(digest_db))
+    try:
+        # 第 1 轮打印 5 行，第 2 轮（更晚）只打印 3 行
+        save_offboard_print_snapshot(conn, [_C(f"SZ30000{i}") for i in range(5)], today="2026-11-03", print_seq=100000)
+        save_offboard_print_snapshot(
+            conn, [_C("SZ300758"), _C("SZ301171"), _C("SZ300999")], today="2026-11-03", print_seq=140000
+        )
+    finally:
+        conn.close()
+
+    conn = connect_readonly(str(digest_db))
+    try:
+        snap = latest_print_snapshot(conn)
+    finally:
+        conn.close()
+    assert snap is not None
+    date, _tm, rows, seq = snap
+    assert date == "2026-11-03" and seq == 140000
+    assert [r["symbol"] for r in rows] == ["SZ300758", "SZ301171", "SZ300999"]  # 3 只，不是 5 只
+    assert rows[0]["tier"] == "T2" and rows[0]["vol_ratio"] == 2.0
+
+
+def test_baseline_stats_are_own_labels_and_never_empty_string(digest_db):
+    """基准率素材：来自本项目自己的标签（不是市场先验），且桶样本量标注「样本少」。"""
+    conn = sqlite3.connect(str(digest_db))
+    try:
+        conn.executemany(
+            "INSERT INTO offboard_launch_log (date, symbol, tier, vol_ratio, main_pct, accum_5d, amount, next_day_pct)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            [
+                ("2026-10-01", "SZ000001", "T2", 12.0, 12.0, 9.0, 2e8, 8.5),  # 命中
+                ("2026-10-01", "SZ000002", "T2", 2.5, 1.0, 1.0, 0.5e8, -2.0),
+                ("2026-10-02", "SZ000003", "T1", 3.5, 6.0, 5.0, 1e8, 3.0),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    conn = connect_readonly(str(digest_db))
+    try:
+        stats = load_baseline_stats(conn)
+    finally:
+        conn.close()
+    assert stats["n"] == 3
+    assert "T2" in stats["tiers"]
+    text = render_baseline_text(
+        stats, label_map={"vol_ratio": "量比", "main_pct": "主力净占比", "accum_5d": "5日累计", "amount": "成交额"}
+    )
+    assert "本区历史 3 条" in text
+    assert "样本少" in text  # 所有桶 n<30，必须标注，不能当结论用
+    # 空库时不得给出空串（模型会把它当「没有基准」而编造）
+    empty = render_baseline_text({"n": 0, "tiers": {}, "buckets": {}}, label_map={})
+    assert empty == NA or "暂无数据" in empty
+
+
+def test_analyze_prompt_requires_baseline_alignment():
+    """提示词必须**强制**排序对齐基准率桶，而不是让模型自由发挥。"""
+    from scanner.ai_digest.llm import SYSTEM_PROMPT_ANALYZE
+
+    assert "baseline.stats" in SYSTEM_PROMPT_ANALYZE
+    assert "桶" in SYSTEM_PROMPT_ANALYZE and "命中率" in SYSTEM_PROMPT_ANALYZE
+    assert "样本少" in SYSTEM_PROMPT_ANALYZE  # n<30 的桶只能当参考
+    assert "最差桶" in SYSTEM_PROMPT_ANALYZE  # 落进差桶必须写进风险
+
+
+def test_baseline_item_only_in_analyze_mode():
+    rows = [{"symbol": "SZ300758", "tier": "T2", "vol_ratio": 2.31}]
+    a = build_materials("2026-11-02", rows, mode="analyze", baseline="基准率文本")
+    assert next(i for i in a.items if i.id == "baseline.stats").value == "基准率文本"
+    t = build_materials("2026-11-02", rows, mode="transcribe", baseline="基准率文本")
+    assert not [i for i in t.items if i.id == "baseline.stats"]
 
 
 # ── 6. 包级纪律（零写 / 不用裸 except）─────────────────────────────────────────

@@ -191,6 +191,7 @@ class TestMigrationCatalog:
             "m019_offboard_log_top_hits",
             "m020_offboard_active_metrics",
             "m021_view_snapshot",
+            "m022_offboard_print_snapshot",
         ]
 
     def test_every_migration_has_desc(self):
