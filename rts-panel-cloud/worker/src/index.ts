@@ -5,6 +5,8 @@
  *   POST /api/ingest              上报（Bearer 密钥，**不在** Access 覆盖内）
  *   GET  /api/regions             首屏五区块（Access 之后，1 查询，不含 stocks）
  *   GET  /api/meta                状态条（1 查询）
+ *   GET  /api/stock/:symbol/kline 个股 K 线 + 出现史 + 评分分解（Access 之后，2 查询）
+ *   GET  /api/ai-explain?symbol=  AI 解读（Access 之后，只读，不写任何表）
  *   GET  /api/health              存活探针（不碰 D1）
  */
 import { Hono } from "hono";
@@ -14,6 +16,8 @@ import { AppError, err } from "./error";
 import { ingest } from "./routes/ingest";
 import { meta } from "./routes/meta";
 import { regions } from "./routes/regions";
+import { stockKline } from "./routes/stock";
+import { aiExplain } from "./routes/explain";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -45,6 +49,8 @@ app.get("/api/health", (c) => c.json({ ok: true, data: { alive: true } }));
 app.post("/api/ingest", (c) => ingest(c as any));
 app.get("/api/regions", (c) => regions(c as any));
 app.get("/api/meta", (c) => meta(c as any));
+app.get("/api/stock/:symbol/kline", (c) => stockKline(c as any));
+app.get("/api/ai-explain", (c) => aiExplain(c as any));
 
 app.notFound((c) => c.json(err("NOT_FOUND", "无此端点"), 404));
 

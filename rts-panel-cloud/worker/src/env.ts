@@ -8,6 +8,14 @@ export type Env = {
   INGEST_SECRET: string;
   /** CORS 白名单，逗号分隔。生产同域部署后留空，仅本地 dev 用。 */
   WEB_ORIGINS: string;
+  /**
+   * 模型服务（magpie 中转，OpenAI 兼容）—— 三个变量均走
+   * `wrangler secret put`（**不能**放 vars：vars 明文可读）。
+   * 缺任一个 = 未配置：`/api/ai-explain` 返回 503 且不发起任何请求。
+   */
+  MAGPIE_BASE_URL?: string;
+  MAGPIE_API_KEY?: string;
+  MAGPIE_MODEL?: string;
 };
 
 /** 各路由处理器共用的上下文类型（避免在每个路由里重写一遍 & 到处 `as any`）。 */
