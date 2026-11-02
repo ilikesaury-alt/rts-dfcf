@@ -61,6 +61,7 @@ from scanner.offboard_watch import (
     offboard_gate,
     opening_silence_active,
     persist_round,
+    repair_next_day_labels,
     run_offboard_watch,
     sort_key,
 )
@@ -123,7 +124,8 @@ def _bars(series: list[float], today: str, volume: float = 2.0e6) -> list[dict]:
 
     日期用自然日倒推：本模块的三个 K 线判定（5 日累计 / MA / 顶背离）都只看**顺序**，
     不看交易日间隔；真正需要「相邻交易日」语义的地方是 `backfill_next_day`，那里
-    另有 ≤4 自然日的防呆（见 _bars_by_date 的用例）。
+    另有「区间内不得有已登记交易日」的防呆（见 `_bars_by_date` 的用例与
+    `TestBackfillNextBarSemantics`）。
     """
     end = _date.fromisoformat(today)
     out = []
@@ -1033,14 +1035,119 @@ def test_backfill_skips_when_next_bar_too_far(db):
     assert backfill_next_day(db, None) == 0
 
 
-def test_backfill_fills_when_gap_within_4_days(db):
-    """跨周末（3 自然日）仍算次日，正常回填。"""
+def _last_sessions(today: _date, count: int = 2) -> list[str]:
+    """今天之前最近的 `count` 个交易日（升序；含周末/长假的跳跃）。"""
+    out: list[str] = []
+    cur = today
+    while len(out) < count:
+        cur -= _td(days=1)
+        if is_trading_day(cur):
+            out.append(cur.isoformat())
+    return sorted(out)
+
+
+def _holiday_span_before_today(today: _date, min_gap: int = 5) -> tuple[str, str] | None:
+    """从今天往回找一段「连续休市 ≥min_gap 自然日」的相邻交易日对 (d0, nxt)。
+
+    动态找而不是写死 `2026-09-30 → 2026-10-08`：写死日期会让用例随日历漂移失败，
+    而本用例要验的恰恰是「**跨登记假期**的次日算不算次日」。
+    """
+    d1 = today
+    for _ in range(400):
+        d1 -= _td(days=1)
+        if not is_trading_day(d1):
+            continue
+        for gap in range(min_gap, 13):  # 13 = _MAX_BACKFILL_GAP_DAYS + 1
+            d0 = d1 - _td(days=gap)
+            if d0 >= today or not is_trading_day(d0):
+                continue
+            mid = [d0 + _td(days=i) for i in range(1, gap)]
+            if not any(is_trading_day(x) for x in mid):
+                return d0.isoformat(), d1.isoformat()
+    return None
+
+
+def _session_gap_before_today(today: _date) -> tuple[str, str] | None:
+    """从今天往回找 (d0, d1)：两者都是交易日，且中间**夹着**至少一个交易日。
+
+    这是「停牌/漏 bar」的形态：`later[0]` 看起来也是交易日，但它不是**紧邻**的那个。
+    """
+    d1 = today
+    for _ in range(400):
+        d1 -= _td(days=1)
+        if not is_trading_day(d1):
+            continue
+        for gap in range(2, 13):
+            d0 = d1 - _td(days=gap)
+            if not is_trading_day(d0):
+                continue
+            mid = [d0 + _td(days=i) for i in range(1, gap)]
+            if any(is_trading_day(x) for x in mid):
+                return d0.isoformat(), d1.isoformat()
+    return None
+
+
+def test_backfill_fills_across_registered_holiday(db):
+    """防呆 1（2026-11-03 重写）：跨国庆/春节的「次日」必须回填，不得当「太远」丢掉。
+
+    旧判据 = 「相差 ≤4 个自然日」（只够覆盖周末）⇒ 节前最后一个交易日的信号
+    **永久**丢失标签。实测 `scanner.db`：`2026-09-30` 那 45 行 `next_day_pct` 至今
+    **0/45**，而 09-30 与 10-08 两根 bar 在池里都在（间隔 8 天 > 4）。
+    丢的是「节前一档」整个 regime，不是随机样本。
+    """
     today = now_beijing().date()
-    d0 = (today - _td(days=4)).isoformat()
-    d1 = (today - _td(days=1)).isoformat()
+    span = _holiday_span_before_today(today)
+    if span is None:  # pragma: no cover - holidays.json 覆盖不到时
+        pytest.skip("holidays.json 里今天之前没有 ≥5 天的连续休市，无法构造样本")
+    d0, d1 = span
     sym = "SZ300201"
     _save_klines(db, {sym: _bars_by_date([(d0, 10.0), (d1, 12.0)])}, today.isoformat())
     _insert_signal(db, sym, d0)
+
+    assert backfill_next_day(db, None) == 1, f"跨假期 {d0}→{d1} 必须算次日"
+    pct = db.execute("SELECT next_day_pct FROM offboard_launch_log WHERE date=?", (d0,)).fetchone()[0]
+    assert pct == pytest.approx(20.0)
+
+
+def test_backfill_skips_when_a_registered_session_sits_between(db):
+    """防呆 1 的反向：中间夹着已登记交易日 ⇒ 不是「次日」（停牌/漏 bar），跳过。"""
+    today = now_beijing().date()
+    span = _session_gap_before_today(today)
+    if span is None:  # pragma: no cover - 日历覆盖不到时
+        pytest.skip("找不到「中间夹着交易日」的样本区间")
+    d0, d1 = span
+    sym = "SZ300201"
+    _save_klines(db, {sym: _bars_by_date([(d0, 10.0), (d1, 12.0)])}, today.isoformat())
+    _insert_signal(db, sym, d0)
+    assert backfill_next_day(db, None) == 0
+
+
+def test_backfill_skips_next_bar_dated_today(db):
+    """防呆 3（2026-11-03）：`nxt == today` ⇒ 那是**当日盘中 bar**，不得当「次日收盘」。
+
+    生产机理：K 线池末根当日第一次取数即冻结成盘中值，而 `backfill_next_day` 在交易
+    时段每轮都跑、且只在 `next_day_pct IS NULL` 时写 ⇒ 标签会永久冻结在 ~09:45。
+    实测 703 行（两根 bar 都已定稿）：46% 与真值相差 >2pp、25% 符号相反、
+    ≤−5% 尾部 5.26% vs 真值 12.66%。
+    """
+    today = now_beijing().date()
+    d0 = (today - _td(days=1)).isoformat()
+    sym = "SZ300201"
+    _save_klines(db, {sym: _bars_by_date([(d0, 10.0), (today.isoformat(), 11.0)])}, today.isoformat())
+    _insert_signal(db, sym, d0)
+
+    assert backfill_next_day(db, None) == 0
+    assert db.execute("SELECT next_day_pct FROM offboard_launch_log WHERE date=?", (d0,)).fetchone()[0] is None
+
+
+def test_backfill_fills_when_next_bar_is_last_finalized_session(db):
+    """防呆 3 的反向：`nxt` 是昨天（已定稿）⇒ 照常回填（别把正常口径一起关掉）。"""
+    today = now_beijing().date()
+    d0, d1 = _last_sessions(today, 2)
+    sym = "SZ300201"
+    _save_klines(db, {sym: _bars_by_date([(d0, 10.0), (d1, 12.0)])}, today.isoformat())
+    _insert_signal(db, sym, d0)
+
     assert backfill_next_day(db, None) == 1
     pct = db.execute("SELECT next_day_pct FROM offboard_launch_log WHERE date=?", (d0,)).fetchone()[0]
     assert pct == pytest.approx(20.0)
@@ -2092,3 +2199,215 @@ def test_demo_samples_cover_offboard_specific_branches(capsys):
     assert sum(1 for e, *_ in _DEMO_CASES if e == "T2") == 2
     # T2 的主力净占比门（300122）与 T1 的（300118）是两条独立样本，各算各的
     assert sum(1 for e, *_ in _DEMO_CASES if e == "主力净占比") == 2
+
+
+# ── 2026-11-03 审查修复：K 线额度只管补取 / 粗筛剔除结构性排除 / display_top ────
+#
+# 三处都是「读数与实现不符」，不是阈值问题：
+#   ① 额度被施加在**入参**上 ⇒ 额度外的票连当日已缓存的 K 线都读不到，被记成
+#      「无K线数据(榜外池未覆盖)」（实测 2026-10-23：366 只里 126 只当日已缓存）；
+#   ② 粗筛没剔榜内/今日已推荐 ⇒ 100 个实时补价名额里 14~19 个花在必被
+#      `build_candidates` 丢掉的票上（实测 10-29 / 10-30）；
+#   ③ `top_hits` 写死 `OFFBOARD_DISPLAY_TOP` 而非本轮实际 `top_n`。
+
+
+class _RecordingQuoteAdapter(_FakeKlineAdapter):
+    """假数据源：记录实时行情请求了哪些 symbol（验粗筛范围用）。"""
+
+    def __init__(self, quotes=None, bars=None, fail=()):
+        super().__init__(bars=bars, fail=fail)
+        self._quotes = quotes or {}
+        self.requested: list[str] = []
+
+    def fetch_hot_quotes_batch(self, symbols):
+        self.requested.extend(symbols)
+        return {s: self._quotes[s] for s in symbols if s in self._quotes}
+
+
+def test_load_offboard_klines_reads_cache_beyond_fetch_symbols(db):
+    """读缓存覆盖**全部入参**，`fetch_symbols` 只限制补取请求（2026-11-03）。"""
+    day = now_beijing().date().isoformat()
+    a, b = "SZ300101", "SZ300102"
+    _save_klines(db, {a: _bars(_UP_SERIES, day), b: _bars(_UP_SERIES, day)}, day)
+    adapter = _FakeKlineAdapter({a: _bars(_UP_SERIES, day), b: _bars(_UP_SERIES, day)})
+
+    got = load_offboard_klines(db, adapter, [a, b], fetch_symbols=[])
+    assert set(got) == {a, b}, "缓存命中不得因为「不在补取额度内」而被丢掉"
+    assert adapter.calls == [], "fetch_symbols=[] ⇒ 一个补取请求都不该发"
+
+    # 对照：fetch_symbols=None（回填/CLI 路径）时缺失者照旧补取
+    c = "SZ300103"
+    adapter2 = _FakeKlineAdapter({c: _bars(_UP_SERIES, day)})
+    got2 = load_offboard_klines(db, adapter2, [c])
+    assert adapter2.calls == [c]
+    assert c in got2
+
+
+def test_run_offboard_watch_tiers_cached_candidates_beyond_fetch_limit(db, monkeypatch):
+    """额度外的候选**只要当日缓存里有 K 线就必须照常分层**（旧实现全部判「无数据」）。
+
+    旧实现把额度施加在 `load_offboard_klines` 的**入参**上 ⇒ 第 81 名之后连缓存都
+    读不到。这里是 3 只候选 + 额度 1 的最小复现：一只缓存都不缺，三只都该产出。
+    """
+    monkeypatch.setattr("scanner.offboard_watch.OFFBOARD_KLINE_FETCH_LIMIT", 1)
+    day = now_beijing().date().isoformat()
+    snapshot = {f"SZ30010{i}": _payload(vol_ratio=3.0 - i * 0.1, percent=2.5, main_pct=2.0) for i in range(1, 4)}
+    _save_klines(db, {s: _bars(_UP_SERIES, day) for s in snapshot}, day)
+
+    rows = run_offboard_watch(None, db, [], top_n=5, snapshot=snapshot)
+    assert {r.symbol for r in rows} == set(snapshot), "缓存命中者不该被额度截断"
+    reasons = {r[0] for r in db.execute("SELECT reason FROM offboard_rejections").fetchall()}
+    assert not any("无K线数据" in r for r in reasons)
+
+
+def test_run_offboard_watch_labels_quota_skipped_candidates(db, monkeypatch):
+    """额度外且**无缓存**者 ⇒ 理由串是「未补取(额度外)」而非「池未覆盖」。
+
+    两者对展示的后果相同，对**事后归因**完全不同：前者是资源上限，后者是数据缺失。
+    `offboard_rejections` 是本段唯一的证据链（`rule_validate` 看不见本模块），
+    混成一句会让「按理由重放阈值」的人误判 K 线覆盖面。
+    """
+    monkeypatch.setattr("scanner.offboard_watch.OFFBOARD_KLINE_FETCH_LIMIT", 1)
+    day = now_beijing().date().isoformat()
+    top_sym, out_sym = "SZ300101", "SZ300102"  # 量比降序 → 只有 top_sym 进额度
+    snapshot = {
+        top_sym: _payload(vol_ratio=3.0, percent=2.5, main_pct=2.0),
+        out_sym: _payload(vol_ratio=1.6, percent=2.5, main_pct=2.0),
+    }
+    _save_klines(db, {top_sym: _bars(_UP_SERIES, day)}, day)  # 额度外那只**没有**缓存
+
+    rows = run_offboard_watch(None, db, [], top_n=5, snapshot=snapshot)
+    assert [r.symbol for r in rows] == [top_sym]
+    reason = db.execute("SELECT reason FROM offboard_rejections WHERE symbol=?", (out_sym,)).fetchone()[0]
+    assert "额度外" in reason, f"应区分「额度外未补取」，实际：{reason}"
+
+
+def test_prefilter_excludes_board_and_recommended_before_live_quotes(db):
+    """粗筛（实时补价名额）必须先剔掉榜内与今日已推荐票 —— 它们随后必被门丢。
+
+    实测 2026-10-29 / 10-30：100 个补价名额里分别有 14 / 19 个花在 `today_syms` 上，
+    等于系统性偏置了「谁被用实时价评估」。
+    """
+    on_board, recommended, free = "SZ300101", "SZ300102", "SZ300103"
+    snapshot = {s: _payload(vol_ratio=3.0 - i * 0.1) for i, s in enumerate((on_board, recommended, free))}
+    quotes = {
+        s: {"current": 10.0, "percent": 2.5, "volume": 2.0e6, "amount": 8.0e7, "name": "自检样本"} for s in snapshot
+    }
+    adapter = _RecordingQuoteAdapter(quotes=quotes)
+
+    rows = run_offboard_watch(
+        adapter,
+        db,
+        [{"symbol": on_board}],
+        exclude_symbols={recommended},
+        top_n=5,
+        klines={},
+        snapshot=snapshot,
+    )
+    assert adapter.requested == [free], "榜内/已推荐票不得占用实时补价名额"
+    assert rows == []  # klines={} ⇒ 分层阶段全部无 K 线
+
+
+def test_persist_round_top_hits_follows_callers_display_top(db):
+    """`top_hits` 必须跟**本轮实际展示的 top_n**，不是写死的常量（2026-11-03）。"""
+    rows = [_cand(symbol=f"SZ3010{i:02d}", volume_ratio=10.0 - i) for i in range(5)]
+    persist_round(db, rows, display_top=2)
+    day = now_beijing().date().isoformat()
+    hits = dict(db.execute("SELECT symbol, top_hits FROM offboard_launch_log WHERE date=?", (day,)).fetchall())
+    marked = {k for k, v in hits.items() if v}
+    assert marked == {r.symbol for r in rows[:2]}
+
+
+# ── 一次性修数 repair_next_day_labels（2026-11-03）────────────────────────────
+#
+# 修的是「代码修好了但历史标签仍是错的」这件事：`backfill_next_day` 只填 NULL，
+# 已冻结的错误值不会自愈。工具的判据与写入侧三条防呆同源，且**只认
+# `fetch_date > nxt` 的那份缓存**（唯一能证明「次日 bar 已定稿」的证据）。
+
+
+def _set_label(db, symbol: str, day: str, pct: float | None) -> None:
+    db.execute(
+        "UPDATE offboard_launch_log SET next_day_pct=? WHERE date=? AND symbol=?",
+        (pct, day, symbol),
+    )
+    db.commit()
+
+
+def test_repair_next_day_labels_skips_cache_not_later_than_next_session(db):
+    """**唯一证据是 `fetch_date > nxt`**：当日盘中快照（`fetch_date == nxt`）不得作依据。
+
+    当初写错就是因为拿「次日那天自己抓的盘中快照」当「次日收盘」—— 修数工具若也
+    信它，等于把错值原样抄一遍（看似跑了一次修复，实际什么也没改）。
+    """
+    today = now_beijing().date()
+    d0, d1 = _last_sessions(today, 2)
+    sym = "SZ300201"
+    _insert_signal(db, sym, d0)
+    db.execute("UPDATE offboard_launch_log SET last_hit_time='2026-09-18T09:50:00'")
+    # 唯一的缓存行 = 次日当天抓的（d1 那根是盘中价），fetch_date == nxt
+    _save_klines(db, {sym: _bars_by_date([(d0, 10.0), (d1, 10.2)])}, d1)
+    _set_label(db, sym, d0, 2.0)
+
+    report = repair_next_day_labels(db, dry_run=False)
+    assert report["checked"] == 1
+    assert report["changed"] == []
+    assert report["skipped"] == {"缓存早于次日收盘(无法确认定稿)": 1}
+    pct, lht = db.execute(
+        "SELECT next_day_pct, last_hit_time FROM offboard_launch_log WHERE date=? AND symbol=?", (d0, sym)
+    ).fetchone()
+    assert pct == pytest.approx(2.0), "验不了就不改（不猜）"
+    assert lht == "2026-09-18T09:50:00", "修数不得碰 last_hit_time"
+
+
+def test_repair_next_day_labels_uses_only_cache_later_than_next_session(db):
+    """只有 `fetch_date > nxt` 的缓存才可作依据；满足时覆盖成真收盘价差。"""
+    today = now_beijing().date()
+    d0, d1 = _last_sessions(today, 2)
+    sym = "SZ300201"
+    _insert_signal(db, sym, d0)
+    # 后一日抓取的缓存：d1 已是**定稿收盘** 11.0
+    _save_klines(db, {sym: _bars_by_date([(d0, 10.0), (d1, 11.0)])}, today.isoformat())
+    _set_label(db, sym, d0, 2.0)  # 冻结的错值（盘中口径）
+
+    report = repair_next_day_labels(db, dry_run=False)
+    # 最新缓存 fetch_date == today > d1 ⇒ 可用
+    assert report["skipped"] == {}
+    assert len(report["changed"]) == 1
+    pct = db.execute("SELECT next_day_pct FROM offboard_launch_log WHERE date=? AND symbol=?", (d0, sym)).fetchone()[0]
+    assert pct == pytest.approx(10.0)
+
+
+def test_repair_next_day_labels_dry_run_writes_nothing(db):
+    today = now_beijing().date()
+    d0, d1 = _last_sessions(today, 2)
+    sym = "SZ300201"
+    _insert_signal(db, sym, d0)
+    _save_klines(db, {sym: _bars_by_date([(d0, 10.0), (d1, 11.0)])}, today.isoformat())
+    _set_label(db, sym, d0, 2.0)
+
+    report = repair_next_day_labels(db)  # 默认 dry_run
+    assert len(report["changed"]) == 1
+    pct = db.execute("SELECT next_day_pct FROM offboard_launch_log WHERE date=? AND symbol=?", (d0, sym)).fetchone()[0]
+    assert pct == pytest.approx(2.0), "dry-run 不得写库"
+
+
+def test_repair_next_day_labels_is_idempotent_and_reports_skips(db):
+    """修完再跑一次必须报 0 需修；无缓存/未定稿的行进 skipped 且不改值。"""
+    today = now_beijing().date()
+    d0, d1 = _last_sessions(today, 2)
+    sym, no_cache = "SZ300201", "SZ300202"
+    _insert_signal(db, sym, d0)
+    _insert_signal(db, no_cache, d0)
+    _save_klines(db, {sym: _bars_by_date([(d0, 10.0), (d1, 11.0)])}, today.isoformat())
+    _set_label(db, sym, d0, 2.0)
+    _set_label(db, no_cache, d0, 1.5)
+
+    assert len(repair_next_day_labels(db, dry_run=False)["changed"]) == 1
+    second = repair_next_day_labels(db, dry_run=False)
+    assert second["changed"] == []
+    assert second["same"] == 1
+    assert second["skipped"] == {"无K线池缓存": 1}
+    untouched = db.execute(
+        "SELECT next_day_pct FROM offboard_launch_log WHERE date=? AND symbol=?", (d0, no_cache)
+    ).fetchone()[0]
+    assert untouched == pytest.approx(1.5), "验不了的行必须原样保留，不猜"

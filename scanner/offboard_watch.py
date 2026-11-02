@@ -91,7 +91,7 @@ from dataclasses import dataclass, field
 from datetime import date as _date
 from datetime import datetime
 from datetime import timedelta as _td
-from typing import Sequence
+from typing import Collection, Sequence
 
 from scanner.concept import attach_display_boards
 from scanner.config import (
@@ -130,7 +130,7 @@ from scanner.features import ma_alignment_score
 from scanner.hot_watch import is_hot_universe
 from scanner.market_extra import fetch_fund_flow_rank
 from scanner.models import make_kline_bar
-from scanner.trading_session import trading_minutes_elapsed
+from scanner.trading_session import is_trading_day, trading_minutes_elapsed
 from scanner.trend_beauty import DAILY_BEAUTY_MIN_BARS
 from scanner.utils import EXTERNAL_FAILURES, accum_5d, is_st, to_float
 from scanner.validator import mo_divergence
@@ -844,8 +844,19 @@ def _save_klines(conn, data: dict[str, list], fetch_date: str) -> None:
         logger.warning("榜外K线池写入失败（本轮结果不受影响）: %s", e)
 
 
-def load_offboard_klines(conn, adapter, symbols: list[str], fetch_date: str | None = None) -> dict[str, list]:
+def load_offboard_klines(
+    conn,
+    adapter,
+    symbols: list[str],
+    fetch_date: str | None = None,
+    *,
+    fetch_symbols: Collection[str] | None = None,
+) -> dict[str, list]:
     """榜外 K 线池：当日缓存优先，缺失者并发补取后落库 → {symbol: [bar, ...]}。
+
+    `fetch_symbols`（2026-11-03）：**只允许对这批 symbol 发补取请求**，其余仅读当日
+    缓存；None = 对全部缺失者补取（回填 / CLI 路径，调用方已自行定量）。
+    存在的理由见 `run_offboard_watch` 里「额度只管补取、不管读缓存」那段。
 
     **为何不复用 `daily_kline`**：那张表的既定语义是「榜单衍生池」（999 只里 982 只在
     `appearances`），塞入榜外票会污染所有基于它的回测基准与归因（portfolio_backtest /
@@ -859,7 +870,12 @@ def load_offboard_klines(conn, adapter, symbols: list[str], fetch_date: str | No
     day = fetch_date or now_beijing().date().isoformat()
     uniq = list(dict.fromkeys(symbols))
     result = _read_cached_klines(conn, uniq, day)
-    missing = [s for s in uniq if s not in result]
+    # 🔴 额度只管**补取请求**，不管**读缓存**（2026-11-03）：读缓存是一条分块 SELECT，
+    # 零网络成本，没有理由跟着请求额度一起截断。此前调用方把额度施加在**入参**上，
+    # 额度外的票连「当天已缓存的 K 线」都读不到（实测 2026-10-23：366 只被记为
+    # 「无K线数据(榜外池未覆盖)」，其中 126 只当日已缓存）。
+    allowed = None if fetch_symbols is None else set(fetch_symbols)
+    missing = [s for s in uniq if s not in result and (allowed is None or s in allowed)]
     if missing and adapter is not None:
         fetched = _fetch_klines_batch(adapter, missing)
         if fetched:
@@ -871,20 +887,28 @@ def load_offboard_klines(conn, adapter, symbols: list[str], fetch_date: str | No
 # ── 落库与回填（可验证性的硬前置）────────────────────────────────────────────
 
 
-def persist_round(conn, rows: Sequence[OffboardCandidate]) -> None:
+def persist_round(
+    conn,
+    rows: Sequence[OffboardCandidate],
+    display_top: int = OFFBOARD_DISPLAY_TOP,
+) -> None:
     """B 段逐日落库（(date, symbol) 唯一）。失败只告警，不影响本轮结果返回。
 
     🔴 **信号值首次写入即冻结**（2026-09-21 修）：`name / tier / percent / accum_5d /
     vol_ratio / main_pct / amount / float_cap / price` 九列在 ON CONFLICT 时**不更新**，
     只有 `last_hit_time` 与 `updated` 每轮刷新。
 
-    `top_hits`（m019）：**前 `OFFBOARD_DISPLAY_TOP` 行**每轮 +1，其余行恒 0 ——
+    `top_hits`（m019）：**前 `display_top` 行**每轮 +1，其余行恒 0 ——
     原是「反复进前十」粉名/🔥 标识（2026-10-14~15 四版沿革）的落库依据；
     **标识已于 2026-10-16 按用户决策整体删除**，本列照常累加（列已发布，id 不得
     改名/删列；与 gate_hits 同款作研究原料保留）。
 
+    `display_top`（2026-11-03）：默认 `OFFBOARD_DISPLAY_TOP`，由 `run_offboard_watch`
+    传入**本轮实际的 `top_n`**。此前写死常量 ⇒ `--top 3` / 调用方改 `top_n` 时该列
+    与「实际展示了几行」不一致（生产恒等，CLI 与单测不等）。
+
     ⚠ 2026-10-16 修复（计数口径）：ON CONFLICT 原为 `top_hits=top_hits+1` ——
-    **无条件 +1**，把 INSERT 时算出的 `1 if i < OFFBOARD_DISPLAY_TOP else 0` 丢掉。
+    **无条件 +1**，把 INSERT 时算出的 `1 if i < display_top else 0` 丢掉。
     而本函数收到的是**全部过门行**（`run_offboard_watch` 只对展示做
     `passed[:top_n]`）⇒ 排在前 N 之外的行首插记 0、此后每轮仍 +1，计数实为
     「过门轮次 − 1」：一只**从未进过展示前 N** 的票也能攒到门槛，正是 m019 被
@@ -893,6 +917,10 @@ def persist_round(conn, rows: Sequence[OffboardCandidate]) -> None:
 
     `gate_hits`（m020，2026-10-14）：**所有过门行**每轮 +1（不只前 N）—— 曾是
     「今日活跃」在场率标识（today_presence，已退场）的分子，现仅作研究原料。
+    ⚠ 严格说它计的是「过门 **且分层通过**」的轮次（本函数收到的是 `passed`）——
+    只过 `offboard_gate`、被 `classify_tier` 判掉的行**不累加**（那类行只进
+    `offboard_rejections`）。2026-11-03 更正文案：旧注释写「所有过门行」会让人
+    拿它当「gate 通过率」的分子，两者差一个分层。
     与 top_hits 同为计数列（ON CONFLICT 累加，跨日因 (date, symbol) 主键自然
     重置）。留存行不入本表 ⇒ 不累。
 
@@ -948,7 +976,7 @@ def persist_round(conn, rows: Sequence[OffboardCandidate]) -> None:
                         c.current,
                         now,
                         now,
-                        1 if i < OFFBOARD_DISPLAY_TOP else 0,
+                        1 if i < display_top else 0,
                         1,
                         now,
                     )
@@ -967,17 +995,82 @@ def persist_round(conn, rows: Sequence[OffboardCandidate]) -> None:
         logger.warning("B段逐日落库失败（本轮结果不受影响）: %s", e)
 
 
+# 次日 bar 的「间隔合理性」自然日上限：覆盖 A 股最长连续休市（国庆 8 个自然日、
+# 春节 9~12 个自然日）。原实现写死 4（只够覆盖周末）—— 见 `_next_bar_is_next_session`。
+_MAX_BACKFILL_GAP_DAYS = 12
+
+
+def _next_bar_is_next_session(d: str, nxt: str) -> bool:
+    """`nxt` 是否就是 `d` 之后**紧邻的下一个交易日**（回填防呆 1，2026-11-03 重写）。
+
+    旧实现 = 「`nxt - d` 相差 ≤4 个自然日」。那 4 只够覆盖周末（3 天），而**国庆/春节的
+    休市跨度是 8~12 个自然日** ⇒ 节前最后一个交易日的信号会被整批判为「次日 bar 太远」
+    而**永久丢失标签**（不是延后，是永不回填：`next_day_pct IS NULL` 的查询每轮都会
+    重新判一次，判据本身不会变）。实测 `scanner.db`：`2026-09-30` 那 45 行
+    `next_day_pct` 至今 **0/45**，而 09-30 与 10-08 两根 bar 在池里都存在
+    （`(10-08 − 09-30).days = 8 > 4`）。丢的恰好是「节前一档」这整个 regime，
+    不是随机样本。
+
+    新判据 = **区间内不得有已登记的交易日**（区分停牌与休市的唯一可判据）：
+      · 跨国庆（09-30 → 10-08，中间 10-01~10-07 全是登记假日）⇒ 放行 ✓
+      · 跨周末（周五 → 周一）⇒ 放行 ✓
+      · 停牌 3 天（周二 → 下周一，中间 3 个交易日）⇒ 拦下 ✓（验不了「次日」）
+      · 停牌 + 假期混合（09-29 → 10-09，中间 09-30/10-08 是交易日）⇒ 拦下 ✓
+
+    ⚠ `holidays.json` 只覆盖到 2026-10-07（人工维护）：**未登记的假日**会让中间某天被
+    误当交易日 ⇒ 保守拦下 ⇒ 该行不产出标签。方向是对的（宁缺勿错），代价是那张表需要
+    继续维护（见 `scanner/holidays.py` docstring 的双向故障说明）。
+    """
+    try:
+        d0 = _date.fromisoformat(d)
+        d1 = _date.fromisoformat(nxt)
+    except ValueError:
+        return False  # 脏日期字符串：验不了就不产出
+    gap = (d1 - d0).days
+    if gap <= 0 or gap > _MAX_BACKFILL_GAP_DAYS:
+        return False
+    cur = d0 + _td(days=1)
+    while cur < d1:
+        if is_trading_day(cur):
+            return False
+        cur += _td(days=1)
+    return True
+
+
 def backfill_next_day(conn, adapter, signal_date: str | None = None) -> int:
     """回填 `offboard_launch_log.next_day_pct`（次日收益 %），返回回填行数。
 
     口径：信号日收盘价 → **次一交易日**收盘价。榜外票不在 `daily_kline`，数据源是本区
     自己的榜外 K 线池（会按需补取，结果留在池里，下一轮直接命中）。
 
-    ⚠ 两个必须的防呆（都源自 `daily_kline` 已踩过的坑）：
+    ⚠ 三个必须的防呆（1、2 源自 `daily_kline` 已踩过的坑，3 是 2026-11-03 新增）：
       1. **不能假设「下一根 bar = 下一交易日」** —— 日线源在停牌/跳空时会缺 bar，
-         故要求下一根 bar 与信号日相差 ≤4 个自然日（覆盖周末），否则跳过；
+         故要求 `d` 与 `nxt` 之间**没有任何已登记的交易日**（`_next_bar_is_next_session`），
+         否则跳过。⚠ 原实现是「相差 ≤4 个自然日」，只够覆盖周末 ⇒ 国庆/春节（8~12 个
+         自然日）会把节前那一档信号**永久**判为「太远」（实测 2026-09-30 那 45 行）。
       2. **信号日必须早于今天**（`date < today`）—— 否则每轮都会为当天的信号去找
          「次日 bar」，既永远找不到、又会把当天的 K 线池反复翻一遍。
+      3. 🔴 **`nxt` 必须早于今天**（`nxt < today`）—— 否则那根「次日 bar」是**当日盘中
+         bar**。见下段。
+
+    🔴 为什么 `nxt` 不能是「今天」（2026-11-03 修，实测口径故障）
+    --------------------------------------------------------
+    K 线池的末根就是当日盘中 bar（`_exclude_today` docstring 实测 215/215），而本函数
+    在**交易时段每轮都跑**（`unified_scanner` 主循环的交易分支；非交易分支不扫）⇒
+    放行 `nxt == today` 等于把「次日收益」定义成「信号日收盘 → 次日第一次成功取到
+    K 线那一刻（≈09:45）」，而 `next_day_pct IS NULL` 的写入条件让这个值**永久冻结**
+    （主链路 `backtest.backfill_outcomes` 是覆盖式重算、能自愈；本链路不能）。
+
+    实测（`scanner.db` 里两根 bar 都已定稿的 703 行 / 23 个信号日，用「严格晚于次日」
+    那份 `offboard_kline_cache` 重算真值）：
+      · 偏差绝对值 > 2pp：322/703（46%）；符号相反：176/703（25%）；
+      · ≤−5% 尾部：现库 5.26% vs 真值 **12.66%**（下行尾部被砍掉一半多）；
+      · ≥7% 命中：3.70% vs 5.69%；标准差 3.59 vs 4.95（整体被压缩）；
+      · 极端例：`SZ300695 2026-10-29` 现库 **+20.00**（盘中涨停价），收盘→收盘实为 **+5.50**。
+
+    故标签**延后一个交易日**：等次日之后的某次取数（那时 `nxt` 的 bar 已定稿）再回填。
+    `--backfill` 也绕不过去 —— 池里 `nxt` 那行在当日第一次取数时就冻成了盘中值，
+    收盘后再读仍是它。
     """
     if conn is None:
         return 0
@@ -1016,11 +1109,14 @@ def backfill_next_day(conn, adapter, signal_date: str | None = None) -> int:
             if not later:
                 continue
             nxt = later[0]
-            # 防呆 1 的日期差计算也可能抛（脏日期字符串），同样不能让整轮回填崩掉
-            try:
-                if (_date.fromisoformat(nxt) - _date.fromisoformat(d)).days > 4:
-                    continue
-            except ValueError:
+            # 防呆 3：`nxt` 就是今天 ⇒ 那根是当日盘中 bar（池里当天第一次取数即冻结），
+            # 拿它当「次日收盘」会把口径改成「收盘→次日 09:45」且永不修正。
+            if nxt >= today:
+                continue
+            # 防呆 1（2026-11-03 重写）：`nxt` 必须是 `d` 之后**紧邻的下一个交易日**。
+            # 原实现是「相差 ≤4 自然日」，跨国庆/春节时会把整批信号判为太远。
+            # 日期解析失败也在 `_next_bar_is_next_session` 内部收口（返回 False）。
+            if not _next_bar_is_next_session(d, nxt):
                 continue
             # 🔴 2026-10-08 修复 KeyError：`later` 只保证「有比 d 晚的 bar」，
             #   **不保证 d 自己在 by_date 里** —— `by_date` 来自 `_clean_bars`，
@@ -1051,6 +1147,133 @@ def backfill_next_day(conn, adapter, signal_date: str | None = None) -> int:
         except EXTERNAL_FAILURES as e:
             logger.warning("B段回填提交失败: %s", e)
     return filled
+
+
+# ── 一次性修数：重算**已冻结**的 next_day_pct（2026-11-03）───
+
+
+def repair_next_day_labels(conn, *, dry_run: bool = True) -> dict:
+    """重算已冻结的 `offboard_launch_log.next_day_pct`，返回一份差异账（不打印）。
+
+    为什么需要这个工具（与 `backfill_next_day` 的分工）
+    ----------------------------------------------------
+    `backfill_next_day` **只填 NULL**（`WHERE next_day_pct IS NULL`）—— 这个「首次写入即
+    冻结」的语义对信号列（`tier`/`percent`/`vol_ratio`）是对的，对标签列是错的：旧实现
+    把标签定成了「信号日收盘 → 次日**盘中**价」（K 线池末根是当日盘中 bar，而回填在交易
+    时段每轮都跑），而冻结让它**永不修正**。修了写入侧（防呆 3 `nxt < today`）只能保证
+    今后的标签正确，库里的历史标签不会自愈。
+
+    实测（本题就是为这 903 行写的）：两根 bar 都已定稿的 703 行里，46% 与真值差 >2pp、
+    25% 符号相反、≤−5% 尾部 5.26% vs 真值 12.66%。不修，则 `scripts/offboard_nextday.py`
+    会把这批错样本与正确样本混算。
+
+    口径（三条防呆全部与写入侧同源）
+    ------------------------------
+    1. `nxt` = 池里 `d` 之后的第一根 bar，且必须通过 `_next_bar_is_next_session`；
+    2. `nxt < today`（否则那根是当日盘中 bar）；
+    3. **取数只用 `fetch_date > nxt` 的那份缓存** —— 那是唯一能保证「`nxt` 那根已定稿」的
+       证据（当初写错就是因为用了 `fetch_date == nxt` 的盘中快照）。没有这样的缓存则
+       该行**跳过**，不猜。
+
+    且**零联网**：只读 `offboard_kline_cache`，不传 adapter、不发请求（修数是离线作业，
+    不该因一次网络抖动写成半截）。
+
+    `dry_run=True`（默认）只算差异不落库。返回：
+        {"checked": n, "same": m, "changed": [(date, symbol, old, new), ...],
+         "skipped": {reason: count}, "old_mean": f, "new_mean": f}
+    """
+    today = now_beijing().date().isoformat()
+    report: dict = {"checked": 0, "same": 0, "changed": [], "skipped": {}, "old_mean": None, "new_mean": None}
+    if conn is None:
+        return report
+    try:
+        rows = conn.execute(
+            f"SELECT date, symbol, next_day_pct FROM {_LOG_TABLE} "  # noqa: S608 - 常量表名
+            "WHERE next_day_pct IS NOT NULL"
+        ).fetchall()
+    except EXTERNAL_FAILURES as e:
+        logger.warning("B段标签重算查询失败: %s", e)
+        return report
+    if not rows:
+        return report
+    report["checked"] = len(rows)
+
+    def _skip(reason: str) -> None:
+        skipped = report["skipped"]
+        skipped[reason] = skipped.get(reason, 0) + 1
+
+    # 每票只取**最新一份**缓存：它含最长的已定稿历史，且只有它可能满足 `fetch_date > nxt`。
+    symbols = sorted({sym for _d, sym, _nd in rows})
+    latest: dict[str, tuple[str, dict]] = {}
+    for i in range(0, len(symbols), 400):
+        chunk = symbols[i : i + 400]
+        placeholders = ",".join("?" * len(chunk))
+        try:
+            cached = conn.execute(
+                f"SELECT symbol, fetch_date, payload_json FROM {_KLINE_TABLE} "  # noqa: S608 - 常量表名 + 占位符
+                f"WHERE symbol IN ({placeholders}) ORDER BY fetch_date",
+                tuple(chunk),
+            ).fetchall()
+        except EXTERNAL_FAILURES as e:
+            logger.warning("B段标签重算读 K 线池失败: %s", e)
+            continue
+        for sym, fetch_date, payload in cached:
+            try:
+                latest[sym] = (fetch_date, {b["date"]: b for b in _clean_bars(json.loads(payload)) if b.get("date")})
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+    now = now_beijing().isoformat(timespec="seconds")
+    changed: list[tuple[str, str, float, float]] = []
+    for d, sym, old in rows:
+        entry = latest.get(sym)
+        if not entry:
+            _skip("无K线池缓存")
+            continue
+        fetch_date, by_date = entry
+        later = sorted(x for x in by_date if x > d)
+        if not later:
+            _skip("池里没有更晚的bar")
+            continue
+        nxt = later[0]
+        if nxt >= today:
+            _skip("次日bar未定稿")
+            continue
+        if not _next_bar_is_next_session(d, nxt):
+            _skip("次日bar不是紧邻交易日")
+            continue
+        if fetch_date <= nxt:
+            _skip("缓存早于次日收盘(无法确认定稿)")
+            continue
+        p0 = to_float((by_date.get(d) or {}).get("close"), 0.0) or 0.0
+        p1 = to_float((by_date.get(nxt) or {}).get("close"), 0.0) or 0.0
+        if p0 <= 0 or p1 <= 0:
+            _skip("缺信号日或次日的收盘价")
+            continue
+        new = round((p1 - p0) / p0 * 100.0, 4)
+        if old is not None and abs(new - old) < 1e-6:
+            report["same"] += 1
+            continue
+        changed.append((d, sym, float(old) if old is not None else float("nan"), new))
+
+    report["changed"] = changed
+    vals_old = [c[2] for c in changed if c[2] == c[2]]  # 排除 nan
+    report["old_mean"] = round(sum(vals_old) / len(vals_old), 4) if vals_old else None
+    report["new_mean"] = round(sum(c[3] for c in changed) / len(changed), 4) if changed else None
+
+    if dry_run or not changed:
+        return report
+    try:
+        conn.executemany(
+            f"UPDATE {_LOG_TABLE} SET next_day_pct=?, updated=? WHERE date=? AND symbol=?",  # noqa: S608 - 常量表名
+            [(new, now, d, sym) for d, sym, _old, new in changed],
+        )
+        conn.commit()
+    except EXTERNAL_FAILURES as e:
+        # 修数是离线作业：失败就原样报出来（不许静默改成部分成功）
+        logger.warning("B段标签重算写入失败: %s", e)
+        raise
+    return report
 
 
 # ── 单轮主流程 ──────────────────────────────────────────────────────────────
@@ -1156,13 +1379,21 @@ def run_offboard_watch(
     # 输入（price/percent/name/main_pct/vol_ratio）已全部新鲜：前四者来自雪球
     # 实时补价 + f14 名称，量比/main_pct 来自东财资金流行内快照（见
     # `_apply_live_fund_flow`）。
+    # 榜内 / 今日已推荐的票**不进粗筛**（2026-11-03）：它们随后必被 `build_candidates`
+    # 的 `code in board_codes or symbol in skip` 丢掉，却会先占掉实时补价的头部名额 ——
+    # 实测 2026-10-29 / 10-30 的 100 个名额里分别有 **14 / 19** 个花在 `today_syms` 上。
+    # 判据与 `build_candidates` 逐字同源（同一份 code_of），不新增语义。
+    _board_codes = {code_of(str(it.get("symbol") or "")) for it in board_items if it.get("symbol")}
+    _skip = exclude_symbols or set()
     _pct_low = max(0.0, HOT_MIN_PERCENT - OFFBOARD_PREFILTER_PCT_BUFFER)
     _pct_high = OFFBOARD_T2_TODAY_MAX + OFFBOARD_PREFILTER_PCT_BUFFER
     prefilter = [
         s
         for s, p in ((s, snapshot[s]) for s in gem_offboard if snapshot.get(s))
         if (
-            (to_float(p.get("amount"), 0.0) or 0.0) >= OFFBOARD_MIN_AMOUNT * OFFBOARD_PREFILTER_AMOUNT_RATIO
+            s not in _skip
+            and code_of(s) not in _board_codes
+            and (to_float(p.get("amount"), 0.0) or 0.0) >= OFFBOARD_MIN_AMOUNT * OFFBOARD_PREFILTER_AMOUNT_RATIO
             and (to_float(p.get("float_cap"), 0.0) or 0.0)
             >= OFFBOARD_MIN_FLOAT_CAP * OFFBOARD_PREFILTER_FLOAT_CAP_RATIO
             and not is_st(str(p.get("name") or names.get(s) or ""))
@@ -1189,10 +1420,7 @@ def run_offboard_watch(
     recent = _recent_dwell_symbols(conn, today)
     retained: list[OffboardCandidate] = []
     if recent:
-        _board_codes = {code_of(str(it.get("symbol") or "")) for it in board_items if it.get("symbol")}
-        retained = _retain_candidates(
-            snapshot, recent, {c.symbol for c in cands}, _board_codes, exclude_symbols or set(), names
-        )
+        retained = _retain_candidates(snapshot, recent, {c.symbol for c in cands}, _board_codes, _skip, names)
 
     # 次日收益回填（2026-10-08 修复 L5）：移到「本轮是否产出」的所有提前返回**之前**
     # —— 原先 `not cands` / 零候选轮会跳过回填，长期零产出的交易日标签停积，与
@@ -1212,17 +1440,31 @@ def run_offboard_watch(
         persist_round(conn, [])
         return []
 
+    quota_limited = klines is None
+    attempted: set[str] = set()
     if klines is None:
-        # K 线补取额度优先给严格候选；留存票追加在额度之后（数量有 DWELL_MAX 封顶）。
-        kline_syms = [c.symbol for c in cands[:OFFBOARD_KLINE_FETCH_LIMIT]]
-        kline_syms += [c.symbol for c in retained if c.symbol not in kline_syms]
-        klines = load_offboard_klines(conn, adapter, kline_syms)
+        # 🔴 额度只管**补取请求**，不管**读缓存**（2026-11-03）。此前额度被施加在入参上
+        # （`load_offboard_klines(conn, adapter, cands[:LIMIT])`）⇒ 额度外的票即使当日
+        # 缓存里有 K 线也拿不到，被记成「无K线数据(榜外池未覆盖)」。实测 2026-10-23：
+        # 366 只被判「池未覆盖」，其中 **126 只当日已缓存**；而 `offboard_rejections`
+        # 是**最新写入覆盖**，于是一只票掉出额度后连原来真实的理由
+        # （如 `MA空头排列`）也会被改写成「数据没覆盖」—— 那张表是本段唯一的证据链。
+        all_syms = list(dict.fromkeys([c.symbol for c in cands] + [c.symbol for c in retained]))
+        # 补取额度优先给严格候选；留存票追加在额度之后（数量有 DWELL_MAX 封顶）。
+        attempted = {c.symbol for c in cands[:OFFBOARD_KLINE_FETCH_LIMIT]} | {c.symbol for c in retained}
+        klines = load_offboard_klines(conn, adapter, all_syms, fetch_symbols=attempted)
 
     passed: list[OffboardCandidate] = []
     tier_rejects: list[tuple[str, str]] = []
     for c in cands:
         if annotate(c, klines.get(c.symbol), today) is None:
-            tier_rejects.append((c.symbol, c.reasons[0] if c.reasons else "不产出"))
+            why = c.reasons[0] if c.reasons else "不产出"
+            # 区分「额度外没补取」与「补取了但没有数据」（2026-11-03）：两者对展示的
+            # 后果相同（不产出），对**事后归因**完全不同 —— 前者是资源上限，后者是数据
+            # 缺失。混成一句会让「按理由重放阈值」的人误判 K 线覆盖面。
+            if quota_limited and c.symbol not in klines and c.symbol not in attempted:
+                why = "K线未补取(额度外)"
+            tier_rejects.append((c.symbol, why))
             continue
         passed.append(c)
 
@@ -1240,7 +1482,7 @@ def run_offboard_watch(
 
     passed.sort(key=sort_key)
     # 🔴 只落严格行 —— 留存行若也刷新 last_hit_time，留存窗口会自我续命（永远不过期）。
-    persist_round(conn, passed)
+    persist_round(conn, passed, top_n)
     # （回填已前移至 build_candidates 之后：零候选轮也执行，见上方 L5 注释。）
 
     # 留存行不占 top_n 名额：严格信号永远优先，续展的「已回落」票只作尾部上下文。
@@ -1546,6 +1788,12 @@ def main(argv: "list[str] | None" = None) -> int:
     p.add_argument("--offline-demo", action="store_true", help="离线自检：内置样本，不联网")
     p.add_argument("--backfill", action="store_true", help="只回填历史日 next_day_pct 后退出（写生产库，有意为之）")
     p.add_argument("--date", help="配合 --backfill：只回填该信号日（YYYY-MM-DD）")
+    p.add_argument(
+        "--repair-next-day",
+        action="store_true",
+        help="重算**已冻结**的 next_day_pct（2026-11-03 前写入的是「收盘→次日盘中」口径）；默认 dry-run",
+    )
+    p.add_argument("--apply", action="store_true", help="配合 --repair-next-day：真正写库（不带则只打差异账）")
     p.add_argument("--verbose", action="store_true", help="调试日志")
     args = p.parse_args(argv)
 
@@ -1560,6 +1808,29 @@ def main(argv: "list[str] | None" = None) -> int:
     from scanner.data_source import get_adapter
     from scanner.db.queries import get_market_extra_snapshot as _snap
     from scanner.db.schema import get_conn
+
+    if args.repair_next_day:
+        # 修数作业：**零联网**（只读 offboard_kline_cache），故提前返回、**不**构造 adapter。
+        conn = get_conn()
+        try:
+            report = repair_next_day_labels(conn, dry_run=not args.apply)
+        finally:
+            conn.close()
+        changed = report["changed"]
+        print("【B 段 next_day_pct 重算】口径 = 信号日收盘 → 次一交易日**收盘**（三条防呆同源）")
+        print(f"  待查 {report['checked']} 行 | 已一致 {report['same']} 行 | 需修 {len(changed)} 行")
+        if report["skipped"]:
+            bits = " / ".join(f"{k} {v}" for k, v in sorted(report["skipped"].items()))
+            print(f"  跳过：{bits}")
+        if changed:
+            if report["old_mean"] is not None:
+                print(f"  均值：旧 {report['old_mean']:+.2f}% → 新 {report['new_mean']:+.2f}%")
+            else:
+                print(f"  均值：新 {report['new_mean']:+.2f}%")
+            for d, sym, old, new in sorted(changed, key=lambda r: -abs(r[3] - r[2]))[:5]:
+                print(f"    {d} {sym}  {old:+.2f} → {new:+.2f}")
+            print("  （已落库）" if args.apply else "  dry-run：加 --apply 才写库")
+        return 0
 
     adapter = get_adapter()
 

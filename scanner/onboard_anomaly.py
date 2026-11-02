@@ -50,7 +50,6 @@ T2「启动首日」的下沿是 `MOMENTUM_LAUNCH_TODAY_MIN`(3.5%)，语义是�
 from __future__ import annotations
 
 import logging
-from datetime import date as _date
 from typing import Sequence
 
 from scanner.config import (
@@ -69,6 +68,7 @@ from scanner.models import KlineBar
 from scanner.offboard_watch import (
     T1,
     OffboardCandidate,
+    _next_bar_is_next_session,
     annotate,
     offboard_gate,
     opening_silence_active,
@@ -417,10 +417,15 @@ def backfill_next_day_pct(conn, signal_date: str | None = None) -> int:
     逐行 UPDATE。榜内票的日线本就在 `daily_kline`（本模块 docstring 已述），
     故不需要榜外那套 `offboard_kline_cache`。
 
-    保留榜外段的两条防呆（docstring 见 `offboard_watch.backfill_next_day`）：
-      1. 次一 bar 与信号日相差 ≤4 个自然日（覆盖周末），否则跳过；
+    保留榜外段的三个防呆（docstring 见 `offboard_watch.backfill_next_day`）：
+      1. `nxt` 必须是 `d` 之后**紧邻的下一个交易日**（`_next_bar_is_next_session`：
+         区间内不得有已登记的交易日）。⚠ 原实现是「相差 ≤4 个自然日」，只够覆
+         盖周末 ⇒ 国庆/春节（8~12 个自然日）会把节前那一档信号**永久**丢掉标签；
       2. 信号日必须 `< today` —— 否则每轮都为当天信号去找「次日 bar」，
-         既永远找不到、又反复翻当天的 K 线。
+         既永远找不到、又反复翻当天的 K 线；
+      3. `nxt` 必须 `< today` —— 否则那根「次日 bar」是**当日盘中 bar**
+         （`daily_kline` 里当天那根在收盘定稿前是盘中值），而本函数只在
+         `next_day_pct IS NULL` 时写 ⇒ 会永久冻结成「收盘→次日盘中」口径。
 
     `signal_date` 用于 CLI/回放指定某一天（与榜外段同名参数同义）。
     """
@@ -460,11 +465,12 @@ def backfill_next_day_pct(conn, signal_date: str | None = None) -> int:
             if not later:
                 continue
             nxt = later[0]
-            # 防呆 1：次一 bar 隔太久（停牌/长假）⇒ 不是「次日」，跳过。
-            try:
-                if (_date.fromisoformat(nxt) - _date.fromisoformat(d)).days > 4:
-                    continue
-            except ValueError:
+            # 防呆 3：`nxt` 就是今天 ⇒ 那根是当日盘中 bar（收盘定稿前一直在变），
+            # 拿它当「次日收盘」会把口径改成「收盘→次日盘中」且永不修正。
+            if nxt >= today:
+                continue
+            # 防呆 1（2026-11-03 与榜外段同批修正）：`nxt` 必须是紧邻的下一个交易日。
+            if not _next_bar_is_next_session(d, nxt):
                 continue
             b0 = by_date.get(d)
             b1 = by_date.get(nxt)
