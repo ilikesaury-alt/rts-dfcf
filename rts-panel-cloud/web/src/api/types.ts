@@ -114,6 +114,28 @@ export type KlineResponse = {
   scoreBreakdown?: Record<string, number> | null;
 };
 
+/** 解读素材项（服务端确定性组装；`id` 是稳定键，`label`/`value` 直接展示）。 */
+export type ExplainMaterial = { id: string; label: string; value: string };
+
+/**
+ * `GET /api/ai-explain?symbol=` 响应（E2，ADR 0001）。
+ *
+ * ⚠ `label`（“仅解读，非投资建议”）**恒由服务端给**，前端只渲染、不自行拼写 ——
+ *   前端自拼就能被改成任意文案，红线标签必须单源在服务端。
+ *   `redlined=true` 表示模型输出触红线被整段替换（`text` 已是拒答文案）。
+ */
+export type ExplainResponse = {
+  symbol: string;
+  label: string;
+  text: string;
+  redlined: boolean;
+  cached: boolean;
+  materials: ExplainMaterial[];
+  /** 缺失的来源（如 `kline` / `appearances` / `regionRow`）。 */
+  missing: string[];
+  /** 素材来自哪一轮快照（null = 该票只在上报的 K 线缓存里）。 */
+  generatedFrom: { date: string; time: string; klineDate: string | null } | null;
+};
 /** 统一响应信封（`error.ts`）：成功 `{ok:true,data}`，失败 `{ok:false,error}`。 */
 export type Envelope<T> = { ok: true; data: T } | { ok: false; error: { code: string; message: string } };
 
@@ -127,6 +149,9 @@ export type ApiErrorCode =
   | "BAD_REQUEST" // E9  参数非法
   | "RANGE_EXCEEDED" // E9  days 越界
   | "NOT_IN_REPORT" // E10 票不在 kline_cache
+  | "AI_UNAVAILABLE" // 模型服务未配置（503，未出网）
+  | "AI_UPSTREAM" // 模型服务调用失败（502）
+  | "AI_RATE_LIMITED" // 同标的出网冷却中（429）
   | "NO_SNAPSHOT" // E11 date 无快照
   | "CORRUPT_SNAPSHOT" //     payload 损坏
   | "NOT_FOUND" //  无此端点

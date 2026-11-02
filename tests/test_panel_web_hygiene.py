@@ -109,3 +109,29 @@ def test_table_components_have_no_hardcoded_column_labels():
             if word in code:
                 offenders.append(f"{p.relative_to(WEB_SRC)}: 硬编码列名 {word!r}")
     assert not offenders, "列头必须来自云端 colSpec（D7）：\n" + "\n".join(offenders)
+
+
+# 红线标签的**服务端单源**（ADR 0001 / docs/specs/ai-explain.md 验收 4）。
+# 文案在 `worker/src/routes/explain.ts::AI_LABEL`；前端只渲染 `data.label`。
+_AI_LABEL = "仅解读，非投资建议"
+WORKER_SRC = WEB_SRC.parents[1] / "worker" / "src"
+
+
+def test_ai_label_not_hardcoded_in_web():
+    """前端不得自拼红线标签 —— 自拼就能被改写成任意说法，服务端保证随之失效。
+
+    「前端只渲染服务端下发的值」是这条验收能被自动化判定的关键：不是查文案对不对，
+    而是查**这段话在 web 侧代码里根本不存在**（注释不算，注释不执行）。
+    """
+    explain = WORKER_SRC / "routes" / "explain.ts"
+    assert explain.exists(), f"未找到服务端标签真源：{explain}"
+    assert _AI_LABEL in explain.read_text(encoding="utf-8"), "服务端 AI_LABEL 缺失或已改名"
+
+    # 防空转：本测试自己的 grep 面为空时，offender 恒空、必然假绿 ——
+    # 防空转不依赖同文件的姊妹测试（它们可能被单独删掉）。
+    assert _ts_files(), "web/src 下无 .ts/.tsx 文件，本守卫空转"
+
+    offenders = [
+        p.relative_to(WEB_SRC).as_posix() for p in _ts_files() if _AI_LABEL in _code_only(p.read_text(encoding="utf-8"))
+    ]
+    assert not offenders, f"红线标签必须由服务端下发，前端不得硬编码：{offenders}"

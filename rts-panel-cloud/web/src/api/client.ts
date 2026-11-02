@@ -119,6 +119,8 @@ export const API = {
   meta: "/api/meta",
   stream: "/api/stream",
   stockKline: (symbol: string) => `/api/stock/${encodeURIComponent(symbol)}/kline`,
+  /** AI 解读（只读端点；请求面只有 symbol，无自由文本）。 */
+  aiExplain: (symbol: string) => `/api/ai-explain?symbol=${encodeURIComponent(symbol)}`,
   history: "/api/history",
   historyRounds: "/api/history/rounds",
   metaDates: "/api/meta/dates",

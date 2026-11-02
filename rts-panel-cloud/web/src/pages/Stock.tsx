@@ -18,7 +18,7 @@ import { useEffect, useMemo, useState } from "react";
 import { KLineChart, darkTheme, type KLineData, type KLineTheme } from "kline-component";
 
 import { API, ApiError, apiGet } from "../api/client";
-import type { KlineResponse } from "../api/types";
+import type { ExplainResponse, KlineResponse } from "../api/types";
 import { fmtPct, num } from "../lib/cols";
 import { listHref } from "../lib/router";
 
@@ -155,6 +155,8 @@ export default function Stock({ symbol }: Props) {
             {items.length > 0 ? <p className="mt-1.5 mb-0 text-[12px] text-text-dim">合计为各分项之和；面板不做评分判断。</p> : null}
           </section>
 
+          <AiExplain symbol={symbol} />
+
           <section className="flex min-w-0 flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-sm">
             <h2 className="m-0 text-[13px] font-semibold">出现史（最近 {data.appearances.length} 条）</h2>
             {data.appearances.length === 0 ? (
@@ -197,7 +199,102 @@ export default function Stock({ symbol }: Props) {
 
 function errorText(code: string): string {
   if (code === "NOT_IN_REPORT") return "本轮上报未包含该票";
+  if (code === "BAD_REQUEST") return "代码格式不对（应为 6 位代码或带 SH/SZ/BJ 前缀）";
+  if (code === "AI_UNAVAILABLE") return "AI 解读暂不可用：未配置模型服务凭据";
+  if (code === "AI_UPSTREAM") return "AI 解读服务暂时不可用，请稍后重试";
+  if (code === "AI_RATE_LIMITED") return "该标的刚解读过，请稍后再试";
   if (code === "NETWORK") return "本地服务无响应";
-  if (code === "BAD_REQUEST") return "股票代码不合法";
   return `读取失败（${code}）`;
+}
+
+/**
+ * AI 解读区块（E3，ADR 0001）。
+ *
+ * 三条设计决定：
+ * 1. **点击才请求**（P4）：进页不自动打模型，调用量 = 主动点击数（成本可控）。
+ * 2. `label` 只渲染服务端下发的 `data.label`，**本文件不写那句标签文案** ——
+ *    前端自拼就能被改成任意文案，红线标签必须单源在服务端
+ *    （守卫：`tests/test_panel_web_hygiene.py::test_ai_label_not_hardcoded_in_web`）。
+ * 3. `text` 原样展示，不重写、不摘要；`redlined=true` 时用错误色提醒「已被拦下」。
+ */
+function AiExplain({ symbol }: { symbol: string }) {
+  const [data, setData] = useState<ExplainResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [showMaterials, setShowMaterials] = useState(false);
+
+  const run = () => {
+    setLoading(true);
+    setError(null);
+    apiGet<ExplainResponse>(API.aiExplain(symbol))
+      .then((res) => setData(res))
+      .catch((e: unknown) => setError(e instanceof ApiError ? e.code : "INTERNAL"))
+      .finally(() => setLoading(false));
+  };
+
+  return (
+    <section className="flex min-w-0 flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-sm">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="m-0 text-[13px] font-semibold">AI 解读</h2>
+        <button
+          type="button"
+          onClick={run}
+          disabled={loading}
+          className="rounded-md border border-border px-2 py-1 text-[12px] text-text-dim transition-colors outline-none hover:bg-white/5 hover:text-text focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {loading ? "生成中…" : data ? "重新解读" : "生成解读"}
+        </button>
+      </div>
+
+      <p className="m-0 text-[12px] text-text-dim">
+        解读由模型转述本轮已上报的数据生成，素材逐项列在下方可核对；系统不由此产生任何新的评分或推荐。
+      </p>
+
+      {error ? <p className="m-0 text-err">{errorText(error)}</p> : null}
+
+      {data ? (
+        <>
+          <p className={`m-0 text-[12px] font-semibold ${data.redlined ? "text-err" : "text-text-dim"}`}>{data.label}</p>
+          <p className={`m-0 text-[13px] whitespace-pre-wrap ${data.redlined ? "text-err" : ""}`}>{data.text}</p>
+          {data.missing.length > 0 ? (
+            <p className="m-0 text-[12px] text-text-dim">
+              缺失来源：{data.missing.join("、")}（模型未收到这些数据，不得补）
+            </p>
+          ) : null}
+          <div className="flex flex-wrap items-center gap-2 text-[12px] text-text-dim">
+            <button
+              type="button"
+              onClick={() => setShowMaterials((v) => !v)}
+              className="rounded border border-border px-2 py-0.5 text-text-dim transition-colors outline-none hover:bg-white/5 hover:text-text focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {showMaterials ? "收起素材" : `查看素材（${data.materials.length} 项）`}
+            </button>
+            {data.generatedFrom ? (
+              <span>
+                依据快照 {data.generatedFrom.date} {data.generatedFrom.time}
+                {data.generatedFrom.klineDate ? ` · K 线截至 ${data.generatedFrom.klineDate}` : ""}
+              </span>
+            ) : (
+              <span>依据已上报的 K 线缓存</span>
+            )}
+            {data.cached ? <span>· 缓存命中</span> : null}
+          </div>
+          {showMaterials ? (
+            <div className="max-w-full overflow-x-auto">
+              <table className="w-full border-collapse text-[12px]">
+                <tbody>
+                  {data.materials.map((m) => (
+                    <tr key={m.id}>
+                      <th className="pl-0 text-left align-top font-normal whitespace-nowrap text-text-dim">{m.label}</th>
+                      <td className="pl-2 text-left break-all">{m.value}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </>
+      ) : null}
+    </section>
+  );
 }
