@@ -13,6 +13,7 @@ import type { Ctx } from "../env";
 import { AppError } from "../error";
 import { SCHEMA_VERSION } from "../serialize";
 import type { Ctx as PayloadCtx, Regions, Stock } from "../serialize";
+import { isSymbol } from "../symbol";
 
 /** 校验通过后的上报体类型（`validate` 的断言目标）。 */
 export type IngestBody = {
@@ -28,7 +29,7 @@ export type IngestBody = {
 
 /** FR-C2 规则 5：每轮最多 20 只票（≈160KB）。与本地 `STOCK_QUOTA` 同语义同数值。 */
 export const STOCK_QUOTA = 20;
-const SYMBOL_RE = /^\d{6}$/;
+
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^\d{2}:\d{2}:\d{2}$/;
 
@@ -50,13 +51,27 @@ export function validate(p: unknown): asserts p is IngestBody {
   if (!Array.isArray(regions?.main)) throw new AppError("BAD_REQUEST", "regions.main must be an array", 400);
 }
 
-/** 取合法 symbol 的 stocks 项，**先取全量再截断**（复核修 6：截断而非拒绝）。 */
+/**
+ * 取合法 symbol 的 stocks 项，**先取全量再截断**（复核修 6：截断而非拒绝）。
+ *
+ * symbol 口径单一来源：`../symbol.ts` 的 `isSymbol`（`SYMBOL_RE` 只管形状，前缀-代码段
+ * 一致性在 `isSymbol` 里），可带 `SH`/`SZ`/`BJ` 前缀或裸 6 位。
+ *
+ * ⚠ 2026-11-02 缺陷修复：此前本文件自写 `/^\d{6}$/`，而实测 `scanner.db` 的真实键是
+ *   `SZ301171` / `SH600036`（带前缀）⇒ 每轮 stocks **全部被判为脏键丢弃**，
+ *   `kline_cache` 生产恒为空（`/api/stock/{symbol}/kline` 随之恒 404）。
+ *   该缺陷长期假绿的根因是既有测试一律用 `300000+i` 这类 6 位键，与生产格式不符。
+ *   守卫见 `test/api.test.ts`「真实格式 symbol」与「pickStocks 边界」两例。
+ */
 export function pickStocks(
   stocks: unknown,
   quota = STOCK_QUOTA,
 ): { accepted: [string, Stock][]; total: number } {
   const src = (stocks ?? {}) as Record<string, Stock>;
-  const all = Object.entries(src).filter(([sym]) => SYMBOL_RE.test(sym)) as [string, Stock][];
+  // ⚠ 用 `isSymbol`（形状 + 前缀一致性），**不是** 裸 `SYMBOL_RE.test`：
+  //   后者会放行 `SH300001`（上交所前缀 + 创业板代码）这类矛盾键（复核项 3）。
+  //   三个端点（ingest / stock / explain）必须共用同一口径，否则就是「两份校验各自漂移」。
+  const all = Object.entries(src).filter(([sym]) => isSymbol(sym)) as [string, Stock][];
   return { accepted: all.slice(0, quota), total: all.length };
 }
 
