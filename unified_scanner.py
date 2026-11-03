@@ -70,6 +70,7 @@ from scanner.onboard_anomaly import run_onboard_anomaly
 from scanner.orchestrator import scan_with_raw
 from scanner.ranking_snapshot import persist_ranking_snapshot
 from scanner.single_instance import SingleInstanceError, SingleInstanceLock, stop_existing_scanners
+from scanner.terminal_copy import capture_stdout, install_hotkey
 from scanner.trading_session import (
     is_trading_day,
     is_trading_time,
@@ -407,6 +408,13 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
     print(f"  新面孔: 过去{NEW_FACE_LOOKBACK_DAYS}天未出现 = 新  |  交易时段: 09:30-11:30 / 13:00-15:00")
     print(f"  {'=' * 60}")
 
+    # 终端「一键复制」（按 c 把上一轮面板纯文本送进系统剪贴板，2026-11-03）。
+    # 仅真控制台装得上（重定向/服务态无按键可读 ⇒ install_hotkey 返回 False）；
+    # 装了才提示用户，装不上终端保持原样（不新增噪声）。
+    copy_hotkey_on = install_hotkey()
+    if copy_hotkey_on:
+        print("  💡 按 c 键可把上一轮终端面板复制到剪贴板")
+
     # 上一轮扫描的榜单排名快照：综合排序「排名」列据此显示雪球榜单排名变化（+N 升 / -N 降）。
     last_ranks: dict[str, int] = {}
     # 榜单可观测性：上一轮飙升榜成员集合，用于算本轮重叠率（探测上游样本口径抖动）。
@@ -678,22 +686,25 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
 
                 # 真实市场指数（创业板指 pct）：供市况标签与板块建议，缓存命中无额外请求。
                 _market_pct = adapter.fetch_market_index()
-                view = display(
-                    len(all_gem),
-                    interval,
-                    filtered_large_cap=filtered_large_cap,
-                    conn=conn,
-                    live_quotes=live_quotes,
-                    rank_map=current_rank_map,
-                    today_pool=res.today_pool,
-                    last_ranks=last_ranks,
-                    hot_rows=hot_rows,
-                    offboard_rows=offboard_rows,
-                    onboard_rows=onboard_rows,
-                    hist_rows=hist_rows,
-                    market_idx_pct=_market_pct,
-                    new_symbols=new_syms,
-                )
+                # 面板文本采集（tee stdout）：渲染时把「打印出去的东西」原样记下来，
+                # 供按 c 复制用（不重渲染、不重算 ⇒ 复制到的与屏幕所见逐字一致）。
+                with capture_stdout():
+                    view = display(
+                        len(all_gem),
+                        interval,
+                        filtered_large_cap=filtered_large_cap,
+                        conn=conn,
+                        live_quotes=live_quotes,
+                        rank_map=current_rank_map,
+                        today_pool=res.today_pool,
+                        last_ranks=last_ranks,
+                        hot_rows=hot_rows,
+                        offboard_rows=offboard_rows,
+                        onboard_rows=onboard_rows,
+                        hist_rows=hist_rows,
+                        market_idx_pct=_market_pct,
+                        new_symbols=new_syms,
+                    )
                 # 快照本轮榜单排名供下一轮展示排名变化（上一轮为 None 时显示纯名次）。
                 last_ranks = dict(current_rank_map)
                 log_results(new_faces, momentum + rebound_list + short_term_list)
@@ -776,7 +787,9 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                 while _remaining > 0:
                     if not is_trading_time():
                         break
-                    print(f"\r  ⏳ 下次刷新还有 {_remaining:.0f}s ...", end="", flush=True)
+                    # 复制提示与倒计时同处一行（\r 原地刷新）：清屏后仍能看见怎么用。
+                    _tip = "  💡 按 c 复制面板 |" if copy_hotkey_on else ""
+                    print(f"\r{_tip}  ⏳ 下次刷新还有 {_remaining:.0f}s ...", end="", flush=True)
                     _step = min(5.0, _remaining)
                     time.sleep(_step)
                     _remaining -= _step
