@@ -12,6 +12,7 @@
 # IDE / 个人会话数据（含本地绝对路径与私人笔记，不入库）
 .vscode/
 .trae/
+.pi/
 .workbuddy/
 .workbuddy-ai/
 /opencode.json
