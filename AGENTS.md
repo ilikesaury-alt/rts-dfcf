@@ -143,14 +143,8 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
   主卡片、连击只落 `hot_watch_hits`；`RTS_HOT_WATCH=0` 整体关闭。
 - kline_drift（自动）：每日对 daily_kline 锚定窗口做价格 SHA256 指纹比对（雪球前复权价
   会被除权事件静默重算 → 回测跨期不可复现），漂移即告警 + 写 logs/finalize.log。
-- **终端「一键复制」（按 c）**：终端里按 `c` → **股票名称 + 6 位代码**清单进系统剪贴板
-  （`scanner/terminal_copy.py`）。面板文本**采集自 stdout tee**（渲染时记下打印出去的东西，
-  **不重渲染/不重算** ⇒ 与屏幕所见同源），ANSI 已剥离（剪贴板里不该有 `\033[91m`）；
-  清单靠表格固定列序（`# / 代码 / 名称`）抽出，代码去 SH/SZ/BJ 前缀取 6 位纯代码
-  （同 `hot_watch._strip_code` 口径），**只有名字没有代码的行不抄**。
-  剪贴板走 ctypes `CF_UNICODETEXT`（中文/emoji 安全），`clip`/`pbcopy` 仅兜底。
-  只在**真控制台**装热键（`msvcrt`，重定向/服务态无按键可读 ⇒ 装不上）；剪贴板不可用
-  只打印提示、**绝不阻断扫描**。守卫：`tests/test_terminal_copy.py`。
+- **终端「一键复制」（按 c）**：按 `c` → 本轮「名称+6位代码」清单进剪贴板
+  （`scanner/terminal_copy.py`；清单从 stdout tee 采集的面板文本里抽，去 ANSI、去 SH/SZ 前缀）。
 
 ## Key facts
 
@@ -252,7 +246,7 @@ scanner/
   validator.py              # Post-score validation (overbought, risk flags)
   ranking.py                # Composite ranking + tier (档0-3) + nextday mark
   display.py                # Terminal rendering (ANSI colors)
-  terminal_copy.py          # 终端「一键复制」（按 c → 上一轮面板纯文本进剪贴板）
+  terminal_copy.py          # 终端「一键复制」（按 c → 名称+代码清单进剪贴板）
   feishu.py                 # Feishu webhook push
   push_gate.py              # 飞书推送过滤门（纯展示层，终端不套用）
   hot_watch.py              # 沪深飙升独立区（与主线口径解耦）
