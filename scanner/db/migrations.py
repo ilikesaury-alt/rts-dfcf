@@ -55,6 +55,9 @@ from scanner.config import now_beijing
 # 账本表名
 LEDGER_TABLE = "schema_migrations"
 
+#: `market_extra_cache` 上供 B 段资金流历史查询用的复合索引名（m023）。
+FLOW_INDEX_NAME = "idx_mec_type_sym_date"
+
 
 def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
     """表存在且含该列。表不存在返回 False（→ 触发 up，由 up 自己负责建表）。"""
@@ -493,6 +496,40 @@ def _check_offboard_print_snapshot(conn: sqlite3.Connection) -> bool:
     return _has_table(conn, "offboard_print_snapshot")
 
 
+def _check_market_extra_flow_index(conn: sqlite3.Connection) -> bool:
+    """索引存在性（`sqlite_master` 查 `index` 类型）。
+
+    ⚠ **表不存在时返回 True（视为已满足）**：`market_extra_cache` 由
+    `schema.init_db` 建（**不是**迁移建的）⇒ 迁移单独跑（如只跑 `run_migrations`
+    的单测或运维脚本）时表可能不存在。此时**不能**报错中断整轮迁移 ——
+    表会在下次 `init_db` 建好，而 `init_db` 之后会再跑一次迁移。
+    """
+    if not _has_table(conn, "market_extra_cache"):
+        return True
+    return bool(
+        conn.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (FLOW_INDEX_NAME,)).fetchone()
+    )
+
+
+def _up_market_extra_flow_index(conn: sqlite3.Connection) -> None:
+    """给 `market_extra_cache` 加 `(data_type, symbol, date DESC)` 复合索引。
+
+    用途：B 段「N 日主力累计净流入门」要按 symbol 取最近 N 天的资金流快照
+    （`scanner/offboard_flow.py`）。无此索引时该查询会退化成
+    「按 symbol 定位后临时 B-tree 排序」；实测 535 只候选 744ms → 637ms，
+    40 只（真实每轮量级）约 70ms ⇒ **不是瓶颈**，索引只是锦上添花。
+
+    ⚠ `CREATE INDEX IF NOT EXISTS` ⇒ 可重复执行；表大时建索引需短暂写锁
+    （168k 行约 1s）。
+    ⚠ 表不存在时**跳过**（不抛错）：表由 `schema.init_db` 建，不是迁移建的。
+    """
+    if not _has_table(conn, "market_extra_cache"):
+        return
+    conn.execute(
+        f"CREATE INDEX IF NOT EXISTS {FLOW_INDEX_NAME} ON market_extra_cache(data_type, symbol, date DESC)"  # noqa: S608 - 常量索引名
+    )
+
+
 # ── 迁移总表（顺序即执行顺序；只在末尾追加）──
 MIGRATIONS: list[Migration] = [
     add_column(
@@ -635,6 +672,12 @@ MIGRATIONS: list[Migration] = [
         desc="新增 offboard_print_snapshot（终端最后一次打印的榜外异动行；与 launch_log 的整日累加口径分开）",
         check=_check_offboard_print_snapshot,
         up=_up_offboard_print_snapshot,
+    ),
+    Migration(
+        id="m023_market_extra_flow_index",
+        desc="新增 market_extra_cache 复合索引 (data_type, symbol, date DESC)：B 段 N 日主力累计净流入门的历史查询",
+        check=_check_market_extra_flow_index,
+        up=_up_market_extra_flow_index,
     ),
 ]
 

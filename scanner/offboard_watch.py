@@ -86,6 +86,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date as _date
@@ -105,6 +106,8 @@ from scanner.config import (
     OFFBOARD_DISPLAY_TOP,
     OFFBOARD_DWELL_MAX,
     OFFBOARD_DWELL_MIN,
+    OFFBOARD_FLOW_MIN_SUM,
+    OFFBOARD_FLOW_WINDOW,
     OFFBOARD_KLINE_DAYS,
     OFFBOARD_KLINE_FETCH_LIMIT,
     OFFBOARD_KLINE_WORKERS,
@@ -130,6 +133,7 @@ from scanner.features import ma_alignment_score
 from scanner.hot_watch import is_hot_universe
 from scanner.market_extra import fetch_fund_flow_rank
 from scanner.models import make_kline_bar
+from scanner.offboard_flow import load_flow_history, sum_main_net
 from scanner.trading_session import is_trading_day, trading_minutes_elapsed
 from scanner.trend_beauty import DAILY_BEAUTY_MIN_BARS
 from scanner.utils import EXTERNAL_FAILURES, accum_5d, is_st, to_float
@@ -187,6 +191,9 @@ class OffboardCandidate:
     # 板块（2026-09-22）：与 A 段 `HotCandidate.sector` 同义同源（`concept.attach_display_boards`
     # 在返回前就地填），取值与 v1 池选「板块」列同一条回退链。空 = 取数失败 → 渲染 `—`。
     sector: str = ""
+    # N 日主力净额合计（元，2026-11-03）：**None = 不可判定**（历史不足 N 天）。
+    # ⚠ 不可判定 ≠ 净流出 —— 门控时按 fail-open 放行（新股不该因「没历史」被砍）。
+    flow_sum: float | None = None
     reasons: list[str] = field(default_factory=list)
 
 
@@ -217,6 +224,21 @@ def sort_key(c: OffboardCandidate) -> tuple:
 
 
 # ── 门槛 ────────────────────────────────────────────────────────────────────
+
+
+def _flow_gate_reason(c: OffboardCandidate) -> str | None:
+    """N 日主力累计净流入门（2026-11-03）：不通过返回理由串。
+
+    ⚠ `flow_sum is None` = 历史不足 N 天（**不可判定**）⇒ fail-open 放行，
+    绝不当成「净流出」—— 否则上市越晚的票越容易被砍（隐性偏差）。
+    ⚠ 这条与 `OFFBOARD_MAIN_PCT_MIN`（当日主力净占比）**不共线**（r=+0.051）：
+    一条看资金的中期方向，一条看今日的瞬时状态 ⇒ 是增量信息，不是重复。
+    详见 `scanner/offboard_flow.py` 模块 docstring 与
+    `scripts/shadow_feature_backtest.py` 的检验输出。
+    """
+    if c.flow_sum is not None and c.flow_sum < OFFBOARD_FLOW_MIN_SUM:
+        return f"{OFFBOARD_FLOW_WINDOW}日主力累计{c.flow_sum / 1e4:.0f}万<{OFFBOARD_FLOW_MIN_SUM / 1e4:.0f}万"
+    return None
 
 
 def offboard_gate(c: OffboardCandidate, *, retain: bool = False) -> str | None:
@@ -267,7 +289,7 @@ def offboard_gate(c: OffboardCandidate, *, retain: bool = False) -> str | None:
         return f"成交额不足({c.amount / 1e4:.0f}万<{OFFBOARD_MIN_AMOUNT / 1e4:.0f}万)"
     if c.float_market_capital < OFFBOARD_MIN_FLOAT_CAP:
         return f"流通市值过小({c.float_market_capital / 1e8:.1f}亿<{OFFBOARD_MIN_FLOAT_CAP / 1e8:.0f}亿)"
-    return None
+    return _flow_gate_reason(c)
 
 
 # ── 留存（dwell，2026-10-09）────────────────────────────────────────────────
@@ -299,12 +321,18 @@ def _retain_candidates(
     board_codes: set[str],
     skip: set[str],
     names: dict[str, str],
+    *,
+    conn: sqlite3.Connection | None = None,
 ) -> list[OffboardCandidate]:
     """近期成员中本轮未严格过门者 → 活跃度门放宽重评（`offboard_gate(retain=True)`）。
 
     与 `build_candidates` 同款的零成本前置过滤（创业板前缀 / 榜内 / 已推荐）——
     一只票早上以 B 段产出、中午冲进飙升榜，留存机制**不能**把它再捞回来。
     返回按量比降序、截断到 `OFFBOARD_DWELL_MAX`。
+
+    ⚠ 流门（`OFFBOARD_FLOW_WINDOW` 日主力累计）在留存路径**照跑**（2026-11-03）：
+    留存只放宽**活跃度类**两门（量比、成交额），其余门照严 —— 中期资金在撤的票
+    不该靠留存机制续命。查询失败/历史不足 ⇒ fail-open（与严格门同语义）。
     """
     out: list[OffboardCandidate] = []
     for sym in recent - strict_syms:
@@ -317,6 +345,14 @@ def _retain_candidates(
         c = _snapshot_row_to_candidate(sym, payload, names)
         if offboard_gate(c, retain=True) is None:
             out.append(c)
+    if conn is not None and out:
+        sums = _load_flow_sums(conn, [c.symbol for c in out])
+        kept: list[OffboardCandidate] = []
+        for c in out:
+            c.flow_sum = sums.get(c.symbol)
+            if _flow_gate_reason(c) is None:
+                kept.append(c)
+        out = kept
     out.sort(key=lambda x: -x.volume_ratio)
     return out[:OFFBOARD_DWELL_MAX]
 
@@ -532,6 +568,8 @@ def build_candidates(
     board_items: Sequence[dict],
     names: dict[str, str],
     exclude_symbols: set[str] | None = None,
+    *,
+    conn: sqlite3.Connection | None = None,
 ) -> tuple[list[OffboardCandidate], list[tuple[str, str]]]:
     """资金流快照 → **榜外创业板**、已过 `offboard_gate` 的候选（按量比降序）。
 
@@ -540,11 +578,18 @@ def build_candidates(
     「榜外」= 不在本轮飙升榜里（`board_items` 的 6 位代码集合）。`exclude_symbols`
     另排今日已推荐票 —— 与 v1 回捞区同款先例，避免同一只票在主表和 B 段同屏两现。
     候选按量比降序：决定 K 线补取额度（`OFFBOARD_KLINE_FETCH_LIMIT`）优先给谁。
+
+    `conn`（2026-11-03）：给了就启用 **N 日主力累计净流入门**（中期资金方向）。
+    ⚠ **两阶段判定**（性能）：流门放最后 —— 先跑完其它门得到幸存者，**只对幸存者**
+    批量查历史资金流（全市场 1400+ 只查一次要 1.4s，幸存者通常几十只 ⇒ ~30ms）。
+    ⚠ **不可判定 ≠ 净流出**：历史不足 N 天 ⇒ `flow_sum is None` ⇒ fail-open 放行
+    （否则上市越晚的票越容易被砍）。查询失败（sqlite3.Error）也一律 fail-open。
     """
     board_codes = {code_of(str(it.get("symbol") or "")) for it in board_items if it.get("symbol")}
     skip = exclude_symbols or set()
     out: list[OffboardCandidate] = []
     rejects: list[tuple[str, str]] = []
+    sums: dict[str, float] = {}
 
     for symbol, payload in snapshot.items():
         if not payload:
@@ -563,8 +608,44 @@ def build_candidates(
             continue
         out.append(c)
 
+    # ── 第二阶段：N 日主力累计净流入门（2026-11-03）──
+    # 放最后是**性能**考虑：全市场 1400+ 只查一次要 1.4s，而幸存者通常几十只。
+    # ⚠ 这里跑的是 `_flow_gate_reason` 而不是 `offboard_gate` —— 其它门已全部跑过，
+    #   不必再跑一遍（且 `offboard_gate` 内部含流门，会重复判定）。
+    if conn is not None and out:
+        sums = _load_flow_sums(conn, [c.symbol for c in out])
+        kept: list[OffboardCandidate] = []
+        for c in out:
+            c.flow_sum = sums.get(c.symbol)
+            reason = _flow_gate_reason(c)
+            if reason:
+                rejects.append((c.symbol, reason))
+                continue
+            kept.append(c)
+        out = kept
+
     out.sort(key=lambda x: -x.volume_ratio)
     return out, rejects
+
+
+def _load_flow_sums(conn: sqlite3.Connection, symbols: list[str]) -> dict[str, float]:
+    """N 日主力净额合计 {symbol: 元}；历史不足 N 天 / 查询失败的**不在结果里**
+    （调用方按「不可判定 ⇒ fail-open 放行」处理）。
+
+    ⚠ fail-open 是**刻意的**：把「查不到」当成「净流出」会砍掉新股与数据缺失的票，
+    形成「上市越晚越容易被砍」的隐性偏差（与该门想抓的「资金在撤」不是一回事）。
+    """
+    try:
+        history = load_flow_history(conn, symbols, window=OFFBOARD_FLOW_WINDOW)
+    except sqlite3.Error as e:
+        logger.warning("B段资金流历史查询失败（放行本轮）: %s", e)
+        return {}
+    out: dict[str, float] = {}
+    for sym, hist in history.items():
+        total = sum_main_net(hist, window=OFFBOARD_FLOW_WINDOW)
+        if total is not None:
+            out[sym] = total
+    return out
 
 
 # ── T1 / T2 分层 ────────────────────────────────────────────────────────────
@@ -1410,7 +1491,7 @@ def run_offboard_watch(
         # 通用门的 ST 判定与展示都读它。
         names = {**names, **{s: snapshot[s]["name"] for s in live_ok if snapshot[s].get("name")}}
 
-    cands, gate_rejects = build_candidates(snapshot, board_items, names, exclude_symbols)
+    cands, gate_rejects = build_candidates(snapshot, board_items, names, exclude_symbols, conn=conn)
     today = now_beijing().date().isoformat()
 
     # 留存（dwell，2026-10-09）：量比/主占改吃实时值后，阈值附近横跳的票会反复进出。
@@ -1420,7 +1501,9 @@ def run_offboard_watch(
     recent = _recent_dwell_symbols(conn, today)
     retained: list[OffboardCandidate] = []
     if recent:
-        retained = _retain_candidates(snapshot, recent, {c.symbol for c in cands}, _board_codes, _skip, names)
+        retained = _retain_candidates(
+            snapshot, recent, {c.symbol for c in cands}, _board_codes, _skip, names, conn=conn
+        )
 
     # 次日收益回填（2026-10-08 修复 L5）：移到「本轮是否产出」的所有提前返回**之前**
     # —— 原先 `not cands` / 零候选轮会跳过回填，长期零产出的交易日标签停积，与

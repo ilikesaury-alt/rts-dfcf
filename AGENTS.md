@@ -48,6 +48,7 @@ python -m scanner.nextday_calib              # 校准漂移巡检；改 nextday_
 # B 段（榜外异动）次日表现追踪（只读库，刻意不给结论）
 python scripts/offboard_nextday.py [--days N] [--tier T2] [--json]
 python scripts/offboard_nextday.py --repair-next-day [--apply]   # 修历史错标签，默认 dry-run
+python scripts/shadow_feature_backtest.py [--no-fetch]   # B 段新数据源的回溯样本外检验
 
 # B 段 AI 分析（手动触发，不轮询，不挂主循环）
 python -m scanner.ai_digest                  # research（默认）：模型自己调工具查真实数据后给判断
@@ -175,6 +176,23 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
 - **`scripts/offboard_nextday.py` 刻意不给结论**：B 段是 rule_validate 三个评估器的盲区，
   样本外裁决通道不存在；阈值归属 `config_hot_watch.py` docstring。统计脚本一旦给「建议」
   就成了第二结论源（守卫 `test_report_contains_no_verdict_wording`）。
+- **B 段 N 日主力累计净流入门（2026-11-03，唯一有样本外证据的 B 段新门）**：
+  `config_hot_watch.OFFBOARD_FLOW_WINDOW=10` / `OFFBOARD_FLOW_MIN_SUM=0.0`，
+  实现 `scanner/offboard_flow.py` + `offboard_watch._flow_gate_reason`。
+  证据（`scripts/shadow_feature_backtest.py`，948 条已标注样本 / 25 个交易日，
+  **配对 bootstrap** 按日等权 + 逐日 CI，与 `rule_validate` 同口径）：
+  Δ命中 **+1.43pp** CI[+0.33,+2.67]，逐日 **正17/负4**（符号检验 p=0.0009），
+  jackknife Δ∈[+1.10,+1.65]，窗口 10~30 全部为正。
+  三条硬约束：**①只取已收盘交易日**（`date < 今日` —— 当天那行会被当天后续快照覆盖成
+  「接近收盘」的值，而信号是盘中产生的 ⇒ 含当天行 = 前视偏差；剔除后两个**独立**数据源
+  本地库/东财 fflow 仍一致显著）；**②不可判定 ≠ 净流出**（历史不足 N 天 ⇒ fail-open
+  放行，否则上市越晚越容易被砍）；**③阈值取零**（阈值越高 Δ 越大同时过滤后样本骤减
+  = 分母效应）。序列来自 `market_extra_cache`（主循环每天已在写）⇒ **零新增网络请求**；
+  与「当日主力净占比」**不共线**（r=+0.051）⇒ 是增量信息不是重复。
+  ⚠ **已否决的伪信号**（别加）：**龙虎榜** bootstrap CI 看着显著（+9.19pp）但逐日
+  正8/负9（p=0.815）= 少数几天拉起来的假信号；**公告**（业绩预告/重组并购方向为负
+  「利好出尽」但参与日仅 2~5 天，样本不足）。
+  ⚠ 回退：`OFFBOARD_FLOW_WINDOW=0` 或把 `_flow_gate_reason` 的调用摘掉。
 - **ai_digest 素材口径**：值取自 launch_log 冻结快照（「信号时涨幅」= 被推出时的涨幅）；
   段内顺序用 `offboard_watch.sort_key`；`next_day_pct` 刻意不进素材（防绩效读数变成判断）。
   历史基准率（`source.load_baseline_stats`）是素材一部分，标签文本自带「本项目实测、
@@ -230,6 +248,7 @@ scanner/
   push_gate.py              # 飞书推送过滤门（纯展示层，终端不套用）
   hot_watch.py              # 沪深飙升独立区（与主线口径解耦）
   offboard_watch.py         # 榜外异动段（launch_log 写侧、实时覆盖、标签回填）
+  offboard_flow.py          # B 段 N 日主力累计净流入（历史资金流序列，零新增请求）
   onboard_anomaly.py        # 榜内异动段（标签回填同款三防呆）
   view/assemble.py          # build_scan_view：v1 池选排序键 + 终端行组装
   render.py                 # 终端/飞书共用渲染（COLS_HOT、三段段标题）
