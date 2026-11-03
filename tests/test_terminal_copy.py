@@ -79,6 +79,43 @@ def test_capture_stdout_does_not_clobber_devnull_downgrade():
     assert sys.stdout is not original
 
 
+# ── 清单抽取 ────────────────────────────────────────────────────────────
+
+
+def test_extract_stock_list_keeps_name_and_code_only():
+    text = (
+        "  ◆ v1 池选 — 新票优先·类别优先·排名升序·资金流降序\n"
+        "   #  代码         名称      涨幅     5日累计   现价   排名  板块     评分 策略\n"
+        "   1  SZ300369    绿盟科技    +8.10%   +12.00%  23.50     7  半导体   86  新面孔\n"
+        "   2  SZ300133    华策影视    +6.20%    +3.10%  11.20    12  传媒     72  动量\n"
+    )
+    assert tc.extract_stock_list(text) == "绿盟科技 300369\n华策影视 300133"
+
+
+def test_extract_stock_list_handles_hot_rows_without_market_prefix():
+    text = (
+        "  — 榜内飙升 —\n"
+        "   1  300369      绿盟科技   +9.90%   +15.00%  23.50   +3   120手   1.2亿  2.10  8.0   120  半导体  88.0   —   ★3\n"
+    )
+    assert tc.extract_stock_list(text) == "绿盟科技 300369"
+
+
+def test_extract_stock_list_dedupes_and_ignores_non_row_lines():
+    text = (
+        "  创业板飙升榜监控  (2026-11-03 10:00:00)\n"
+        "  ◆ 飞书过门（本轮 3 只通过严格过滤 · 下一张卡片将推此集合）\n"
+        "    池选  绿盟科技 威尔高\n"
+        "   1  SZ300369  绿盟科技  +8.10%\n"
+        "   2  SZ300133  华策影视  +6.20%\n"
+        "   3  300369     绿盟科技  +9.00%\n"  # 与第 1 行同一只票（不同区块）
+    )
+    assert tc.extract_stock_list(text) == "绿盟科技 300369\n华策影视 300133"
+
+
+def test_extract_stock_list_empty_for_non_table_text():
+    assert tc.extract_stock_list("  创业板飙升榜监控  (2026-11-03 10:00:00)\n") == ""
+
+
 # ── 剪贴板 ──────────────────────────────────────────────────────────────
 
 
@@ -156,16 +193,21 @@ def test_handle_copy_request_reports_when_nothing_captured(capsys, monkeypatch):
     assert "还没有可复制" in out
 
 
-def test_handle_copy_request_reports_success(capsys, monkeypatch):
-    tc._set_latest("v1 池选\n300001 特变电")
-    monkeypatch.setattr(tc, "copy_to_clipboard", lambda text: True)
+def test_handle_copy_request_copies_names_and_codes_only(capsys, monkeypatch):
+    tc._set_latest(
+        "  1  SZ300369    绿盟科技    +8.10%   +12.00%   23.50   7   半导体   86   新面孔\n"
+        "  2  SZ300133    华策影视    +6.20%    +3.10%   11.20  12   传媒     72   动量\n"
+    )
+    copied = []
+    monkeypatch.setattr(tc, "copy_to_clipboard", lambda text: copied.append(text) or True)
     tc._handle_copy_request()
+    assert copied == ["绿盟科技 300369\n华策影视 300133"]
     out = capsys.readouterr().out
-    assert "已复制" in out
+    assert "已复制 2 只股票" in out
 
 
 def test_handle_copy_request_reports_failure(capsys, monkeypatch):
-    tc._set_latest("v1 池选")
+    tc._set_latest("  1  300369  绿盟科技  +8.10%")
     monkeypatch.setattr(tc, "copy_to_clipboard", lambda text: False)
     tc._handle_copy_request()
     out = capsys.readouterr().out

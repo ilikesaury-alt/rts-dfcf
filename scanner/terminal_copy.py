@@ -1,7 +1,12 @@
-"""终端面板「一键复制」：按 `c` 键 → 上一轮终端面板（纯文本）进系统剪贴板。
+"""终端面板「一键复制」：按 `c` 键 → **股票名称 + 6 位代码**清单进系统剪贴板。
 
 **为什么需要**：终端每轮 `clear_screen()` 重绘，面板内容没法「选中复制」；
 中文 + emoji + 对齐空格在 cmd / Windows Terminal 里手动框选极易选错行。
+
+**复制什么**：只抄「名称 + 代码」，一行一只（按面板出现顺序去重）——
+面板里那些分数/涨幅/排名/板块列是给眼睛看的，粘到别处反而是噪声。
+清单从**面板文本**里抽（表格列序 `# / 代码 / 名称` 固定），代码统一去掉
+SH/SZ/BJ 前缀取 6 位纯代码（与 `scanner.hot_watch._strip_code` 同口径）。
 
 **三条纪律**：
 
@@ -30,6 +35,7 @@ from contextlib import contextmanager
 __all__ = [
     "capture_stdout",
     "copy_to_clipboard",
+    "extract_stock_list",
     "hotkey_hint",
     "install_hotkey",
     "latest_panel_text",
@@ -47,9 +53,42 @@ _ANSI_RE = re.compile(
     r"|\x1b[@-Z\\-_]"  # ESC 单字符序列
 )
 
+# 终端表格行：**序号列 + 代码列 + 名称列**（COLS_POOL 与 COLS_HOT 同列序：
+# `#` / `代码` / `名称`，见 scanner/view/model.py）。抽清单靠这个固定列序，
+# 不依赖任何一列的宽度或对齐方式（宽度变了也不影响匹配）。
+_ROW_RE = re.compile(r"^\s{0,4}\d{1,3}\s+((?:SH|SZ|BJ)?\d{6})\s+(\S+)")
+
 # 进程内最近一次采集到的面板文本（线程安全）。
 _lock = threading.Lock()
 _latest: str = ""
+
+
+def _normalize_code(code: str) -> str:
+    """代码去市场前缀（SH/SZ/BJ）→ 6 位纯代码（与 `scanner.hot_watch._strip_code` 同口径）。"""
+    if len(code) > 2 and code[:2] in ("SH", "SZ", "BJ"):
+        return code[2:]
+    return code
+
+
+def extract_stock_list(text: str) -> str:
+    """从面板文本抽出「名称 + 6 位代码」清单（每行一只，按出现顺序去重）。
+
+    只认表格行（`序号 代码 名称 …`）：标题行、表头、「飞书过门」那种**只有名字
+    没有代码**的行都不匹配 ⇒ 不会混进清单（没有代码的票对用户也没用）。
+    """
+    lines: list[str] = []
+    seen: set[str] = set()
+    for line in text.splitlines():
+        m = _ROW_RE.match(line)
+        if not m:
+            continue
+        code = _normalize_code(m.group(1))
+        name = m.group(2)
+        if code in seen:
+            continue
+        seen.add(code)
+        lines.append(f"{name} {code}")
+    return "\n".join(lines)
 
 
 def strip_ansi(text: str) -> str:
@@ -260,8 +299,16 @@ def _handle_copy_request() -> None:
     if not text.strip():
         _say("  [复制] 还没有可复制的面板（等下一轮扫描后再按 c）")
         return
-    ok = copy_to_clipboard(text)
-    _say("  [复制] 已复制上一轮终端面板到剪贴板 ✅" if ok else "  [复制] 复制失败（剪贴板不可用）")
+    stock_list = extract_stock_list(text)
+    if not stock_list.strip():
+        _say("  [复制] 本轮面板没有可抄的票（等下一轮扫描后再按 c）")
+        return
+    count = len(stock_list.splitlines())
+    ok = copy_to_clipboard(stock_list)
+    if ok:
+        _say(f"  [复制] 已复制 {count} 只股票（名称+代码）到剪贴板 ✅")
+    else:
+        _say("  [复制] 复制失败（剪贴板不可用）")
 
 
 def _say(msg: str) -> None:
@@ -300,4 +347,4 @@ def install_hotkey(*, force: bool = False) -> bool:
 
 def hotkey_hint() -> str:
     """终端提示语（告知用户怎么用）。"""
-    return f"  💡 按 {COPY_KEY} 键可把上一轮终端面板复制到剪贴板"
+    return f"  💡 按 {COPY_KEY} 键可把本轮股票（名称+代码）复制到剪贴板"

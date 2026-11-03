@@ -413,7 +413,7 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
     # 装了才提示用户，装不上终端保持原样（不新增噪声）。
     copy_hotkey_on = install_hotkey()
     if copy_hotkey_on:
-        print("  💡 按 c 键可把上一轮终端面板复制到剪贴板")
+        print("  💡 按 c 键可把本轮股票（名称+代码）复制到剪贴板")
 
     # 上一轮扫描的榜单排名快照：综合排序「排名」列据此显示雪球榜单排名变化（+N 升 / -N 降）。
     last_ranks: dict[str, int] = {}
@@ -788,7 +788,7 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                     if not is_trading_time():
                         break
                     # 复制提示与倒计时同处一行（\r 原地刷新）：清屏后仍能看见怎么用。
-                    _tip = "  💡 按 c 复制面板 |" if copy_hotkey_on else ""
+                    _tip = "  💡 按 c 复制股票清单 |" if copy_hotkey_on else ""
                     print(f"\r{_tip}  ⏳ 下次刷新还有 {_remaining:.0f}s ...", end="", flush=True)
                     _step = min(5.0, _remaining)
                     time.sleep(_step)
