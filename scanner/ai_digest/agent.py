@@ -74,6 +74,36 @@ class ResearchResult:
         return "、".join(parts)
 
 
+#: 自选清单模式的候选字段（值缺失就整段不渲染 —— 随意指定清单没有层/量比等
+#: 信号字段，写「层 None」会污染提示词，模型可能把 None 当成真值引用）。
+_CAND_FIELDS: tuple[tuple[str, str], ...] = (
+    ("tier", "层"),
+    ("percent", "信号时涨幅"),
+    ("vol_ratio", "量比"),
+    ("main_pct", "主力净占比"),
+    ("accum_5d", "5日累计"),
+    ("amount", "成交额"),
+    ("float_cap", "流通市值"),
+)
+
+#: 值后缀带百分号的字段（与旧提示词逐字同口径）。
+_PCT_KEYS = {"percent", "main_pct", "accum_5d"}
+
+
+def _candidate_lines(candidates: list[dict[str, Any]]) -> list[str]:
+    """候选清单 → 提示词行：只渲染非 None 的字段。"""
+    lines = []
+    for c in candidates:
+        parts = [f"- {c.get('symbol')} {c.get('name')}".rstrip()]
+        parts += [
+            f"｜{label} {c.get(key)}{'%' if key in _PCT_KEYS else ''}"
+            for key, label in _CAND_FIELDS
+            if c.get(key) is not None
+        ]
+        lines.append("".join(parts))
+    return lines
+
+
 def run_research(
     cfg: MagpieConfig,
     candidates: list[dict[str, Any]],
@@ -82,21 +112,20 @@ def run_research(
     max_rounds: int = 8,
     max_calls: int = 30,
     tools: list[ToolSpec] | None = None,
+    origin: str = "榜外异动段今日过门的票",
 ) -> ResearchResult:
-    """跑一轮「模型自己调研」。返回最终文本 + 工具调用记录 + 工具输出全文。"""
+    """跑一轮「模型自己调研」。返回最终文本 + 工具调用记录 + 工具输出全文。
+
+    `origin`：候选来源文案（写进提示词，模型据此知道自己在分析什么池子；
+    自选清单模式传「用户指定的自选清单」）。
+    """
     tool_list = tools if tools is not None else build_tools()
     schemas = [t.schema() for t in tool_list]
 
-    cand_lines = []
-    for c in candidates:
-        cand_lines.append(
-            f"- {c.get('symbol')} {c.get('name')}｜层 {c.get('tier')}｜信号时涨幅 {c.get('percent')}%"
-            f"｜量比 {c.get('vol_ratio')}｜主力净占比 {c.get('main_pct')}%"
-            f"｜5日累计 {c.get('accum_5d')}%｜成交额 {c.get('amount')}｜流通市值 {c.get('float_cap')}"
-        )
+    cand_lines = _candidate_lines(candidates)
     user = "\n".join(
         [
-            f"候选股票 {len(candidates)} 只（这些是榜外异动段今日过门的票）：",
+            f"候选股票 {len(candidates)} 只（{origin}）：",
             *cand_lines,
             "",
             "请自己调用工具查真实市场数据（K线/报价/资金流/概念板块/板块涨幅分布/市场概览/飙升榜/系统出现史），",

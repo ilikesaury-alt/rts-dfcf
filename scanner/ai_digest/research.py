@@ -36,6 +36,20 @@ __all__ = ["ResearchContext", "ToolSpec", "build_tools"]
 #: 单个工具输出的字符上限（超出截断并明说 —— 静默截断会让模型以为数据就这么多）。
 _MAX_TOOL_CHARS = 3000
 
+#: 单次工具调用最多接受多少个代码。
+#: ⚠ 以前这里是 `[:20]` **静默截断** —— 第 21 只以后的票模型压根看不到，
+#:   它却会以为「都查过了」（数据缺失被读成「没有异动」，是幻觉的温床）。
+#:   现在：超过上限时**明说截掉了哪几只**，让模型知道哪些没查。
+_MAX_SYMBOLS_PER_CALL = 20
+
+
+def _note_truncated(syms: list[str]) -> str:
+    """超上限被截掉的代码（明说，避免模型误以为「全部都查过了」）。"""
+    if len(syms) <= _MAX_SYMBOLS_PER_CALL:
+        return ""
+    dropped = syms[_MAX_SYMBOLS_PER_CALL:]
+    return f"（本次只查了前 {_MAX_SYMBOLS_PER_CALL} 只，{len(dropped)} 只未查：{'、'.join(dropped)}；需要请分批查）"
+
 
 @dataclass
 class ResearchContext:
@@ -169,7 +183,9 @@ def _tool_get_realtime_quote(args: dict[str, Any], ctx: ResearchContext) -> str:
     syms = [str(s).strip().upper() for s in (args.get("symbols") or []) if str(s).strip()]
     if not syms:
         return '参数错误：需要 symbols（代码数组，如 ["SZ300289"]）'
-    syms = syms[:20]
+    all_syms = syms
+    syms = syms[:_MAX_SYMBOLS_PER_CALL]
+    trunc_note = _note_truncated(all_syms)
 
     def produce() -> dict[str, dict]:
         from scanner.api import fetch_hot_quotes_batch
@@ -198,7 +214,7 @@ def _tool_get_realtime_quote(args: dict[str, Any], ctx: ResearchContext) -> str:
             f"成交额 {_money(q.get('amount'))}",
         ]
         lines.append(f"{s}: " + " | ".join(parts))
-    return "实时报价：\n" + "\n".join(lines)
+    return "实时报价：\n" + "\n".join(lines) + (f"\n{trunc_note}" if trunc_note else "")
 
 
 def _tool_get_fund_flow(args: dict[str, Any], ctx: ResearchContext) -> str:
@@ -206,7 +222,9 @@ def _tool_get_fund_flow(args: dict[str, Any], ctx: ResearchContext) -> str:
     syms = [str(s).strip().upper() for s in (args.get("symbols") or []) if str(s).strip()]
     if not syms:
         return "参数错误：需要 symbols"
-    syms = syms[:20]
+    all_syms = syms
+    syms = syms[:_MAX_SYMBOLS_PER_CALL]
+    trunc_note = _note_truncated(all_syms)
     try:
         from scanner.market_extra import fetch_fund_flow_rank
 
@@ -232,7 +250,7 @@ def _tool_get_fund_flow(args: dict[str, Any], ctx: ResearchContext) -> str:
             f" | 成交额 {_money(r.get('amount'))}"
             f" | 流通市值 {_money(r.get('float_cap'))}"
         )
-    return "资金流（金额单位：万/亿）：" + chr(10).join(lines)
+    return "资金流（金额单位：万/亿）：" + chr(10).join(lines) + (f"\n{trunc_note}" if trunc_note else "")
 
 
 def _tool_get_concepts(args: dict[str, Any], ctx: ResearchContext) -> str:

@@ -1,0 +1,262 @@
+# 命令速查表（COMMANDS.md）
+
+> 面向**人**的操作手册：每条命令干什么、怎么调、什么时候跑。
+> 面向 AI 的约束（口径、纪律、不可破的规则）在 [`AGENTS.md`](AGENTS.md)；两者别混。
+>
+> 维护：加新命令时同步补一张表；命令行为变了先改这里再改代码。
+
+---
+
+## 0. 最常用的 5 条
+
+```bash
+python unified_scanner.py                 # 跑扫描器（60s 一轮，按 c 复制名单）
+python pick.py --clipboard                # 把剪贴板里的名单丢给 AI 调研 → 出报告
+python stock_report.py 300319             # 单只票深报（代码或名字都行）
+python -m pytest tests/ -q                # 全量测试
+python -m scanner.rule_validate           # 改权重/阈值后的样本外验证门
+```
+
+---
+
+## 1. 日常扫描（终端）
+
+| 命令 | 说明 |
+|---|---|
+| `python unified_scanner.py` | 主循环，默认 60s 刷新；`120` = 自定义间隔 |
+| `python unified_scanner.py --no-feishu` | 不推飞书（只看终端时用，省一次外呼） |
+| `python unified_scanner.py --no-panel` | 不上报 Web 面板（优先级最高，覆盖 `.env`） |
+| `python unified_scanner.py --no-lock` | 跳过单实例锁（**仅调试**，会和已有实例抢库） |
+
+**终端里按 `c`**：把上一轮面板的「名称+6 位代码」清单送进剪贴板 → 接着
+`python pick.py --clipboard` 就能让 AI 调研这一批票（一条链路）。
+
+终端三段结构（`v1 池选` 有序，其余三段各自成表、互不排名）：`榜内飙升 / 榜内异动 / 榜外异动`。
+
+---
+
+## 2. 看盘 / 报表
+
+| 命令 | 说明 |
+|---|---|
+| `python stock_report.py 300319` | 个股深度报告（代码或名称） |
+| `python stock_report.py 麦捷科技 --quick` | 快速模式：只用本地数据，不调 API |
+| `python today_report.py` | 今日综合排序分析报告（默认最近有数据的交易日） |
+| `python today_report.py --date 2026-11-03 --top 10` | 指定日期 + 只看前 10 只 |
+| `python today_report.py --json` | 机器可读 |
+| `python prevday_perf.py` | 历史复盘：各组次日表现汇总 |
+| `python prevday_perf.py --days 0` | 全期（0 = 不限天数） |
+| `python prevday_perf.py --force` | 跳过数据健康检查（交叉验证不符也强行出） |
+| `python query_today.py` / `query_summary.py` | 查今日推荐 / 推荐汇总（默认昨日） |
+
+---
+
+## 3. AI 分析
+
+### 3.1 自选清单批量调研（**选票主力入口**）
+
+```bash
+python pick.py                            # 交互粘贴（空行结束；粘贴整段文本也行）
+python pick.py 300319 300666 SZ300770     # 直接给代码（30/00/60/68 开头，一次 ≤50 只）
+python pick.py --clipboard                # 读 Windows 剪贴板（终端按 c 复制后用这个）
+python pick.py --symbols-file list.txt    # 从文本文件读（一行一个代码或名字）
+python pick.py --clipboard --limit 10     # 面板票多时只取前 10 只（按面板顺序 = 优先级）
+python pick.py --clipboard --out 报告.txt --max-calls 50   # 存盘 + 调工具预算
+```
+
+等价长命令：`python -m scanner.ai_digest --symbols ...`（`pick.py` 只是简写）。
+
+**一条完整链路**：扫描器终端按 `c` → 面板名单进剪贴板 → `python pick.py --clipboard` → 报告。
+面板三段加起来常超 20 只，**上限 50**；超了用 `--limit N` 取前 N 只。
+
+模型会**自己查真实数据**（K线 / 实时报价 / 资金流 / 分时 / 多日资金流趋势 / 概念板块 /
+板块热力图 / 市场概览 / 飙升榜 / 公告 / 龙虎榜 / 系统出现史），最后给**排序 + 入选依据 +
+风险 + 证据强弱 + 整体判断**。
+- 幻觉巡检：正文里每个数字必须在工具输出里逐字出现，编造就当场标出（退出码 5）。
+- 退出码：0 成功 / 1 未配凭据 / 2 上游失败 / 3 参数或代码有问题 / 5 幻觉巡检拦截。
+- 凭据：`MAGPIE_BASE_URL` / `MAGPIE_API_KEY` / `MAGPIE_MODEL` 放 `.env`。
+- ⚠ **网关连不上先 ping 域名**：`trycloudflare` 临时隧道进程一停域名就停止解析
+  （表现为 `ConnectionError`，与凭据/代码无关）。本地网关 `http://127.0.0.1:3425/v1`
+  是同一个 magpie 网关，但**依赖 pi 在跑**。
+
+### 3.2 外部 AI 分析库（**已评估，不采用**）
+
+曾接入 `simonlin1212/TradingAgents-astock`（上游 TradingAgents 119k★ 的 A 股特化 fork：
+7 个 A 股分析师 + 多空辩论 + 三方风控），实测能出 17 段 / 2.5 万字的中文决策报告。
+**2026-11-03 用户决策：不采用，已删除。**
+
+理由：**效率是前提**。外部库单只票 2~5 分钟（30~50 次 LLM 调用）、批量半小时以上，
+而次日异动是分钟级生意 —— 分析再好，出得晚就没用了。它的价值投资视角
+（财报/估值/护城河）与本项目的目标函数（次日 ≥7% hit 率）也不必然同向。
+
+⇒ 本项目只保留**自建 research 模式**（`python pick.py`，单只约 1~2 分钟）。
+新增维度一律先过延迟闸；慢手段只能进离线旁路，不进主循环/终端/飞书。
+
+
+### 3.3 榜外异动（B 段）AI 分析
+
+```bash
+python -m scanner.ai_digest                      # 默认 research：模型自己查数据后给判断
+python -m scanner.ai_digest --mode analyze       # 按项目历史分层命中率算账（主观判断，不落库）
+python -m scanner.ai_digest --mode transcribe    # 纯转述（过全部红线；触红线 exit 3）
+python -m scanner.ai_digest --materials          # 只打素材，不出网
+python -m scanner.ai_digest --demo               # 内置样例（零库零网，验证整条链路）
+python -m scanner.ai_digest --json               # 机器可读（含幻觉巡检结果）
+```
+
+数据源 `--source auto|view|log`（默认 auto = 取更新的那个）。`--limit N` 控制分析前 N 只。
+
+---
+
+## 4. 数据回填 / 修复 / 诊断
+
+| 命令 | 说明 |
+|---|---|
+| `python backfill_kline.py` | 收盘后回填推荐历史票的缺失 K 线，重算 `next_day_pct` |
+| `python backfill_kline.py --dry-run --days 120` | 只统计缺失，不调 API 不写库 |
+| `python backfill_market_index.py` | 回填 `market_index_log` 历史（默认 200 天） |
+| `python backfill_market_index.py --dry-run --overwrite-live` | 预演 / 覆盖被冻结的基准值 |
+| `python repair_kline.py --since 2026-10-01` | 修 `daily_kline` 里的非法 bar（默认 dry-run） |
+| `python diag_health.py` | 数据新鲜度体检（各表最新日期/行数 + 扫描质量日志） |
+| `python diag_capture.py` | 榜单捕获率诊断（当日收盘 ≥7% 的票有没有被抓住） |
+| `python leaderboard_obs.py --days 7` | 飙升榜/热搜榜成分与排名分布时间序列 |
+| `python query_today.py --date 2026-11-03` | 查指定日推荐 |
+
+> **K 线漂移**：系统每日对 `daily_kline` 做价格指纹比对，除权导致的静默重算会告警并写
+> `logs/finalize.log` —— 回测跨期不可复现时先看这里。
+
+---
+
+## 5. 验证 / 回测（**改权重、阈值、常数前必跑**）
+
+```bash
+# 样本外验证门（退出码：0 可挂出 / 1 证据不足 / 2 显著变差 / 3 用法或可见性错误）
+python -m scanner.rule_validate
+python -m scanner.rule_validate --list-evaluators
+python -m scanner.rule_validate --evaluator rescore --set scanner.config.MIN_SCORE=60
+
+# 回测
+python -m scanner.backtest --days 60 --metric next_day_pct     # 次日涨幅分布
+python -m scanner.backtest --ranking --backfill               # 按综合排序回放 + 回填标签
+python -m scanner.portfolio_backtest --compare --rescore --buy-delay 0 --buy-at close --hold-days 3
+python -m scanner.portfolio_backtest --compare-horizons "1,3" --buy-at close --hold-days-auto
+
+# 标签 / 校准 / 模型
+python -m scanner.triple_barrier --report      # 三重屏障标签（+7%/-5%/3日），幂等
+python -m scanner.model_bucket                 # M3 walkforward LightGBM 可行性
+python -m scanner.nextday_calib                # 校准漂移巡检
+python -m scanner.nextday_calib --write        # 改过 nextday_prob 常数后必须写快照
+python -m scanner.walkforward --train 60 --test 20
+python -m scanner.nextday_attribution --days 30 --excess
+```
+
+**口径提醒**：唯一口径是**次日 ≥7% hit 率**；排序/档位/🎯 画像/类别准入全用它。
+`--buy-at open` 会被拒绝（信号是收盘后才产生的，不能当开盘价买）。
+改 `nextday_prob` 常数后忘了 `nextday_calib --write` ⇒ `test_nextday_calib` 会红。
+
+---
+
+## 6. 独立区自检（回归哨兵）
+
+```bash
+python -m scanner.hot_watch --offline-demo       # 沪深飙升区 12 条内置样本逐条核对，全绿 exit 0
+python -m scanner.historical_watch --offline-demo # v1 回捞区同理
+python -m scanner.offboard_watch --offline-demo  # 榜外异动段同理
+```
+
+---
+
+## 7. 离线研究脚本（`scripts/`，只读、不改库、不进生产链路）
+
+### 7.1 B 段（榜外异动）专用
+
+```bash
+python scripts/offboard_nextday.py               # B 段次日表现追踪（刻意不给结论）
+python scripts/offboard_nextday.py --days 20 --tier T2 --json
+python scripts/offboard_nextday.py --repair-next-day          # 修历史错标签（默认 dry-run）
+python scripts/offboard_nextday.py --repair-next-day --apply   # 真写
+python scripts/shadow_feature_backtest.py --no-fetch           # B 段新数据源的回溯样本外检验
+```
+
+### 7.2 其它研究/审计脚本
+
+| 脚本 | 用途 |
+|---|---|
+| `scripts/profit_ledger.py` | 收益账本：按某规则买入实际拿到多少（扣真实成本） |
+| `scripts/push_gate_impact.py` | 飞书过滤门的离线影响评估（三个问题，全部用真实历史数据） |
+| `scripts/prelaunch_probe.py` | 启动前形态的样本外可提取性探针（只读，不联网） |
+| `scripts/beauty_mark_eval.py` | 「稳」走势标记分档的样本外裁决 |
+| `scripts/flow_mark_evidence.py` | 资金流图标收窄的实证复算 |
+| `scripts/label_audit.py` | 标签登记簿审计（出处 / 证据等级 / 反误读） |
+| `scripts/nextday_calib_ab.py` | 概率常数变更的排序 A/B 验证台 |
+| `scripts/nextday_rule_scan.py` | 次日大涨高概率规则历史验证（H1/H2 分半） |
+| `scripts/nextday_mark_split_verify.py` | 🎯 分型前后命中率对比 |
+| `scripts/ranking_validate_day.py` | 单日综合排序 → 次日表现验证 |
+| `scripts/review_tier_replay.py` | 忠实回放生产 `entry_tier`，验证档位区分度 |
+| `scripts/tier_penalty_replay.py` | 档位「级联否决」vs「扣分制」对照回放 |
+| `scripts/tier3_reason_perf.py` | 档3 警示劣后 → 按劣后原因拆开的次日归因 |
+| `scripts/seq_refine_replay.py` | 排序序列细化规则回放 |
+| `scripts/signal_combo_analysis.py` | 组合信号命中率分析 |
+| `scripts/pool_filter_scan.py` | 池内部过滤器摸底（哪些被剔除的组次日确实更差） |
+| `scripts/replay_source_swap.py` | 数据源替换实验：把昨天 v1 产出当榜单输入回放 |
+| `scripts/label_registry.py` 相关 | 见 `python -m scanner.label_registry`（控制台需 UTF-8：`PYTHONIOENCODING=utf-8`） |
+| `scripts/project_audit.py` | 项目量化普查（规模/复杂度热点/依赖扇入扇出） |
+| `scripts/ths_api_probe.py` | 同花顺 API 接入前探测 |
+| `scripts/panel_m0_check.py` | M0 门自动执行器（终端渲染 vs 云端读回逐条比对） |
+| `scripts/_verify_view_split.py` | 视图层拆分等价性证明 |
+| `scripts/_config_diff.py` | 对比 git HEAD 版 `config.py` 与当前导出的 API 差异（一次性小工具；需 UTF-8 控制台） |
+| `scripts/_run_tests_all.py` | 一次性跑全量 pytest（内存捕获，不落临时文件） |
+
+---
+
+## 8. 环境变量开关（`.env`）
+
+| 变量 | 作用 |
+|---|---|
+| `RTS_PUSH_GATE=0` | 关掉飞书过滤门（回滚用） |
+| `RTS_HOT_WATCH=0` | 整体关掉沪深飙升独立区 |
+| `RTS_LOCAL_PANEL` / `RTS_LOCAL_PANEL_PORT` | 本地 Web 面板开关 / 端口 |
+| `RTS_PANEL_URL` / `RTS_PANEL_SECRET` | 面板上报地址 / 密钥 |
+| `RTS_FEISHU_WEBHOOK` | 飞书 webhook 覆盖 |
+| `RTS_DB_PATH` | 指定 DB 路径（默认根目录 `scanner.db`） |
+| `RTS_DATA_SOURCE` | 数据源（雪球 / 同花顺 fallback） |
+| `RTS_ENABLE_POOL` / `RTS_ENABLE_FUND_FLOW` / `RTS_ENABLE_ZT_POOL` / `RTS_ENABLE_INTRADAY_TACTICS` / `RTS_ENABLE_FUND_RISK` | 各取数/策略模块开关 |
+| `RTS_HIST_WATCH` / `RTS_HOT_OFFBOARD` / `RTS_ONBOARD_ANOMALY` / `RTS_OFFBOARD_BOARD_FETCH` / `RTS_HOT_BEAUTY_GATE` / `RTS_HOT_FUND_FLOW_FILTER` | 榜外段/榜内异动/回捞等分项开关 |
+| `RTS_CLEAR` / `RTS_TREND_MARK` / `RTS_FINAL_PICK` / `RTS_DISPLAY_MAX_TODAY_PCT` | 终端展示相关 |
+| `RTS_ENV_FILE` | 指定 `.env` 路径 |
+| `MAGPIE_BASE_URL` / `MAGPIE_API_KEY` / `MAGPIE_MODEL` | AI 网关凭据（`.env`，勿提交） |
+
+---
+
+## 9. 改代码后的验证顺序
+
+```bash
+ruff check .            # 风格/静态
+ruff format .           # 格式化
+mypy scanner/           # 类型
+python -m pytest tests/ -q
+```
+
+按改动范围再加：
+
+| 改动 | 追加验证 |
+|---|---|
+| 权重 / 阈值 / 常数 | `python -m scanner.rule_validate` |
+| `nextday_prob` 常数 | 再加 `python -m scanner.nextday_calib --write` |
+| `scanner/pipeline/` | `pytest tests/test_pipeline.py` |
+| `scanner/db/` | `pytest tests/test_migrations.py tests/test_schema_migration.py` |
+| 飙升区 / 回捞区 / 榜外段规则 | 对应 `--offline-demo` 全绿 |
+| `ai_digest` / `pick.py` | `pytest tests/test_ai_digest.py tests/test_ai_digest_symbols.py` |
+
+---
+
+## 10. 常见坑（详见 AGENTS.md 对应条目）
+
+- **WAL 库不能 `cp` 备份**：用 `sqlite3` Online Backup API，或先 `PRAGMA wal_checkpoint(TRUNCATE)`，备份后校验行数。
+- **飞书 webhook 曾泄露**，bot 已需轮换；`.env` 勿提交。
+- **东财 push2 有 IP 级限频**：调试频繁会「ulist 也不通」，等冷却恢复，别误判代码故障。
+- **雪球两接口字段不同**：`batch/quote.json` 没有量比/涨跌停价，`quote.json?extend=detail` 才有。
+- **雪球握手只认 `xq_a_token`**（不是 HTTP 200）；排查看 `session.cookies.get_dict()`。
+- **时间一律用 Beijing 时区**（`BEIJING_TZ`），别用 naive local time。
+- **B 段脚本刻意不给结论**（统计脚本一旦给「建议」就成了第二结论源）。
+- **`--rescore` 是 P&L 验证必需**：`recommendations` 存的是冻结分，改阈值不回溯改旧分。

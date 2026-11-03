@@ -9,6 +9,16 @@
   正文里出现的每个数字都必须能在素材里找到，找不到就当场标出。
 - `transcribe`：纯转述（云端 `/api/ai-explain` 同款纪律，过全部红线槽位）。
 
+第三种入口：**自选清单批量调研** —— 不吃榜外异动段，把用户指定的代码（≤20 只）
+交给 research 调研员，模型自己查数据后出排序与判断。四种给法（后三种容忍文本里
+混着名字/日期，只抽 30/00/60/68 开头的 6 位码）：
+- `--symbols 300319,300666`（显式给，严格校验，写错当场报）
+- `--symbols`（不带值 = 交互粘贴，空行结束）
+- `--clipboard`（读 Windows 剪贴板 —— 配合扫描器终端「一键复制」按 c，一条链路）
+- `--symbols-file list.txt`
+根目录 `python pick.py` 是同款简写（裸代码/无参=交互）。名字用雪球批量报价解
+（fail-open 拿不到就用代码本身）；幻觉巡检比对基准 = 工具输出全文；`--out` 落盘纯文本。
+
 数据源（`--source auto` 默认）：取**更新的**那个 ——
 - `view`：`view_snapshot` 最近一轮终端打印的载荷（含留存行、实时值、入选理由、板块）；
 - `log`：`offboard_launch_log` 最新信号日（信号值冻结快照，无留存行）。
@@ -26,7 +36,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import subprocess
 import sys
+import tempfile
+from pathlib import Path
 from typing import Any
 
 from scanner.ai_digest.guard import REFUSAL, is_redlined
@@ -56,6 +70,305 @@ LABELS = {
 }
 
 _RULE = "─" * 78
+
+#: 自选清单单只代码的形状：可选 SZ/SH 前缀 + 6 位数字。
+_SYMBOL_RE = re.compile(r"^(SZ|SH)?(\d{6})$")
+
+#: 自由文本里抽代码（剪贴板/文件/粘贴板）：可选 SZ/SH 前缀 + 6 位数字。
+#: ⚠ 不带前缀时只认 30/00/60/68 开头 —— 否则日期（202611）、涨跌幅（6.4400）
+#:   之类会被当成代码抽出来。
+_CODE_RE = re.compile(r"(?<!\d)(?:(SZ|SH)\s*)?(\d{6})(?!\d)", re.I)
+
+#: 单次调研的代码上限。
+#: ⚠ 以前是 20 —— 那是**单次工具调用的入参上限**（报价/资金流工具一次最多 20 个），
+#:   被误当成「整个清单上限」了。而模型本来就能分批调用工具（每次 20 只），
+#:   面板三段加起来常常超 20 只 ⇒ 以前直接报错退出，用户根本用不了。
+#:   现在放开到 50；真的太多时用 `--limit N` 取面板顺序的前 N 只。
+MAX_SYMBOLS = 50
+
+
+def normalize_user_symbols(text: str) -> list[str]:
+    """『300319, sz300666 600519』→ ['SZ300319', 'SZ300666', 'SH600519']。
+
+    裸 6 位码按首位推交易所：30/00 → SZ、60/68 → SH（本系统是沪深主板+创业板口径）；
+    带前缀的只校验形状。去重保序，上限 20 只（报价批量接口与提示词都按 20 封顶）。
+    """
+    tokens = [t for t in re.split(r"[\s,，、;；]+", text or "") if t]
+    out: list[str] = []
+    for tok in tokens:
+        m = _SYMBOL_RE.match(tok.upper())
+        if not m:
+            raise ValueError(f"看不懂的代码「{tok}」——要 6 位数字，或 SZ/SH 前缀 + 6 位数字")
+        prefix, digits = m.groups()
+        if prefix is None:
+            if digits[0] in "03":
+                prefix = "SZ"
+            elif digits[0] == "6":
+                prefix = "SH"
+            else:
+                raise ValueError(f"代码「{tok}」不在沪深主板/创业板口径内（30/00/60/68 开头）")
+        sym = prefix + digits
+        if sym not in out:
+            out.append(sym)
+    if not out:
+        raise ValueError("没解析到任何代码")
+    if len(out) > MAX_SYMBOLS:
+        raise ValueError(f"一次最多 {MAX_SYMBOLS} 只")
+    return out
+
+
+def extract_symbols_from_text(text: str) -> tuple[list[str], list[str]]:
+    """自由文本 → (代码列表, 被跳过的数字串)。
+
+    给剪贴板 / 文件 / 粘贴板用：文本里常混着股票名字、日期、涨跌幅。
+    只认 30/00/60/68 开头的 6 位码（或带 SZ/SH 前缀的）—— 否则 `20261104`
+    这类日期会被当成代码抽走。其余 6 位数字串记为「跳过」报给用户看。
+    """
+    out: list[str] = []
+    skipped: list[str] = []
+    for m in _CODE_RE.finditer(text or ""):
+        prefix, digits = m.group(1), m.group(2)
+        if prefix:
+            sym = prefix.upper() + digits
+        elif digits[0] in "03":
+            sym = "SZ" + digits
+        elif digits[0] == "6":
+            sym = "SH" + digits
+        else:
+            skipped.append(digits)
+            continue
+        if sym not in out:
+            out.append(sym)
+    return out, skipped
+
+
+def _read_clipboard_text() -> str:
+    """读 Windows 剪贴板文本（PowerShell `Get-Clipboard`）。
+
+    ⚠ 走临时文件而不是管道：PowerShell 重定向到管道时用控制台代码页编码，
+    中文名单会乱码；让 PS 自己写 UTF-8 文件最稳。非 Windows / 失败 → 空串。
+    """
+    if sys.platform != "win32":
+        return ""
+    with tempfile.TemporaryDirectory() as td:
+        out_path = os.path.join(td, "clip.txt")
+        ps = f"$t = Get-Clipboard -Raw; [IO.File]::WriteAllText('{out_path}', [string]$t, [Text.Encoding]::UTF8)"
+        try:
+            # noqa 组：命令是我们写死的固定串（剪贴板文本不进命令行，走临时文件传递），
+            # 不存在不可信输入；Windows 上 powershell 必在 PATH。
+            subprocess.run(  # noqa: S603
+                ["powershell", "-NoProfile", "-Command", ps],  # noqa: S607
+                capture_output=True,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        try:
+            return Path(out_path).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return ""
+
+
+def _read_text_file(path: str) -> str:
+    """读清单文件（UTF-8 优先，GBK 兼底）。读不到 → 抛 `OSError` 给调用方报。"""
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return Path(path).read_text(encoding="gbk", errors="ignore")
+
+
+def _interactive_symbols() -> tuple[list[str], list[str]]:
+    """交互粘贴：多行输入，空行（或 EOF）结束。"""
+    print("粘贴或输入股票代码（逗号/空格/换行分隔；空行或 Ctrl-D 结束）：")
+    chunks: list[str] = []
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            break
+        chunks.append(line)
+    if not chunks:
+        return [], []
+    return extract_symbols_from_text(" ".join(chunks))
+
+
+def _resolve_input_symbols(args: argparse.Namespace) -> tuple[list[str], list[str]]:
+    """按来源解析用户清单 → (代码列表, 说明行)。
+
+    来源优先级：`--symbols-file` > `--clipboard` > `--symbols`（有值=严格解析；
+    无值=交互粘贴）。代码来自剪贴板/文件/粘贴板时用宽松抽码（容忍名字/日期混在里面）。
+    """
+    if getattr(args, "symbols_file", None):
+        text = _read_text_file(args.symbols_file)
+        syms, skipped = extract_symbols_from_text(text)
+        return syms, [f"清单文件 {args.symbols_file}", *_skip_note(skipped)]
+    if getattr(args, "clipboard", False):
+        text = _read_clipboard_text()
+        if not text.strip():
+            raise ValueError("读不到剪贴板文本（剪贴板为空，或不在 Windows 上）")
+        syms, skipped = extract_symbols_from_text(text)
+        return syms, ["剪贴板", *_skip_note(skipped)]
+    if args.symbols is None:
+        raise ValueError("没给清单（用 --symbols / --clipboard / --symbols-file）")
+    if args.symbols == "":
+        syms, skipped = _interactive_symbols()
+        return syms, ["交互输入", *_skip_note(skipped)]
+    return normalize_user_symbols(args.symbols), []
+
+
+def _skip_note(skipped: list[str]) -> list[str]:
+    """被跳过的数字串说明（让人知道「为什么少了几个」）。"""
+    if not skipped:
+        return []
+    head = "、".join(skipped[:8])
+    more = f"…共 {len(skipped)} 个" if len(skipped) > 8 else ""
+    return [f"跳过 {len(skipped)} 个非 A 股 6 位数字串（{head}{more}）"]
+
+
+def _resolve_names(symbols: list[str]) -> dict[str, str]:
+    """雪球批量报价解名字。fail-open：拿不到就用代码本身（不挡调研）。"""
+    from scanner.utils import EXTERNAL_FAILURES
+
+    try:
+        from scanner.api import fetch_hot_quotes_batch, make_session
+
+        quotes = fetch_hot_quotes_batch(make_session(), symbols)
+        return {s: str((quotes.get(s) or {}).get("name") or s) for s in symbols}
+    except EXTERNAL_FAILURES:
+        return {s: s for s in symbols}
+
+
+def _run_symbols(args: argparse.Namespace) -> int:
+    """`--symbols` 入口：自选清单批量调研（research 模式专属，不读榜外段）。"""
+    from scanner.ai_digest.llm import AIUpstreamError, magpie_config
+
+    if args.mode != "research":
+        print("[!] --symbols 只支持 --mode research（默认）；analyze/transcribe 的数据源是榜外异动段。")
+        return 3
+
+    try:
+        symbols, notes = _resolve_input_symbols(args)
+    except (ValueError, OSError) as e:
+        print(f"[!] {e}")
+        return 3
+    if not symbols:
+        print("[!] 没解析到任何股票代码。")
+        return 3
+    if len(symbols) > MAX_SYMBOLS:
+        print(f"[!] 一次最多 {MAX_SYMBOLS} 只（当前 {len(symbols)} 只），请分批或加 --limit N。")
+        return 3
+    # `--limit N` 取面板顺序的前 N 只（面板顺序 = 优先级顺序，先砍后面的）。
+    limit = getattr(args, "limit", None)
+    if limit and limit > 0 and len(symbols) > limit:
+        notes = [*notes, f"清单共 {len(symbols)} 只，按 --limit 只取前 {limit} 只"]
+        symbols = symbols[:limit]
+
+    cfg = magpie_config()
+    if cfg is None:
+        print("[!] 未配置模型服务凭据（MAGPIE_BASE_URL / MAGPIE_API_KEY / MAGPIE_MODEL）。")
+        print("    放 .env 后重试。")
+        return 1
+
+    from scanner.ai_digest.agent import run_research
+    from scanner.ai_digest.material import unverified_numbers
+    from scanner.ai_digest.research import ResearchContext
+
+    print(f"[i] 自选清单 {len(symbols)} 只（模型 {cfg.model}，最多 {args.max_calls} 次工具调用）…", file=sys.stderr)
+    for note in notes:
+        print(f"[i] 来源：{note}", file=sys.stderr)
+    names = _resolve_names(symbols)
+    named = {s: n for s, n in names.items() if n != s}
+    if named:
+        print("[i] " + "、".join(f"{s} {n}" for s, n in named.items()), file=sys.stderr)
+
+    conn = connect_readonly(resolve_db_path())
+    try:
+        ctx = ResearchContext(conn=conn)
+        rows = [{"symbol": s, "name": names.get(s, s)} for s in symbols]
+        try:
+            result = run_research(
+                cfg,
+                rows,
+                ctx,
+                max_rounds=args.max_rounds,
+                max_calls=args.max_calls,
+                origin="用户指定的自选清单",
+            )
+        except AIUpstreamError as e:
+            print(f"[!] {e}")
+            return 2
+    finally:
+        conn.close()
+
+    # 幻觉巡检：比对基准 = 全部工具输出（模型能引用的一切真实数据；
+    # 提示词里的清单只有代码与名字，数字只可能来自工具输出）。
+    unverified = unverified_numbers(result.text, result.tool_output_blob)
+
+    if args.json:
+        _emit(
+            {
+                "ok": True,
+                "mode": "research",
+                "source": "symbols",
+                "label": LABELS["research"],
+                "text": result.text,
+                "unverified_numbers": unverified,
+                "tool_summary": result.tool_summary(),
+                "symbols": [{"symbol": s, "name": names.get(s, s)} for s in symbols],
+            }
+        )
+        return 5 if unverified else 0
+
+    print(_RULE)
+    print("自选清单 · AI 调研")
+    print(LABELS["research"])
+    print(_RULE)
+    print(
+        f"清单：{'、'.join(f'{s} {names.get(s, s)}' for s in symbols)}"
+        f" · {len(result.tool_calls)} 次工具调用 / {result.rounds} 轮"
+    )
+    print()
+    print(result.text)
+    if unverified:
+        print()
+        print(
+            f"[!] 幻觉巡检：以下数字在工具输出里没有逐字出现（可能是概括、四舍五入或自造，请自行核对）：{'、'.join(unverified)}"
+        )
+    if result.tool_calls:
+        print()
+        print(f"模型自己查了这些（{result.tool_summary()}）：")
+
+    out_path = getattr(args, "out", None)
+    if out_path:
+        _save_report(out_path, symbols, names, result, unverified)
+        print(f"\n[i] 报告已存 {out_path}")
+    return 5 if unverified else 0
+
+
+def _save_report(
+    out_path: str,
+    symbols: list[str],
+    names: dict[str, str],
+    result: Any,
+    unverified: list[str],
+) -> None:
+    """报告落盘（纯文本，同终端内容去掉 ANSI；不进库、不进飞书）。"""
+    lines = [
+        _RULE,
+        "自选清单 · AI 调研",
+        LABELS["research"],
+        _RULE,
+        f"清单：{'、'.join(f'{s} {names.get(s, s)}' for s in symbols)}"
+        f" · {len(result.tool_calls)} 次工具调用 / {result.rounds} 轮",
+        "",
+        result.text,
+    ]
+    if unverified:
+        lines += ["", f"[!] 幻觉巡检未通过：{'、'.join(unverified)}"]
+    if result.tool_calls:
+        lines += ["", f"模型查询记录（{result.tool_summary()}）"]
+    Path(out_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
 
 #: 内置样例（`--demo`）：零库、零网，用来验证「素材 → 提示词 → 巡检」整条链路。
 #: 刻意含一条缺字段行（`accum_5d` 为 None）与一条未登记层，覆盖两条降级路径。
@@ -138,6 +451,19 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         default="research",
         help="research=模型自己查真实市场数据后给判断（默认）；analyze=按历史基准率算账；transcribe=纯转述",
     )
+    p.add_argument(
+        "--symbols",
+        nargs="?",
+        const="",
+        help=("自选清单：给代码（--symbols 300319,300666）或直接给剪贴板内容；只写 --symbols 不带值 = 交互粘贴模式"),
+    )
+    p.add_argument(
+        "--clipboard",
+        action="store_true",
+        help="从 Windows 剪贴板读清单（配合终端「一键复制」按 c 用；文本里的名字/日期会自动跳过）",
+    )
+    p.add_argument("--symbols-file", help="从文本文件读清单（一行一个代码或名字）")
+    p.add_argument("--out", help="把报告存到该文件（默认只打印）")
     p.add_argument("--max-rounds", type=int, default=8, help="research 模式最多几轮工具调用（默认 8）")
     p.add_argument("--max-calls", type=int, default=30, help="research 模式最多几次工具调用（默认 30）")
     p.add_argument(
@@ -150,8 +476,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument(
         "--limit",
         type=int,
-        default=OFFBOARD_DISPLAY_TOP,
-        help=f"分析前 N 只（按段内顺序；默认 {OFFBOARD_DISPLAY_TOP} = 终端展示行数）",
+        default=None,
+        help=(
+            f"只分析前 N 只（自选清单模式：取面板顺序的前 N 只；榜外段模式：段内顺序前 N 只，"
+            f"默认 {OFFBOARD_DISPLAY_TOP}）"
+        ),
     )
     p.add_argument("--materials", action="store_true", help="只打素材（逐项 id|label|value），不出网")
     p.add_argument("--demo", action="store_true", help="用内置样例跑（零库零网）")
@@ -233,12 +562,14 @@ def _force_utf8_stdout() -> None:
     只在本命令 `main()` 里调（不入模块顶层）：测试捕获的 stdout 不应被改写。
     `getattr` 模式同 `scripts/offboard_nextday.py` —— `sys.stdout` 静态类型是 TextIO
     （无 `reconfigure`），运行时的 TextIOWrapper 才有；pythonw 下 stdout 可能为 None。
+    stderr 同改：`[i]` 进度行都走 stderr，不改就是一屏乱码。
     """
     if sys.platform != "win32":
         return
-    reconfigure = getattr(sys.stdout, "reconfigure", None)
-    if callable(reconfigure):
-        reconfigure(encoding="utf-8")
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
 
 
 def _emit(obj: dict[str, Any]) -> None:
@@ -250,6 +581,9 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     _load_env()
 
+    if args.symbols is not None or args.clipboard or args.symbols_file:
+        return _run_symbols(args)
+
     try:
         info = _resolve_rows(args)
     except OffboardSourceError as e:
@@ -259,7 +593,7 @@ def main(argv: list[str] | None = None) -> int:
     mats = build_materials(
         info["date"],
         info["rows"],
-        limit=args.limit,
+        limit=args.limit if args.limit and args.limit > 0 else OFFBOARD_DISPLAY_TOP,
         mode=args.mode,
         market=info.get("market"),
         baseline=info.get("baseline"),

@@ -20,6 +20,8 @@ A-share (创业板) stock scanner: watches Xueqiu biaosheng (飙升) leaderboard
 
 ## Commands
 
+面向人的完整命令速查表（参数 / 场景 / 环境变量 / 常见坑）见 `COMMANDS.md`；下面是精简版。
+
 ```
 python unified_scanner.py            # 60s refresh；120 = custom interval；--no-feishu
 python stock_report.py 300319        # 个股深报（名字也行）
@@ -68,6 +70,7 @@ python -m scanner.ai_digest --materials | --demo | --json
 # 凭据 MAGPIE_* 放 .env。红线守卫与 worker 侧 explain/guard.ts 双端同源：
 # 只改一侧即红（test_ts_slot_vocabulary_is_covered_by_python_guard）。
 
+
 # 沪深飙升独立区自检（改规则后必跑，回归哨兵）
 python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，全绿 exit 0
 ```
@@ -86,6 +89,11 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
 
 ## 目标函数（唯一口径）
 
+**效率是前提**（2026-11-03 用户决策）：次日异动是**分钟级**生意 —— 分析再好、
+出来晚了就没用了。新增维度/分析手段**一律先过延迟闸**（单只票 ≤ 2 分钟出结论），
+慢的手段只能进**离线旁路**，不得进主循环/终端/飞书。
+⚠ 曾评估并接入外部多智能体框架（TradingAgents-Astock），**已删除**：
+单只票 2~5 分钟太慢，且价值投资视角与本目标函数不必然同向。
 **次日≥7% hit 率**是系统唯一类别先验口径——排序、档位、🎯 画像、类别准入全用它。
 **唯一手抄源 = `config_scoring.CATEGORY_HIT_RATE`**（+ `_DEFAULT`），下游一律派生不得复制：
 `nextday_prob.BASE_RATE_BY_CAT` = **别名**（`is` 同一对象）；
