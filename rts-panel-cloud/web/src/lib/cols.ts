@@ -29,7 +29,7 @@ export type Profile = "pool" | "hot" | "offboard" | "hist";
 export type Tone = "up" | "down";
 
 /** 行尾标记：与终端行尾图标同源（新 / ⚡ / 稳 / ▼）。 */
-export type MarkKind = "new" | "bolt" | "steady" | "outflow";
+export type MarkKind = "new" | "bolt" | "steady" | "outflow" | "conflict";
 
 export type Mark = { text: string; kind: MarkKind };
 
@@ -152,8 +152,16 @@ const POOL_CELLS: Record<string, CellFn> = {
   "现价": (row) => priceCell(num(row.current)),
   "排名": (row) => ({ text: num(row.rank) === null ? DASH : String(num(row.rank)) }),
   "板块": sectorCell,
-  "评分": (row) => scoreCell(num(row.score), 0),
-  "策略": (row) => ({ text: text(row.cat_label) }),
+  // 「类别·先验」= 策略短标签 + 该类别历史命中率（%）。
+  // ⚠ 2026-11-04：原「评分」列已删除 —— 分数在**类别内**无区分力（实测类内 IC −0.020），
+  //   显示它只会让人以为「高分=更可能涨」；排序依据的量是**类别先验**（类内 IC +0.027）。
+  //   先验由 Python 侧算好随载荷下发（row.prior_pct），前端不重算业务口径。
+  "类别·先验": (row) => {
+    const label = text(row.cat_label);
+    const prior = num(row.prior_pct);
+    const p = prior === null ? DASH : `${prior.toFixed(1)}%`;
+    return { text: label ? `${label}·${p}` : p, val: prior ?? undefined };
+  },
 };
 // #endregion
 
@@ -228,13 +236,17 @@ const TABLES: Record<Profile, Record<string, CellFn>> = {
 };
 
 /**
- * 允许「临时排序」的列（FR-V2：仅 评分 / 涨幅 / 量比，且界面必须标「临时排序」）。
+ * 允许「临时排序」的列（FR-V2：仅 涨幅 / 量比 / 评分，且界面必须标「临时排序」）。
  *
  * ⚠ 本文件是 `lib/`，可以出现列名字面量；`components/**` 由 hygiene 守卫禁写列名，
  *   故这张表只能放这里、由 `RegionTable` 经 props 消费。
+ *
+ * ⚠ 2026-11-04：v1 池选的「评分」列已删（分数在类别内无区分力）⇒ 池选不再有评分列可排；
+ *   「类别·先验」是**类别常量**（同类别同值），排它 = 按类别排（与服务端主序同义），
+ *   故**不进临时排序白名单**（无信息量）。hot/hist 的评分是另一套量（复合分），保留可排。
  */
 export const SORTABLE: Record<Profile, string[]> = {
-  pool: ["评分", "涨幅"],
+  pool: ["涨幅"],
   hot: ["评分", "涨幅", "量比"],
   offboard: ["涨幅", "量比"],
   hist: ["评分", "涨幅", "量比"],
@@ -289,6 +301,11 @@ export function rowMarks(row: Row, profile: Profile, ctx: RowContext): Mark[] {
   const beauty = ctx.marks.beauty[key];
   if (beauty) {
     marks.push({ text: beauty, kind: "steady" });
+  }
+  // 「先强资弱」（2026-11-04）：类别先验高（A 档）但主力净流出 ⇒ 排序位置与资金证据矛盾。
+  // 判定在 Python 侧（view.model.prior_flow_conflict），面板只渲染不重算。
+  if (profile === "pool" && row.prior_flow_conflict === true) {
+    marks.push({ text: "先强资弱", kind: "conflict" });
   }
   return marks;
 }

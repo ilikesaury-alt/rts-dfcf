@@ -125,6 +125,24 @@ class LabelSpec:
 
 # ── 登记簿（顺序 = 图例里的出现顺序）────────────────────────────────────────
 LABEL_REGISTRY: dict[str, LabelSpec] = {
+    "prior_flow_conflict": LabelSpec(
+        id="prior_flow_conflict",
+        labels=("先强资弱",),
+        surfaces=("scanner/view/model.py", "scanner/feishu.py"),
+        where="v1 池选 行尾（view.model._entry_row_suffix 的 prior_flow_conflict 分支；"
+        "飞书 _row_line 同位；面板 marks kind=conflict）",
+        rule="**排序依据与资金证据矛盾**：类别档位 = A（先验 ≥ PUSH_TIER_A_MIN=0.10）"
+        "**且**主力净占比 < 0（净流出）。资金流取值与行尾 ▼/▼▼ 图标同一条回退链"
+        "（行内 dims → market_extra_cache 快照）",
+        source="S5: 本仓样本外回放（2026-11-04；scripts/rerank_backtest.py，"
+        "walkforward 7 窗 / 评估集 1226 条 / 70 天）。依据：类别先验在**类内**有效"
+        "（rank IC +0.027），主力净占比是类内最强的区分键（IC +0.092），"
+        "而两者冲突时（先验强而资金流出）行位靠前但证据相反 ⇒ 需标出",
+        grade="E0",
+        counter="先强资弱=「类别先验强但主力在净流出」·**未校准**（本标记只指出两个证据互相矛盾，"
+        "**不含任何方向预测**）·≠次日必跌·判定用 A 档阈值（本仓口径，非外部基准）",
+        sections=("pool",),
+    ),
     "fund_outflow": LabelSpec(
         id="fund_outflow",
         labels=("▼", "▼▼", "🔴", "🔴🔴"),

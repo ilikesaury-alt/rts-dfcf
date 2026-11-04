@@ -106,8 +106,6 @@ python -m scanner.ai_digest --json               # 机器可读（含幻觉巡�
 
 数据源 `--source auto|view|log`（默认 auto = 取更新的那个）。`--limit N` 控制分析前 N 只。
 
----
-
 ## 4. 数据回填 / 修复 / 诊断
 
 | 命令 | 说明 |
@@ -177,6 +175,37 @@ python scripts/offboard_nextday.py --repair-next-day          # 修历史错标�
 python scripts/offboard_nextday.py --repair-next-day --apply   # 真写
 python scripts/shadow_feature_backtest.py --no-fetch           # B 段新数据源的回溯样本外检验
 ```
+
+### 7.1b 池内排序依据的样本外检验（v1 池选排序口径的证据）
+
+```bash
+python scripts/rerank_backtest.py          # 各排序键的 top-N hit 率 + 配对 CI + 类内 IC
+python scripts/rerank_backtest.py --top 5  # top-5
+python scripts/rerank_backtest.py --json   # 机器可读
+```
+
+- **零 LLM 调用、零网络、零成本**（只读库）—— 检验 v1 池选**排序依据**（类别先验 + 主力净占比）有没有边际。
+- 结论（2026-11-04）：**类别先验有效、分数无效** ⇒ 已落进生产（v1 池选删「评分」列、改显「类别·先验」列）。
+- 切分：walkforward（train=30 / test=10 / embargo=2，与 `rule_validate` 同款），**先验只用 train 窗标签重算**。
+- ⚠ **看「类内 IC」而不是只看 top-N 命中率**：全池 top-3 口径会把「类别构成效应」误读成「分数有效」。
+- 刻意不给建议、不产短名单（同 `offboard_nextday.py` 纪律）。
+
+### 7.1c Phase 2：LLM 排序 vs 确定性排序（模型这一步有没有增量）
+
+```bash
+python scripts/rerank_llm_backtest.py                    # 默认 15 天（会出网、要花钱）
+python scripts/rerank_llm_backtest.py --llm-max-days 30  # 更多天（更贵）
+python scripts/rerank_llm_backtest.py --no-fetch         # 只用缓存重算（零成本）
+```
+
+- 把历史日的 v1 池**重建**后，同一份池子分别交给「确定性基线（按 `nextday_prob` 排）」与「LLM（同一套素材 + 同一套提示词）」，
+  逐日配对比较。
+- ⚠ **主指标是 rank IC 不是 top-N 命中率**：重建池命中率基线只有 ~3% ⇒ top-N 口径功效近零。
+- ⚠ 历史池是**重建**的（少了展示层实时覆盖与硬门剔除）⇒ 只有相对比较有效，绝对值不可与线上比。
+- 缓存：`logs/rerank_llm_cache.json`（gitignored）；**守卫逻辑变更后必须递增 `CACHE_VERSION`**；
+  缓存键含**素材指纹** ⇒ 素材一变缓存即失效（避免拿旧排序评新池）。
+- 结论（2026-11-04）：模型排序**无显著增量**（ΔIC +0.0300 [−0.020,+0.080]）⇒
+  「让 LLM 决定排第几」已下线（CLI 入口移除），排序归确定性键（先验 → 主力净占比 → 系统概率）。
 
 ### 7.2 其它研究/审计脚本
 

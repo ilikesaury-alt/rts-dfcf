@@ -144,6 +144,12 @@
   color: var(--color-up); /* ▼ 是**警示**不是跌色：与终端资金流图标同口径 */
 }
 
+/* 「先强资弱」（2026-11-04）：先验强但主力净流出 —— 排序位置与资金证据矛盾。
+   与终端 YELLOW 同口径（终端 view.model._entry_row_suffix 的同名标记）。 */
+.mark-conflict {
+  color: var(--color-lag-warn);
+}
+
 /* 评分分解表的合计行（pages/Stock.tsx） */
 .kv-total th,
 .kv-total td {

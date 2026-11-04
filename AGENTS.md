@@ -60,6 +60,8 @@ python -m scanner.nextday_calib              # 校准漂移巡检；改 nextday_
 python scripts/offboard_nextday.py [--days N] [--tier T2] [--json]
 python scripts/offboard_nextday.py --repair-next-day [--apply]   # 修历史错标签，默认 dry-run
 python scripts/shadow_feature_backtest.py [--no-fetch]   # B 段新数据源的回溯样本外检验
+python scripts/rerank_backtest.py                    # 池内排序依据的样本外检验（零 LLM 成本）
+python scripts/rerank_llm_backtest.py --llm-max-days 30   # Phase 2：模型排序 vs 确定性排序（要花钱）
 
 # B 段 AI 分析（手动触发，不轮询，不挂主循环）
 python -m scanner.ai_digest                  # research（默认）：模型自己调工具查真实数据后给判断
@@ -153,6 +155,10 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
   词表与排序链分两处写（`=` vs 带空格的排序键），守卫认带空格的 `T2 启动首日`。
 - **只有 `v1 池选` 有序**：新票优先 → 类别优先级 → 榜单排名升序 → 资金流降序 → 形态加分
   （`scanner/view/assemble.py::build_scan_view`）。终端标题 = 前四键，**改键必须同批改标题**。
+- **v1 池选「评分」列已删（2026-11-04）**：分数在类别内无区分力（类内 IC −0.020）⇒
+  改显「类别·先验」列（`RBD·17.9%`，单源 `view.model.category_prior_pct`）。
+  ⚠ 跨端同源：终端 `COLS_POOL` / 飞书 `_fmt_row` / 面板 `cols.ts` 的 `POOL_CELLS` 三处
+  必须同步（守卫 `test_panel_web_cols.py` 比对逐项同序）。
   「新票」= 本轮新进今日推荐池（跨轮票集差集 `new_symbols`），**不是** `recommendations.time`
   （那是最后一次提分时刻）。
 - `hot_watch` 独立区与主线完全解耦：样本面沪深主板+创业板（主线只创业板 300/301）；口径
@@ -217,6 +223,16 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
   历史基准率（`source.load_baseline_stats`）是素材一部分，标签文本自带「本项目实测、
   非市场先验」与 n；`BASELINE_BUCKETS` 的 cuts 与 scale 必须同单位。analyze 模式是
   用户决策的「无第二结论源」纪律的**有意例外**（输出不落库/不进计算/不进飞书）。
+- **v1 池选排序口径（2026-11-04，样本外实测后定稿）**：`新票→类别先验→榜位→主力净占比`；
+  **分数不进排序、不进表**（类内 IC −0.020 vs 先验 +0.027，n=70 天 walkforward）。
+  ⚠ 全池 top-3 口径会把**类别构成效应**误读成「分数有效」（score 看着 +3.10pp）。证据：`scripts/rerank_backtest.py`。
+- **「先强资弱」标记（2026-11-04）**：类别档位=A 且主力净占比<0 ⇒ 排序位置与资金证据矛盾，
+  行尾标出（判定单源 `view.model.prior_flow_conflict`；终端/飞书/面板三出口同待遇）。
+- **AI 排序已下线（2026-11-04）**：Phase 2 实测模型排序 vs 确定性排序 ΔIC **+0.0300**
+  [−0.020,+0.080]（30 天重建池 / 29 天可比，**不显著**；机制：`system_p` 在池内 86% 的行
+  上并列 ⇒ 确定性排序在并列里任意；模型优势全来自「它用了主力净占比」）⇒ **CLI 入口移除**，
+  `ai_digest/rerank.py` 只作为 Phase 2 证据的可复现载体保留。
+  ⚠ 数字出自守卫 v3 的回放；v4 修了「当日已冲高」这类误拦（1/30 天），结论不变。
 - **research 模式（ai_digest 默认，2026-11-03）= 模型自己查真实市场数据再判断**：
   网关**支持 tool-calling**（实测 `finish_reason=tool_calls`）⇒ 工具箱
   `ai_digest/research.py`（8 个：K线/实时报价/资金流/概念/板块热力图/市场概览/飙升榜/
@@ -304,6 +320,7 @@ scanner/
   patterns.py               # Candlestick patterns
   fundamentals.py           # Fundamentals filtering (pywencai)
   ai_digest/                # B 段 AI 分析（手动触发；material/guard/source）
+    rerank.py               # Phase 2 证据的可复现载体（无 CLI 入口）
   pipeline/                 # 主扫描通路阶段纯函数（改前必读包 docstring）
     pool.py / features.py / buckets.py / scoring.py / tactics.py
   db/

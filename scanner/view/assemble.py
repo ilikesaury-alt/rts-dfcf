@@ -413,6 +413,18 @@ def build_scan_view(
             # 「新」取自调用方传入的 new_symbols（跨轮票集差集）——**不读 DB 时间戳**，
             # 理由见本函数 docstring 的 new_symbols 段（time 会被提分覆盖）。
             # new_symbols 缺省/空 ⇒ 本键恒 1 ⇒ 键序完全还原，输出逐字节不变。
+            #
+            # ⚠ **各键的证据（2026-11-04 样本外回放，scripts/rerank_backtest.py；
+            #    walkforward 7 窗 / 评估集 1226 条 / 70 天）**：
+            #    · 第2键 类别 = **类别先验**（`CATEGORY_HIT_RATE`）：类内 rank IC **+0.027**
+            #      ⇒ 类别层面有效，是排序主轴。
+            #    · 第4键 资金流 = **类内最强的区分键**（类内 rank IC **+0.092**）⇒ 档内细分靠它。
+            #    · **分数不参与**（类内 rank IC **−0.020**，正负天数接近 1:1）⇒ 分数既不进
+            #      排序、也不进 v1 池选表（表里那列已改成「类别·先验」）。
+            #    · 第3键 榜位：历史样本里只有 10% 的行能拿到榜位（重建池多不在飙升榜 top-100）
+            #      ⇒ **未测出强弱**，故不动它（不因缺证据而重排）。
+            #    ⚠ **别用全池 top-N 命中率判断哪个键有效**：那个口径会把「类别构成效应」
+            #      误读成「分数有效」（score 看着 +3.10pp，实际是某些日高分恰落在强类别）。
             _is_new_key = 0 if (new_symbols and sym in new_symbols) else 1
             # 与展示列同款 None 检查（2026-10-08 L6）：`or` 会把 live_rank=0 静默回退
             # 到 rank —— 0 不是合法排名，缺失就该按缺失走 99999 兜底。
@@ -458,6 +470,10 @@ def build_scan_view(
                     current=_cur_row,
                     sector=_entry_sector(_e),
                     is_new_entry=not _ink,
+                    # 「类别·先验」列与「先强资弱」标记的取值（2026-11-04）：
+                    # 判定都在展示层单源（view.model），assemble 只把结果带上（供面板载荷）。
+                    prior_pct=category_prior_pct(_e.get("category")),
+                    prior_flow_conflict=prior_flow_conflict(_e, flow_pct_map),
                 )
             )
     except EXTERNAL_FAILURES as _e:

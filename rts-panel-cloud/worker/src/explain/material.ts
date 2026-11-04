@@ -33,20 +33,31 @@ export const NA = "暂无数据";
 /**
  * 类别先验（**手工维护**，决策 P2：不扩 Python 上报链路）。
  *
- * ⚠ 只写「这个桶是什么、评分往哪个方向读」，**不写任何命中率数字** ——
+ * ⚠ 只写「这个桶是什么、**先验往哪个方向读**」，**不写任何命中率数字** ——
  *   本项目唯一的统计产物在本地（`rule_validate` / `prevday_perf`），未随快照上报，
  *   在云端凭空写一个百分比就是编造证据。
  *   来源：`scanner/categories.py::CATEGORIES` 的 `CategoryInfo` + `AGENTS.md`「目标函数」。
  *   改动口径请同步 `scanner/categories.py`。
+ *
+ * ⚠ 2026-11-04 口径修正（样本外实测，n=70 天 walkforward）：**「评分越高越靠前」是错的**。
+ *   分数在**类别内**毫无区分力（类内 rank IC −0.020，正负天数接近 1:1）⇒
+ *   排序的主轴是**类别先验**，类别内靠主力净占比/榜位区分。
+ *   ⇒ 下列文案不再提「评分」，也不提「低分档命中更高」（那是 kNF 的旧口径，
+ *     已被本次回放证伪为「类内无区分力」，保留会变成另一个误导）。
  */
 export const PRIORS: Record<string, string> = {
-  rebound: "反弹类（代号 RBD）：前期回调后出现反弹形态，评分越高越靠前。",
-  known_new_face: "已知新面孔（代号 kNF）：反复上榜的熟悉票重新出现。⚠ 该桶评分**反指**——低分档命中更高，不能按「分越高越好」读。",
-  momentum: "动量类（代号 MOM）：榜上动能加速的票，评分越高越靠前。",
-  new_face: "新面孔（代号 NEW）：首次/近阶段首次进入候选池的票。",
-  short_term: "短线类（代号 ST）：短线博弈形态，属参考口径。",
+  rebound: "反弹类（代号 RBD）：前期回调后出现反弹形态。**类别先验高**（该类历史次日≥7%命中率高）。",
+  known_new_face: "已知新面孔（代号 kNF）：反复上榜的熟悉票重新出现。类别先验次高。",
+  momentum: "动量类（代号 MOM）：榜上动能加速的票。类别先验居中。",
+  new_face: "新面孔（代号 NEW）：首次/近阶段首次进入候选池的票。类别先验低于基线。",
+  short_term: "短线类（代号 ST）：短线博弈形态。**类别先验最低**（低于全体基线），属参考口径。",
   core_dip: "核心票回调低吸（代号 core_dip）：核心方向标的回调到位。",
 };
+
+/** 评分在**类别内**无区分力的口径提示（2026-11-04 样本外实测）。
+ *  云端解读**不得**把评分讲成「越强越可能涨」。 */
+export const SCORE_CAVEAT =
+  "⚠ 评分**不参与排序**（实测：类别内与次日涨幅无单调关系）；排序主轴是类别先验，类别内靠主力净占比/榜位区分。";
 
 /** 行字段白名单：`[字段名, 中文标签, 格式化]`（字段名同 `cols.ts`，顺序决定素材顺序）。 */
 type Fmt = "text" | "pct" | "price" | "score1" | "dec1" | "dec2" | "int" | "plusInt" | "cap" | "days" | "bool";
@@ -89,8 +100,10 @@ const ROW_FIELDS: Record<RegionKey, readonly Field[]> = {
     ["current", "现价", "price"],
     ["rank", "排名", "int"],
     ["sector", "板块", "text"],
-    ["score", "评分", "score1"],
-    ["cat_label", "策略", "text"],
+    // ⚠ 2026-11-04：主表**不给评分**（类别内无区分力）⇒ 改给**类别先验命中率**
+    //   （`prior_pct` 由 Python 侧随载荷下发，见 scanner/view/model.py::MainRow.prior_pct）。
+    ["cat_label", "类别", "text"],
+    ["prior_pct", "先验命中率(%)", "dec1"],
     ["is_new_entry", "本轮新进池", "bool"],
   ],
   hist: [
@@ -246,6 +259,8 @@ export function buildMaterials(input: BuildInput): ExplainMaterials {
     missing.push("prior");
     items.push({ id: `prior.${cat}`, label: `类别先验·${cat}`, value: `${NA}（该桶无手工先验文案）` });
   }
+  // 评分口径提示（2026-11-04）：主表不再给评分，模型不得自己把旧分数读成强弱信号。
+  items.push({ id: "caveat.score", label: "评分口径", value: SCORE_CAVEAT });
 
   return { symbol, items, missing };
 }

@@ -11,6 +11,7 @@ from scanner.config import (
 )
 from scanner.models import Candidate, RecommendationRow
 from scanner.nextday_rule import RuleResult
+from scanner.push_gate import TIER_A, classify
 
 # 排序/画像纯逻辑单源在 scanner.ranking；display 只导入渲染所需子集。
 # 此前的全量 re-export（供 scripts 的 display._entry_* 属性访问）已下线：
@@ -111,6 +112,8 @@ __all__ = (
     "_entry_dip_labels",
     "_entry_row_suffix",
     "_entry_sector",
+    "category_prior_pct",
+    "prior_flow_conflict",
     "_fund_flow_icon_str",
     "_is_console",
     "_market_env_tag",
@@ -383,6 +386,48 @@ def _beauty_mark_for(entry: RecommendationRow | dict, kline: list | None) -> str
     return beauty_mark(entry, kline, fresh_candidate(entry))
 
 
+def category_prior_pct(category: str | None) -> float:
+    """该类别的**先验命中率**（%，展示用）：单源 = `push_gate.classify`（= CATEGORY_HIT_RATE）。
+
+    为什么走 `classify` 而不是直接查表：它已经把「表外类别 → 全体基线」的兑底
+    封装好了（`classify` 返回 (档位, 先验)），直查表会在展示层多写一份兑底逻辑
+    ⇒ 两处兑底可能漂移。
+
+    ⚠ **这是本仓唯一有证据的类别口径**（2026-11-04 回放实测）：
+    类别先验在**类内**是有效的排序依据（IC +0.027）；而**分数在类内无区分力**
+    （IC −0.020，正负天数接近 1:1）⇒ 分数不进排序、不进本列。
+    """
+    _tier, hit = classify(category)
+    return hit * 100
+
+
+def prior_flow_conflict(entry: RecommendationRow | dict, flow_pct_map: dict[str, float]) -> bool:
+    """**先验强、但主力在净流出** —— 排序依据与资金证据互相矛盾（确定性矛盾提示）。
+
+    判定（两个条件都是现成单源，**不新造阈值**）：
+    - 类别档位 = A（先验 ≥ `PUSH_TIER_A_MIN` = 0.10）—— `push_gate.classify`；
+    - 主力净占比 < 0（净流出）—— 与行尾资金流图标同一条回退链（行内 dims → flow_map）。
+
+    ⚠ 只看 <0 而不是 ≤ -8%：≤ -8% 的行**已被展示层硬门剔除**（FUND_OUTFLOW_NET_PCT），
+    留在池里的净流出都是「轻度」的（-8% ~ 0%）——正是容易被忽略的那种矛盾。
+
+    为什么要标出来：这类票**排在前面但资金在跑**（类别先验撑着位置）。排序是系统给的，
+    但矛盾需要人知道 —— 这是纯确定性检查（不需要 LLM）。
+    """
+    cat = entry.get("category") if isinstance(entry, dict) else getattr(entry, "category", None)
+    tier, _hit = classify(cat)
+    if tier != TIER_A:
+        return False
+    sym = entry.get("symbol") if isinstance(entry, dict) else getattr(entry, "symbol", None)
+    ff = None
+    if sym:
+        ff = to_float(flow_pct_map.get(sym), default=None)
+    if ff is None:
+        dims = entry_dims(entry)
+        ff = to_float(dims.get("fund_flow_main_pct"), default=None)
+    return ff is not None and ff < 0
+
+
 def _entry_row_suffix(
     entry: RecommendationRow | dict,
     flow_pct_map: dict[str, float],
@@ -423,6 +468,11 @@ def _entry_row_suffix(
             extra = f"{extra} {icon}".strip() if extra else icon
     if extra:
         parts.append(f" {extra}")
+    # 「先强资弱」：类别先验高（A 档）但主力净流出 —— 排序位置与资金证据矛盾
+    # （2026-11-04；判定单源 `prior_flow_conflict`，紧跟资金流图标 → 读者一眼看到
+    # 「▼ 先强资弱」= 「钱在跑，但类别先验把它顶到前面」）。纯展示，不改排序。
+    if prior_flow_conflict(entry, flow_pct_map):
+        parts.append(f" {ANSI['YELLOW']}先强资弱{ANSI['RESET']}")
     # 🎯（次日大涨画像）行尾标记：自 2026-09-04 停用（命中率过低），2026-09-16 连
     # 判定函数（ranking.is_nextday_marked）一并删除——故此处不再留注释开关。
     if breakout_marked:
@@ -481,8 +531,13 @@ COLS_POOL: tuple = (
     ("现价", 7, "r"),
     ("排名", 8, "r"),
     ("板块", 14, "l"),
-    ("评分", 4, "r"),
-    ("策略", 5, "l"),
+    # 「类别·先验」= 策略短标签 + 该类别历史命中率（%）。
+    # ⚠ 2026-11-04：原「评分」列已**删除** —— 分数在**类别内**毫无区分力
+    #   （实测类内 IC −0.020，正负天数接近 1:1；n=70 天 walkforward），
+    #   显示它只会让人以为「高分=更可能涨」。排序真正依据的量就是**类别先验**
+    #   （类内 IC +0.027），故直接把先验放到行里。
+    #   ⇒ 宽度：短标签 3 字 + "·" + "17.9%"（5）= 9 ⇒ 取 11（含余量）。
+    ("类别·先验", 11, "l"),
 )
 # 详情列规格：渲染实现是 render._print_priority_row。
 # 2026-09-14 现状：其两个消费方（核心方向低吸区 / 回马枪区）都无展示区 ——
@@ -658,6 +713,12 @@ class MainRow:
     # 历史 5 日累计口径上 —— 否决输入必须用本字段（缺失时才回退 accum），否则
     # short_term 行的过热判定系统性偏严一档。展示列仍读 accum，不受影响。
     accum_hist: float | None = None
+    #: **类别先验命中率**（%）：v1 池选行的「类别·先验」列取值（单源 `category_prior_pct`）。
+    #: 面板/云端需要它才能渲染该列（终端直接算得出，但载荷必须带值 —— 前端不重算业务口径）。
+    prior_pct: float = 0.0
+    #: **先验强、但主力净流出**（排序依据与资金证据矛盾）：行尾「先强资弱」标记的判定结果。
+    #: 与终端 `view.model.prior_flow_conflict` 同一实现，面板只渲染不重算。
+    prior_flow_conflict: bool = False
 
 
 @dataclass

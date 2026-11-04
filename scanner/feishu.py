@@ -56,7 +56,13 @@ from scanner.view.assemble import _market_suggestion_text
 # 2026-10-13 榜内飙升段也下沉为段标题，故一并引用）。此前本模块自持一份 09-21 层序
 # 翻转前的旧文案（写成「排序=量比→主力净占比·T1 量先动/T2 启动首日」，与实际的 T2 在前
 # **相反**），且漏了「开盘静默窗」—— 与上方 _pad/_trunc 同属本仓禁忌的复制，改为单源引用。
-from scanner.view.model import entry_display_quote, hot_subtitle, offboard_subtitle
+from scanner.view.model import (
+    category_prior_pct,
+    entry_display_quote,
+    hot_subtitle,
+    offboard_subtitle,
+    prior_flow_conflict,
+)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ── 推送决策 ──
@@ -165,7 +171,10 @@ class RowSnapshot:
     rank: int | None = None
     pct: float = 0.0
     accum: float | None = None
-    score: int = 0
+    #: **类别先验命中率**（%）：取代原 `score`（评分）——
+    #: 分数在类别内无区分力（实测类内 IC −0.020），先验才是排序依据（类内 IC +0.027）。
+    #: 取值单源 = `view.model.category_prior_pct`（= push_gate.classify）。
+    prior_pct: float | None = None
     risk_flags: list[str] = field(default_factory=list)
     ff_pct: float | None = None
     zt_lb: int | None = None
@@ -252,7 +261,7 @@ def _extract_row(entry, flow_pct_map) -> RowSnapshot:
         rank=_row_rank(entry),
         pct=_row_percent(entry),
         accum=_row_accum(entry),
-        score=_to_score(entry.get("score")),
+        prior_pct=category_prior_pct(entry.get("category")),
         risk_flags=_row_risk(entry),
         ff_pct=_row_ff_pct(entry, flow_pct_map),
         zt_lb=_row_zt(entry),
@@ -278,10 +287,16 @@ _FUND_FLOW_EMOJI = {
 
 
 def _fmt_row(s: RowSnapshot) -> str:
-    """单行：排名 名称 代码 涨幅 5日累计 评分 [风险] [资金流/连板] [操作纪律]。"""
+    """单行：排名 名称 代码 涨幅 5日累计 先验 [风险] [资金流/连板] [操作纪律]。
+
+    ⚠ 「先验」取代原「评分」（2026-11-04）：分数在**类别内**毫无区分力
+    （实测类内 IC −0.020，正负天数接近 1:1），显示它会让人误以为「高分=更可能涨」。
+    先验宽度固定 5 字符（`17.9%` / ` 6.2%`）⇒ 行内对齐不因位数变化而错位。
+    """
     rs = f"{s.rank:>3}" if s.rank else "  —"
     pct_str = f"+{s.pct:.1f}%" if s.pct >= 0 else f"{s.pct:.1f}%"
     acc_str = f"{s.accum:+.1f}%" if s.accum is not None else "N/A"
+    prior_str = f"{s.prior_pct:>4.1f}%" if s.prior_pct is not None else "  —  "
     # 风险标签分级（与终端共用 split_risk_flags，阈值集中在 config）
     hard, soft_count = split_risk_flags(s.risk_flags)
     risk_parts = []
@@ -303,11 +318,11 @@ def _fmt_row(s: RowSnapshot) -> str:
     extra_str = (" " + " ".join(extra_parts)) if extra_parts else ""
     # 操作纪律标签在反引号定宽块之外追加——不破坏 _pad 列对齐（审查修复）
     tactic_str = (" " + " ".join(s.tactic_tags)) if s.tactic_tags else ""
-    return f"`{rs} {_pad(s.name, 8)} {s.symbol} {pct_str:>7} {acc_str:>7}  {s.score:>2}分{risk_str}{extra_str}`{tactic_str}"
+    return f"`{rs} {_pad(s.name, 8)} {s.symbol} {pct_str:>7} {acc_str:>7} {prior_str}{risk_str}{extra_str}`{tactic_str}"
 
 
 def _row_line(entry, view, rank=None, accum=None, score=None, is_new_entry: bool = False) -> str:
-    """把一条推荐行渲染成卡片文本行（rank/accum/score 可由调用方直接给最终值）。
+    """把一条推荐行渲染成卡片文本行（rank/accum 可由调用方直接给最终值）。
 
     is_new_entry：本轮新进入今日推荐池（MainRow.is_new_entry 透传），行尾打「新」标记。
     位置与终端一致 —— 插在**稳 标记之前**（终端里「新」也排在行尾最前，相对顺序同为「新 … 稳」）。
@@ -317,12 +332,14 @@ def _row_line(entry, view, rank=None, accum=None, score=None, is_new_entry: bool
         snap.rank = rank
     if accum is not None:
         snap.accum = accum
-    if score is not None:
-        snap.score = score
     line = _fmt_row(snap)
     # 本轮新进池标记（2026-09-21）：与终端 v1 池选行同位，判定单源 MainRow.is_new_entry。
     if is_new_entry:
         line += " 新"
+    # 「先强资弱」矛盾提示（2026-11-04）：类别先验高（A 档）但主力净流出 ⇒
+    # 排序位置与资金证据打架。与终端 `_entry_row_suffix` 同一判定（view.model.prior_flow_conflict）。
+    if prior_flow_conflict(entry, view.flow_pct_map):
+        line += " 先强资弱"
     # 走势美感标记（2026-09-09 上线 / 2026-09-15 分档）：v1 池选行尾 ""/"稳"/"稳★"，
     # 与终端同源（view.beauty_mark，判定单源 trend_beauty.beauty_mark）。
     bm = (getattr(view, "beauty_mark", None) or {}).get((entry.get("symbol"), entry.get("category")), "")
@@ -548,7 +565,6 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
             view,
             rank=row.rank,
             accum=row.accum,
-            score=_to_score(row.score),
             is_new_entry=bool(getattr(row, "is_new_entry", False)),
         )
         for row in main

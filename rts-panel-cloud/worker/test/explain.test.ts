@@ -88,6 +88,8 @@ const MAIN_ROW = (symbol: string) => ({
   rank: 17,
   sector: "软件",
   score: 61,
+  // ⚠ 2026-11-04：主表素材改为「先验」而非「评分」（类别内无区分力）。
+  prior_pct: 10.0,
   is_new_entry: true,
   score_breakdown: { momentum: 30, flow: 20, structure: 11 },
 });
@@ -163,8 +165,13 @@ describe("GET /api/ai-explain", () => {
     expect(ids.some((i: string) => i.startsWith("kline."))).toBe(true);
     expect(ids.some((i: string) => i.startsWith("prior.momentum"))).toBe(true);
     // 素材值必须与快照一致（不是模型编的）—— 验收 7：多点抽验，覆盖数值/文本/布尔格式化
-    const score = d.materials.find((m: any) => m.id === "row.main.score");
-    expect(score.value).toBe("61.0");
+    // 主表**不再**给评分（类别内无区分力）⇒ 素材里不得有 row.main.score。
+    expect(d.materials.find((m: any) => m.id === "row.main.score")).toBeUndefined();
+    const prior = d.materials.find((m: any) => m.id === "row.main.prior_pct");
+    expect(prior.value).toBe("10.0");
+    // 评分口径提示必须在场（防止模型把旧分数读成强弱信号）。
+    const caveat = d.materials.find((m: any) => m.id === "caveat.score");
+    expect(caveat.value).toContain("不参与排序");
     const pct = d.materials.find((m: any) => m.id === "row.main.pct");
     expect(pct.value).toBe("+3.21%");
     const rank = d.materials.find((m: any) => m.id === "row.main.rank");

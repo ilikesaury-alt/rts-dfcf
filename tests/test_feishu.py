@@ -532,7 +532,9 @@ def test_fmt_row_pool_card_marks_only_outflow():
     from scanner.feishu import RowSnapshot, _fmt_row
 
     def row(ff_pct):
-        return RowSnapshot(symbol="300001", name="测试票", pct=3.2, accum=5.0, score=70, ff_pct=ff_pct)
+        return RowSnapshot(
+            symbol="300001", name="测试票", pct=3.2, accum=5.0, prior_pct=17.9, ff_pct=ff_pct
+        )
 
     assert "🔴" in _fmt_row(row(-6.0)), "负向照常画"
     assert _fmt_row(row(-9.0)).count("🔴") == 2, "强流出两枚"

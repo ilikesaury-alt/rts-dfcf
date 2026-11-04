@@ -443,7 +443,10 @@ def _load_env() -> None:
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="python -m scanner.ai_digest",
-        description="榜外异动（B 段）AI 分析：默认综合分析+筛选候选（模型观点）；--mode transcribe 回到纯转述。",
+        description=(
+            "AI 分析（手动触发）：默认 research=模型自己查真实数据后给判断；"
+            "analyze/transcribe=榜外异动（B 段）的算账/纯转述"
+        ),
     )
     p.add_argument(
         "--mode",

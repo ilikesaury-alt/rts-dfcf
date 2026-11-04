@@ -672,9 +672,10 @@ def render_terminal(view: ScanView) -> None:
         _nm_disp = f"{ANSI['BOLD']}{ANSI['MAGENTA']}{_nm}{ANSI['RESET']}" if row.core else _nm
         _av_str = f"{row.accum:+.2f}%" if row.accum is not None else "—"
         _rk_val = str(row.rank) if row.rank is not None else "—"
-        _sc_str = f"{row.score:.0f}" if row.score else "—"
         _cur_str = f"{row.current:.2f}" if row.current else "—"
         _sec = _trunc(row.sector, COLS_POOL[7][1])
+        # 类别·先验（2026-11-04 取代原「评分」列）：短标签 + 该类别历史命中率。
+        _cat_prior = f"{row.cat_label}·{category_prior_pct(_e.get('category')):.1f}%"
         # 行尾标记与低吸区同源（_entry_row_suffix）：风险/资金流/⚡。
         # 💡低吸标签不再行尾展示（太杂乱，2026-09-03），仅作两段式排序依据（_v2_pool_sort_key）。
         _bolt = view.breakout_mark.get((_e["symbol"], _e["category"]), False)
@@ -701,8 +702,7 @@ def render_terminal(view: ScanView) -> None:
                     _cur_str,
                     _rk_val,
                     _sec,
-                    _sc_str,
-                    row.cat_label,
+                    _cat_prior,
                 ],
                 COLS_POOL,
             )
@@ -727,6 +727,15 @@ def render_terminal(view: ScanView) -> None:
     # 标题纪律：标题四词与第 1~4 键一一对应，**改键必须同批改标题**（09-16 换键漏改标题
     # 的教训——标题是用户判断「排序对不对」的唯一线索）。
     print(f"  {ANSI['BOLD']}◆ v1 池选 — 新票优先·类别优先·排名升序·资金流降序{ANSI['RESET']}")
+    # 「类别·先验」列的口径说明（2026-11-04）：**本区不显示评分** ——
+    # 实测（70 天 walkforward，n=1895 样本）分数在**类别内**毫无区分力
+    # （类内 IC −0.020，正负天数接近 1:1），显示它只会让人误以为「高分=更可能涨」。
+    # 排序真正依据的量是**类别先验**（类内 IC +0.027），故直接把它放进行里。
+    # ⚠ 改键/改列必须同批改标题（标题是用户判断「排序对不对」的唯一线索）。
+    print(
+        f"  {ANSI['YELLOW']}类别·先验 = 该类别历史上的次日≥7%命中率（系统唯一口径）"
+        f"· 本区不显示评分：分数在类别内无区分力{ANSI['RESET']}"
+    )
     # 通用风险门清单（2026-09-16）：三个展示区共用一个实现（scanner/display_gates.py），
     # 故这里把「哪些门在起作用」显式打出来 —— 此前只有飙升/回捞两区写了脚注，
     # 主展示区什么都看不到，用户无从判断「这只票到底过没过风控」。
