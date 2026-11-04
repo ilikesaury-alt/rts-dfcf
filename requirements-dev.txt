@@ -3,4 +3,4 @@ pytest>=8.0
 pytest-cov>=5.0  # CI 覆盖率基线（2026-09-13 加入；只报告不设门禁）
 ruff>=0.16
 mypy>=1.10
-lightgbm>=4.0  # v3 模型桶离线训练（scanner/model_bucket.py）
+# lightgbm 只服务已归档的 legacy/scanner/model_bucket.py；需要复现时单独安装。

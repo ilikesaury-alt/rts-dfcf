@@ -32,36 +32,11 @@ python backfill_kline.py             # 收盘后手动回填 K 线
 python -m pytest tests/ [--run-smoke]        # --run-smoke 需真库+网络
 ruff check . / ruff format . / mypy scanner/
 
-python -m scanner.portfolio_backtest --compare --rescore --buy-delay 0 --buy-at close --hold-days 3
-python -m scanner.portfolio_backtest --compare-horizons "1,3" --buy-at close --hold-days-auto
-# --buy-at open 被拒绝：信号收盘后才产生。--hold-days-auto：类别级持有期
-# （cum_3d 语义类按 config.HOLD_DAYS_BY_CATEGORY）。
-
-# 样本外验证门（改权重/常数必须先跑）
-python -m scanner.rule_validate                 # 基线自检
-python -m scanner.rule_validate --evaluator rescore --set scanner.config.MIN_SCORE=60
-python -m scanner.rule_validate --list-evaluators
-# 退出码：0 支持挂出 / 1 证据不足(默认拒绝) / 2 显著变差 / 3 用法或可见性错误
-# 主指标 = test 窗按日等权 top-N 次日 hit 率；显著性 = 按日配对 bootstrap 95% CI。
-# 判定只看 test 窗。MDE 来自观测差值的 bootstrap SE，基线自检恒为 n/a；
-# 真正的可检测性来源是「翻转了 X/N 个交易日的 top-N」——翻转 0 天 = 检不出任何东西。
-# ⚠ 可见性硬校验：--set 的模块不在评估器可见集合内 → 退出码 3（防验证了没生效的改动）。
-#   可见集合：stored-score=无 / nextday-prob=scanner.nextday_prob(默认,快) /
-#   rescore=config/weights/analysis/enhancer/validator/ranking/categories(约29s)。
-# ⚠ 快照式导入陷阱：`from scanner.config import X` 把值绑进导入方命名空间，
-#   只改 scanner.config.X 对消费方无效；报告显示"传播 0 个模块"先怀疑改错模块。
-
-# Offline label / data-quality
-python -m scanner.triple_barrier --report    # 三重屏障标签（+7%/-5%/3日），幂等
-python -m scanner.model_bucket               # M3 walkforward LightGBM 可行性
-python -m scanner.nextday_calib              # 校准漂移巡检；改 nextday_prob 常数后 --write
-
 # B 段（榜外异动）次日表现追踪（只读库，刻意不给结论）
 python scripts/offboard_nextday.py [--days N] [--tier T2] [--json]
 python scripts/offboard_nextday.py --repair-next-day [--apply]   # 修历史错标签，默认 dry-run
 python scripts/shadow_feature_backtest.py [--no-fetch]   # B 段新数据源的回溯样本外检验
-python scripts/rerank_backtest.py                    # 池内排序依据的样本外检验（零 LLM 成本）
-python scripts/rerank_llm_backtest.py --llm-max-days 30   # Phase 2：模型排序 vs 确定性排序（要花钱）
+# 旧样本外验证门 / 概率校准 / P&L 回测已归档 legacy/，不进主程序命令（见 legacy/README.md）。
 
 # B 段 AI 分析（手动触发，不轮询，不挂主循环）
 python -m scanner.ai_digest                  # research（默认）：模型自己调工具查真实数据后给判断
@@ -80,14 +55,13 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
 ## Verification order
 
 代码改动：`ruff check` → `mypy` → `pytest tests/`（可选 `--run-smoke`）。
-**权重/阈值/常数**改动：加跑 `python -m scanner.rule_validate`；改 `nextday_prob`
-常数还要 `python -m scanner.nextday_calib --write`，否则 test_nextday_calib 红。
+**类别先验/阈值**改动：`pytest tests/test_category_priors.py`，并列出受影响类别集合。
 **`scanner/pipeline/`**（或 `scan_with_raw` 其余部分）：`pytest tests/test_pipeline.py`
 （`scan_with_raw` 本身无自动守护，只能 `scripts/replay_source_swap.py` 离线回放人工比对；
 黄金样本工具已删除——常红的守卫等于没有守卫，复原方式查 git 历史）。
 **`scanner/db/`**：`pytest tests/test_migrations.py tests/test_schema_migration.py`。
-⚠ 排序/档位/🎯 画像校准于 `next_day`（次日≥7% hit），回测默认 `--hold-days 3`；
-改权重/阈值前先确认优化哪个口径。
+⚠ 旧样本外验证门已归档 `legacy/`；当前终端主链路**没有**自动化样本外门，
+改权重/阈值前先确认优化哪个口径（唯一口径：次日≥7% hit）。
 
 ## 目标函数（唯一口径）
 
@@ -98,12 +72,10 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
 单只票 2~5 分钟太慢，且价值投资视角与本目标函数不必然同向。
 **次日≥7% hit 率**是系统唯一类别先验口径——排序、档位、🎯 画像、类别准入全用它。
 **唯一手抄源 = `config_scoring.CATEGORY_HIT_RATE`**（+ `_DEFAULT`），下游一律派生不得复制：
-`nextday_prob.BASE_RATE_BY_CAT` = **别名**（`is` 同一对象）；
 `config_scoring.COMPOSITE_CAT_BASE` = `(hit−基准)/(最高hit−基准)×10`。
-守护：`tests/test_category_priors.py`（结构/派生）；数值漂移另有 `test_nextday_calib.py`。
-⚠ 改这类**结构性**口径别只跑 `rule_validate`——三个评估器都看不见 `COMPOSITE_CAT_BASE`，
-纯搬迁必报「证据不足/翻转 0 天」。等价变换要另证（常量取值 + 生产函数体逐字节相同）；
-行为变更要列出受影响类别集合差异。
+活消费方：终端「类别·先验」列 / 飞书 push_gate 分档 / `prior_flow_conflict`。
+守护：`tests/test_category_priors.py`（结构/派生）。⚠ 等价变换须另证（常量取值 +
+生产函数体逐字节相同）；行为变更须列出受影响类别集合差异。
 **退池类别**（`comeback` 0.028 / `pool_pick` 0.021，均低于默认 0.078）已从先验表删除、
 注册表保留条目只翻 `live_produced=False`（`pullback` 同理，勿删）。守卫
 `test_retired_categories_are_absent_from_prior_table`；表外类别在 push_gate 必判 C 档。
@@ -134,7 +106,7 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
 - **Fail-open**：外部取数优雅降级，只 catch `scanner.utils.EXTERNAL_FAILURES`
   （OSError/timeout/requests/sqlite3.Error/ValueError/KeyError），**禁裸 `except Exception`**；
   编程错误必须冒泡到主循环。
-- **`--rescore` 是 P&L 验证必需**：`recommendations` 存冻结分，改 config 阈值不回溯改旧分。
+- **`recommendations` 存冻结分**：改 config 阈值不回溯改旧分（历史回放须显式重算）。
 - **DB** = 根目录 `scanner.db`（gitignored，WAL 模式，`init_db()` 自动建）。
 - **`.env`** 含密钥（THS key、Feishu webhook 覆盖、MAGPIE_*），勿提交。
   Feishu webhook 曾泄露过，**bot 需轮换**（`git log -p -S "open.feishu.cn"` 查历史）。
@@ -198,14 +170,14 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
   身份被推出」的存档，不是展示值；`percent` 冻结语义不受实时覆盖修复影响，刻意不动）。
   终端「最后打印的那几行」真源是 m022 表 `offboard_print_snapshot`（launch_log 是整日累加、
   view_snapshot 被 RTS_LOCAL_PANEL 门控，都不能当终端真源）。
-- **`scripts/offboard_nextday.py` 刻意不给结论**：B 段是 rule_validate 三个评估器的盲区，
-  样本外裁决通道不存在；阈值归属 `config_hot_watch.py` docstring。统计脚本一旦给「建议」
-  就成了第二结论源（守卫 `test_report_contains_no_verdict_wording`）。
+- **`scripts/offboard_nextday.py` 刻意不给结论**：B 段无常设样本外裁决通道
+  （旧验证门已归档 `legacy/`，它本就看不见 B 段）；阈值归属 `config_hot_watch.py` docstring。
+  统计脚本一旦给「建议」就成了第二结论源（守卫 `test_report_contains_no_verdict_wording`）。
 - **B 段 N 日主力累计净流入门（2026-11-03，唯一有样本外证据的 B 段新门）**：
   `config_hot_watch.OFFBOARD_FLOW_WINDOW=10` / `OFFBOARD_FLOW_MIN_SUM=0.0`，
   实现 `scanner/offboard_flow.py` + `offboard_watch._flow_gate_reason`。
   证据（`scripts/shadow_feature_backtest.py`，948 条已标注样本 / 25 个交易日，
-  **配对 bootstrap** 按日等权 + 逐日 CI，与 `rule_validate` 同口径）：
+  **配对 bootstrap** 按日等权 + 逐日 CI）：
   Δ命中 **+1.43pp** CI[+0.33,+2.67]，逐日 **正17/负4**（符号检验 p=0.0009），
   jackknife Δ∈[+1.10,+1.65]，窗口 10~30 全部为正。
   三条硬约束：**①只取已收盘交易日**（`date < 今日` —— 当天那行会被当天后续快照覆盖成
@@ -225,7 +197,7 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
   用户决策的「无第二结论源」纪律的**有意例外**（输出不落库/不进计算/不进飞书）。
 - **v1 池选排序口径（2026-11-04，样本外实测后定稿）**：`新票→类别先验→榜位→主力净占比`；
   **分数不进排序、不进表**（类内 IC −0.020 vs 先验 +0.027，n=70 天 walkforward）。
-  ⚠ 全池 top-3 口径会把**类别构成效应**误读成「分数有效」（score 看着 +3.10pp）。证据：`scripts/rerank_backtest.py`。
+  ⚠ 全池 top-3 口径会把**类别构成效应**误读成「分数有效」（score 看着 +3.10pp）。证据：`legacy/scripts/rerank_backtest.py`。
 - **「先强资弱」标记（2026-11-04）**：类别档位=A 且主力净占比<0 ⇒ 排序位置与资金证据矛盾，
   行尾标出（判定单源 `view.model.prior_flow_conflict`；终端/飞书/面板三出口同待遇）。
 - **AI 排序已下线（2026-11-04）**：Phase 2 实测模型排序 vs 确定性排序 ΔIC **+0.0300**
@@ -290,11 +262,7 @@ scanner/
   render.py                 # 终端/飞书共用渲染（COLS_HOT、三段段标题）
   historical_watch.py       # v1 回捞（hist_rows，终端隐藏、飞书保留）
   backtest.py               # Historical backtest + outcome backfill
-  portfolio_backtest.py     # Portfolio backtest with --rescore
-  historical_rescan.py      # Re-run live pipeline on historical data (--rescore)
-  nextday_attribution.py    # Next-day return attribution
-  nextday_calib.py          # 概率校准重算 + 漂移巡检单源（配 nextday_calib.json 快照）
-  rule_validate.py          # 样本外验证门（改权重/常数前必跑）
+  nextday_attribution.py    # Next-day return attribution（prevday_perf 等复盘脚本仍用）
   core_themes.py            # Core theme dip-buying
   comeback.py               # Comeback (回马枪) strategy
   concept.py                # Concept/theme board (East Money F10)
@@ -307,7 +275,6 @@ scanner/
   intraday_fetch.py         # Parallel minute data fetching
   kline_fetch.py            # Parallel K-line fetching
   features.py               # Feature engineering
-  walkforward.py            # Walk-forward optimization
   market_extra.py           # ZT pool + fund flow (East Money push2delay→ulist 批量)
   data_health.py            # Data quality checks
   net.py                    # HTTP utilities, East Money tokens
@@ -327,4 +294,5 @@ scanner/
     migrations.py           # 版本化 schema 迁移清单 + schema_migrations 账本
 scripts/                    # Analysis/verification scripts (not production)
 tests/                      # pytest suite
+legacy/                     # 已下线离线验证/概率子系统快照（见 legacy/README.md）
 ```

@@ -1,6 +1,6 @@
 """**先验入行 + 「先强资弱」矛盾提示**（2026-11-04）的单测。
 
-这批改动的缘起（样本外回放结论，见 `scripts/rerank_backtest.py`）：
+这批改动的缘起（样本外回放结论，见 `legacy/scripts/rerank_backtest.py`）：
 - 分数在**类别内**毫无区分力（类内 rank IC −0.020，正负天数接近 1:1）⇒ 不该显示在
   排序表里（原来叫「评分」列，显示它等于暗示「高分=更可能涨」）；
 - 类别先验是**类内有效**的排序依据（IC +0.027）⇒ 把它放进行里（列「类别·先验」）；
@@ -46,7 +46,7 @@ def test_category_prior_of_unknown_category_falls_back_to_baseline():
 
 def test_prior_is_stronger_than_score_in_pool_sorting():
     """回归守卫：**先验 > 分数**（类内 IC +0.027 vs −0.020）。
-    这条测试本身不重算 IC（那是 scripts/rerank_backtest.py 的活），
+    这条测试本身不重算 IC（那是 legacy/scripts/rerank_backtest.py 的活），
     它守的是「排序表里显示的是先验、不是分数」这个决定不被悄悄改回去。"""
     from scanner.view.model import COLS_POOL
 

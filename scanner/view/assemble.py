@@ -414,7 +414,7 @@ def build_scan_view(
             # 理由见本函数 docstring 的 new_symbols 段（time 会被提分覆盖）。
             # new_symbols 缺省/空 ⇒ 本键恒 1 ⇒ 键序完全还原，输出逐字节不变。
             #
-            # ⚠ **各键的证据（2026-11-04 样本外回放，scripts/rerank_backtest.py；
+            # ⚠ **各键的证据（2026-11-04 样本外回放，legacy/scripts/rerank_backtest.py；
             #    walkforward 7 窗 / 评估集 1226 条 / 70 天）**：
             #    · 第2键 类别 = **类别先验**（`CATEGORY_HIT_RATE`）：类内 rank IC **+0.027**
             #      ⇒ 类别层面有效，是排序主轴。

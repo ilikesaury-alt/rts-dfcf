@@ -20,10 +20,10 @@ B 段（`scanner/offboard_watch.py`）上线时把「逐日落库 + `next_day_pc
 ⚠ 本脚本**不产出结论**，只报数（与 `scripts/push_gate_impact.py` 同一纪律）
 --------------------------------------------------------------------
 报告里没有「好/坏」「该收紧/该放宽」「建议阈值」任何字样。理由：
-  · B 段的阈值归属 `scanner/config_hot_watch.py`，改它们要走
-    `python -m scanner.rule_validate` —— 而 `rule_validate` 的三个评估器
-    **都看不见** `offboard_watch`（`--set` 会被可见性硬校验拦在退出码 3），
-    即 B 段是验证门的盲区，靠样本外统计裁决这条路在这里**不存在**；
+  · B 段的阈值归属 `scanner/config_hot_watch.py`。旧样本外验证门
+    （rule_validate，现归档在 legacy/）的三个评估器**都看不见** `offboard_watch`
+    （`--set` 会被可见性硬校验拦在退出码 3），即 B 段一直是验证门的盲区，
+    靠常设统计裁决这条路在这里**不存在**；
   · 因此 B 段唯一可用的判据就是 observe-first 的逐日表，而「够不够格下结论」
     是报告必须自己交代的事（见 MDE/配对天数段）—— 一旦这里给出建议，它就成了
     项目的第二个结论源。

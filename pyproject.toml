@@ -30,6 +30,8 @@ packages = ["scanner", "scanner.ai_digest", "scanner.db", "scanner.pipeline", "s
 [tool.ruff]
 line-length = 120
 target-version = "py312"
+# 2026-11-04：legacy/ 是已下线子系统的冻结快照，不参与主程序检查。
+extend-exclude = ["legacy"]
 
 [tool.ruff.lint]
 # 2026-08-29 扩充：原 select 仅 E/F/W/I，漏检大量复杂度与坏味道。分档纳入，
@@ -83,6 +85,8 @@ warn_return_any = false
 disallow_untyped_defs = false
 
 [tool.pytest.ini_options]
+# legacy/tests/ 是归档快照，默认不收集；复现方式见 legacy/README.md。
+testpaths = ["tests"]
 markers = [
     "smoke: 真实 scanner.db / 外网依赖的集成测试（默认跳过，--run-smoke 运行）",
 ]

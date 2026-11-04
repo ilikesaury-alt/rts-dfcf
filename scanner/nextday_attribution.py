@@ -103,7 +103,7 @@ def load_dedup(conn: sqlite3.Connection, days: int = 0) -> list[dict]:
        停留榜上时长正相关，属有偏加权：momentum hit 16.5%(n=508) → 10.0%(n=290)。
 
     2026-09-13 升公共名（原 `_load_dedup`，别名保留）：本函数是「校准样本口径」的
-    唯一实现，scanner.nextday_calib 等分析模块必须复用而非复制（复制即口径漂移）。
+    唯一实现；离线分析模块（含已归档的 scanner.nextday_calib）必须复用而非复制。
     """
     rows = load_attribution_rows(
         conn, "next_day_pct", cols="name, percent, score_breakdown", days=days

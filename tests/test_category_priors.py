@@ -3,8 +3,8 @@
 **为什么需要这组测试**：2026-09-14 静态审查（docs/strategy-flow-review-2026-09-14.md §一）
 发现系统里存在**三张手抄的类别先验表且口径互相矛盾**：
 
-  nextday_prob.BASE_RATE_BY_CAT      → hit 率（曾用于终选排序，现只剩离线消费者）
   config_scoring.COMPOSITE_CAT_BASE  → hit 率线性映射（但取自更早的快照）
+  nextday_prob.BASE_RATE_BY_CAT      → 别名（2026-11-04 随离线概率子系统归档）
   decision.DECISION_CATEGORY_SPECS   → **平均超额收益**（决策层准入与顺序）
 
 后果：同一类别在系统内既是最好又是最差。core_dip 平均超额 +1.69%（旧表第一优先级）
@@ -16,16 +16,12 @@
 本文件把这条约束钉死——任何"再长出一份手抄副本"或"派生公式被改歪"的改动都会 fail。
 
 2026-09-14 后续（决策层删除）：第三张表随 `scanner/decision.py` 的决策层一起消失，
-本文件相应删掉「决策层准入/顺序」那两节守护（原 §3/§4）。**口径约束本身不变**——
-现在只剩两位派生消费方（nextday_prob 别名、COMPOSITE_CAT_BASE），守护照旧逐项复算。
+本文件相应删掉「决策层准入/顺序」那两节守护（原 §3/§4）。**口径约束本身不变**。
 
-2026-09-21 后续（终选参考区删除）：`nextday_prob.BASE_RATE_BY_CAT` 的线上消费者
-（scanner/final_pick.py）也删除了，本别名现在只服务**离线**评估（rule_validate 的
-nextday-prob 评估器 / scripts/nextday_calib_ab.py）。守护不变 —— 别名关系与派生公式
-仍必须成立，因为离线评估结论直接影响「是否上生产」的判断。
-
-（数值漂移由 tests/test_nextday_calib.py 的代码常数↔快照守护负责，与本文件的
-「结构/派生关系」守护互补。）
+2026-11-04（离线验证子系统归档）：`nextday_prob` / `nextday_calib` / `rule_validate`
+移入 `legacy/`（见 legacy/README.md），别名守护随之删除。本文件只守护**仍有活消费方**
+的部分：`CATEGORY_HIT_RATE` 单源、`COMPOSITE_CAT_BASE` 派生公式、退池类别约束 ——
+它们服务终端「类别·先验」列、飞书 push_gate 分档与 `prior_flow_conflict`。
 """
 
 from __future__ import annotations
@@ -43,21 +39,8 @@ from scanner.config import (
     CATEGORY_HIT_RATE_DEFAULT,
     COMPOSITE_CAT_BASE,
 )
-from scanner.nextday_prob import BASE_RATE_BY_CAT, BASE_RATE_DEFAULT
 
 # ── 1. 唯一手抄源：下游必须派生，不得复制 ──
-
-
-def test_nextday_prob_aliases_the_single_source():
-    """nextday_prob.BASE_RATE_BY_CAT 必须**是** CATEGORY_HIT_RATE 本人（同一对象）。
-
-    若此处变成 `is not`，说明有人又写了一份字面 dict —— 那正是本次要消灭的
-    「三张手抄表」问题复发。别名而非 copy 也是刻意的：保证「改一处、全系统一致」。
-    """
-    assert BASE_RATE_BY_CAT is CATEGORY_HIT_RATE, (
-        "BASE_RATE_BY_CAT 必须别名 config_scoring.CATEGORY_HIT_RATE（单一手抄源），不得再复制一份字面表"
-    )
-    assert BASE_RATE_DEFAULT == CATEGORY_HIT_RATE_DEFAULT
 
 
 def test_single_source_keys_cover_all_live_categories():

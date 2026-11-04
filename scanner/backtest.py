@@ -365,7 +365,7 @@ def load_attribution_rows(
        旧逻辑取 **score 最高**——按分数挑选样本会系统性偏向高分档，正是"高分档 hit
        更高"结论的选择偏差来源。现统一取最后一轮（不按 score 挑选）。
 
-    口径与 scanner.walkforward.load_rows 对齐（后者本就正确，本次未改）。
+    口径与已归档的 scanner.walkforward.load_rows 对齐（后者本就正确，本次未改）。
 
     cols：附加列（逗号分隔，调用方传入内部字面量，不接受外部输入）。
     require_breakdown：为 True 时额外要求 score_breakdown IS NOT NULL。

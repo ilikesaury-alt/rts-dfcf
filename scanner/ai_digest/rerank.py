@@ -4,10 +4,10 @@
 
 建它的原始目的是回答「今天池子里这十几只，我该优先看哪只」。**做完了，结论是
 「不值得作为日常命令」**：
-- Phase 1（`scripts/rerank_backtest.py`）：排序依据里**类别先验有效、分数无效**
+- Phase 1（`legacy/scripts/rerank_backtest.py`）：排序依据里**类别先验有效、分数无效**
   （类内 rank IC +0.027 vs −0.020）⇒ 「分数不进排序」这条被写进了生产
   （v1 池选删掉「评分」列、改显「类别·先验」列）。
-- Phase 2（本模块 + `scripts/rerank_llm_backtest.py`）：**模型自己排序相对确定性排序
+- Phase 2（本模块 + `legacy/scripts/rerank_llm_backtest.py`）：**模型自己排序相对确定性排序
   没有显著增量**（ΔIC +0.0525，95% CI [−0.049,+0.148]，30 个历史日重建池）⇒
   「让 LLM 决定排第几」既花钱又不可复现，还多一份会漂移的第二结论源。
 

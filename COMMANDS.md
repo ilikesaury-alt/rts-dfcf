@@ -14,7 +14,7 @@ python unified_scanner.py                 # 跑扫描器（60s 一轮，按 c �
 python pick.py --clipboard                # 把剪贴板里的名单丢给 AI 调研 → 出报告
 python stock_report.py 300319             # 单只票深报（代码或名字都行）
 python -m pytest tests/ -q                # 全量测试
-python -m scanner.rule_validate           # 改权重/阈值后的样本外验证门
+python -m scanner.hot_watch --offline-demo   # 飙升区规则回归哨兵（改规则后必跑）
 ```
 
 ---
@@ -125,32 +125,18 @@ python -m scanner.ai_digest --json               # 机器可读（含幻觉巡�
 
 ---
 
-## 5. 验证 / 回测（**改权重、阈值、常数前必跑**）
+## 5. 验证 / 回测
 
 ```bash
-# 样本外验证门（退出码：0 可挂出 / 1 证据不足 / 2 显著变差 / 3 用法或可见性错误）
-python -m scanner.rule_validate
-python -m scanner.rule_validate --list-evaluators
-python -m scanner.rule_validate --evaluator rescore --set scanner.config.MIN_SCORE=60
-
-# 回测
 python -m scanner.backtest --days 60 --metric next_day_pct     # 次日涨幅分布
 python -m scanner.backtest --ranking --backfill               # 按综合排序回放 + 回填标签
-python -m scanner.portfolio_backtest --compare --rescore --buy-delay 0 --buy-at close --hold-days 3
-python -m scanner.portfolio_backtest --compare-horizons "1,3" --buy-at close --hold-days-auto
-
-# 标签 / 校准 / 模型
-python -m scanner.triple_barrier --report      # 三重屏障标签（+7%/-5%/3日），幂等
-python -m scanner.model_bucket                 # M3 walkforward LightGBM 可行性
-python -m scanner.nextday_calib                # 校准漂移巡检
-python -m scanner.nextday_calib --write        # 改过 nextday_prob 常数后必须写快照
-python -m scanner.walkforward --train 60 --test 20
-python -m scanner.nextday_attribution --days 30 --excess
+python -m scanner.nextday_attribution --days 30 --excess      # 次日归因
 ```
 
-**口径提醒**：唯一口径是**次日 ≥7% hit 率**；排序/档位/🎯 画像/类别准入全用它。
-`--buy-at open` 会被拒绝（信号是收盘后才产生的，不能当开盘价买）。
-改 `nextday_prob` 常数后忘了 `nextday_calib --write` ⇒ `test_nextday_calib` 会红。
+**口径提醒**：唯一口径是**次日 ≥7% hit 率**；排序/档位/类别准入全用它。
+⚠ 旧样本外验证门（`rule_validate`）、概率校准（`nextday_calib`）、P&L 回测
+（`portfolio_backtest`）、三重屏障/模型桶已整体归档 `legacy/`（见 `legacy/README.md`）：
+它们的常数**没有任何生产读取方**。当前终端主链路没有自动化样本外门。
 
 ---
 
@@ -176,36 +162,11 @@ python scripts/offboard_nextday.py --repair-next-day --apply   # 真写
 python scripts/shadow_feature_backtest.py --no-fetch           # B 段新数据源的回溯样本外检验
 ```
 
-### 7.1b 池内排序依据的样本外检验（v1 池选排序口径的证据）
+### 7.1b 已归档：池内排序 / LLM 排序回放
 
-```bash
-python scripts/rerank_backtest.py          # 各排序键的 top-N hit 率 + 配对 CI + 类内 IC
-python scripts/rerank_backtest.py --top 5  # top-5
-python scripts/rerank_backtest.py --json   # 机器可读
-```
-
-- **零 LLM 调用、零网络、零成本**（只读库）—— 检验 v1 池选**排序依据**（类别先验 + 主力净占比）有没有边际。
-- 结论（2026-11-04）：**类别先验有效、分数无效** ⇒ 已落进生产（v1 池选删「评分」列、改显「类别·先验」列）。
-- 切分：walkforward（train=30 / test=10 / embargo=2，与 `rule_validate` 同款），**先验只用 train 窗标签重算**。
-- ⚠ **看「类内 IC」而不是只看 top-N 命中率**：全池 top-3 口径会把「类别构成效应」误读成「分数有效」。
-- 刻意不给建议、不产短名单（同 `offboard_nextday.py` 纪律）。
-
-### 7.1c Phase 2：LLM 排序 vs 确定性排序（模型这一步有没有增量）
-
-```bash
-python scripts/rerank_llm_backtest.py                    # 默认 15 天（会出网、要花钱）
-python scripts/rerank_llm_backtest.py --llm-max-days 30  # 更多天（更贵）
-python scripts/rerank_llm_backtest.py --no-fetch         # 只用缓存重算（零成本）
-```
-
-- 把历史日的 v1 池**重建**后，同一份池子分别交给「确定性基线（按 `nextday_prob` 排）」与「LLM（同一套素材 + 同一套提示词）」，
-  逐日配对比较。
-- ⚠ **主指标是 rank IC 不是 top-N 命中率**：重建池命中率基线只有 ~3% ⇒ top-N 口径功效近零。
-- ⚠ 历史池是**重建**的（少了展示层实时覆盖与硬门剔除）⇒ 只有相对比较有效，绝对值不可与线上比。
-- 缓存：`logs/rerank_llm_cache.json`（gitignored）；**守卫逻辑变更后必须递增 `CACHE_VERSION`**；
-  缓存键含**素材指纹** ⇒ 素材一变缓存即失效（避免拿旧排序评新池）。
-- 结论（2026-11-04）：模型排序**无显著增量**（ΔIC +0.0300 [−0.020,+0.080]）⇒
-  「让 LLM 决定排第几」已下线（CLI 入口移除），排序归确定性键（先验 → 主力净占比 → 系统概率）。
+`legacy/scripts/rerank_backtest.py`（类别先验有效、分数无效 → v1 池选改显「类别·先验」列）
+与 `legacy/scripts/rerank_llm_backtest.py`（模型排序无显著增量 → 下线 AI 排序）已归档，
+复现方式见 `legacy/README.md`；两条结论仍写在 `AGENTS.md`「Key facts」。
 
 ### 7.2 其它研究/审计脚本
 
@@ -217,7 +178,6 @@ python scripts/rerank_llm_backtest.py --no-fetch         # 只用缓存重算（
 | `scripts/beauty_mark_eval.py` | 「稳」走势标记分档的样本外裁决 |
 | `scripts/flow_mark_evidence.py` | 资金流图标收窄的实证复算 |
 | `scripts/label_audit.py` | 标签登记簿审计（出处 / 证据等级 / 反误读） |
-| `scripts/nextday_calib_ab.py` | 概率常数变更的排序 A/B 验证台 |
 | `scripts/nextday_rule_scan.py` | 次日大涨高概率规则历史验证（H1/H2 分半） |
 | `scripts/nextday_mark_split_verify.py` | 🎯 分型前后命中率对比 |
 | `scripts/ranking_validate_day.py` | 单日综合排序 → 次日表现验证 |
@@ -270,8 +230,7 @@ python -m pytest tests/ -q
 
 | 改动 | 追加验证 |
 |---|---|
-| 权重 / 阈值 / 常数 | `python -m scanner.rule_validate` |
-| `nextday_prob` 常数 | 再加 `python -m scanner.nextday_calib --write` |
+| 类别先验 / 阈值 | `pytest tests/test_category_priors.py` + 列出受影响类别集合 |
 | `scanner/pipeline/` | `pytest tests/test_pipeline.py` |
 | `scanner/db/` | `pytest tests/test_migrations.py tests/test_schema_migration.py` |
 | 飙升区 / 回捞区 / 榜外段规则 | 对应 `--offline-demo` 全绿 |
@@ -288,4 +247,4 @@ python -m pytest tests/ -q
 - **雪球握手只认 `xq_a_token`**（不是 HTTP 200）；排查看 `session.cookies.get_dict()`。
 - **时间一律用 Beijing 时区**（`BEIJING_TZ`），别用 naive local time。
 - **B 段脚本刻意不给结论**（统计脚本一旦给「建议」就成了第二结论源）。
-- **`--rescore` 是 P&L 验证必需**：`recommendations` 存的是冻结分，改阈值不回溯改旧分。
+- **`recommendations` 存的是冻结分**：改阈值不会回溯改旧分，历史回放须显式重算。

@@ -81,11 +81,11 @@ FUND_FLOW_MAIN_PCT_WEAK = -5.0  # 主力净占比 ≤-5% → 扣分
 #       图标语义收窄为「主力大幅流出告警」，绘制表见 view.model._FUND_FLOW_ICON
 #       与 feishu._FUND_FLOW_EMOJI。**判定单源 `signals.fund_flow_signal` 仍返五档不动**
 #       —— 它同时被 ranking._fund_flow_norm 消费并给 composite_score 加权（in/strong_in
-#       各 +0.3），那属权重口径，改动须先跑 `python -m scanner.rule_validate --evaluator rescore`。
+#       各 +0.3），那属权重口径；旧验证门已归档（legacy/），改动靠人工复核。
 #   · 负向档保留靠的是**语义一致**（与 FUND_OUTFLOW_NET_PCT 硬门、「资金流出」标签同一阈值）
 #     而非预测力：hit 率上 strong_out 最低、out 最高，但 n=156/86 属弱证据，且中位次日%
 #     五档彼此接近 ⇒ 引用一律用 hit 率口径，别引用中位数排序。
-#   与 nextday_calib.json 记录的 OR_OUTFLOW 漂移 223.9%（"已失去区分度"）不矛盾：
+#   与 legacy/scanner/nextday_calib.json 记录的 OR_OUTFLOW 漂移 223.9%（"已失去区分度"）不矛盾：
 #   两段都在说**区分度弱**——正向弱到不画，负向弱到只作提示。
 FUND_FLOW_BONUS_WEAK = -3
 # ── 风险标签阈值 ──

@@ -245,9 +245,9 @@ class TestTradingMinutesElapsed:
 
 
 class TestNthTradingDayAfter:
-    """P0-3 收敛单源回归：backtest / portfolio_backtest / historical_rescan 此前各抄一份，
-    backtest 版在 max_iter 耗尽时静默返回非交易日（holidays.json 损坏会算错 next_day 收益）。
-    统一到本模块后，耗尽必须返回 None。
+    """P0-3 收敛单源回归：backtest 此前自抄一份，max_iter 耗尽时静默返回非交易日
+    （holidays.json 损坏会算错 next_day 收益）。统一到本模块后，耗尽必须返回 None。
+    2026-11-04：portfolio_backtest / historical_rescan 已归档进 legacy/，不再断言它们。
     """
 
     def test_skips_weekend(self):
@@ -269,12 +269,8 @@ class TestNthTradingDayAfter:
         assert nth_trading_day_after(date.fromisoformat("2026-06-18"), 1) is None
 
     def test_is_single_source_for_consumers(self):
-        # 三处消费方（backtest / portfolio_backtest / historical_rescan）应复用同一函数对象，
+        # 仍在主链路里的消费方（backtest.backfill_outcomes）必须复用同一函数对象，
         # 杜绝再次分叉出带 bug 的本地拷贝。
         import scanner.backtest as backtest
-        import scanner.historical_rescan as historical_rescan
-        import scanner.portfolio_backtest as portfolio_backtest
 
         assert backtest.nth_trading_day_after is nth_trading_day_after
-        assert historical_rescan.nth_trading_day_after is nth_trading_day_after
-        assert portfolio_backtest.nth_trading_day_after is nth_trading_day_after
