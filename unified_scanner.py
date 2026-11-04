@@ -579,13 +579,13 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
 
                 # 沪深飙升·极有可能大涨独立区（2026-09-11 合入）：复用本轮已抓取的
                 # 飙升榜（同源同排序键），两批批量补全 + 前 N 名单票 detail ≈ 3-5s。
-                # 完全 fail-open：本区任何失败都不影响主线（try 内捕获，仅留空该区）。
+                # 外部取数失败时留空该区（fail-open）；编程错误冒泡到主循环兜底。
                 hot_rows = None
                 if HOT_WATCH_ENABLED:
                     try:
                         hot_rows = run_hot_watch(adapter, conn, xq_raw, top_n=HOT_DISPLAY_TOP)
-                    except Exception as e:
-                        # 本区是独立观察维度，异常不应拖累主线扫描；记录到 error log 供排查
+                    except EXTERNAL_FAILURES as e:
+                        # 本区是独立观察维度，外部取数失败不拖累主线；编程错误冒泡到主循环
                         print(f"  [!] 沪深飙升区跳过: {type(e).__name__}: {e}")
                         _log_exception("hot_watch 独立区异常", e)
                         hot_rows = None
@@ -596,7 +596,8 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                 # 行，创业板全集）拿来，在**榜外创业板**里找 T1 量先动·价未动 / T2 启动首日。
                 # 与 A 段同区不同段、不混排；样本域与主线互斥（exclude_symbols 剔除今日
                 # 已推荐票，同 v1 回捞区先例）⇒ 同屏不会出现同一只票两种结论。
-                # 本段不依赖榜单 ⇒ 雪球榜单熔断时它仍可产出。完全 fail-open。
+                # 计算不依赖榜单，但主循环在 xq_raw 为空时整轮 continue，
+                # 故「榜单熔断仍可产出」不成立；外部取数失败时留空本段（fail-open）。
                 offboard_rows = None
                 if OFFBOARD_WATCH_ENABLED:
                     try:
@@ -607,7 +608,7 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                             exclude_symbols=today_syms,
                             top_n=OFFBOARD_DISPLAY_TOP,
                         )
-                    except Exception as e:
+                    except EXTERNAL_FAILURES as e:
                         print(f"  [!] 飙升榜外段跳过: {type(e).__name__}: {e}")
                         _log_exception("offboard_watch 独立区异常", e)
                         offboard_rows = None
@@ -619,7 +620,7 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                 # （offboard_gate + classify_tier 的 T1 分支），只把样本域从榜外
                 # 换成榜内 —— 不是新口径，是同口径换域。
                 # exclude 含 A 段已展示的票，避免同屏出现同一只票两次。
-                # 完全 fail-open（同 B 段）；落库只进本段自己的 onboard_anomaly_log。
+                # 外部取数失败时留空本段（同 B 段）；落库只进 onboard_anomaly_log。
                 onboard_rows = None
                 if ONBOARD_ANOMALY_ENABLED:
                     try:
@@ -631,7 +632,7 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                             exclude_symbols=_seen,
                             top_n=ONBOARD_DISPLAY_TOP,
                         )
-                    except Exception as e:
+                    except EXTERNAL_FAILURES as e:
                         print(f"  [!] 榜内异动段跳过: {type(e).__name__}: {e}")
                         _log_exception("onboard_anomaly 独立区异常", e)
                         onboard_rows = None
@@ -646,7 +647,7 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                 # 为什么不是「沿用 v1 规则」：v1 的 is_new 由历史在榜记录决定，昨天进过 v1
                 # 的票今天必然判不出 new_face；2026-09-16 实测原样跑 v1 仅 1/15 过门。
                 # 样本域与 v1 池选互斥（today_syms 在此剔除），故同屏不会出现同一只票两种结论。
-                # 与 hot_watch 同为 fail-open：本区异常一律留空，主线扫描不受影响。
+                # 与 hot_watch 同款：外部取数失败留空本区，编程错误冒泡到主循环。
                 hist_rows = None
                 if HIST_WATCH_ENABLED:
                     try:
@@ -658,7 +659,7 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                             exclude_symbols=today_syms,
                             top_n=HIST_DISPLAY_TOP,
                         )
-                    except Exception as e:
+                    except EXTERNAL_FAILURES as e:
                         print(f"  [!] 前日v1回捞区跳过: {type(e).__name__}: {e}")
                         _log_exception("historical_watch 独立区异常", e)
                         hist_rows = None

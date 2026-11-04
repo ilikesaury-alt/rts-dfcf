@@ -171,7 +171,9 @@ def build_scan_view(
     """构建一次扫描的展示视图（纯计算，不 print、不写库）：读今日推荐并算出档位/标记/排序。
 
     返回值供 render_terminal / 飞书卡片共用，保证各出口看到同一份选择。
-    无 conn 或今日无推荐时返回 None（由调用方决定是否渲染）。
+    无 conn，或「今日无推荐且沪深飙升三段均无内容」时返回 None。
+    2026-11-04：旧实现在今日无推荐时无条件返回 None，导致三段（取数不依赖
+    today_recs）算完也被整屏吞掉；现改为返回一份空主线的 ScanView，让三段照常渲染。
 
     live_quotes: {symbol: {percent, current}} 实时行情覆盖，优先于候选池和数据库数据。
     rank_map: {symbol: 飙升榜排名} 当前扫描的榜单排名，为掉榜/重启行补实时排名。
@@ -216,7 +218,32 @@ def build_scan_view(
 
     today_recs = get_today_recommendations(conn)
     if not today_recs:
-        return None
+        # 三段由调用方独立取数，不依赖今日推荐。三段全空时维持旧行为（返回 None，
+        # 不打一张只有标题的空屏）；有任何一段有内容则返回「空主线」视图。
+        # hist_rows 终端已隐藏，不作为触发条件（避免屏幕只剩过门区的回捞组）。
+        if not (hot_rows or offboard_rows or onboard_rows):
+            return None
+        _weak_empty = weak
+        if _weak_empty is None:
+            _regime = _real_market_regime(market_idx_pct)
+            _weak_empty = _regime if _regime is not None else False
+        return ScanView(
+            main_rows=[],
+            breakout_mark={},
+            flow_pct_map={},
+            last_ranks=last_ranks or {},
+            weak=_weak_empty,
+            warnings=warnings,
+            rule_result=None,
+            beauty_mark={},
+            guxing_mark={},
+            hot_rows=hot_rows,
+            offboard_rows=offboard_rows,
+            onboard_rows=onboard_rows,
+            hist_rows=hist_rows,
+            flow_filtered=0,
+            market_idx_pct=market_idx_pct,
+        )
 
     today_pool = today_pool or {}
     for entry in today_recs:
@@ -253,13 +280,14 @@ def build_scan_view(
     # 保存的全市场快照——避免综合排序大量行因进程重启丢失资金流图标。
     flow_pct_map = get_fund_flow_pct_map(conn, [e["symbol"] for e in today_recs])
 
-    # ── 展示层资金流出硬门（2026-09-14 统一口径，**单一入口**）──
+    # ── 主线展示层资金流出硬门（2026-09-14 建立；2026-11-04 改注）──
     # 判定单源 ranking.is_fund_outflow（阈值 config_sources.FUND_OUTFLOW_NET_PCT = -8.0%，
     # 回退链：行内 dims/score_breakdown → flow_pct_map 当日全市场快照）。
-    # 在此处过滤 `today_recs` 一次，下游全部派生集合（main_recs 及其一切切片）自动继承
-    # ——终端与飞书同源
-    # （feishu 只读 build_scan_view 产出的同一份 ScanView），不会再出现「某区剔了、
-    # 上方池选区还在」的同屏口径分叉。
+    # ⚠ 本门**只作用于 today_recs**（v1 池选及其派生集合）。沪深飙升三段由各自取数侧
+    #   判定：A 段 hot_watch.hard_exclude（受 RTS_HOT_FUND_FLOW_FILTER 开关）、B 段与
+    #   榜内异动段 offboard_gate → common_hard_gate（恒判）。阈值同源但开关独立，
+    #   故这里不是「全区域单一入口」，flow_filtered 也不含三段的剔除数。
+    # 终端与飞书同源（feishu 只读同一份 ScanView），主线内部不会再出现同屏口径分叉。
     # ⚠ 刻意**不改 excluded 标记、不写库**：excluded=1 会改回测 / nextday_attribution /
     # prevday_perf 的样本口径（load_attribution_rows 取 excluded=0），把展示层语义泄漏
     # 进历史基线。RTS_FUND_FLOW_HARD_FILTER=0 关闭本门。
@@ -272,9 +300,8 @@ def build_scan_view(
                 continue
             _kept_recs.append(_e)
         today_recs = _kept_recs
-        # 全被剔时不提前返回：继续走完终选区（它可能给出「门关 + 原因」，
-        # 比直接少一整块输出更可诊断），只是各展示区天然为空。
-        # 比直接少一整块输出更可诊断），只是各展示区天然为空。
+        # 全被剔时不提前返回：三段仍在，让它们照常渲染；只是 v1 池选区自然为空。
+        # （旧注释提到的「终选区」已于 2026-09-21 整体删除。）
 
     # P1-9（2026-08-20）：全部推荐一次性批量回放累计（build_accum_map 单查询）。
     # 2026-09-16：🎯 标记预计算（`nextday_mark` + 双挂票归一）随 🎯 画像删除。

@@ -758,8 +758,9 @@ class ScanView:
     # 落库。幸存者偏差结构性存在：只能收录仍在监控池的票，名单随情绪周期整体换血。
     guxing_mark: dict[tuple[str, str], str] | None = None
     # 沪深飙升·极有可能大涨独立区（2026-09-11 自 rts-xueqiu 合入）：HotCandidate 列表。
-    # 与主线（创业板/next_day 口径）完全解耦——样本面更宽（沪深主板+创业板）、口径为
-    # 「当日 momentum + 榜单热度跃升」，不参与主线评分/档位/🎯。
+    # 与主线（创业板/next_day 口径）完全解耦——样本面同为创业板 300/301
+    # （2026-09-11 合入时曾含沪深主板，后收窄；见 hot_watch.is_hot_universe）、
+    # 口径为「当日 momentum + 榜单热度跃升」，不参与主线评分/档位/🎯。
     # 终端与飞书**都画**（feishu build_feishu_card 的「◆ 沪深飙升」节），但不进去重键
     # （分钟级刷新，计入会击穿 FEISHU_MIN_INTERVAL 节流，见 feishu._view_symbols）。
     # None = 本轮未启用或无结果（渲染时整区跳过，不留空表）。
@@ -783,8 +784,9 @@ class ScanView:
     # 与 hot_rows 同款：终端与飞书都画、不落库、不参与任何主线口径，也不进去重键。
     # None / 空列表 = 本轮无结果（渲染时整区跳过，不留空表）。
     hist_rows: list | None = None
-    # 展示层资金流出硬门（2026-09-14）剔除的行数：主力净占比 ≤ FUND_OUTFLOW_NET_PCT
-    # 的票不进任何展示区（v1 池选 / v1 回捞 / 沪深飙升 A·B 段），终端与飞书同源。
+    # 主线资金流出硬门（2026-09-14）剔除的行数：主力净占比 ≤ FUND_OUTFLOW_NET_PCT
+    # 的票不进 v1 池选及其派生集合。**只统计主线**：沪深飙升三段在各自取数侧判定
+    # （阈值同源、开关独立），剔除数不计入本字段。终端与飞书同源。
     # 纯展示层过滤——不改 excluded、不落库，回测/归因样本口径不受影响。
     flow_filtered: int = 0
     # 大盘指数涨幅（创业板指 pct），供 sector suggestion 展示；None = 取数失败。

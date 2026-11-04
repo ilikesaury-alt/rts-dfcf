@@ -133,9 +133,10 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
   必须同步（守卫 `test_panel_web_cols.py` 比对逐项同序）。
   「新票」= 本轮新进今日推荐池（跨轮票集差集 `new_symbols`），**不是** `recommendations.time`
   （那是最后一次提分时刻）。
-- `hot_watch` 独立区与主线完全解耦：样本面沪深主板+创业板（主线只创业板 300/301）；口径
-  「当日 momentum+榜单热度跃升」（主线是 next_day hit）。不写 recommendations、不进飞书
-  主卡片、连击只落 `hot_watch_hits`；`RTS_HOT_WATCH=0` 整体关闭。
+- `hot_watch` 独立区与主线完全解耦：样本面同为创业板 300/301（`is_hot_universe`；
+  区标题「沪深」只是市场名，勿误读为沪深两市）；口径「当日 momentum+热度跃升」
+  （主线是 next_day hit）。不写 recommendations、不进飞书主卡片、连击只落
+  `hot_watch_hits`；`RTS_HOT_WATCH=0` 整体关闭。
 - kline_drift（自动）：每日对 daily_kline 锚定窗口做价格 SHA256 指纹比对（雪球前复权价
   会被除权事件静默重算 → 回测跨期不可复现），漂移即告警 + 写 logs/finalize.log。
 - **终端「一键复制」（按 c）**：按 `c` → 本轮「名称+6位代码」清单进剪贴板

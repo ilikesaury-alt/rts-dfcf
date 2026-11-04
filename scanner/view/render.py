@@ -82,7 +82,7 @@ def display(
     render_terminal / build_scan_view 均在类定义之后，无需引号。
 
     返回本轮 ScanView 供飞书复用（同一份选择，避免两端分叉与重复计算）；
-    conn 为空或今日无推荐时返回 None。
+    无 conn，或今日无推荐且沪深飙升三段均无内容时返回 None。
 
     today_pool：本轮候选池快照（symbol → Candidate），由调用方（scan_with_raw 的
     ScanResult）传入，display 不直接访问 orchestrator 内部状态。
@@ -650,19 +650,20 @@ def render_terminal(view: ScanView) -> None:
     for _w in view.warnings:
         print(f"  [!] {_w}")
 
-    # 展示层资金流出硬门（2026-09-14）：跨区域生效，故提示放在所有区块之前——
-    # 否则用户只会看到"某些票不见了"却不知道为什么（过滤在 build_scan_view 一处完成）。
+    # 主线资金流出硬门（2026-09-14）：提示放在所有区块之前，否则用户只会看到
+    # 「某些票不见了」却不知道为什么。过滤只在 build_scan_view 对 today_recs 做一次；
+    # 沪深飙升三段的门在各自取数侧（阈值同源、开关独立），本计数不含它们。
     if view.flow_filtered:
         print(
-            f"  {ANSI['YELLOW']}▸ 资金流出已剔除 {view.flow_filtered} 只"
-            f"（主力净占比 ≤ {FUND_OUTFLOW_NET_PCT:.0f}% · 全区域统一口径）{ANSI['RESET']}"
+            f"  {ANSI['YELLOW']}▸ v1 池选资金流出已剔除 {view.flow_filtered} 只"
+            f"（主力净占比 ≤ {FUND_OUTFLOW_NET_PCT:.0f}% · 三段各自在取数侧判定）{ANSI['RESET']}"
         )
 
     # 终选参考区（2026-09-08 起与决策层合并渲染；2026-09-14 决策层删除后本区独立；
     # 2026-09-21 按用户决策**整体删除**——连同 scanner/final_pick.py、scanner/decision.py
-    # 与 ScanView.final_pick_lines 字段）。终端现状只剩三个区块：
-    # v1 池选 / 沪深飙升（A 段） / 榜外异动（B 段），三区互不排名。
-    # v1 回捞于 2026-09-28 按用户决策隐藏。
+    # 与 ScanView.final_pick_lines 字段）。终端现状：v1 池选、沪深飙升独立区
+    # （榜内飙升 / 榜内异动 / 榜外异动三段并列）、◆ 飞书过门透明区；
+    # v1 回捞于 2026-09-28 按用户决策终端隐藏（飞书卡片仍保留）。
     # 需复原见 git 历史。
 
     # ── 主表 / v2 池选区共用行渲染（同列 spec，行尾标记与回马枪/低吸区同源）──
@@ -726,40 +727,42 @@ def render_terminal(view: ScanView) -> None:
     #   需恢复时从 git 历史取回 `composite_tier` 调用（assemble.py）。
     # 标题纪律：标题四词与第 1~4 键一一对应，**改键必须同批改标题**（09-16 换键漏改标题
     # 的教训——标题是用户判断「排序对不对」的唯一线索）。
-    print(f"  {ANSI['BOLD']}◆ v1 池选 — 新票优先·类别优先·排名升序·资金流降序{ANSI['RESET']}")
-    # 「类别·先验」列的口径说明（2026-11-04）：**本区不显示评分** ——
-    # 实测（70 天 walkforward，n=1895 样本）分数在**类别内**毫无区分力
-    # （类内 IC −0.020，正负天数接近 1:1），显示它只会让人误以为「高分=更可能涨」。
-    # 排序真正依据的量是**类别先验**（类内 IC +0.027），故直接把它放进行里。
-    # ⚠ 改键/改列必须同批改标题（标题是用户判断「排序对不对」的唯一线索）。
-    print(
-        f"  {ANSI['YELLOW']}类别·先验 = 该类别历史上的次日≥7%命中率（系统唯一口径）"
-        f"· 本区不显示评分：分数在类别内无区分力{ANSI['RESET']}"
-    )
-    # 通用风险门清单（2026-09-16）：三个展示区共用一个实现（scanner/display_gates.py），
-    # 故这里把「哪些门在起作用」显式打出来 —— 此前只有飙升/回捞两区写了脚注，
-    # 主展示区什么都看不到，用户无从判断「这只票到底过没过风控」。
-    # ⚠ 主线这批门**在扫描期施加**（candidates.filter_gem_stocks + pipeline.pool +
-    # assemble 的资金流出过滤），展示期不再重复判一遍；飙升/回捞两区没有扫描链路，
-    # 在各自取数时判。差别只在**何时判**，不在**判什么**。
-    # print(
-    #     f"  {ANSI['YELLOW']}▸ 风险门（与沪深飙升 · v1 回捞 同源）：ST·非创业板·停牌/无成交·"
-    #     f"价格>{MAX_STOCK_PRICE:.0f}元·市值>{MAX_MARKET_CAP / 1e8:.0f}亿·资金流出≤{FUND_OUTFLOW_NET_PCT:.0f}%{ANSI['RESET']}"
-    # )
-    # 美感标记分档图例（2026-09-15）：仅在确有标记时打一行，避免常年占位。
-    # ★ 必须就地解释成「回撤更小」——否则最自然的误读是「更可能大涨」，而数据不支持
-    # （稳★ 与 稳 的 next_day hit 无正向区分度，只有尾部回撤有差别，见 trend_beauty docstring）。
-    # ⚠ 2026-09-28 起本图例由 scanner/label_registry.legend_line 统一生成，
-    #   同日按用户决策「去掉显示读法」整行移除（飞书 build_feishu_card 同批移除），
-    #   下面这份旧注释块保留作历史 —— 当年「两处须同步改」的约束，现由 registry 单源承担。
-    # if any((view.beauty_mark or {}).values()):
-    #     print(
-    #         f"  {ANSI['GREEN']}稳{ANSI['RESET']}=日线趋势稳　"
-    #         f"{ANSI['GREEN']}稳★{ANSI['RESET']}=分时亦稳（尾部回撤更小·非更易大涨）"
-    #     )
-    print(_table_header(COLS_POOL))
-    for _si, row in enumerate(view.main_rows, 1):
-        _emit_pool_table_row(view, row, _si)
+    # 今日无推荐时不打 v1 池选空表，只让下方三段渲染（2026-11-04）。
+    if view.main_rows:
+        print(f"  {ANSI['BOLD']}◆ v1 池选 — 新票优先·类别优先·排名升序·资金流降序{ANSI['RESET']}")
+        # 「类别·先验」列的口径说明（2026-11-04）：**本区不显示评分** ——
+        # 实测（70 天 walkforward，n=1895 样本）分数在**类别内**毫无区分力
+        # （类内 IC −0.020，正负天数接近 1:1），显示它只会让人误以为「高分=更可能涨」。
+        # 排序真正依据的量是**类别先验**（类内 IC +0.027），故直接把它放进行里。
+        # ⚠ 改键/改列必须同批改标题（标题是用户判断「排序对不对」的唯一线索）。
+        print(
+            f"  {ANSI['YELLOW']}类别·先验 = 该类别历史上的次日≥7%命中率（系统唯一口径）"
+            f"· 本区不显示评分：分数在类别内无区分力{ANSI['RESET']}"
+        )
+        # 通用风险门清单（2026-09-16）：三个展示区共用一个实现（scanner/display_gates.py），
+        # 故这里把「哪些门在起作用」显式打出来 —— 此前只有飙升/回捞两区写了脚注，
+        # 主展示区什么都看不到，用户无从判断「这只票到底过没过风控」。
+        # ⚠ 主线这批门**在扫描期施加**（candidates.filter_gem_stocks + pipeline.pool +
+        # assemble 的资金流出过滤），展示期不再重复判一遍；飙升/回捞两区没有扫描链路，
+        # 在各自取数时判。差别只在**何时判**，不在**判什么**。
+        # print(
+        #     f"  {ANSI['YELLOW']}▸ 风险门（与沪深飙升 · v1 回捞 同源）：ST·非创业板·停牌/无成交·"
+        #     f"价格>{MAX_STOCK_PRICE:.0f}元·市值>{MAX_MARKET_CAP / 1e8:.0f}亿·资金流出≤{FUND_OUTFLOW_NET_PCT:.0f}%{ANSI['RESET']}"
+        # )
+        # 美感标记分档图例（2026-09-15）：仅在确有标记时打一行，避免常年占位。
+        # ★ 必须就地解释成「回撤更小」——否则最自然的误读是「更可能大涨」，而数据不支持
+        # （稳★ 与 稳 的 next_day hit 无正向区分度，只有尾部回撤有差别，见 trend_beauty docstring）。
+        # ⚠ 2026-09-28 起本图例由 scanner/label_registry.legend_line 统一生成，
+        #   同日按用户决策「去掉显示读法」整行移除（飞书 build_feishu_card 同批移除），
+        #   下面这份旧注释块保留作历史 —— 当年「两处须同步改」的约束，现由 registry 单源承担。
+        # if any((view.beauty_mark or {}).values()):
+        #     print(
+        #         f"  {ANSI['GREEN']}稳{ANSI['RESET']}=日线趋势稳　"
+        #         f"{ANSI['GREEN']}稳★{ANSI['RESET']}=分时亦稳（尾部回撤更小·非更易大涨）"
+        #     )
+        print(_table_header(COLS_POOL))
+        for _si, row in enumerate(view.main_rows, 1):
+            _emit_pool_table_row(view, row, _si)
 
     # ── ⚡ 动量加速观察（动态推荐区已按需求移除，2026-09-03；其数据字段 adj_picks 亦
     # 于 2026-09-16 随 🎯/回马枪删除——该序列的语义完全由这两个特性构成）──
@@ -798,8 +801,8 @@ def render_terminal(view: ScanView) -> None:
     _render_push_gate_region(view)
 
     # 综合判断摘要（2026-09-17 重写的「分区体检报告」）已于 2026-09-21 按用户决策整体
-    # 删除：终端因此**只剩三个区块**（v1 池选 / 沪深飙升 A 段 / 榜外异动 B 段），
-    # v1 回捞于 2026-09-28 按用户决策隐藏。三区互不排名、不给出任何买卖结论。
+    # 删除：终端因此只剩「v1 池选 + 沪深飙升三段并列 + 飞书过门透明区」，
+    # v1 回捞于 2026-09-28 按用户决策隐藏。各区互不排名、不给出任何买卖结论。
     # 需复原见 git 历史（_build_summary 与其 ScanView.summary 字段同批移除）。
 
 
@@ -823,7 +826,7 @@ def display_priority(
     传入则复用（display 主屏已在打印头部前算过一次，避免重复查询）。
     market_idx_pct：真实市场指数（创业板指 pct），优先用于弱市判定。
     返回 ScanView 供复用（display 主屏回传飞书 / 测试捕获输出后取数据两用）；
-    无 conn 或今日无推荐时返回 None。
+    无 conn，或今日无推荐且沪深飙升三段均无内容时返回 None。
     """
     view = build_scan_view(
         conn=conn,
