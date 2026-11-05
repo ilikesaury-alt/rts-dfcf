@@ -120,26 +120,57 @@ def test_mark_text_is_stable():
     assert bpr.mark_text([]) == ""
 
 
-def test_candidate_scope_excludes_retired_categories():
+def _cand_conn() -> sqlite3.Connection:
+    """带 `get_today_recommendations` 所需列（含 trend/time）的内存库。"""
     conn = sqlite3.connect(":memory:")
     conn.execute(
         "CREATE TABLE recommendations (id INTEGER PRIMARY KEY, symbol TEXT, name TEXT, category TEXT,"
         " score REAL, percent REAL, concept TEXT, accumulated_pct REAL, score_breakdown TEXT,"
-        " date TEXT, excluded INTEGER)"
+        " date TEXT, excluded INTEGER, trend TEXT, time TEXT)"
     )
-    rows = [
-        ("SZ300001", "甲", "momentum", 50, 1.0, None, None, None, "2026-11-05", 0),
-        ("SZ300002", "乙", "pool_pick", 50, 1.0, None, None, None, "2026-11-05", 0),
-        ("SZ300003", "丙", "core_dip", 50, 1.0, None, None, None, "2026-11-05", 0),
-        ("SZ300004", "丁", "short_term", 50, 1.0, None, None, None, "2026-11-05", 1),
-    ]
+    return conn
+
+
+def _ins(conn: sqlite3.Connection, rows: list[tuple]) -> None:
     conn.executemany(
         "INSERT INTO recommendations (symbol,name,category,score,percent,concept,accumulated_pct,"
-        "score_breakdown,date,excluded) VALUES (?,?,?,?,?,?,?,?,?,?)",
-        rows,
+        "score_breakdown,date,excluded,trend,time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        [(s, n, c, sc, 1.0, None, None, None, d, ex, None, "09:35:00") for s, n, c, sc, d, ex in rows],
+    )
+
+
+def test_candidate_scope_excludes_retired_categories():
+    conn = _cand_conn()
+    _ins(
+        conn,
+        [
+            ("SZ300001", "甲", "momentum", 50, "2026-11-05", 0),
+            ("SZ300002", "乙", "pool_pick", 50, "2026-11-05", 0),
+            ("SZ300003", "丙", "core_dip", 50, "2026-11-05", 0),
+            ("SZ300004", "丁", "short_term", 50, "2026-11-05", 1),
+        ],
     )
     got = bpr.load_candidates(conn, "2026-11-05")
     assert [r["symbol"] for r in got] == ["SZ300001"], [r["symbol"] for r in got]
+    conn.close()
+
+
+def test_candidate_dedupe_keeps_leaderboard_category():
+    """同一票当日同时有 core_dip 与 short_term 两行 ⇒ **只出现一次**，且保留榜上类别。
+
+    （2026-11-05 实测 8 只如此；不去重会在报告里把同一只票列两遍。）
+    """
+    conn = _cand_conn()
+    _ins(
+        conn,
+        [
+            ("SZ300007", "汉威科技", "core_dip", 90, "2026-11-05", 0),  # 低优桶但高分
+            ("SZ300007", "汉威科技", "short_term", 40, "2026-11-05", 0),  # 榜上类别但低分
+        ],
+    )
+    got = bpr.load_candidates(conn, "2026-11-05")
+    assert len(got) == 1, got
+    assert got[0]["category"] == "short_term", got[0]  # 榜上类别优先，不被 core_dip 遮蔽
     conn.close()
 
 

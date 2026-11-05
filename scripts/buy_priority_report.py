@@ -146,28 +146,34 @@ EXCLUDED_CATS = ("comeback", "core_dip", "pool_pick", "pullback")
 
 # ── 取数 ────────────────────────────────────────────────────────────────
 def load_candidates(conn: sqlite3.Connection, day: str) -> list[dict]:
-    rows = conn.execute(
-        "SELECT symbol, name, category, score, percent, concept, accumulated_pct, score_breakdown "
-        "FROM recommendations WHERE date = ? AND excluded = 0 ORDER BY id",
-        (day,),
-    ).fetchall()
-    out = []
-    for sym, name, cat, score, pct, concept, accum, bb in rows:
+    """当日候选池。
+
+    **去重口径复用项目单源** `scanner.db.queries.get_today_recommendations`（不自己写 SQL）：
+    它内部按 symbol 去重、**榜上类别优先于 comeback/core_dip、同优先级取最高分** ——
+    同一票当日可能同时有 core_dip 与 short_term 两行（实测 2026-11-05 有 8 只如此），
+    自己写 SQL 不排序就会把同一只票在报告里列两遍（曾发生，`tests/` 有守卫）。
+
+    返回后再滤掉**退池类别**（comeback/core_dip/pool_pick/pullback）—— 与终端 v1 池选同集合。
+    """
+    from scanner.db.queries import get_today_recommendations
+
+    out: list[dict] = []
+    for e in get_today_recommendations(conn, day):
+        cat = e.get("category")
         if cat in EXCLUDED_CATS:
             continue
-        try:
-            bd = json.loads(bb) if bb else {}
-        except json.JSONDecodeError:
+        bd = e.get("score_breakdown") or {}
+        if not isinstance(bd, dict):
             bd = {}
         out.append(
             {
-                "symbol": sym,
-                "name": name or sym,
+                "symbol": e["symbol"],
+                "name": e.get("name") or e["symbol"],
                 "category": cat,
-                "score": score,
-                "db_pct": pct,
-                "concept": concept,
-                "accum_db": accum,
+                "score": e.get("score"),
+                "db_pct": e.get("percent"),
+                "concept": e.get("concept"),
+                "accum_db": e.get("accumulated_pct"),
                 "overbought": any(bool(v) for k, v in bd.items() if k.endswith("overbought") and v is not None),
             }
         )
