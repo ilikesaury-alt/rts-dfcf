@@ -73,14 +73,23 @@ from scanner.offboard_watch import (
     offboard_gate,
     opening_silence_active,
     sort_key,
+    unadjusted_silence_active,
 )
 from scanner.utils import EXTERNAL_FAILURES, to_float
+from scanner.volume_bias import biased_snapshot
 
 logger = logging.getLogger(__name__)
 
 
-def _snapshot_vol_ratio_map(conn, symbols: Sequence[str]) -> dict[str, float]:
+def _snapshot_vol_ratio_map(
+    conn,
+    symbols: Sequence[str],
+    snapshot: dict[str, dict] | None = None,
+) -> dict[str, float]:
     """资金流快照 → `{symbol: vol_ratio}`（缺失/无该键则不出现）。
+
+    `snapshot`（2026-11-05）：调用方已载入并**去过偏**的快照（见 `run_onboard_anomaly`
+    的量比去偏段）⇒ 本函数不再重复读库。缺省 None 时自己读（兼容既有调用方/单测）。
 
     ## 为什么量比必须走这里，而不能走 `quotes`（2026-10-08 修复）
 
@@ -113,7 +122,8 @@ def _snapshot_vol_ratio_map(conn, symbols: Sequence[str]) -> dict[str, float]:
     if conn is None or not symbols:
         return {}
     try:
-        snapshot = get_market_extra_snapshot(conn, "fund_flow")
+        if snapshot is None:
+            snapshot = get_market_extra_snapshot(conn, "fund_flow")
     except EXTERNAL_FAILURES as e:
         logger.warning("榜内异动段量比快照取数失败（本段按无量比继续）: %s", e)
         return {}
@@ -134,6 +144,7 @@ def build_onboard_candidates(
     conn=None,
     *,
     exclude_symbols: set[str] | None = None,
+    snapshot: dict[str, dict] | None = None,
 ) -> tuple[list[OffboardCandidate], list[tuple[str, str]]]:
     """榜内创业板 → 通过 `offboard_gate` 的候选（按量比降序）。
 
@@ -157,7 +168,14 @@ def build_onboard_candidates(
     rejects: list[tuple[str, str]] = []
 
     # 量比一次性取数（快照覆盖全集，1 次查询，与 B 段同源）。
-    vr_map = _snapshot_vol_ratio_map(conn, [str(it.get("symbol") or "") for it in board_items])
+    # 快照缺省时在本函数内读一次（调用方未传 = 未去偏的原始快照，单测走这条路）。
+    if snapshot is None and conn is not None:
+        try:
+            snapshot = get_market_extra_snapshot(conn, "fund_flow")
+        except EXTERNAL_FAILURES as e:
+            logger.warning("榜内异动段量比快照取数失败（本段按无量比继续）: %s", e)
+            snapshot = {}
+    vr_map = _snapshot_vol_ratio_map(conn, [str(it.get("symbol") or "") for it in board_items], snapshot)
 
     for it in board_items:
         symbol = str(it.get("symbol") or "")
@@ -192,6 +210,8 @@ def build_onboard_candidates(
             percent=to_float(q.get("percent"), to_float(it.get("percent"))) or 0.0,
             accum_5d=0.0,
             volume_ratio=vr_map.get(symbol, 0.0),
+            # 上报原值（2026-11-05 量比去偏）：快照被去偏过时 `vol_ratio_raw` 才有值。
+            volume_ratio_raw=to_float((snapshot or {}).get(symbol, {}).get("vol_ratio_raw"), 0.0) or 0.0,
             main_pct=0.0,
             volume=to_float(q.get("volume"), 0.0) or 0.0,
             amount=to_float(q.get("amount"), 0.0) or 0.0,
@@ -266,6 +286,22 @@ def run_onboard_anomaly(
     if opening_silence_active():
         return []
 
+    # 🔴 量比去偏（2026-11-05，与榜外段**同口径**）：本段与 B 段共用
+    # `offboard_gate` 的同一个量比门（`MOMENTUM_LAUNCH_VOL`），而量比来自**同一份**
+    # `market_extra_cache` 快照 ⇒ 同一个阈值必须配同一个尺度，否则「同门同层」是假的。
+    # 详见 `scanner/volume_bias.py`（k(m) 的实测与去偏，零新增网络）。
+    # ⚠ 去偏系数不可得（本地历史不足）⇒ 退回旧口径的 15 分钟窗口（读数不可信时
+    # 不能假装可信），与榜外段同一处置。
+    try:
+        snapshot = get_market_extra_snapshot(conn, "fund_flow")
+    except EXTERNAL_FAILURES as e:
+        logger.warning("榜内异动段量比快照取数失败（本段留空）: %s", e)
+        return []
+    bias = biased_snapshot(conn, snapshot)
+    if bias is None and unadjusted_silence_active():
+        # 去偏系数不可得 ⇒ 读数仍虚高 ⇒ 退回旧口径的 15 分钟窗口（与榜外段同处置）。
+        return []
+
     if quotes is None:
         fetch_batch = getattr(adapter, "fetch_hot_quotes_batch", None)
         if fetch_batch is None:
@@ -289,7 +325,9 @@ def run_onboard_anomaly(
         if not quotes:
             return []
 
-    cands, _rejects = build_onboard_candidates(board_items, quotes, conn, exclude_symbols=exclude_symbols)
+    cands, _rejects = build_onboard_candidates(
+        board_items, quotes, conn, exclude_symbols=exclude_symbols, snapshot=snapshot
+    )
     if not cands:
         return []
 
@@ -363,6 +401,9 @@ def persist_round(conn, rows: Sequence[OffboardCandidate], today: str) -> None:
             c.percent,
             c.accum_5d,
             c.volume_ratio,
+            # 上报原值（2026-11-05 量比去偏）：0 = 未去偏 ⇒ NULL，
+            # 读侧 coalesce(vol_ratio_raw, vol_ratio) 恒得原值尺度。
+            round(c.volume_ratio_raw, 3) if c.volume_ratio_raw > 0 else None,
             c.main_pct,
             c.amount,
             c.float_market_capital,
@@ -374,11 +415,12 @@ def persist_round(conn, rows: Sequence[OffboardCandidate], today: str) -> None:
     try:
         conn.executemany(
             "INSERT INTO onboard_anomaly_log "
-            "(date,symbol,name,tier,percent,accum_5d,vol_ratio,main_pct,amount,"
-            "float_cap,price,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+            "(date,symbol,name,tier,percent,accum_5d,vol_ratio,vol_ratio_raw,main_pct,amount,"
+            "float_cap,price,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(date,symbol) DO UPDATE SET "
             "name=excluded.name,tier=excluded.tier,percent=excluded.percent,"
             "accum_5d=excluded.accum_5d,vol_ratio=excluded.vol_ratio,"
+            "vol_ratio_raw=excluded.vol_ratio_raw,"
             "main_pct=excluded.main_pct,amount=excluded.amount,"
             "float_cap=excluded.float_cap,price=excluded.price,updated=excluded.updated",
             data,

@@ -24,6 +24,8 @@ import json
 import sqlite3
 from datetime import date, timedelta
 
+import pytest
+
 from scanner.config import (
     ONBOARD_ANOMALY_ENABLED,
     ONBOARD_DISPLAY_TOP,
@@ -321,7 +323,7 @@ def _logdb() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.execute(
         "CREATE TABLE onboard_anomaly_log (date TEXT, symbol TEXT, name TEXT, tier TEXT, "
-        "percent REAL, accum_5d REAL, vol_ratio REAL, main_pct REAL, amount REAL, "
+        "percent REAL, accum_5d REAL, vol_ratio REAL, vol_ratio_raw REAL, main_pct REAL, amount REAL, "
         "float_cap REAL, price REAL, first_time TEXT, next_day_pct REAL, updated TEXT, "
         "PRIMARY KEY (date, symbol))"
     )
@@ -500,3 +502,48 @@ def test_does_not_write_recommendations():
     s = inspect.getsource(src)
     assert "recommendations" not in s
     assert "appearances" not in s
+
+
+# ── 7. 量比去偏（2026-11-05）─────────────────────────────────────────────────
+def test_run_path_applies_volume_bias():
+    """回归守卫：生产路径必须走**量比去偏**。
+
+    本段与榜外段共用 `offboard_gate` 的**同一个**量比门（`MOMENTUM_LAUNCH_VOL`）、
+    同一份 `market_extra_cache` 快照 ⇒ 同一个阈值必须配同一个尺度，否则「同门同层」
+    是假的（榜外段去偏后读数是「全天口径等价值」，本段若不跟着去偏，同一张表里
+    两段的量比会差一个量级）。
+    """
+    import inspect
+
+    src = inspect.getsource(run_onboard_anomaly)
+    assert "biased_snapshot" in src, "生产路径必须应用量比去偏，否则与榜外段不同尺度"
+
+
+def test_candidate_volume_ratio_is_debiased_value():
+    """候选的量比 = **去偏值**；上报原值另存 `volume_ratio_raw`（落库用）。"""
+    from scanner.db.queries import get_market_extra_snapshot
+    from scanner.volume_bias import apply_bias
+
+    board = [{"symbol": "SZ300001", "name": "创A", "percent": 2.0, "exchange": "SZ"}]
+    quotes = {
+        "SZ300001": {
+            "code": "300001",
+            "name": "创A",
+            "exchange": "SZ",
+            "current": 10.0,
+            "percent": 2.0,
+            "volume": 1e7,
+            "amount": 5e8,
+            "market_capital": 5e9,
+            "float_market_capital": 4e9,
+            "turnover_rate": 3.0,
+            "status": 1,
+        }
+    }
+    conn = _snapdb({"SZ300001": 5.0})
+    snapshot = get_market_extra_snapshot(conn, "fund_flow")
+    apply_bias(snapshot, 2.0)  # 5.0 → 2.5
+    cands, _ = build_onboard_candidates(board, quotes, conn, snapshot=snapshot)
+    assert len(cands) == 1
+    assert cands[0].volume_ratio == pytest.approx(2.5)
+    assert cands[0].volume_ratio_raw == pytest.approx(5.0)

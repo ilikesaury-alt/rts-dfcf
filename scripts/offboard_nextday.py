@@ -146,6 +146,21 @@ def _has_table(conn: sqlite3.Connection, name: str) -> bool:
     return row is not None
 
 
+def _vol_ratio_expr(conn: sqlite3.Connection) -> str:
+    """量比列表达式：**上报原值尺度**（跨 2026-11-05 的量比去偏改动可比）。
+
+    2026-11-06 起 `offboard_launch_log.vol_ratio` 存的是**去偏值**（决策口径），
+    上报原值另存 `vol_ratio_raw`（m024）⇒ 量比分桶必须用原值尺度，否则同一个桶
+    在改动前后含义不同。旧行 `vol_ratio_raw` 为 NULL ⇒ 其 `vol_ratio` 本就是原值
+    ⇒ coalesce 正确回退。老库没有该列 ⇒ 退回裸列。
+    """
+    try:
+        conn.execute("SELECT vol_ratio_raw FROM offboard_launch_log LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return "vol_ratio"
+    return "coalesce(vol_ratio_raw, vol_ratio)"
+
+
 def load_rows(conn: sqlite3.Connection, days: int | None, tier: str | None) -> tuple[list[Row], list[str], list[str]]:
     """读 `offboard_launch_log` → (有标签行, 全部信号日, 尚无标签的信号日)。
 
@@ -157,7 +172,10 @@ def load_rows(conn: sqlite3.Connection, days: int | None, tier: str | None) -> t
     if not _has_table(conn, "offboard_launch_log"):
         return [], [], []
 
-    cols = "date, symbol, name, tier, percent, accum_5d, vol_ratio, main_pct, price, next_day_pct"
+    cols = (
+        "date, symbol, name, tier, percent, accum_5d, "
+        f"{_vol_ratio_expr(conn)} AS vol_ratio, main_pct, price, next_day_pct"
+    )
     sql = f"SELECT {cols} FROM offboard_launch_log"  # noqa: S608 - 列名是上方常量
     params: list = []
     if days:

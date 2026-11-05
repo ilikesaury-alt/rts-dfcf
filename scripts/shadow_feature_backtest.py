@@ -65,9 +65,26 @@ ANN_KEYWORDS = {
 }
 
 
+def _vol_ratio_expr(conn: sqlite3.Connection) -> str:
+    """量比列表达式：**上报原值尺度**（跨 2026-11-05 的量比去偏改动可比）。
+
+    2026-11-06 起 `offboard_launch_log.vol_ratio` 存的是**去偏值**（决策口径），
+    上报原值另存 `vol_ratio_raw`（m024）⇒ 量比分桶必须用原值尺度，否则同一个桶
+    在改动前后含义不同。旧行 `vol_ratio_raw` 为 NULL ⇒ 其 `vol_ratio` 本就是原值
+    ⇒ coalesce 正确回退。老库没有该列 ⇒ 退回裸列。
+    """
+    try:
+        conn.execute("SELECT vol_ratio_raw FROM offboard_launch_log LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return "vol_ratio"
+    return "coalesce(vol_ratio_raw, vol_ratio)"
+
+
 def load_samples(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
-        "SELECT date, symbol, tier, percent, accum_5d, vol_ratio, main_pct, amount, float_cap, next_day_pct "
+        "SELECT date, symbol, tier, percent, accum_5d, "
+        f"{_vol_ratio_expr(conn)} AS vol_ratio, "
+        "main_pct, amount, float_cap, next_day_pct "
         "FROM offboard_launch_log WHERE next_day_pct IS NOT NULL ORDER BY date"
     ).fetchall()
     keys = ("date", "symbol", "tier", "percent", "accum_5d", "vol_ratio", "main_pct", "amount", "float_cap", "ndp")

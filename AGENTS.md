@@ -231,6 +231,9 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
   （供存量行解析）；注册表条目。
 - **榜外段「反复进前十」粉名/🔥 标识已整体删除**（2026-10-16 用户决策），守卫为反向
   （`test_offboard_subtitle_has_no_repeat_marker`）；`top_hits`/`gate_hits` 列保留作研究原料。
+- **B/C 段量比是「去偏值」**（2026-11-05）：上报量比 ÷ 全市场量能前置系数 k(m)
+  （`scanner/volume_bias.py`）；**A 段仍是上报原值** ⇒ 两处尺度不同，别混用/别互相引用。
+  落库 `vol_ratio`=决策值、`vol_ratio_raw`=上报原值，分析侧读 `coalesce(前,后)`。
 
 ## Architecture
 
@@ -259,6 +262,7 @@ scanner/
   offboard_watch.py         # 榜外异动段（launch_log 写侧、实时覆盖、标签回填）
   offboard_flow.py          # B 段 N 日主力累计净流入（历史资金流序列，零新增请求）
   onboard_anomaly.py        # 榜内异动段（标签回填同款三防呆）
+  volume_bias.py            # 开盘量比失真系数 k(m) 的实测与去偏（B/C 段共用，零新增网络）
   view/assemble.py          # build_scan_view：v1 池选排序键 + 终端行组装
   render.py                 # 终端/飞书共用渲染（COLS_HOT、三段段标题）
   historical_watch.py       # v1 回捞（hist_rows，终端隐藏、飞书保留）

@@ -236,7 +236,8 @@ _OFFBOARD_LAUNCH_LOG_DDL = """
         tier TEXT NOT NULL,             -- 'T1'=量先动·价未动 / 'T2'=启动首日
         percent REAL,                   -- 信号时的今日涨幅（快照）
         accum_5d REAL,                  -- 5 日累计涨幅（排除今日）
-        vol_ratio REAL,                 -- 量比（快照）
+        vol_ratio REAL,                 -- 量比（**决策值**：2026-11-06 起为去偏值，见 vol_ratio_raw）
+        vol_ratio_raw REAL,             -- 上报原值（2026-11-05 起的量比去偏；旧行 NULL ⇒ 其 vol_ratio 即原值）
         main_pct REAL,                  -- 主力净占比（快照）
         amount REAL,                    -- 成交额（元）
         float_cap REAL,                 -- 流通市值（元）
@@ -393,6 +394,33 @@ def _up_offboard_log_top_hits(conn: sqlite3.Connection) -> None:
 
 def _check_offboard_log_top_hits(conn: sqlite3.Connection) -> bool:
     return not _has_table(conn, "offboard_launch_log") or _has_column(conn, "offboard_launch_log", "top_hits")
+
+
+def _up_offboard_log_vol_ratio_raw(conn: sqlite3.Connection) -> None:
+    """m024（2026-11-05）：`offboard_launch_log` / `onboard_anomaly_log` 补 `vol_ratio_raw`。
+
+    动机 —— 量比**去偏**（`scanner/volume_bias.py`）改变了 `vol_ratio` 列的语义：
+    2026-11-06 起写入的是**去偏值**（= 与收盘同尺度的量比），而 2026-11-05 之前
+    写入的是**上报原值**。同一列两种尺度 ⇒ 按量比分桶的历史分析（`scripts/
+    offboard_nextday.py` 的量比分桶、`scripts/shadow_feature_backtest.py` 的量比
+    特征）在跨改动的样本上直接不可比。
+
+    修法：新增一列存**上报原值**，`vol_ratio` 保持「**决策值**」语义不变
+    （= 落库那刻门/排序/展示实际用的那个数，跨历史一致）。分析侧统一读
+    `coalesce(vol_ratio_raw, vol_ratio)` ⇒ 恒为原值尺度，跨改动可比。
+
+    旧行 `vol_ratio_raw` 为 NULL ⇒ 其 `vol_ratio` 本来就是原值 ⇒ coalesce 正确回退。
+    """
+    if not _has_column(conn, "offboard_launch_log", "vol_ratio_raw"):
+        conn.execute("ALTER TABLE offboard_launch_log ADD COLUMN vol_ratio_raw REAL")
+    if _has_table(conn, "onboard_anomaly_log") and not _has_column(conn, "onboard_anomaly_log", "vol_ratio_raw"):
+        conn.execute("ALTER TABLE onboard_anomaly_log ADD COLUMN vol_ratio_raw REAL")
+
+
+def _check_offboard_log_vol_ratio_raw(conn: sqlite3.Connection) -> bool:
+    return (
+        not _has_table(conn, "offboard_launch_log") or _has_column(conn, "offboard_launch_log", "vol_ratio_raw")
+    ) and (not _has_table(conn, "onboard_anomaly_log") or _has_column(conn, "onboard_anomaly_log", "vol_ratio_raw"))
 
 
 def _up_offboard_active_metrics(conn: sqlite3.Connection) -> None:
@@ -678,6 +706,12 @@ MIGRATIONS: list[Migration] = [
         desc="新增 market_extra_cache 复合索引 (data_type, symbol, date DESC)：B 段 N 日主力累计净流入门的历史查询",
         check=_check_market_extra_flow_index,
         up=_up_market_extra_flow_index,
+    ),
+    Migration(
+        id="m024_offboard_log_vol_ratio_raw",
+        desc="offboard_launch_log / onboard_anomaly_log 补 vol_ratio_raw（量比去偏前的上报原值；vol_ratio 保持决策值语义）",
+        check=_check_offboard_log_vol_ratio_raw,
+        up=_up_offboard_log_vol_ratio_raw,
     ),
 ]
 

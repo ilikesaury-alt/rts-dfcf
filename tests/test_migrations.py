@@ -193,6 +193,7 @@ class TestMigrationCatalog:
             "m021_view_snapshot",
             "m022_offboard_print_snapshot",
             "m023_market_extra_flow_index",
+            "m024_offboard_log_vol_ratio_raw",
         ]
 
     def test_every_migration_has_desc(self):

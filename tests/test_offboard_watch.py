@@ -64,8 +64,10 @@ from scanner.offboard_watch import (
     repair_next_day_labels,
     run_offboard_watch,
     sort_key,
+    unadjusted_silence_active,
 )
 from scanner.trading_session import is_trading_day
+from scanner.volume_bias import apply_bias
 
 # ── 夹具 / 构造器 ────────────────────────────────────────────────────────────
 
@@ -201,6 +203,9 @@ def _offline_defaults(monkeypatch):
       （慢，且让单测依赖外网）。关掉后降级链走③名称关键词，正是离线该有的行为。
     """
     monkeypatch.setattr("scanner.offboard_watch.OFFBOARD_OPENING_SILENCE_MIN", 0)
+    # ⚠ 兜底窗口（去偏系数不可得时沿用 15 分钟口径）也必须关掉，否则本文件在
+    # 开盘后 15 分钟内跑会整批返回 []（内存库无历史 ⇒ k(m) 恒不可判定 ⇒ 走兜底）。
+    monkeypatch.setattr("scanner.offboard_watch.OFFBOARD_OPENING_SILENCE_MIN_UNADJUSTED", 0)
     monkeypatch.setattr("scanner.offboard_watch.OFFBOARD_BOARD_FETCH", 0)
 
 
@@ -1306,6 +1311,81 @@ def test_run_offboard_watch_end_to_end(db):
     assert logged == {"SZ300101": T1, "SZ300102": T2}
 
 
+class TestVolumeRatioBias:
+    """量比去偏（2026-11-05）：门 / 展示 / 落库一律用**去偏值**。
+
+    背景：开盘的量比读数被**全市场共同**的量能前置形状放大（实测 k(m)：m=1 → 13.6x，
+    m=3 → 7.3x，m=15 → 3.5x）⇒ 2026-09-21 的「开盘静默 15 分钟」既**没修好失真**
+    （09:45 的读数仍虚高 3.5 倍，量比门在 09:54 通过率 94.6% = 等于没筛），又砍掉了
+    早盘最值钱的一段。改法：逐轮实测 k(m) 并把上报量比除掉 —— **阈值语义一字不改**
+    （`MOMENTUM_LAUNCH_VOL`=1.5 仍是「相对自身近 5 日均速的放量倍数」）。
+    """
+
+    @staticmethod
+    def _bias(k: float):
+        """伪造一个固定的 k(m)（避开真实时钟 ⇒ 用例不随时段 flaky）。"""
+
+        def _apply(conn, snapshot):
+            apply_bias(snapshot, k)
+            return k
+
+        return _apply
+
+    def test_gate_uses_debiased_ratio(self, db, monkeypatch):
+        """上报量比 2.0、k=4.0 ⇒ 去偏后 0.5 ⇒ 过不了量比门（1.5）。
+
+        旧口径下这只票会以「量比 2.0」过门 —— 那正是开盘失真的产物（真实读数 0.5，
+        即它相对自身历史**没有**放量）。
+        """
+        monkeypatch.setattr("scanner.offboard_watch.biased_snapshot", self._bias(4.0))
+        day = now_beijing().date().isoformat()
+        snapshot = {"SZ300101": _payload(vol_ratio=2.0, percent=2.5, main_pct=2.0)}
+        klines = {"SZ300101": _bars(_UP_SERIES, day)}
+        rows = run_offboard_watch(None, db, [], top_n=5, klines=klines, snapshot=snapshot)
+        assert rows == []
+
+    def test_surviving_row_carries_both_values(self, db, monkeypatch):
+        """产出行同时带**去偏值**（决策口径）与**上报原值**（落 `vol_ratio_raw`）。"""
+        monkeypatch.setattr("scanner.offboard_watch.biased_snapshot", self._bias(4.0))
+        day = now_beijing().date().isoformat()
+        snapshot = {"SZ300101": _payload(vol_ratio=8.0, percent=2.5, main_pct=2.0)}
+        klines = {"SZ300101": _bars(_UP_SERIES, day)}
+        rows = run_offboard_watch(None, db, [], top_n=5, klines=klines, snapshot=snapshot)
+        assert len(rows) == 1
+        assert rows[0].volume_ratio == pytest.approx(2.0)  # 8.0 / 4.0
+        assert rows[0].volume_ratio_raw == pytest.approx(8.0)
+        # 落库：vol_ratio = 决策值（去偏），vol_ratio_raw = 上报原值
+        row = db.execute(
+            "SELECT vol_ratio, vol_ratio_raw FROM offboard_launch_log WHERE symbol='SZ300101'"
+        ).fetchone()
+        assert row[0] == pytest.approx(2.0)
+        assert row[1] == pytest.approx(8.0)
+
+    def test_without_bias_factor_values_stay_raw(self, db, monkeypatch):
+        """k(m) 不可得 ⇒ **不修正**（读数保持原样），且此时走 15 分钟兜底窗口。"""
+        monkeypatch.setattr("scanner.offboard_watch.biased_snapshot", lambda *a, **k: None)
+        day = now_beijing().date().isoformat()
+        snapshot = {"SZ300101": _payload(vol_ratio=2.0, percent=2.5, main_pct=2.0)}
+        klines = {"SZ300101": _bars(_UP_SERIES, day)}
+        rows = run_offboard_watch(None, db, [], top_n=5, klines=klines, snapshot=snapshot)
+        assert len(rows) == 1
+        assert rows[0].volume_ratio == pytest.approx(2.0)
+        assert rows[0].volume_ratio_raw == 0.0  # 未去偏 ⇒ 无原值可留
+
+    def test_log_raw_column_is_null_when_not_debiased(self, db, monkeypatch):
+        """未去偏时 `vol_ratio_raw` 写 NULL ⇒ 读侧 coalesce 回退到 `vol_ratio`（原值）。"""
+        monkeypatch.setattr("scanner.offboard_watch.biased_snapshot", lambda *a, **k: None)
+        day = now_beijing().date().isoformat()
+        snapshot = {"SZ300101": _payload(vol_ratio=2.0, percent=2.5, main_pct=2.0)}
+        klines = {"SZ300101": _bars(_UP_SERIES, day)}
+        run_offboard_watch(None, db, [], top_n=5, klines=klines, snapshot=snapshot)
+        row = db.execute(
+            "SELECT vol_ratio, vol_ratio_raw FROM offboard_launch_log WHERE symbol='SZ300101'"
+        ).fetchone()
+        assert row[0] == pytest.approx(2.0)
+        assert row[1] is None
+
+
 def test_run_offboard_watch_respects_top_n(db):
     day = now_beijing().date().isoformat()
     snapshot = {f"SZ30010{i}": _payload(vol_ratio=1.6 + i * 0.1) for i in range(1, 4)}
@@ -1710,11 +1790,15 @@ def _first_non_trading_day() -> _date:
 
 
 class TestOpeningSilence:
-    """开盘 15 分钟内不产出 —— 修的是**量比失真**（分母趋 0 时商发散），不是阈值。
+    """开盘 5 分钟内不产出 —— 修的是**量比失真**，不是阈值。
 
     量比 = 当日累计量 ÷（近 5 日均每分钟量 × 已交易分钟数）：开盘头几分钟分母只有
-    几分钟，读数虚高一个量级。实测 09:33 捕获的 3 只 T1 虚高 6.6~11.5 倍且当日全数
-    转跌；09:45 之后收敛到 ≈1.0。而量比正是本段排序键的主键。
+    几分钟，读数虚高一个量级（实测 k(m)：m=1 → 13.6x，m=3 → 7.3x，m=5 → 5.7x）。
+
+    ⚠ **2026-11-05**：窗口从 15 分钟缩到 **5 分钟**，因为失真现在能被**算出来并扣掉**
+    （`scanner/volume_bias.py`），不必再等它自己收敛。旧窗口其实没修好失真 ——
+    09:45 的读数仍虚高 3.5 倍，量比门在 09:54 的通过率是 94.6%（等于没筛）。
+    去偏系数不可得时**退回旧的 15 分钟窗口**（`unadjusted_silence_active`）。
 
     本类显式**打开**窗口（文件级 autouse 夹具默认把它关成 0 防 flaky）。
     窗口按 `trading_minutes_elapsed` 判定：午休 120 分钟已排除 —— 这正是不能用
@@ -1728,6 +1812,8 @@ class TestOpeningSilence:
     @pytest.fixture(autouse=True)
     def _enable(self, monkeypatch):
         monkeypatch.setattr("scanner.offboard_watch.OFFBOARD_OPENING_SILENCE_MIN", OFFBOARD_OPENING_SILENCE_MIN)
+        # 兜底窗口在本类保持关闭：本类只验「去偏口径窗口」的边界。
+        monkeypatch.setattr("scanner.offboard_watch.OFFBOARD_OPENING_SILENCE_MIN_UNADJUSTED", 0)
 
     def test_window_uses_config_constant(self):
         """守卫：本类确实把窗口打开了（否则下面几条会静默地全测成「不静默」）。"""
@@ -1740,10 +1826,10 @@ class TestOpeningSilence:
         assert opening_silence_active(self._at(9, 30)) is True
 
     def test_silent_one_minute_before_boundary(self):
-        assert opening_silence_active(self._at(9, 44)) is True
+        assert opening_silence_active(self._at(9, 34)) is True
 
     def test_not_silent_at_boundary(self):
-        assert opening_silence_active(self._at(9, 45)) is False
+        assert opening_silence_active(self._at(9, 35)) is False
 
     def test_not_silent_during_and_after_lunch_break(self):
         """午休不算「开盘头几分钟」：11:30 与 13:00 的已交易分钟数都是 120。"""
@@ -1758,6 +1844,25 @@ class TestOpeningSilence:
     def test_window_disabled_when_constant_zero(self, monkeypatch):
         monkeypatch.setattr("scanner.offboard_watch.OFFBOARD_OPENING_SILENCE_MIN", 0)
         assert opening_silence_active(self._at(9, 30)) is False
+
+    def test_unadjusted_window_keeps_old_15_minute_boundary(self, monkeypatch):
+        """去偏系数不可得时**退回旧的 15 分钟口径** —— 读数不可信时不能假装可信。"""
+        from scanner.config import OFFBOARD_OPENING_SILENCE_MIN_UNADJUSTED
+
+        monkeypatch.setattr(
+            "scanner.offboard_watch.OFFBOARD_OPENING_SILENCE_MIN_UNADJUSTED",
+            OFFBOARD_OPENING_SILENCE_MIN_UNADJUSTED,
+        )
+        assert OFFBOARD_OPENING_SILENCE_MIN_UNADJUSTED == 15
+        assert unadjusted_silence_active(self._at(9, 35)) is True
+        assert unadjusted_silence_active(self._at(9, 44)) is True
+        assert unadjusted_silence_active(self._at(9, 45)) is False
+
+    def test_unadjusted_window_is_wider_than_adjusted_window(self):
+        """两道窗的**关系**是被测的契约：兜底窗必须 ≥ 去偏窗（否则兜底毫无意义）。"""
+        from scanner.config import OFFBOARD_OPENING_SILENCE_MIN_UNADJUSTED
+
+        assert OFFBOARD_OPENING_SILENCE_MIN_UNADJUSTED >= OFFBOARD_OPENING_SILENCE_MIN
 
     def test_run_offboard_watch_returns_empty_inside_window(self, db, monkeypatch):
         """整条主流程在窗口内直接返回 [] —— 第一道门在读任何数据之前。"""

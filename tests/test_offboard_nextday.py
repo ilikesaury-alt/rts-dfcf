@@ -27,6 +27,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "offboard_nextday.py"
 
@@ -105,7 +107,7 @@ def _memdb() -> sqlite3.Connection:
     conn.execute(
         "CREATE TABLE offboard_launch_log ("
         "date TEXT, symbol TEXT, name TEXT, tier TEXT, percent REAL, accum_5d REAL,"
-        "vol_ratio REAL, main_pct REAL, price REAL, next_day_pct REAL)"
+        "vol_ratio REAL, vol_ratio_raw REAL, main_pct REAL, price REAL, next_day_pct REAL)"
     )
     return conn
 
@@ -228,3 +230,40 @@ def test_module_docstring_declares_no_conclusion_discipline():
     doc = ob.__doc__ or ""
     assert "不产出结论" in doc
     assert "rule_validate" in doc, "必须写明 B 段是 rule_validate 的盲区（不给结论的根因）"
+
+
+def test_vol_ratio_reads_raw_scale_when_column_exists():
+    """量比分桶必须用**上报原值**尺度（2026-11-05 起 `vol_ratio` 存的是去偏值）。
+
+    `vol_ratio` = 决策值（落库那刻门/展示用的数）；`vol_ratio_raw` = 上报原值。
+    读侧 coalesce ⇒ 新旧行同尺度，跨改动可比。
+    """
+    conn = _memdb()
+    conn.execute(
+        "INSERT INTO offboard_launch_log (date,symbol,name,tier,percent,accum_5d,"
+        "vol_ratio,vol_ratio_raw,main_pct,price,next_day_pct) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        ("2026-11-06", "SZ300001", "甲", "T1", 2.0, 1.0, 1.2, 4.8, 1.0, 10.0, 3.0),
+    )
+    conn.commit()
+    rows, _days, _unlabeled = ob.load_rows(conn, None, None)
+    assert len(rows) == 1
+    assert rows[0].vol_ratio == pytest.approx(4.8)  # 原值，不是去偏值 1.2
+
+
+def test_vol_ratio_falls_back_to_plain_column_on_old_db():
+    """老库没有 `vol_ratio_raw` 列 ⇒ 退回裸列（那时 `vol_ratio` 本就是原值）。"""
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE offboard_launch_log ("
+        "date TEXT, symbol TEXT, name TEXT, tier TEXT, percent REAL, accum_5d REAL,"
+        "vol_ratio REAL, main_pct REAL, price REAL, next_day_pct REAL)"
+    )
+    conn.execute(
+        "INSERT INTO offboard_launch_log (date,symbol,name,tier,percent,accum_5d,"
+        "vol_ratio,main_pct,price,next_day_pct) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        ("2026-10-08", "SZ300001", "甲", "T1", 2.0, 1.0, 4.8, 1.0, 10.0, 3.0),
+    )
+    conn.commit()
+    rows, _days, _unlabeled = ob.load_rows(conn, None, None)
+    assert len(rows) == 1
+    assert rows[0].vol_ratio == pytest.approx(4.8)

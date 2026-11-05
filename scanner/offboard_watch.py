@@ -64,12 +64,41 @@ fail-open / fail-closed
    开盘满 15 分钟才产出，作为 `run_offboard_watch` 的**第一道门**。依据是量比在开盘
    头几分钟存在**量纲性失真**（商的分母趋 0 时发散），而量比正是本段第一排序键 ——
    实测 09:33 捕获的 3 只 T1 量比虚高 6.6~11.5 倍，且是当日唯三由涨转跌的票。
+   ⚠ **2026-11-05 重做**：15 分钟**并没有把失真等掉**（09:45 的读数仍虚高 3.5 倍，
+   量比门在 09:54 的通过率 94.6% = 等于没筛）⇒ 改成「**测量修正代替时间等待**」：
+   逐轮实测全市场量能前置系数 k(m) 并把上报量比除掉（`scanner/volume_bias.py`），
+   窗口随之缩到 5 分钟（详见下一节）。
 2. **落库冻结**（`persist_round` + 迁移 `m016`）：信号值改为「首次写入即冻结」，
    另立 `last_hit_time` 列记最后命中。旧语义「最后写入即收盘值」会把票的**信号身份**
    （T1/T2、捕获时的涨幅）覆盖掉，事后无法还原它以什么身份被推出。
 
 ⚠ 本段**筛选常量一个没动**：样本只有 2 个交易日 / 19 行 —— 够证伪「量比在开盘几分钟
 可用」（那是数学性质，不是统计推断），远不够支撑任何阈值调整（项目铁律 observe-first）。
+
+2026-11-05 量比去偏（把「等 15 分钟」换成「把读数算准」）
+----------------------------------------------------------
+用户决策：「榜外异动开盘后 15 分钟才显示，是否有点太长了」。核查结论：**是，而且
+那 15 分钟本来就没解决问题**——开盘的量比失真是**全市场共同的时间形状因子**
+（集合竞价 + 早盘集中放量），可测可扣：
+
+    k(m) = 全市场中位[今日累计量 ÷ 近 5 日收盘量均值] ÷ (m/240)
+    实测（2026-11-05）：m=1 → 13.6x，m=3 → 7.3x，m=5 → 5.7x，m=15 → 3.5x，m=30 → 2.7x
+
+故本段的量比一律改用 `上报量比 ÷ k(m)`（**扣掉全市场共同的量能前置形状**后的值，
+与收盘口径同一量级），`k(m)` 由本地库逐轮实测（`scanner/volume_bias.py`，**零新增
+网络**）。三条纪律：
+1. **阈值一个字没改**：`MOMENTUM_LAUNCH_VOL`(1.5) 的语义（「相对自身近 5 日均速的
+   放量倍数」）去偏前后完全一致 ⇒ 不存在无标签调参；
+2. **k(m) 不可得 ⇒ 读数不可信 ⇒ 退回旧的 15 分钟窗口**（`OFFBOARD_OPENING_
+   SILENCE_MIN_UNADJUSTED`），不在读数不可信时假装可信；
+3. **榜内异动段同改**（`onboard_anomaly`）：它与本段共用 `offboard_gate` 的**同一个**
+   量比门、同**一份**快照 ⇒ 同一个阈值必须配同一个尺度，否则「同门同层」是假的。
+   ⚠ 榜内**飙升**段（A 段）**未改**（用户决策）—— 它的量比进入复合评分，改动面更大。
+
+⚠ 副作用（已量化，早盘会「更空」）：量比门在早盘从「几乎不过滤」变成真过滤 ——
+09:59 实测同一快照 330 只候选，原始口径过量比门 327 只（99.1%），去偏后 72 只
+（21.8%）⇒ 早盘产出**变少但变真**（不是「更早更多」）。这是「修测量」的必然结果，
+不是调松了门。
 
 2026-10-09 留存（dwell）
 ------------------------
@@ -116,6 +145,7 @@ from scanner.config import (
     OFFBOARD_MIN_AMOUNT,
     OFFBOARD_MIN_FLOAT_CAP,
     OFFBOARD_OPENING_SILENCE_MIN,
+    OFFBOARD_OPENING_SILENCE_MIN_UNADJUSTED,
     OFFBOARD_PREFILTER_AMOUNT_RATIO,
     OFFBOARD_PREFILTER_FLOAT_CAP_RATIO,
     OFFBOARD_PREFILTER_PCT_BUFFER,
@@ -138,6 +168,7 @@ from scanner.trading_session import is_trading_day, trading_minutes_elapsed
 from scanner.trend_beauty import DAILY_BEAUTY_MIN_BARS
 from scanner.utils import EXTERNAL_FAILURES, accum_5d, is_st, to_float
 from scanner.validator import mo_divergence
+from scanner.volume_bias import biased_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +225,10 @@ class OffboardCandidate:
     # N 日主力净额合计（元，2026-11-03）：**None = 不可判定**（历史不足 N 天）。
     # ⚠ 不可判定 ≠ 净流出 —— 门控时按 fail-open 放行（新股不该因「没历史」被砍）。
     flow_sum: float | None = None
+    # 上报原值（2026-11-05 量比去偏）：`volume_ratio` 是**去偏后**的决策/展示口径，
+    # 这里留一份**上报原值**落库（`offboard_launch_log.vol_ratio_raw`），供事后按
+    # 原始尺度重放阈值。0 = 本轮没有原值（未去偏时）。
+    volume_ratio_raw: float = 0.0
     reasons: list[str] = field(default_factory=list)
 
 
@@ -214,7 +249,10 @@ def sort_key(c: OffboardCandidate) -> tuple:
     AUC 0.469 < 0.5）。段内主键取量比，机制依据是「量比 = 当日每分钟均量 ÷ 近 5 日
     每分钟均量」= **增量资金**的直接代理，且与「量能领先于价格」的假设同向。
     ⚠ 量比在开盘头几分钟虚高一个量级（分母只有几分钟）⇒ **本排序键的正确性依赖
-    `OFFBOARD_OPENING_SILENCE_MIN` 那道静默窗口**，两者是一组，不可只删其一。
+    「量比已去偏」**（`scanner/volume_bias.py`：上报量比 ÷ 全市场量能前置系数 k(m)）
+    与 `OFFBOARD_OPENING_SILENCE_MIN` 那道静默窗口，两者是一组，不可只删其一。
+    ⚠ k(m) 是**全市场同一个标量** ⇒ 去偏**不改变同一轮内的相对序**（排序键本身
+    不受影响），改的是**读数的绝对尺度**（门槛判定 + 展示数字）。
 
     ⚠ A/B 两段**不混排**（同一张表内分段并列）：A 段的复合分里 `rank_change` 独占
     35/100，榜外票恒缺该项 ⇒ 混排必被永久压到最末。这不是「口径不可比」的抽象说法，
@@ -552,6 +590,9 @@ def _snapshot_row_to_candidate(symbol: str, payload: dict, names: dict[str, str]
         percent=to_float(payload.get("percent"), 0.0) or 0.0,
         accum_5d=0.0,  # 由 K 线算
         volume_ratio=to_float(payload.get("vol_ratio"), 0.0) or 0.0,
+        # 上报原值：量比去偏时由 `volume_bias.apply_bias` 写进快照（vol_ratio_raw），
+        # 未去偏时为 0 ⇒ 落库时写 NULL（旧行同义）。
+        volume_ratio_raw=to_float(payload.get("vol_ratio_raw"), 0.0) or 0.0,
         main_pct=to_float(payload.get("main_pct"), 0.0) or 0.0,
         volume=to_float(payload.get("volume"), 0.0) or 0.0,
         amount=to_float(payload.get("amount"), 0.0) or 0.0,
@@ -978,6 +1019,9 @@ def persist_round(
     🔴 **信号值首次写入即冻结**（2026-09-21 修）：`name / tier / percent / accum_5d /
     vol_ratio / main_pct / amount / float_cap / price` 九列在 ON CONFLICT 时**不更新**，
     只有 `last_hit_time` 与 `updated` 每轮刷新。
+    ⚠ `vol_ratio` 的语义 = **落库那刻门/排序/展示实际用的值**（跨历史一致）；2026-11-05
+    的量比去偏起它是**去偏值**，同时新增 `vol_ratio_raw` 存上报原值（m024）⇒ 分析侧
+    统一读 `coalesce(vol_ratio_raw, vol_ratio)` 即得原值尺度（跨改动可比）。
 
     `top_hits`（m019）：**前 `display_top` 行**每轮 +1，其余行恒 0 ——
     原是「反复进前十」粉名/🔥 标识（2026-10-14~15 四版沿革）的落库依据；
@@ -1034,9 +1078,9 @@ def persist_round(
         if rows:
             conn.executemany(
                 f"""INSERT INTO {_LOG_TABLE}
-                (date, symbol, name, tier, percent, accum_5d, vol_ratio, main_pct,
+                (date, symbol, name, tier, percent, accum_5d, vol_ratio, vol_ratio_raw, main_pct,
                  amount, float_cap, price, first_time, last_hit_time, top_hits, gate_hits, updated)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(date, symbol) DO UPDATE SET
                   last_hit_time=excluded.last_hit_time,
                   top_hits=top_hits+excluded.top_hits,
@@ -1051,6 +1095,9 @@ def persist_round(
                         round(c.percent, 3),
                         round(c.accum_5d, 3),
                         round(c.volume_ratio, 3),
+                        # 上报原值（2026-11-05 量比去偏）：0 = 本轮未去偏 ⇒ 写 NULL，
+                        # 读侧 `coalesce(vol_ratio_raw, vol_ratio)` 恒得原值尺度。
+                        round(c.volume_ratio_raw, 3) if c.volume_ratio_raw > 0 else None,
                         round(c.main_pct, 3),
                         c.amount,
                         c.float_market_capital,
@@ -1363,10 +1410,19 @@ def repair_next_day_labels(conn, *, dry_run: bool = True) -> dict:
 def opening_silence_active(now: datetime | None = None) -> bool:
     """开盘静默窗口是否生效（True = 本轮不产出）。
 
-    窗口依据见 `config_hot_watch.OFFBOARD_OPENING_SILENCE_MIN` 的注释：量比 = 当日累计量
-    ÷（近 5 日均每分钟量 × 已交易分钟数），开盘头几分钟的分母只有几分钟，商**虚高一个
-    量级**；而量比是本段 `sort_key` 的第一排序键。实测 09:33 捕获的 3 只 T1 虚高
-    11.5/8.6/6.6 倍且当日全数转跌，09:45 之后收敛到 ≈1.0。
+    ⚠ **2026-11-05 重做**：窗口从 15 分钟缩到 **5 分钟**，因为开盘的量比失真现在
+    可以被**算出来并扣掉**（`scanner/volume_bias.py`），不必再靠「等它自己收敛」。
+    本函数只管「开盘头几分钟一律不产出」这件最朴素的事；**能不能提前放行**取决于
+    去偏系数是否可得 ⇒ 见 `unadjusted_silence_active`（兜底窗口）。
+
+    历史依据（2026-09-21 设 15 分钟时）：量比 = 当日累计量 ÷（近 5 日均每分钟量 ×
+    已交易分钟数），开盘头几分钟的分母只有几分钟，商**虚高一个量级**；而量比是
+    本段 `sort_key` 的第一排序键。实测 09:33 捕获的 3 只 T1 虚高 11.5/8.6/6.6 倍
+    且当日全数转跌。
+
+    ⚠ 2026-11-05 的实测反过来证明：**等 15 分钟并没有把失真等掉** —— 09:45 的读数
+    仍虚高 3.5 倍，量比门在 09:54 的通过率是 94.6%（等于没筛）。故本函数从
+    「等失真消失」改成「等读数可被修正」，窗口随之缩到 5 分钟。
 
     用 `trading_minutes_elapsed` 而**不是**墙上时间差：它已把午休 120 分钟排除在外
     （11:30 与 13:00 都返回 120），故「开盘满 N 分钟」在任何时刻都只指「上午连续竞价
@@ -1380,6 +1436,20 @@ def opening_silence_active(now: datetime | None = None) -> bool:
     return trading_minutes_elapsed(now) < OFFBOARD_OPENING_SILENCE_MIN
 
 
+def unadjusted_silence_active(now: datetime | None = None) -> bool:
+    """**去偏系数不可得**时的兜底静默窗（True = 本轮不产出）。
+
+    何时走这条路：本地库没有足够的 `market_extra_cache` 历史（新库 / 数据不足）
+    ⇒ k(m) 算不出来 ⇒ 量比读数仍是虚高的 ⇒ 此时放行 5 分钟窗口 = 放出一堆
+    「量比 7~10」的行。故退回 2026-09-21 的 15 分钟口径（宁可晚，不可假）。
+
+    `OFFBOARD_OPENING_SILENCE_MIN_UNADJUSTED <= 0` = 关闭兜底（离线自检 / 回放路径）。
+    """
+    if OFFBOARD_OPENING_SILENCE_MIN_UNADJUSTED <= 0:
+        return False
+    return trading_minutes_elapsed(now) < OFFBOARD_OPENING_SILENCE_MIN_UNADJUSTED
+
+
 def run_offboard_watch(
     adapter,
     conn,
@@ -1389,6 +1459,7 @@ def run_offboard_watch(
     top_n: int = OFFBOARD_DISPLAY_TOP,
     klines: dict[str, list] | None = None,
     snapshot: dict[str, dict] | None = None,
+    bias_conn: sqlite3.Connection | None = None,
 ) -> list[OffboardCandidate]:
     """跑一轮 B 段筛选，返回待展示的前 `top_n` 行。
 
@@ -1398,6 +1469,11 @@ def run_offboard_watch(
     `klines` 显式传入时跳过 K 线池（离线自检路径，不联网）；
     `snapshot` 显式传入时跳过 DB 读取（CLI 用生产快照 + 内存库的组合，见 `main`），
     **并跳过实时资金流补拉**（见下方 M1 修复段）—— 测试/离线路径保持零联网。
+
+    `bias_conn`（2026-11-05）：**量比去偏系数 k(m) 的参考量来源**（读
+    `market_extra_cache` 的历史收盘量）。默认用 `conn`；CLI 路径的 `conn` 是内存库
+    （无历史）⇒ 那里必须显式传生产库的连接，否则去偏恒判「不可判定」⇒ 退回 15
+    分钟兜底窗口（CLI 在开盘后 15 分钟内看不到东西）。
 
     异常处理见模块 docstring 的 fail-open / fail-closed 一节；编程错误不吞。
     """
@@ -1436,6 +1512,20 @@ def run_offboard_watch(
             logger.warning("B段实时资金流补拉失败（退化为快照 main_pct/vol_ratio）: %s", e)
             ff_map = {}
         _apply_live_fund_flow(snapshot, ff_map)
+
+    # 🔴 量比去偏（2026-11-05）：把**上报量比**换算成「按当前进度折算的全天口径」。
+    # 上报量比 = 当日累计量 ÷（近 5 日均每分钟量 × 已交易分钟数），开盘头几分钟的
+    # 分母只有几分钟 ⇒ 全市场共同的读数虚高（实测 k(m)：09:31 13.6x / 09:33 7.3x /
+    # 09:45 3.5x / 09:54 3.2x）。k(m) 由本地库逐轮实测（`scanner/volume_bias.py`，
+    # 零新增网络）⇒ 扣掉它，量比就回到「与收盘同一量级」，门槛 `MOMENTUM_LAUNCH_VOL`
+    # 的语义一字不改。
+    # ⚠ 必须在**实时资金流覆盖之后**：覆盖刷进来的是新鲜的上报原值，去偏要在它上面做。
+    # ⚠ 必须在**粗筛之前**：粗筛按量比降序取头部（去偏是全市场同一个标量，不改相对
+    # 序，但口径要一致，免得日志/展示/门三处读到不同的数）。
+    bias = biased_snapshot(bias_conn or conn, snapshot)
+    # 不可判定（本地历史不足 / 样本太少）⇒ 读数仍虚高 ⇒ 退回旧口径的 15 分钟窗口。
+    if bias is None and unadjusted_silence_active():
+        return []
 
     # 🔴 实时价覆盖（2026-10-08）：**在过门之前**就地覆盖快照 —— 判定与展示共用同一份
     # 数据，故口径自洽（判定即所见）。原因与实测见 `_apply_live_quote` docstring：
@@ -1838,6 +1928,8 @@ def _row_json(c: OffboardCandidate) -> dict:
         "percent": round(c.percent, 2),
         "accum_5d": round(c.accum_5d, 2),
         "vol_ratio": round(c.volume_ratio, 2),
+        # 上报原值（量比去偏前）：`vol_ratio` 是去偏后的决策口径。
+        "vol_ratio_raw": round(c.volume_ratio_raw, 2),
         "main_pct": round(c.main_pct, 2),
         "amount": round(c.amount),
         "float_cap_yi": round(c.float_market_capital / 1e8, 2),
@@ -1944,7 +2036,7 @@ def main(argv: "list[str] | None" = None) -> int:
         print(
             f"  开盘静默窗口生效中：已交易 {trading_minutes_elapsed()} 分钟 < "
             f"OFFBOARD_OPENING_SILENCE_MIN={OFFBOARD_OPENING_SILENCE_MIN} 分钟"
-            " —— 量比在此窗口内虚高一个量级，本轮不产出"
+            " —— 开盘头几分钟的量比失真最大（可测可扣，但此刻不值得先信它），本轮不产出"
         )
         return 0
 
@@ -1952,16 +2044,18 @@ def main(argv: "list[str] | None" = None) -> int:
     if not board:
         print("  [!] 飙升榜为空（熔断中/网络异常）——本段候选不依赖榜单，继续尝试快照")
     prod = get_conn()
-    try:
-        snapshot = _snap(prod, "fund_flow")
-    finally:
-        prod.close()
+    snapshot = _snap(prod, "fund_flow")
     if not snapshot:
         print("  [!] 资金流快照为空（主循环未落库？），无法运行 B 段")
         return 1
     print(f"  飙升榜 {len(board)} 条 / 资金流快照 {len(snapshot)} 只 | 数据源 {adapter.name}")
 
-    rows = run_offboard_watch(adapter, _cli_conn(), board, top_n=args.top, snapshot=snapshot)
+    # ⚠ `bias_conn=prod`：量比去偏系数 k(m) 要读**生产库**的历史收盘量（CLI 的
+    # `conn` 是内存库、无历史）⇒ 不传则去偏恒判「不可判定」⇒ 退回 15 分钟兜底窗口。
+    try:
+        rows = run_offboard_watch(adapter, _cli_conn(), board, top_n=args.top, snapshot=snapshot, bias_conn=prod)
+    finally:
+        prod.close()
     if not rows:
         print("  本轮无标的通过（榜外无异动 / 全被排除）")
         return 0

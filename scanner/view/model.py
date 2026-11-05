@@ -606,8 +606,17 @@ def hot_subtitle(n: int) -> str:
     排序键须与 `hot_watch.build_candidates` 的 `passed.sort(key=(-score, -rank_change))`
     同序（同分再按排名上升）。四项权重取自 `config_hot_watch.HOT_W_*`（和 = 100），
     故这里写各项权重而不是别的分母。
+
+    ⚠ 「量比=上报原值」（2026-11-05）：榜外/榜内异动两段的量比已按全市场量能前置
+    系数去偏（`scanner/volume_bias.py`），**本段未改**（用户决策：它进入复合评分，
+    改动面更大）⇒ 同一区内三段的量比列**不是同一个尺度**，必须标出来，否则读者
+    会把「榜内 2.0」与「榜外 1.6」当成可比。
     """
-    return f"（榜内创业板·当日动能+热度跃升（已涨）·排序=评分↓(排名上升35/涨幅25/价格15/量能25)·同分比排名上升·{n} 只）"
+    return (
+        "（榜内创业板·当日动能+热度跃升（已涨）·"
+        "排序=评分↓(排名上升35/涨幅25/价格15/量能25)·同分比排名上升·量比=上报原值·"
+        f"{n} 只）"
+    )
 
 
 def offboard_subtitle(n: int) -> str:
@@ -640,7 +649,7 @@ def offboard_subtitle(n: int) -> str:
         "（榜外创业板·非榜单来源·"
         "层级 T1=量先动·价未动 / T2=启动首日·"
         "排序=T2 启动首日→T1 量先动→量比→主力净占比"
-        f"·开盘 {OFFBOARD_OPENING_SILENCE_MIN} 分内不产出(量比失真)"
+        f"·开盘 {OFFBOARD_OPENING_SILENCE_MIN} 分内不产出·量比按市场前置系数去偏"
         f"·{n} 只·观察段·未回测）"
     )
 
@@ -662,7 +671,7 @@ def onboard_subtitle(n: int) -> str:
         "（榜内创业板·榜单来源·"
         "层级 仅T1=量先动·价未动（T2=启动首日需已涨，与本段互斥）·"
         "排序=量比→主力净占比"
-        f"·开盘 {OFFBOARD_OPENING_SILENCE_MIN} 分内不产出(量比失真)"
+        f"·开盘 {OFFBOARD_OPENING_SILENCE_MIN} 分内不产出·量比按市场前置系数去偏"
         f"·{n} 只·观察段·未回测·与榜外段同门同层）"
     )
 
