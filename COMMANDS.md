@@ -11,10 +11,10 @@
 
 ```bash
 python unified_scanner.py                 # 跑扫描器（60s 一轮，按 c 复制名单）
+python scripts/buy_priority_report.py     # 盘中买入优先级反馈报告（独立脚本，~8s，见 §2.1）
 python pick.py --clipboard                # 把剪贴板里的名单丢给 AI 调研 → 出报告
 python stock_report.py 300319             # 单只票深报（代码或名字都行）
 python -m pytest tests/ -q                # 全量测试
-python -m scanner.hot_watch --offline-demo   # 飙升区规则回归哨兵（改规则后必跑）
 ```
 
 ---
@@ -48,6 +48,49 @@ python -m scanner.hot_watch --offline-demo   # 飙升区规则回归哨兵（改
 | `python prevday_perf.py --days 0` | 全期（0 = 不限天数） |
 | `python prevday_perf.py --force` | 跳过数据健康检查（交叉验证不符也强行出） |
 | `python query_today.py` / `query_summary.py` | 查今日推荐 / 推荐汇总（默认昨日） |
+
+---
+
+### 2.1 盘中买入优先级反馈报告（**独立脚本**，随跑随出）
+
+把「当日候选 → 第一/第二/第三梯队 + 回避 + 明日动作」打出来。**只读库、不写库、
+不改任何生产逻辑、不进主循环/终端/飞书**（`scanner/` 零改动）。
+
+```bash
+python scripts/buy_priority_report.py                    # 默认档：~8-11s（本地+公告12只+龙虎榜4只）
+python scripts/buy_priority_report.py --no-ann           # 纯本地零网络：~0.5s（只看资金/位置/板块）
+python scripts/buy_priority_report.py --out 今日.md       # 同时落盘（utf-8-sig，Excel 可直接开）
+python scripts/buy_priority_report.py --symbols 300638,300568   # 指定清单（默认当日推荐池）
+python scripts/buy_priority_report.py --top 10           # 只打前 10 只
+python scripts/buy_priority_report.py --date 2026-11-04  # 复盘某个交易日（需当日有标签）
+```
+
+**耗时档位**（实测 2026-11-05，46 只候选）：
+
+| 开关 | 耗时 | 加什么 |
+|---|---|---|
+| `--no-ann` | **0.5s** | 纯本地库：资金/位置/个股历史/板块排位/市场环境 |
+| 默认 | **8~11s** | + 公告 12 只（东财）+ 龙虎榜 4 只（东财） |
+| `--dtb 0` | −2.6s | 关掉龙虎榜 |
+| `--ann-top 0` | −6s | 关掉公告（等价 `--no-ann`） |
+| `--minute N` | +18s | 分时均价（雪球 minute.json，只对第一/二梯队前 N 只） |
+| `--ai N` | **≈60s/只** | AI 深度复核（`scanner.ai_digest` research 工具箱，模型自己查真实数据） |
+
+**报告里每只票给什么**：现价/涨幅/类别·先验/评分 → 资金（主力净占比·净额·超大单·5日累计与净流入天数）
+→ 位置（MA5 偏离·历史5日·量比·换手）→ 个股历史兑现率 + 弹性（市值/价格）→ **板块排位**
+（它在主板块当日第几，跟随还是掉队）→ **大涨之后模式**（该票历史上大涨之后的次日表现）→
+公告事件（已验证负面 / 未验证）→ 龙虎榜（最近一次上榜后的 D1/D5）→ **✅成立条件 / ❌失效信号**
+（带具体价位）。末尾是**明日动作** + **口径与已知缺口**。
+
+**分档口径**（写死在脚本里，可改可查）：
+- 综合分 = 先验25 + 当日资金20 + 中期资金20 + 位置20 + 个股历史10 + 弹性10 − 惩罚项；
+- **封顶①** 先验 C 档（< 7.8% 基线）⇒ 最高第三梯队；
+- **封顶②** 命中**已验证负面**公告（减持/对外担保/股权激励）⇒ 最高第二梯队；
+- **硬否决 → 回避**：主力 ≤ −8% / 当日涨幅 ≥ 8% / 历史5日累计 ≥ 50% / 超买硬信号；
+- 公告证据分层与实测数字见脚本 docstring 与 `scripts/ann_event_backtest.py`。
+
+⚠ 三个已知缺口（报告尾部也会打）：① 板块排位**未做样本外检验** ⇒ 只提示、不进分数；
+② 资金累计用本地每日快照（与东财日频收盘值有差）；③ 公告只对排序靠前 N 只拉 ⇒ 未标 ≠ 没有。
 
 ---
 
@@ -173,6 +216,8 @@ python scripts/shadow_feature_backtest.py --no-fetch           # B 段新数据�
 | 脚本 | 用途 |
 |---|---|
 | `scripts/profit_ledger.py` | 收益账本：按某规则买入实际拿到多少（扣真实成本） |
+| `scripts/ann_event_backtest.py` | 公告事件的历史样本外检验（v1 主线 / 榜外段可切换 · 13 类事件 · 配对 bootstrap + 逐日符号检验 + jackknife） |
+| `scripts/buy_priority_report.py` | **盘中买入优先级反馈报告**（独立脚本 · 只读库 · ~8s）：综合分档 + 成立/失效条件 + 明日动作（详见 §2.1） |
 | `scripts/push_gate_impact.py` | 飞书过滤门的离线影响评估（三个问题，全部用真实历史数据） |
 | `scripts/prelaunch_probe.py` | 启动前形态的样本外可提取性探针（只读，不联网） |
 | `scripts/beauty_mark_eval.py` | 「稳」走势标记分档的样本外裁决 |

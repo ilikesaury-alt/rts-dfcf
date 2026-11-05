@@ -36,6 +36,7 @@ ruff check . / ruff format . / mypy scanner/
 python scripts/offboard_nextday.py [--days N] [--tier T2] [--json]
 python scripts/offboard_nextday.py --repair-next-day [--apply]   # 修历史错标签，默认 dry-run
 python scripts/shadow_feature_backtest.py [--no-fetch]   # B 段新数据源的回溯样本外检验
+python scripts/buy_priority_report.py    # 盘中买入优先级反馈报告（独立脚本·只读库·~8s）
 # 旧样本外验证门 / 概率校准 / P&L 回测已归档 legacy/，不进主程序命令（见 legacy/README.md）。
 
 # B 段 AI 分析（手动触发，不轮询，不挂主循环）
@@ -188,8 +189,10 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
   = 分母效应）。序列来自 `market_extra_cache`（主循环每天已在写）⇒ **零新增网络请求**；
   与「当日主力净占比」**不共线**（r=+0.051）⇒ 是增量信息不是重复。
   ⚠ **已否决的伪信号**（别加）：**龙虎榜** bootstrap CI 看着显著（+9.19pp）但逐日
-  正8/负9（p=0.815）= 少数几天拉起来的假信号；**公告**（业绩预告/重组并购方向为负
-  「利好出尽」但参与日仅 2~5 天，样本不足）。
+  正8/负9（p=0.815）= 少数几天拉起来的假信号；**公告**在 B 段亦不可用（参与日仅 2~5 天）。
+  ⚠ **2026-11-05**：公告结论**总体特异**，别跨段搬 —— v1 主线为负的是「对外担保」「股权激励类」
+  （Δ −6.6pp、逐日 0/12~0/14、p≤0.001、分半同向），旧结论只在 B 段成立；且**两门合并即失效**
+  ⇒ 分门用；验证 `python scripts/ann_event_backtest.py`（按日配对 bootstrap + 逐日符号检验）。
   ⚠ 回退：`OFFBOARD_FLOW_WINDOW=0` 或把 `_flow_gate_reason` 的调用摘掉。
 - **ai_digest 素材口径**：值取自 launch_log 冻结快照（「信号时涨幅」= 被推出时的涨幅）；
   段内顺序用 `offboard_watch.sort_key`；`next_day_pct` 刻意不进素材（防绩效读数变成判断）。
