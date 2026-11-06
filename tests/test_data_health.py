@@ -7,7 +7,7 @@
   - save_kline_to_db 的 finalized 标记（盘中今日=0，收盘后/历史=1）
 """
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 
 import pytest
 
@@ -18,7 +18,22 @@ BEIJING = timezone(timedelta(hours=8))
 
 
 def _now(h: int, m: int = 0) -> datetime:
-    return datetime(2026, 8, 18, h, m, tzinfo=BEIJING)
+    """「今日」的 h:m 假时钟，日期取**真实今天**。
+
+    2026-11-06 修复：曾硬编码 2026-08-18，真实日期越过那天后 3 个 finalized 测试全挂
+    （`assert (None)`）。且这里存在**两个独立时钟**，只有「真实今天/昨天」两档日期同时满足：
+      ① `scanner.db.dal.now_beijing`（本文件 patch）→ today_str，决定 finalized 判据；
+      ② `scanner/db/queries.get_cached_klines` 自己的真实 now_beijing → 60 天回看窗口
+         （本文件不 patch 它）；bar 日期早于窗口就**读不回来**，跟 finalized 值无关。
+    所以别改回固定日期（含「今天」字面量），也别为了让 patch 生效去 patch ②——
+    那会让测试假装通过而掩盖窗口行为。
+    """
+    return datetime.combine(datetime.now(BEIJING).date(), time(h, m), tzinfo=BEIJING)
+
+
+def _day(offset: int = 0) -> str:
+    """与 _now() 同源的日期串：0=今天、-1=昨天（同上，必须是真实日期）。"""
+    return (datetime.now(BEIJING).date() + timedelta(days=offset)).isoformat()
 
 
 @pytest.fixture
@@ -167,7 +182,7 @@ class TestSaveKlineFinalizedMark:
         # P1-6 拆分后 save_kline_to_db 实现在 scanner.db.dal，patch 须打在实现模块
         monkeypatch.setattr("scanner.db.dal.now_beijing", lambda: _now(10, 30))
         monkeypatch.setattr("scanner.db.dal.is_trading_time", lambda: True)
-        save_kline_to_db(conn, "SZ300607", [self._bar("2026-08-18", 36.27)])
+        save_kline_to_db(conn, "SZ300607", [self._bar(_day(), 36.27)])
         bars = get_cached_kline(conn, "SZ300607")
         assert bars and bars[-1]["finalized"] is False
 
@@ -175,7 +190,7 @@ class TestSaveKlineFinalizedMark:
         """收盘后（定稿/backfill）写入今日 bar → finalized=1。"""
         monkeypatch.setattr("scanner.db.dal.now_beijing", lambda: _now(18, 0))
         monkeypatch.setattr("scanner.db.dal.is_trading_time", lambda: False)
-        save_kline_to_db(conn, "SZ300607", [self._bar("2026-08-18", 37.90)])
+        save_kline_to_db(conn, "SZ300607", [self._bar(_day(), 37.90)])
         bars = get_cached_kline(conn, "SZ300607")
         assert bars and bars[-1]["finalized"] is True
 
@@ -183,7 +198,7 @@ class TestSaveKlineFinalizedMark:
         """历史 bar（非今日）盘中写入也置 finalized=1。"""
         monkeypatch.setattr("scanner.db.dal.now_beijing", lambda: _now(10, 30))
         monkeypatch.setattr("scanner.db.dal.is_trading_time", lambda: True)
-        save_kline_to_db(conn, "SZ300607", [self._bar("2026-08-17", 37.53)])
+        save_kline_to_db(conn, "SZ300607", [self._bar(_day(-1), 37.53)])
         bars = get_cached_kline(conn, "SZ300607")
         assert bars and bars[-1]["finalized"] is True
 
