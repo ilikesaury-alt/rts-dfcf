@@ -68,6 +68,7 @@ from scanner.models import RecommendationRow
 from scanner.offboard_watch import run_offboard_watch
 from scanner.onboard_anomaly import run_onboard_anomaly
 from scanner.orchestrator import scan_with_raw
+from scanner.panel_md import save_panel_round
 from scanner.ranking_snapshot import persist_ranking_snapshot
 from scanner.single_instance import SingleInstanceError, SingleInstanceLock, stop_existing_scanners
 from scanner.terminal_copy import capture_stdout, install_hotkey
@@ -708,6 +709,10 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                     )
                 # 快照本轮榜单排名供下一轮展示排名变化（上一轮为 None 时显示纯名次）。
                 last_ranks = dict(current_rank_map)
+                # 面板逐轮存档（<LOG_DIR>/panel_md/股票池.md；fail-open，纯展示层）：
+                # 与「按 c 复制」同一份 tee 采集文本，不重渲染不重算；每轮整份覆盖，
+                # 文件里只留最近一次。写盘异常在 save_panel_round 内部吞掉，绝不断主循环。
+                save_panel_round()
                 log_results(new_faces, momentum + rebound_list + short_term_list)
                 if not no_feishu:
                     pushed = push_feishu(view, len(all_gem), filtered_large_cap=filtered_large_cap)

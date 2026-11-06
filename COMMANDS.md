@@ -251,6 +251,8 @@ python scripts/shadow_feature_backtest.py --no-fetch           # B 段新数据�
 | `RTS_HOT_WATCH=0` | 整体关掉沪深飙升独立区 |
 | `RTS_LOCAL_PANEL` / `RTS_LOCAL_PANEL_PORT` | 本地 Web 面板开关 / 端口 |
 | `RTS_PANEL_URL` / `RTS_PANEL_SECRET` | 面板上报地址 / 密钥 |
+| `RTS_PANEL_MD=0` | 关掉面板逐轮存档（默认每轮**整份覆盖** `logs/panel_md/股票池.md`，只留最近一次） |
+| `RTS_PANEL_MD_PATH` | 存档 md 完整路径（整份覆盖，指向外部文件会替换其原有内容） |
 | `RTS_FEISHU_WEBHOOK` | 飞书 webhook 覆盖 |
 | `RTS_DB_PATH` | 指定 DB 路径（默认根目录 `scanner.db`） |
 | `RTS_DATA_SOURCE` | 数据源（雪球 / 同花顺 fallback） |

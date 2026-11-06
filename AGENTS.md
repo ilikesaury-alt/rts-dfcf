@@ -259,6 +259,7 @@ scanner/
   ranking.py                # Composite ranking + tier (档0-3) + nextday mark
   display.py                # Terminal rendering (ANSI colors)
   terminal_copy.py          # 终端「一键复制」（按 c → 名称+代码清单进剪贴板）
+  panel_md.py               # 面板逐轮存档（股票池.md：每轮整份覆盖、只留最近一次，纯展示层）
   feishu.py                 # Feishu webhook push
   push_gate.py              # 飞书推送过滤门（纯展示层，终端不套用）
   hot_watch.py              # 沪深飙升独立区（与主线口径解耦）

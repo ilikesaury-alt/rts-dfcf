@@ -123,6 +123,13 @@ def _env_str(name: str, default: str) -> str:
     return v.strip() if v and v.strip() else default
 
 
+# ── 面板逐轮存档（panel_md）──
+# 每轮把最近一次终端面板文本整份覆盖到 <LOG_DIR>/panel_md/股票池.md（只留最新一轮）。
+PANEL_MD_ENABLED = _env_flag("RTS_PANEL_MD", True)  # 总闸：RTS_PANEL_MD=0 整体关闭
+# 完整路径覆盖（空 = 用默认路径）；整份覆盖语义，指向外部文件会替换其原有内容。
+PANEL_MD_PATH = os.environ.get("RTS_PANEL_MD_PATH", "").strip()
+
+
 # 2026-09-28：以下两个开关随 v2 池管道退池一并删除，二者均已无任何读取方——
 #   pipeline_mode()        —— 自身 docstring 早已写明「不再切换任何行为，仅为兼容保留」，
 #                            唯一调用方 scripts/run_v2_once.py 已随 v2 工具链删除；
@@ -168,6 +175,8 @@ __all__ = [
     "resolve_db_path",
     "resolve_log_dir",
     "FOREIGN_EXCLUDED_PREFIXES",
+    "PANEL_MD_ENABLED",
+    "PANEL_MD_PATH",
     "_env_flag",
     "_env_float",
     "_env_str",

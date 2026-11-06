@@ -55,6 +55,9 @@ coverage.xml
 
 # 输出产物
 graphify-out/
+# 外部自动化任务（deepseek-harness）按天生成的筛选报告 / AI digest 个人自选清单
+/筛选报告-*.md
+/my_watchlist.txt
 
 # 前端测试缓存：vitest 的 json 缓存目录（会落在 git 根，非 web/ 下）
 .vitest/
