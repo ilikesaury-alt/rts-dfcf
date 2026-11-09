@@ -743,9 +743,35 @@ def test_research_tools_exist_and_are_wired():
         assert sch["function"]["parameters"]["type"] == "object"
 
 
-def test_research_tools_use_real_local_data(digest_db):
-    """工具必须能用**本地真实数据**跑通（列名写错会 OperationalError ⇒ 工具静默失效）。"""
+def test_research_tools_use_real_local_data(digest_db, monkeypatch):
+    """工具必须能用**本地真实数据**跑通（列名写错会 OperationalError ⇒ 工具静默失效）。
+
+    ⚠ `get_kline` 本地不足 3 根会去雪球补实时 K 线并**整段替换**本地行；不桩掉
+    外网路径，本用例就会随本机 cookie/网络状态忽绿忽红（2026-11-06 实测：
+    联网成功时输出变成 4 根实时 bar，断言里的 2026-11-02 消失）。这里把四个
+    工具会碰到的取数函数全桩成空/None，SQL 仍查真库 ⇒ 零联网，列名守卫的意图不变。
+    """
+    import scanner.api as api_mod
+    import scanner.market_extra as market_extra_mod
     from scanner.ai_digest.research import ResearchContext, build_tools, run_tool
+
+    calls: list[str] = []
+
+    def _no_remote_bars(session, symbol, days=None):
+        calls.append("kline")
+        return []
+
+    def _no_index(session):
+        calls.append("index")
+
+    def _no_zt():
+        calls.append("zt")
+        return []
+
+    monkeypatch.setattr(api_mod, "fetch_kline", _no_remote_bars)
+    monkeypatch.setattr(api_mod, "fetch_market_index", _no_index)
+    monkeypatch.setattr(market_extra_mod, "fetch_zt_pool", _no_zt)
+    monkeypatch.setattr(ResearchContext, "get_session", lambda self: object())
 
     conn = sqlite3.connect(str(digest_db))
     try:
@@ -770,6 +796,7 @@ def test_research_tools_use_real_local_data(digest_db):
         tools = {t.name: t for t in build_tools()}
 
         k = run_tool(tools["get_kline"], {"symbol": "SZ300770", "n": 5}, ctx)
+        assert calls == ["kline"], "本地不足 3 根时必须走过「实时补」分支，桩才有效"
         assert "2026-11-02" in k and "40.33" in k
         assert "1630万股" in k, "成交量必须给人读单位（模型照抄，不自己换算）"
 
@@ -780,6 +807,7 @@ def test_research_tools_use_real_local_data(digest_db):
         assert "short_term" in rec and "score=72" in rec
 
         ov = run_tool(tools["get_market_overview"], {}, ctx)
+        assert {"index", "zt"} <= set(calls), "概览的两条外网取数也必须走桩（不许真联网）"
         assert "本地 K 线样本" in ov  # 即使指数/涨停池取不到，本地那部分也必须出得来
     finally:
         conn.close()
