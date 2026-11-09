@@ -1,9 +1,11 @@
 """终端「一键复制」（`scanner/terminal_copy.py`）单测。
 
-覆盖三件事：
+覆盖四件事：
 1. **文本正确性**：ANSI 去掉、`\r` 进度行规整、采集到的内容 = 打印出去的内容。
-2. **不越界**：采集只还原 stdout、不改别的；剪贴板失败只返回 False 不抛。
-3. **热键行为**：只有 `c`（不分大小写）触发复制；`None`（无输入）继续等。
+2. **区块切分**：按 `◆` 只留 v1 池选 + 沪深飙升两区，区内整行逐字保留、不去重；
+   头部摘要/告警/飞书过门不进剪贴板。
+3. **不越界**：采集只还原 stdout、不改别的；剪贴板失败只返回 False 不抛。
+4. **热键行为**：只有 `c`（不分大小写）触发复制；`None`（无输入）继续等。
 
 ⚠ 每个用例都**显式断言调用发生**（AGENTS.md：禁空断言）。
 """
@@ -79,41 +81,78 @@ def test_capture_stdout_does_not_clobber_devnull_downgrade():
     assert sys.stdout is not original
 
 
-# ── 清单抽取 ────────────────────────────────────────────────────────────
+# ── 区块切分（复制「两区完整原文」，2026-11-06）──────────────────────
 
 
-def test_extract_stock_list_keeps_name_and_code_only():
-    text = (
-        "  ◆ v1 池选 — 新票优先·类别优先·排名升序·资金流降序\n"
-        "   #  代码         名称      涨幅     5日累计   现价   排名  板块     评分 策略\n"
-        "   1  SZ300369    绿盟科技    +8.10%   +12.00%  23.50     7  半导体   86  新面孔\n"
-        "   2  SZ300133    华策影视    +6.20%    +3.10%  11.20    12  传媒     72  动量\n"
-    )
-    assert tc.extract_stock_list(text) == "绿盟科技 300369\n华策影视 300133"
-
-
-def test_extract_stock_list_handles_hot_rows_without_market_prefix():
-    text = (
-        "  — 榜内飙升 —\n"
-        "   1  300369      绿盟科技   +9.90%   +15.00%  23.50   +3   120手   1.2亿  2.10  8.0   120  半导体  88.0   —   ★3\n"
-    )
-    assert tc.extract_stock_list(text) == "绿盟科技 300369"
-
-
-def test_extract_stock_list_dedupes_and_ignores_non_row_lines():
-    text = (
-        "  创业板飙升榜监控  (2026-11-03 10:00:00)\n"
-        "  ◆ 飞书过门（本轮 3 只通过严格过滤 · 下一张卡片将推此集合）\n"
+def _sample_panel() -> str:
+    """贴近真实渲染的面板纯文本（已去 ANSI）：头部 → 两区 → 飞书过门。"""
+    return (
+        "================================================================================\n"
+        "  创业板飙升榜监控  (2026-11-06 10:00:00)\n"
+        "  创业板共 1350 只 | 每60s刷新 | 市况偏强\n"
+        "================================================================================\n"
+        "  [!] 数据质量告警：行情延迟\n"
+        "◆ v1 池选 — 新票优先·类别优先·排名升序·资金流降序\n"
+        "类别·先验 = 该类别历史上的次日≥7%命中率（系统唯一口径）\n"
+        "   #  代码         名称      涨幅     5日累计   现价   排名  板块     类别·先验\n"
+        "   1  SZ300369    绿盟科技    +8.10%   +12.00%  23.50     7  半导体   RBD·17.9%  新\n"
+        "   2  SZ300133    华策影视    +6.20%    +3.10%  11.20    12  传媒     MOM·13.2%\n"
+        "\n"
+        "◆ 沪深飙升 · 极有可能大涨（创业板 · 三段并列·互不排名 · 与上方主线口径独立）\n"
+        "  — 榜内飙升（…）\n"
+        "   #  代码       名称     涨幅    排名上升  成交量   评分  层  连击\n"
+        "   1  300369    绿盟科技  +9.90%   +3     300000手  88.0  —  ★3\n"
+        "  — 榜内异动（…）\n"
+        "  — 榜外异动（…）\n"
+        "   1  300133    华策影视  +2.10%    —     120000手   —   T2  —\n"
+        "  ------------------------------------------------------------------------\n"
+        "\n"
+        "◆ 飞书过门（本轮 3 只通过严格过滤 · 下一张卡片将推此集合）\n"
         "    池选  绿盟科技 威尔高\n"
-        "   1  SZ300369  绿盟科技  +8.10%\n"
-        "   2  SZ300133  华策影视  +6.20%\n"
-        "   3  300369     绿盟科技  +9.00%\n"  # 与第 1 行同一只票（不同区块）
     )
-    assert tc.extract_stock_list(text) == "绿盟科技 300369\n华策影视 300133"
 
 
-def test_extract_stock_list_empty_for_non_table_text():
-    assert tc.extract_stock_list("  创业板飙升榜监控  (2026-11-03 10:00:00)\n") == ""
+def test_extract_table_regions_keeps_both_regions_verbatim():
+    panel = _sample_panel()
+    lines = panel.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("◆ v1 池选"))
+    end = next(i for i, line in enumerate(lines) if line.startswith("◆ 飞书过门"))
+    expected = "\n".join(lines[start:end]).strip("\n")
+    got = tc.extract_table_regions(panel)
+    # 两区之间逐字保留：区/段标题、口径说明、表头、全部数据列、区尾分隔线。
+    assert got == expected
+    assert "  创业板飙升榜监控" not in got
+    assert "  [!] 数据质量告警" not in got
+    assert "◆ 飞书过门" not in got
+    assert "池选  绿盟科技 威尔高" not in got
+
+
+def test_extract_table_regions_keeps_cross_region_duplicates():
+    """不精简 = 不按代码去重：同票在 v1 与沪深区各自整行都留下。"""
+    got = tc.extract_table_regions(_sample_panel())
+    assert got.count("   1  SZ300369    绿盟科技") == 1
+    assert got.count("   1  300369    绿盟科技") == 1
+
+
+def test_extract_table_regions_returns_empty_without_target_regions():
+    text = "  创业板飙升榜监控  (2026-11-06 10:00:00)\n◆ 飞书过门（本轮 3 只通过严格过滤）\n    池选  绿盟科技\n"
+    assert tc.extract_table_regions(text) == ""
+
+
+def test_extract_table_regions_falls_back_to_full_text_without_region_titles():
+    """区标题约定变动时别静默复制空内容：有表格行就原样给全文。"""
+    text = "   1  SZ300369  绿盟科技  +8.10%\n   2  SZ300133  华策影视  +6.20%\n"
+    assert tc.extract_table_regions(text) == text.strip("\n")
+
+
+def test_capture_stdout_then_extract_regions_roundtrip():
+    """tee 采集 → 去 ANSI → 按 ◆ 切区，整条链路端到端。"""
+    with tc.capture_stdout():
+        print("\x1b[1m◆ v1 池选 — 新票优先\x1b[0m")
+        print("   1  SZ300369  绿盟科技  +8.10%")
+    assert tc.extract_table_regions(tc.latest_panel_text()) == (
+        "◆ v1 池选 — 新票优先\n   1  SZ300369  绿盟科技  +8.10%"
+    )
 
 
 # ── 剪贴板 ──────────────────────────────────────────────────────────────
@@ -193,21 +232,26 @@ def test_handle_copy_request_reports_when_nothing_captured(capsys, monkeypatch):
     assert "还没有可复制" in out
 
 
-def test_handle_copy_request_copies_names_and_codes_only(capsys, monkeypatch):
-    tc._set_latest(
-        "  1  SZ300369    绿盟科技    +8.10%   +12.00%   23.50   7   半导体   86   新面孔\n"
-        "  2  SZ300133    华策影视    +6.20%    +3.10%   11.20  12   传媒     72   动量\n"
-    )
-    copied = []
+def test_handle_copy_request_copies_full_table_regions(capsys, monkeypatch):
+    """按 c 复制的是两区完整原文，不是压缩后的「名称+代码」清单。"""
+    tc._set_latest(_sample_panel())
+    copied: list[str] = []
     monkeypatch.setattr(tc, "copy_to_clipboard", lambda text: copied.append(text) or True)
     tc._handle_copy_request()
-    assert copied == ["绿盟科技 300369\n华策影视 300133"]
+    assert len(copied) == 1
+    payload = copied[0]
+    assert payload == tc.extract_table_regions(_sample_panel())
+    assert "   #  代码         名称      涨幅" in payload  # 表头在
+    assert "   1  SZ300369    绿盟科技    +8.10%" in payload  # 全列在
+    assert "   1  300369    绿盟科技  +9.90%   +3     300000手" in payload
+    assert "  创业板飙升榜监控" not in payload  # 头部摘要不在
+    assert "◆ 飞书过门" not in payload
     out = capsys.readouterr().out
-    assert "已复制 2 只股票" in out
+    assert "已复制本轮面板原文" in out
 
 
 def test_handle_copy_request_reports_failure(capsys, monkeypatch):
-    tc._set_latest("  1  300369  绿盟科技  +8.10%")
+    tc._set_latest("  1  300369  绿盟科技  +8.10%")  # 无 ◆ 标题 ⇒ 走全文兜底，仍会尝试写剪贴板
     monkeypatch.setattr(tc, "copy_to_clipboard", lambda text: False)
     tc._handle_copy_request()
     out = capsys.readouterr().out

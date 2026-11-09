@@ -74,6 +74,26 @@ def test_extract_symbols_from_mixed_text():
     assert "830799" in skipped and "202611" not in "".join(syms)
 
 
+def test_extract_symbols_from_full_panel_only_reads_code_column():
+    """终端按 c 复制的是整行表格；成交量「300000手」不能被读成股票代码。"""
+    text = (
+        "◆ v1 池选 — 新票优先·类别优先\n"
+        "   #  代码         名称      涨幅     5日累计   现价   排名  板块     类别·先验\n"
+        "   1  SZ300369    绿盟科技    +8.10%   +12.00%  23.50     7  半导体   RBD·17.9%\n"
+        "◆ 沪深飙升 · 极有可能大涨（三段并列）\n"
+        "   1  300133      华策影视  +2.10%    —     300000手   —   T2  —\n"
+    )
+    syms, skipped = extract_symbols_from_text(text)
+    assert syms == ["SZ300369", "SZ300133"]
+    assert skipped == []
+
+
+def test_extract_symbols_still_scans_free_text_loosely():
+    """无表格行的粘贴文本仍走宽松抽码（旧行为不变）。"""
+    text = "麦捷科技 300319 +6.44%\n新媒股份 SZ300770 现价 15.20 元"
+    assert extract_symbols_from_text(text)[0] == ["SZ300319", "SZ300770"]
+
+
 def test_extract_dedups_and_returns_empty_pair_for_garbage():
     assert extract_symbols_from_text("没有任何代码") == ([], [])
     syms, _ = extract_symbols_from_text("300319 300319 SZ300319")

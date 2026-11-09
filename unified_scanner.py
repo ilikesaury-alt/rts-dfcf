@@ -71,7 +71,7 @@ from scanner.orchestrator import scan_with_raw
 from scanner.panel_md import save_panel_round
 from scanner.ranking_snapshot import persist_ranking_snapshot
 from scanner.single_instance import SingleInstanceError, SingleInstanceLock, stop_existing_scanners
-from scanner.terminal_copy import capture_stdout, install_hotkey
+from scanner.terminal_copy import capture_stdout, hotkey_hint, install_hotkey
 from scanner.trading_session import (
     is_trading_day,
     is_trading_time,
@@ -409,12 +409,12 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
     print(f"  新面孔: 过去{NEW_FACE_LOOKBACK_DAYS}天未出现 = 新  |  交易时段: 09:30-11:30 / 13:00-15:00")
     print(f"  {'=' * 60}")
 
-    # 终端「一键复制」（按 c 把上一轮面板纯文本送进系统剪贴板，2026-11-03）。
+    # 终端「一键复制」（按 c 把本轮两个表格区的完整原文送进系统剪贴板，2026-11-03）。
     # 仅真控制台装得上（重定向/服务态无按键可读 ⇒ install_hotkey 返回 False）；
-    # 装了才提示用户，装不上终端保持原样（不新增噪声）。
+    # 装了才提示用户，装不上终端保持原样（不新增噪声）。提示语走 hotkey_hint 单源。
     copy_hotkey_on = install_hotkey()
     if copy_hotkey_on:
-        print("  💡 按 c 键可把本轮股票（名称+代码）复制到剪贴板")
+        print(hotkey_hint())
 
     # 上一轮扫描的榜单排名快照：综合排序「排名」列据此显示雪球榜单排名变化（+N 升 / -N 降）。
     last_ranks: dict[str, int] = {}

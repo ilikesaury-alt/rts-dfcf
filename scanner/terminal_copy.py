@@ -1,21 +1,29 @@
-"""终端面板「一键复制」：按 `c` 键 → **股票名称 + 6 位代码**清单进系统剪贴板。
+"""终端面板「一键复制」：按 `c` 键 → 本轮「v1 池选 + 沪深飙升三段」**完整原文**进剪贴板。
 
 **为什么需要**：终端每轮 `clear_screen()` 重绘，面板内容没法「选中复制」；
 中文 + emoji + 对齐空格在 cmd / Windows Terminal 里手动框选极易选错行。
 
-**复制什么**：只抄「名称 + 代码」，一行一只（按面板出现顺序去重）——
-面板里那些分数/涨幅/排名/板块列是给眼睛看的，粘到别处反而是噪声。
-清单从**面板文本**里抽（表格列序 `# / 代码 / 名称` 固定），代码统一去掉
-SH/SZ/BJ 前缀取 6 位纯代码（与 `scanner.hot_watch._strip_code` 同口径）。
+**复制什么（2026-11-06 用户决策：内容不精简、区域不变）**：从面板文本按 `◆`
+区标题切块，只保留 `◆ v1 池选` 与 `◆ 沪深飙升 · 极有可能大涨`（含榜内飙升 /
+榜内异动 / 榜外异动三段）两块的**全部行** —— 区/段标题、口径说明、表头、每行
+所有列（涨幅、排名、板块、类别·先验、评分、层、连击、行尾标记）、区尾分隔线，
+按面板原顺序原对齐，**不裁列、不改数字、不去重**。头部摘要（时间/市况/
+「创业板共 N 只」）、告警行、`◆ 飞书过门` 透明区都不在复制范围（v1 回捞终端
+本就隐藏）⇒ 与屏幕上那四张表严格一致。三段段标题一律 `—` 前缀，只有 `◆`
+才切区（与 `panel_m0_check.terminal_regions` 同口径）。
 
 **三条纪律**：
 
 1. **只复制已经打印出去的东西** —— 面板文本在渲染时从 stdout 采集（tee），
-   **不重新渲染、不重算**：复制到的与屏幕上看到的逐字一致（同一份数据、同一份格式化）。
+   **不重新渲染、不重算、不重新拼表**：复制到的与屏幕所见逐字一致，唯一加工是
+   按 `◆` 区标题裁掉非表格区。
 2. **去 ANSI** —— 剪贴板里留一堆 `\033[91m` 只会把聊天框搞成乱码；
    同时把 `\r` 进度行规整成整行文本。
 3. **fail-open** —— 剪贴板不可用（无 GUI 会话 / 权限不足 / 非交互 stdin）
    只打印一句提示，**绝不影响扫描主循环**。
+
+**下游**：`pick.py --clipboard` 用 `ai_digest.extract_symbols_from_text` 从这份完整
+表格里抽 6 位码（表格行只认代码列，避免成交量等 6 位数字被误当代码），不必手工整理。
 
 **平台**：Windows 走 ctypes（user32/kernel32，`CF_UNICODETEXT`，中文安全）；
 其它平台走 `pbcopy` / `xclip` / `wl-copy` 兜底。按键监听仅 Windows 实现
@@ -33,9 +41,10 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
 __all__ = [
+    "PANEL_ROW_RE",
     "capture_stdout",
     "copy_to_clipboard",
-    "extract_stock_list",
+    "extract_table_regions",
     "hotkey_hint",
     "install_hotkey",
     "latest_panel_text",
@@ -54,41 +63,45 @@ _ANSI_RE = re.compile(
 )
 
 # 终端表格行：**序号列 + 代码列 + 名称列**（COLS_POOL 与 COLS_HOT 同列序：
-# `#` / `代码` / `名称`，见 scanner/view/model.py）。抽清单靠这个固定列序，
-# 不依赖任何一列的宽度或对齐方式（宽度变了也不影响匹配）。
-_ROW_RE = re.compile(r"^\s{0,4}\d{1,3}\s+((?:SH|SZ|BJ)?\d{6})\s+(\S+)")
+# `#` / `代码` / `名称`，见 scanner/view/model.py）。本模块用它判「文本里是否确有
+# 面板表格行」，`ai_digest.extract_symbols_from_text` 用同一份正则从完整面板里
+# 只取代码列 ⇒ 改列序只改这里。不依赖任何一列的宽度或对齐方式。
+PANEL_ROW_RE = re.compile(r"^\s{0,4}\d{1,3}\s+((?:SH|SZ|BJ)?\d{6})\s+(\S+)", re.I)
+
+# 区标题以 `◆` 起始（三段段标题一律 `—`，见 AGENTS.md）。按它切块才能把
+# 「头部摘要 / 飞书过门」挡在剪贴板外，同时不碰区内任何一行。
+_REGION_TITLE_RE = re.compile(r"^\s*◆\s*(.*)$")
+# 只复制这两块；出现其它 `◆`（如 `◆ 飞书过门`）立刻停止保留。
+_COPY_REGION_KEYS = ("v1 池选", "沪深飙升")
 
 # 进程内最近一次采集到的面板文本（线程安全）。
 _lock = threading.Lock()
 _latest: str = ""
 
 
-def _normalize_code(code: str) -> str:
-    """代码去市场前缀（SH/SZ/BJ）→ 6 位纯代码（与 `scanner.hot_watch._strip_code` 同口径）。"""
-    if len(code) > 2 and code[:2] in ("SH", "SZ", "BJ"):
-        return code[2:]
-    return code
+def extract_table_regions(text: str) -> str:
+    """从面板纯文本切出「v1 池选 + 沪深飙升三段」两区的**完整原文**（不精简）。
 
+    逐行扫描：遇 `◆` 区标题就重新判定要不要保留，标题含 `_COPY_REGION_KEYS`
+    之一 ⇒ 从该行起整块保留（含空行、段标题、表头、数据行、区尾分隔线），直到
+    下一个 `◆`。区内的行**一个字都不改**，故跨区同一只票的整行也照原样留下。
 
-def extract_stock_list(text: str) -> str:
-    """从面板文本抽出「名称 + 6 位代码」清单（每行一只，按出现顺序去重）。
-
-    只认表格行（`序号 代码 名称 …`）：标题行、表头、「飞书过门」那种**只有名字
-    没有代码**的行都不匹配 ⇒ 不会混进清单（没有代码的票对用户也没用）。
+    ⚠ 兜底：一个 `◆` 都没识别到、但确有 `# / 代码 / 名称` 表格行时返回全文 ——
+    区标题约定若被改动，复制不该静默变空（改标题需同批更新本模块的关键词）。
     """
     lines: list[str] = []
-    seen: set[str] = set()
+    keeping = False
+    saw_title = False
     for line in text.splitlines():
-        m = _ROW_RE.match(line)
-        if not m:
-            continue
-        code = _normalize_code(m.group(1))
-        name = m.group(2)
-        if code in seen:
-            continue
-        seen.add(code)
-        lines.append(f"{name} {code}")
-    return "\n".join(lines)
+        m = _REGION_TITLE_RE.match(line)
+        if m:
+            saw_title = True
+            keeping = any(key in m.group(1) for key in _COPY_REGION_KEYS)
+        if keeping:
+            lines.append(line)
+    if not lines and not saw_title and any(PANEL_ROW_RE.match(line) for line in text.splitlines()):
+        return text.strip("\n")
+    return "\n".join(lines).strip("\n")
 
 
 def strip_ansi(text: str) -> str:
@@ -299,14 +312,14 @@ def _handle_copy_request() -> None:
     if not text.strip():
         _say("  [复制] 还没有可复制的面板（等下一轮扫描后再按 c）")
         return
-    stock_list = extract_stock_list(text)
-    if not stock_list.strip():
-        _say("  [复制] 本轮面板没有可抄的票（等下一轮扫描后再按 c）")
+    payload = extract_table_regions(text)
+    if not payload.strip():
+        _say("  [复制] 本轮面板没有可抄的表格区（等下一轮扫描后再按 c）")
         return
-    count = len(stock_list.splitlines())
-    ok = copy_to_clipboard(stock_list)
+    count = len(payload.splitlines())
+    ok = copy_to_clipboard(payload)
     if ok:
-        _say(f"  [复制] 已复制 {count} 只股票（名称+代码）到剪贴板 ✅")
+        _say(f"  [复制] 已复制本轮面板原文（v1 池选 + 沪深飙升三段，{count} 行）到剪贴板 ✅")
     else:
         _say("  [复制] 复制失败（剪贴板不可用）")
 
@@ -347,4 +360,4 @@ def install_hotkey(*, force: bool = False) -> bool:
 
 def hotkey_hint() -> str:
     """终端提示语（告知用户怎么用）。"""
-    return f"  💡 按 {COPY_KEY} 键可把本轮股票（名称+代码）复制到剪贴板"
+    return f"  💡 按 {COPY_KEY} 键可把本轮面板（v1 池选 + 沪深飙升三段）完整复制到剪贴板"

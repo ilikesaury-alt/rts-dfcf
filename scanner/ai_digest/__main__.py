@@ -61,6 +61,7 @@ from scanner.ai_digest.source import (
     render_baseline_text,
 )
 from scanner.config import OFFBOARD_DISPLAY_TOP, resolve_db_path
+from scanner.terminal_copy import PANEL_ROW_RE
 
 #: 每种模式的标签（命令侧保证，**不是模型给的**）。
 LABELS = {
@@ -123,10 +124,16 @@ def extract_symbols_from_text(text: str) -> tuple[list[str], list[str]]:
     给剪贴板 / 文件 / 粘贴板用：文本里常混着股票名字、日期、涨跌幅。
     只认 30/00/60/68 开头的 6 位码（或带 SZ/SH 前缀的）—— 否则 `20261104`
     这类日期会被当成代码抽走。其余 6 位数字串记为「跳过」报给用户看。
+
+    ⚠ 完整面板（终端按 `c` 复制的两区原文）走**表格行代码列**专用通道：
+    每行除代码外还有成交量/市值等 16 列数字，宽松扫全文会把「300000手」
+    误读成 SZ300000。识别到 `# / 代码 / 名称` 列序的行时只读代码列，
+    区内其它数字既不当代码也不报「跳过」（否则每行都是噪声）。
     """
     out: list[str] = []
     skipped: list[str] = []
-    for m in _CODE_RE.finditer(text or ""):
+
+    def _take(m: re.Match[str]) -> None:
         prefix, digits = m.group(1), m.group(2)
         if prefix:
             sym = prefix.upper() + digits
@@ -136,9 +143,22 @@ def extract_symbols_from_text(text: str) -> tuple[list[str], list[str]]:
             sym = "SH" + digits
         else:
             skipped.append(digits)
-            continue
+            return
         if sym not in out:
             out.append(sym)
+
+    panel_codes = [m.group(1) for line in (text or "").splitlines() if (m := PANEL_ROW_RE.match(line))]
+    if panel_codes:
+        for code in panel_codes:
+            cm = _CODE_RE.fullmatch(code)
+            if cm:
+                _take(cm)
+            else:
+                skipped.append(code)
+        return out, skipped
+
+    for m in _CODE_RE.finditer(text or ""):
+        _take(m)
     return out, skipped
 
 

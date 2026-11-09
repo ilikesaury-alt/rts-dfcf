@@ -10,9 +10,9 @@
 ## 0. 最常用的 5 条
 
 ```bash
-python unified_scanner.py                 # 跑扫描器（60s 一轮，按 c 复制名单）
+python unified_scanner.py                 # 跑扫描器（60s 一轮，按 c 复制两区完整原文）
 python scripts/buy_priority_report.py     # 盘中买入优先级反馈报告（独立脚本，~8s，见 §2.1）
-python pick.py --clipboard                # 把剪贴板里的名单丢给 AI 调研 → 出报告
+python pick.py --clipboard                # 把剪贴板里的两区表格（自动抽码）丢给 AI 调研 → 出报告
 python stock_report.py 300319             # 单只票深报（代码或名字都行）
 python -m pytest tests/ -q                # 全量测试
 ```
@@ -28,8 +28,11 @@ python -m pytest tests/ -q                # 全量测试
 | `python unified_scanner.py --no-panel` | 不上报 Web 面板（优先级最高，覆盖 `.env`） |
 | `python unified_scanner.py --no-lock` | 跳过单实例锁（**仅调试**，会和已有实例抢库） |
 
-**终端里按 `c`**：把上一轮面板的「名称+6 位代码」清单送进剪贴板 → 接着
-`python pick.py --clipboard` 就能让 AI 调研这一批票（一条链路）。
+**终端里按 `c`**：把本轮 `v1 池选` + `沪深飙升` 三段两区的**完整原文**送进剪贴板
+（区/段标题、口径说明、表头、每行全部列、区尾分隔线，只去 ANSI）—— 不精简、不去重，
+粘出去和屏幕所见一致；头部摘要、`◆ 飞书过门` 不在复制范围。接着
+`python pick.py --clipboard` 就能让 AI 调研这一批票（抽码只认表格行代码列，
+成交量这类 6 位数字不会被误当成股票代码）。
 
 终端三段结构（`v1 池选` 有序，其余三段各自成表、互不排名）：`榜内飙升 / 榜内异动 / 榜外异动`。
 
@@ -101,7 +104,7 @@ python scripts/buy_priority_report.py --date 2026-11-04  # 复盘某个交易日
 ```bash
 python pick.py                            # 交互粘贴（空行结束；粘贴整段文本也行）
 python pick.py 300319 300666 SZ300770     # 直接给代码（30/00/60/68 开头，一次 ≤50 只）
-python pick.py --clipboard                # 读 Windows 剪贴板（终端按 c 复制后用这个）
+python pick.py --clipboard                # 读 Windows 剪贴板（终端按 c 复制后用这个；完整表格也行）
 python pick.py --symbols-file list.txt    # 从文本文件读（一行一个代码或名字）
 python pick.py --clipboard --limit 10     # 面板票多时只取前 10 只（按面板顺序 = 优先级）
 python pick.py --clipboard --out 报告.txt --max-calls 50   # 存盘 + 调工具预算
@@ -109,7 +112,7 @@ python pick.py --clipboard --out 报告.txt --max-calls 50   # 存盘 + 调工�
 
 等价长命令：`python -m scanner.ai_digest --symbols ...`（`pick.py` 只是简写）。
 
-**一条完整链路**：扫描器终端按 `c` → 面板名单进剪贴板 → `python pick.py --clipboard` → 报告。
+**一条完整链路**：扫描器终端按 `c` → 两区完整原文进剪贴板 → `python pick.py --clipboard` → 报告。
 面板三段加起来常超 20 只，**上限 50**；超了用 `--limit N` 取前 N 只。
 
 模型会**自己查真实数据**（K线 / 实时报价 / 资金流 / 分时 / 多日资金流趋势 / 概念板块 /

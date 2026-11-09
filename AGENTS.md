@@ -140,8 +140,8 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
   `hot_watch_hits`；`RTS_HOT_WATCH=0` 整体关闭。
 - kline_drift（自动）：每日对 daily_kline 锚定窗口做价格 SHA256 指纹比对（雪球前复权价
   会被除权事件静默重算 → 回测跨期不可复现），漂移即告警 + 写 logs/finalize.log。
-- **终端「一键复制」（按 c）**：按 `c` → 本轮「名称+6位代码」清单进剪贴板
-  （`scanner/terminal_copy.py`；清单从 stdout tee 采集的面板文本里抽，去 ANSI、去 SH/SZ 前缀）。
+- **终端「一键复制」（按 c）**：本轮「v1 池选 + 沪深飙升三段」两区**完整原文**进剪贴板
+  （`scanner/terminal_copy.py`；从 tee 面板文本按 `◆` 区标题切块，只去 ANSI；改区标题须同批改关键词）。
 
 ## Key facts
 
@@ -258,7 +258,7 @@ scanner/
   validator.py              # Post-score validation (overbought, risk flags)
   ranking.py                # Composite ranking + tier (档0-3) + nextday mark
   display.py                # Terminal rendering (ANSI colors)
-  terminal_copy.py          # 终端「一键复制」（按 c → 名称+代码清单进剪贴板）
+  terminal_copy.py          # 终端「一键复制」（按 c → 两区完整原文进剪贴板）
   panel_md.py               # 面板逐轮存档（股票池.md：每轮整份覆盖、只留最近一次，纯展示层）
   feishu.py                 # Feishu webhook push
   push_gate.py              # 飞书推送过滤门（纯展示层，终端不套用）
