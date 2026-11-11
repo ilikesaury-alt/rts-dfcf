@@ -685,8 +685,46 @@ def _tool_get_market_overview(args: dict[str, Any], ctx: ResearchContext) -> str
     return "市场概览：\n" + "\n".join(parts)
 
 
+#: 榜单里 A 股（SH/SZ 前缀）占比低于此值 ⇒ 判定为「非 A 股时段」，输出必须降级说明。
+#:
+#: 依据（实测 2026-11-11 `leaderboard_log.symbol_snapshot` + 收盘后实拉）：
+#: - 盘中 09:30~14:59：A 股占 **82%~95%**（尾盘 14:50~14:59 稳定 95%）
+#: - 收盘后 18:10 实拉：A 股仅 **8/30 = 27%**（前排是 NVDA / SK海力士 / CoreWeave / AMD）
+#:
+#: 为什么用「实际占比」而不是「时钟」判断：榜单是**全球**市场热度的读数，收盘后 A 股
+#: 停止交易 ⇒ 飙升榜自然由海外票占据。这不是数据坏了，是**数据换了语义**。
+#: 用实际占比判断，天然适配节假日/周末（当天 A 股根本没交易，占比同样会塌）。
+_BD_ASHARE_MIN_RATIO = 0.5
+
+
+def _board_ashare_note(items: list[dict[str, Any]]) -> str:
+    """按榜单里 A 股的实际占比给出时段说明（数据驱动，不靠时钟猜）。"""
+    if not items:
+        return ""
+    a = sum(
+        1
+        for it in items
+        if str(it.get("symbol") or it.get("code") or "")[:2] in ("SH", "SZ")
+    )
+    ratio = a / len(items)
+    if ratio >= _BD_ASHARE_MIN_RATIO:
+        return f"（A 股占 {a}/{len(items)}，榜单当前以 A 股为主，可直接用作题材共振参考）"
+    return (
+        f"（**当前 A 股仅占 {a}/{len(items)}**，榜单主体是海外标的 —— "
+        f"A 股已收盘/非交易时段，飙升榜反映的是全球热度而非 A 股资金关注度；"
+        f"**不可用于论证 A 股个股的题材共振**，仅作大盘情绪背景参考）"
+    )
+
+
 def _tool_get_board_rank(args: dict[str, Any], ctx: ResearchContext) -> str:
-    """雪球飙升榜当前排名 —— 榜单热度是「资金关注度」的独立读数。"""
+    """雪球飙升榜当前排名 —— 榜单热度是「资金关注度」的独立读数。
+
+    ⚠ **盘后降级说明**（2026-11-11 加）：收盘后 A 股停止交易，飙升榜由海外票占据
+    （实测 18:10 实拉：前排 NVDA / SK海力士 / CoreWeave / AMD，A 股仅 8/30）。
+    此时榜单对「A 股个股的题材共振」**没有参考价值**，但模型若不加区分，会拿
+    英伟达的涨幅去论证 A 股某只票的算力题材 ⇒ 幻觉式推理。
+    故按**实际 A 股占比**（数据驱动，非时钟判断）降级输出。
+    """
     try:
         from scanner.api import fetch_biaosheng
 
@@ -700,7 +738,9 @@ def _tool_get_board_rank(args: dict[str, Any], ctx: ResearchContext) -> str:
     for i, it in enumerate(items[:15], 1):
         sym = it.get("symbol") or it.get("code") or "?"
         lines.append(f"#{i} {sym} {it.get('name') or ''} 涨幅 {it.get('percent')}%")
-    return "飙升榜前 15：\n" + "\n".join(lines)
+    note = _board_ashare_note(items)
+    head = "飙升榜前 15："
+    return head + ("\n" + note if note else "") + "\n" + "\n".join(lines)
 
 
 def _tool_get_stock_record(args: dict[str, Any], ctx: ResearchContext) -> str:
@@ -1024,7 +1064,9 @@ def build_tools() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="get_board_rank",
-            description="取雪球飙升榜当前前 15 名（名次、代码、涨幅）。榜单热度是资金关注度的独立读数。",
+            description="取雪球飙升榜当前前 15 名（名次、代码、涨幅）。榜单热度是资金关注度的独立读数。"
+            "⚠ 收盘后 A 股休市，榜单主体会变成海外标的（英伟达/AMD 等），此时**不能**用它论证 "
+            "A 股个股的题材共振；工具输出会标明当前 A 股占比，据此判断可用性。",
             parameters=_p({}, []),
             handler=_tool_get_board_rank,
         ),
