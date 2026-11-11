@@ -21,7 +21,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from scanner.ai_digest.features import SymbolFeatures, build_features, render_feature_block
-from scanner.ai_digest.llm import BRIEF_INSTRUCTION, MagpieConfig, chat
+from scanner.ai_digest.llm import (
+    BRIEF_INSTRUCTION,
+    BRIEF_RESEARCH_INSTRUCTION,
+    MagpieConfig,
+    chat,
+)
 from scanner.ai_digest.panel import PanelRegion, PanelSnapshot
 from scanner.ai_digest.research import ResearchContext, ToolSpec, build_tools, run_tool
 from scanner.utils import EXTERNAL_FAILURES
@@ -50,8 +55,15 @@ RESEARCH_SYSTEM_PROMPT = "\n".join(
         "4. 别重复查你已经查过的东西；证据够了就直接给结论，不要为了「查得更全」多跑几轮。",
         "",
         "输出要求：",
-        "5. 给出排序（第1/第2…），每只票写清：入选依据（引用你查到的具体数据）、主要风险、证据强弱（强/中/弱）。",
-        "6. 数据不支持的票就明说「证据不足」；不要为了凑数硬排。",
+        "5. 把候选分成**四档**，每只票只能落在一档：",
+        "   · **首选** —— 证据强、且你愿意现在就动手的。**没有数量上限**：如果 3 只都够硬，",
+        "     就 3 只都是首选；只有 1 只够硬就 1 只。**不要为了「显得严谨」硬压到 1 只**，",
+        "     也不要为了凑数把证据不够的塞进来。",
+        "   · **次选** —— 逻辑成立但差一口气（位置偏高 / 量能不足 / 缺板块共振 / 等确认）。",
+        "     同样**没有数量上限**，够格的有几只就列几只。",
+        "   · **观察** —— 有亮点但现在不能动手（信号未确认、需要明天看开盘）。",
+        "   · **证据不足** —— 数据不支持下判断，明说为什么不足（缺哪块数据），不要硬排。",
+        "6. 每只票写清：入选依据（引用你查到的具体数据）、主要风险、证据强弱（强/中/弱）。",
         "7. 只许用工具查到的数据说话。**禁止编造任何数字**（事后有机器逐个核对，查不到的数字会被标出）。",
         "8. 禁止给出目标价与止损位（本系统没有这类数据支撑，给了就是编造）。",
         "9. 结尾给一句话的整体判断：这批票里有没有真正值得动手的；如果整体证据都不够，就直说。",
@@ -121,8 +133,10 @@ SUMMARY_SYSTEM_PROMPT = "\n".join(
         "1. 只许使用证据里出现过的数字，一个都不许新增、估算、换算、求平均或求和（事后有机器逐个核对）。",
         "2. 证据里没有的项目就说「证据不足」，绝不猜测、绝不用常识补齐。",
         "3. 不要复述证据原文，不要写查询过程（「我查了 K 线」这类话一律不要）。",
-        "4. 给出排序（第1/第2…），每只写：判断、入选依据（引用具体数字）、主要风险。",
-        "5. 证据不足以区分的就直说「证据不足」，不要为了凑数硬排。",
+        "4. 按**首选 / 次选 / 观察 / 证据不足**四档归类（每只只能落一档），每只写：判断、",
+        "   入选依据（引用具体数字）、主要风险。**首选与次选都没有数量上限** —— 证据强的有几只",
+        "   就列几只，不要为了「显得严谨」硬压成一只，也不要凑数。",
+        "5. 证据不足以区分的就直说「证据不足」并写明缺哪块数据，不要为了凑数硬排。",
         "6. 禁止给出目标价与止损位（证据里没有这类数据，给了就是编造）。",
         "7. 结尾一句话给整体判断：这批里有没有真正值得动手的。",
         "8. 不要用 Markdown 标题/列表符号/加粗；需要分段就用单个换行。",
@@ -152,7 +166,7 @@ def build_summary_messages(
         "请基于以上内容写报告。",
     ]
     if brief:
-        lines += ["", BRIEF_INSTRUCTION]
+        lines += ["", BRIEF_INSTRUCTION, BRIEF_RESEARCH_INSTRUCTION]
     return [
         {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
         {"role": "user", "content": "\n".join(lines)},
@@ -253,7 +267,7 @@ def build_research_prompt(
         if block:
             lines += ["", *block]
     if brief:
-        lines += ["", BRIEF_INSTRUCTION]
+        lines += ["", BRIEF_INSTRUCTION, BRIEF_RESEARCH_INSTRUCTION]
     return "\n".join(lines)
 
 
