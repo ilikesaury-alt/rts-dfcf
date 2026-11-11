@@ -101,6 +101,7 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
 
 ## 硬规则 / 易踩坑
 
+- **公告缓存读侧必须 `notice_date <= signal_date`**（`scanner/announcement_cache.py`，m025）：缓存天然含未来公告，不过滤即前视；水位失败不推进、缺水位/过期须告警，别把「没取到」读成「没有公告」。
 - **WAL 库备份不能 `cp`**：必须 `sqlite3` Online Backup API（`src.backup(dst)`）或先
   `PRAGMA wal_checkpoint(TRUNCATE)`；**备份后必须校验行数**。
 - **Beijing timezone**（`BEIJING_TZ` UTC+8）用于一切时间逻辑，勿用 naive local time。
@@ -265,6 +266,7 @@ scanner/
   hot_watch.py              # 沪深飙升独立区（与主线口径解耦）
   offboard_watch.py         # 榜外异动段（launch_log 写侧、实时覆盖、标签回填）
   offboard_flow.py          # B 段 N 日主力累计净流入（历史资金流序列，零新增请求）
+  announcement_cache.py     # 公告缓存单源（m025）：读侧无前视 + 水位；替掉按票冻结的 12MB JSON
   onboard_anomaly.py        # 榜内异动段（标签回填同款三防呆）
   volume_bias.py            # 开盘量比失真系数 k(m) 的实测与去偏（B/C 段共用，零新增网络）
   view/assemble.py          # build_scan_view：v1 池选排序键 + 终端行组装

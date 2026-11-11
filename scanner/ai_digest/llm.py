@@ -26,6 +26,7 @@ from scanner.utils import EXTERNAL_FAILURES
 __all__ = [
     "AIUpstreamError",
     "MagpieConfig",
+    "BRIEF_INSTRUCTION",
     "SYSTEM_PROMPT_ANALYZE",
     "SYSTEM_PROMPT_TRANSCRIBE",
     "build_messages",
@@ -114,18 +115,38 @@ SYSTEM_PROMPT_ANALYZE = "\n".join(
 )
 
 
-def build_messages(m: OffboardMaterials, mode: str = "analyze") -> list[dict[str, str]]:
-    """素材 → 提示词消息（纯函数，便于测试断言「模型只看得到素材」）。"""
+#: `--brief` 的共享输出约束（analyze / transcribe / research 三处同源，不许各写一份）。
+#: 只改「篇幅与排版」，不改纪律：幻觉巡检、红线、基准率引用全部照旧。
+BRIEF_INSTRUCTION = "\n".join(
+    [
+        "【简洁报告格式（用户指定）】",
+        "不要写 Markdown 标题、列表符号、加粗、小标题；不要复述素材或工具输出。",
+        "每只票最多一行：`代码 名称｜判断｜依据（必须带工具输出或素材里出现过的具体数字，",
+        "含历史基准率数字，若有）｜风险`。",
+        "最多 12 行，结尾一行整体判断；不确定的票写「证据不足」，不硬排、不凑数。",
+        "不要写查询记录、素材核对表、免责声明长段、缺失项清单——这些由命令侧另行处理。",
+        "所有数字必须逐字来自工具输出或素材（事后有机器逐个核对）；禁止目标价、止损位。",
+    ]
+)
+
+
+def build_messages(m: OffboardMaterials, mode: str = "analyze", *, brief: bool = False) -> list[dict[str, str]]:
+    """素材 → 提示词消息（纯函数，便于测试断言「模型只看得到素材」）。
+
+    `brief=True` 只在 user 末尾追加 `BRIEF_INSTRUCTION`；system 提示词逐字不变
+    ⇒ 红线守卫 / 基准率排序规则 / 幻觉巡检全部照旧，只压篇幅。
+    """
     lines = "\n".join(f"{i.id} | {i.label} | {i.value}" for i in m.items)
-    user = "\n".join(
-        [
-            f"信号日：{m.date}",
-            f"素材（每行：编号 | 项目 | 值，共 {len(m.items)} 项）：",
-            lines or "（无）",
-            "",
-            f"缺失项：{'、'.join(m.missing) if m.missing else '无'}",
-        ]
-    )
+    parts = [
+        f"信号日：{m.date}",
+        f"素材（每行：编号 | 项目 | 值，共 {len(m.items)} 项）：",
+        lines or "（无）",
+        "",
+        f"缺失项：{'、'.join(m.missing) if m.missing else '无'}",
+    ]
+    if brief:
+        parts += ["", BRIEF_INSTRUCTION]
+    user = "\n".join(parts)
     system = SYSTEM_PROMPT_ANALYZE if mode == "analyze" else SYSTEM_PROMPT_TRANSCRIBE
     return [
         {"role": "system", "content": system},
@@ -233,10 +254,15 @@ def chat(
 
 
 def transcribe(
-    cfg: MagpieConfig, materials: OffboardMaterials, *, timeout: float = TIMEOUT_S, mode: str = "analyze"
+    cfg: MagpieConfig,
+    materials: OffboardMaterials,
+    *,
+    timeout: float = TIMEOUT_S,
+    mode: str = "analyze",
+    brief: bool = False,
 ) -> str:
     """调用模型，返回文本。任何失败一律抛 `AIUpstreamError`（CLI 转退出码 2）。"""
-    resp = chat(cfg, build_messages(materials, mode), timeout=timeout)
+    resp = chat(cfg, build_messages(materials, mode, brief=brief), timeout=timeout)
     text = resp.get("content")
     if not isinstance(text, str) or not text.strip():
         raise AIUpstreamError("模型服务返回空内容。")

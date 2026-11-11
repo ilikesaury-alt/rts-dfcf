@@ -16,6 +16,7 @@
 | `get_market_overview` | 创业板指 + 涨停池 + 本地 K 线样本涨跌家数 | 指数/涨停池需联 |
 | `get_board_rank` | 雪球飙升榜（名次/涨幅/排名变化） | 是 |
 | `get_stock_record` | 本系统历史（出现次数/类别/次日收益） | 否 |
+| `get_announcements` | 本地 `announcement_cache`（m025，按日水位）优先，miss 才东财 | 缺则联 |
 
 失败纪律：任一工具失败都**返回一句人话给模型**（不抛异常、不静默），让模型知道「这块查不到」
 而不是拿到空数据瞎猜。工具输出会被截断（token 预算），截断也明说。
@@ -371,21 +372,48 @@ def _tool_get_stock_record(args: dict[str, Any], ctx: ResearchContext) -> str:
 
 
 def _tool_get_announcements(args: dict[str, Any], ctx: ResearchContext) -> str:
-    """最近公告（东财公开接口）—— 公司层面的真实事件。"""
+    """最近公告：**本地 `announcement_cache`（m025）优先**，miss 才联网。
+
+    `ResearchContext.cached` 只在单次调研内有效（进程退出即丢）；m025 把公告按日增量
+    落库并记水位（`ann_sync_waterline`），所以不同会话 / 不同票共用同一份，不必每次联网。
+    ⚠ 缓存表不存在（新库未迁移）或查询失败 ⇒ fail-open 回退东财实时查询，绝不静默返回空。
+    ⚠ 读侧 `notice_date <= 今天` 无前视；水位日期写进输出，让模型知道新鲜度。
+    """
     symbol = str(args.get("symbol") or "").strip().upper()
     if not symbol:
         return "参数错误：需要 symbol"
     n = max(3, min(int(args.get("n") or 8), 30))
-    try:
-        from scanner.ai_digest.em_data import fetch_announcements
+    from scanner.config import now_beijing
 
-        items = ctx.cached(f"ann:{symbol}:{n}", lambda: fetch_announcements(symbol, n))
-    except EXTERNAL_FAILURES as e:
-        return f"公告查询失败（{type(e).__name__}）"
+    day = now_beijing().date().isoformat()
+    items: list[dict[str, Any]] = []
+    source = ""
+    try:
+        rows = ctx.conn.execute(
+            "SELECT notice_date, title, ann_type FROM announcement_cache "
+            "WHERE symbol = ? AND notice_date <= ? ORDER BY notice_date DESC, title LIMIT ?",
+            (symbol, day, n),
+        ).fetchall()
+        wl = ctx.conn.execute("SELECT MAX(end_date) FROM ann_sync_waterline").fetchone()
+    except sqlite3.Error:
+        rows, wl = [], None
+    if rows:
+        items = [{"date": r[0], "title": r[1], "type": r[2] or ""} for r in rows]
+        source = f"本地公告缓存(m025, 水位 {wl[0] or '未知'})"
+    else:
+        try:
+            from scanner.ai_digest.em_data import fetch_announcements
+
+            items = ctx.cached(f"ann:{symbol}:{n}", lambda: fetch_announcements(symbol, n)) or []
+            source = "东财实时查询"
+        except EXTERNAL_FAILURES as e:
+            return f"公告查询失败（{type(e).__name__}）"
     if not items:
-        return f"{symbol}：最近无公告可查（接口空或该票无公告）"
+        return f"{symbol}：最近无公告可查（缓存与接口都为空或该票无公告）"
     lines = [f"{it['date']} {it['title']}" + (f"［{it['type']}］" if it.get("type") else "") for it in items]
-    return f"{symbol} 最近 {len(items)} 条公告（仅标题与日期，**未经核实其利好/利空**）：\n" + chr(10).join(lines)
+    return f"{symbol} 最近 {len(items)} 条公告（{source}；仅标题与日期，**未经核实其利好/利空**）：\n" + chr(10).join(
+        lines
+    )
 
 
 def _tool_get_intraday_fund_flow(args: dict[str, Any], ctx: ResearchContext) -> str:

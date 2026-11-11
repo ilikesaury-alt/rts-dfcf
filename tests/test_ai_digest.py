@@ -576,7 +576,7 @@ def test_cli_analyze_mode_accepts_advice_but_transcribe_refuses_it(capsys, monke
     monkeypatch.setenv("MAGPIE_API_KEY", "k-test")
     monkeypatch.setenv("MAGPIE_MODEL", "m-test")
     advice = "建议重点关注第1只，量比最高。"
-    monkeypatch.setattr(llm, "transcribe", lambda cfg, mats, mode="analyze", timeout=None: advice)
+    monkeypatch.setattr(llm, "transcribe", lambda cfg, mats, mode="analyze", timeout=None, brief=False: advice)
 
     code = cli.main(["--demo", "--mode", "analyze"])
     out = capsys.readouterr().out
@@ -600,7 +600,7 @@ def test_cli_flags_fabricated_number_and_exits_5(capsys, monkeypatch):
     monkeypatch.setattr(
         llm,
         "transcribe",
-        lambda cfg, mats, mode="analyze", timeout=None: "第1只量比 2.31，目标价 18.5 元。",
+        lambda cfg, mats, mode="analyze", timeout=None, brief=False: "第1只量比 2.31，目标价 18.5 元。",
     )
 
     code = cli.main(["--demo", "--mode", "analyze"])
@@ -986,3 +986,121 @@ def test_digest_package_has_no_bare_except_exception():
     """fail-open 纪律：只捕 `EXTERNAL_FAILURES`；裸 except Exception 会把编程错误吞掉。"""
     offenders = [p.name for p in _py_sources() if re.search(r"except\s+Exception\b", p.read_text(encoding="utf-8"))]
     assert not offenders, f"禁止裸 except Exception：{offenders}"
+
+
+# ── 7. 公告缓存（m025）接进 ai_digest 的守卫 ──────────────────────────────────
+
+
+def _ann_conn() -> sqlite3.Connection:
+    c = sqlite3.connect(":memory:")
+    c.execute("CREATE TABLE announcement_cache (symbol TEXT, notice_date TEXT, title TEXT, ann_type TEXT)")
+    c.execute("CREATE TABLE ann_sync_waterline (scope TEXT, end_date TEXT, rows INTEGER, updated TEXT)")
+    return c
+
+
+def test_announcement_tool_prefers_local_cache(monkeypatch):
+    """缓存命中 ⇒ 不联网，并把水位日期写进工具输出（幻觉巡检的比对基准）。"""
+    import scanner.ai_digest.em_data as em
+    from scanner.ai_digest import research as R
+
+    conn = _ann_conn()
+    conn.execute("INSERT INTO announcement_cache VALUES ('SZ300001','2026-11-10','回购股份方案','公司公告')")
+    conn.execute("INSERT INTO ann_sync_waterline VALUES ('candidates','2026-11-11',1,'x')")
+    called = []
+    monkeypatch.setattr(em, "fetch_announcements", lambda s, n: called.append(1) or [])
+    out = R._tool_get_announcements({"symbol": "SZ300001", "n": 8}, R.ResearchContext(conn=conn))
+    assert "本地公告缓存" in out and "2026-11-11" in out and "回购股份方案" in out
+    assert not called, "缓存命中不得联网"
+    conn.close()
+
+
+def test_announcement_tool_falls_back_when_cache_missing(monkeypatch):
+    """新库/未迁移 ⇒ 表不存在也要 fail-open 回退东财，不能静默返回空。"""
+    import scanner.ai_digest.em_data as em
+    from scanner.ai_digest import research as R
+
+    conn = sqlite3.connect(":memory:")
+    called = []
+
+    def fake(s, n):
+        called.append(1)
+        return [{"date": "2026-11-10", "title": "某公告", "type": ""}]
+
+    monkeypatch.setattr(em, "fetch_announcements", fake)
+    out = R._tool_get_announcements({"symbol": "SZ300001", "n": 8}, R.ResearchContext(conn=conn))
+    assert "东财实时查询" in out and "某公告" in out and called
+    conn.close()
+
+
+def test_announcement_cache_load_is_lookahead_free():
+    """缓存天然含未来公告；读侧不过滤即前视 ⇒ 回测结论会假显著。"""
+    from scanner.announcement_cache import load
+
+    conn = _ann_conn()
+    conn.executemany(
+        "INSERT INTO announcement_cache VALUES (?,?,?,?)",
+        [
+            ("SZ300001", "2026-11-09", "第9日", ""),
+            ("SZ300001", "2026-11-12", "未来公告", ""),
+            ("SZ300001", "2026-10-20", "窗口外", ""),
+        ],
+    )
+    got = load(conn, ["SZ300001"], signal_date="2026-11-11", window=10)
+    assert [a["title"] for a in got["SZ300001"]] == ["第9日"], got
+    conn.close()
+
+
+# ── 8. 简洁报告（--brief）/ 最新终端输入标注 ─────────────────────────────────
+
+
+def test_brief_prompt_appends_shared_instruction():
+    """只压篇幅，不动 system：红线 / 基准率排序 / 幻觉巡检全部照旧。"""
+    from scanner.ai_digest.llm import BRIEF_INSTRUCTION, build_messages
+
+    m = build_materials("2026-11-11", [_row()])
+    normal = build_messages(m, "analyze")
+    brief = build_messages(m, "analyze", brief=True)
+    assert BRIEF_INSTRUCTION not in normal[1]["content"]
+    assert BRIEF_INSTRUCTION in brief[1]["content"]
+    assert "每只票最多一行" in BRIEF_INSTRUCTION
+    assert brief[0] == normal[0], "system 提示词不得因 --brief 改动"
+
+
+def test_brief_reaches_research_prompt(monkeypatch):
+    """research 模式也必须收到同一份约束（自选清单与 B 段共用 run_research）。"""
+    from scanner.ai_digest import agent
+    from scanner.ai_digest.llm import BRIEF_INSTRUCTION, MagpieConfig
+    from scanner.ai_digest.research import ResearchContext
+
+    captured = {}
+
+    def fake_chat(cfg, messages, **kw):
+        captured["user"] = messages[1]["content"]
+        return {"content": "结论", "tool_calls": []}
+
+    monkeypatch.setattr(agent, "chat", fake_chat)
+    cfg = MagpieConfig(base_url="x", api_key="y", model="z")
+    conn = sqlite3.connect(":memory:")
+    try:
+        agent.run_research(
+            cfg, [{"symbol": "SZ300001", "name": "测试"}], ResearchContext(conn=conn), tools=[], brief=True
+        )
+        assert BRIEF_INSTRUCTION in captured["user"]
+        agent.run_research(
+            cfg, [{"symbol": "SZ300001", "name": "测试"}], ResearchContext(conn=conn), tools=[], brief=False
+        )
+        assert BRIEF_INSTRUCTION not in captured["user"]
+    finally:
+        conn.close()
+
+
+def test_freshness_marks_stale_print_snapshot(monkeypatch):
+    """午休主循环不刷 B 段 ⇒ 必须显示数据年龄并标非实时。"""
+    from datetime import datetime
+
+    import scanner.ai_digest.__main__ as cli
+
+    monkeypatch.setattr(cli, "now_beijing", lambda: datetime(2026, 11, 11, 12, 10, 0))
+    out = cli._freshness("11:29:49")
+    assert "数据 40 分钟前" in out and "非实时" in out
+    assert cli._freshness("") == ""

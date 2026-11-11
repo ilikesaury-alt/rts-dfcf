@@ -148,9 +148,15 @@ python -m scanner.ai_digest --mode transcribe    # 纯转述（过全部红线�
 python -m scanner.ai_digest --materials          # 只打素材，不出网
 python -m scanner.ai_digest --demo               # 内置样例（零库零网，验证整条链路）
 python -m scanner.ai_digest --json               # 机器可读（含幻觉巡检结果）
+python -m scanner.ai_digest --brief              # 简洁报告：每票一行、≤12 行，不打印查询记录/素材核对表
+python -m scanner.ai_digest --brief --out 简报.md  # 落盘同一份简洁报告（不进库）
+python -m scanner.ai_digest --source print --materials  # 核对输入=终端最后打印行（带 seq 与数据年龄）
 ```
 
-数据源 `--source auto|view|log`（默认 auto = 取更新的那个）。`--limit N` 控制分析前 N 只。
+数据源 `--source auto|print|view|log`（默认 auto / print = `offboard_print_snapshot` 终端最后
+一次打印的行，含留存行、顺序即屏幕顺序；输出带 `print_seq` 与「数据 X 分钟前 / 非实时」）。
+`view`=桌面版 view_snapshot，`log`=launch_log 整日过门账。`--limit N` 控制分析前 N 只。
+`--brief` 只压篇幅与命令侧附加内容：system 提示词、红线守卫、基准率排序、幻觉巡检全部照旧。
 
 ## 4. 数据回填 / 修复 / 诊断
 
@@ -206,6 +212,9 @@ python scripts/offboard_nextday.py --days 20 --tier T2 --json
 python scripts/offboard_nextday.py --repair-next-day          # 修历史错标签（默认 dry-run）
 python scripts/offboard_nextday.py --repair-next-day --apply   # 真写
 python scripts/shadow_feature_backtest.py --no-fetch           # B 段新数据源的回溯样本外检验
+python scripts/ann_cache_sync.py --migrate-legacy             # 旧 12MB JSON 历史公告一次性导入（幂等）
+python scripts/ann_cache_sync.py                              # 当日最后一轮榜外行批量刷新公告（多码 1 请求）
+# B 段 AI 分析走 python -m scanner.ai_digest / pick.py（见 §3），不要另写报告脚本
 ```
 
 ### 7.1b 已归档：池内排序 / LLM 排序回放
@@ -219,7 +228,8 @@ python scripts/shadow_feature_backtest.py --no-fetch           # B 段新数据�
 | 脚本 | 用途 |
 |---|---|
 | `scripts/profit_ledger.py` | 收益账本：按某规则买入实际拿到多少（扣真实成本） |
-| `scripts/ann_event_backtest.py` | 公告事件的历史样本外检验（v1 主线 / 榜外段可切换 · 13 类事件 · 配对 bootstrap + 逐日符号检验 + jackknife） |
+| `scripts/ann_event_backtest.py` | 公告事件的历史样本外检验（v1 主线 / 榜外段可切换 · 关键词表 2026-11-11 扩充 · 配对 bootstrap + 逐日符号检验 + jackknife） |
+| `scripts/ann_cache_sync.py` | 公告缓存同步（m025）：候选票批量多码 1 请求 / 全市场按日回填 / 旧 JSON 迁移；取数失败**不推进水位** |
 | `scripts/buy_priority_report.py` | **盘中买入优先级反馈报告**（独立脚本 · 只读库 · ~8s）：综合分档 + 成立/失效条件 + 明日动作（详见 §2.1） |
 | `scripts/push_gate_impact.py` | 飞书过滤门的离线影响评估（三个问题，全部用真实历史数据） |
 | `scripts/prelaunch_probe.py` | 启动前形态的样本外可提取性探针（只读，不联网） |

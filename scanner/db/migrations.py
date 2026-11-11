@@ -524,6 +524,41 @@ def _check_offboard_print_snapshot(conn: sqlite3.Connection) -> bool:
     return _has_table(conn, "offboard_print_snapshot")
 
 
+def _up_announcement_cache(conn: sqlite3.Connection) -> None:
+    """m025（2026-11-11）：公告缓存表 + 同步水位表（离线交叉验证的单一真相）。
+
+    为什么必须落库而不是继续用 `logs/shadow_feature_cache.json`（实测 12MB / 520 票）：
+    - 那份缓存的写侧是 `todo = [s for s in symbols if s not in cache]` —— **按票、
+      命中即永久冻结**。实测最后写入停在 2026-11-02，而 11-06 宇邦要约收购、
+      11-10 智信回购方案全都不在缓存里 ⇒ 「有缓存」等于「没有缓存」。
+    - 它把公告 / 资金流 / 龙虎榜三类数据混在一个 12MB JSON 里，公告部分无法单独
+      按日期增量，也无法被主链路与离线脚本共用。
+
+    本表的两条硬约束（改错会静默算错，故写进迁移而不是脚本注释）：
+    ① 主键含 `content_hash`：公告标题可能被上游重发/修订，**不能按 title 覆盖**；
+    ② `ann_sync_waterline` 记水位：读侧必须打印「缓存截止日」，缺水位或过期要
+       显式告警，**不能静默当「无公告」**。历史公告一经发布不再改 ⇒ 不需要 TTL，
+       只需要水位（与 sift-cli 的「公告元数据无 TTL、PDF 永久」同思路）。
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS announcement_cache ("
+        "symbol TEXT NOT NULL, notice_date TEXT NOT NULL, title TEXT NOT NULL, "
+        "ann_type TEXT, source_url TEXT, content_hash TEXT NOT NULL, "
+        "fetched_at TEXT NOT NULL, "
+        "PRIMARY KEY (symbol, notice_date, content_hash))"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ann_cache_date ON announcement_cache(notice_date, symbol)")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS ann_sync_waterline ("
+        "scope TEXT NOT NULL, end_date TEXT NOT NULL, rows INTEGER NOT NULL DEFAULT 0, "
+        "updated TEXT NOT NULL, PRIMARY KEY (scope))"
+    )
+
+
+def _check_announcement_cache(conn: sqlite3.Connection) -> bool:
+    return _has_table(conn, "announcement_cache") and _has_table(conn, "ann_sync_waterline")
+
+
 def _check_market_extra_flow_index(conn: sqlite3.Connection) -> bool:
     """索引存在性（`sqlite_master` 查 `index` 类型）。
 
@@ -712,6 +747,12 @@ MIGRATIONS: list[Migration] = [
         desc="offboard_launch_log / onboard_anomaly_log 补 vol_ratio_raw（量比去偏前的上报原值；vol_ratio 保持决策值语义）",
         check=_check_offboard_log_vol_ratio_raw,
         up=_up_offboard_log_vol_ratio_raw,
+    ),
+    Migration(
+        id="m025_announcement_cache",
+        desc="公告缓存 announcement_cache + 同步水位 ann_sync_waterline（离线交叉验证单一真相；替掉冻结式 12MB JSON）",
+        check=_check_announcement_cache,
+        up=_up_announcement_cache,
     ),
 ]
 

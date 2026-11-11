@@ -247,3 +247,57 @@ def test_market_env_classifies_broad_rally():
     assert env["up"] == 8 and env["down"] == 2
     assert "普涨" in env["kind"]
     conn.close()
+
+
+# ── 2026-11-11 关键词扩充守卫（行为变更：只扩未验证表，已验证集合不动）──
+
+
+def test_expanded_keywords_recognize_previously_missed_events():
+    """本次「10 日窗口 0 命中」的四类漏检：回购 / 要约收购 / 诉讼（窗口外）/ 再融资。"""
+    ann = [
+        {"date": "2026-11-10", "title": "智信精密:深圳市智信精密仪器股份有限公司回购股份方案"},
+        {"date": "2026-11-06", "title": "宇邦新材:关于要约收购提示性公告期满60日的说明"},
+        {"date": "2026-10-08", "title": "波长光电:关于公司收到起诉书的公告"},
+        {"date": "2026-09-24", "title": "川环科技:关于向特定对象发行股票申请获得同意注册批复的公告"},
+        {"date": "2026-11-10", "title": "概念动态:川环科技新增人形机器人概念"},  # 非公告事件
+    ]
+    hits10 = bpr.classify_events(ann, signal_date="2026-11-11")
+    assert "回购" in hits10
+    assert "要约收购" in hits10
+    assert "诉讼仲裁" not in hits10, "10-08 在 10 日窗口外，不得命中"
+    assert "再融资" not in hits10, "09-24 在窗口外"
+    hits60 = bpr.classify_events(ann, signal_date="2026-11-11", lookback=60)
+    assert "诉讼仲裁" in hits60 and "再融资" in hits60
+    assert all("人形机器人" not in h for h in hits60), "概念动态不是公告事件"
+
+
+def test_expanded_keywords_keep_verified_negative_set():
+    """扩充只动 ANN_UNVERIFIED；已验证负面集合逐字不变（否则会悄悄多降档）。"""
+    assert bpr.ANN_NEGATIVE_VERIFIED == ("减持", "对外担保", "股权激励")
+    assert "回购" in bpr.ANN_UNVERIFIED and "要约收购" in bpr.ANN_UNVERIFIED
+    repurchase = bpr.classify([_row(ann=["回购"])])[0]
+    assert not any("已验证负面" in d for d in repurchase["downgrade"])
+    incentive = bpr.classify([_row(ann=["股权激励"])])[0]
+    assert any("已验证负面" in d for d in incentive["downgrade"])
+
+
+def test_repurchase_for_equity_incentive_hits_both_and_still_demotes():
+    """智信精密式标题：回购（未验证）+ 股权激励（已验证）⇒ 仍按已验证降档。"""
+    ann = [{"date": "2026-11-10", "title": "智信精密:回购股份方案（用于股权激励或员工持股）"}]
+    hits = bpr.classify_events(ann, signal_date="2026-11-11")
+    assert "回购" in hits and "股权激励" in hits, hits
+    row = bpr.classify([_row(ann=hits)])[0]
+    assert any("已验证负面" in d for d in row["downgrade"])
+
+
+def test_bond_holder_change_is_not_refinancing():
+    """金杨精密式「债券持有人可转债持有比例变动」≠ 公司再融资，不得误标。"""
+    ann = [{"date": "2026-11-07", "title": "金杨精密:关于债券持有人可转债持有比例变动达10%的公告"}]
+    assert "再融资" not in bpr.classify_events(ann, signal_date="2026-11-11")
+    genuine = [{"date": "2026-09-24", "title": "川环科技:关于向特定对象发行股票申请获得同意注册批复的公告"}]
+    assert "再融资" in bpr.classify_events(genuine, signal_date="2026-11-11", lookback=60)
+
+
+def test_mark_text_covers_new_categories():
+    got = bpr.mark_text(["回购", "要约收购", "监管问询", "诉讼仲裁", "中标订单", "业绩预告", "再融资"])
+    assert got == "⚑回购/要约/问询/诉讼/中标/预告/再融资", got

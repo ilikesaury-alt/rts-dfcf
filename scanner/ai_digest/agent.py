@@ -20,7 +20,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from scanner.ai_digest.llm import MagpieConfig, chat
+from scanner.ai_digest.llm import BRIEF_INSTRUCTION, MagpieConfig, chat
 from scanner.ai_digest.research import ResearchContext, ToolSpec, build_tools, run_tool
 
 __all__ = ["ResearchResult", "run_research"]
@@ -113,6 +113,7 @@ def run_research(
     max_calls: int = 30,
     tools: list[ToolSpec] | None = None,
     origin: str = "榜外异动段今日过门的票",
+    brief: bool = False,
 ) -> ResearchResult:
     """跑一轮「模型自己调研」。返回最终文本 + 工具调用记录 + 工具输出全文。
 
@@ -130,6 +131,7 @@ def run_research(
             "",
             "请自己调用工具查真实市场数据（K线/报价/资金流/概念板块/板块涨幅分布/市场概览/飙升榜/系统出现史），",
             "然后给出排序、入选依据、风险与整体判断。",
+            *(["", BRIEF_INSTRUCTION] if brief else []),
         ]
     )
 
@@ -176,7 +178,8 @@ def run_research(
     messages.append(
         {
             "role": "user",
-            "content": "工具调用次数已达上限。请基于已经查到的数据给出最终排序与判断，不要再调用工具。",
+            "content": "工具调用次数已达上限。请基于已经查到的数据给出最终排序与判断，不要再调用工具。"
+            + (chr(10) + BRIEF_INSTRUCTION if brief else ""),
         }
     )
     resp = chat(cfg, messages, tools=None)

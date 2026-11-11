@@ -60,8 +60,26 @@ from scanner.ai_digest.source import (
     load_offboard_rows,
     render_baseline_text,
 )
-from scanner.config import OFFBOARD_DISPLAY_TOP, resolve_db_path
+from scanner.config import OFFBOARD_DISPLAY_TOP, now_beijing, resolve_db_path
 from scanner.terminal_copy import PANEL_ROW_RE
+
+
+def _freshness(time_str: str) -> str:
+    """终端快照时刻 → 「数据 X 分钟前 / 非实时」标注。
+
+    用户要求输入是「最新的终端打印信息」：时刻必须可见，且午休主循环不刷 B 段时要
+    明说非实时，不能让几十分钟前的快照看起来像刚刚的行情。
+    """
+    if not time_str or ":" not in time_str:
+        return ""
+    try:
+        hh, mm, ss = (int(x) for x in time_str.split(":"))
+        now = now_beijing()
+        age = max(0, (now.hour * 3600 + now.minute * 60 + now.second - (hh * 3600 + mm * 60 + ss)) // 60)
+        return f" · 数据 {age} 分钟前" + ("（非实时）" if age > 5 else "")
+    except (ValueError, TypeError):
+        return ""
+
 
 #: 每种模式的标签（命令侧保证，**不是模型给的**）。
 LABELS = {
@@ -312,6 +330,9 @@ def _run_symbols(args: argparse.Namespace) -> int:
                 ctx,
                 max_rounds=args.max_rounds,
                 max_calls=args.max_calls,
+                # `_run_symbols` 会被测试直接喂手工构造的 Namespace（没有 brief 字段）；
+                # 与上面 `limit = getattr(args, "limit", None)` 同款防御，避免 AttributeError。
+                brief=getattr(args, "brief", False),
                 origin="用户指定的自选清单",
             )
         except AIUpstreamError as e:
@@ -486,14 +507,20 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="从 Windows 剪贴板读清单（配合终端「一键复制」按 c 用；文本里的名字/日期会自动跳过）",
     )
     p.add_argument("--symbols-file", help="从文本文件读清单（一行一个代码或名字）")
-    p.add_argument("--out", help="把报告存到该文件（默认只打印）")
+    p.add_argument("--out", help="把简洁报告存到该文件（配合 --brief；默认只打印）")
+    p.add_argument(
+        "--brief",
+        action="store_true",
+        help="简洁报告：每票一行、最多 12 行，不打印查询记录/素材核对表（幻觉巡检与红线照旧）",
+    )
     p.add_argument("--max-rounds", type=int, default=8, help="research 模式最多几轮工具调用（默认 8）")
     p.add_argument("--max-calls", type=int, default=30, help="research 模式最多几次工具调用（默认 30）")
     p.add_argument(
         "--source",
-        choices=("auto", "view", "log"),
+        choices=("auto", "print", "view", "log"),
         default="auto",
-        help="auto=取更新的那个（默认）；view=最近一轮终端打印；log=launch_log 最新信号日",
+        help="auto/print=终端最后一次打印的行（offboard_print_snapshot，含留存行/屏幕顺序）；"
+        "view=桌面版 view_snapshot；log=launch_log 整日过门账（信号值冻结）",
     )
     p.add_argument("--date", help="信号日 YYYY-MM-DD（仅 log 源；默认取最新）")
     p.add_argument(
@@ -537,12 +564,13 @@ def _resolve_rows(args: argparse.Namespace) -> dict[str, Any]:
         if args.source in ("print", "auto"):
             snap = latest_print_snapshot(conn)
             if snap is not None:
-                date, time_str, rows, _seq = snap
+                date, time_str, rows, seq = snap
                 return {
                     "date": date,
                     "rows": rows,
                     "source": "print",
                     "time": time_str,
+                    "seq": seq,
                     "market": None,
                     "baseline": baseline,
                 }
@@ -623,7 +651,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     shown, total = len(mats.symbols), len(info["rows"])
     source_desc = {
-        "print": f"offboard_print_snapshot {info['date']} {info['time']}（终端最后一次打印的行，顺序即屏幕顺序）",
+        "print": f"offboard_print_snapshot {info['date']} {info['time']} seq={info.get('seq') or '—'}"
+        f"（终端最后一次打印的行，顺序即屏幕顺序）{_freshness(info.get('time') or '')}",
         "view": f"view_snapshot {info['date']} {info['time']}（桌面版快照 · 含留存行/实时值）",
         "log": f"offboard_launch_log {info['date']}（整日过门账 · 信号值冻结快照）",
         "demo": "内置样例",
@@ -670,6 +699,7 @@ def main(argv: list[str] | None = None) -> int:
                     ctx,
                     max_rounds=args.max_rounds,
                     max_calls=args.max_calls,
+                    brief=args.brief,
                 )
             finally:
                 conn.close()
@@ -683,7 +713,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             tool_blob = ""
             print(f"[i] 已发出请求（模式 {args.mode} · 模型 {cfg.model}；实测单次 10~90s，请稍等）…", file=sys.stderr)
-            text = transcribe(cfg, mats, mode=args.mode)
+            text = transcribe(cfg, mats, mode=args.mode, brief=args.brief)
     except AIUpstreamError as e:
         if args.json:
             _emit({"ok": False, "error": {"code": "AI_UPSTREAM", "message": str(e)}})
@@ -704,7 +734,7 @@ def main(argv: list[str] | None = None) -> int:
     # 幻觉巡检（两种模式都跑；analyze 模式它是唯一的确定性闸）。
     from scanner.ai_digest.llm import build_messages
 
-    user_prompt = build_messages(mats, args.mode)[1]["content"]
+    user_prompt = build_messages(mats, args.mode, brief=args.brief)[1]["content"]
     # research 模式的比对基准 = 全部工具输出（模型能引用的一切真实数据）
     check_blob = (user_prompt + chr(10) + tool_blob) if args.mode == "research" else user_prompt
     unverified = unverified_numbers(text, check_blob)
@@ -726,6 +756,8 @@ def main(argv: list[str] | None = None) -> int:
                 "generatedFrom": {
                     "date": info["date"],
                     "time": info.get("time") or None,
+                    "print_seq": info.get("seq"),
+                    "brief": args.brief,
                     "symbols": list(mats.symbols),
                 },
             }
@@ -734,8 +766,40 @@ def main(argv: list[str] | None = None) -> int:
             return 3
         return 5 if unverified else 0
 
+    # `--brief`：一屏报告（不打印查询记录 / 素材核对表）。幻觉巡检与红线照旧，
+    # 只是把「命令侧附加内容」收起来；`--out` 落的是这一份，不是原来的长报告。
+    # ⚠ 默认模式是 research，别把它标成「AI 转述」（那是 transcribe 的标题）。
+    report_title = {
+        "analyze": "榜外异动 · AI 综合分析",
+        "research": "榜外异动 · AI 调研",
+        "transcribe": "榜外异动 · AI 转述",
+    }.get(args.mode, "榜外异动 · AI 分析")
+    if args.brief:
+        brief_lines = [
+            _RULE,
+            report_title,
+            LABELS[args.mode],
+            _RULE,
+            f"数据源 {source_desc} · 共 {total} 行 · 本次 {shown} 只",
+            "",
+            text,
+        ]
+        if unverified:
+            brief_lines += [
+                "",
+                f"[!] 幻觉巡检：以下数字在素材/工具输出里没有逐字出现（可能是概括、四舍五入或自造，请自行核对）：{'、'.join(unverified)}",
+            ]
+        report = "\n".join(brief_lines) + "\n"
+        if args.out:
+            Path(args.out).write_text(report, encoding="utf-8")
+            print(f"[报告] {args.out}", file=sys.stderr)
+        print(report, end="")
+        if redlined:
+            return 3
+        return 5 if unverified else 0
+
     print(_RULE)
-    print("榜外异动 · AI 综合分析" if args.mode == "analyze" else "榜外异动 · AI 转述")
+    print(report_title)
     print(LABELS[args.mode])
     print(_RULE)
     print(f"数据源 {source_desc} · 共 {total} 行 · 本次 {shown} 只（段内顺序与终端同源）")

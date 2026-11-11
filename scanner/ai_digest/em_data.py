@@ -17,13 +17,23 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
+from scanner.config import now_beijing
 from scanner.utils import EXTERNAL_FAILURES
 
-__all__ = ["fetch_announcements", "fetch_dragon_tiger", "fetch_intraday_fund_flow"]
+__all__ = [
+    "fetch_announcements",
+    "fetch_announcements_batch",
+    "fetch_market_announcements",
+    "fetch_dragon_tiger",
+    "fetch_intraday_fund_flow",
+]
 
 _TIMEOUT = 15.0
+_ANN_URL = "https://np-anotice-stock.eastmoney.com/api/security/ann"
+_ANN_PAGE = 100  # 实测 page_size=500 接口接受，但 100 更稳且翻页成本低
 
 
 def _requests():
@@ -34,21 +44,51 @@ def _requests():
     return requests
 
 
+def _bare(code_or_symbol: str) -> str:
+    return (
+        code_or_symbol[2:] if len(code_or_symbol) == 8 and code_or_symbol[:2] in ("SH", "SZ", "BJ") else code_or_symbol
+    )
+
+
+def _parse_ann_item(it: dict[str, Any]) -> tuple[str, str, str, list[str]]:
+    """东财公告行 → (date, title, type, codes)。**三个取数函数共用**，避免口径漂移。
+
+    ⚠ `columns` 实测是**字符串列表**（如 ["公司公告"]），不是 dict 列表 ——
+      当 dict 列表写会 AttributeError（2026-11-03 实测）。
+    ⚠ `codes` 是列表：一条公告可能关联多票（如「关于XXX等」），且含 inner_code /
+      market_code / short_name / stock_code；取 `stock_code` 建索引。
+    """
+    cols = it.get("columns")
+    if isinstance(cols, list) and cols:
+        first = cols[0]
+        col_type = first.get("column_name", "") if isinstance(first, dict) else str(first)
+    else:
+        col_type = ""
+    codes = [
+        str(c.get("stock_code") or "") for c in (it.get("codes") or []) if isinstance(c, dict) and c.get("stock_code")
+    ]
+    return (
+        str(it.get("notice_date") or "")[:10],
+        str(it.get("title") or "").strip(),
+        str(col_type),
+        codes,
+    )
+
+
 def fetch_announcements(symbol: str, limit: int = 8) -> list[dict[str, Any]]:
     """最近公告（标题 + 日期 + 类型）。东财按裸 6 位代码查（不带前缀）。"""
-    code = symbol[2:] if len(symbol) == 8 and symbol[:2] in ("SH", "SZ", "BJ") else symbol
     req = _requests()
     if req is None:
         return []
     try:
         resp = req.get(
-            "https://np-anotice-stock.eastmoney.com/api/security/ann",
+            _ANN_URL,
             params={
                 "page_size": max(1, min(limit, 30)),
                 "page_index": 1,
                 "ann_type": "A",
                 "client_source": "web",
-                "stock_list": code,
+                "stock_list": _bare(symbol),
             },
             timeout=_TIMEOUT,
         )
@@ -60,22 +100,118 @@ def fetch_announcements(symbol: str, limit: int = 8) -> list[dict[str, Any]]:
     items = (payload.get("data") or {}).get("list") or []
     out = []
     for it in items:
-        cols = it.get("columns")
-        # ⚠ `columns` 实测是**字符串列表**（如 ["公司公告"]），不是 dict 列表 ——
-        #   当 dict 列表写会 AttributeError（2026-11-03 实测）。
-        if isinstance(cols, list) and cols:
-            first = cols[0]
-            col_type = first.get("column_name", "") if isinstance(first, dict) else str(first)
-        else:
-            col_type = ""
-        out.append(
-            {
-                "date": str(it.get("notice_date") or "")[:10],
-                "title": str(it.get("title") or "").strip(),
-                "type": str(col_type),
-            }
-        )
+        date, title, col_type, _codes = _parse_ann_item(it)
+        out.append({"date": date, "title": title, "type": col_type})
     return out
+
+
+def fetch_announcements_batch(symbols: list[str], *, days: int = 30) -> dict[str, list[dict[str, Any]]]:
+    """**一次（必要时分页）请求**拿多只票最近 N 天公告 —— 缓存同步的写侧入口。
+
+    ⚠ 实测（2026-11-11，`np-anotice-stock`）：`stock_list` 接受**逗号分隔多码** ——
+      3 票一次请求 total=8、覆盖 3 个代码；与 `begin_time`/`end_time` 同用时区间
+      生效（智信 301512 在 11-01~11-11 精确 4 条）。⇒ 12 只候选从 **12 请求压到 1**，
+      零新依赖（本环境 AKShare 1.18.64 已装，但其 `stock_info_global_cls` 实测 90s
+      超时 ⇒ 资讯侧不要走 AKShare）。
+
+    返回 `{带前缀 symbol: [{date,title,type}, ...]}`，按日期降序。
+    ⚠ 一条公告可能关联多票 ⇒ 对**每个** `codes[].stock_code` 都落一份；`codes` 为空
+      的行无法归属，跳过（不猜）。
+    fail-open：网络/上游结构变化返回已取到的部分；编程错误照常冒泡（不用裸 except）。
+    """
+    ordered = list(dict.fromkeys(symbols))
+    if not ordered:
+        return {}
+    req = _requests()
+    if req is None:
+        return {}
+    end = now_beijing().date()
+    begin = end - timedelta(days=max(1, days))
+    out: dict[str, list[dict[str, Any]]] = {s: [] for s in ordered}
+    page, total = 1, None
+    while True:
+        try:
+            resp = req.get(
+                _ANN_URL,
+                params={
+                    "page_size": _ANN_PAGE,
+                    "page_index": page,
+                    "ann_type": "A",
+                    "client_source": "web",
+                    "stock_list": ",".join(_bare(s) for s in ordered),
+                    "begin_time": begin.isoformat(),
+                    "end_time": end.isoformat(),
+                },
+                timeout=_TIMEOUT,
+            )
+            payload = resp.json()
+        except EXTERNAL_FAILURES:
+            break
+        except ValueError:
+            break
+        data = payload.get("data") or {}
+        items = data.get("list") or []
+        if not items:
+            break
+        if total is None:
+            try:
+                total = int(data.get("total_hits") or 0)
+            except (TypeError, ValueError):
+                total = 0
+        for it in items:
+            date, title, col_type, codes = _parse_ann_item(it)
+            for code in codes:
+                sym = next((s for s in ordered if _bare(s) == code), None)
+                if sym is not None and date:
+                    out[sym].append({"date": date, "title": title, "type": col_type})
+        if total is not None and page * _ANN_PAGE >= total:
+            break
+        page += 1
+        if page > 50:  # 防御性上限：上游 total 异常大时不无限翻页
+            break
+    for s in ordered:
+        out[s].sort(key=lambda x: x["date"], reverse=True)
+    return out
+
+
+def fetch_market_announcements(day: str, page: int = 1, page_size: int = _ANN_PAGE) -> tuple[list[dict[str, Any]], int]:
+    """按**交易日全市场**分页拉公告（历史回填 / 全市场水位用）。
+
+    2026-11-11 实测：单日 900 条（page_size=100 ⇒ 9 页）。盘中候选筛选不需要走这条，
+    用 `fetch_announcements_batch` 一请求即可；本函数只用于批量建库/回测。
+    返回 `(rows, total_hits)`，row 额外带 `codes`（可据此只留创业板 300/301）。
+    """
+    req = _requests()
+    if req is None:
+        return [], 0
+    try:
+        resp = req.get(
+            _ANN_URL,
+            params={
+                "page_size": max(1, min(page_size, 500)),
+                "page_index": page,
+                "ann_type": "A",
+                "client_source": "web",
+                "begin_time": day,
+                "end_time": day,
+            },
+            timeout=_TIMEOUT,
+        )
+        payload = resp.json()
+    except EXTERNAL_FAILURES:
+        return [], 0
+    except ValueError:
+        return [], 0
+    data = payload.get("data") or {}
+    rows = []
+    for it in data.get("list") or []:
+        date, title, col_type, codes = _parse_ann_item(it)
+        rows.append({"date": date, "title": title, "type": col_type, "codes": codes})
+    try:
+        total = int(data.get("total_hits") or 0)
+    except (TypeError, ValueError):
+        total = 0
+    return rows, total
 
 
 def fetch_intraday_fund_flow(symbol: str) -> list[dict[str, Any]]:
