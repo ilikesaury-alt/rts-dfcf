@@ -20,9 +20,11 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from scanner.ai_digest.features import SymbolFeatures, build_features, render_feature_block
 from scanner.ai_digest.llm import BRIEF_INSTRUCTION, MagpieConfig, chat
 from scanner.ai_digest.panel import PanelRegion, PanelSnapshot
 from scanner.ai_digest.research import ResearchContext, ToolSpec, build_tools, run_tool
+from scanner.utils import EXTERNAL_FAILURES
 
 __all__ = [
     "ResearchResult",
@@ -198,6 +200,7 @@ def build_research_prompt(
     *,
     panel: PanelSnapshot | None = None,
     brief: bool = False,
+    features: dict[str, Any] | None = None,
 ) -> str:
     """构造 research 的 user 提示词（**纯函数**）。
 
@@ -207,6 +210,12 @@ def build_research_prompt(
 
     `panel` 有值时按**区**渲染（v1 池选 / 沪深飙升各段），并保留每区自己的口径原文；
     没有面板（自选清单模式）就退回扁平候选行。
+
+    `features`：`features.build_features` 算好的本地特征（`{symbol: SymbolFeatures}`）。
+    有值时在面板后面追加一段**结论化**的本地数据（5日/10日累计、距20日高点、量能、
+    最近公告），并明确告诉模型「这些不用再调工具取」—— 实测省掉 `get_kline` /
+    `get_announcements` 的往返，代价约 +1.7k tokens。**不塞原始 K 线**：30 只票 × 10 根
+    是 3414 字符且模型基本只用来判断「位置/放量」，压成两个百分比即可。
     """
     if panel is not None and panel.regions:
         head = [
@@ -233,6 +242,16 @@ def build_research_prompt(
             "请自己调用工具查真实市场数据（K线/报价/资金流/概念板块/板块涨幅分布/市场概览/飙升榜/系统出现史），",
             "然后给出排序、入选依据、风险与整体判断。",
         ]
+    if features:
+        order: list[str] = []
+        if panel is not None and panel.regions:
+            for region in panel.regions:
+                order += [str(r.get("symbol")) for r in region.rows]
+        else:
+            order += [str(c.get("symbol")) for c in candidates]
+        block = render_feature_block(features, order)
+        if block:
+            lines += ["", *block]
     if brief:
         lines += ["", BRIEF_INSTRUCTION]
     return "\n".join(lines)
@@ -292,6 +311,27 @@ def _run_calls_serial(
     """串行回退（单调用 / 非文件库 / 并行不可用）。"""
     return [_exec_job(j, ctx) for j in jobs]
 
+
+def _prefetch_features(
+    candidates: list[dict[str, Any]],
+    panel: PanelSnapshot | None,
+    ctx: ResearchContext,
+) -> dict[str, SymbolFeatures] | None:
+    """从本地库算候选票特征；任何异常都返回 None（预加载是增强，不是前置条件）。"""
+    syms: list[str] = []
+    if panel is not None and panel.regions:
+        for region in panel.regions:
+            syms += [str(r.get("symbol")) for r in region.rows if r.get("symbol")]
+    else:
+        syms += [str(c.get("symbol")) for c in candidates if c.get("symbol")]
+    if not syms:
+        return None
+    try:
+        return build_features(ctx.conn_for_thread(), syms)
+    except EXTERNAL_FAILURES:  # 预加载失败绝不能拖垮调研
+        return None
+
+
 def run_research(
     cfg: MagpieConfig,
     candidates: list[dict[str, Any]],
@@ -306,6 +346,7 @@ def run_research(
     user_prompt: str | None = None,
     summarize: bool = True,
     summarize_always: bool = False,
+    prefetch_features: bool = True,
 ) -> ResearchResult:
     """跑一轮「模型自己调研」。返回最终文本 + 工具调用记录 + 工具输出全文。
 
@@ -316,11 +357,22 @@ def run_research(
     各不相同的排序键不是一回事，混成一个扁平清单就丢了「它凭什么在这张表里」。
     `user_prompt`：直接给成品提示词（CLI 用同一份做幻觉巡检基准，保证
     「巡检比对的文本」== 「模型实际收到的文本」）。
+    `prefetch_features`：把本地算得出的特征（5日/10日累计、距20日高点、量能、最近公告）
+    直接写进提示词，省掉模型调 `get_kline`/`get_announcements` 的往返。纯本地、可失败 ——
+    出错就当没有，不影响调研。
     """
     tool_list = tools if tools is not None else build_tools()
     schemas = [t.schema() for t in tool_list]
 
-    user = user_prompt or build_research_prompt(candidates, origin, panel=panel, brief=brief)
+    # 本地特征预加载：只算**结论化**字段（不塞原始 K 线），失败就当没有。
+    # 为什么不在 `build_research_prompt` 里做：那是纯函数，拿不到连接。
+    feats: dict[str, SymbolFeatures] | None = None
+    if prefetch_features and user_prompt is None:
+        feats = _prefetch_features(candidates, panel, ctx)
+
+    user = user_prompt or build_research_prompt(
+        candidates, origin, panel=panel, brief=brief, features=feats
+    )
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": RESEARCH_SYSTEM_PROMPT},
         {"role": "user", "content": user},

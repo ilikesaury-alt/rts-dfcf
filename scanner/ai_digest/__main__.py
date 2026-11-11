@@ -67,6 +67,7 @@ from scanner.ai_digest.source import (
 )
 from scanner.config import OFFBOARD_DISPLAY_TOP, now_beijing, resolve_db_path
 from scanner.terminal_copy import PANEL_ROW_RE
+from scanner.utils import EXTERNAL_FAILURES
 
 
 def _freshness(time_str: str, date_str: str = "") -> str:
@@ -560,6 +561,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--max-rounds", type=int, default=8, help="research 模式最多几轮工具调用（默认 8）")
     p.add_argument("--max-calls", type=int, default=30, help="research 模式最多几次工具调用（默认 30）")
     p.add_argument(
+        "--no-prefetch-features",
+        dest="prefetch_features",
+        action="store_false",
+        help="research 模式：不把本地特征（5日/10日累计、距20日高点、量能、最近2条公告）"
+        "预加载进提示词，改由模型自己调 get_kline/get_announcements（默认预加载）",
+    )
+    p.add_argument(
         "--source",
         choices=("auto", "panel", "print", "view", "log"),
         default="auto",
@@ -749,11 +757,26 @@ def main(argv: list[str] | None = None) -> int:
             # 面板列名与 B 段列名不是一套。这里直接打**模型真正会收到的提示词**，
             # 那才是「素材」在 research 模式下的含义。
             from scanner.ai_digest.agent import build_research_prompt
+            from scanner.ai_digest.features import build_features
 
             _panel = info.get("panel")
             _rows = [dict(r) for reg in _panel.regions for r in reg.rows] if _panel else list(info["rows"])
+            _feats = None
+            if args.prefetch_features:
+                try:
+                    _c = connect_readonly(resolve_db_path())
+                    try:
+                        _feats = build_features(_c, [str(r.get("symbol")) for r in _rows if r.get("symbol")])
+                    finally:
+                        _c.close()
+                except EXTERNAL_FAILURES as _e:
+                    print(f"[!] 本地特征预加载跳过: {type(_e).__name__}: {_e}", file=sys.stderr)
             print("")
-            print(build_research_prompt(_rows, "终端面板原文", panel=_panel, brief=args.brief))
+            print(
+                build_research_prompt(
+                    _rows, "终端面板原文", panel=_panel, brief=args.brief, features=_feats
+                )
+            )
             return 0
         print(render_material_items(mats))
         return 0
@@ -795,14 +818,28 @@ def main(argv: list[str] | None = None) -> int:
                 rows_for_model = [dict(r) for reg in panel.regions for r in reg.rows]
             else:
                 rows_for_model = [dict(r) for r in info["rows"]]
-            user_prompt_research = build_research_prompt(
-                rows_for_model,
-                "终端面板原文" if panel is not None else "终端数据",
-                panel=panel,
-                brief=args.brief,
-            )
             conn = connect_readonly(resolve_db_path())
             try:
+                # 本地特征预加载：**必须在建提示词之前**算好，因为同一份文本既发给模型
+                # 又当幻觉巡检基准 —— 若模型收到带特征的版本、巡检却比不带特征的版本，
+                # 那些「5日 +24.6%」会被判成编造（正是这里历史上的翻车方式）。
+                from scanner.ai_digest.features import build_features
+
+                _feats = None
+                if args.prefetch_features:
+                    try:
+                        _feats = build_features(
+                            conn, [str(r.get("symbol")) for r in rows_for_model if r.get("symbol")]
+                        )
+                    except EXTERNAL_FAILURES as _e:  # 预加载失败不拦调研
+                        print(f"[!] 本地特征预加载跳过: {type(_e).__name__}: {_e}", file=sys.stderr)
+                user_prompt_research = build_research_prompt(
+                    rows_for_model,
+                    "终端面板原文" if panel is not None else "终端数据",
+                    panel=panel,
+                    brief=args.brief,
+                    features=_feats,
+                )
                 # ⚠ 工具自己懒加载雪球 session（`ResearchContext.get_session`）——
                 #   适配器没有公开 session 属性，取 `.session` 会 AttributeError。
                 ctx = ResearchContext(conn=conn)
@@ -816,6 +853,9 @@ def main(argv: list[str] | None = None) -> int:
                     panel=panel,
                     user_prompt=user_prompt_research,
                     summarize_always=args.summarize_always,
+                    # 已在上面的 `user_prompt_research` 里预加载过；再让 run_research 算一遍
+                    # 既浪费一次全表查询，又会因两条路径算出的特征不同而让巡检基准漂移。
+                    prefetch_features=False,
                 )
             finally:
                 conn.close()

@@ -450,22 +450,118 @@ def _tool_get_realtime_quote(args: dict[str, Any], ctx: ResearchContext) -> str:
     return body + (f"\n{trunc_note}" if trunc_note else "")
 
 
+#: 收盘后多久，本地快照才算「已定格」（收盘 15:00 → 15:06 留出尾盘结算宽限）。
+#: 依据：`market_extra_cache` 的当日行会被后续快照 INSERT OR REPLACE **持续覆盖**，
+#: 而主循环最后一轮实测落在 14:54 —— **还差 6 分钟的尾盘 + 集合竞价**。
+#: 实测 2026-11-11 伊之密：本地 14:54 快照 main_pct=21.73% / volume=1277.78万，
+#: 收盘终值 24.38% / 1374.48万（差 +2.65pp / +96.7万手）。这不是"缓存旧了"的小事：
+#: 尾盘主力净流入是**判断次日承接**的核心证据，用盘中值会系统性低估强势票。
+_CLOSE_SETTLED_AFTER = (15, 6)
+
+#: A 股收盘时刻（用于判定本地快照是否已定格）。
+_MARKET_CLOSE = (15, 0)
+
+
+def _local_snapshot_final(now: Any) -> bool:
+    """当前时刻是否已过「本地快照定格线」（收盘 + 宽限）。"""
+    return (now.hour, now.minute) >= _CLOSE_SETTLED_AFTER
+
+
 def _tool_get_fund_flow(args: dict[str, Any], ctx: ResearchContext) -> str:
-    """东财资金流（主力净占比 / 超大单 / 大单）。"""
+    """资金流（主力净占比 / 超大单 / 换手 / 量比）—— **本地缓存优先，但按时点分档**。
+
+    ## 为什么要本地优先（2026-11-11）
+
+    主扫描器每轮把全市场（实测 1453 只）的今日资金流落进 `market_extra_cache`
+    （`data_type='fund_flow'`），而这里原先**无条件**调 `fetch_fund_flow_rank()`
+    走东财 —— 同一天同源的数据，盘后分析时又白跑一次网络。
+
+    字段已核：本地 payload 与联网版**完全一致**（`main_net` / `main_pct` / `super_net` /
+    `turnover` / `vol_ratio` / `amount` / `float_cap` / `name` 全有），可直接互换。
+
+    ## 但不能无条件用本地 —— 本地最后一轮落在 14:54
+
+    实测差异（2026-11-11，本地 vs 收盘后实时）：
+
+    | 票 | main_pct | volume | 差 |
+    |---|---|---|---|
+    | 伊之密 | 21.73% → 24.38% | 1277.78万 → 1374.48万 | +2.65pp / +96.7万手 |
+    | 顺网科技 | 15.19% → 15.14% | 7635.33万 → 7762.66万 | −0.05pp / +127万手 |
+    | 富瀚微 | 3.02% → 2.90% | 3503.85万 → 3592.05万 | −0.12pp / +88万手 |
+
+    成交量的差异是**系统性的**（全部为负增量 ⇒ 本地缺尾盘+集合竞价）。
+    `main_pct` 方向不一，但伊之密那种强势票被低估 2.65pp —— 足以改变「首选」排序。
+
+    ## 分档规则
+
+    - **盘中 / 收盘前**：`market_extra_cache` 就是当前最新（主循环 60 秒一轮在写）⇒ 用本地，
+      零联网。这是多数使用场景（终端跑着、人盯着看）。
+    - **收盘后（≥15:06）**：本地已定格但**不是终值** ⇒ 优先联网取终值；联网失败才退回本地，
+      并在输出里**明说是盘中快照**（让模型知道这个数偏低，别据此下强结论）。
+    - 本地无当日条目的票：并入联网那次全量拉取（`fetch_fund_flow_rank` 是**无参全量**接口，
+      不能按票逐只请求）。
+    """
     syms = [str(s).strip().upper() for s in (args.get("symbols") or []) if str(s).strip()]
     if not syms:
         return "参数错误：需要 symbols"
     all_syms = syms
     syms = syms[:_MAX_SYMBOLS_PER_CALL]
     trunc_note = _note_truncated(all_syms)
-    try:
-        from scanner.market_extra import fetch_fund_flow_rank
 
-        rows = ctx.cached("ff:" + ",".join(syms), fetch_fund_flow_rank)
-    except EXTERNAL_FAILURES as e:
-        return f"资金流查询失败（{type(e).__name__}）"
+    from scanner.config import now_beijing
+
+    settled = _local_snapshot_final(now_beijing())
+
+    local: dict[str, Any] = {}
+    try:
+        from scanner.db.queries import get_market_extra_cache
+
+        local = ctx.cached(
+            "fflocal:" + ",".join(syms),
+            lambda: get_market_extra_cache(ctx.conn_for_thread(), syms, "fund_flow"),
+        )
+    except EXTERNAL_FAILURES:
+        local = {}
+
+    rows: dict[str, Any] = {}
+    src_note = ""
+    remote_note = ""
+
+    if not settled and local:
+        # 盘中：本地就是最新，零联网
+        rows = dict(local)
+        src_note = "本地 market_extra_cache（盘中最新快照）"
+    else:
+        # 收盘后：本地已定格但非终值 ⇒ 取终值
+        try:
+            from scanner.market_extra import fetch_fund_flow_rank
+
+            remote = ctx.cached("ff:live", fetch_fund_flow_rank)
+            for s in syms:
+                r = (remote.get(s) or remote.get(s[2:])) if remote else None
+                if r:
+                    rows[s] = r
+            if rows:
+                src_note = "东财实时（收盘终值）"
+                if local:
+                    gained = len(rows) - len([s for s in syms if s in local])
+                    if gained > 0:
+                        remote_note = f"\n（本地快照缺 {gained} 只，已由联网补齐）"
+            else:
+                raise ValueError("联网返回空")
+        except EXTERNAL_FAILURES as e:
+            if local:
+                rows = dict(local)
+                src_note = "本地 market_extra_cache（收盘定格快照，**非终值**）"
+                remote_note = (
+                    f"\n（联网取终值失败：{type(e).__name__} ⇒ 以上为 15:00 收盘前最后一轮快照，"
+                    f"成交量与主力净额**低于**收盘终值，判断强势票时请留出余量）"
+                )
+            else:
+                return f"资金流查询失败（{type(e).__name__}）"
     if not rows:
         return "资金流数据为空"
+
     lines = []
     for s in syms:
         # ⚠ 东财行的键名是 `main_net`/`super_net`/`turnover`/`vol_ratio`（实测 2026-11-03），
@@ -483,7 +579,9 @@ def _tool_get_fund_flow(args: dict[str, Any], ctx: ResearchContext) -> str:
             f" | 成交额 {_money(r.get('amount'))}"
             f" | 流通市值 {_money(r.get('float_cap'))}"
         )
-    return "资金流（金额单位：万/亿）：" + chr(10).join(lines) + (f"\n{trunc_note}" if trunc_note else "")
+    head = f"资金流（金额单位：万/亿；{src_note}）："
+    tail = "".join(x for x in (remote_note, f"\n{trunc_note}" if trunc_note else "") if x)
+    return head + chr(10).join(lines) + tail
 
 
 def _tool_get_concepts(args: dict[str, Any], ctx: ResearchContext) -> str:
