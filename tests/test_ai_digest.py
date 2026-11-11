@@ -841,7 +841,11 @@ def test_research_tools_use_real_local_data(digest_db, monkeypatch):
 
         ov = run_tool(tools["get_market_overview"], {}, ctx)
         assert {"index", "zt"} <= set(calls), "概览的两条外网取数也必须走桩（不许真联网）"
-        assert "本地 K 线样本" in ov  # 即使指数/涨停池取不到，本地那部分也必须出得来
+        # 即使指数/涨停池取不到，本地那部分也必须出得来。
+        # ⚠ 断言**行为**（涨跌家数与合计在），不绑死文案措辞 —— 2026-11-11 改过这行
+        #   输出（`本地 K 线样本` → `本地样本涨跌`，并补了平盘数与上涨率），
+        #   绑文案的断言会跟着无意义地红一次。
+        assert "上涨" in ov and "下跌" in ov and "合计" in ov
     finally:
         conn.close()
 

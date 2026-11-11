@@ -652,16 +652,39 @@ def _tool_get_sector_heatmap(args: dict[str, Any], ctx: ResearchContext) -> str:
 
 
 def _tool_get_market_overview(args: dict[str, Any], ctx: ResearchContext) -> str:
-    """市场概览：指数、涨停家数、样本涨跌分布 —— 判断这是普涨还是结构行情。"""
+    """市场概览：指数、涨停家数、样本涨跌分布 —— 判断这是普涨还是结构行情。
+
+    ## 为什么样本数要写得这么啰嗦（2026-11-11）
+
+    实测事故：模型在结尾写「跟随 **287 只样本**普涨」，而工具当时给的是
+    「上涨 77 / 下跌 13 / 共 92」。287 既不在工具输出里、也不在提示词里 ——
+    是模型**自己补的**。
+
+    根因不是它想编，而是原表述给了它「这个数不完整、需要修正」的暗示：
+    `共 92（覆盖 92 只）` 里 `覆盖` 一词容易被读成「样本覆盖不全」，
+    而 A 股有 5000+ 只，92 看着就像个残缺的抽样 ⇒ 模型顺手"补全"成一个更像全市场的数。
+
+    故改为：① 明说这是**本地库**的滚动窗口（不是全市场统计）；
+    ② 明说这个数**本身可信、不需要修正**；③ 给出「上涨+下跌」与「共」的加总关系，
+    并提示平盘票的存在 —— 否则模型自己算 `77+13=90≠92` 会以为数据有矛盾。
+    """
     parts: list[str] = []
     # ① 本地 K 线样本的涨跌分布（免费）
     # ⚠ `daily_kline` 的列名是 **`percent`**（不是 `pct`）—— 写错会 OperationalError
     row = ctx.conn_for_thread().execute(
         "SELECT SUM(CASE WHEN percent > 0 THEN 1 ELSE 0 END), SUM(CASE WHEN percent < 0 THEN 1 ELSE 0 END), "
-        "count(*), MAX(date) FROM daily_kline WHERE date = (SELECT MAX(date) FROM daily_kline)"
+        "count(*), MAX(date), SUM(CASE WHEN percent = 0 THEN 1 ELSE 0 END) "
+        "FROM daily_kline WHERE date = (SELECT MAX(date) FROM daily_kline)"
     ).fetchone()
     if row and row[2]:
-        parts.append(f"本地 K 线样本（{row[3]}）：上涨 {row[0]} / 下跌 {row[1]} / 共 {row[2]}（覆盖 {row[2]} 只）")
+        up, down, total, day, flat = row[0] or 0, row[1] or 0, row[2], row[3], row[4] or 0
+        # 上涨率才是「普涨还是结构行情」的可比读数 —— 直接算好给模型，别让它自己除
+        # （模型自己做除法 = 它算出来的数，巡检会判编造，是「721 万」那类误报的同源问题）。
+        up_ratio = (up / total * 100.0) if total else 0.0
+        parts.append(
+            f"本地样本涨跌（{day}）：上涨 {up} / 下跌 {down} / 平盘 {flat} / 合计 {total} 只，"
+            f"上涨率 {up_ratio:.1f}%（样本=本地库当日有 K 线的票，非全市场家数）"
+        )
     # ② 创业板指
     try:
         from scanner.api import fetch_market_index
@@ -672,12 +695,29 @@ def _tool_get_market_overview(args: dict[str, Any], ctx: ResearchContext) -> str
     except EXTERNAL_FAILURES as e:
         parts.append(f"创业板指：取不到（{type(e).__name__}）")
     # ③ 涨停池（情绪温度）
+    # ⚠ 原表述是「{n} 家（连板数据见下）」—— 但**下面并没有任何连板数据**，
+    #   `fetch_zt_pool` 返回的 `lianban`/`zt_stat` 从未被输出过。模型会去找一段
+    #   不存在的内容（实测它会转而自己编一个数字来"补全"）。
+    #   现在直接把连板分布算出来给它 —— 情绪温度看的是「几进几」，不是总家数。
     try:
         from scanner.market_extra import fetch_zt_pool
 
         zt = ctx.cached("zt", fetch_zt_pool)
         if zt:
-            parts.append(f"涨停池：{len(zt)} 家（连板数据见下）")
+            dist: dict[int, int] = {}
+            for item in zt.values():
+                lb = item.get("lianban")
+                if isinstance(lb, int) and lb > 0:
+                    dist[lb] = dist.get(lb, 0) + 1
+            if dist:
+                # 按板数降序，只列有票的档位：`5板1家、3板2家、首板81家`
+                detail = "、".join(
+                    f"{'首板' if k == 1 else f'{k}板'}{dist[k]}家"
+                    for k in sorted(dist, reverse=True)
+                )
+                parts.append(f"涨停池：{len(zt)} 家（连板分布：{detail}）")
+            else:
+                parts.append(f"涨停池：{len(zt)} 家（连板分布：取不到）")
         else:
             parts.append("涨停池：取不到")
     except EXTERNAL_FAILURES as e:
