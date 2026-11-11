@@ -6,20 +6,26 @@
 
 工具的取材原则（每条都是「真实市场数据」，不是我们编的口径）：
 
-| 工具 | 数据源 | 联网? |
-|---|---|---|
-| `get_kline` | 本地 `daily_kline`（收盘定稿），不足则雪球实时 K 线 | 缺数据才联 |
-| `get_realtime_quote` | 雪球批量报价（现价/涨幅/量比/换手/市值） | 是 |
-| `get_fund_flow` | 东财资金流（主力净占比/超大单/大单） | 是（缓存优先） |
-| `get_concepts` | 东财 F10 概念板块（本地 `concept_cache` 优先） | 缺则联 |
-| `get_sector_heatmap` | `concept_cache` 反查成分 × `daily_kline` 当日涨幅 | 否 |
-| `get_market_overview` | 创业板指 + 涨停池 + 本地 K 线样本涨跌家数 | 指数/涨停池需联 |
-| `get_board_rank` | 雪球飙升榜（名次/涨幅/排名变化） | 是 |
-| `get_stock_record` | 本系统历史（出现次数/类别/次日收益） | 否 |
-| `get_announcements` | 本地 `announcement_cache`（m025，按日水位）优先，miss 才东财 | 缺则联 |
+| 工具 | 数据源 | 联网? | 多票? |
+|---|---|---|---|
+| `get_kline` | 本地 `daily_kline`（收盘定稿），不足则雪球实时 K 线 | 缺数据才联 | `symbols` |
+| `get_realtime_quote` | 雪球批量报价（现价/涨幅/换手/市值；**无量比**） | 是 | `symbols` |
+| `get_fund_flow` | 东财资金流（主力净占比/超大单/大单） | 是（缓存优先） | `symbols` |
+| `get_concepts` | 东财 F10 概念板块（本地 `concept_cache` 优先） | 缺则联 | `symbols` |
+| `get_sector_heatmap` | `concept_cache` 反查成分 × `daily_kline` 当日涨幅 | 否 | — |
+| `get_market_overview` | 创业板指 + 涨停池 + 本地 K 线样本涨跌家数 | 指数/涨停池需联 | — |
+| `get_board_rank` | 雪球飙升榜（名次/涨幅/排名变化） | 是 | — |
+| `get_stock_record` | 本系统历史（出现次数/类别/次日收益） | 否 | — |
+| `get_announcements` | 本地 `announcement_cache`（m025，按日水位）优先，miss 才东财 | 缺则联 | `symbols` |
 
 失败纪律：任一工具失败都**返回一句人话给模型**（不抛异常、不静默），让模型知道「这块查不到」
 而不是拿到空数据瞎猜。工具输出会被截断（token 预算），截断也明说。
+
+**为什么工具尽量批量**（2026-11-11）：12 个工具串行跑一遍只要 ~15 秒，但整次调研要 47~72 秒
+—— 成本的大头是**LLM 往返次数**（网关后面是推理模型），不是取数。而 9 个工具原先只能查单票，
+模型分析 8 只票就得「8 次 K 线 + 8 次概念 + 8 次公告」，直接吃掉 30 次调用预算。
+故 `get_kline` / `get_concepts` / `get_announcements` 都改成 `symbols` 数组（单票 `symbol`
+保留兼容），一次调用查多票 —— 少一次往返就省掉整轮推理的几十秒。
 """
 
 from __future__ import annotations
@@ -52,13 +58,51 @@ def _note_truncated(syms: list[str]) -> str:
     return f"（本次只查了前 {_MAX_SYMBOLS_PER_CALL} 只，{len(dropped)} 只未查：{'、'.join(dropped)}；需要请分批查）"
 
 
+def _parse_symbols(args: dict[str, Any]) -> list[str]:
+    """从工具参数里取代码列表：`symbols`（推荐，数组）优先，回退 `symbol`（单票，兼容）。
+
+    ⚠ 两个参数都要认：老提示词 / 老调用记录里模型写的是 `symbol`，schema 一改成数组就
+      直接报参数错误 ⇒ 那轮调研白跑。去重保序，避免同一只票重复占额度。
+    """
+    syms = [str(s).strip().upper() for s in (args.get("symbols") or []) if str(s).strip()]
+    if not syms and args.get("symbol"):
+        syms = [str(args["symbol"]).strip().upper()]
+    return list(dict.fromkeys(syms))
+
+
+def _symbols_param_schema() -> dict[str, Any]:
+    """`symbols` + `symbol` 双参数（批量推荐用法 + 单票兼容用法）。"""
+    return {
+        "symbols": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": f"代码数组（推荐），最多 {_MAX_SYMBOLS_PER_CALL} 个，如 [\"SZ300289\",\"SZ300770\"]",
+        },
+        "symbol": {"type": "string", "description": "单票代码（兼容用法，等价于 symbols 只给一个）"},
+    }
+
+
 @dataclass
 class ResearchContext:
-    """工具运行上下文（连接 / 雪球 session / 缓存）。"""
+    """工具运行上下文（连接 / 雪球 session / 缓存）。
+
+    ## 为什么有 `conn_for_thread()`
+
+    `agent.run_research` 在同一轮里**并行**执行模型一次发出的多个工具调用（省 LLM 往返），
+    而 `sqlite3` 连接**不能跨线程**（实测 `ProgrammingError: SQLite objects created in a
+    thread can only be used in that same thread`）。故这里按线程各开一条只读连接：
+    主线程仍用传入的 `conn`（调用方/测试的行为逐字不变），子线程各自懒建。
+
+    文件库才能这么做（靠 `PRAGMA database_list` 反查路径）；`:memory:` 库拿不到路径 ⇒
+    退回共享 `conn`，由调用方（`agent`）检测到后**自动降级为串行**，不硬闯。
+    """
 
     conn: sqlite3.Connection
     session: Any = None
     _cache: dict[str, Any] = field(default_factory=dict)
+    _lock: Any = field(default=None, repr=False)  # threading.Lock（惰性建，避免模块级依赖）
+    _tl: Any = field(default=None, repr=False)  # threading.local：每线程一条连接
+    _db_path: str | None = field(default=None, repr=False)  # None=未探测；""=非文件库
 
     def get_session(self) -> Any:
         """懒加载雪球 session（工具需要原始 session 的：报价 / 榜单 / K 线）。
@@ -74,11 +118,56 @@ class ResearchContext:
             self.session = make_session()
         return self.session
 
+    def _locks(self) -> Any:
+        if self._lock is None:
+            import threading
+
+            object.__setattr__(self, "_lock", threading.Lock())
+            object.__setattr__(self, "_tl", threading.local())
+        return self._lock
+
+    def _main_db_path(self) -> str:
+        """探测主干连接指向的文件路径；`:memory:`/探测失败 → `""`。"""
+        cached = self._db_path
+        if cached is None:
+            try:
+                rows = self.conn.execute("PRAGMA database_list").fetchall()
+                cached = next((str(r[2]) for r in rows if r[1] == "main"), "")
+            except sqlite3.Error:
+                cached = ""
+            object.__setattr__(self, "_db_path", cached)
+        return cached
+
+    def can_parallelize(self) -> bool:
+        """能否安全地并行执行工具（= 主干是文件库，可给子线程另开连接）。"""
+        return bool(self._main_db_path())
+
+    def conn_for_thread(self) -> sqlite3.Connection:
+        """当前线程可用的连接。
+
+        主线程（创建 `conn` 的那个）直接返回原连接 → 单线程调用方（测试、脚本）行为不变；
+        子线程懒建一条自己的只读连接（不建库：路径已存在才来这儿）。
+        """
+        self._locks()
+        if not self.can_parallelize():
+            return self.conn
+        local = self._tl
+        got = getattr(local, "conn", None)
+        if got is None:
+            got = sqlite3.connect(f"file:{self._main_db_path()}?mode=ro", uri=True)
+            local.conn = got
+        return got
+
     def cached(self, key: str, producer: Callable[[], Any]) -> Any:
-        """同一次运行内的工具结果缓存（避免模型重复查同一件事）。"""
-        if key not in self._cache:
-            self._cache[key] = producer()
-        return self._cache[key]
+        """同一次运行内的工具结果缓存（避免模型重复查同一件事）。
+
+        ⚠ 加锁：并行执行时两条线程可能同时要同一个 key —— 不加锁会各自跑一遍 producer
+        （最坏是重复一次外呼），且 `dict` 虽不会损坏但语义上应「一次就够」。
+        """
+        with self._locks():
+            if key not in self._cache:
+                self._cache[key] = producer()
+            return self._cache[key]
 
 
 @dataclass
@@ -121,10 +210,92 @@ def _money(v: Any) -> str:
     return f"{v:.2f}"
 
 
+def _num_or_dash(v: Any) -> str:
+    """普通数值格式化（None → `—`）—— 与 `_pct`/`_money` 同一「缺失即 `—`」风格。
+
+    存在的理由只有一个：**别把 Python 的 `None` 直接打进给模型看的字符串**。
+    `f"{None}"` 得到字面量「None」，模型分不清那是「取不到」还是「这个字段的语义值」，
+    于是自己脑补（2026-11-11 实测：`量比 None` 被模型当成了真实读数）。
+    """
+    if isinstance(v, bool) or not isinstance(v, int | float):
+        return "—"
+    return f"{v:.2f}"
+
+
 def _truncate(text: str) -> str:
     if len(text) <= _MAX_TOOL_CHARS:
         return text
     return text[:_MAX_TOOL_CHARS] + f"\n…（输出过长已截断，原始长度 {len(text)} 字符）"
+
+
+def _fit_blocks(blocks: list[tuple[str, list[str]]], *, drop_head: bool, reserve: int = 0) -> str:
+    """把多个 `(标题, 明细行)` 块拼成一份**每只票都还在**的文本，超预算就每块少给几行。
+
+    ⚠ 为什么不能直接交给 `_truncate`：那是从尾部一刀切字符。批量工具的输出量随票数
+      线性涨（20 票 × 15 根日线 ≈ 16.8k 字符，预算 3k）⇒ 一刀切之后**第 3 只票以后全
+      没了**，连「已截断」那句提示本身也被切在尾巴上。模型看不到某只票 ≠ 那只票没异动，
+      它会把「输出里没有」读成「查了没数据」—— 这比静默截断更坏。
+      所以按票均分预算，每票内部丢最早的那几条，并**逐票说明**丢了几条。
+
+    `drop_head=True` 表示明细行是「旧→新」（日线），丢时从头部丢；否则是「新→旧」
+    （公告），从尾部丢。两种情况下留下的都是**最近**的数据。
+    `reserve` 给调用方追加的尾巴（如「本次只查了前 20 只…」）留预算 —— 不留的话
+       `run_tool` 的 `_truncate` 会把它连同最后一只票一起切掉。
+    """
+    budget = _MAX_TOOL_CHARS - reserve
+    rendered = [head + ("\n" + "\n".join(lines) if lines else "") for head, lines in blocks]
+    if sum(len(r) + 2 for r in rendered) <= budget:
+        return "\n\n".join(rendered)
+
+    # 每块预算 = 均分 - 标题/省略说明的固定开销（60 字符足够放下「省略 N 条」那句）
+    per = max(80, budget // max(1, len(blocks)) - 60)
+    out: list[str] = []
+    for head, lines in blocks:
+        ordered = list(reversed(lines)) if drop_head else lines  # 先按「最近优先」取
+        keep: list[str] = []
+        used = len(head) + 1
+        for line in ordered:
+            if keep and used + len(line) + 1 > per:
+                break
+            keep.append(line)
+            used += len(line) + 1
+        if drop_head:
+            keep.reverse()  # 还原成「旧→新」的展示顺序
+        text = head + ("\n" + "\n".join(keep) if keep else "")
+        dropped = len(lines) - len(keep)
+        if dropped:
+            text += f"\n…（输出预算所限，本票省略 {dropped} 条较早的记录）"
+        out.append(text)
+    return "\n\n".join(out)
+
+
+def _fit_inline(blocks: list[tuple[str, list[str]]], *, sep: str, reserve: int = 0) -> str:
+    """把 `(前缀, 词项列表)` 逐票渲染成**一行**（`前缀 + sep.join(词项)`），超预算就少给几个词。
+
+    概念板块一票能有 20+ 个标签（worst case 实测：20 票合计 3793 字符 > 3000 预算），
+    尾部一刀切会直接切掉最后 4 只票 —— 模型看不到某只票的板块，就会以为它「没有板块」。
+    所以按票均分预算、每票内部少给几个标签，并写清「等 N 项」。
+    """
+    budget = _MAX_TOOL_CHARS - reserve
+    rendered = [prefix + sep.join(terms) for prefix, terms in blocks]
+    if sum(len(r) + 1 for r in rendered) <= budget:
+        return "\n".join(rendered)
+
+    per = max(80, budget // max(1, len(blocks)) - 24)  # 24 字符留给「…等 N 项」
+    out: list[str] = []
+    for prefix, terms in blocks:
+        keep: list[str] = []
+        used = len(prefix)
+        for term in terms:
+            if keep and used + len(term) + len(sep) > per:
+                break
+            keep.append(term)
+            used += len(term) + len(sep)
+        text = prefix + sep.join(keep)
+        if len(keep) < len(terms):
+            text += f"…等 {len(terms)} 项"
+        out.append(text)
+    return "\n".join(out)
 
 
 def _p(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
@@ -134,38 +305,42 @@ def _p(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
 # ── 工具实现 ──────────────────────────────────────────────────────────────────
 
 
-def _tool_get_kline(args: dict[str, Any], ctx: ResearchContext) -> str:
-    """个股日线（本地优先）。"""
-    symbol = str(args.get("symbol") or "").strip().upper()
-    n = max(3, min(int(args.get("n") or 15), 60))
-    if not symbol:
-        return "参数错误：需要 symbol（如 SZ300289）"
+def _kline_rows_by_symbol(conn: sqlite3.Connection, syms: list[str], n: int) -> dict[str, list[tuple]]:
+    """一次 `WHERE symbol IN (...)` 取回多票的最近 n 根日线，按票分组（**不循环查询**）。
 
-    rows = ctx.conn.execute(
-        "SELECT date, open, close, high, low, volume FROM daily_kline WHERE symbol = ? ORDER BY date DESC LIMIT ?",
-        (symbol, n),
-    ).fetchall()
-    src = "本地 daily_kline"
-    if len(rows) < 3:
-        # 本地不够 → 雪球实时补（收盘定稿的日线才是真值，缺失才用实时）
-        try:
-            from scanner.api import fetch_kline
+    为什么不用 N 次单票查询：8 只票就是 8 次 `SELECT ... ORDER BY date DESC LIMIT n`，
+    每次都走一遍 `idx_kline_sym_date` 的定位 + 排序。一次 IN 查询只做一遍，本地表
+    1149 票 × 141 行这个量级下差距是毫秒级到几十毫秒 —— 而调研一轮要跑好几次。
+    逐票 `ORDER BY date DESC LIMIT n` 的语义用窗口函数 `ROW_NUMBER()` 保持（否则
+    全局 LIMIT 会把票数也截掉）。
+    """
+    if not syms:
+        return {}
+    marks = ",".join("?" for _ in syms)
+    sql = (  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
+        "SELECT symbol, date, open, close, high, low, volume FROM ("  # noqa: S608
+        "  SELECT symbol, date, open, close, high, low, volume,"
+        "         ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn"
+        f"  FROM daily_kline WHERE symbol IN ({marks})"
+        ") WHERE rn <= ? ORDER BY symbol, date DESC"
+    )
+    grouped: dict[str, list[tuple]] = {}
+    for row in conn.execute(sql, (*syms, n)).fetchall():
+        grouped.setdefault(str(row[0]), []).append(row[1:])
+    return grouped
 
-            session = ctx.get_session()
-            bars = fetch_kline(session, symbol, days=n) or []
-            if bars:
-                src = "雪球实时 K 线"
-                lines = [
-                    f"{b['date']} O{b['open']:.2f} C{b['close']:.2f} H{b['high']:.2f} L{b['low']:.2f} "
-                    f"量{b['volume'] / 1e4:.0f}万股"
-                    for b in bars
-                ]
-                return f"{symbol} 最近 {len(bars)} 根日线（{src}）：\n" + "\n".join(lines)
-        except EXTERNAL_FAILURES as e:
-            return f"{symbol}：本地日线不足（{len(rows)} 根）且实时拉取失败（{type(e).__name__}）"
 
-    if not rows:
-        return f"{symbol}：本地无日线数据（该票不在 daily_kline 覆盖内）"
+def _remote_bars(ctx: ResearchContext, symbol: str, n: int) -> list[dict[str, Any]]:
+    """雪球实时 K 线（本地日线不足 3 根时才调用）—— 单独成函数而不是循环里的 lambda：
+    闭包在循环中捕获的是变量，`ruff B023` / `mypy` 都会在「缓存键与实查票错位」上报错。"""
+    from scanner.api import fetch_kline
+
+    session = ctx.get_session()
+    return ctx.cached(f"kline_rt:{symbol}:{n}", lambda: fetch_kline(session, symbol, days=n) or [])
+
+
+def _render_kline(symbol: str, rows: list[tuple], src: str) -> tuple[str, list[str]]:
+    """一组 (date, o, c, h, l, v) → `(标题, 逐日行)`（逐日涨跌由相邻收盘算出）。"""
     lines = []
     prev_close = None
     for date, o, c, h, low, v in reversed(rows):
@@ -176,16 +351,65 @@ def _tool_get_kline(args: dict[str, Any], ctx: ResearchContext) -> str:
         # 成交量给人读单位（万股）—— 模型若自己把 10491942 写成「1049万」，
         # 那是它换算的，幻觉巡检会判它编造（工具已给单位，模型照抄即可）。
         lines.append(f"{date} O{o:.2f} C{c:.2f} H{h:.2f} L{low:.2f} 量{v / 1e4:.0f}万股{chg}")
-    return f"{symbol} 最近 {len(rows)} 根日线（{src}）：\n" + "\n".join(lines)
+    return f"{symbol} 最近 {len(rows)} 根日线（{src}）：", lines
+
+
+def _tool_get_kline(args: dict[str, Any], ctx: ResearchContext) -> str:
+    """个股日线（本地优先，支持多票一次查）。"""
+    all_syms = _parse_symbols(args)
+    n = max(3, min(int(args.get("n") or 15), 60))
+    if not all_syms:
+        return '参数错误：需要 symbols（代码数组，如 ["SZ300289"]）或 symbol（单票）'
+    syms = all_syms[:_MAX_SYMBOLS_PER_CALL]
+    trunc_note = _note_truncated(all_syms)
+
+    # ① 本地日线：一次 IN 查询覆盖所有票（0.00s 级），这是绝大多数情况下的全部数据。
+    try:
+        grouped = ctx.cached(
+            "kline:" + ",".join(syms) + f":{n}",
+            lambda: _kline_rows_by_symbol(ctx.conn_for_thread(), syms, n),
+        )
+    except EXTERNAL_FAILURES as e:  # sqlite3.Error 属 EXTERNAL_FAILURES（库锁/磁盘）
+        return f"日线查询失败（{type(e).__name__}）"
+
+    blocks: list[tuple[str, list[str]]] = []
+    # ② 本地不足 3 根的票才联网补（收盘定稿的日线才是真值，缺失才用实时）
+    for s in syms:
+        rows = grouped.get(s) or []
+        if len(rows) >= 3:
+            blocks.append(_render_kline(s, rows, "本地 daily_kline"))
+            continue
+        try:
+            bars = _remote_bars(ctx, s, n)
+            if bars:
+                lines = [
+                    f"{b['date']} O{b['open']:.2f} C{b['close']:.2f} H{b['high']:.2f} L{b['low']:.2f} "
+                    f"量{b['volume'] / 1e4:.0f}万股"
+                    for b in bars
+                ]
+                blocks.append((f"{s} 最近 {len(bars)} 根日线（雪球实时 K 线）：", lines))
+                continue
+        except EXTERNAL_FAILURES as e:
+            blocks.append((f"{s}：本地日线不足（{len(rows)} 根）且实时拉取失败（{type(e).__name__}）", []))
+            continue
+        if not rows:
+            blocks.append((f"{s}：本地无日线数据（该票不在 daily_kline 覆盖内）", []))
+        else:
+            # 本地有几根（1~2 根）就先给这几根 —— 有数据总比「无数据」有用，
+            # 但必须说清它不足 3 根，别让模型把 2 根当完整形态看。
+            blocks.append(_render_kline(s, rows, f"本地 daily_kline，仅 {len(rows)} 根（不足 3 根）"))
+    # 明细行是「旧→新」⇒ 超预算时丢最早的几根（形态看最近的才准）
+    body = _fit_blocks(blocks, drop_head=True, reserve=len(trunc_note) + 1)
+    return body + (f"\n{trunc_note}" if trunc_note else "")
+
 
 
 def _tool_get_realtime_quote(args: dict[str, Any], ctx: ResearchContext) -> str:
     """雪球实时批量报价。"""
-    syms = [str(s).strip().upper() for s in (args.get("symbols") or []) if str(s).strip()]
-    if not syms:
+    all_syms = _parse_symbols(args)
+    if not all_syms:
         return '参数错误：需要 symbols（代码数组，如 ["SZ300289"]）'
-    all_syms = syms
-    syms = syms[:_MAX_SYMBOLS_PER_CALL]
+    syms = all_syms[:_MAX_SYMBOLS_PER_CALL]
     trunc_note = _note_truncated(all_syms)
 
     def produce() -> dict[str, dict]:
@@ -206,16 +430,24 @@ def _tool_get_realtime_quote(args: dict[str, Any], ctx: ResearchContext) -> str:
         if not q:
             lines.append(f"{s}: 无数据")
             continue
+        # ⚠ 缺失字段一律写 `—`（与 `_pct`/`_money` 同风格），**绝不能把 Python 的 None
+        #   打进字符串**：模型看到字面量「量比 None」会当成「量比为 0/异常」自己脑补。
         parts = [
-            f"现价 {q.get('current')}",
+            f"现价 {_num_or_dash(q.get('current'))}",
             f"涨幅 {_pct(q.get('percent'))}",
-            f"量比 {q.get('volume_ratio')}",
+            f"量比 {_num_or_dash(q.get('volume_ratio'))}",
             f"换手 {_pct(q.get('turnover_rate'))}",
             f"市值 {_money(q.get('market_capital'))}",
             f"成交额 {_money(q.get('amount'))}",
         ]
         lines.append(f"{s}: " + " | ".join(parts))
-    return "实时报价：\n" + "\n".join(lines) + (f"\n{trunc_note}" if trunc_note else "")
+    # ⚠ 量比在批量接口里**恒为缺失**（`batch/quote.json` 没有这个字段，只有单票
+    #   `quote.json?extend=detail` 才有，1 请求/票）⇒ 不解释的话，一排 `—` 会被模型
+    #   读成「这些票量比都异常」，或者它干脆自己编一个。
+    body = "实时报价：\n" + "\n".join(lines)
+    if any((quotes.get(s) or {}).get("volume_ratio") is None for s in syms):
+        body += "\n（注：批量报价接口不提供「量比」字段，需量比请参考候选清单里终端面板给的值）"
+    return body + (f"\n{trunc_note}" if trunc_note else "")
 
 
 def _tool_get_fund_flow(args: dict[str, Any], ctx: ResearchContext) -> str:
@@ -247,7 +479,7 @@ def _tool_get_fund_flow(args: dict[str, Any], ctx: ResearchContext) -> str:
             f" | 主力净额 {_money(r.get('main_net'))}"
             f" | 超大单净额 {_money(r.get('super_net'))}"
             f" | 换手 {_pct(r.get('turnover'))}"
-            f" | 量比 {r.get('vol_ratio')}"
+            f" | 量比 {_num_or_dash(r.get('vol_ratio'))}"
             f" | 成交额 {_money(r.get('amount'))}"
             f" | 流通市值 {_money(r.get('float_cap'))}"
         )
@@ -255,24 +487,47 @@ def _tool_get_fund_flow(args: dict[str, Any], ctx: ResearchContext) -> str:
 
 
 def _tool_get_concepts(args: dict[str, Any], ctx: ResearchContext) -> str:
-    """个股所属概念/板块（F10）。"""
-    symbol = str(args.get("symbol") or "").strip().upper()
-    if not symbol:
-        return "参数错误：需要 symbol"
+    """个股所属概念/板块（F10，支持多票一次查）。"""
+    all_syms = _parse_symbols(args)
+    if not all_syms:
+        return '参数错误：需要 symbols（代码数组，如 ["SZ300289"]）或 symbol（单票）'
+    syms = all_syms[:_MAX_SYMBOLS_PER_CALL]
+    trunc_note = _note_truncated(all_syms)
     try:
         from scanner.db.queries import get_concepts_cache
 
-        cached = ctx.cached("concepts:" + symbol, lambda: get_concepts_cache(ctx.conn, [symbol]).get(symbol, []))
-        boards = list(cached or [])
-        if not boards:
-            from scanner.concept import fetch_stock_boards
-
-            boards = fetch_stock_boards(symbol) or []
-        if not boards:
-            return f"{symbol}：无概念板块数据"
-        return f"{symbol} 所属概念/板块：{'、'.join(boards)}"
+        # 本地 concept_cache **一次查多票**（`get_concepts_cache` 本身就是批量接口，
+        # 内部一条 IN 查询）—— 这是 99% 情况下的全部数据，零请求。
+        hit = ctx.cached("concepts:" + ",".join(syms), lambda: get_concepts_cache(ctx.conn_for_thread(), syms))
     except EXTERNAL_FAILURES as e:
         return f"概念查询失败（{type(e).__name__}）"
+
+    # 只有缓存 miss（过期/新票）的票才走 F10 单票接口 —— 联网成本按 miss 数走，
+    # 不再按「查了几只」走。
+    miss = [s for s in syms if not (hit.get(s) or [])]
+    fetched: dict[str, list[str]] = {}
+    if miss:
+        try:
+            from scanner.concept import _fetch_many
+
+            # ⚠ 用 `_fetch_many` 而**不是** `_collect_concepts`：后者末尾会
+            #   `save_concepts_cache(conn, ...)` 写库，而本包的连接是 `mode=ro`
+            #   （AI 输出零落库的硬约束）⇒ 一写就 sqlite3.OperationalError。
+            #   `_fetch_many` 复用主线的并行取数（线程池 + 阶段限时），只读不写。
+            fetched = _fetch_many(miss) or {}
+        except EXTERNAL_FAILURES as e:
+            return f"概念查询失败（{type(e).__name__}）"
+
+    blocks: list[tuple[str, list[str]]] = []
+    for s in syms:
+        boards = list(hit.get(s) or fetched.get(s) or [])
+        if not boards:
+            blocks.append((f"{s}：无概念板块数据", []))
+            continue
+        blocks.append((f"{s} 所属概念/板块：", boards))
+    # 概念标签一票能有 20+ 个 ⇒ 超预算时每票少给几个标签，但**每只票都必须在**
+    body = _fit_inline(blocks, sep="、", reserve=len(trunc_note) + 1)
+    return body + (f"\n{trunc_note}" if trunc_note else "")
 
 
 def _tool_get_sector_heatmap(args: dict[str, Any], ctx: ResearchContext) -> str:
@@ -282,7 +537,7 @@ def _tool_get_sector_heatmap(args: dict[str, Any], ctx: ResearchContext) -> str:
         return "参数错误：需要 concept（概念名）"
     # ⚠ `daily_kline` 列名是 `percent`；`concept_cache.concepts` 存的是 **JSON 数组文本**
     #   （实测：'["算力","东数西算",...]'）⇒ 用 LIKE 匹配 JSON 片段即可。
-    rows = ctx.conn.execute(
+    rows = ctx.conn_for_thread().execute(
         "SELECT c.symbol, k.percent, k.close, c.concepts FROM concept_cache c "
         "JOIN daily_kline k ON k.symbol = c.symbol "
         "WHERE k.date = (SELECT MAX(date) FROM daily_kline) AND c.concepts LIKE ?",
@@ -303,7 +558,7 @@ def _tool_get_market_overview(args: dict[str, Any], ctx: ResearchContext) -> str
     parts: list[str] = []
     # ① 本地 K 线样本的涨跌分布（免费）
     # ⚠ `daily_kline` 的列名是 **`percent`**（不是 `pct`）—— 写错会 OperationalError
-    row = ctx.conn.execute(
+    row = ctx.conn_for_thread().execute(
         "SELECT SUM(CASE WHEN percent > 0 THEN 1 ELSE 0 END), SUM(CASE WHEN percent < 0 THEN 1 ELSE 0 END), "
         "count(*), MAX(date) FROM daily_kline WHERE date = (SELECT MAX(date) FROM daily_kline)"
     ).fetchone()
@@ -357,7 +612,7 @@ def _tool_get_stock_record(args: dict[str, Any], ctx: ResearchContext) -> str:
         return "参数错误：需要 symbol"
     # ⚠ `appearances` 表的列是 (id, symbol, name, date, rank, percent, value, next_day_pct)
     #   —— **没有** category/score/excluded（那是 `recommendations` 的列）⇒ 用后者。
-    rows = ctx.conn.execute(
+    rows = ctx.conn_for_thread().execute(
         "SELECT date, category, score, percent, excluded, next_day_pct FROM recommendations "
         "WHERE symbol = ? ORDER BY date DESC LIMIT 15",
         (symbol,),
@@ -371,6 +626,39 @@ def _tool_get_stock_record(args: dict[str, Any], ctx: ResearchContext) -> str:
     return f"{symbol} 最近 {len(rows)} 条系统记录（v1 推荐池）：" + chr(10).join(lines)
 
 
+def _announcements_local(conn: sqlite3.Connection, syms: list[str], day: str, n: int) -> dict[str, list[dict]]:
+    """一次 `WHERE symbol IN (...)` 读本地 `announcement_cache`，返回 `{symbol: [items]}`。
+
+    逐票 `LIMIT n` 用窗口函数保语义（全局 LIMIT 会把「票数 × n」截成 n 条）。
+    表不存在（新库未迁移）⇒ 返回空 dict，由调用方 fail-open 走联网，**不静默返回空**。
+    """
+    marks = ",".join("?" for _ in syms)
+    sql = (  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
+        "SELECT symbol, notice_date, title, ann_type FROM ("  # noqa: S608
+        "  SELECT symbol, notice_date, title, ann_type,"
+        "         ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY notice_date DESC, title) AS rn"
+        f"  FROM announcement_cache WHERE symbol IN ({marks}) AND notice_date <= ?"
+        ") WHERE rn <= ? ORDER BY symbol, notice_date DESC, title"
+    )
+    try:
+        rows = conn.execute(sql, (*syms, day, n)).fetchall()
+    except sqlite3.Error:
+        return {}
+    out: dict[str, list[dict]] = {}
+    for sym, date, title, ann_type in rows:
+        out.setdefault(str(sym), []).append({"date": date, "title": title, "type": ann_type or ""})
+    return out
+
+
+def _announcements_waterline(conn: sqlite3.Connection) -> str:
+    """公告同步水位（新鲜度）。表缺失/读失败返回「未知」—— 绝不能因此整块失败。"""
+    try:
+        row = conn.execute("SELECT MAX(end_date) FROM ann_sync_waterline").fetchone()
+    except sqlite3.Error:
+        return "未知"
+    return str(row[0] or "未知") if row else "未知"
+
+
 def _tool_get_announcements(args: dict[str, Any], ctx: ResearchContext) -> str:
     """最近公告：**本地 `announcement_cache`（m025）优先**，miss 才联网。
 
@@ -378,41 +666,50 @@ def _tool_get_announcements(args: dict[str, Any], ctx: ResearchContext) -> str:
     落库并记水位（`ann_sync_waterline`），所以不同会话 / 不同票共用同一份，不必每次联网。
     ⚠ 缓存表不存在（新库未迁移）或查询失败 ⇒ fail-open 回退东财实时查询，绝不静默返回空。
     ⚠ 读侧 `notice_date <= 今天` 无前视；水位日期写进输出，让模型知道新鲜度。
+    ⚠ 批量：本地一次查多票；只有**本地一条都没有**的票才联网，且走
+      `fetch_announcements_batch`（`stock_list` 接受逗号分隔多码，12 票 1 请求）。
     """
-    symbol = str(args.get("symbol") or "").strip().upper()
-    if not symbol:
-        return "参数错误：需要 symbol"
+    all_syms = _parse_symbols(args)
+    if not all_syms:
+        return '参数错误：需要 symbols（代码数组，如 ["SZ300289"]）或 symbol（单票）'
+    syms = all_syms[:_MAX_SYMBOLS_PER_CALL]
+    trunc_note = _note_truncated(all_syms)
     n = max(3, min(int(args.get("n") or 8), 30))
     from scanner.config import now_beijing
 
     day = now_beijing().date().isoformat()
-    items: list[dict[str, Any]] = []
-    source = ""
-    try:
-        rows = ctx.conn.execute(
-            "SELECT notice_date, title, ann_type FROM announcement_cache "
-            "WHERE symbol = ? AND notice_date <= ? ORDER BY notice_date DESC, title LIMIT ?",
-            (symbol, day, n),
-        ).fetchall()
-        wl = ctx.conn.execute("SELECT MAX(end_date) FROM ann_sync_waterline").fetchone()
-    except sqlite3.Error:
-        rows, wl = [], None
-    if rows:
-        items = [{"date": r[0], "title": r[1], "type": r[2] or ""} for r in rows]
-        source = f"本地公告缓存(m025, 水位 {wl[0] or '未知'})"
-    else:
-        try:
-            from scanner.ai_digest.em_data import fetch_announcements
 
-            items = ctx.cached(f"ann:{symbol}:{n}", lambda: fetch_announcements(symbol, n)) or []
-            source = "东财实时查询"
+    local = ctx.cached(f"ann_local:{','.join(syms)}:{n}", lambda: _announcements_local(ctx.conn_for_thread(), syms, day, n))
+    # miss = 本地一条都没有的票。⚠ 这可能是「该票真没公告」也可能是「缓存没同步到」，
+    #   两种都得联网确认一次 —— 静默当成「没公告」是最危险的读法。
+    miss = [s for s in syms if not local.get(s)]
+    remote: dict[str, list[dict]] = {}
+    if miss:
+        try:
+            from scanner.ai_digest.em_data import fetch_announcements_batch
+
+            remote = ctx.cached(
+                "ann_remote:" + ",".join(miss),
+                lambda: fetch_announcements_batch(miss, days=30) or {},
+            )
         except EXTERNAL_FAILURES as e:
-            return f"公告查询失败（{type(e).__name__}）"
-    if not items:
-        return f"{symbol}：最近无公告可查（缓存与接口都为空或该票无公告）"
-    lines = [f"{it['date']} {it['title']}" + (f"［{it['type']}］" if it.get("type") else "") for it in items]
-    return f"{symbol} 最近 {len(items)} 条公告（{source}；仅标题与日期，**未经核实其利好/利空**）：\n" + chr(10).join(
-        lines
+            if not local:
+                return f"公告查询失败（{type(e).__name__}）"
+            remote = {}  # 本地已有部分数据 ⇒ 只标出联网那部分失败，不整体失败
+
+    wl = _announcements_waterline(ctx.conn_for_thread())
+    blocks: list[tuple[str, list[str]]] = []
+    for s in syms:
+        items = (local.get(s) or remote.get(s) or [])[:n]
+        if not items:
+            blocks.append((f"{s}：最近无公告可查（缓存与接口都为空或该票无公告）", []))
+            continue
+        source = f"本地公告缓存(m025, 水位 {wl})" if local.get(s) else "东财实时查询"
+        lines = [f"{it['date']} {it['title']}" + (f"［{it['type']}］" if it.get("type") else "") for it in items]
+        blocks.append((f"{s} 最近 {len(items)} 条公告（{source}；仅标题与日期，**未经核实其利好/利空**）：", lines))
+    # 公告明细是「新→旧」⇒ 超预算时丢最旧的几条（`drop_head=False`）
+    return _fit_blocks(blocks, drop_head=False, reserve=len(trunc_note) + 1) + (
+        f"\n{trunc_note}" if trunc_note else ""
     )
 
 
@@ -575,23 +872,26 @@ def build_tools() -> list[ToolSpec]:
     return [
         ToolSpec(
             name="get_kline",
-            description="取某只创业板股票最近 N 根日线（开收高低量 + 逐日涨跌），用于看形态、位置、量能变化。symbol 如 SZ300289，n 默认 15。",
+            description=(
+                "取多只创业板股票最近 N 根日线（开收高低量 + 逐日涨跌），用于看形态、位置、量能变化。"
+                "**一次给多个代码**（symbols 数组，最多 20 个），不要一票一次地调。n 默认 15。"
+            ),
             parameters=_p(
                 {
-                    "symbol": {"type": "string", "description": "带交易所前缀的代码，如 SZ300289"},
+                    **_symbols_param_schema(),
                     "n": {"type": "integer", "description": "取几根日线，默认 15，最多 60"},
                 },
-                ["symbol"],
+                ["symbols"],
             ),
             handler=_tool_get_kline,
         ),
         ToolSpec(
             name="get_realtime_quote",
-            description="取多只票的实时/最新报价：现价、涨幅、量比、换手、市值、成交额。用于确认当前价格与热度。",
-            parameters=_p(
-                {"symbols": {"type": "array", "items": {"type": "string"}, "description": "代码数组，最多 20 个"}},
-                ["symbols"],
+            description=(
+                "取多只票的实时/最新报价：现价、涨幅、换手、市值、成交额（批量接口不提供量比）。"
+                "用于确认当前价格与热度。"
             ),
+            parameters=_p(_symbols_param_schema(), ["symbols"]),
             handler=_tool_get_realtime_quote,
         ),
         ToolSpec(
@@ -605,8 +905,11 @@ def build_tools() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="get_concepts",
-            description="取某只票所属的概念/板块（如 CPO、光模块、存储芯片）。用于判断它属于哪个题材、有没有板块效应。",
-            parameters=_p({"symbol": {"type": "string"}}, ["symbol"]),
+            description=(
+                "取多只票所属的概念/板块（如 CPO、光模块、存储芯片）。用于判断它们属于哪个题材、有没有板块效应。"
+                "**一次给多个代码**（symbols 数组，最多 20 个）。"
+            ),
+            parameters=_p(_symbols_param_schema(), ["symbols"]),
             handler=_tool_get_concepts,
         ),
         ToolSpec(
@@ -635,13 +938,16 @@ def build_tools() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="get_announcements",
-            description="取该票最近的上市公司公告（标题+日期）。用于判断近期有没有实质公司事件（业绩预告/重组/增减持等）。",
+            description=(
+                "取多只票最近的上市公司公告（标题+日期）。用于判断近期有没有实质公司事件（业绩预告/重组/增减持等）。"
+                "**一次给多个代码**（symbols 数组，最多 20 个）。"
+            ),
             parameters=_p(
                 {
-                    "symbol": {"type": "string"},
-                    "n": {"type": "integer", "description": "取几条，默认 8，最多 30"},
+                    **_symbols_param_schema(),
+                    "n": {"type": "integer", "description": "每只票取几条，默认 8，最多 30"},
                 },
-                ["symbol"],
+                ["symbols"],
             ),
             handler=_tool_get_announcements,
         ),

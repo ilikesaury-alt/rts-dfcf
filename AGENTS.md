@@ -228,6 +228,15 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
   猜错会 OperationalError ⇒ 工具**静默失效**。
   ④ **东财 fflow `klt=101` 是日频不是分时**（121 个交易日；`klt=1` 本环境取不到 0 点）⇒
   工具名为 `get_fund_flow_trend`；东财公告的 `columns` 是**字符串列表**（不是 dict 列表）。
+- **ai_digest 的幻觉巡检基准必须 == 模型实际收到的提示词**（2026-11-11）：两处各自拼一份
+  就会漂移，实测放过 `ff_pct`/`price`/`first_time` 等模型从未见到的数字。单源 = `agent.build_research_prompt`。
+
+- **ai_digest 工具并行执行的前提**（2026-11-11）：`sqlite3` 连接**不能跨线程**
+  ⇒ 子线程走 `ResearchContext.conn_for_thread()` 各开只读连接；`:memory:` 反查不到路径则退回串行。
+
+- **幻觉巡检**不豁免「模型自己做的算术」**（2026-11-11 实测）：认下 721（前四项和）
+  需 0.1% 容差，而该容差下真编造数字**误放率 53.8%** ⇒ 宁可偶尔误报，闸门不焊死。
+
 - **push_gate「削减 88%」口径已作废**（测量总体错了：recommendations 原始行含 pool_pick，
   生产卡片到不了）；真实削减量未知，需用真实卡片总体重测。
 - **pool_pick 退池后三处不能跟着删**（存量 988 行仍在 DB）：`view/assemble.py` 的
@@ -267,6 +276,7 @@ scanner/
   offboard_watch.py         # 榜外异动段（launch_log 写侧、实时覆盖、标签回填）
   offboard_flow.py          # B 段 N 日主力累计净流入（历史资金流序列，零新增请求）
   announcement_cache.py     # 公告缓存单源（m025）：读侧无前视 + 水位；替掉按票冻结的 12MB JSON
+  announcement_prefetch.py  # 候选票公告预取（m025 写侧·主循环旁路）：daemon 线程 + 按票/整批节流
   onboard_anomaly.py        # 榜内异动段（标签回填同款三防呆）
   volume_bias.py            # 开盘量比失真系数 k(m) 的实测与去偏（B/C 段共用，零新增网络）
   view/assemble.py          # build_scan_view：v1 池选排序键 + 终端行组装
@@ -299,6 +309,7 @@ scanner/
   fundamentals.py           # Fundamentals filtering (pywencai)
   ai_digest/                # B 段 AI 分析（手动触发；material/guard/source）
     rerank.py               # Phase 2 证据的可复现载体（无 CLI 入口）
+    panel.py                # 股票池.md 面板原文 → 结构化两区行（research 默认输入）
   pipeline/                 # 主扫描通路阶段纯函数（改前必读包 docstring）
     pool.py / features.py / buckets.py / scoring.py / tactics.py
   db/

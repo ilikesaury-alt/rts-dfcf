@@ -493,6 +493,32 @@ def test_unverified_numbers_detection():
     assert unverified_numbers("目标价 18.5，涨幅 2.5%", prompt) == ["2.5", "18.5"]
     assert unverified_numbers("", prompt) == []
 
+def test_unverified_numbers_does_not_exempt_model_arithmetic():
+    """**有意不豁免**「模型自己做的算术」——这是一条被实测支撑的决定，别改。
+
+    场景（2026-11-11 真实跑出来的）：工具给了「最近 5 日主力净额 304.40万、30.26万、
+    57.36万、329.48万、6391.09万」，模型在报告里写「此前 4 日合计 721 万」——
+    721 是它自己加出来的，基准里没有 ⇒ 被判未通过。这是**误报**（不是编造）。
+
+    为什么仍然不加豁免：实测（逐行组合枚举，400 个随机编造数字）——
+      · 容差 1.0% 时误放率 88.0%（= 真编造数字被判成「派生值」而放行）
+      · 认出 721（实际和 721.50，差 0.069%）需要 0.1% 容差，而该容差下误放率仍达 53.8%
+    ⇒ 任何能认下 721 的规则，都会同时放行一半以上的真编造。宁可偶尔误报，
+      也不能把守卫从「偶尔吵」变成「基本不设防」。
+    """
+    from scanner.ai_digest.material import unverified_numbers
+
+    prompt = (
+        "最近5日主力净额：11-05 304.40万、11-06 30.26万、11-09 57.36万、"
+        "11-10 329.48万、11-11 6391.09万"
+    )
+    # 721 = 前四项之和（实际 721.50），模型自己算的 ⇒ 仍然会被标出（有意为之）
+    # ⚠ 「此前4日合计」里的 4 也不在基准里（基准只有 11-05~11-11 这些日期串），
+    #    所以断言里它也在列 —— 这正是「误报」的样子：无害但会出现在告警里。
+    assert unverified_numbers("此前4日合计 721 万", prompt) == ["4", "721"]
+    # 而逐字抄的单个值当然通过
+    assert unverified_numbers("11-11 主力净额 6391.09万", prompt) == []
+
 
 def test_view_source_normalizes_keys(digest_db):
     """视图行键名（volume_ratio/float_market_capital/current）必须收口成素材口径。"""
@@ -552,11 +578,18 @@ def test_view_source_normalizes_keys(digest_db):
     assert "第1只·入选理由" in [i.label for i in m.items]
 
 
-def test_auto_source_prefers_newer_terminal_snapshot(digest_db, monkeypatch):
-    """auto：view 快照更新（= 最近一次终端打印）就用它；log 更新则回退 log。"""
+def test_auto_source_prefers_newer_terminal_snapshot(digest_db, monkeypatch, tmp_path):
+    """auto：面板原文（终端最后一次打印）> view 快照 > launch_log。
+
+    2026-11-11 起 auto **先试面板原文**（`股票池.md`）——它是唯一同时含 v1 池选 与
+    沪深飙升三段、且保留全部列与各区口径的来源。这里把面板路径指到不存在的位置，
+    验证「面板不可用时静默回退」这条链；面板可用时的优先级另有用例。
+    """
     import scanner.ai_digest.__main__ as cli
+    import scanner.config as cfgmod
 
     monkeypatch.setattr(cli, "resolve_db_path", lambda: str(digest_db))
+    monkeypatch.setattr(cfgmod, "PANEL_MD_PATH", str(tmp_path / "nope.md"))
     args = cli._parse_args(["--demo"])
     args.demo = False
     args.source = "auto"
@@ -1007,7 +1040,9 @@ def test_announcement_tool_prefers_local_cache(monkeypatch):
     conn.execute("INSERT INTO announcement_cache VALUES ('SZ300001','2026-11-10','回购股份方案','公司公告')")
     conn.execute("INSERT INTO ann_sync_waterline VALUES ('candidates','2026-11-11',1,'x')")
     called = []
-    monkeypatch.setattr(em, "fetch_announcements", lambda s, n: called.append(1) or [])
+    # ⚠ 桩的是**批量**取数（工具的唯一联网入口）—— 桩单票函数会让本守卫空转：
+    #   缓存命中时工具根本不碰联网路径，桩打错地方也照样「通过」。
+    monkeypatch.setattr(em, "fetch_announcements_batch", lambda syms, days=30: called.append(1) or {})
     out = R._tool_get_announcements({"symbol": "SZ300001", "n": 8}, R.ResearchContext(conn=conn))
     assert "本地公告缓存" in out and "2026-11-11" in out and "回购股份方案" in out
     assert not called, "缓存命中不得联网"
@@ -1022,11 +1057,11 @@ def test_announcement_tool_falls_back_when_cache_missing(monkeypatch):
     conn = sqlite3.connect(":memory:")
     called = []
 
-    def fake(s, n):
-        called.append(1)
-        return [{"date": "2026-11-10", "title": "某公告", "type": ""}]
+    def fake(syms, days=30):
+        called.append(list(syms))
+        return {s: [{"date": "2026-11-10", "title": "某公告", "type": ""}] for s in syms}
 
-    monkeypatch.setattr(em, "fetch_announcements", fake)
+    monkeypatch.setattr(em, "fetch_announcements_batch", fake)
     out = R._tool_get_announcements({"symbol": "SZ300001", "n": 8}, R.ResearchContext(conn=conn))
     assert "东财实时查询" in out and "某公告" in out and called
     conn.close()
@@ -1048,6 +1083,281 @@ def test_announcement_cache_load_is_lookahead_free():
     got = load(conn, ["SZ300001"], signal_date="2026-11-11", window=10)
     assert [a["title"] for a in got["SZ300001"]] == ["第9日"], got
     conn.close()
+
+
+# ── 7b. 批量工具（symbols 数组，2026-11-11）────────────────────────────────────
+# 为什么这批用例存在：整次调研的耗时大头是 **LLM 往返次数**，而「一票一次」的
+# 单票工具逼模型把 30 次调用预算花在重复调用上。三条路径都要守住：
+#   ① 批量真的把多票数据都带回来了（不是只查第一只）；
+#   ② 老调用形态（只给 symbol）仍能工作 —— 否则老提示词直接报参数错误；
+#   ③ 超上限必须**明说**截掉了哪几只（静默截断会被模型读成「这些票没异动」）。
+
+
+def _batch_conn() -> sqlite3.Connection:
+    """批量工具用的最小真表（daily_kline / concept_cache / announcement_cache）。"""
+    c = sqlite3.connect(":memory:")
+    c.execute(
+        "CREATE TABLE daily_kline (symbol TEXT, timestamp INTEGER, date TEXT, open REAL, close REAL,"
+        " high REAL, low REAL, volume REAL, percent REAL, PRIMARY KEY(symbol, date))"
+    )
+    c.execute("CREATE TABLE concept_cache (symbol TEXT PRIMARY KEY, concepts TEXT, updated TEXT)")
+    c.execute("CREATE TABLE announcement_cache (symbol TEXT, notice_date TEXT, title TEXT, ann_type TEXT)")
+    c.execute("CREATE TABLE ann_sync_waterline (scope TEXT, end_date TEXT, rows INTEGER, updated TEXT)")
+    return c
+
+
+def test_kline_tool_batches_multiple_symbols_in_one_query(monkeypatch):
+    """一次给 4 个代码 ⇒ 4 只票的日线全在输出里（且不是只查第一只）。"""
+    import scanner.api as api_mod
+    from scanner.ai_digest import research as R
+
+    # 本地有 ≥3 根就不该联网：桩一被调用即说明批量路径没走本地。
+    called: list[str] = []
+    monkeypatch.setattr(api_mod, "fetch_kline", lambda session, s, days=None: called.append(s) or [])
+    monkeypatch.setattr(R.ResearchContext, "get_session", lambda self: object())
+
+    conn = _batch_conn()
+    syms = ["SZ300001", "SZ300002", "SZ300003", "SZ300004"]
+    for i, s in enumerate(syms, 1):
+        conn.executemany(
+            "INSERT INTO daily_kline VALUES (?,?,?,?,?,?,?,?,?)",
+            [(s, 0, f"2026-11-0{d}", 10.0 + i, 10.5 + i, 10.8 + i, 9.9 + i, 1e6, 1.5) for d in (1, 2, 3)],
+        )
+    out = R._tool_get_kline({"symbols": syms, "n": 5}, R.ResearchContext(conn=conn))
+    for s in syms:
+        assert s in out, f"{s} 的日线没出现在批量输出里：{out}"
+    # 每只票自己的收盘价都要对得上（防止「4 个标题 + 1 份数据」这种假批量）
+    assert "C11.50" in out and "C12.50" in out and "C13.50" in out and "C14.50" in out
+    assert not called, "本地命中不得联网"
+    conn.close()
+
+
+def test_kline_tool_accepts_single_symbol_for_backward_compat():
+    """老形态（只给 `symbol`）必须照旧工作 —— 否则老提示词/老调用记录直接报参数错误。"""
+    from scanner.ai_digest import research as R
+
+    conn = _batch_conn()
+    conn.executemany(
+        "INSERT INTO daily_kline VALUES (?,?,?,?,?,?,?,?,?)",
+        [("SZ300001", 0, f"2026-11-0{d}", 10.0, 10.5, 10.8, 9.9, 1e6, 1.5) for d in (1, 2, 3)],
+    )
+    out = R._tool_get_kline({"symbol": "SZ300001", "n": 5}, R.ResearchContext(conn=conn))
+    assert "SZ300001" in out and "C10.50" in out
+    conn.close()
+
+
+def test_kline_tool_local_hit_does_not_touch_network(monkeypatch):
+    """本地已有 ≥3 根 ⇒ 一次网络请求都不许发（这是批量化的主要收益）。"""
+    import scanner.api as api_mod
+    from scanner.ai_digest import research as R
+
+    called: list[str] = []
+    monkeypatch.setattr(api_mod, "fetch_kline", lambda session, s, days=None: called.append(s) or [])
+    monkeypatch.setattr(R.ResearchContext, "get_session", lambda self: object())
+
+    conn = _batch_conn()
+    conn.executemany(
+        "INSERT INTO daily_kline VALUES (?,?,?,?,?,?,?,?,?)",
+        [
+            (s, 0, f"2026-11-0{d}", 10.0, 10.5, 10.8, 9.9, 1e6, 1.5)
+            for s in ("SZ300001", "SZ300002", "SZ300003")
+            for d in (1, 2, 3)
+        ],
+    )
+    R._tool_get_kline({"symbols": ["SZ300001", "SZ300002", "SZ300003"]}, R.ResearchContext(conn=conn))
+    assert not called, "本地命中不得联网"
+    conn.close()
+
+
+def test_concepts_tool_batches_and_only_fetches_cache_misses(monkeypatch):
+    """概念：本地命中的票零请求，只有 miss 的票才走 F10。"""
+    import scanner.concept as concept_mod
+    from scanner.ai_digest import research as R
+
+    conn = _batch_conn()
+    conn.executemany(
+        "INSERT INTO concept_cache VALUES (?,?,?)",
+        [
+            ("SZ300001", '["CPO概念","光模块"]', "2026-11-11"),
+            ("SZ300002", '["存储芯片"]', "2026-11-11"),
+        ],
+    )
+    fetched: list[list[str]] = []
+    monkeypatch.setattr(
+        concept_mod, "_fetch_many", lambda syms, deadline=None: fetched.append(list(syms)) or {}
+    )
+    out = R._tool_get_concepts(
+        {"symbols": ["SZ300001", "SZ300002", "SZ300003"]}, R.ResearchContext(conn=conn)
+    )
+    assert "CPO概念" in out and "存储芯片" in out
+    assert fetched == [["SZ300003"]], f"只有缓存 miss 的票才该联网，实际：{fetched}"
+    assert "SZ300003：无概念板块数据" in out
+    conn.close()
+
+
+def test_announcements_tool_batches_and_only_fetches_misses(monkeypatch):
+    """公告：本地一次查多票；只有本地一条都没有的票才联网，且走**批量**接口。"""
+    import scanner.ai_digest.em_data as em
+    from scanner.ai_digest import research as R
+
+    conn = _batch_conn()
+    conn.executemany(
+        "INSERT INTO announcement_cache VALUES (?,?,?,?)",
+        [
+            ("SZ300001", "2026-11-10", "回购股份方案", "公司公告"),
+            ("SZ300002", "2026-11-09", "三季度报告", "公司公告"),
+        ],
+    )
+    called: list[list[str]] = []
+
+    def fake_batch(syms, days=30):
+        called.append(list(syms))
+        return {s: [{"date": "2026-11-08", "title": f"{s} 的公告", "type": ""}] for s in syms}
+
+    monkeypatch.setattr(em, "fetch_announcements_batch", fake_batch)
+    out = R._tool_get_announcements(
+        {"symbols": ["SZ300001", "SZ300002", "SZ300003"], "n": 5}, R.ResearchContext(conn=conn)
+    )
+    assert "回购股份方案" in out and "三季度报告" in out
+    assert called == [["SZ300003"]], f"只有 miss 的票才该联网，实际：{called}"
+    assert "SZ300003 的公告" in out
+    conn.close()
+
+
+def test_batch_tools_state_truncation_over_cap():
+    """超过 20 只必须**明说**截掉了哪几只 —— 静默截断会被模型读成「这些票没异动」。"""
+    from scanner.ai_digest import research as R
+
+    over = [f"SZ30{i:04d}" for i in range(25)]
+    conn = _batch_conn()
+    for s in over[:20]:
+        conn.executemany(
+            "INSERT INTO daily_kline VALUES (?,?,?,?,?,?,?,?,?)",
+            [(s, 0, f"2026-11-0{d}", 10.0, 10.5, 10.8, 9.9, 1e6, 1.5) for d in (1, 2, 3)],
+        )
+    out = R._tool_get_kline({"symbols": over}, R.ResearchContext(conn=conn))
+    assert "本次只查了前 20 只" in out
+    for s in over[20:]:
+        assert s in out, f"被截掉的 {s} 必须在提示里点名（否则模型以为查过了）"
+    # 前 20 只里至少有一只的数据真的出来了（证明截断前确实查了）
+    assert over[0] in out
+    conn.close()
+
+
+def test_kline_batch_over_budget_keeps_every_symbol_visible():
+    """20 票 × 60 根远超 3000 字符预算 ⇒ 不许让尾部一刀切把后面的票整段切掉。
+
+    真实风险：批量把输出量放大了 20 倍，`_truncate` 从尾部切字符 ⇒ 第 3 只票之后
+    全没了，模型会把「输出里没有」读成「查了没数据」。要求：每只票的标题都在，
+    被省略的行数逐票明说。
+    """
+    from scanner.ai_digest import research as R
+
+    conn = _batch_conn()
+    syms = [f"SZ30{i:04d}" for i in range(1, 21)]
+    conn.executemany(
+        "INSERT INTO daily_kline VALUES (?,?,?,?,?,?,?,?,?)",
+        [
+            (s, 0, f"2026-{m:02d}-{d:02d}", 10.0, 10.5, 10.8, 9.9, 1e6, 1.5)
+            for s in syms
+            for m in range(1, 5)
+            for d in range(1, 16)
+        ],
+    )
+    out = R.run_tool(
+        next(t for t in R.build_tools() if t.name == "get_kline"),
+        {"symbols": syms, "n": 60},
+        R.ResearchContext(conn=conn),
+    )
+    assert len(out) <= R._MAX_TOOL_CHARS + 200, f"输出必须落在预算内，实际 {len(out)}"
+    for s in syms:
+        assert s in out, f"{s} 被预算切掉了 —— 模型会把「没看到」读成「没数据」"
+    assert "本票省略" in out, "省略了多少条必须逐票明说"
+    conn.close()
+
+
+def test_concepts_batch_over_budget_keeps_every_symbol_visible(monkeypatch):
+    """20 票 × 20+ 个概念标签会超 3000 字符预算 ⇒ 不许让尾部一刀切切掉最后几只票。
+
+    真实 worst case 实测（2026-11-11，scanner.db）：20 票合计 3793 字符，旧的尾部截断
+    把最后 4 只票整段切掉 —— 模型会把「输出里没有」读成「这票没有概念板块」。
+    """
+    from scanner.ai_digest import research as R
+
+    conn = _batch_conn()
+    syms = [f"SZ30{i:04d}" for i in range(1, 21)]
+    long_boards = [f"概念标签{i:02d}" for i in range(30)]
+    conn.executemany(
+        "INSERT INTO concept_cache VALUES (?,?,?)",
+        [(s, json.dumps(long_boards, ensure_ascii=False), "2026-11-11") for s in syms],
+    )
+    out = R._tool_get_concepts({"symbols": syms}, R.ResearchContext(conn=conn))
+    assert len(out) <= R._MAX_TOOL_CHARS, f"输出必须落在预算内，实际 {len(out)}"
+    for s in syms:
+        assert s in out, f"{s} 被预算切掉了 —— 模型会读成「这票没有板块」"
+    assert "等 30 项" in out, "少给了几个标签必须写清总数"
+    conn.close()
+
+
+def test_realtime_quote_never_prints_literal_none(monkeypatch):
+    """批量报价接口没有 volume_ratio ⇒ 必须输出 `—` + 一句解释，不能出现字面量 None。
+
+    模型看到「量比 None」会当成一个真实读数（或自己补一个），这两种都是幻觉来源。
+    """
+    import scanner.api as api_mod
+    from scanner.ai_digest import research as R
+
+    def fake_batch(session, symbols, batch_size=50):
+        return {
+            s: {
+                "current": 85.46,
+                "percent": 6.8,
+                "volume_ratio": None,  # ← 实测就是这个值
+                "turnover_rate": 3.2,
+                "market_capital": 1.205e10,
+                "amount": 6.4e8,
+            }
+            for s in symbols
+        }
+
+    monkeypatch.setattr(api_mod, "fetch_hot_quotes_batch", fake_batch)
+    monkeypatch.setattr(R.ResearchContext, "get_session", lambda self: object())
+    out = R._tool_get_realtime_quote({"symbols": ["SZ300613"]}, R.ResearchContext(conn=sqlite3.connect(":memory:")))
+    assert "None" not in out, f"缺失字段不得输出字面量 None：{out}"
+    assert "量比 —" in out
+    assert "不提供「量比」字段" in out
+    assert "6.80%" in out and "120.50亿" in out
+
+
+def test_realtime_quote_accepts_single_symbol_for_backward_compat(monkeypatch):
+    """报价工具也认 `symbol`（老形态），且缺失字段同样走 `—`。"""
+    import scanner.api as api_mod
+    from scanner.ai_digest import research as R
+
+    monkeypatch.setattr(
+        api_mod,
+        "fetch_hot_quotes_batch",
+        lambda session, symbols, batch_size=50: {s: {"current": 10.0, "percent": None} for s in symbols},
+    )
+    monkeypatch.setattr(R.ResearchContext, "get_session", lambda self: object())
+    out = R._tool_get_realtime_quote({"symbol": "SZ300001"}, R.ResearchContext(conn=sqlite3.connect(":memory:")))
+    assert "SZ300001" in out and "涨幅 —" in out and "None" not in out
+
+
+def test_batch_tools_schema_advertises_symbols_array():
+    """schema 必须把 `symbols` 摆在前面（推荐用法）+ 保留 `symbol`（兼容）。
+
+    模型是按 schema 写参数的：只留 `symbol` 就退化成「一票一次」，批量白做。
+    """
+    from scanner.ai_digest.research import build_tools
+
+    tools = {t.name: t for t in build_tools()}
+    for name in ("get_kline", "get_concepts", "get_announcements"):
+        props = tools[name].parameters["properties"]
+        assert props["symbols"]["type"] == "array", name
+        assert props["symbol"]["type"] == "string", name
+        assert list(props)[0] == "symbols", f"{name} 应把 symbols 放第一个（推荐用法优先）"
+        assert "symbols" in tools[name].parameters["required"]
 
 
 # ── 8. 简洁报告（--brief）/ 最新终端输入标注 ─────────────────────────────────

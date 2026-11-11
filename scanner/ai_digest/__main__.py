@@ -1,4 +1,4 @@
-"""`python -m scanner.ai_digest` —— 榜外异动段的 AI 分析（**手动触发**，2026-11-03）。
+"""`python -m scanner.ai_digest` —— AI 调研 / 榜外异动段分析（**手动触发**，2026-11-03）。
 
 两种模式（2026-11-03 用户决策，决策记录见 AGENTS.md）：
 
@@ -19,10 +19,15 @@
 根目录 `python pick.py` 是同款简写（裸代码/无参=交互）。名字用雪球批量报价解
 （fail-open 拿不到就用代码本身）；幻觉巡检比对基准 = 工具输出全文；`--out` 落盘纯文本。
 
-数据源（`--source auto` 默认）：取**更新的**那个 ——
-- `view`：`view_snapshot` 最近一轮终端打印的载荷（含留存行、实时值、入选理由、板块）；
+数据源（`--source auto` 默认），research 模式按此优先级逐级回退：
+- `panel`（**默认首选，2026-11-11**）：`股票池.md` 面板原文 —— 唯一同时含 `v1 池选` 与
+  `沪深飙升` 三段、且**保留全部列与各区口径**的来源（`ai_digest/panel.py` 按渲染侧列规格
+  反过来切格）。模型因此看到的是「屏幕上那份列表」，而不是一个扁平代码清单。
+  只有 research 模式用它：analyze/transcribe 按设计是**榜外异动段转述**。
+- `print`：`offboard_print_snapshot` 终端最后一次打印的榜外行（含留存行、屏幕顺序）；
+- `view`：`view_snapshot` 桌面版快照（含留存行、实时值、入选理由、板块）；
 - `log`：`offboard_launch_log` 最新信号日（信号值冻结快照，无留存行）。
-扫描器今天跑过 ⇒ view 快照就是「刚才终端上那份」；没跑过 ⇒ 自动回退 log。
+面板文件还没生成（终端一轮都没跑）⇒ 自动回退 print → view → log，不报错。
 
 为什么是命令而不是「终端每轮自动打」：主循环 60s 一轮、单线程串行渲染 ⇒ 自动出网会让
 「刷新频率 = 计费频率」，且一次外呼会把扫描节拍拖慢。本命令只有人敲才出网。
@@ -64,22 +69,57 @@ from scanner.config import OFFBOARD_DISPLAY_TOP, now_beijing, resolve_db_path
 from scanner.terminal_copy import PANEL_ROW_RE
 
 
-def _freshness(time_str: str) -> str:
+def _freshness(time_str: str, date_str: str = "") -> str:
     """终端快照时刻 → 「数据 X 分钟前 / 非实时」标注。
 
     用户要求输入是「最新的终端打印信息」：时刻必须可见，且午休主循环不刷 B 段时要
     明说非实时，不能让几十分钟前的快照看起来像刚刚的行情。
+
+    ⚠ 必须带**日期**判定（2026-11-11 修）：此前只拿 `HH:MM:SS` 与当前时钟相减，
+    `max(0, ...)` 把跨日的负值吞成 0 ⇒ 昨天 14:55 的快照在「今天 13:59」被标成
+    「数据 0 分钟前」。而 `latest_print_snapshot` 是按 `date DESC` 取的，今天没跑扫描器
+    时它返回的就是昨天的快照 —— 正好落进这个假新鲜陷阱。
     """
     if not time_str or ":" not in time_str:
         return ""
     try:
         hh, mm, ss = (int(x) for x in time_str.split(":"))
         now = now_beijing()
+        if date_str:
+            from datetime import date as _date
+
+            y, mo, dd = (int(x) for x in date_str.split("-"))
+            snap_day = _date(y, mo, dd)
+            if snap_day != now.date():
+                # 跨日：不给「N 分钟前」，直接标日期，避免把隔夜快照读成实时。
+                days = (now.date() - snap_day).days
+                return f" · 快照为 {date_str} {time_str}（{days} 天前，非实时）"
         age = max(0, (now.hour * 3600 + now.minute * 60 + now.second - (hh * 3600 + mm * 60 + ss)) // 60)
         return f" · 数据 {age} 分钟前" + ("（非实时）" if age > 5 else "")
     except (ValueError, TypeError):
         return ""
 
+
+
+def _unverified_note(unverified: list[str]) -> str:
+    """幻觉巡检未通过时的用户可见文案（**单源**：三处出口逐字一致）。
+
+    为什么要写这么细：这个告警有两类正当来源，不说清就会变成噪声 ——
+    ① **模型自己做的算术**（把工具给的几个数相加/相减，如「此前 4 日合计 721 万」）；
+    ② **概括四舍五入**（把 33.35 写成 33.4）。两者都不是编造。
+    真正的编造是第三个特征：**基准里根本没有那个量级**。
+
+    ⚠ 刻意**不**为 ① 做自动豁免（2026-11-11 实测）：判定「这个数 = 某几项之和」需要
+    0.1% 容差才认得出 721（实际和 721.50，差 0.069%），而该容差下**真编造数字的
+    误放率达 53.8%**（逐行组合枚举，400 个随机编造数实测）—— 守卫会从「偶尔误报」
+    退化成「基本不设防」。宁可偶尔误报一次让人扫一眼，也不能把闸门焊死。
+    """
+    return (
+        f"[!] 幻觉巡检：以下数字在基准里找不到（{chr(12289).join(unverified)}）。\n"
+        "    常见无害情形：模型自己把几个数相加/相减（如「前几项合计」），或四舍五入；\n"
+        "    需要警惕的是：这些数字在证据里**根本没有对应量级**时，即为编造。\n"
+        "    核对方式：上面报告里凡出现这些数字的句子，回到「模型自己查了这些」的工具输出里找一眼。"
+    )
 
 #: 每种模式的标签（命令侧保证，**不是模型给的**）。
 LABELS = {
@@ -334,6 +374,7 @@ def _run_symbols(args: argparse.Namespace) -> int:
                 # 与上面 `limit = getattr(args, "limit", None)` 同款防御，避免 AttributeError。
                 brief=getattr(args, "brief", False),
                 origin="用户指定的自选清单",
+                summarize_always=getattr(args, "summarize_always", False),
             )
         except AIUpstreamError as e:
             print(f"[!] {e}")
@@ -372,9 +413,7 @@ def _run_symbols(args: argparse.Namespace) -> int:
     print(result.text)
     if unverified:
         print()
-        print(
-            f"[!] 幻觉巡检：以下数字在工具输出里没有逐字出现（可能是概括、四舍五入或自造，请自行核对）：{'、'.join(unverified)}"
-        )
+        print(_unverified_note(unverified))
     if result.tool_calls:
         print()
         print(f"模型自己查了这些（{result.tool_summary()}）：")
@@ -405,7 +444,7 @@ def _save_report(
         result.text,
     ]
     if unverified:
-        lines += ["", f"[!] 幻觉巡检未通过：{'、'.join(unverified)}"]
+        lines += ["", _unverified_note(unverified)]
     if result.tool_calls:
         lines += ["", f"模型查询记录（{result.tool_summary()}）"]
     Path(out_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -485,8 +524,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="python -m scanner.ai_digest",
         description=(
-            "AI 分析（手动触发）：默认 research=模型自己查真实数据后给判断；"
-            "analyze/transcribe=榜外异动（B 段）的算账/纯转述"
+            "AI 调研（手动触发）：默认 research=吃终端面板原文(v1 池选+沪深飙升)，"
+            "模型自己联网查数据后出首选/次选；analyze/transcribe=榜外异动（B 段）的算账/纯转述"
         ),
     )
     p.add_argument(
@@ -513,14 +552,19 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help="简洁报告：每票一行、最多 12 行，不打印查询记录/素材核对表（幻觉巡检与红线照旧）",
     )
+    p.add_argument(
+        "--summarize-always",
+        action="store_true",
+        help="research 模式：结论一律由独立的「总结器」重写一遍（更简洁，但多一次调用 ≈ 慢 20~30s）",
+    )
     p.add_argument("--max-rounds", type=int, default=8, help="research 模式最多几轮工具调用（默认 8）")
     p.add_argument("--max-calls", type=int, default=30, help="research 模式最多几次工具调用（默认 30）")
     p.add_argument(
         "--source",
-        choices=("auto", "print", "view", "log"),
+        choices=("auto", "panel", "print", "view", "log"),
         default="auto",
-        help="auto/print=终端最后一次打印的行（offboard_print_snapshot，含留存行/屏幕顺序）；"
-        "view=桌面版 view_snapshot；log=launch_log 整日过门账（信号值冻结）",
+        help="auto/panel=终端面板原文（股票池.md：v1 池选 + 沪深飙升三段，保留全部列与各区口径）；"
+        "print=终端最后一次打印的榜外行；view=桌面版 view_snapshot；log=launch_log 整日过门账",
     )
     p.add_argument("--date", help="信号日 YYYY-MM-DD（仅 log 源；默认取最新）")
     p.add_argument(
@@ -560,6 +604,31 @@ def _resolve_rows(args: argparse.Namespace) -> dict[str, Any]:
         label_map={"vol_ratio": "量比", "main_pct": "主力净占比", "accum_5d": "5日累计", "amount": "成交额"},
     )
     try:
+        # ⓪ panel 源（**默认优先**）：终端面板原文 —— 唯一同时含 v1 池选 与 沪深飙升三段、
+        #    且保留全部列与各区口径的来源。用户口径 =「分析我屏幕上那份」，故 auto 先试它。
+        #    ⚠ 只服务 `research` 模式：analyze/transcribe 按设计就是**榜外异动段转述**，
+        #      它们吃的是 B 段素材（冻结信号字段），面板行喂不进 `build_materials`。
+        if args.source in ("panel", "auto") and args.mode == "research":
+            from scanner.ai_digest.panel import load_panel_md
+
+            panel_snap, panel_path = load_panel_md()
+            if panel_snap is not None and panel_snap.total:
+                return {
+                    "date": panel_snap.date,
+                    "rows": [r for reg in panel_snap.regions for r in reg.rows],
+                    "source": "panel",
+                    "time": panel_snap.time,
+                    "market": None,
+                    "baseline": baseline,
+                    "panel": panel_snap,
+                    "panel_path": panel_path,
+                }
+            if args.source == "panel":
+                raise OffboardSourceError(
+                    f"面板原文不可用（{panel_path}）—— 终端还没跑过一轮，或 RTS_PANEL_MD=0 关了存档。"
+                    " 可加 --source log 读当日榜外过门账。"
+                )
+
         # ① print 源：终端最后一次打印的那几行（含留存行，顺序即屏幕顺序）
         if args.source in ("print", "auto"):
             snap = latest_print_snapshot(conn)
@@ -649,10 +718,25 @@ def main(argv: list[str] | None = None) -> int:
         market=info.get("market"),
         baseline=info.get("baseline"),
     )
-    shown, total = len(mats.symbols), len(info["rows"])
+    # 面板源的「共 N 只 / 本次 M 只」必须与**模型实际收到的**一致（`--limit` 按每区截断）。
+    # 不能用 `build_materials` 的 `mats.symbols` —— 那是 B 段素材口径，面板行喂不进它。
+    if info["source"] == "panel" and info.get("panel") is not None:
+        _panel = info["panel"]
+        _lim = args.limit if args.limit and args.limit > 0 else None
+        total = _panel.total
+        shown = sum(min(len(r.rows), _lim) if _lim else len(r.rows) for r in _panel.regions)
+        if _lim:
+            from scanner.ai_digest.panel import limit_per_region
+
+            info["panel"] = limit_per_region(_panel, _lim)
+    else:
+        shown, total = len(mats.symbols), len(info["rows"])
     source_desc = {
+        "panel": f"面板原文 {info['date']} {info['time']}"
+        f"（{info.get('panel_path')} · {(len(info['panel'].regions) if info.get('panel') else 0)} 个区 · "
+        f"含 v1 池选与沪深飙升三段）{_freshness(info.get('time') or '', info['date'])}",
         "print": f"offboard_print_snapshot {info['date']} {info['time']} seq={info.get('seq') or '—'}"
-        f"（终端最后一次打印的行，顺序即屏幕顺序）{_freshness(info.get('time') or '')}",
+        f"（终端最后一次打印的行，顺序即屏幕顺序）{_freshness(info.get('time') or '', info['date'])}",
         "view": f"view_snapshot {info['date']} {info['time']}（桌面版快照 · 含留存行/实时值）",
         "log": f"offboard_launch_log {info['date']}（整日过门账 · 信号值冻结快照）",
         "demo": "内置样例",
@@ -660,6 +744,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.materials:
         print(f"模式 {args.mode} · 数据源 {source_desc} · 共 {total} 行 · 本次 {shown} 只")
+        if info["source"] == "panel" and args.mode == "research":
+            # 面板源下 `build_materials` 那套 B 段素材字段（tier/percent/vol_ratio…）是空的 ——
+            # 面板列名与 B 段列名不是一套。这里直接打**模型真正会收到的提示词**，
+            # 那才是「素材」在 research 模式下的含义。
+            from scanner.ai_digest.agent import build_research_prompt
+
+            _panel = info.get("panel")
+            _rows = [dict(r) for reg in _panel.regions for r in reg.rows] if _panel else list(info["rows"])
+            print("")
+            print(build_research_prompt(_rows, "终端面板原文", panel=_panel, brief=args.brief))
+            return 0
         print(render_material_items(mats))
         return 0
 
@@ -679,14 +774,32 @@ def main(argv: list[str] | None = None) -> int:
     tool_summary = ""
     try:
         if args.mode == "research":
-            # research 模式：模型自己调工具查真实数据（agent.run_research），
-            # 幻觉巡检的比对基准 = **全部工具输出全文**（不再只是素材）。
-            from scanner.ai_digest.agent import run_research
+            # research 模式：模型自己调工具查真实数据（agent.run_research）。
+            # 提示词由 `agent.build_research_prompt` **单一构造**，同一份文本同时用于
+            # ① 发给模型 ② 幻觉巡检的比对基准 —— 两处各自拼一份就会漂移（历史上
+            #    CLI 用 analyze 模板当基准，模型从未见过的 ff_pct 数字被判「没编造」）。
+            from scanner.ai_digest.agent import build_research_prompt, run_research
             from scanner.ai_digest.research import ResearchContext
 
             print(
                 f"[i] 调研模式：模型将自行调用工具查市场数据（模型 {cfg.model}，最多 {args.max_calls} 次调用）…",
                 file=sys.stderr,
+            )
+            panel = info.get("panel")
+            # `--limit` 必须真的生效：此前只作用于 mats（打给人看的那份），而喂给模型的
+            # 是 info["rows"] 全量 ⇒ 界面说「本次 12 只」、模型却收到 27 只，还会被巡检出
+            # 「第 20 只」这种越界序号当编造。
+            # `--limit` 已在上面的显示侧按单源 `limit_per_region` 裁过 info["panel"]，
+            # 这里直接用同一份 —— 两处各裁一次就是口径漂移的入口。
+            if panel is not None:
+                rows_for_model = [dict(r) for reg in panel.regions for r in reg.rows]
+            else:
+                rows_for_model = [dict(r) for r in info["rows"]]
+            user_prompt_research = build_research_prompt(
+                rows_for_model,
+                "终端面板原文" if panel is not None else "终端数据",
+                panel=panel,
+                brief=args.brief,
             )
             conn = connect_readonly(resolve_db_path())
             try:
@@ -695,11 +808,14 @@ def main(argv: list[str] | None = None) -> int:
                 ctx = ResearchContext(conn=conn)
                 result = run_research(
                     cfg,
-                    [dict(r) for r in info["rows"]],
+                    rows_for_model,
                     ctx,
                     max_rounds=args.max_rounds,
                     max_calls=args.max_calls,
                     brief=args.brief,
+                    panel=panel,
+                    user_prompt=user_prompt_research,
+                    summarize_always=args.summarize_always,
                 )
             finally:
                 conn.close()
@@ -707,9 +823,11 @@ def main(argv: list[str] | None = None) -> int:
             tool_summary = result.tool_summary()
             tool_blob = result.tool_output_blob
             print(
-                f"[i] 调研完成：{len(result.tool_calls)} 次工具调用 / {result.rounds} 轮",
+                f"[i] 调研完成：{len(result.tool_calls)} 次工具调用 / {result.rounds} 轮"
+                f"（报告：{'总结器重构' if result.summarized else '调研阶段直出'}）",
                 file=sys.stderr,
             )
+
         else:
             tool_blob = ""
             print(f"[i] 已发出请求（模式 {args.mode} · 模型 {cfg.model}；实测单次 10~90s，请稍等）…", file=sys.stderr)
@@ -734,9 +852,14 @@ def main(argv: list[str] | None = None) -> int:
     # 幻觉巡检（两种模式都跑；analyze 模式它是唯一的确定性闸）。
     from scanner.ai_digest.llm import build_messages
 
-    user_prompt = build_messages(mats, args.mode, brief=args.brief)[1]["content"]
-    # research 模式的比对基准 = 全部工具输出（模型能引用的一切真实数据）
-    check_blob = (user_prompt + chr(10) + tool_blob) if args.mode == "research" else user_prompt
+    if args.mode == "research":
+        # research 的比对基准 = **模型实际收到的提示词**（同一份）+ 全部工具输出。
+        # 不再用 `build_messages(mats, ...)` —— 那是 analyze/transcribe 的素材模板，
+        # research 模式下模型收不到它 ⇒ 拿它当基准会放过「模型编了它从未见过的字段」
+        # （实测 ff_pct=7.77 / price=10.0 / first_time=09:45:00 全被漏判）。
+        check_blob = user_prompt_research + chr(10) + tool_blob
+    else:
+        check_blob = build_messages(mats, args.mode, brief=args.brief)[1]["content"]
     unverified = unverified_numbers(text, check_blob)
 
     if args.json:
@@ -751,6 +874,7 @@ def main(argv: list[str] | None = None) -> int:
                 "cached": False,
                 "unverified_numbers": unverified,
                 "tool_summary": tool_summary,
+                "summarized": bool(getattr(result, "summarized", False)),
                 "materials": [{"id": i.id, "label": i.label, "value": i.value} for i in mats.items],
                 "missing": list(mats.missing),
                 "generatedFrom": {
@@ -769,9 +893,14 @@ def main(argv: list[str] | None = None) -> int:
     # `--brief`：一屏报告（不打印查询记录 / 素材核对表）。幻觉巡检与红线照旧，
     # 只是把「命令侧附加内容」收起来；`--out` 落的是这一份，不是原来的长报告。
     # ⚠ 默认模式是 research，别把它标成「AI 转述」（那是 transcribe 的标题）。
+    # research 模式的输入可以是「面板原文」（v1 池选 + 沪深飙升三段）或自选清单，
+    # 都不再只是榜外异动段 ⇒ 标题按实际来源写，别让报告标题与内容对不上。
+    _research_title = (
+        "终端面板 · AI 调研（v1 池选 + 沪深飙升）" if info["source"] == "panel" else "自选清单 · AI 调研"
+    )
     report_title = {
         "analyze": "榜外异动 · AI 综合分析",
-        "research": "榜外异动 · AI 调研",
+        "research": _research_title,
         "transcribe": "榜外异动 · AI 转述",
     }.get(args.mode, "榜外异动 · AI 分析")
     if args.brief:
@@ -785,10 +914,7 @@ def main(argv: list[str] | None = None) -> int:
             text,
         ]
         if unverified:
-            brief_lines += [
-                "",
-                f"[!] 幻觉巡检：以下数字在素材/工具输出里没有逐字出现（可能是概括、四舍五入或自造，请自行核对）：{'、'.join(unverified)}",
-            ]
+            brief_lines += ["", _unverified_note(unverified)]
         report = "\n".join(brief_lines) + "\n"
         if args.out:
             Path(args.out).write_text(report, encoding="utf-8")
@@ -807,9 +933,7 @@ def main(argv: list[str] | None = None) -> int:
     print(text)
     if unverified:
         print()
-        print(
-            f"[!] 幻觉巡检：以下数字在素材/工具输出里没有逐字出现（可能是概括、四舍五入或自造，请自行核对）：{'、'.join(unverified)}"
-        )
+        print(_unverified_note(unverified))
     if tool_summary:
         print()
         print(f"模型自己查了这些（{tool_summary}）：")

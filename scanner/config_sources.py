@@ -268,6 +268,18 @@ DAILY_BEAUTY_MAX_UPPER_SHADOW = 4.0  # 近5日最大上影线（% vs 昨收）�
 DAILY_BEAUTY_MIN_SLOPE_PCT = 0.0  # 近5日收盘涨幅 ≥ 此值（趋势向上）
 DAILY_BEAUTY_MAX_OFF_HIGH_PCT = 12.0  # 收盘距 20 日最高收盘回撤超过此值 = 破位
 
+# ── 候选票公告预取（2026-11-11，scanner/announcement_prefetch.py）──
+# 主循环产出候选后，后台 daemon 线程把**终端实际展示的那批票**的公告同步进
+# `announcement_cache`（m025），使 ai_digest 的 get_announcements 稳定命中本地、零联网。
+# ⚠ 它是**旁路**：不阻塞主循环（网络在后台线程）、失败只告警（fail-open）、
+#   不新建表（复用 m025）。`RTS_ANN_PREFETCH=0` 回滚（行为与加本功能之前一致）。
+ANN_PREFETCH_ENABLED = _env_flag("RTS_ANN_PREFETCH", True)
+# 整批节流间隔（秒）：60s 一轮的主循环最多 5 分钟一次外呼。按票再叠一层「同一交易日
+# 只成功预取一次」，故稳态下每票每日基本只 1 次请求（批量请求，多票共用一次外呼）。
+ANN_PREFETCH_MIN_INTERVAL_SEC = 300.0
+# 回看窗口（自然日），与 ai_digest 的公告查询窗口（默认 8 条 / 30 天内）对齐。
+ANN_PREFETCH_DAYS = 30
+
 __all__ = [
     "FEISHU_WEBHOOK",
     "FEISHU_KEYWORD",
@@ -313,4 +325,7 @@ __all__ = [
     "DAILY_BEAUTY_MAX_UPPER_SHADOW",
     "DAILY_BEAUTY_MIN_SLOPE_PCT",
     "DAILY_BEAUTY_MAX_OFF_HIGH_PCT",
+    "ANN_PREFETCH_ENABLED",
+    "ANN_PREFETCH_MIN_INTERVAL_SEC",
+    "ANN_PREFETCH_DAYS",
 ]

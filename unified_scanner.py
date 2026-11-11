@@ -29,6 +29,7 @@ if _ENV_FILE:
 else:
     load_dotenv()  # 从 .env 加载环境变量（飞书 webhook 等）
 
+from scanner.announcement_prefetch import request_prefetch
 from scanner.backtest import backfill_outcomes
 from scanner.config import (
     AFTERNOON_END,
@@ -713,6 +714,21 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                 # 与「按 c 复制」同一份 tee 采集文本，不重渲染不重算；每轮整份覆盖，
                 # 文件里只留最近一次。写盘异常在 save_panel_round 内部吞掉，绝不断主循环。
                 save_panel_round()
+
+                # ── 候选票公告预取（m025，非阻塞旁路）──
+                # 位置：**紧跟 save_panel_round 之后**（渲染已完成、view 是终稿）。
+                # 取的是 `view` 里四区已按展示上限截断的票 ⇒ 正是终端展示、也正是
+                # ai_digest 会分析的那批（不是全市场）。`request_prefetch` 只取票 +
+                # 过闸 + 起 daemon 线程，零网络零 DB，主循环立刻继续走倒计时；
+                # 开关（`RTS_ANN_PREFETCH`）/ 节流 / 开关判定都在它内部读 config 单源。
+                # 内外两层 fail-open：函数自身 catch EXTERNAL_FAILURES，这里再兜一层，
+                # 保证挂点出任何外部问题都不影响本轮收尾（与 panel_on / local_on 同款）。
+                if view is not None:
+                    try:
+                        request_prefetch(view)
+                    except EXTERNAL_FAILURES as e:
+                        print(f"    [!] 公告预取跳过: {type(e).__name__}: {e}", flush=True)
+
                 log_results(new_faces, momentum + rebound_list + short_term_list)
                 if not no_feishu:
                     pushed = push_feishu(view, len(all_gem), filtered_large_cap=filtered_large_cap)

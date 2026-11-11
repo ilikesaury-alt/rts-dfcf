@@ -99,7 +99,24 @@ python scripts/buy_priority_report.py --date 2026-11-04  # 复盘某个交易日
 
 ## 3. AI 分析
 
-### 3.1 自选清单批量调研（**选票主力入口**）
+### 3.0 面板原文调研（**默认入口，2026-11-11**）
+
+```bash
+python -m scanner.ai_digest                       # 读 logs/panel_md/股票池.md（终端最新一轮原文）
+python -m scanner.ai_digest --brief               # 一屏报告：每票一行 + 整体判断
+python -m scanner.ai_digest --limit 3             # 每区只取前 3 只（区是并列段，按区截断）
+python -m scanner.ai_digest --materials           # 只打模型会收到的提示词，不出网
+python -m scanner.ai_digest --out 报告.txt --max-calls 40
+```
+
+**输入 = 终端面板原文**（`◆ v1 池选` + `◆ 沪深飙升` 三段），不是扁平代码清单：模型拿到的是
+各区自己那一套列（池选的 `类别·先验` / 飙升段的 `层`·`量比`·`换手`）**和各自的口径原文**，
+并被明确要求「各区口径互不相同，不要跨区排名」。来源缺失时自动回退 print → view → log。
+
+⚠ `analyze` / `transcribe` 不吃面板 —— 它们按设计就是**榜外异动段（B 段）转述**，
+`--source panel` 只对 `--mode research`（默认）生效。
+
+### 3.1 自选清单批量调研（指定代码）
 
 ```bash
 python pick.py                            # 交互粘贴（空行结束；粘贴整段文本也行）
@@ -266,6 +283,7 @@ python scripts/ann_cache_sync.py                              # 当日最后一�
 | `RTS_PANEL_URL` / `RTS_PANEL_SECRET` | 面板上报地址 / 密钥 |
 | `RTS_PANEL_MD=0` | 关掉面板逐轮存档（默认每轮**整份覆盖** `logs/panel_md/股票池.md`，只留最近一次） |
 | `RTS_PANEL_MD_PATH` | 存档 md 完整路径（整份覆盖，指向外部文件会替换其原有内容） |
+| `RTS_ANN_PREFETCH=0` | 关掉候选票公告预取（默认开：候选产出后后台线程把终端展示那批票的公告同步进 `announcement_cache`；不阻塞主循环） |
 | `RTS_FEISHU_WEBHOOK` | 飞书 webhook 覆盖 |
 | `RTS_DB_PATH` | 指定 DB 路径（默认根目录 `scanner.db`） |
 | `RTS_DATA_SOURCE` | 数据源（雪球 / 同花顺 fallback） |
