@@ -30,6 +30,7 @@ import pytest
 
 import scanner.ai_digest.research as research_mod
 import scanner.config as config_mod
+import scanner.db.queries as queries_mod
 from scanner.ai_digest.research import ResearchContext, build_tools, run_tool
 
 
@@ -67,10 +68,17 @@ def conn() -> sqlite3.Connection:
 
 @pytest.fixture()
 def freeze(monkeypatch: pytest.MonkeyPatch):
-    """把 `now_beijing` 冻在指定时刻（工具内部按它判是否收盘）。"""
+    """把 `now_beijing` 冻在指定时刻（工具内部按它判是否收盘）。
+
+    ⚠ **必须同时 patch `db.queries`**：它 `from scanner.config import now_beijing`
+    是**独立引用**（导入即绑定），只 patch `scanner.config` 那个名字不影响它。
+    踩过：只 patch 一处时，`get_market_extra_cache` 仍按真实日期取「今天」，
+    在真实时间为次日/盘后时会取不到本地行 ⇒ 测试在特定时刻假红。
+    """
 
     def _set(dt: datetime.datetime) -> None:
         monkeypatch.setattr(config_mod, "now_beijing", lambda: dt)
+        monkeypatch.setattr(queries_mod, "now_beijing", lambda: dt)
 
     return _set
 

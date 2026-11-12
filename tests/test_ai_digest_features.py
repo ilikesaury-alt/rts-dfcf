@@ -198,3 +198,114 @@ def test_cli_materials_prompt_equals_model_prompt(monkeypatch: pytest.MonkeyPatc
     assert shown == model_side
     # 且特征确实在里面（否则两边「一致地都缺」也能过）
     assert "+1.0%" in shown
+
+
+# ── 2026-11-12 盘中实跑暴露的两个 bug ────────────────────────────────────────
+#
+# 两个都是「预加载喂了错数据」，而错数据比没数据更危险：模型会把假数字当事实排序。
+
+
+def _bar_db(rows: list[tuple[str, str, float, float, int]]) -> sqlite3.Connection:
+    """(symbol, date, volume, close, finalized) → 最小库。"""
+    c = sqlite3.connect(":memory:")
+    c.execute(
+        "CREATE TABLE daily_kline (symbol TEXT, date TEXT, open REAL, close REAL, "
+        "high REAL, low REAL, volume REAL, percent REAL, finalized INT)"
+    )
+    c.execute(
+        "CREATE TABLE announcement_cache (symbol TEXT, notice_date TEXT, title TEXT, "
+        "ann_type TEXT, source_url TEXT, content_hash TEXT, fetched_at TEXT)"
+    )
+    for sym, day, vol, close, fin in rows:
+        c.execute(
+            "INSERT INTO daily_kline VALUES (?,?,?,?,?,?,?,?,?)",
+            (sym, day, close, close, close, close, vol, 0.0, fin),
+        )
+    c.commit()
+    return c
+
+
+def test_intraday_partial_bar_does_not_produce_vol_ratio() -> None:
+    """盘中（最新 bar `finalized=0`）**不许**算量能 —— 那是拿半天量比整日均量。
+
+    实测 11-12 10:29 斯迪克：算出 0.8x「萎缩」，而东财量比 3.31（显著放量）。
+    两个数方向相反，模型写出「量比 3.31、量能 0.8x 萎缩」这种自相矛盾的判断。
+    """
+    rows = [("SZ300806", f"2026-11-{d:02d}", 3400.0, 48.0, 1) for d in range(5, 11)]
+    rows.append(("SZ300806", "2026-11-12", 2425.0, 50.0, 0))  # 盘中部分 bar
+    conn = _bar_db(rows)
+
+    feat = build_features(conn, ["SZ300806"])["SZ300806"]
+
+    assert feat.vol_ratio_5d is None, "盘中不许给量能（会系统性低估）"
+    assert feat.intraday_partial is True
+    # 百分比类字段不受影响 —— 用的是当前价，盘中同样成立
+    assert feat.pct_5d is not None
+
+
+def test_finalized_bar_still_produces_vol_ratio() -> None:
+    """已定稿时量能照常算（不能因为修 bug 把正常路径也关掉）。"""
+    rows = [("SZ300002", f"2026-11-{d:02d}", 1000.0, 20.0, 1) for d in range(5, 11)]
+    rows.append(("SZ300002", "2026-11-12", 3000.0, 20.0, 1))  # 已定稿
+    conn = _bar_db(rows)
+
+    feat = build_features(conn, ["SZ300002"])["SZ300002"]
+    assert feat.vol_ratio_5d == pytest.approx(3.0, abs=1e-6)
+    assert feat.intraday_partial is False
+
+
+def test_stale_kline_produces_no_features() -> None:
+    """K 线陈旧（>7 自然日）⇒ 整组特征置空，**不渲染 3 个月前的涨幅**。
+
+    实测面板里有票落后 108 天。若不挡，模型会拿到「3.5 个月前的 5 日累计」
+    当成今天的事实 —— 比缺数据更坏：缺数据它会说「证据不足」。
+    """
+    rows = [("SZ300612", f"2026-07-{d:02d}", 1000.0, 10.0, 1) for d in range(20, 28)]
+    rows += [("SZ300999", "2026-11-12", 1000.0, 10.0, 1)]  # 提供「全表最新日」= 11-12
+    conn = _bar_db(rows)
+
+    feat = build_features(conn, ["SZ300612"])["SZ300612"]
+
+    assert feat.is_stale is True
+    assert feat.stale_days > 100
+    assert feat.pct_5d is None
+    assert feat.pct_10d is None
+    assert feat.high_20d_gap is None
+    assert feat.vol_ratio_5d is None
+
+
+def test_stale_symbol_reported_not_dropped_silently() -> None:
+    """陈旧票要在块尾**被点名**，不能静默消失。
+
+    整行消失 ⇒ 模型读成「这只查过了、没异动」；点名 ⇒ 它知道要走工具补查。
+    """
+    rows = [("SZ300612", f"2026-07-{d:02d}", 1000.0, 10.0, 1) for d in range(20, 28)]
+    rows += [("SZ300999", "2026-11-12", 1000.0, 10.0, 1)]
+    conn = _bar_db(rows)
+    feats = build_features(conn, ["SZ300612"])
+
+    block = render_feature_block(feats, ["SZ300612"])
+    tail = "\n".join(block)
+    assert "SZ300612" in tail
+    assert "陈旧" in tail
+    assert "get_kline" in tail  # 明确告诉模型自己去查
+
+
+def test_slight_lag_still_usable() -> None:
+    """2 天内的滞后**仍可用**（周末/节假日常见），不能被误判成陈旧。"""
+    rows = [("SZ300063", f"2026-11-{d:02d}", 1000.0, 10.0, 1) for d in range(4, 11)]
+    rows += [("SZ300999", "2026-11-12", 1000.0, 10.0, 1)]
+    conn = _bar_db(rows)
+
+    feat = build_features(conn, ["SZ300063"])["SZ300063"]
+    assert feat.is_stale is False
+    assert feat.pct_5d is not None
+
+
+def test_intraday_note_only_shown_when_partial() -> None:
+    """盘中说明只在真盘中时出现（收盘后不该出现，否则是噪音）。"""
+    rows = [("SZ300002", f"2026-11-{d:02d}", 1000.0, 20.0, 1) for d in range(5, 12)]
+    conn = _bar_db(rows)
+    feats = build_features(conn, ["SZ300002"])
+    block = render_feature_block(feats, ["SZ300002"])
+    assert not any("当前为**盘中**" in line for line in block)
