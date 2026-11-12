@@ -390,11 +390,17 @@ def _latest_kline_date(ctx: ResearchContext, syms: list[str]) -> str | None:
 
 
 def _stale_days(rows: list[tuple], latest: str | None) -> int:
-    """某票最新 bar 距全表最新交易日的自然日数（无数据/解析失败 → 0）。"""
+    """某票最新 bar 距全表最新交易日的自然日数（无数据/解析失败 → 0）。
+
+    ⚠ `rows` 来自 `_kline_rows_by_symbol`，按 `date DESC` 追加 —— `rows[0]` 是
+    **最新**一根，`rows[-1]` 是最旧。曾在这里写反成 `rows[-1]`：全库 1148/1149 只
+    被误判为「落后 20 天」，每只都触发联网补取（正是 `_latest_kline_date` 注释里
+    要防的那件事），补取失败还把好数据标成「非当前形态」。
+    """
     if not rows or not latest:
         return 0
     try:
-        return (date.fromisoformat(latest) - date.fromisoformat(str(rows[-1][1]))).days
+        return (date.fromisoformat(latest) - date.fromisoformat(str(rows[0][1]))).days
     except (ValueError, TypeError):
         return 0
 
@@ -732,16 +738,26 @@ def _tool_get_sector_heatmap(args: dict[str, Any], ctx: ResearchContext) -> str:
         return "参数错误：需要 concept（概念名）"
 
     conn = ctx.conn_for_thread()
-    # ⚠ `daily_kline` 列名是 `percent`；`concept_cache.concepts` 存的是 **JSON 数组文本**
-    #   （实测：'["算力","东数西算",...]'）⇒ 用 LIKE 匹配 JSON 片段即可。
-    # ① 先拿成分股全名单（不受数据新鲜度影响）
+    # ⚠ `concept_cache.concepts` 存的是 **JSON 数组文本**（如 `["算力","东数西算",...]`）。
+    #
+    # ❌ 不能用 `LIKE '%AI%'` 子串匹配：实测输入「AI」命中 216 行、精确匹配 0 行 ——
+    #   全是「AI手机/AI应用/AI智能体/AIGC/AI制药」等假阳性（"AI制药"也含"AI"）。
+    #   输入「军工」会把「国防军工」混进来，「机器人」会混入「服务机器人/人形机器人」。
+    #   那样热力图算的就是**另一个板块**，且输出看起来数据齐全 —— 比样本残缺更隐蔽。
+    #
+    # ✅ 取出全部 concepts 后 Python 侧 `json.loads` + **全等匹配**。宁可 0 匹配
+    #   （返回「概念名不匹配」提示），也不要子串假阳性。
+    import json as _json
+
     try:
-        members = [
-            str(r[0])
-            for r in conn.execute(
-                "SELECT symbol FROM concept_cache WHERE concepts LIKE ?", (f"%{concept}%",)
-            ).fetchall()
-        ]
+        members: list[str] = []
+        for sym, raw in conn.execute("SELECT symbol, concepts FROM concept_cache").fetchall():
+            try:
+                arr = _json.loads(str(raw)) if raw else []
+            except (ValueError, TypeError):
+                continue
+            if isinstance(arr, list) and concept in [str(x) for x in arr]:
+                members.append(str(sym))
     except EXTERNAL_FAILURES as e:
         return f"概念「{concept}」查询失败（{type(e).__name__}）"
     if not members:
@@ -1041,6 +1057,7 @@ def _tool_get_announcements(args: dict[str, Any], ctx: ResearchContext) -> str:
     #   两种都得联网确认一次 —— 静默当成「没公告」是最危险的读法。
     miss = [s for s in syms if not local.get(s)]
     remote: dict[str, list[dict]] = {}
+    remote_failed = False
     if miss:
         try:
             from scanner.ai_digest.em_data import fetch_announcements_batch
@@ -1052,14 +1069,22 @@ def _tool_get_announcements(args: dict[str, Any], ctx: ResearchContext) -> str:
         except EXTERNAL_FAILURES as e:
             if not local:
                 return f"公告查询失败（{type(e).__name__}）"
-            remote = {}  # 本地已有部分数据 ⇒ 只标出联网那部分失败，不整体失败
+            # 本地已有部分数据 ⇒ 不整体失败，但**必须把联网失败说出口**（2026-11-12 修）：
+            # 此前 `remote={}` 静默吞掉 —— miss 票被渲染成「缓存与接口都为空**或该票无公告**」，
+            # 模型会把「查询失败」读成「无公司事件」（审计 2026-11-12 #3：三分歧义里
+            # 最危险的读法）。改为记下失败，渲染时对 miss 票单独标注。
+            remote_failed = True
 
     wl = _announcements_waterline(ctx.conn_for_thread())
     blocks: list[tuple[str, list[str]]] = []
     for s in syms:
         items = (local.get(s) or remote.get(s) or [])[:n]
         if not items:
-            blocks.append((f"{s}：最近无公告可查（缓存与接口都为空或该票无公告）", []))
+            if remote_failed and s in miss:
+                # 联网那部分失败了 —— 不能让模型把「查询失败」读成「该票无公告」
+                blocks.append((f"{s}：本地缓存无公告，且实时查询失败 —— **公告状态未知**（不能当作无公告）", []))
+            else:
+                blocks.append((f"{s}：最近无公告可查（缓存与接口都为空或该票无公告）", []))
             continue
         source = f"本地公告缓存(m025, 水位 {wl})" if local.get(s) else "东财实时查询"
         lines = [f"{it['date']} {it['title']}" + (f"［{it['type']}］" if it.get("type") else "") for it in items]

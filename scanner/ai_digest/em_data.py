@@ -76,10 +76,15 @@ def _parse_ann_item(it: dict[str, Any]) -> tuple[str, str, str, list[str]]:
 
 
 def fetch_announcements(symbol: str, limit: int = 8) -> list[dict[str, Any]]:
-    """最近公告（标题 + 日期 + 类型）。东财按裸 6 位代码查（不带前缀）。"""
+    """最近公告（标题 + 日期 + 类型）。东财按裸 6 位代码查（不带前缀）。
+
+    ⚠ 失败语义（2026-11-12）：网络/上游故障**抛出**（EXTERNAL_FAILURES 族），
+    不再吞掉返回 `[]` —— 调用方必须能区分「查询失败」和「该票确实无公告」。
+    把失败当「无公告」是最危险的读法：模型会把「公告查询失败」读成「无公司事件」。
+    """
     req = _requests()
     if req is None:
-        return []
+        raise OSError("requests 不可用（THS/东财路径不可达）")
     try:
         resp = req.get(
             _ANN_URL,
@@ -93,10 +98,8 @@ def fetch_announcements(symbol: str, limit: int = 8) -> list[dict[str, Any]]:
             timeout=_TIMEOUT,
         )
         payload = resp.json()
-    except EXTERNAL_FAILURES:
-        return []
-    except ValueError:  # 非 JSON（被网关拦了）
-        return []
+    except ValueError as e:  # 非 JSON（被网关拦了）
+        raise OSError(f"公告接口返回非 JSON：{e}") from e
     items = (payload.get("data") or {}).get("list") or []
     out = []
     for it in items:
@@ -117,14 +120,17 @@ def fetch_announcements_batch(symbols: list[str], *, days: int = 30) -> dict[str
     返回 `{带前缀 symbol: [{date,title,type}, ...]}`，按日期降序。
     ⚠ 一条公告可能关联多票 ⇒ 对**每个** `codes[].stock_code` 都落一份；`codes` 为空
       的行无法归属，跳过（不猜）。
-    fail-open：网络/上游结构变化返回已取到的部分；编程错误照常冒泡（不用裸 except）。
+    失败语义（2026-11-12）：**首页失败抛出**（OSError）——首页都没拿到 ⇒ 整批失败，
+    调用方必须能区分「完全失败」和「确实无公告」；**后续页失败 fail-open** 返回已取到
+    的部分（翻页失败只丢尾部，主体已到手）。此前首页失败也静默 `break` 返回 `{}`，
+    公告预取把「11 只 miss 票一条没取到」当整批成功推进水位（审计 2026-11-12 #7）。
     """
     ordered = list(dict.fromkeys(symbols))
     if not ordered:
         return {}
     req = _requests()
     if req is None:
-        return {}
+        raise OSError("requests 不可用（东财路径不可达）")
     end = now_beijing().date()
     begin = end - timedelta(days=max(1, days))
     out: dict[str, list[dict[str, Any]]] = {s: [] for s in ordered}
@@ -145,10 +151,14 @@ def fetch_announcements_batch(symbols: list[str], *, days: int = 30) -> dict[str
                 timeout=_TIMEOUT,
             )
             payload = resp.json()
+        except ValueError as e:
+            if page == 1:
+                raise OSError(f"公告批量接口返回非 JSON：{e}") from e
+            break  # 后续页失败：保留已取到的部分（fail-open）
         except EXTERNAL_FAILURES:
-            break
-        except ValueError:
-            break
+            if page == 1:
+                raise  # 首页失败 = 整批失败，调用方必须知道
+            break  # 后续页失败：保留已取到的部分（fail-open）
         data = payload.get("data") or {}
         items = data.get("list") or []
         if not items:
@@ -183,7 +193,7 @@ def fetch_market_announcements(day: str, page: int = 1, page_size: int = _ANN_PA
     """
     req = _requests()
     if req is None:
-        return [], 0
+        raise OSError("requests 不可用（东财路径不可达）")
     try:
         resp = req.get(
             _ANN_URL,
@@ -198,10 +208,8 @@ def fetch_market_announcements(day: str, page: int = 1, page_size: int = _ANN_PA
             timeout=_TIMEOUT,
         )
         payload = resp.json()
-    except EXTERNAL_FAILURES:
-        return [], 0
-    except ValueError:
-        return [], 0
+    except ValueError as e:  # 非 JSON（被网关拦了）
+        raise OSError(f"全市场公告接口返回非 JSON：{e}") from e
     data = payload.get("data") or {}
     rows = []
     for it in data.get("list") or []:
@@ -227,7 +235,7 @@ def fetch_intraday_fund_flow(symbol: str) -> list[dict[str, Any]]:
     market = "1" if code.startswith(("6", "9")) else "0"  # 1=沪 0=深/北
     req = _requests()
     if req is None:
-        return []
+        raise OSError("requests 不可用（东财路径不可达）")
     try:
         resp = req.get(
             "https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get",
@@ -241,10 +249,8 @@ def fetch_intraday_fund_flow(symbol: str) -> list[dict[str, Any]]:
             timeout=_TIMEOUT,
         )
         payload = resp.json()
-    except EXTERNAL_FAILURES:
-        return []
-    except ValueError:
-        return []
+    except ValueError as e:
+        raise OSError(f"资金流接口返回非 JSON：{e}") from e
     klines = (payload.get("data") or {}).get("klines") or []
     out: list[dict[str, Any]] = []
     for line in klines:
@@ -276,7 +282,7 @@ def fetch_dragon_tiger(symbol: str, limit: int = 5) -> list[dict[str, Any]]:
     code = symbol[2:] if len(symbol) == 8 and symbol[:2] in ("SH", "SZ", "BJ") else symbol
     req = _requests()
     if req is None:
-        return []
+        raise OSError("requests 不可用（东财路径不可达）")
     try:
         resp = req.get(
             "https://datacenter-web.eastmoney.com/api/data/v1/get",
@@ -294,10 +300,8 @@ def fetch_dragon_tiger(symbol: str, limit: int = 5) -> list[dict[str, Any]]:
             timeout=_TIMEOUT,
         )
         payload = resp.json()
-    except EXTERNAL_FAILURES:
-        return []
-    except ValueError:
-        return []
+    except ValueError as e:
+        raise OSError(f"龙虎榜接口返回非 JSON：{e}") from e
     rows = (payload.get("result") or {}).get("data") or []
     out = []
     for r in rows:
