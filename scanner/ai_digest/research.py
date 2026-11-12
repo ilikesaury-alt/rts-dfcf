@@ -34,6 +34,7 @@ import json
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 from scanner.utils import EXTERNAL_FAILURES
@@ -343,19 +344,62 @@ def _render_kline(symbol: str, rows: list[tuple], src: str) -> tuple[str, list[s
     """一组 (date, o, c, h, l, v) → `(标题, 逐日行)`（逐日涨跌由相邻收盘算出）。"""
     lines = []
     prev_close = None
-    for date, o, c, h, low, v in reversed(rows):
+    # 循环变量不叫 `date`：会遮蔽 `from datetime import date`（ruff F402），
+    # 而本模块的陈旧判定要用那个类型。
+    for day, o, c, h, low, v in reversed(rows):
         chg = ""
         if prev_close:
             chg = f" ({(c / prev_close - 1) * 100:+.2f}%)"
         prev_close = c
         # 成交量给人读单位（万股）—— 模型若自己把 10491942 写成「1049万」，
         # 那是它换算的，幻觉巡检会判它编造（工具已给单位，模型照抄即可）。
-        lines.append(f"{date} O{o:.2f} C{c:.2f} H{h:.2f} L{low:.2f} 量{v / 1e4:.0f}万股{chg}")
+        lines.append(f"{day} O{o:.2f} C{c:.2f} H{h:.2f} L{low:.2f} 量{v / 1e4:.0f}万股{chg}")
     return f"{symbol} 最近 {len(rows)} 根日线（{src}）：", lines
 
 
+#: 本地日线「够新」的阈值（自然日）。超过就联网补真值，而不是拿旧 bar 当现状。
+#:
+#: 与 `features._MAX_STALE_DAYS` 同值但**用途不同**：那边决定「要不要把特征喂进提示词」，
+#: 这边决定「要不要联网补取」。两边独立可调 —— 特征侧宁可保守（喂错比不喂坏），
+#: 工具侧可以更积极（它本来就是去查数据的）。
+_KLINE_MAX_STALE_DAYS = 5
+
+
+def _latest_kline_date(ctx: ResearchContext, syms: list[str]) -> str | None:
+    """全表最新交易日（作为「今天」的基准）。
+
+    ⚠ 不能用 `date.today()`：盘前/周末跑时今天还没有 K 线，按自然日算会把所有票
+    都判成陈旧，于是**每只都去联网**（一次调研能打几十个请求）。
+    """
+    try:
+        row = ctx.conn_for_thread().execute("SELECT MAX(date) FROM daily_kline").fetchone()
+    except EXTERNAL_FAILURES:
+        return None
+    return str(row[0]) if row and row[0] else None
+
+
+def _stale_days(rows: list[tuple], latest: str | None) -> int:
+    """某票最新 bar 距全表最新交易日的自然日数（无数据/解析失败 → 0）。"""
+    if not rows or not latest:
+        return 0
+    try:
+        return (date.fromisoformat(latest) - date.fromisoformat(str(rows[-1][1]))).days
+    except (ValueError, TypeError):
+        return 0
+
+
 def _tool_get_kline(args: dict[str, Any], ctx: ResearchContext) -> str:
-    """个股日线（本地优先，支持多票一次查）。"""
+    """个股日线（本地优先，支持多票一次查）。
+
+    ## 陈旧数据必须**补取**，不是只提示（2026-11-12）
+
+    `daily_kline` 是扫描过程的副产物，只覆盖「曾被扫描器选中过」的票。实测面板 14 只里
+    6 只的本地日线落后 9~108 天。原实现的补取条件是 `len(rows) < 3` —— 而陈旧票往往有
+    20+ 根**旧 bar**，条件不成立 ⇒ **永远不补**，模型拿到几个月前的形态却以为是最新的。
+
+    现在：`len(rows) < 3` **或** 最新一根落后 > `_KLINE_MAX_STALE_DAYS` ⇒ 联网取真值。
+    联网也失败时才退回旧 bar，并在标题里**明说落后多少天、非当前形态**。
+    """
     all_syms = _parse_symbols(args)
     n = max(3, min(int(args.get("n") or 15), 60))
     if not all_syms:
@@ -373,12 +417,22 @@ def _tool_get_kline(args: dict[str, Any], ctx: ResearchContext) -> str:
         return f"日线查询失败（{type(e).__name__}）"
 
     blocks: list[tuple[str, list[str]]] = []
-    # ② 本地不足 3 根的票才联网补（收盘定稿的日线才是真值，缺失才用实时）
+    # ② 本地数据不可用（不足 3 根 **或已陈旧**）的票才联网补。
+    #
+    # ⚠ **陈旧判定是 2026-11-12 补的关键分支**：原条件只有 `len(rows) < 3`，
+    #   而陈旧票往往有 20+ 根**旧 bar**（`len >= 3` 成立）⇒ **永远不会补取**，
+    #   模型拿到的是几个月前的形态。实测面板 14 只里有 6 只落后 9~108 天，
+    #   全部走的是「本地 daily_kline」这条正常分支，没有任何提示。
+    #
+    #   这正是「修复旧数据」而不是「提示旧数据」的地方：能补就补，补不到才降级说明。
+    latest_local = _latest_kline_date(ctx, syms)
     for s in syms:
         rows = grouped.get(s) or []
-        if len(rows) >= 3:
+        stale_days = _stale_days(rows, latest_local)
+        if len(rows) >= 3 and stale_days <= _KLINE_MAX_STALE_DAYS:
             blocks.append(_render_kline(s, rows, "本地 daily_kline"))
             continue
+        # 走到这里 = 本地不足 3 根，或最新一根太旧 ⇒ 联网取真值
         try:
             bars = _remote_bars(ctx, s, n)
             if bars:
@@ -387,17 +441,30 @@ def _tool_get_kline(args: dict[str, Any], ctx: ResearchContext) -> str:
                     f"量{b['volume'] / 1e4:.0f}万股"
                     for b in bars
                 ]
-                blocks.append((f"{s} 最近 {len(bars)} 根日线（雪球实时 K 线）：", lines))
+                why = (
+                    f"本地仅 {len(rows)} 根"
+                    if len(rows) < 3
+                    else f"本地最新一根为 {rows[-1][1]}，已落后 {stale_days} 天"
+                )
+                blocks.append((f"{s} 最近 {len(bars)} 根日线（雪球实时 K 线；{why} ⇒ 已补取）：", lines))
                 continue
         except EXTERNAL_FAILURES as e:
-            blocks.append((f"{s}：本地日线不足（{len(rows)} 根）且实时拉取失败（{type(e).__name__}）", []))
+            blocks.append(
+                (f"{s}：本地日线不可用（{len(rows)} 根，最新 {rows[-1][1] if rows else '—'}）"
+                 f"且实时拉取失败（{type(e).__name__}）", [])
+            )
             continue
         if not rows:
             blocks.append((f"{s}：本地无日线数据（该票不在 daily_kline 覆盖内）", []))
         else:
-            # 本地有几根（1~2 根）就先给这几根 —— 有数据总比「无数据」有用，
-            # 但必须说清它不足 3 根，别让模型把 2 根当完整形态看。
-            blocks.append(_render_kline(s, rows, f"本地 daily_kline，仅 {len(rows)} 根（不足 3 根）"))
+            # 联网也失败：本地有几根就给几根，但**必须说清它旧**——
+            # 否则模型会把 3 个月前的形态当当前形态。
+            blocks.append(
+                _render_kline(
+                    s, rows,
+                    f"本地 daily_kline，最新一根 {rows[-1][1]}（**已落后 {stale_days} 天，非当前形态**）",
+                )
+            )
     # 明细行是「旧→新」⇒ 超预算时丢最早的几根（形态看最近的才准）
     body = _fit_blocks(blocks, drop_head=True, reserve=len(trunc_note) + 1)
     return body + (f"\n{trunc_note}" if trunc_note else "")
@@ -823,8 +890,10 @@ def _announcements_local(conn: sqlite3.Connection, syms: list[str], day: str, n:
     except sqlite3.Error:
         return {}
     out: dict[str, list[dict]] = {}
-    for sym, date, title, ann_type in rows:
-        out.setdefault(str(sym), []).append({"date": date, "title": title, "type": ann_type or ""})
+    for sym, notice_day, title, ann_type in rows:
+        out.setdefault(str(sym), []).append(
+            {"date": notice_day, "title": title, "type": ann_type or ""}
+        )
     return out
 
 

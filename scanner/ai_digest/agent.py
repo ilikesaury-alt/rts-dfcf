@@ -20,7 +20,12 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from scanner.ai_digest.features import SymbolFeatures, build_features, render_feature_block
+from scanner.ai_digest.features import (
+    SymbolFeatures,
+    build_features,
+    features_from_bars,
+    render_feature_block,
+)
 from scanner.ai_digest.llm import (
     BRIEF_INSTRUCTION,
     BRIEF_RESEARCH_INSTRUCTION,
@@ -29,6 +34,7 @@ from scanner.ai_digest.llm import (
 )
 from scanner.ai_digest.panel import PanelRegion, PanelSnapshot
 from scanner.ai_digest.research import ResearchContext, ToolSpec, build_tools, run_tool
+from scanner.config import now_beijing
 from scanner.utils import EXTERNAL_FAILURES
 
 __all__ = [
@@ -331,7 +337,21 @@ def _prefetch_features(
     panel: PanelSnapshot | None,
     ctx: ResearchContext,
 ) -> dict[str, SymbolFeatures] | None:
-    """从本地库算候选票特征；任何异常都返回 None（预加载是增强，不是前置条件）。"""
+    """从本地库算候选票特征；任何异常都返回 None（预加载是增强，不是前置条件）。
+
+    ## 陈旧票：先补取，补不到才降级（2026-11-12）
+
+    `daily_kline` 是扫描副产物，实测面板 14 只里 6 只落后 9~108 天。原先的做法是
+    「陈旧就置空 + 提示模型自己查」—— 用户明确指出这不够：**目的是修复旧数据，
+    不是找出来提示**。
+
+    故这里对陈旧票**主动联网补取日线**（批量一次请求，与 `get_kline` 同一数据源），
+    用真值重算特征。补不到的票才退回「置空 + 点名」—— 那时它确实没有可用数据，
+    提示是唯一诚实的做法。
+
+    成本：陈旧票通常只有几只（实测 6 只），雪球批量接口 1 次请求即可；且走
+    `ctx.cached` 与 `get_kline` 共享缓存，模型后续再查同一只票时零额外请求。
+    """
     syms: list[str] = []
     if panel is not None and panel.regions:
         for region in panel.regions:
@@ -341,9 +361,49 @@ def _prefetch_features(
     if not syms:
         return None
     try:
-        return build_features(ctx.conn_for_thread(), syms)
+        feats = build_features(ctx.conn_for_thread(), syms)
     except EXTERNAL_FAILURES:  # 预加载失败绝不能拖垮调研
         return None
+    return _backfill_stale_features(feats, ctx)
+
+
+#: 陈旧票补取日线时最多回溯多少天（要够算 10 日累计 + 20 日高点）。
+_BACKFILL_DAYS = 25
+
+
+def _backfill_stale_features(
+    feats: dict[str, SymbolFeatures],
+    ctx: ResearchContext,
+) -> dict[str, SymbolFeatures]:
+    """对陈旧/无本地数据的票联网补日线，用真值重算特征（失败的保持置空）。"""
+    stale = [s for s, f in feats.items() if f.is_stale or f.pct_5d is None]
+    if not stale:
+        return feats
+
+    from scanner.ai_digest.research import _remote_bars
+
+    for sym in stale:
+        try:
+            # 复用 `research._remote_bars` —— 它已处理好「循环内闭包捕获」与缓存键
+            # （`ruff B023` 正是这个坑），且与 `get_kline` 共享同一缓存条目。
+            bars = _remote_bars(ctx, sym, _BACKFILL_DAYS)
+        except EXTERNAL_FAILURES:
+            continue  # 补不到就保持置空（调用侧会点名，模型自己走工具）
+        if not bars:
+            continue
+        # 把远程 bar 归一成 `(date, close, high, volume)` 旧→新，交给
+        # `features.features_from_bars` —— 公式只有一份，两处不会漂移。
+        ordered = sorted(bars, key=lambda x: str(x["date"]))
+        rows = [(str(b["date"]), b["close"], b["high"], b["volume"]) for b in ordered]
+        # ⚠ 补取的最后一根**可能正是今天盘中那根**（雪球实时 K 线会带上当日未收盘 bar）。
+        #   若不判，会把「半天量」当整日量算出假的萎缩/放量 —— 与本地路径同一个坑
+        #   （本地路径靠 `finalized` 字段判，远程没有这个字段，只能按日期判）。
+        today = now_beijing().date().isoformat()
+        newest_is_today = bool(rows) and rows[-1][0] == today
+        feats[sym] = features_from_bars(
+            sym, rows, newest_finalized=not newest_is_today, backfilled=True
+        )
+    return feats
 
 
 def run_research(

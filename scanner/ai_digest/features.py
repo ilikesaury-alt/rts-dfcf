@@ -45,6 +45,7 @@ from datetime import date
 __all__ = [
     "SymbolFeatures",
     "build_features",
+    "features_from_bars",
     "render_feature_block",
 ]
 
@@ -78,6 +79,8 @@ class SymbolFeatures:
     intraday_partial: bool = False
     #: 该票最新 K 线距今的自然日数；超过 `_MAX_STALE_DAYS` 时其余字段全部为空。
     stale_days: int = 0
+    #: 特征由**联网补取的实时日线**算出（不是本地库）—— 说明本地曾陈旧、已补齐。
+    backfilled: bool = False
 
     @property
     def is_stale(self) -> bool:
@@ -193,35 +196,15 @@ def build_features(
                 continue
 
         if bars:
-            closes = [_f(b[2]) for b in bars]
-            highs = [_f(b[3]) for b in bars]
-            vols = [_f(b[4]) for b in bars]
-            # bars[0] 是最新一根
-            if len(bars) >= 2 and closes[0] and closes[-1]:
-                base5 = closes[5] if len(closes) > 5 and closes[5] else None
-                if base5:
-                    feat.pct_5d = (closes[0] / base5 - 1.0) * 100.0
-                base10 = closes[10] if len(closes) > 10 and closes[10] else None
-                if base10:
-                    feat.pct_10d = (closes[0] / base10 - 1.0) * 100.0
-            if closes[0] and highs:
-                window = [h for h in highs[:20] if h]
-                if window:
-                    peak = max(window)
-                    if peak:
-                        feat.high_20d_gap = (closes[0] / peak - 1.0) * 100.0
-            # ⚠ 量能只在**最新 bar 已定稿**时算 —— 盘中那根是部分 bar，除以完整交易日的
-            #   均量会系统性低估（实测斯迪克 10:29 算出 0.8x"萎缩"，而实际量比 3.31）。
-            #   未定稿 ⇒ 置 None（渲染成 `—`），交给模型的量比（按时段归一化）去回答。
+            # `bars` 是「新→旧」；公式本体在 `features_from_bars`（**单一份**），
+            # 补取路径也用同一个函数 —— 两处各写一份公式是口径漂移的经典入口。
+            norm = [(b[1], b[2], b[3], b[4]) for b in bars]
             newest_finalized = bars[0][6] if len(bars[0]) > 6 else 1
-            if vols and vols[0] and newest_finalized:
-                prior = [v for v in vols[1:6] if v]
-                if prior:
-                    avg = sum(prior) / len(prior)
-                    if avg:
-                        feat.vol_ratio_5d = vols[0] / avg
-            if not newest_finalized:
-                feat.intraday_partial = True
+            computed = features_from_bars(
+                sym, list(reversed(norm)), newest_finalized=bool(newest_finalized)
+            )
+            computed.announcements = feat.announcements
+            feat = computed
         out[sym] = feat
 
     # 公告：一次 IN 查询，每票取最近 N 条
@@ -252,6 +235,55 @@ def build_features(
     return out
 
 
+def features_from_bars(
+    symbol: str,
+    bars: list[tuple[str, float | None, float | None, float | None]],
+    *,
+    newest_finalized: bool = True,
+    backfilled: bool = False,
+) -> SymbolFeatures:
+    """从「**旧→新**」的 `(date, close, high, volume)` 算单票特征。
+
+    **公式的唯一实现** —— 本地库路径（`build_features`）与联网补取路径
+    （`agent._backfill_stale_features`）都走这里。两处各写一份「5日累计 / 距20日高 /
+    量能」是口径漂移的经典入口（同一只票两条路径给出不同涨幅，模型无法察觉）。
+
+    `newest_finalized=False` ⇒ 最新 bar 是盘中部分 bar，**量能置空**（见 `build_features`
+    的 docstring：半天量比整日均量会系统性低估，实测斯迪克 0.8x vs 实际量比 3.31）。
+    """
+    feat = SymbolFeatures(symbol=symbol)
+    feat.backfilled = backfilled
+    if not bars:
+        return feat
+
+    closes = [_f(b[1]) for b in bars]
+    highs = [_f(b[2]) for b in bars]
+    vols = [_f(b[3]) for b in bars]
+    # bars 是旧→新，最新在末尾
+    if len(bars) >= 2 and closes[-1]:
+        base5 = closes[-6] if len(closes) >= 6 and closes[-6] else None
+        if base5:
+            feat.pct_5d = (closes[-1] / base5 - 1.0) * 100.0
+        base10 = closes[-11] if len(closes) >= 11 and closes[-11] else None
+        if base10:
+            feat.pct_10d = (closes[-1] / base10 - 1.0) * 100.0
+    if closes[-1] and highs:
+        window = [h for h in highs[-20:] if h]
+        if window:
+            peak = max(window)
+            if peak:
+                feat.high_20d_gap = (closes[-1] / peak - 1.0) * 100.0
+    if not newest_finalized:
+        feat.intraday_partial = True
+    elif vols and vols[-1]:
+        prior = [v for v in vols[-6:-1] if v]
+        if prior:
+            avg = sum(prior) / len(prior)
+            if avg:
+                feat.vol_ratio_5d = vols[-1] / avg
+    return feat
+
+
 def render_feature_block(features: dict[str, SymbolFeatures], order: list[str]) -> list[str]:
     """渲染成紧凑的提示词行（每票一行）。`order` 决定顺序，缺特征的票也出行（明说 `—`）。
 
@@ -270,13 +302,17 @@ def render_feature_block(features: dict[str, SymbolFeatures], order: list[str]) 
             "用的是当前价，盘中同样成立。）"
         )
     stale: list[str] = []
+    seen: set[str] = set()
     for sym in order:
         feat = features.get(sym)
-        if feat is None:
+        if feat is None or sym in seen:
+            # 同一只票可能同时在 `v1 池选` 与 `飙升区` 两个面板区里出现 ——
+            # 特征只渲染一次（重复行白占 token，还会让模型以为它们是两只不同的票）。
             continue
+        seen.add(sym)
         if feat.is_stale:
-            # 陈旧票**不渲染假数字**，只标出来 —— 让模型知道「这只没有本地历史」，
-            # 而不是拿到一组 3 个月前的涨幅当成今天的事实。
+            # 补取失败才走到这里 —— 陈旧数据**不渲染成当前事实**，只点名，
+            # 让模型知道「这只没有可用历史」，而不是拿 3 个月前的涨幅当今天。
             stale.append(f"{sym}(落后{feat.stale_days}天)")
             continue
         parts = [
@@ -290,11 +326,15 @@ def render_feature_block(features: dict[str, SymbolFeatures], order: list[str]) 
             parts.append("公告 " + "；".join(feat.announcements))
         else:
             parts.append("公告 —")
+        if feat.backfilled:
+            # 标出「这行是联网补的」：与本地算的同样可信，但模型据此知道
+            # 本地库对这只票覆盖不全（可解释它为什么在 daily_kline 里查不到）。
+            parts.append("※联网补取")
         lines.append(" ".join(parts))
     if stale:
-        # 明确说「这些票没有本地特征可用」⇒ 模型会走工具查，而不是以为它们没异动。
+        # 补取也失败的那些 —— 明确说「没有可用特征」，模型会走工具查，而不是以为它们没异动。
         lines.append(
-            f"（⚠ 以下票本地 K 线已陈旧，**不提供**特征，请用 get_kline / get_realtime_quote "
-            f"自己查：{'、'.join(stale)}）"
+            f"（⚠ 以下票本地 K 线陈旧且联网补取失败，**不提供**特征，请用 get_kline / "
+            f"get_realtime_quote 自己查：{'、'.join(stale)}）"
         )
     return lines

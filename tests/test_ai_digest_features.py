@@ -309,3 +309,123 @@ def test_intraday_note_only_shown_when_partial() -> None:
     feats = build_features(conn, ["SZ300002"])
     block = render_feature_block(feats, ["SZ300002"])
     assert not any("当前为**盘中**" in line for line in block)
+
+
+# ── 陈旧数据必须**补齐**，不是只提示（2026-11-12 用户明确要求）───────────────
+#
+# 「目的是要修复旧数据的问题，而不是找出来提示」。
+# 故：陈旧票先联网补取实时日线、用真值重算特征；补不到才降级点名。
+
+
+def test_stale_symbol_is_backfilled_with_remote_bars() -> None:
+    """陈旧票联网补到数据后 ⇒ 特征由**真值**算出，且标 `backfilled`。"""
+    from scanner.ai_digest.agent import _backfill_stale_features
+
+    rows = [("SZ300612", f"2026-07-{d:02d}", 1000.0, 10.0, 1) for d in range(20, 28)]
+    rows += [("SZ300999", "2026-11-12", 1000.0, 10.0, 1)]
+    conn = _bar_db(rows)
+    feats = build_features(conn, ["SZ300612"])
+    assert feats["SZ300612"].is_stale
+
+    # 桩：远程给 25 根新鲜 bar（末根是**历史日**，不算盘中部分 bar）
+    remote = [
+        {"date": f"2026-10-{d:02d}", "close": 10.0 + d * 0.1, "high": 12.0, "volume": 1000.0}
+        for d in range(1, 26)
+    ]
+    import scanner.ai_digest.research as research_mod
+
+    class _Ctx:
+        def cached(self, key, fn):
+            return remote
+
+    original = research_mod._remote_bars
+    try:
+        research_mod._remote_bars = lambda ctx, sym, n: remote  # type: ignore[assignment]
+        got = _backfill_stale_features(feats, _Ctx())  # type: ignore[arg-type]
+    finally:
+        research_mod._remote_bars = original  # type: ignore[assignment]
+
+    f = got["SZ300612"]
+    assert f.is_stale is False, "补到数据后不该再标陈旧"
+    assert f.backfilled is True
+    assert f.pct_5d is not None, "应由远程真值算出 5 日累计"
+
+
+def test_backfill_failure_keeps_stale_and_names_it() -> None:
+    """补取失败 ⇒ 保持置空并被点名（此时提示是唯一诚实的做法）。"""
+    import scanner.ai_digest.research as research_mod
+    from scanner.ai_digest.agent import _backfill_stale_features
+
+    rows = [("SZ300612", f"2026-07-{d:02d}", 1000.0, 10.0, 1) for d in range(20, 28)]
+    rows += [("SZ300999", "2026-11-12", 1000.0, 10.0, 1)]
+    conn = _bar_db(rows)
+    feats = build_features(conn, ["SZ300612"])
+
+    original = research_mod._remote_bars
+    try:
+        research_mod._remote_bars = lambda ctx, sym, n: []  # type: ignore[assignment]
+        got = _backfill_stale_features(feats, object())  # type: ignore[arg-type]
+    finally:
+        research_mod._remote_bars = original  # type: ignore[assignment]
+
+    assert got["SZ300612"].is_stale is True
+    block = render_feature_block(got, ["SZ300612"])
+    assert any("补取失败" in line for line in block)
+
+
+def test_backfilled_row_marked_in_output() -> None:
+    """补取来的行要标 `※联网补取` —— 模型据此知道本地库对这只票覆盖不全。"""
+    feats = {
+        "SZ300612": SymbolFeatures(
+            symbol="SZ300612", pct_5d=1.0, pct_10d=2.0, high_20d_gap=-3.0, backfilled=True
+        )
+    }
+    block = render_feature_block(feats, ["SZ300612"])
+    assert any("※联网补取" in line for line in block)
+
+
+def test_duplicate_symbol_rendered_once() -> None:
+    """同一只票同时在两个面板区出现时，特征只渲染一次。
+
+    实测：`SZ300063` 同时在 `v1 池选` 与 `飙升区` —— 渲染两行既白占 token，
+    也会让模型以为它们是两只不同的票。
+    """
+    feats = {"SZ300063": SymbolFeatures(symbol="SZ300063", pct_5d=5.0)}
+    block = render_feature_block(feats, ["SZ300063", "SZ300063", "SZ300063"])
+    hits = [ln for ln in block if ln.startswith("SZ300063")]
+    assert len(hits) == 1
+
+
+def test_remote_intraday_bar_does_not_produce_vol_ratio() -> None:
+    """补取路径的末根若是**今天**（盘中未收盘）⇒ 同样不许算量能。
+
+    远程 K 线没有 `finalized` 字段，只能按日期判 —— 漏判就复现「半天量 vs 整日均量」
+    那个低估 bug（实测斯迪克 0.8x vs 实际量比 3.31）。
+    """
+    from datetime import date as _date
+
+    import scanner.ai_digest.research as research_mod
+    from scanner.ai_digest.agent import _backfill_stale_features
+
+    rows = [("SZ300612", f"2026-07-{d:02d}", 1000.0, 10.0, 1) for d in range(20, 28)]
+    rows += [("SZ300999", "2026-11-12", 1000.0, 10.0, 1)]
+    conn = _bar_db(rows)
+    feats = build_features(conn, ["SZ300612"])
+
+    today = _date.today().isoformat()
+    remote = [
+        {"date": f"2026-11-{d:02d}", "close": 10.0, "high": 11.0, "volume": 1000.0}
+        for d in range(1, 13)
+    ]
+    remote.append({"date": today, "close": 10.0, "high": 11.0, "volume": 500.0})
+
+    original = research_mod._remote_bars
+    try:
+        research_mod._remote_bars = lambda ctx, sym, n: remote  # type: ignore[assignment]
+        got = _backfill_stale_features(feats, object())  # type: ignore[arg-type]
+    finally:
+        research_mod._remote_bars = original  # type: ignore[assignment]
+
+    f = got["SZ300612"]
+    assert f.vol_ratio_5d is None, "末根是今天（盘中）⇒ 不许算量能"
+    assert f.intraday_partial is True
