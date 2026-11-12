@@ -978,10 +978,40 @@ def main(argv: list[str] | None = None) -> int:
         print()
         print(f"模型自己查了这些（{tool_summary}）：")
     print()
-    print("素材核对（模型看到的初始数据；逐行可对）：")
-    print(render_materials_block(mats))
-    if mats.missing:
-        print(f"\n缺失项（素材里是「暂无数据」，模型不得补）：{'、'.join(mats.missing)}")
+    if args.mode == "research":
+        # ⚠ research 模式**不能**打「素材核对表」（2026-11-12 修）。
+        #
+        # `mats` 是 B 段（榜外异动）的素材：字段是 tier / percent / vol_ratio /
+        # main_pct / accum_5d / price / first_time。而 research 的输入是**面板原文**
+        # 或自选清单 —— 两套字段根本不是一回事，`render_materials_block` 必然读空。
+        #
+        # 实测后果：不加 `--brief` 时尾部打 14 只 × 10 个字段的「暂无数据」，再打一行
+        # 一百多项的「缺失项」清单 —— **两屏全是空字段**，读者完全无法从中获得信息，
+        # 只会以为数据取不到。
+        #
+        # 改为打**模型真正看到的东西**：本地特征块（与提示词同源）。
+        from scanner.ai_digest.features import render_feature_block
+
+        if _feats:
+            print("模型看到的本地特征（与提示词同源；逐行可对）：")
+            _order: list[str] = []
+            if panel is not None and panel.regions:
+                for _reg in panel.regions:
+                    _order += [str(r.get("symbol")) for r in _reg.rows if r.get("symbol")]
+            else:
+                _order += [str(r.get("symbol")) for r in info["rows"] if r.get("symbol")]
+            _block = render_feature_block(_feats, _order)
+            # 首行是说明文字（「本地特征（已替你算好…）」），这里已经打过标题，跳过
+            print("\n".join(_block[1:]) if _block else "（无）")
+        else:
+            print("模型看到的本地特征：未预加载（--no-prefetch-features）")
+        if panel is not None:
+            print(f"\n面板原文（模型输入，共 {total} 行）：logs/panel_md/股票池.md")
+    else:
+        print("素材核对（模型看到的初始数据；逐行可对）：")
+        print(render_materials_block(mats))
+        if mats.missing:
+            print(f"\n缺失项（素材里是「暂无数据」，模型不得补）：{'、'.join(mats.missing)}")
     if redlined:
         return 3
     return 5 if unverified else 0
