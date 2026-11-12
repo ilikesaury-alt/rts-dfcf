@@ -223,6 +223,17 @@ def _num_or_dash(v: Any) -> str:
     return f"{v:.2f}"
 
 
+def _as_float(v: Any) -> float | None:
+    """数值化（None/非法 → `None`）。用于从上游 JSON 里取百分比字段。
+
+    与 `_num_or_dash` 的分工：那个负责**渲染**（缺失显示 `—`），这个负责**判定**
+    （缺失返回 `None`，让调用方决定是跳过还是标缺）。
+    """
+    if isinstance(v, bool) or not isinstance(v, int | float):
+        return None
+    return float(v)
+
+
 def _truncate(text: str) -> str:
     if len(text) <= _MAX_TOOL_CHARS:
         return text
@@ -457,14 +468,16 @@ def _tool_get_kline(args: dict[str, Any], ctx: ResearchContext) -> str:
         if not rows:
             blocks.append((f"{s}：本地无日线数据（该票不在 daily_kline 覆盖内）", []))
         else:
-            # 联网也失败：本地有几根就给几根，但**必须说清它旧**——
-            # 否则模型会把 3 个月前的形态当当前形态。
-            blocks.append(
-                _render_kline(
-                    s, rows,
-                    f"本地 daily_kline，最新一根 {rows[-1][1]}（**已落后 {stale_days} 天，非当前形态**）",
-                )
-            )
+            # 联网也失败：本地有几根就给几根，但**必须说清它缺什么**——
+            # 否则模型会把 3 个月前的形态当当前形态，或把 1 根当完整形态。
+            # ⚠ 两种原因要分开说：`stale_days > 0` = 数据太旧；`stale_days == 0`
+            #   说明是**根数不足**（本地只有 1~2 根，联网也没补到）。混成一句
+            #   「已落后 0 天」既是假话，也丢掉了「形态不完整」这个关键信息。
+            if stale_days > 0:
+                why = f"最新一根 {rows[-1][1]}，**已落后 {stale_days} 天，非当前形态**"
+            else:
+                why = f"仅 {len(rows)} 根，**形态不完整**（实时补取失败）"
+            blocks.append(_render_kline(s, rows, f"本地 daily_kline，{why}"))
     # 明细行是「旧→新」⇒ 超预算时丢最早的几根（形态看最近的才准）
     body = _fit_blocks(blocks, drop_head=True, reserve=len(trunc_note) + 1)
     return body + (f"\n{trunc_note}" if trunc_note else "")
@@ -696,26 +709,123 @@ def _tool_get_concepts(args: dict[str, Any], ctx: ResearchContext) -> str:
 
 
 def _tool_get_sector_heatmap(args: dict[str, Any], ctx: ResearchContext) -> str:
-    """某概念下各成分股的当日涨幅（谁领涨/谁掉队）—— 板块共振还是个股孤军。"""
+    """某概念下各成分股的**当日**涨幅（谁领涨/谁掉队）—— 板块共振还是个股孤军。
+
+    ## 为什么必须联网补齐（2026-11-12）
+
+    原实现只读本地 `daily_kline` 的 `MAX(date)` 行。实测「人工智能」概念有 **208 只**
+    成分股，而当日有 K 线的只有 **10 只（4.8%）** —— 但输出写的是「当日 N 只有本地数据」，
+    模型读到的是「这个板块今天只有 7 只涨跌」。
+
+    **这会把 7 只的分化当成整个板块的分化**：实测输出「领涨 +5.77%、靠后 -6.38%」
+    看着像板块内剧烈分化，实际只是 3.4% 的样本。而「游戏概念」更糟 —— 7 只成分股
+    全部陈旧，直接返回「本地无成分股当日数据」，模型会认为该板块没有成分股。
+
+    这不是「标注一下」能解决的：板块共振的判断**依赖成分股涨跌分布**，样本残缺时
+    任何结论都是假的。故改为：本地有当日数据就用；缺的用**雪球批量报价**补齐。
+
+    成本可控：批量接口 50 只/请求，实测 200 只 **1.6 秒**（一次请求覆盖，含实时涨幅）。
+    与 `get_realtime_quote` 共享 `ctx.cached` 缓存，模型后续再查同一批票零额外请求。
+    """
     concept = str(args.get("concept") or "").strip()
     if not concept:
         return "参数错误：需要 concept（概念名）"
+
+    conn = ctx.conn_for_thread()
     # ⚠ `daily_kline` 列名是 `percent`；`concept_cache.concepts` 存的是 **JSON 数组文本**
     #   （实测：'["算力","东数西算",...]'）⇒ 用 LIKE 匹配 JSON 片段即可。
-    rows = ctx.conn_for_thread().execute(
-        "SELECT c.symbol, k.percent, k.close, c.concepts FROM concept_cache c "
-        "JOIN daily_kline k ON k.symbol = c.symbol "
-        "WHERE k.date = (SELECT MAX(date) FROM daily_kline) AND c.concepts LIKE ?",
-        (f"%{concept}%",),
-    ).fetchall()
-    if not rows:
-        return f"概念「{concept}」：本地无成分股当日数据"
-    rows = sorted(rows, key=lambda r: r[1] if r[1] is not None else -999, reverse=True)
-    # ⚠ SELECT 4 列（symbol, percent, close, concepts）⇒ 解包要 4 个（2026-11-03 实测：
-    #   写成 3 个会 ValueError「too many values to unpack」，工具直接不可用）。
-    head = "、".join(f"{s} {p:+.2f}%" for s, p, _cl, _c in rows[:8] if p is not None)
-    tail = "、".join(f"{s} {p:+.2f}%" for s, p, _cl, _c in rows[-5:] if p is not None)
-    return f"概念「{concept}」当日 {len(rows)} 只有本地数据（涨幅最高→最低）：\n领涨：{head}\n靠后：{tail}"
+    # ① 先拿成分股全名单（不受数据新鲜度影响）
+    try:
+        members = [
+            str(r[0])
+            for r in conn.execute(
+                "SELECT symbol FROM concept_cache WHERE concepts LIKE ?", (f"%{concept}%",)
+            ).fetchall()
+        ]
+    except EXTERNAL_FAILURES as e:
+        return f"概念「{concept}」查询失败（{type(e).__name__}）"
+    if not members:
+        return f"概念「{concept}」：本地无该概念的成分股名单（可能概念名不匹配）"
+
+    # ② 本地**当日**涨幅（只覆盖被扫描器选中过的票，实测占比很低）
+    #
+    # ⚠ 不能裸用 `MAX(date)` 当"今天"：库里可能只有几周前的行（实测某概念 7 只成分股
+    #   全部停在旧日期），那时 `date = MAX(date)` 会命中**一个月前的涨幅**，
+    #   被当成"今日板块表现"——比样本残缺更坏，因为它看起来数据齐全。
+    #   故必须再校验 `MAX(date)` 离真实今天足够近，否则整段本地数据视为不可用。
+    from scanner.ai_digest.features import _MAX_STALE_DAYS  # 单源：与特征新鲜度同一阈值
+
+    local: dict[str, float] = {}
+    try:
+        latest = conn.execute("SELECT MAX(date) FROM daily_kline").fetchone()
+        latest_day = str(latest[0]) if latest and latest[0] else None
+        if latest_day:
+            from scanner.config import now_beijing
+
+            gap = (now_beijing().date() - date.fromisoformat(latest_day)).days
+            if gap > _MAX_STALE_DAYS:
+                latest_day = None  # 整库都陈旧 ⇒ 本地数据不可用作"当日"
+        if latest_day:
+            marks = ",".join("?" for _ in members)
+            sql = (  # noqa: S608 - 占位符由 ",".join("?" * n) 生成，值经参数化传入
+                "SELECT symbol, percent FROM daily_kline "  # noqa: S608
+                f"WHERE date = ? AND symbol IN ({marks})"  # noqa: S608
+            )
+            for sym, pct in conn.execute(sql, (latest_day, *members)).fetchall():
+                v = _as_float(pct)
+                if v is not None:
+                    local[str(sym)] = v
+    except EXTERNAL_FAILURES:
+        latest_day = None
+
+    # ③ 缺的票用批量报价补齐（一次请求 50 只，实测 200 只 1.6s）
+    missing = [s for s in members if s not in local]
+    fetched: dict[str, float] = {}
+    fetch_note = ""
+    if missing:
+        try:
+            from scanner.api import fetch_hot_quotes_batch
+
+            session = ctx.get_session()
+            quotes = ctx.cached(
+                "sector_quotes:" + concept,
+                lambda: fetch_hot_quotes_batch(session, missing) or {},
+            )
+            for sym, q in (quotes or {}).items():
+                v = _as_float((q or {}).get("percent"))
+                if v is not None:
+                    fetched[str(sym)] = v
+            if len(fetched) < len(missing):
+                # ⚠ 「补齐 0 只」也是**样本残缺**，必须与「补齐 N 只」区别标注 ——
+                #   否则模型看到「本地缺 2 只，补齐 0 只」会读成「已经补过了」，
+                #   进而把 1 只的样本当成整个板块。
+                fetch_note = (
+                    f"（⚠ 本地缺 {len(missing)} 只，联网只补到 {len(fetched)} 只，"
+                    f"**样本仍不完整**，结论请自行打折）"
+                )
+            else:
+                fetch_note = f"（本地缺 {len(missing)} 只，已用雪球批量报价补齐 {len(fetched)} 只）"
+        except EXTERNAL_FAILURES as e:
+            fetch_note = f"（⚠ 本地缺 {len(missing)} 只，联网补齐失败：{type(e).__name__}）"
+
+    merged = {**local, **fetched}
+    if not merged:
+        return f"概念「{concept}」：{len(members)} 只成分股均无当日涨跌数据"
+
+    ranked = sorted(merged.items(), key=lambda kv: kv[1], reverse=True)
+    head = "、".join(f"{s} {p:+.2f}%" for s, p in ranked[:8])
+    tail = "、".join(f"{s} {p:+.2f}%" for s, p in ranked[-5:]) if len(ranked) > 8 else ""
+    # 上涨家数才是「板块共振」的可比读数 —— 直接算好，别让模型自己数
+    # （模型自己数 = 它算出来的数，巡检会判编造）。
+    up = sum(1 for _, p in ranked if p > 0)
+    ratio = up / len(ranked) * 100.0
+    body = (
+        f"概念「{concept}」成分股 {len(members)} 只，取到当日涨跌 {len(ranked)} 只，"
+        f"上涨 {up} 只（{ratio:.0f}%）{fetch_note}：\n领涨：{head}"
+    )
+    if tail:
+        body += f"\n靠后：{tail}"
+    return body
 
 
 def _tool_get_market_overview(args: dict[str, Any], ctx: ResearchContext) -> str:

@@ -801,19 +801,35 @@ def test_research_tools_use_real_local_data(digest_db, monkeypatch):
         calls.append("zt")
         return []
 
+    def _no_quotes(session, syms, batch_size=50):
+        # `get_sector_heatmap` 自 2026-11-12 起会对本地缺的成分股走批量报价补齐
+        # （此前它纯本地）—— 不桩的话这里会真的联网。
+        calls.append("quotes")
+        return {}
+
     monkeypatch.setattr(api_mod, "fetch_kline", _no_remote_bars)
     monkeypatch.setattr(api_mod, "fetch_market_index", _no_index)
     monkeypatch.setattr(market_extra_mod, "fetch_zt_pool", _no_zt)
+    monkeypatch.setattr(api_mod, "fetch_hot_quotes_batch", _no_quotes)
     monkeypatch.setattr(ResearchContext, "get_session", lambda self: object())
 
+    # ⚠ 日期必须用**今天**：`get_sector_heatmap` 自 2026-11-12 起会校验 `MAX(date)`
+    #   距今是否超过 `_MAX_STALE_DAYS`（否则把一个月前的涨幅当"当日板块表现"）。
+    #   硬编码 2026-11-02 会让这个用例随时间推移必然失败 —— 它测的是「SQL 列名对不对」，
+    #   不是「陈旧数据怎么处理」（后者由 test_ai_digest_sector_heatmap 专门覆盖）。
+    from scanner.config import now_beijing
+
+    _today = now_beijing().date().isoformat()
     conn = sqlite3.connect(str(digest_db))
     try:
         conn.execute(
             "INSERT INTO daily_kline (symbol, date, open, close, high, low, volume, percent) "
-            "VALUES ('SZ300770','2026-11-02',38.15,40.33,40.46,37.50,16304308,6.44)"
+            "VALUES ('SZ300770',?,38.15,40.33,40.46,37.50,16304308,6.44)",
+            (_today,),
         )
         conn.execute(
-            "INSERT INTO concept_cache (symbol, concepts, updated) VALUES ('SZ300770','[\"传媒\",\"影视概念\"]','2026-11-02')"
+            "INSERT INTO concept_cache (symbol, concepts, updated) VALUES ('SZ300770','[\"传媒\",\"影视概念\"]',?)",
+            (_today,),
         )
         conn.execute(
             "INSERT INTO recommendations (date, time, symbol, name, category, score, percent, excluded) "
@@ -830,7 +846,7 @@ def test_research_tools_use_real_local_data(digest_db, monkeypatch):
 
         k = run_tool(tools["get_kline"], {"symbol": "SZ300770", "n": 5}, ctx)
         assert calls == ["kline"], "本地不足 3 根时必须走过「实时补」分支，桩才有效"
-        assert "2026-11-02" in k and "40.33" in k
+        assert _today in k and "40.33" in k, "日线必须是本地那一根（含列值）"
         assert "1630万股" in k, "成交量必须给人读单位（模型照抄，不自己换算）"
 
         heat = run_tool(tools["get_sector_heatmap"], {"concept": "传媒"}, ctx)
