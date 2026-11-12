@@ -607,8 +607,11 @@ class TestFetchMarketIndexCoercion:
             pct = api.fetch_market_index(MagicMock())
         assert pct == pytest.approx(-0.93)
         assert api.get_market_index_meta()[1] == "2026-08-18"
-        out = capsys.readouterr().out
-        assert "读到旧 bar" in out and "2026-08-18" in out
+        # ⚠ 告警走 **stderr**（2026-11-12）：共享模块的 print 打 stdout 会污染
+        # `--json` 的输出（机器消费方 json.loads 直接炸）。改到 stderr 后这里
+        # 必须跟着断 err 而不是 out。
+        err = capsys.readouterr().err
+        assert "读到旧 bar" in err and "2026-08-18" in err
 
     def test_no_stale_warning_before_open(self, monkeypatch, capsys):
         """开盘前（<09:30）今日 bar 尚未生成，读到昨日 bar 属正常 → 不告警。"""

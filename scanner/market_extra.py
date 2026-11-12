@@ -32,6 +32,7 @@
 
 import logging
 import os
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -212,7 +213,7 @@ def fetch_zt_pool(today: str | None = None) -> dict[str, dict]:
         _cache_put_all(_zt_cache, result, key)
         return result
     except EXTERNAL_FAILURES as e:
-        print(f"  [!] 涨停池获取失败: {e}")
+        print(f"  [!] 涨停池获取失败: {e}", file=sys.stderr)
         # 短退避：失败空结果只冻结 FUND_FLOW_PARTIAL_TTL_SEC(60s) 而非默认 300s——
         # 默认 TTL 会让失败在 5 分钟内零重试（2026-08-20 修复，此前注释声称"短退避"实际 300s）。
         _cache_put_all(_zt_cache, {}, key, ttl=FUND_FLOW_PARTIAL_TTL_SEC)
@@ -458,21 +459,21 @@ def fetch_fund_flow_rank() -> dict[str, dict]:
         result, timed_out, err = _fetch_fund_flow_bounded(FUND_FLOW_FETCH_TIMEOUT, codes)
         if timed_out:
             if result:
-                print(f"  [!] 个股资金流拉取超时，已获取 {len(result)} 只（部分数据），下一轮扫描重试补全")
+                print(f"  [!] 个股资金流拉取超时，已获取 {len(result)} 只（部分数据），下一轮扫描重试补全", file=sys.stderr)
             else:
                 # 0 只不是"部分数据"：首批请求失败（网络/代理/无 data）或线程连一批都没
                 # 跑完。2026-10-12 前两者共用同一文案，把真故障读成"少几只、下轮补"。
-                print(f"  [!] 个股资金流获取失败（0 只）{'：' + err if err else ''}，下一轮扫描重试")
+                print(f"  [!] 个股资金流获取失败（0 只）{'：' + err if err else ''}，下一轮扫描重试", file=sys.stderr)
             _cache_put(_ff_cache, key, (result, time.time(), FUND_FLOW_PARTIAL_TTL_SEC, set(codes)))
         else:
             # 批级失败但整体完成：此前 errs 随 done=True 静默丢弃，缺批数据被当完整
             # 快照缓存 300s 无从排查 —— 显式打出来（一次拉取至多一条）。
             if err:
-                print(f"  [!] 个股资金流拉取完成但部分批次失败：{err}")
+                print(f"  [!] 个股资金流拉取完成但部分批次失败：{err}", file=sys.stderr)
             _cache_put(_ff_cache, key, (result, time.time(), None, set(codes)))
         return result
     except EXTERNAL_FAILURES as e:
-        print(f"  [!] 个股资金流获取失败: {e}")
+        print(f"  [!] 个股资金流获取失败: {e}", file=sys.stderr)
         # 短退避：失败空结果只冻结 FUND_FLOW_PARTIAL_TTL_SEC(60s) 而非默认 300s
         # （2026-08-20 修复，此前注释声称"短退避"实际 300s 内零重试）。
         _cache_put(_ff_cache, key, ({}, time.time(), FUND_FLOW_PARTIAL_TTL_SEC, set(codes)))

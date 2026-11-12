@@ -1,4 +1,5 @@
 import logging
+import sys
 import threading
 import time
 from datetime import datetime
@@ -287,7 +288,7 @@ def _warn_stale_index_bar(bar_date: str | None) -> None:
             return  # 开盘前今日 bar 尚未生成，读到昨日属正常
         today = now.date().isoformat()
         if bar_date < today and is_trading_day(now.date()):
-            print(f"  [!] 大盘指数读到旧 bar (date={bar_date}, 今日={today})——大盘标签可能失真")
+            print(f"  [!] 大盘指数读到旧 bar (date={bar_date}, 今日={today})——大盘标签可能失真", file=sys.stderr)
     except EXTERNAL_FAILURES:  # noqa: BLE001  交易日历异常不阻塞指数取数
         pass  # 外部依赖降级，非代码错误
 
@@ -336,7 +337,7 @@ def fetch_market_index(session: requests.Session) -> float | None:
                     _market_index_cache = (pct, bar_date, now)
                 return pct
     except EXTERNAL_FAILURES as e:
-        print(f"  [!] 获取大盘指数失败: {e}")
+        print(f"  [!] 获取大盘指数失败: {e}", file=sys.stderr)
     return None
 
 
@@ -478,7 +479,7 @@ _biaosheng_cb: dict[str, Any] = {
 
 def _warn_stale_cached(name: str, seconds: float) -> None:
     """获取失败返回陈旧榜单 → 终端醒目告警（一次/冷却期），否则下游无感知。"""
-    print(f"  [!] {name} 获取失败，使用 {int(seconds)} 秒前缓存榜单（信号可能失真）", flush=True)
+    print(f"  [!] {name} 获取失败，使用 {int(seconds)} 秒前缓存榜单（信号可能失真）", flush=True, file=sys.stderr)
 
 
 def _biaosheng_circuit_breaker(raw_items: list[dict], success: bool = True) -> list[dict]:
@@ -609,7 +610,7 @@ def fetch_market_caps_batch(session: requests.Session, symbols: list[str]) -> di
                             "high_pct": _quote_high_pct(q),
                         }
         except EXTERNAL_FAILURES as e:
-            print(f"  [!] 市值批量查询失败(批次{i // 50 + 1}): {e}")
+            print(f"  [!] 市值批量查询失败(批次{i // 50 + 1}): {e}", file=sys.stderr)
             continue
 
     if not result:
@@ -816,7 +817,7 @@ def _fetch_minute_data(session: requests.Session, symbol: str) -> list[dict] | N
             _cache_put(_MINUTE_DATA_CACHE, symbol, (None, now))
         return None
     except EXTERNAL_FAILURES as e:
-        print(f"  [!] 获取分时数据失败 {symbol}: {e}")
+        print(f"  [!] 获取分时数据失败 {symbol}: {e}", file=sys.stderr)
         with _minute_data_cache_lock:
             _cache_put(_MINUTE_DATA_CACHE, symbol, (None, now))
         return None
@@ -977,7 +978,7 @@ def analyze_intraday(session: requests.Session, symbol: str, items: list[dict] |
                 _cache_put(_INTRADAY_CACHE, symbol, (score, now))
         return score
     except EXTERNAL_FAILURES as e:
-        print(f"  [!] 分析分时强度失败 {symbol}: {e}")
+        print(f"  [!] 分析分时强度失败 {symbol}: {e}", file=sys.stderr)
         if use_cache:
             with _intraday_cache_lock:
                 _cache_put(_INTRADAY_CACHE, symbol, (None, now))

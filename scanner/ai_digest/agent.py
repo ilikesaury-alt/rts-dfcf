@@ -96,6 +96,14 @@ class ResearchResult:
     summarized: bool = False
     """报告是否出自第二阶段的独立总结器（`False` = 调研阶段自己写的）。"""
 
+    budget_exhausted: bool = False
+    """工具预算（max_calls/max_rounds）耗尽后靠总结器收的尾。
+
+    ⚠ `True` 时报告基于**不完整证据**——被跳过的调用（`skipped`）只回给模型、
+    不进 `tool_calls`/`blob`。此前这个状态零标记：截断报告与正常报告在人读产物上
+    不可区分（审计 2026-11-12 M2），自动化转发会把「基于半截数据的结论」当完整报告。
+    """
+
     def tool_summary(self) -> str:
         if not self.tool_calls:
             return "（本轮没有调用任何工具）"
@@ -549,13 +557,26 @@ def run_research(
     #   现在把它换成只看证据的总结器 ⇒ **调用次数不变**，但上下文从「12 个工具 schema +
     #   全部来回」缩成「候选清单 + 证据全文」，更快也更聚焦。没有靠加调用换简洁。
     blob = "\n".join(blob_parts)
+    budget_exhausted = bool(skipped)
     if not summarize:
         return ResearchResult(
             text="（已达工具调用上限，本次未生成结论）",
             rounds=rounds,
             tool_calls=calls,
             tool_output_blob=blob,
+            budget_exhausted=budget_exhausted,
         )
     resp = chat(cfg, build_summary_messages(user, blob, brief=brief), tools=None)
     text = (resp.get("content") or "").strip() or "（模型未给出结论）"
-    return ResearchResult(text=text, rounds=rounds, tool_calls=calls, tool_output_blob=blob, summarized=True)
+    if budget_exhausted:
+        # 截断报告**必须**自带标记 —— 总结器产出结构完整、分档齐全的报告，
+        # 读者无法从文本判断证据被截断了（审计 2026-11-12 M2）。
+        text = f"⚠ 工具预算耗尽（{max_calls} 次调用/{rounds} 轮），以下基于已取得的证据，可能有未查项：\n\n" + text
+    return ResearchResult(
+        text=text,
+        rounds=rounds,
+        tool_calls=calls,
+        tool_output_blob=blob,
+        summarized=True,
+        budget_exhausted=budget_exhausted,
+    )

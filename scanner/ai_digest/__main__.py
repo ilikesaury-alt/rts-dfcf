@@ -915,6 +915,7 @@ def main(argv: list[str] | None = None) -> int:
                 "unverified_numbers": unverified,
                 "tool_summary": tool_summary,
                 "summarized": bool(getattr(result, "summarized", False)),
+                "budget_exhausted": bool(getattr(result, "budget_exhausted", False)),
                 "materials": [{"id": i.id, "label": i.label, "value": i.value} for i in mats.items],
                 "missing": list(mats.missing),
                 "generatedFrom": {
@@ -957,8 +958,15 @@ def main(argv: list[str] | None = None) -> int:
             brief_lines += ["", _unverified_note(unverified)]
         report = "\n".join(brief_lines) + "\n"
         if args.out:
-            Path(args.out).write_text(report, encoding="utf-8")
-            print(f"[报告] {args.out}", file=sys.stderr)
+            if unverified:
+                # 巡检失败也落盘，但注记提到首行（自动化转发只取文件不看退出码）
+                Path(args.out).write_text(
+                    _unverified_note(unverified) + "\n\n" + report, encoding="utf-8"
+                )
+                print(f"[报告] {args.out}（⚠ 含未核实数字，注记已置于首行）", file=sys.stderr)
+            else:
+                Path(args.out).write_text(report, encoding="utf-8")
+                print(f"[报告] {args.out}", file=sys.stderr)
         print(report, end="")
         if redlined:
             return 3
@@ -1014,6 +1022,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\n缺失项（素材里是「暂无数据」，模型不得补）：{'、'.join(mats.missing)}")
     if redlined:
         return 3
+    if unverified and args.out:
+        # 巡检失败（模型编了数字）也允许落盘，但**必须把注记提到文件首行** ——
+        # 自动化转发（cron/飞书）只取文件不看退出码，坏报告混在好报告里最危险。
+        Path(args.out).write_text(
+            _unverified_note(unverified) + "\n\n" + report + "\n", encoding="utf-8"
+        )
+        print(f"[报告] {args.out}（⚠ 含未核实数字，注记已置于首行）", file=sys.stderr)
+    elif args.out:
+        Path(args.out).write_text(report + "\n", encoding="utf-8")
+        print(f"[报告] {args.out}", file=sys.stderr)
     return 5 if unverified else 0
 
 

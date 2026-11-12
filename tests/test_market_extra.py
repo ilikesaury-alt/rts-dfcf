@@ -266,10 +266,12 @@ class TestFetchFundFlow:
         net = _NetCounter(error=_requests.ConnectionError("host unreachable"))
         monkeypatch.setattr(me._requests, "get", net.get)
         assert me.fetch_fund_flow_rank() == {}
-        out = capsys.readouterr().out
-        assert "获取失败（0 只）" in out
-        assert "部分数据" not in out, "0 只不是部分数据，两种故障不得共用文案"
-        assert "host unreachable" in out, "失败原因必须可见，否则无法定位网络/代理问题"
+        # ⚠ 告警走 **stderr**（2026-11-12）：共享模块的 print 打 stdout 会污染
+        # `--json` 的输出（机器消费方 json.loads 直接炸）。
+        err = capsys.readouterr().err
+        assert "获取失败（0 只）" in err
+        assert "部分数据" not in err, "0 只不是部分数据，两种故障不得共用文案"
+        assert "host unreachable" in err, "失败原因必须可见，否则无法定位网络/代理问题"
         # 首批同步失败（含一次重试）后快速失败，不对余下批次打请求
         assert net.calls == 2
 
