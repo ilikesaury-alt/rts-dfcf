@@ -254,6 +254,8 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
   跨表 join 会拼出两个时刻的状态（实测 `SZ300063`：launch +2.05 vs rej −1.83）。
   聚合按 `reason_code`（门 ID），别按 `reason`（含当轮数值，数万条碎片）。
 
+### 横截面异动观察层（`scanner/crosssection.py`，m027）
+并列观察层，与飙升榜解耦（榜空轮照记），只写 `crosssection_signal`、**不进 B 段冻结表/回测口径**。`RTS_CROSSSECTION=0` 一键关，`python -m scanner.crosssection --health` 离线核对；60s/轮·预热 6 轮·`≡` 段·限频注意等细节见 COMMANDS.md。
 ## Architecture
 
 ```
@@ -281,6 +283,7 @@ scanner/
   hot_watch.py              # 沪深飙升独立区（与主线口径解耦）
   offboard_watch.py         # 榜外异动段（launch_log 写侧、实时覆盖、标签回填）
   offboard_flow.py          # B 段 N 日主力累计净流入（历史资金流序列，零新增请求）
+  crosssection.py           # 创业板全集横截面观察层（≡ 段；并列层，见上节）
   announcement_cache.py     # 公告缓存单源（m025）：读侧无前视 + 水位；替掉按票冻结的 12MB JSON
   announcement_prefetch.py  # 候选票公告预取（m025 写侧·主循环旁路）：daemon 线程 + 按票/整批节流
   onboard_anomaly.py        # 榜内异动段（标签回填同款三防呆）

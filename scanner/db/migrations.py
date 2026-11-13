@@ -698,6 +698,33 @@ def _up_market_extra_flow_index(conn: sqlite3.Connection) -> None:
     )
 
 
+def _up_crosssection_signal(conn: sqlite3.Connection) -> None:
+    """m027（2026-11-13）：创业板全集横截面异动信号表。
+
+    与雪球飙升榜**解耦**的并列观察层（`scanner/crosssection.py`）：主循环每轮把
+    东财创业板全集快照的 p95+ 榜外异动落在这里，每轮一个 `round_seq`（HHMMSS）。
+
+    ⚠ 口径边界：
+    - 只写**已经观测到**的快照（信号产生时刻 = 该轮墙钟），不读任何更晚数据；
+    - 不写 `offboard_launch_log` / `offboard_rejections` / `recommendations`，
+      本表不参与 B 段冻结样本与任何回测口径；
+    - 读侧唯一 = `python -m scanner.crosssection`（人工验证），无生产消费方。
+    故本表可随时清空/重建，不影响既有口径。
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS crosssection_signal ("
+        "date TEXT NOT NULL, round_seq INTEGER NOT NULL, symbol TEXT NOT NULL, "
+        "name TEXT, price REAL, percent REAL, speed_1 REAL, speed_3 REAL, speed_5 REAL, "
+        "amount_surge REAL, vol_ratio REAL, pct_rank REAL, updated_at TEXT NOT NULL, "
+        "PRIMARY KEY (date, round_seq, symbol))"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cs_signal_round ON crosssection_signal(date DESC, round_seq DESC)")
+
+
+def _check_crosssection_signal(conn: sqlite3.Connection) -> bool:
+    return _has_table(conn, "crosssection_signal") and _has_index(conn, "idx_cs_signal_round")
+
+
 # ── 迁移总表（顺序即执行顺序；只在末尾追加）──
 MIGRATIONS: list[Migration] = [
     add_column(
@@ -864,6 +891,12 @@ MIGRATIONS: list[Migration] = [
         desc="B 段证据链：rejections 首次态冻结列（与 launch_log 同锚）+ reason 结构化 + launch_log 流门/k 落库",
         check=_check_offboard_evidence_chain,
         up=_up_offboard_evidence_chain,
+    ),
+    Migration(
+        id="m027_crosssection_signal",
+        desc="新增 crosssection_signal：创业板全集横截面异动信号（与飙升榜解耦的并列观察层）",
+        check=_check_crosssection_signal,
+        up=_up_crosssection_signal,
     ),
 ]
 

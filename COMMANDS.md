@@ -233,7 +233,14 @@ python -m scanner.nextday_attribution --days 30 --excess      # 次日归因
 python -m scanner.hot_watch --offline-demo       # 沪深飙升区 12 条内置样本逐条核对，全绿 exit 0
 python -m scanner.historical_watch --offline-demo # v1 回捞区同理
 python -m scanner.offboard_watch --offline-demo  # 榜外异动段同理
+
+# 横截面异动观察层（与飙升榜解耦的并列层；60s/轮，1/3/5 轮≈1/3/5 分钟，预热 6 轮）
+python -m scanner.crosssection --health          # 库内轮次/信号数摘要（离线只读）
+python -m scanner.crosssection --date 2026-11-13 --json   # 当日信号（默认最新一轮）
+python -m scanner.crosssection                   # 打印当日最新一轮 p95+ 榜外信号
 ```
+> 并列观察层：只写 `crosssection_signal`，**不进 B 段冻结表、不改回测口径**；终端块用 `≡` 起头（`◆`/`—` 是面板区/段标题，会污染 `ai_digest/panel.py` 解析）。
+> ⚠ 快照刷新从 300s 缩到约 60s 会推高 push2delay 请求量，遇东财 IP 限频先 `RTS_CROSSSECTION=0` 关掉或调大 `RTS_CROSSSECTION_TTL_SEC`。
 
 ---
 
@@ -297,6 +304,7 @@ python scripts/ann_cache_sync.py                              # 当日最后一�
 |---|---|
 | `RTS_PUSH_GATE=0` | 关掉飞书过滤门（回滚用） |
 | `RTS_HOT_WATCH=0` | 整体关掉沪深飙升独立区 |
+| `RTS_CROSSSECTION=0` | 关掉创业板全集横截面观察层（`≡` 段 + `crosssection_signal` 写库）；`RTS_CROSSSECTION_TTL_SEC` 调快照节流（默认 55s，东财 IP 限频时调大） |
 | `RTS_LOCAL_PANEL` / `RTS_LOCAL_PANEL_PORT` | 本地 Web 面板开关 / 端口 |
 | `RTS_PANEL_URL` / `RTS_PANEL_SECRET` | 面板上报地址 / 密钥 |
 | `RTS_PANEL_MD=0` | 关掉面板逐轮存档（默认每轮**整份覆盖** `logs/panel_md/股票池.md`，只留最近一次） |

@@ -23,6 +23,7 @@ from scanner.categories import (  # noqa: F401,E402  (re-export)
 )
 from scanner.config_categories import *  # noqa: F401,F403
 from scanner.config_core import *  # noqa: F401,F403
+from scanner.config_crosssection import *  # noqa: F401,F403
 from scanner.config_historical import *  # noqa: F401,F403
 from scanner.config_hot_watch import *  # noqa: F401,F403
 from scanner.config_push import *  # noqa: F401,F403

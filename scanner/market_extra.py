@@ -429,7 +429,7 @@ def _fetch_fund_flow_bounded(timeout: float, codes: list[str] | None = None) -> 
     return box.get("value", {}), timed_out, box.get("err", "")
 
 
-def fetch_fund_flow_rank() -> dict[str, dict]:
+def fetch_fund_flow_rank(*, force: bool = False) -> dict[str, dict]:
     """拉取**创业板全集 ∪ 注册码**的个股今日资金流（东财 push2delay ulist），
     返回 {6位代码: {main_net, main_pct, super_net, ...报价快照}}。
 
@@ -443,12 +443,17 @@ def fetch_fund_flow_rank() -> dict[str, dict]:
     换血）会触发重拉补齐，保证 A 段主板票首轮即入快照。
     超时返回已收集部分（告警 + 只缓存 FUND_FLOW_PARTIAL_TTL_SEC，下一轮扫描
     重试补全缺批）；彻底失败打印告警、缓存空结果短退避并返回 {}（软降级）。
+
+    `force=True`（2026-11-13，横截面观察层）：跳过 300s 进程 TTL 短路，**仍按同一
+    路径取数并写回 `_ff_cache`** —— 这样本轮稍后 `collect_market_extra()` 的普通
+    调用直接命中的是这份刚取的快照，不会产生第二次网络请求。`force=False` 与
+    本参数引入前逐字一致。
     """
     key = _today_key()
     registered = _registered_ff_codes()
     with _extra_lock:
         entry = _ff_cache.get(key)
-    if entry:
+    if entry and not force:
         eff_ttl = entry[2] if len(entry) > 2 and entry[2] is not None else FUND_FLOW_TTL_SEC
         # 第 4 位 = 上次拉取域（注册码集）；缺位（旧条目）时用已取到的码集近似
         univ = entry[3] if len(entry) > 3 else set(entry[0])

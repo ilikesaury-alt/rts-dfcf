@@ -10,6 +10,7 @@
   - 输出管道/终端异常时 stdout 降级到 devnull，不崩溃
 """
 
+import logging
 import os
 import sqlite3
 import sys
@@ -29,6 +30,7 @@ if _ENV_FILE:
 else:
     load_dotenv()  # 从 .env 加载环境变量（飞书 webhook 等）
 
+from scanner import crosssection
 from scanner.announcement_prefetch import request_prefetch
 from scanner.backtest import backfill_outcomes
 from scanner.config import (
@@ -81,6 +83,10 @@ from scanner.trading_session import (
 )
 from scanner.utils import EXTERNAL_FAILURES, clear_screen
 from scanner.volume_bias import _UNSET as _BIAS_UNSET_FROM_MAIN  # noqa: PLC2701 - 哨兵必须与 volume_bias 同一个对象
+
+# 观察层等 fail-open 旁路统一用 logger.warning（带异常类型名）；无 handler 时
+# logging.lastResort 打到 stderr，控制台可见且不污染 capture_stdout 采集的面板原文。
+logger = logging.getLogger("unified_scanner")
 
 if sys.platform == "win32":
     # sys.stdout 的静态类型是 TextIO（无 reconfigure 属性）；运行时的 TextIOWrapper
@@ -402,6 +408,20 @@ def _local_panel_enabled() -> tuple[bool, int]:
     return True, port
 
 
+def _observe_crosssection(conn, board_items: list[dict] | None) -> None:
+    """横截面观察层接线点（2026-11-13）。
+
+    开关 `RTS_CROSSSECTION=0` 时**连取数都不发生**（用户可一键回滚，不残留请求量）。
+    取数/计算/落库异常按 `EXTERNAL_FAILURES` 兜住——观察层绝不影响主循环。
+    """
+    if not crosssection.CS_ENABLED:
+        return
+    try:
+        crosssection.observe(conn, board_items)
+    except EXTERNAL_FAILURES as e:
+        logger.warning("横截面观察跳过（不影响主循环）: %s: %s", type(e).__name__, e)
+
+
 def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
     """单进程扫描循环。"""
     conn = init_db()
@@ -499,6 +519,10 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                 conn = _ensure_conn(conn)
 
                 xq_raw = adapter.fetch_biaosheng()
+                # 横截面观察层（2026-11-13）：放在榜单熔断判断**之前** —— 即使雪球
+                # 榜空（`continue` 跳过整轮），东财创业板全集的快照与信号仍要记，
+                # 这样本层与飙升榜真正解耦。异常已在接线点内 fail-open。
+                _observe_crosssection(conn, xq_raw or [])
                 if not xq_raw:
                     print("\r  [!] 飙升榜数据为空，等待刷新...", end="", flush=True)
                     time.sleep(interval)
@@ -717,6 +741,15 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                         market_idx_pct=_market_pct,
                         new_symbols=new_syms,
                     )
+                    # 横截面观察层终端块（2026-11-13）：在 tee 内打印 ⇒ 自动进入
+                    # save_panel_round / 一键复制 / 面板上报，且**不改** ScanView /
+                    # view/render / panel_serialize / feishu 的任何既有字段。
+                    # 标题用 `≡`（非 `◆`/`—`），避免污染 ai_digest/panel.py 的区块解析。
+                    if crosssection.CS_ENABLED:
+                        try:
+                            print(crosssection.format_terminal_block())
+                        except EXTERNAL_FAILURES as e:
+                            logger.warning("横截面块渲染跳过（不影响主循环）: %s: %s", type(e).__name__, e)
                 # 快照本轮榜单排名供下一轮展示排名变化（上一轮为 None 时显示纯名次）。
                 last_ranks = dict(current_rank_map)
                 # 面板逐轮存档（<LOG_DIR>/panel_md/股票池.md；fail-open，纯展示层）：
