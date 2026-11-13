@@ -32,6 +32,12 @@
 为什么是命令而不是「终端每轮自动打」：主循环 60s 一轮、单线程串行渲染 ⇒ 自动出网会让
 「刷新频率 = 计费频率」，且一次外呼会把扫描节拍拖慢。本命令只有人敲才出网。
 
+归档（2026-11-13，人工复盘用）：每次跑出报告自动留一份纯文本到
+`logs/ai_digest/YYYY-MM-DD/HHMMSS_<mode>_<source>.md`（按发起时刻分目录，同秒加序号，
+不覆盖旧档案）；`--no-archive` 关闭、`--archive-dir` 改路径。**只归档不回灌**：
+档案不进库/飞书/主循环，也不进任何提示词，更不含次日绩效（防前视）。
+`--demo` / `--materials` / 无凭据 / 上游失败不产生档案（那些没有模型报告）。
+
 退出码：0 成功 / 1 未配置凭据 / 2 上游失败 / 3 触红线被拦（仅 transcribe 模式）/
 4 读库失败或无数据 / 5 幻觉巡检发现编造数字（结果已打印，但退出码让你能脚本化拦截）。
 """
@@ -48,6 +54,15 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from scanner.ai_digest.archive import (
+    DEFAULT_ARCHIVE_DIR,
+    ArchivePayload,
+    render_archive,
+    write_archive,
+)
+from scanner.ai_digest.archive import (
+    RULE as _RULE,
+)
 from scanner.ai_digest.guard import REFUSAL, is_redlined
 from scanner.ai_digest.material import (
     build_materials,
@@ -101,7 +116,6 @@ def _freshness(time_str: str, date_str: str = "") -> str:
         return ""
 
 
-
 def _unverified_note(unverified: list[str]) -> str:
     """幻觉巡检未通过时的用户可见文案（**单源**：三处出口逐字一致）。
 
@@ -122,6 +136,7 @@ def _unverified_note(unverified: list[str]) -> str:
         "    核对方式：上面报告里凡出现这些数字的句子，回到「模型自己查了这些」的工具输出里找一眼。"
     )
 
+
 #: 每种模式的标签（命令侧保证，**不是模型给的**）。
 LABELS = {
     "research": "AI 市场调研 · 模型自行查真实数据后的判断 · 含主观成分，不构成投资建议",
@@ -129,7 +144,7 @@ LABELS = {
     "transcribe": "仅解读，非投资建议",
 }
 
-_RULE = "─" * 78
+#: `_RULE` 由 `archive.RULE` 单源提供（终端与归档文件共用同一条分隔线）。
 
 #: 自选清单单只代码的形状：可选 SZ/SH 前缀 + 6 位数字。
 _SYMBOL_RE = re.compile(r"^(SZ|SH)?(\d{6})$")
@@ -387,6 +402,21 @@ def _run_symbols(args: argparse.Namespace) -> int:
     # 提示词里的清单只有代码与名字，数字只可能来自工具输出）。
     unverified = unverified_numbers(result.text, result.tool_output_blob)
 
+    # 与主流程同一个归档点：拿到模型输出就留档，json / 文本两出口只留一份。
+    _archive_report(
+        args,
+        title="自选清单 · AI 调研",
+        mode="research",
+        source="symbols",
+        source_desc="自选清单 " + "、".join(f"{s} {names.get(s, s)}" for s in symbols),
+        model=cfg.model,
+        total=len(symbols),
+        shown=len(symbols),
+        text=result.text,
+        unverified=unverified,
+        tool_summary=result.tool_summary(),
+    )
+
     if args.json:
         _emit(
             {
@@ -449,6 +479,53 @@ def _save_report(
     if result.tool_calls:
         lines += ["", f"模型查询记录（{result.tool_summary()}）"]
     Path(out_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _archive_report(
+    args: argparse.Namespace,
+    *,
+    title: str,
+    mode: str,
+    source: str,
+    source_desc: str,
+    model: str,
+    total: int,
+    shown: int,
+    text: str,
+    unverified: list[str],
+    tool_summary: str = "",
+    redlined: bool = False,
+) -> str:
+    """渲染归档全文并按开关写盘（返回全文，便于测试与调用方复用）。
+
+    ⚠ 刻意**不接收** `next_day_pct` / 任何绩效字段：档案只记「当时说了什么」，
+    不记「后来涨没涨」。前者是复盘材料，后者一旦混进来并被回灌就是前视偏差。
+    `demo` / `materials` / `no_archive` 时只渲染不写盘（`--out` 仍需这份全文兜底）。
+    """
+    payload = ArchivePayload(
+        title=title,
+        label=LABELS[mode],
+        mode=mode,
+        source=source,
+        source_desc=source_desc,
+        model=model,
+        total=total,
+        shown=shown,
+        text=text,
+        generated_at=now_beijing(),
+        unverified=tuple(unverified),
+        tool_summary=tool_summary,
+        redlined=redlined,
+    )
+    body = render_archive(payload)
+    skip = getattr(args, "demo", False) or getattr(args, "materials", False) or getattr(args, "no_archive", False)
+    if not skip:
+        path = write_archive(payload, root=getattr(args, "archive_dir", None), rendered=body)
+        if path is None:
+            print("[归档] 写盘失败（已跳过；不影响本次报告与退出码）", file=sys.stderr)
+        else:
+            print(f"[归档] {path}", file=sys.stderr)
+    return body
 
 
 #: 内置样例（`--demo`）：零库、零网，用来验证「素材 → 提示词 → 巡检」整条链路。
@@ -547,7 +624,18 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="从 Windows 剪贴板读清单（配合终端「一键复制」按 c 用；文本里的名字/日期会自动跳过）",
     )
     p.add_argument("--symbols-file", help="从文本文件读清单（一行一个代码或名字）")
-    p.add_argument("--out", help="把简洁报告存到该文件（配合 --brief；默认只打印）")
+    p.add_argument("--out", help="额外把报告存到该文件（默认只打印 + 自动归档）")
+    p.add_argument(
+        "--no-archive",
+        dest="no_archive",
+        action="store_true",
+        help=f"不自动归档（默认每次出报告都存一份到 {DEFAULT_ARCHIVE_DIR}/YYYY-MM-DD/）",
+    )
+    p.add_argument(
+        "--archive-dir",
+        default=None,
+        help=f"归档根目录（默认 {DEFAULT_ARCHIVE_DIR}）",
+    )
     p.add_argument(
         "--brief",
         action="store_true",
@@ -750,6 +838,17 @@ def main(argv: list[str] | None = None) -> int:
         "demo": "内置样例",
     }[info["source"]]
 
+    # ⚠ 默认模式是 research，别把它标成「AI 转述」（那是 transcribe 的标题）。
+    # research 模式的输入可以是「面板原文」（v1 池选 + 沪深飙升三段）或自选清单，
+    # 都不再只是榜外异动段 ⇒ 标题按实际来源写，别让报告标题与内容对不上。
+    # 提前到这里：归档文件与终端报告共用同一个标题（单一来源）。
+    _research_title = "终端面板 · AI 调研（v1 池选 + 沪深飙升）" if info["source"] == "panel" else "自选清单 · AI 调研"
+    report_title = {
+        "analyze": "榜外异动 · AI 综合分析",
+        "research": _research_title,
+        "transcribe": "榜外异动 · AI 转述",
+    }.get(args.mode, "榜外异动 · AI 分析")
+
     if args.materials:
         print(f"模式 {args.mode} · 数据源 {source_desc} · 共 {total} 行 · 本次 {shown} 只")
         if info["source"] == "panel" and args.mode == "research":
@@ -772,11 +871,7 @@ def main(argv: list[str] | None = None) -> int:
                 except EXTERNAL_FAILURES as _e:
                     print(f"[!] 本地特征预加载跳过: {type(_e).__name__}: {_e}", file=sys.stderr)
             print("")
-            print(
-                build_research_prompt(
-                    _rows, "终端面板原文", panel=_panel, brief=args.brief, features=_feats
-                )
-            )
+            print(build_research_prompt(_rows, "终端面板原文", panel=_panel, brief=args.brief, features=_feats))
             return 0
         print(render_material_items(mats))
         return 0
@@ -795,6 +890,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     tool_summary = ""
+    # `--json` 出口对 analyze/transcribe 也会读 `result.summarized`；没有 research
+    # 分支给它赋值时，仅靠 getattr(result, ...) 仍会 UnboundLocalError。
+    result: Any = None
     try:
         if args.mode == "research":
             # research 模式：模型自己调工具查真实数据（agent.run_research）。
@@ -828,9 +926,7 @@ def main(argv: list[str] | None = None) -> int:
                 _feats = None
                 if args.prefetch_features:
                     try:
-                        _feats = build_features(
-                            conn, [str(r.get("symbol")) for r in rows_for_model if r.get("symbol")]
-                        )
+                        _feats = build_features(conn, [str(r.get("symbol")) for r in rows_for_model if r.get("symbol")])
                     except EXTERNAL_FAILURES as _e:  # 预加载失败不拦调研
                         print(f"[!] 本地特征预加载跳过: {type(_e).__name__}: {_e}", file=sys.stderr)
                 user_prompt_research = build_research_prompt(
@@ -902,6 +998,23 @@ def main(argv: list[str] | None = None) -> int:
         check_blob = build_messages(mats, args.mode, brief=args.brief)[1]["content"]
     unverified = unverified_numbers(text, check_blob)
 
+    # 归档挂在「拿到模型输出 + 巡检完成」这一个点上，早于 json / brief / 长报告三处出口
+    # ⇒ 每次跑完只留一份档案，且三种出口的档案内容同源。
+    _archive_report(
+        args,
+        title=report_title,
+        mode=args.mode,
+        source=info["source"],
+        source_desc=source_desc,
+        model=cfg.model,
+        total=total,
+        shown=shown,
+        text=text,
+        unverified=unverified,
+        tool_summary=tool_summary,
+        redlined=redlined,
+    )
+
     if args.json:
         _emit(
             {
@@ -933,17 +1046,6 @@ def main(argv: list[str] | None = None) -> int:
 
     # `--brief`：一屏报告（不打印查询记录 / 素材核对表）。幻觉巡检与红线照旧，
     # 只是把「命令侧附加内容」收起来；`--out` 落的是这一份，不是原来的长报告。
-    # ⚠ 默认模式是 research，别把它标成「AI 转述」（那是 transcribe 的标题）。
-    # research 模式的输入可以是「面板原文」（v1 池选 + 沪深飙升三段）或自选清单，
-    # 都不再只是榜外异动段 ⇒ 标题按实际来源写，别让报告标题与内容对不上。
-    _research_title = (
-        "终端面板 · AI 调研（v1 池选 + 沪深飙升）" if info["source"] == "panel" else "自选清单 · AI 调研"
-    )
-    report_title = {
-        "analyze": "榜外异动 · AI 综合分析",
-        "research": _research_title,
-        "transcribe": "榜外异动 · AI 转述",
-    }.get(args.mode, "榜外异动 · AI 分析")
     if args.brief:
         brief_lines = [
             _RULE,
@@ -960,9 +1062,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.out:
             if unverified:
                 # 巡检失败也落盘，但注记提到首行（自动化转发只取文件不看退出码）
-                Path(args.out).write_text(
-                    _unverified_note(unverified) + "\n\n" + report, encoding="utf-8"
-                )
+                Path(args.out).write_text(_unverified_note(unverified) + "\n\n" + report, encoding="utf-8")
                 print(f"[报告] {args.out}（⚠ 含未核实数字，注记已置于首行）", file=sys.stderr)
             else:
                 Path(args.out).write_text(report, encoding="utf-8")
@@ -972,19 +1072,24 @@ def main(argv: list[str] | None = None) -> int:
             return 3
         return 5 if unverified else 0
 
-    print(_RULE)
-    print(report_title)
-    print(LABELS[args.mode])
-    print(_RULE)
-    print(f"数据源 {source_desc} · 共 {total} 行 · 本次 {shown} 只（段内顺序与终端同源）")
-    print()
-    print(text)
+    # 长报告的 `--out` 以前引用了只在 brief 分支里定义的 `report` ⇒ 不带 --brief 时
+    # NameError（COMMANDS.md 里正好有这条命令）。这里把终端头部单独组装一次，
+    # 打印与落盘共用同一份文本；归档全文由 `_archive_report` 独立写盘，两者不混。
+    long_lines = [
+        _RULE,
+        report_title,
+        LABELS[args.mode],
+        _RULE,
+        f"数据源 {source_desc} · 共 {total} 行 · 本次 {shown} 只（段内顺序与终端同源）",
+        "",
+        text,
+    ]
     if unverified:
-        print()
-        print(_unverified_note(unverified))
+        long_lines += ["", _unverified_note(unverified)]
     if tool_summary:
-        print()
-        print(f"模型自己查了这些（{tool_summary}）：")
+        long_lines += ["", f"模型自己查了这些（{tool_summary}）："]
+    report = "\n".join(long_lines) + "\n"
+    print(report, end="")
     print()
     if args.mode == "research":
         # ⚠ research 模式**不能**打「素材核对表」（2026-11-12 修）。
@@ -1025,9 +1130,7 @@ def main(argv: list[str] | None = None) -> int:
     if unverified and args.out:
         # 巡检失败（模型编了数字）也允许落盘，但**必须把注记提到文件首行** ——
         # 自动化转发（cron/飞书）只取文件不看退出码，坏报告混在好报告里最危险。
-        Path(args.out).write_text(
-            _unverified_note(unverified) + "\n\n" + report + "\n", encoding="utf-8"
-        )
+        Path(args.out).write_text(_unverified_note(unverified) + "\n\n" + report + "\n", encoding="utf-8")
         print(f"[报告] {args.out}（⚠ 含未核实数字，注记已置于首行）", file=sys.stderr)
     elif args.out:
         Path(args.out).write_text(report + "\n", encoding="utf-8")

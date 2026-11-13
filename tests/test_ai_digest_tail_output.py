@@ -34,6 +34,11 @@ from pathlib import Path
 
 CLI = Path(__file__).resolve().parent.parent / "scanner" / "ai_digest" / "__main__.py"
 
+#: 尾部输出的定位锚：长报告头部那一行数据源描述（brief 分支少了「（段内顺序与终端同源）」，
+#: 故全文件唯一）。刻意不绑 `print(...)` —— 头部可以逐行 print，也可以先组装成一份文本
+#: 再打印（还要给 `--out` 复用），守的是**后面的分支内容**，不是打印写法。
+_TAIL_ANCHOR = 'f"数据源 {source_desc} · 共 {total} 行 · 本次 {shown} 只（段内顺序与终端同源）"'
+
 
 def _src() -> str:
     # 统一换行符：仓库在 Windows 上是 CRLF，用 `\n` 找子串会找不到。
@@ -43,7 +48,7 @@ def _src() -> str:
 def _research_branch() -> str:
     """截出尾部输出的 research 分支（`if args.mode == "research":` → `else:`）。"""
     src = _src()
-    anchor = src.find('print(f"数据源 {source_desc}')
+    anchor = src.find(_TAIL_ANCHOR)
     assert anchor > 0, "找不到尾部输出"
     idx = src.find('if args.mode == "research":', anchor)
     assert idx > 0, "找不到 research 分支"
@@ -55,7 +60,8 @@ def _research_branch() -> str:
 def _non_research_branch() -> str:
     """截出 `else:`（analyze/transcribe）分支。"""
     src = _src()
-    anchor = src.find('print(f"数据源 {source_desc}')
+    anchor = src.find(_TAIL_ANCHOR)
+    assert anchor > 0, "找不到尾部输出"
     idx = src.find("\n    else:", src.find('if args.mode == "research":', anchor))
     assert idx > 0, "找不到 else 分支"
     return src[idx : idx + 900]

@@ -50,6 +50,7 @@ def _build_argv(argv: list[str]) -> list[str]:
 #: 这些标志的下一个 token 是**它的值**（不能当股票代码）。
 _VALUE_FLAGS = {
     "--out",
+    "--archive-dir",
     "--symbols",
     "--symbols-file",
     "--source",

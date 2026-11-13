@@ -175,6 +175,24 @@ python -m scanner.ai_digest --source print --materials  # 核对输入=终端最
 `view`=桌面版 view_snapshot，`log`=launch_log 整日过门账。`--limit N` 控制分析前 N 只。
 `--brief` 只压篇幅与命令侧附加内容：system 提示词、红线守卫、基准率排序、幻觉巡检全部照旧。
 
+### 3.4 报告归档（每次跑完自动留一份，人工复盘用）
+
+```bash
+python -m scanner.ai_digest                       # 自动归档 + 终端打印（无需加参数）
+python -m scanner.ai_digest --no-archive          # 本次不留档
+python -m scanner.ai_digest --archive-dir D:/复盘  # 改归档根目录
+ls logs/ai_digest/2026-11-13/                   # 按发起日分目录，同秒跑两次加 _2 后缀
+```
+
+默认路径 `logs/ai_digest/YYYY-MM-DD/HHMMSS_<mode>_<source>.md`（在 gitignore 的 `/logs` 下）。
+`--out FILE` 是**额外**再存一份到指定路径；`--json` 也归档（`[归档]` 走 stderr，不污染 stdout）。
+`--demo` / `--materials` / 无凭据 / 上游失败不产生档案（那些没有模型报告）。
+
+⚠ **只归档，不回灌**：档案是「模型当时说了什么」的主观判断，不是事实。它不进库、
+不进飞书、不进主循环，**也不进任何提示词**；文件里刻意不含次日绩效（防前视偏差）。
+要验证 AI 判断有没有用，自己按 `(date, symbol)` 去库里 join 标签，别把结果补写回档案。
+真正持续累计的信息在 DB：冻结信号快照 + 次日标签 → 分层命中率。
+
 ## 4. 数据回填 / 修复 / 诊断
 
 | 命令 | 说明 |

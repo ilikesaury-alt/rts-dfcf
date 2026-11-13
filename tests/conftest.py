@@ -52,6 +52,18 @@ def _isolate_log_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(log_utils, "LOG_DIR", str(tmp_path))
 
 
+@pytest.fixture(autouse=True)
+def _isolate_ai_digest_archive_dir(tmp_path, monkeypatch):
+    """AI 归档默认写 `logs/ai_digest/`；单测必须重定向，否则跑一次测试就多一份假档案。
+
+    ⚠ 打的是 `archive` 模块自己的全局：`write_archive` 在模块内读 `DEFAULT_ARCHIVE_DIR`，
+    `__main__` 里那份是按值快照导入的（只用于 help 文本），改它不影响写盘。
+    """
+    import scanner.ai_digest.archive as archive_mod
+
+    monkeypatch.setattr(archive_mod, "DEFAULT_ARCHIVE_DIR", tmp_path / "ai_digest_archive")
+
+
 def pytest_addoption(parser):
     parser.addoption(
         "--run-smoke",

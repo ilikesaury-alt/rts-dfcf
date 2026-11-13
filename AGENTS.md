@@ -105,6 +105,8 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
 - **WAL 库备份不能 `cp`**：必须 `sqlite3` Online Backup API（`src.backup(dst)`）或先
   `PRAGMA wal_checkpoint(TRUNCATE)`；**备份后必须校验行数**。
 - **Beijing timezone**（`BEIJING_TZ` UTC+8）用于一切时间逻辑，勿用 naive local time。
+- **AI 归档只进 `logs/ai_digest/`，不回灌提示词**（`ai_digest/archive.py`）：档案是主观判断、
+  不含次日绩效；喂回下次分析即成第二结论源＋前视。累计事实/标签走 DB，不靠档案。
 - **Fail-open**：外部取数优雅降级，只 catch `scanner.utils.EXTERNAL_FAILURES`
   （OSError/timeout/requests/sqlite3.Error/ValueError/KeyError），**禁裸 `except Exception`**；
   编程错误必须冒泡到主循环。
@@ -314,6 +316,7 @@ scanner/
   ai_digest/                # B 段 AI 分析（手动触发；material/guard/source）
     rerank.py               # Phase 2 证据的可复现载体（无 CLI 入口）
     panel.py                # 股票池.md 面板原文 → 结构化两区行（research 默认输入）
+    archive.py              # 报告按日归档（纯文本、不回灌；--no-archive 关）
   pipeline/                 # 主扫描通路阶段纯函数（改前必读包 docstring）
     pool.py / features.py / buckets.py / scoring.py / tactics.py
   db/
