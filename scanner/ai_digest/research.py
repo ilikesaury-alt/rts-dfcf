@@ -389,6 +389,19 @@ def _latest_kline_date(ctx: ResearchContext, syms: list[str]) -> str | None:
     return str(row[0]) if row and row[0] else None
 
 
+def _latest_bar_date(rows: list[tuple]) -> str:
+    """`_kline_rows_by_symbol` 最新一根的日期（按 `date DESC` ⇒ `rows[0]`）。
+
+    ⚠ 元组是 `(date, open, close, high, low, volume)`，日期在**第 0 列**。
+    `features.build_features` 的 SELECT 是 `(symbol, date, close, high, volume,
+    percent, finalized)`，那里 `bars[0][1]` 才是日期 —— 曾照抄该下标写成
+    `rows[0][1]`（开盘价）⇒ `date.fromisoformat` 恒抛 ValueError ⇒ `_stale_days`
+    恒返回 0 ⇒ 下面整条「陈旧必须联网补取」分支成了死代码，模型拿到的是几个月
+    前的形态还被标成「本地 daily_kline」。日期下标只在这一个函数里取。
+    """
+    return str(rows[0][0]) if rows else "—"
+
+
 def _stale_days(rows: list[tuple], latest: str | None) -> int:
     """某票最新 bar 距全表最新交易日的自然日数（无数据/解析失败 → 0）。
 
@@ -400,7 +413,7 @@ def _stale_days(rows: list[tuple], latest: str | None) -> int:
     if not rows or not latest:
         return 0
     try:
-        return (date.fromisoformat(latest) - date.fromisoformat(str(rows[0][1]))).days
+        return (date.fromisoformat(latest) - date.fromisoformat(_latest_bar_date(rows))).days
     except (ValueError, TypeError):
         return 0
 
@@ -461,14 +474,17 @@ def _tool_get_kline(args: dict[str, Any], ctx: ResearchContext) -> str:
                 why = (
                     f"本地仅 {len(rows)} 根"
                     if len(rows) < 3
-                    else f"本地最新一根为 {rows[-1][1]}，已落后 {stale_days} 天"
+                    else f"本地最新一根为 {_latest_bar_date(rows)}，已落后 {stale_days} 天"
                 )
                 blocks.append((f"{s} 最近 {len(bars)} 根日线（雪球实时 K 线；{why} ⇒ 已补取）：", lines))
                 continue
         except EXTERNAL_FAILURES as e:
             blocks.append(
-                (f"{s}：本地日线不可用（{len(rows)} 根，最新 {rows[-1][1] if rows else '—'}）"
-                 f"且实时拉取失败（{type(e).__name__}）", [])
+                (
+                    f"{s}：本地日线不可用（{len(rows)} 根，最新 {_latest_bar_date(rows)}）"
+                    f"且实时拉取失败（{type(e).__name__}）",
+                    [],
+                )
             )
             continue
         if not rows:
@@ -480,7 +496,7 @@ def _tool_get_kline(args: dict[str, Any], ctx: ResearchContext) -> str:
             #   说明是**根数不足**（本地只有 1~2 根，联网也没补到）。混成一句
             #   「已落后 0 天」既是假话，也丢掉了「形态不完整」这个关键信息。
             if stale_days > 0:
-                why = f"最新一根 {rows[-1][1]}，**已落后 {stale_days} 天，非当前形态**"
+                why = f"最新一根 {_latest_bar_date(rows)}，**已落后 {stale_days} 天，非当前形态**"
             else:
                 why = f"仅 {len(rows)} 根，**形态不完整**（实时补取失败）"
             blocks.append(_render_kline(s, rows, f"本地 daily_kline，{why}"))

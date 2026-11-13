@@ -1189,6 +1189,86 @@ def test_kline_tool_local_hit_does_not_touch_network(monkeypatch):
     conn.close()
 
 
+def _stale_kline_conn() -> sqlite3.Connection:
+    """全表最新日 = 2026-11-13；目标票 SZ301106 本地只到 8-19（**但有 3 根**）。
+
+    3 根很关键：旧实现的补取条件只有 `len(rows) < 3`，有 3 根旧 bar 反而不补；
+    而 `_stale_days` 又曾把开盘价当日期恒返回 0 —— 两条都要靠这个布局证伪。
+    """
+    conn = _batch_conn()
+    for d in ("11", "12", "13"):
+        conn.execute(
+            "INSERT INTO daily_kline VALUES (?,?,?,?,?,?,?,?,?)",
+            ("SZ300999", 0, f"2026-11-{d}", 10.0, 10.5, 10.8, 9.9, 1e6, 1.5),
+        )
+    for d in (17, 18, 19):
+        conn.execute(
+            "INSERT INTO daily_kline VALUES (?,?,?,?,?,?,?,?,?)",
+            ("SZ301106", 0, f"2026-08-{d}", 17.0, 17.5, 17.8, 16.9, 1e6, 1.5),
+        )
+    return conn
+
+
+def test_kline_tool_backfills_stale_local_bars(monkeypatch):
+    """本地 bar 落后 86 天 ⇒ 必须联网补真值，且只有陈旧票联网（2026-11-12 分支守卫）。
+
+    守的是日期下标：`_kline_rows_by_symbol` 行是 `(date, open, close, ...)`，
+    曾把 `rows[0][1]`（开盘价）当日期 → `_stale_days` 恒 0 ⇒ 整条补取分支是死代码，
+    8 月的旧 bar 被原样标成「本地 daily_kline」喂给模型。
+    """
+    import scanner.api as api_mod
+    from scanner.ai_digest import research as R
+
+    remote = [
+        {"date": "2026-11-12", "open": 18.0, "high": 18.9, "low": 17.8, "close": 18.3, "volume": 3.0e6, "percent": 1.0},
+        {
+            "date": "2026-11-13",
+            "open": 18.3,
+            "high": 18.9,
+            "low": 17.8,
+            "close": 19.75,
+            "volume": 1.03e7,
+            "percent": 4.17,
+        },
+    ]
+    called: list[str] = []
+
+    def _fake_fetch(session, symbol, days=None):
+        called.append(symbol)
+        return remote
+
+    monkeypatch.setattr(api_mod, "fetch_kline", _fake_fetch)
+    monkeypatch.setattr(R.ResearchContext, "get_session", lambda self: object())
+
+    conn = _stale_kline_conn()
+    out = R._tool_get_kline(
+        {"symbols": ["SZ301106", "SZ300999"], "n": 15},
+        R.ResearchContext(conn=conn),
+    )
+    assert called == ["SZ301106"], "陈旧票必须联网补，新鲜票不得联网"
+    assert "本地最新一根为 2026-08-19，已落后 86 天" in out
+    assert "已补取" in out
+    assert "C19.75" in out, "必须给远程真值，而不是 8 月的本地旧收盘 17.50"
+    assert "SZ300999 最近 3 根日线（本地 daily_kline）" in out
+    conn.close()
+
+
+def test_kline_tool_labels_stale_bars_when_remote_fails(monkeypatch):
+    """补取也失败时，旧 bar 必须点名「最新日期 + 落后天数 + 非当前形态」。"""
+    import scanner.api as api_mod
+    from scanner.ai_digest import research as R
+
+    monkeypatch.setattr(api_mod, "fetch_kline", lambda session, s, days=None: [])
+    monkeypatch.setattr(R.ResearchContext, "get_session", lambda self: object())
+
+    conn = _stale_kline_conn()
+    out = R._tool_get_kline({"symbols": ["SZ301106"], "n": 15}, R.ResearchContext(conn=conn))
+    assert "最新一根 2026-08-19" in out, "曾把最旧那根的开盘价当成日期打印"
+    assert "已落后 86 天，非当前形态" in out
+    assert "C17.50" in out, "降级时仍给本地旧值，但不许冒充当前形态"
+    conn.close()
+
+
 def test_concepts_tool_batches_and_only_fetches_cache_misses(monkeypatch):
     """概念：本地命中的票零请求，只有 miss 的票才走 F10。"""
     import scanner.concept as concept_mod
