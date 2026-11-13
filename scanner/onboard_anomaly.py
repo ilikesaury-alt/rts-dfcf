@@ -50,7 +50,7 @@ T2「启动首日」的下沿是 `MOMENTUM_LAUNCH_TODAY_MIN`(3.5%)，语义是�
 from __future__ import annotations
 
 import logging
-from typing import Sequence
+from typing import Any, Sequence
 
 from scanner.config import (
     ONBOARD_ANOMALY_ENABLED,
@@ -76,6 +76,7 @@ from scanner.offboard_watch import (
     unadjusted_silence_active,
 )
 from scanner.utils import EXTERNAL_FAILURES, to_float
+from scanner.volume_bias import _UNSET as _BIAS_UNSET  # noqa: PLC2701 - 哨兵必须与 volume_bias 同一个对象
 from scanner.volume_bias import biased_snapshot
 
 logger = logging.getLogger(__name__)
@@ -263,6 +264,7 @@ def run_onboard_anomaly(
     exclude_symbols: set[str] | None = None,
     top_n: int = ONBOARD_DISPLAY_TOP,
     klines: dict[str, list | None] | None = None,
+    bias: Any = _BIAS_UNSET,
 ) -> list[OffboardCandidate]:
     """跑一轮榜内异动筛选，返回待展示的前 `top_n` 行（T1 独有）。
 
@@ -297,7 +299,12 @@ def run_onboard_anomaly(
     except EXTERNAL_FAILURES as e:
         logger.warning("榜内异动段量比快照取数失败（本段留空）: %s", e)
         return []
-    bias = biased_snapshot(conn, snapshot)
+    # `bias` 显式传入（2026-11-12）：主循环已为榜外段算过一次 k(m)，本段**复用**
+    # 同一个标量，而不是自己再读一次库 —— 两次读库之间若有写入，两段会拿到不同的
+    # m ⇒ 不同的 k ⇒ 同一个 `MOMENTUM_LAUNCH_VOL` 被套两个尺度。
+    # `_BIAS_UNSET` = 调用方没传（CLI / 单测路径）⇒ 照旧自算，行为不变。
+    # 同 `offboard_watch`：未传时走旧签名调用（保持既有桩可用、行为不变）。
+    bias = biased_snapshot(conn, snapshot) if bias is _BIAS_UNSET else biased_snapshot(conn, snapshot, bias=bias)
     if bias is None and unadjusted_silence_active():
         # 去偏系数不可得 ⇒ 读数仍虚高 ⇒ 退回旧口径的 15 分钟窗口（与榜外段同处置）。
         return []

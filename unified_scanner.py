@@ -80,6 +80,7 @@ from scanner.trading_session import (
     seconds_until_next_session,
 )
 from scanner.utils import EXTERNAL_FAILURES, clear_screen
+from scanner.volume_bias import _UNSET as _BIAS_UNSET_FROM_MAIN  # noqa: PLC2701 - 哨兵必须与 volume_bias 同一个对象
 
 if sys.platform == "win32":
     # sys.stdout 的静态类型是 TextIO（无 reconfigure 属性）；运行时的 TextIOWrapper
@@ -601,6 +602,11 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                 # 计算不依赖榜单，但主循环在 xq_raw 为空时整轮 continue，
                 # 故「榜单熔断仍可产出」不成立；外部取数失败时留空本段（fail-open）。
                 offboard_rows = None
+                # 本轮量比去偏系数 k(m)：由榜外段算一次，榜内异动段**复用同一个值**。
+                # 为什么不能各算各的：`market_bias` 要读 DB 的 MAX(updated) 折算已交易
+                # 分钟数 m，两次读库之间若有写入，两段会拿到不同的 m ⇒ 不同的 k ⇒
+                # 同一个 `MOMENTUM_LAUNCH_VOL` 被套两个尺度（2026-11-12 审查发现）。
+                _bias_box: list = []
                 if OFFBOARD_WATCH_ENABLED:
                     try:
                         offboard_rows = run_offboard_watch(
@@ -609,6 +615,7 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                             xq_raw,
                             exclude_symbols=today_syms,
                             top_n=OFFBOARD_DISPLAY_TOP,
+                            bias_out=_bias_box,
                         )
                     except EXTERNAL_FAILURES as e:
                         print(f"  [!] 飙升榜外段跳过: {type(e).__name__}: {e}")
@@ -633,6 +640,8 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                             xq_raw,
                             exclude_symbols=_seen,
                             top_n=ONBOARD_DISPLAY_TOP,
+                            # 复用榜外段本轮算出的 k（榜外段没跑则退回本段自算）
+                            bias=_bias_box[0] if _bias_box else _BIAS_UNSET_FROM_MAIN,
                         )
                     except EXTERNAL_FAILURES as e:
                         print(f"  [!] 榜内异动段跳过: {type(e).__name__}: {e}")

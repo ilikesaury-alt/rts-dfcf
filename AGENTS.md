@@ -246,7 +246,11 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
   （`test_offboard_subtitle_has_no_repeat_marker`）；`top_hits`/`gate_hits` 列保留作研究原料。
 - **B/C 段量比是「去偏值」**（2026-11-05）：上报量比 ÷ 全市场量能前置系数 k(m)
   （`scanner/volume_bias.py`）；**A 段仍是上报原值** ⇒ 两处尺度不同，别混用/别互相引用。
-  落库 `vol_ratio`=决策值、`vol_ratio_raw`=上报原值，分析侧读 `coalesce(前,后)`。
+  落库 `vol_ratio`=决策值、`vol_ratio_raw`=上报原值、`vol_bias_k`=当轮 k，分析侧读 `coalesce(前,后)`。
+- **`offboard_rejections` 复盘只用 `first_*` 列**（m026，2026-11-12）：`percent`/`vol_ratio`/
+  `main_pct`/`reason` 是**最新一轮覆盖**，与 `offboard_launch_log` 的**冻结列不同锚** ⇒
+  跨表 join 会拼出两个时刻的状态（实测 `SZ300063`：launch +2.05 vs rej −1.83）。
+  聚合按 `reason_code`（门 ID），别按 `reason`（含当轮数值，数万条碎片）。
 
 ## Architecture
 

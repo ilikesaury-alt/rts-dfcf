@@ -195,6 +195,7 @@ class TestMigrationCatalog:
             "m023_market_extra_flow_index",
             "m024_offboard_log_vol_ratio_raw",
             "m025_announcement_cache",
+            "m026_offboard_evidence_chain",
         ]
 
     def test_every_migration_has_desc(self):

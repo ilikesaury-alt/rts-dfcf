@@ -248,6 +248,10 @@ _OFFBOARD_LAUNCH_LOG_DDL = """
         gate_hits INTEGER DEFAULT 0,    -- 当日严格过门轮次（v20 新增；今日活跃标识= gate_hits/当日总轮数）
         next_day_pct REAL,              -- 次日收益（%，由 backfill 回填）
         updated TEXT DEFAULT '',
+        -- m026（2026-11-12）证据链补全
+        flow_sum REAL,                  -- N 日主力净额合计（元）；NULL = 未落库/不可判定
+        flow_judged INTEGER DEFAULT 0,  -- 1 = 该行当日**判定过**流门（区分「=0」与「不可判定」）
+        vol_bias_k REAL,                -- 当轮量比去偏系数 k(m)（= vol_ratio_raw/vol_ratio）
         PRIMARY KEY(date, symbol)
     )
 """
@@ -309,12 +313,23 @@ _OFFBOARD_REJECTIONS_DDL = """
         symbol TEXT NOT NULL,
         name TEXT NOT NULL DEFAULT '',
         reason TEXT NOT NULL,          -- 最新一轮的拒绝理由（门槛串 / 分层理由串）
-        percent REAL,                  -- 被拒时的快照涨幅（%）
-        vol_ratio REAL,                -- 被拒时的量比
-        main_pct REAL,                 -- 被拒时的主力净占比
+        percent REAL,                  -- 被拒时的快照涨幅（%）【最新一轮】
+        vol_ratio REAL,                -- 被拒时的量比【最新一轮】
+        main_pct REAL,                 -- 被拒时的主力净占比【最新一轮】
         hits INTEGER DEFAULT 1,        -- 当日累计命中轮次（同票多轮被拒只累加）
         first_time TEXT NOT NULL,
         updated TEXT NOT NULL,
+        -- m026（2026-11-12）：**首次被拒**时的冻结态，与 offboard_launch_log 的
+        -- 「首次写入即冻结」同锚（都锚在当日第一次被拒/产出的时刻）。
+        -- 上面三列是「最新一轮」覆盖值，与 launch_log 的冻结列**不同锚** ⇒
+        -- 跨表 join 会拼出两个不同时刻的状态。复盘一律用 first_* 这几列。
+        first_reason TEXT,             -- 首次被拒的理由（冻结）
+        first_percent REAL,            -- 首次被拒时的涨幅（冻结）
+        first_vol_ratio REAL,          -- 首次被拒时的量比（冻结）
+        first_main_pct REAL,           -- 首次被拒时的主力净占比（冻结）
+        gate TEXT,                     -- 拒绝发生阶段：'gate'（门槛）/ 'tier'（分层）
+        reason_code TEXT,              -- 结构化门 ID（'pct_band' / 'vol_ratio' / ...），可聚合
+        reason_value REAL,             -- 该门的实际读数（原 reason 串里的数值）
         PRIMARY KEY(date, symbol)
     )
 """
@@ -421,6 +436,96 @@ def _check_offboard_log_vol_ratio_raw(conn: sqlite3.Connection) -> bool:
     return (
         not _has_table(conn, "offboard_launch_log") or _has_column(conn, "offboard_launch_log", "vol_ratio_raw")
     ) and (not _has_table(conn, "onboard_anomaly_log") or _has_column(conn, "onboard_anomaly_log", "vol_ratio_raw"))
+
+
+def _up_offboard_evidence_chain(conn: sqlite3.Connection) -> None:
+    """m026（2026-11-12）：B 段证据链补全 —— 两表同锚 + 结构化 reason + 流门落库。
+
+    三条独立动机，同批发布是因为它们共同服务**同一件事**：让
+    `offboard_rejections` / `offboard_launch_log` 能被事后正确地复盘。
+
+    1. 🔴 **两表时间锚不一致**（最严重）
+       `offboard_launch_log` 的信号列是「**首次写入即冻结**」（m016 起），而
+       `offboard_rejections` 的 `percent`/`vol_ratio`/`main_pct` 是「**最新一轮覆盖**」
+       （m017 起，`dal.save_offboard_rejections` 的 ON CONFLICT）。
+       单看每张表都自洽，**跨表 join 就拼错**：实测 2026-11-12 `SZ300063` 在
+       launch_log 冻结 percent=+2.05（当日曾以「上涨异动」身份被推出），在
+       rejections 却是 −1.83、理由「当前非上涨状态」—— 同一只票两个相反结论。
+       而这张表存在的唯一理由是让幸存者偏差可被证伪 ⇒ 必须能对齐到同一时刻。
+       修法：补 `first_*` 四列，**首次被拒即冻结**（与 launch_log 同锚）。
+
+    2. `reason` 串把**当轮具体数值**编了进去（「量比不足(0.90<1.5)」）⇒ 同一道
+       逻辑门产生数万条互不相同的 reason。实测生产库 44706 条里，按 reason 精确
+       GROUP BY 得到的主要「门」其实是 0.90/0.82/0.89 这类数值碎片 ⇒
+       「哪道门杀得最多」这个最基本的问题答不出来。
+       修法：补 `reason_code`（门 ID，可聚合）+ `reason_value`（读数）+ `gate`（阶段）。
+       `reason` 串**保留原样**（人读 / 旧分析脚本兼容）。
+
+    3. N 日主力累计流门（`OFFBOARD_FLOW_WINDOW`）的判定输入 `flow_sum` 每轮实时算、
+       **不落库** ⇒ 事后答不出「当日过门的票资金是正是负」，只能拿今天的库反推
+       过去某天的窗口（成员日快照已被覆盖，近似不等价）。
+       且阈值 `OFFBOARD_FLOW_MIN_SUM = 0.0` 让「恰好 0（放行）」与「不可判定
+       （也放行）」在库里都是 NULL/0 ⇒ 语义糊掉。
+       修法：`flow_sum` + `flow_judged`（1 = 当日判定过，与「不可判定」区分）。
+
+    另补 `vol_bias_k`：量比去偏系数 k(m) 本身落库（= vol_ratio_raw/vol_ratio）。
+    此前只能反算，反算在 vol_ratio_raw 为 NULL 的旧行上不可用。
+
+    ⚠ 全部用 `ADD COLUMN`（本仓铁律：发布后不得改名/删列，只能追加）。
+    ⚠ 每个子步骤各自判幂等：up 分步执行、账本不写 ⇒ 下轮重跑整个 up，
+    此时无条件 ALTER 会撞 duplicate column（与 m020/m024 同款纪律）。
+    """
+    if _has_table(conn, "offboard_rejections"):
+        for col, typ in (
+            ("first_reason", "TEXT"),
+            ("first_percent", "REAL"),
+            ("first_vol_ratio", "REAL"),
+            ("first_main_pct", "REAL"),
+            ("gate", "TEXT"),
+            ("reason_code", "TEXT"),
+            ("reason_value", "REAL"),
+        ):
+            if not _has_column(conn, "offboard_rejections", col):
+                conn.execute(f"ALTER TABLE offboard_rejections ADD COLUMN {col} {typ}")
+        # 存量行回填：老行的「最新一轮」就是**唯一**已知态 ⇒ 用它当首次态。
+        # 这不是等价恢复（真实首次态已丢），但比留 NULL 强：至少量纲与锚点一致，
+        # 且 `first_reason` 非空可作「已回填」标记，避免与真正的新行混淆。
+        conn.execute(
+            "UPDATE offboard_rejections SET "
+            "first_reason = COALESCE(first_reason, reason), "
+            "first_percent = COALESCE(first_percent, percent), "
+            "first_vol_ratio = COALESCE(first_vol_ratio, vol_ratio), "
+            "first_main_pct = COALESCE(first_main_pct, main_pct) "
+            "WHERE first_reason IS NULL"
+        )
+
+    if _has_table(conn, "offboard_launch_log"):
+        for col, typ in (
+            ("flow_sum", "REAL"),
+            ("flow_judged", "INTEGER DEFAULT 0"),
+            ("vol_bias_k", "REAL"),
+        ):
+            if not _has_column(conn, "offboard_launch_log", col):
+                conn.execute(f"ALTER TABLE offboard_launch_log ADD COLUMN {col} {typ}")
+        # vol_bias_k 回填：能从 vol_ratio_raw/vol_ratio 反算的旧行直接补上
+        # （2026-11-06 起的行都有 raw）。算不出的留 NULL = 「未知」，不猜 1.0。
+        conn.execute(
+            "UPDATE offboard_launch_log SET vol_bias_k = vol_ratio_raw / vol_ratio "
+            "WHERE vol_bias_k IS NULL AND vol_ratio_raw IS NOT NULL AND vol_ratio > 0"
+        )
+
+
+def _check_offboard_evidence_chain(conn: sqlite3.Connection) -> bool:
+    # 语义 = 「已满足」：表不存在（全新库，DDL 已含这些列）或列全在 → 满足。
+    if _has_table(conn, "offboard_rejections"):
+        for col in ("first_reason", "reason_code", "gate"):
+            if not _has_column(conn, "offboard_rejections", col):
+                return False
+    if _has_table(conn, "offboard_launch_log"):
+        for col in ("flow_sum", "flow_judged", "vol_bias_k"):
+            if not _has_column(conn, "offboard_launch_log", col):
+                return False
+    return True
 
 
 def _up_offboard_active_metrics(conn: sqlite3.Connection) -> None:
@@ -753,6 +858,12 @@ MIGRATIONS: list[Migration] = [
         desc="公告缓存 announcement_cache + 同步水位 ann_sync_waterline（离线交叉验证单一真相；替掉冻结式 12MB JSON）",
         check=_check_announcement_cache,
         up=_up_announcement_cache,
+    ),
+    Migration(
+        id="m026_offboard_evidence_chain",
+        desc="B 段证据链：rejections 首次态冻结列（与 launch_log 同锚）+ reason 结构化 + launch_log 流门/k 落库",
+        check=_check_offboard_evidence_chain,
+        up=_up_offboard_evidence_chain,
     ),
 ]
 

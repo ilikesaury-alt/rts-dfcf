@@ -115,13 +115,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date as _date
 from datetime import datetime
 from datetime import timedelta as _td
-from typing import Collection, Sequence
+from typing import Any, Collection, Sequence
 
 from scanner.concept import attach_display_boards
 from scanner.config import (
@@ -168,6 +169,7 @@ from scanner.trading_session import is_trading_day, trading_minutes_elapsed
 from scanner.trend_beauty import DAILY_BEAUTY_MIN_BARS
 from scanner.utils import EXTERNAL_FAILURES, accum_5d, is_st, to_float
 from scanner.validator import mo_divergence
+from scanner.volume_bias import _UNSET as _BIAS_UNSET  # noqa: PLC2701 - 哨兵必须与 volume_bias 同一个对象
 from scanner.volume_bias import biased_snapshot
 
 logger = logging.getLogger(__name__)
@@ -328,6 +330,79 @@ def offboard_gate(c: OffboardCandidate, *, retain: bool = False) -> str | None:
     if c.float_market_capital < OFFBOARD_MIN_FLOAT_CAP:
         return f"流通市值过小({c.float_market_capital / 1e8:.1f}亿<{OFFBOARD_MIN_FLOAT_CAP / 1e8:.0f}亿)"
     return _flow_gate_reason(c)
+
+
+# ── 拒绝理由的结构化（2026-11-12，m026）─────────────────────────────────────
+#
+# 为什么需要：`reason` 串把**当轮具体数值**编了进去（「量比不足(0.90<1.5)」），
+# 于是同一道逻辑门产生数万条互不相同的串。实测生产库 44706 条 `offboard_rejections`
+# 按 reason 精确 GROUP BY，主要「门」其实是 0.90/0.82/0.89… 这些数值碎片 ⇒
+# 「哪道门杀得最多」这个最基本的问题答不出来。
+#
+# 修法：不改造 `offboard_gate` / `classify_tier` 的返回值（那两个函数被单测逐条
+# 断言理由子串，改返回类型会连带改一大片），而是在**落库边界**把串解析成
+# `(code, value)`。代价是解析依赖前缀契约 —— 由 `test_reason_codes_cover_all_branches`
+# 守住：任何新增的 return 串若不匹配任何规则，`code` 会落成 `'unknown'`，测试会红。
+#
+# `reason` 串本身**原样保留**（人读 + 旧分析脚本兼容）。
+
+#: (正则, code, 读数分组号 | None)。顺序敏感：先匹配到的赢。
+#: 用正则而不是 `startswith`：部分理由串的**数值在开头**（`10日主力累计-500万<0万`、
+#: `5日累计+26.00%不在[0,15)`），纯前缀匹配会漏。
+_REASON_RULES: tuple[tuple[str, str, int | None], ...] = (
+    # ── 门槛段（offboard_gate / common_hard_gate）──
+    (r"^ST/退市风险股", "st", None),
+    (r"^非创业板个股", "not_gem", None),
+    (r"^非正常交易状态", "bad_status", None),
+    (r"^无有效报价", "no_quote", None),
+    (r"^无成交量", "no_volume", None),
+    (r"^价格过高\(([-+]?\d+(?:\.\d+)?)", "price_too_high", 1),
+    (r"^市值过大\(([-+]?\d+(?:\.\d+)?)", "market_cap_too_big", 1),
+    (r"^主力净流出\(([-+]?\d+(?:\.\d+)?)", "fund_outflow", 1),
+    (r"^当前非上涨状态", "not_rising", None),
+    (r"^涨幅过高\(([-+]?\d+(?:\.\d+)?)", "pct_too_high", 1),
+    (r"^量比不足\(([-+]?\d+(?:\.\d+)?)", "vol_ratio_low", 1),
+    (r"^成交额不足\(([-+]?\d+(?:\.\d+)?)", "amount_low", 1),
+    (r"^流通市值过小\(([-+]?\d+(?:\.\d+)?)", "float_cap_low", 1),
+    (r"^\d+日主力累计([-+]?\d+(?:\.\d+)?)", "flow_sum_negative", 1),
+    # ── 分层段（classify_tier）──
+    (r"^无K线数据", "no_kline", None),
+    (r"^K线未补取", "kline_quota", None),
+    (r"^K线不足6根", "kline_short_accum", None),
+    (r"^K线不足20根", "kline_short_ma", None),
+    (r"^5日累计([-+]?\d+(?:\.\d+)?)", "accum_5d_out", 1),
+    (r"^MA空头排列", "ma_bearish", None),
+    (r"^主力净占比([-+]?\d+(?:\.\d+)?)", "main_pct_low", 1),
+    (r"^顶背离", "bear_divergence", None),
+    # ⚠ 实际串形如「T2在本段不启用(今日5.00%≥3.5)」—— 数值前有「今日」二字，
+    # 故捕获组要跳过它（不能假设 `\(` 紧跟数字）。
+    (r"^T2在本段不启用\([^()]*?([-+]?\d+(?:\.\d+)?)", "tier_disabled_t2", 1),
+    (r"^T1在本段不启用\([^()]*?([-+]?\d+(?:\.\d+)?)", "tier_disabled_t1", 1),
+    (r"^今日涨幅([-+]?\d+(?:\.\d+)?)", "pct_band_miss", 1),
+)
+
+_REASON_RULES_COMPILED = tuple((re.compile(pat), code, grp) for pat, code, grp in _REASON_RULES)
+
+
+def reason_code(reason: str) -> tuple[str, float | None]:
+    """拒绝理由串 → `(门 ID, 该门读数)`。`code='unknown'` = 未覆盖的新分支（应补规则）。
+
+    读数取自该门规则里**显式声明的捕获组**（不是「括号里第一个数」—— 部分串的
+    数值在开头，如 `10日主力累计-500万<0万`、`5日累计+26.00%不在[0,15)`）。
+    解析不出来时 `value=None`（code 仍然正确，聚合不受影响）。
+    """
+    text = str(reason or "")
+    for pat, code, grp in _REASON_RULES_COMPILED:
+        m = pat.match(text)
+        if m is None:
+            continue
+        if grp is None:
+            return code, None
+        try:
+            return code, float(m.group(grp))
+        except (TypeError, ValueError):  # pragma: no cover - 正则已保证可解析
+            return code, None
+    return "unknown", None
 
 
 # ── 留存（dwell，2026-10-09）────────────────────────────────────────────────
@@ -1079,13 +1154,29 @@ def persist_round(
             conn.executemany(
                 f"""INSERT INTO {_LOG_TABLE}
                 (date, symbol, name, tier, percent, accum_5d, vol_ratio, vol_ratio_raw, main_pct,
-                 amount, float_cap, price, first_time, last_hit_time, top_hits, gate_hits, updated)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 amount, float_cap, price, first_time, last_hit_time, top_hits, gate_hits, updated,
+                 flow_sum, flow_judged, vol_bias_k)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(date, symbol) DO UPDATE SET
                   last_hit_time=excluded.last_hit_time,
                   top_hits=top_hits+excluded.top_hits,
                   gate_hits=gate_hits+1,
-                  updated=excluded.updated""",  # noqa: S608 - 常量表名
+                  updated=excluded.updated,
+                  -- 🔴 m026：这三列是**判定读数**（不是信号身份），故**每轮刷新**。
+                  -- 若跟着信号列一起冻结 ⇒ 当天已存在的票永远拿不到 flow_sum
+                  -- （新列只在首次写入时才有值，而那正是「信号刚被推出」那一刻 ——
+                  --   彼时 flow_sum 已算出来，但若当天该票已在库，冻结就把它挡在门外）。
+                  -- 与信号列的区别：信号列回答「它以什么身份被推出」（要冻结），
+                  -- 这三列回答「本轮判它时用了什么数」（要最新）。
+                  flow_sum=excluded.flow_sum,
+                  flow_judged=excluded.flow_judged,
+                  -- ⚠ `vol_bias_k` 用 COALESCE 而非直接覆盖：`vol_ratio`/`vol_ratio_raw`
+                  -- 是**冻结**列（首次写入时的值），而 k 是从这对值算出来的。
+                  -- 若本轮候选没带 raw（该票本轮未走去偏覆盖），excluded 里是 NULL ⇒
+                  -- 直接覆盖会把迁移回填的历史 k 冲成 NULL，而 raw/ratio 还在
+                  -- （实测 45 → 32 行丢 k）。COALESCE(excluded, 旧值) 保住它。
+                  -- ⚠ 不能反过来写 COALESCE(旧值, excluded) —— 那样本轮的新 k 永远写不进去。
+                  vol_bias_k=COALESCE(excluded.vol_bias_k, vol_bias_k)""",  # noqa: S608 - 常量表名
                 [
                     (
                         day,
@@ -1107,6 +1198,15 @@ def persist_round(
                         1 if i < display_top else 0,
                         1,
                         now,
+                        # N 日主力净额合计（m026）：None = 不可判定（历史不足 / 查询失败）
+                        # ⇒ 落 NULL，且 flow_judged=0 明确标记「没判定过」。
+                        # ⚠ 不能写 0 —— 0 是「恰好持平」的合法值，与「不可判定」语义相反。
+                        c.flow_sum,
+                        0 if c.flow_sum is None else 1,
+                        # 量比去偏系数 k(m)（m026）：本轮 raw/ratio 即 k。未去偏时 None。
+                        round(c.volume_ratio_raw / c.volume_ratio, 4)
+                        if c.volume_ratio_raw > 0 and c.volume_ratio > 0
+                        else None,
                     )
                     for i, c in enumerate(rows)
                 ],
@@ -1460,6 +1560,8 @@ def run_offboard_watch(
     klines: dict[str, list] | None = None,
     snapshot: dict[str, dict] | None = None,
     bias_conn: sqlite3.Connection | None = None,
+    bias: Any = _BIAS_UNSET,
+    bias_out: list | None = None,
 ) -> list[OffboardCandidate]:
     """跑一轮 B 段筛选，返回待展示的前 `top_n` 行。
 
@@ -1522,7 +1624,18 @@ def run_offboard_watch(
     # ⚠ 必须在**实时资金流覆盖之后**：覆盖刷进来的是新鲜的上报原值，去偏要在它上面做。
     # ⚠ 必须在**粗筛之前**：粗筛按量比降序取头部（去偏是全市场同一个标量，不改相对
     # 序，但口径要一致，免得日志/展示/门三处读到不同的数）。
-    bias = biased_snapshot(bias_conn or conn, snapshot)
+    # 只有调用方**显式**给了 k 才走「复用」路径；未传时保持旧签名调用
+    # （`biased_snapshot(conn, snapshot)`）—— 这既让 monkeypatch 的旧桩继续可用，
+    # 也保证 CLI / 单测路径的行为逐字节不变。
+    bias = (
+        biased_snapshot(bias_conn or conn, snapshot)
+        if bias is _BIAS_UNSET
+        else biased_snapshot(bias_conn or conn, snapshot, bias=bias)
+    )
+    # 把本轮实际用的 k 交回调用方（主循环据此让榜内异动段复用**同一个**尺度）。
+    # 用出参而不是返回值：本函数的返回值是「待展示的行」，加一个元组会打断所有调用方。
+    if bias_out is not None:
+        bias_out.append(bias)
     # 不可判定（本地历史不足 / 样本太少）⇒ 读数仍虚高 ⇒ 退回旧口径的 15 分钟窗口。
     if bias is None and unadjusted_silence_active():
         return []
@@ -1686,28 +1799,44 @@ def _rejection_rows(
     snapshot: dict[str, dict],
     names: dict[str, str],
 ) -> list[tuple]:
-    """两段拒绝明细 → `offboard_rejections` 行 `(symbol, name, reason, %, 量比, 主占)`。
+    """两段拒绝明细 → `offboard_rejections` 行。
+
+    每条 10 个字段：
+    `(symbol, name, reason, percent, vol_ratio, main_pct, gate, reason_code, reason_value, ...)`
+    —— 末两项由 `dal.save_offboard_rejections` 补齐时间戳，见该函数 docstring。
 
     gate 段的候选对象在 `build_candidates` 内部就地丢弃（对外契约只有 (symbol, reason)），
     故 percent / vol_ratio / main_pct 回**快照**取 —— 这三列正是「事后重放阈值」的输入
     （2026-09-22 那次杠杆测量就得手工重建这一步，跑完即失）。快照缺行时留 None，
     不阻断留痕：留痕存在的意义就是**下次不必再手工重建**。
 
+    `gate`（2026-11-12，m026）：区分「门槛段拒」与「分层段拒」—— 两者语义完全不同
+    （前者是「不该进候选集」，后者是「进了候选集但信号不成立」），混在一起统计会
+    把「信号条件太严」误读成「风险门太严」。
+
+    `reason_code` / `reason_value`：结构化门 ID 与读数（见 `reason_code` docstring）。
+    `reason` 串原样保留。
+
     `name` 优先用 `names`（`get_symbol_names` 的回退链），快照自 2026-09-18 起也带 f14。
     """
     rows: list[tuple] = []
-    for sym, reason in (*gate_rejects, *tier_rejects):
-        p = snapshot.get(sym) or {}
-        rows.append(
-            (
-                sym,
-                names.get(sym) or p.get("name") or "",
-                reason,
-                to_float(p.get("percent"), None),
-                to_float(p.get("vol_ratio"), None),
-                to_float(p.get("main_pct"), None),
+    for gate, group in (("gate", gate_rejects), ("tier", tier_rejects)):
+        for sym, reason in group:
+            p = snapshot.get(sym) or {}
+            code, value = reason_code(reason)
+            rows.append(
+                (
+                    sym,
+                    names.get(sym) or p.get("name") or "",
+                    reason,
+                    to_float(p.get("percent"), None),
+                    to_float(p.get("vol_ratio"), None),
+                    to_float(p.get("main_pct"), None),
+                    gate,
+                    code,
+                    value,
+                )
             )
-        )
     return rows
 
 
@@ -1939,6 +2068,36 @@ def _row_json(c: OffboardCandidate) -> dict:
     }
 
 
+#: CLI 内存库的只读表 DDL（2026-11-12，从生产库 `scanner.db` 导出）。
+#: ⚠ 手写会与真实 schema 漂移（曾把 `concept_cache.concepts` 写成 `concept`、
+#: `offboard_print_snapshot.time` 漏掉）⇒ 改 schema 后需重新导出。
+_CLI_READONLY_DDL: tuple[str, ...] = (
+    "CREATE TABLE appearances ("
+    " id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, name TEXT NOT NULL, "
+    " date TEXT NOT NULL, rank INTEGER, percent REAL, value REAL, next_day_pct REAL)",
+    "CREATE TABLE recommendations ("
+    " id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, time TEXT NOT NULL, "
+    " symbol TEXT NOT NULL, name TEXT, category TEXT, score INTEGER, percent REAL, "
+    " trend TEXT, next_day_pct REAL, fwd_3d REAL, fwd_5d REAL, score_breakdown TEXT, "
+    " source TEXT, cum_2d REAL, cum_3d REAL, concept TEXT, accumulated_pct REAL, "
+    " excluded INTEGER, sector_capped INTEGER, stale_kline INTEGER, excluded_reason TEXT, "
+    " nd10_pct REAL)",
+    "CREATE TABLE concept_cache ( symbol TEXT PRIMARY KEY, concepts TEXT NOT NULL, updated TEXT NOT NULL)",
+    # ⚠ 主键必须带 `(date, print_seq, symbol)` —— 漏了它，`save_offboard_print_snapshot`
+    # 的 ON CONFLICT 会报 "does not match any PRIMARY KEY or UNIQUE constraint"。
+    "CREATE TABLE offboard_print_snapshot ("
+    " date TEXT NOT NULL, time TEXT NOT NULL, print_seq INTEGER NOT NULL, symbol TEXT NOT NULL, "
+    " name TEXT, tier TEXT, percent REAL, accum_5d REAL, vol_ratio REAL, main_pct REAL, "
+    " amount REAL, float_cap REAL, price REAL, sector TEXT, turnover_rate REAL, "
+    " ff_pct REAL, beauty TEXT, reasons TEXT, rank_in_print INTEGER NOT NULL DEFAULT 0, "
+    " updated_at TEXT NOT NULL, PRIMARY KEY (date, print_seq, symbol))",
+    "CREATE TABLE market_extra_cache ("
+    " symbol TEXT NOT NULL, date TEXT NOT NULL, data_type TEXT NOT NULL, "
+    " payload_json TEXT NOT NULL, updated TEXT NOT NULL, "
+    " PRIMARY KEY(symbol, data_type, date))",
+)
+
+
 def _cli_conn():
     """CLI 专用内存库：DDL 与生产迁移同一份（不复制 SQL），但不碰 scanner.db。"""
     import sqlite3
@@ -1958,6 +2117,21 @@ def _cli_conn():
     # 吞掉，连同一块里**已执行**的 launch_log 插入一起永不提交（CLI 路径零落库）。
     conn.execute(_OFFBOARD_ROUND_LOG_DDL)
     conn.execute(_OFFBOARD_REJECTIONS_DDL)
+    # ⚠ 2026-11-12：补齐 CLI 路径会**读**的表 —— 缺它们时每次调用都刷一条
+    # "no such table" 警告（fail-open 吞掉，功能不受影响，但噪音掩盖真告警）。
+    # 均为**只读回退链**或旁路表，空表 = 「查不到」= 设计中的降级路径：
+    #   · appearances              → 名称回退（快照自带 f14，实际很少用到）
+    #   · recommendations          → 今日已推荐票（CLI 不需要真实值）
+    #   · concept_cache            → 板块列缓存（miss 时回落名称关键词）
+    #   · offboard_print_snapshot  → 终端打印快照（CLI 只看 stdout，不读它）
+    #   · market_extra_cache       → 流门历史查询（CLI 传内存库 ⇒ 查不到 ⇒
+    #                                「不可判定」fail-open 放行；生产路径用的是真库）
+    #
+    # DDL **从生产库导出**而非手写 —— 手写过一次，列名与真实 schema 不符
+    # （concept_cache 实际是 `concepts` 不是 `concept`，offboard_print_snapshot
+    # 实际有 `time` 列），结果照样刷警告。schema 变了这里要重新导出。
+    for _ddl in _CLI_READONLY_DDL:
+        conn.execute(_ddl)
     conn.commit()
     return conn
 

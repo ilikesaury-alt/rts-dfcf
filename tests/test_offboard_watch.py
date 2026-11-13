@@ -1355,9 +1355,7 @@ class TestVolumeRatioBias:
         assert rows[0].volume_ratio == pytest.approx(2.0)  # 8.0 / 4.0
         assert rows[0].volume_ratio_raw == pytest.approx(8.0)
         # 落库：vol_ratio = 决策值（去偏），vol_ratio_raw = 上报原值
-        row = db.execute(
-            "SELECT vol_ratio, vol_ratio_raw FROM offboard_launch_log WHERE symbol='SZ300101'"
-        ).fetchone()
+        row = db.execute("SELECT vol_ratio, vol_ratio_raw FROM offboard_launch_log WHERE symbol='SZ300101'").fetchone()
         assert row[0] == pytest.approx(2.0)
         assert row[1] == pytest.approx(8.0)
 
@@ -1379,9 +1377,7 @@ class TestVolumeRatioBias:
         snapshot = {"SZ300101": _payload(vol_ratio=2.0, percent=2.5, main_pct=2.0)}
         klines = {"SZ300101": _bars(_UP_SERIES, day)}
         run_offboard_watch(None, db, [], top_n=5, klines=klines, snapshot=snapshot)
-        row = db.execute(
-            "SELECT vol_ratio, vol_ratio_raw FROM offboard_launch_log WHERE symbol='SZ300101'"
-        ).fetchone()
+        row = db.execute("SELECT vol_ratio, vol_ratio_raw FROM offboard_launch_log WHERE symbol='SZ300101'").fetchone()
         assert row[0] == pytest.approx(2.0)
         assert row[1] is None
 
@@ -2516,3 +2512,259 @@ def test_repair_next_day_labels_is_idempotent_and_reports_skips(db):
         "SELECT next_day_pct FROM offboard_launch_log WHERE date=? AND symbol=?", (d0, no_cache)
     ).fetchone()[0]
     assert untouched == pytest.approx(1.5), "验不了的行必须原样保留，不猜"
+
+
+# ── m026（2026-11-12）：证据链补全 ──────────────────────────────────────────
+
+
+def test_reason_codes_cover_every_gate_branch():
+    """`reason_code` 必须覆盖 `offboard_gate` / `classify_tier` 的**每一个**分支。
+
+    为什么用「真跑门」而不是手写理由串：手写的字面量会与实现漂移，而这里要守的
+    恰恰是「实现新增了一个 return 分支、但忘了给 reason_code 补规则」——
+    那种情况下 `reason_code` 会返回 'unknown'，本测试即红。
+
+    ⚠ 这是 m026 的核心守卫：`offboard_rejections.reason` 串把当轮数值编了进去
+    （「量比不足(0.90<1.5)」），若不结构化，按门聚合统计根本做不出来。
+    """
+    from scanner.offboard_watch import reason_code
+
+    today = now_beijing().date().isoformat()
+    bad: list[str] = []
+
+    # 产出成功的理由串（不是拒绝）—— 不进 rejections 表，规则表也不该收它们。
+    _SUCCESS_PREFIXES = ("量先动·价未动", "启动首日")
+
+    def _check(reason: str | None) -> None:
+        if reason is None:
+            return
+        if reason.startswith(_SUCCESS_PREFIXES):
+            return
+        code, _value = reason_code(reason)
+        if code == "unknown":
+            bad.append(reason)
+
+    # ── 门槛段：逐个把候选推到各道门上（与 test_gate_covers_every_universal_gate_keyword 同款样本）──
+    for cand in (
+        _cand(name="*ST自检"),
+        _cand(code="600519", exchange="SH"),
+        _cand(status=0),
+        _cand(current=0.0),
+        _cand(volume=0.0),
+        _cand(current=260.0),
+        _cand(market_capital=5e10),
+        _cand(main_pct=-20.0),
+        _cand(percent=0.0),
+        _cand(percent=9.0),
+        _cand(volume_ratio=1.0),
+        _cand(amount=1e6),
+        _cand(float_market_capital=1e8),
+        _cand(flow_sum=-5e7),
+    ):
+        _check(offboard_gate(cand))
+
+    # ── 分层段 ──
+    up = _bars(_UP_SERIES, today)  # 多头样本：能过 MA 门
+    _check(classify_tier(_cand(percent=2.5), None, today)[1])  # 无K线数据
+    _check(classify_tier(_cand(percent=2.5), _bars(_SHORT_SERIES, today), today)[1])  # K线不足20根
+    _check(classify_tier(_cand(percent=2.5), _bars(_TINY_SERIES, today), today)[1])  # K线不足6根
+    _check(classify_tier(_cand(percent=2.5), _bars(_ACCUM_HIGH_SERIES, today), today)[1])  # 5日累计
+    _check(classify_tier(_cand(percent=2.5, main_pct=-1.0), up, today)[1])  # 主力净占比
+    _check(classify_tier(_cand(percent=2.5), up, today, allowed_tiers=(T2,))[1])  # T1 关闭
+    _check(classify_tier(_cand(percent=5.0), up, today, allowed_tiers=(T1,))[1])  # T2 关闭
+    _check(classify_tier(_cand(percent=0.5), up, today)[1])  # 涨幅带外
+    # MA 空头 + 顶背离：桩掉判定函数（样本序列造不准这两个）
+    import scanner.offboard_watch as ow
+
+    orig_ma = ow._ma_not_bearish
+    ow._ma_not_bearish = lambda kline: False
+    try:
+        _check(classify_tier(_cand(percent=2.5), up, today)[1])  # MA空头排列
+    finally:
+        ow._ma_not_bearish = orig_ma
+
+    assert bad == [], f"这些理由串没有对应的 reason_code 规则（新增分支须补 _REASON_RULES）：{bad}"
+
+
+def test_reason_code_extracts_reading_from_each_shape():
+    """读数抽取必须覆盖两种串形状：数值在括号里、数值在开头。"""
+    from scanner.offboard_watch import reason_code
+
+    assert reason_code("量比不足(0.90<1.5)") == ("vol_ratio_low", 0.9)
+    assert reason_code("涨幅过高(8.20%>7%)") == ("pct_too_high", 8.2)
+    assert reason_code("主力净流出(-10.4%)") == ("fund_outflow", -10.4)
+    # 数值在开头（不是括号里）—— 纯前缀匹配会漏这两类
+    assert reason_code("10日主力累计-500万<0万") == ("flow_sum_negative", -500.0)
+    assert reason_code("5日累计+26.00%不在[0,15)") == ("accum_5d_out", 26.0)
+    # 无数值的门
+    assert reason_code("当前非上涨状态") == ("not_rising", None)
+    assert reason_code("MA空头排列(MA5<=MA10)") == ("ma_bearish", None)
+    # 未覆盖 → unknown（而不是抛）
+    assert reason_code("某个未来新增的理由") == ("unknown", None)
+    assert reason_code("") == ("unknown", None)
+
+
+def test_rejections_first_columns_freeze_at_first_rejection(db):
+    """🔴 m026 核心：`first_*` 四列**首次被拒即冻结**，与 launch_log 同锚。
+
+    回归的是本次审查发现的 P0：launch_log 冻结、rejections 覆盖 ⇒ 跨表 join 会
+    拼出两个不同时刻的状态（实测 11-12 `SZ300063`：launch +2.05 vs rej −1.83）。
+    """
+    from scanner.db.dal import save_offboard_rejections
+
+    day = now_beijing().date().isoformat()
+    sym = "SZ300101"
+    # 第一轮：量比不足，涨幅 +2.50
+    save_offboard_rejections(
+        db, [(sym, "自检样本", "量比不足(1.00<1.5)", 2.5, 1.0, 2.0, "gate", "vol_ratio_low", 1.0)], day
+    )
+    # 第二轮：盘中翻绿，被「当前非上涨状态」拒
+    save_offboard_rejections(db, [(sym, "自检样本", "当前非上涨状态", -1.8, 0.8, 1.0, "gate", "not_rising", None)], day)
+
+    reason, percent, first_reason, first_pct, first_vr, first_mp, gate, code, hits = db.execute(
+        "SELECT reason, percent, first_reason, first_percent, first_vol_ratio, first_main_pct, "
+        "gate, reason_code, hits FROM offboard_rejections WHERE date=? AND symbol=?",
+        (day, sym),
+    ).fetchone()
+
+    # 最新一轮覆盖（保持原语义）
+    assert reason == "当前非上涨状态"
+    assert percent == pytest.approx(-1.8)
+    # 首次态冻结（m026 新增）
+    assert first_reason == "量比不足(1.00<1.5)", "首次被拒理由必须冻结，不得被后续轮次改写"
+    assert first_pct == pytest.approx(2.5), "首次被拒时的涨幅必须冻结"
+    assert first_vr == pytest.approx(1.0)
+    assert first_mp == pytest.approx(2.0)
+    assert hits == 2
+    assert gate == "gate"
+    assert code == "not_rising"
+
+
+def test_rejections_first_anchor_matches_launch_log_semantics(db):
+    """首次态与 `offboard_launch_log` 的冻结列**同一时间锚**：都记当日第一次。
+
+    这是 P0 的验收标准 —— 两表能 join 到同一时刻。用一个「先产出、后被拒」的票
+    走完整链路验证：launch 里冻的是产出时的 percent，rejections 里冻的是首次被拒
+    时的 percent，两者都是「当日第一次」而非「最后一次」。
+    """
+    from scanner.db.dal import save_offboard_rejections
+
+    day = now_beijing().date().isoformat()
+    sym = "SZ300102"
+    # 当日第一次被推出（+2.50）
+    persist_round(db, [_cand(symbol=sym, percent=2.5, volume_ratio=2.0)])
+    # 之后回落被拒两轮
+    save_offboard_rejections(
+        db, [(sym, "自检样本", "量比不足(1.20<1.5)", 2.5, 1.2, 1.0, "gate", "vol_ratio_low", 1.2)], day
+    )
+    save_offboard_rejections(db, [(sym, "自检样本", "当前非上涨状态", -0.5, 0.9, 0.5, "gate", "not_rising", None)], day)
+
+    launch_pct = db.execute("SELECT percent FROM offboard_launch_log WHERE date=? AND symbol=?", (day, sym)).fetchone()[
+        0
+    ]
+    rej_first_pct = db.execute(
+        "SELECT first_percent FROM offboard_rejections WHERE date=? AND symbol=?", (day, sym)
+    ).fetchone()[0]
+    assert launch_pct == pytest.approx(2.5), "launch_log 冻结在产出时刻"
+    assert rej_first_pct == pytest.approx(2.5), "rejections 首次态冻结在首次被拒时刻"
+    # 两者都是 +2.50 ⇒ 可对齐（而最新态是 -0.5，若用它 join 就会拼错）
+
+
+def test_persist_round_records_flow_sum_and_bias_k(db):
+    """m026：流门读数与去偏系数 k 必须落库（此前都不落，事后无法核验）。"""
+    c = _cand(symbol="SZ300103", percent=2.5, volume_ratio=2.0)
+    c.flow_sum = 1.234e7
+    c.volume_ratio_raw = 4.0  # k = 4.0 / 2.0 = 2.0
+    persist_round(db, [c])
+
+    flow_sum, judged, k = db.execute(
+        "SELECT flow_sum, flow_judged, vol_bias_k FROM offboard_launch_log WHERE symbol=?",
+        ("SZ300103",),
+    ).fetchone()
+    assert flow_sum == pytest.approx(1.234e7)
+    assert judged == 1
+    assert k == pytest.approx(2.0)
+
+
+def test_persist_round_distinguishes_undecidable_flow_from_zero(db):
+    """🔴 `flow_sum=None`（不可判定）与 `flow_sum=0.0`（恰好持平）**必须可区分**。
+
+    阈值 `OFFBOARD_FLOW_MIN_SUM = 0.0` 让两者在门上都放行，但语义相反：
+    一个是「没历史、不判负」，一个是「资金恰好不流入不流出」。混成 NULL/0 会让
+    事后复盘把「不可判定」当成「持平」。
+    """
+    undecidable = _cand(symbol="SZ300104", percent=2.5)
+    undecidable.flow_sum = None
+    zero = _cand(symbol="SZ300105", percent=2.5)
+    zero.flow_sum = 0.0
+    persist_round(db, [undecidable, zero])
+
+    rows = {
+        sym: (fs, fj)
+        for sym, fs, fj in db.execute(
+            "SELECT symbol, flow_sum, flow_judged FROM offboard_launch_log WHERE symbol IN ('SZ300104','SZ300105')"
+        )
+    }
+    assert rows["SZ300104"] == (None, 0), "不可判定：flow_sum 为 NULL 且 flow_judged=0"
+    assert rows["SZ300105"] == (0.0, 1), "恰好持平：flow_sum=0 且 flow_judged=1"
+
+
+def test_persist_round_refreshes_judgement_columns_each_round(db):
+    """🔴 m026：`flow_sum`/`flow_judged`/`vol_bias_k` 必须**每轮刷新**，不能跟信号列一起冻结。
+
+    回归一个真实缺陷：三列若只在首次写入时才有值，则当天已存在的票永远拿不到
+    `flow_sum`（它的值在「信号刚被推出」那一刻就冻结在库里了，后续轮次写不进去）
+    ⇒ 新列对当天存量票完全失效。
+
+    与信号列的区别：`tier`/`percent` 回答「它以什么身份被推出」（要冻结）；
+    这三列回答「本轮判它时用了什么数」（要最新）。
+    """
+    c1 = _cand(symbol="SZ300201", percent=2.5, volume_ratio=2.0)
+    c1.flow_sum = 5.0e7
+    c1.volume_ratio_raw = 4.0
+    persist_round(db, [c1])
+
+    # 第二轮：同一只票，流门读数变了（窗口内资金撤出）
+    c2 = _cand(symbol="SZ300201", percent=2.5, volume_ratio=2.0)
+    c2.flow_sum = -1.0e7
+    c2.volume_ratio_raw = 3.0
+    persist_round(db, [c2])
+
+    flow_sum, judged, k = db.execute(
+        "SELECT flow_sum, flow_judged, vol_bias_k FROM offboard_launch_log WHERE symbol=?",
+        ("SZ300201",),
+    ).fetchone()
+    assert flow_sum == pytest.approx(-1.0e7), "flow_sum 必须跟着最新一轮走"
+    assert judged == 1
+    assert k == pytest.approx(1.5), "vol_bias_k 必须跟着最新一轮走"
+
+    # 第四轮：流门变成「不可判定」（历史不足）⇒ 必须落 NULL + flow_judged=0，
+    # 不能保留上一轮的 -1.0e7（那会让复盘以为当时判的是负）
+    c3 = _cand(symbol="SZ300201", percent=2.5, volume_ratio=2.0)
+    c3.flow_sum = None
+    c3.volume_ratio_raw = 0.0
+    persist_round(db, [c3])
+
+    flow_sum, judged = db.execute(
+        "SELECT flow_sum, flow_judged FROM offboard_launch_log WHERE symbol=?", ("SZ300201",)
+    ).fetchone()
+    assert flow_sum is None, "不可判定必须落 NULL，不能沿用上一轮的读数"
+    assert judged == 0
+
+
+def test_persist_round_keeps_signal_columns_frozen(db):
+    """🔴 反向守卫：信号列**仍然**冻结（m026 不得顺手放宽冻结语义）。
+
+    `flow_sum` 等三列每轮刷新，但 `tier`/`percent`/`accum_5d` 依旧首次写入即冻结
+    —— 那是本表存在的理由（「无法还原它当初以什么身份被推出」）。
+    """
+    c1 = _cand(symbol="SZ300202", percent=2.5, tier=T1)
+    persist_round(db, [c1])
+    c2 = _cand(symbol="SZ300202", percent=6.0, tier=T2)
+    persist_round(db, [c2])
+
+    tier, percent = db.execute(
+        "SELECT tier, percent FROM offboard_launch_log WHERE symbol=?", ("SZ300202",)
+    ).fetchone()
+    assert tier == T1, "信号身份必须冻结"
+    assert percent == pytest.approx(2.5), "信号涨幅必须冻结"

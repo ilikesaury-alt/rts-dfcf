@@ -51,6 +51,7 @@ import logging
 import sqlite3
 import statistics
 from datetime import datetime
+from typing import Any
 
 from scanner.config import (
     OFFBOARD_VOL_BIAS_DAYS,
@@ -65,6 +66,10 @@ logger = logging.getLogger(__name__)
 # 一只票至少要有这么多个交易日的收盘量样本才纳入 D_i（新股/新入库票不够 ⇒ 不参与
 # k(m) 的估计，也不因「没历史」被误判 —— 与 B 段流门的 fail-open 语义同向）。
 _MIN_REF_DAYS = 2
+
+#: `biased_snapshot(bias=...)` 的「未传」哨兵 —— 必须与「传了 None」区分：
+#: 前者 = 本函数自己实测，后者 = 上游已判定不可判定（不得重算，否则又变成两次计算）。
+_UNSET: Any = object()
 
 # D_i 的日内缓存：{(参考交易日元组, 行数): {symbol: 均量}}。参考日集合只在跨日时变
 # ⇒ 每个交易日只算一次（5×1400 行 SQL 聚合 ≈ 0.2s），其余轮次零成本。
@@ -281,13 +286,31 @@ def safe_market_bias(
         return None
 
 
-def biased_snapshot(conn: sqlite3.Connection | None, snapshot: dict[str, dict]) -> float | None:
+def biased_snapshot(
+    conn: sqlite3.Connection | None,
+    snapshot: dict[str, dict],
+    *,
+    bias: float | None = _UNSET,
+) -> float | None:
     """实测 k(m) 并**就地**去偏快照；返回 k（None = 不可判定 ⇒ 未修正）。
 
     榜外异动段（B）与榜内异动段（C）共用这一个入口 —— 两段用**同一个**量比门
     （`MOMENTUM_LAUNCH_VOL`）、**同一份**快照 ⇒ 必须是同一个尺度。
+
+    `bias`（2026-11-12）：**显式传入已算好的 k**，跳过本函数的实测。
+    为什么需要它 —— 原实现是两段**各算一次**：`run_offboard_watch` 与
+    `run_onboard_anomaly` 各自 `get_market_extra_snapshot` + 各自 `market_bias`，
+    而 `market_bias` 内部要读 DB 的 `MAX(updated)` 折算已交易分钟数 m。
+    两次读库之间若有写入（部分刷新轮次），两段会拿到**不同的 m ⇒ 不同的 k**
+    ⇒ 同一个 `MOMENTUM_LAUNCH_VOL` 被套了两个尺度，正是本模块 docstring
+    要求的「同一个阈值必须配同一个尺度」被破坏。
+
+    修法：主循环算一次、显式传下去。`_UNSET` 哨兵用于区分「没传」（照旧自算）
+    与「传了 None」（上游已判定不可判定，直接按未修正处理 —— 不能重算，
+    否则又回到两次计算的老路）。
     """
-    bias = safe_market_bias(conn, snapshot)
+    if bias is _UNSET:
+        bias = safe_market_bias(conn, snapshot)
     if bias is not None:
         apply_bias(snapshot, bias)
     return bias

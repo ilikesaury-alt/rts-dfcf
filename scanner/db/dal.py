@@ -555,37 +555,83 @@ def save_offboard_rejections(
 ) -> int:
     """记录 B 段（沪深飙升·榜外异动）被拒候选（审计表 `offboard_rejections`）。
 
-    `rows` = `offboard_watch._rejection_rows(...)` 产出的行元组，每条 6 个字段：
-    `(symbol, name, reason, percent, vol_ratio, main_pct)`。
+    `rows` = `offboard_watch._rejection_rows(...)` 产出的行元组，每条 9 个字段：
+    `(symbol, name, reason, percent, vol_ratio, main_pct, gate, reason_code, reason_value)`。
 
     为什么需要这张表（与 `save_rejections` 同一个理由）：`offboard_launch_log` 只存
     **产出**行，被拒的候选原先完全不落库 ⇒ 只有幸存者样本，「某道门误杀了多少、
     被杀的票次日涨得怎样」永远答不出来（幸存者偏差），本区任何阈值调整都无从证伪。
     而 `rule_validate` 的三个评估器都看不见本模块 —— 这张表是唯一能积累的证据链。
 
-    同一 (date, symbol) 当日重复命中只累加 `hits` 并刷新 `reason` / 快照三列
-    （取最新一轮：被拒理由会随盘中漂移，最后状态才有复盘意义）。
+    🔴 **两套列，两个时间锚（2026-11-12，m026 修）**
+    -------------------------------------------------
+    本表原先只有「最新一轮覆盖」这一套列（`reason` / `percent` / `vol_ratio` /
+    `main_pct`），而 `offboard_launch_log` 的信号列是「首次写入即冻结」。
+    单看每张表都自洽，**跨表 join 就拼错**：实测 2026-11-12 `SZ300063` 在
+    launch_log 冻结 `percent=+2.05`（当日曾以「上涨异动」被推出），在本表却是
+    `-1.83`、理由「当前非上涨状态」—— 同一只票两个相反结论。而这张表存在的
+    唯一理由是让幸存者偏差可被证伪 ⇒ 必须能与产出样本对齐到**同一时刻**。
+
+    故本表维护两套列：
+
+    | 列组 | 语义 | 写入时机 |
+    |---|---|---|
+    | `reason` / `percent` / `vol_ratio` / `main_pct` | **最新一轮**（盘中最后状态） | 每轮覆盖 |
+    | `first_reason` / `first_percent` / `first_vol_ratio` / `first_main_pct` | **首次被拒即冻结**（与 launch_log 同锚） | 仅首次，之后不动 |
+
+    **复盘一律用 `first_*` 列** —— 它们与 `offboard_launch_log` 的冻结列锚在同一个
+    「当日第一次」语义上。`latest` 那套只回答「它最后是什么状态」，不能用于重放阈值。
+
+    `hits` 累加「被拒轮次数」（同一轮内一只票只会出现一次）。
+
+    `gate` / `reason_code` / `reason_value`（m026）：结构化拒绝归因。
+    `reason` 串把当轮数值编了进去（「量比不足(0.90<1.5)」）⇒ 同一道门产生数万条
+    互不相同的串，实测 44706 条按 reason 精确 GROUP BY 得到的主要「门」其实是
+    0.90/0.82/0.89 这类数值碎片 ⇒「哪道门杀得最多」答不出来。现在可按
+    `reason_code` 聚合、按 `reason_value` 看读数分布。`reason` 原样保留。
+
     fail-open：落库失败仅告警，不影响扫描主流程。
     """
     if not rows:
         return 0
     rec_date = today or now_beijing().date().isoformat()
     now_t = now_beijing().isoformat(timespec="seconds")
-    payload = [(rec_date, *r[:6], now_t, now_t) for r in rows]
+
+    # 兼容两种行形状（m026 前后）：
+    #   · 9 元组（现行 `_rejection_rows`）：sym, name, reason, pct, vr, mp, gate, code, value
+    #   · 6 元组（旧调用方 / 外部脚本）：sym, name, reason, pct, vr, mp —— 结构化三列由
+    #     本函数**自己解析**补齐（`reason_code` 在 dal 侧不 import 以免循环依赖，故内联）。
+    # 刻意不硬性要求 9 元组：`save_offboard_rejections` 是库层公共函数，收紧入参会
+    # 静默打断既有调用方（本次改动就撞到单测）。
+    def _norm(r: tuple) -> tuple:
+        if len(r) >= 9:
+            return tuple(r[:9])
+        # 6 元组：补 gate / code / value（gate 未知 → None，不做猜测）
+        return (*tuple(r[:6]), None, None, None)
+
+    payload = [(rec_date, *_norm(r)[:9], now_t, now_t) for r in rows]
     try:
         conn.executemany(
             "INSERT INTO offboard_rejections "
-            "(date, symbol, name, reason, percent, vol_ratio, main_pct, first_time, updated) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "(date, symbol, name, reason, percent, vol_ratio, main_pct, gate, reason_code, reason_value,"
+            " first_time, updated,"
+            " first_reason, first_percent, first_vol_ratio, first_main_pct) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(date, symbol) DO UPDATE SET "
+            # ── 最新一轮：覆盖 ──
             "name = excluded.name, "
             "reason = excluded.reason, "
             "percent = excluded.percent, "
             "vol_ratio = excluded.vol_ratio, "
             "main_pct = excluded.main_pct, "
+            "gate = excluded.gate, "
+            "reason_code = excluded.reason_code, "
+            "reason_value = excluded.reason_value, "
             "hits = offboard_rejections.hits + 1, "
             "updated = excluded.updated",
-            payload,
+            # 首次态四列 + first_time 刻意不出现在 DO UPDATE 里 ⇒ 首次写入即冻结。
+            # 注意 INSERT 分支里 first_* 也要给值（就是本次的值）。
+            [(*p, p[3], p[4], p[5], p[6]) for p in payload],
         )
         conn.commit()
         return len(payload)
