@@ -365,6 +365,93 @@ class TestFetchListSoftErrorCircuitBreaker:
         assert _biaosheng_cb["failures"] == 0, "正常数据重置失败计数"
 
 
+class TestFetchBiaoshengPagination:
+    """飙升榜必须**翻页拼装**（2026-11-13 实测：上游把单页上限压到 8 条）。
+
+    旧实现只取第 1 页 ⇒ 「飙升榜」退化成「前 8 名」⇒ 当日创业板候选 1~2 只、
+    候选池整天 0 只（面板「创业板共 0 只」），并连带 B/C 段无快照。
+    """
+
+    def _fake_resp(self, items):
+        r = MagicMock()
+        r.json.return_value = {"data": {"items": items}}
+        return r
+
+    def _reset_cb(self):
+        from scanner.api import _biaosheng_cb
+
+        _biaosheng_cb["failures"] = 0
+        _biaosheng_cb["cooldown_until"] = 0
+        _biaosheng_cb["cached"] = []
+        _biaosheng_cb["stale_warned"] = False
+
+    def _run(self, pages):
+        from scanner.api import fetch_biaosheng
+
+        calls: list[str] = []
+
+        def _req(session, url):
+            calls.append(url)
+            return self._fake_resp(pages[len(calls) - 1])
+
+        self._reset_cb()
+        with patch("scanner.api._request_with_retry", side_effect=_req):
+            return fetch_biaosheng(MagicMock(), 100), calls
+
+    def test_pages_are_concatenated(self):
+        """8 条/页时逐页拼接，末页（空）即停。"""
+        pages = [
+            [{"symbol": f"SZ30000{i}"} for i in range(1, 9)],
+            [{"symbol": f"SZ30001{i}"} for i in range(1, 9)],
+            [],
+        ]
+        rows, calls = self._run(pages)
+        assert [r["symbol"] for r in rows] == [f"SZ30000{i}" for i in range(1, 9)] + [
+            f"SZ30001{i}" for i in range(1, 9)
+        ]
+        assert len(calls) == 3, "两页满 + 一页空 ⇒ 3 次请求"
+        assert "page=2" in calls[1]
+
+    def test_single_full_page_issues_one_request(self):
+        """上游恢复单页 100 条时**只有 1 次请求**（翻页不带来额外成本）。"""
+        rows, calls = self._run([[{"symbol": f"SZ3{i:05d}"} for i in range(100)]])
+        assert len(rows) == 100
+        assert len(calls) == 1
+
+    def test_repeated_page_does_not_loop_forever(self):
+        """上游不认 page 参数（每页都回同一批）⇒ 零新增即停，不得死循环。"""
+        rows, calls = self._run([[{"symbol": "SZ300001"}]] * 20)
+        assert [r["symbol"] for r in rows] == ["SZ300001"]
+        assert len(calls) == 2
+
+    def test_first_page_failure_counts_as_failure(self):
+        from scanner.api import _biaosheng_cb, fetch_biaosheng
+
+        self._reset_cb()
+        with patch("scanner.api._request_with_retry", side_effect=requests.RequestException("boom")):
+            rows = fetch_biaosheng(MagicMock(), 100)
+        assert rows == []
+        assert _biaosheng_cb["failures"] == 1, "第 1 页就失败 ⇒ 按软错误计（原语义不变）"
+
+    def test_tail_page_failure_keeps_earlier_pages(self):
+        """尾页抖动不应把已到手的前几页整榜归零。"""
+        from scanner.api import fetch_biaosheng
+
+        calls: list[str] = []
+        first = [{"symbol": f"SZ30000{i}"} for i in range(1, 9)]
+
+        def _req(session, url):
+            calls.append(url)
+            if len(calls) == 1:
+                return self._fake_resp(first)
+            raise requests.RequestException("tail boom")
+
+        self._reset_cb()
+        with patch("scanner.api._request_with_retry", side_effect=_req):
+            rows = fetch_biaosheng(MagicMock(), 100)
+        assert [r["symbol"] for r in rows] == [r["symbol"] for r in first]
+
+
 class TestFetchKlineCoercion:
     """回归：K 线 OHLCV/percent 必须强转数值，字符串/None/NaN 不再漏进下游
     closes 算术（此前 close=None 落库后 analyze_short_term 减法抛 TypeError）。"""

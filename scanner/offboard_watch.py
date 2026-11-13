@@ -162,7 +162,7 @@ from scanner.db.queries import get_market_extra_snapshot, get_symbol_names
 from scanner.display_gates import beauty_marks_daily, code_of, common_hard_gate
 from scanner.features import ma_alignment_score
 from scanner.hot_watch import is_hot_universe
-from scanner.market_extra import fetch_fund_flow_rank
+from scanner.market_extra import collect_market_extra, fetch_fund_flow_rank
 from scanner.models import make_kline_bar
 from scanner.offboard_flow import load_flow_history, sum_main_net
 from scanner.trading_session import is_trading_day, trading_minutes_elapsed
@@ -1592,7 +1592,24 @@ def run_offboard_watch(
     snapshot_from_db = snapshot is None
     if snapshot is None:
         snapshot = get_market_extra_snapshot(conn, "fund_flow")
+        if not snapshot:
+            # 🔴 自愈（2026-11-13）：主循环的 `collect_market_extra` 在候选池为空的那一轮
+            # 会整块 return（它把「本批要增强的票」与「全市场资金流快照」混成一件），
+            # 实测 2026-11-13：飙升榜上游单页上限压到 8 条 ⇒ 创业板候选 0 只 ⇒
+            # `market_extra_cache` 整天零行 ⇒ 本段样本域为空、整天哑掉。
+            # 但本段样本域**独立于候选池**（`get_market_extra_snapshot` 是全市场口径），
+            # 故缺快照时由本段自己拉一次全集并落库（`ensure_universe`），
+            # 不把「没取到」读成「没有异动」。零新增成本：拉取域仍是创业板全集，
+            # 且与主循环共用 `fetch_fund_flow_rank` 的进程内 TTL 缓存。
+            try:
+                collect_market_extra(conn, [], include_zt=False, ensure_universe=True)
+            except EXTERNAL_FAILURES as e:
+                logger.warning("B段全市场资金流补拉失败: %s", e)
+            snapshot = get_market_extra_snapshot(conn, "fund_flow")
     if not snapshot:
+        # 取不到 ≠ 没有异动：本段留空是**降级**，必须留痕（同「公告没取到不能读成没公告」）。
+        # `logger.warning` 在未配置 handler 时由 `logging.lastResort` 打到 stderr ⇒ 终端可见。
+        logger.warning("B段资金流快照为空（全市场取数失败/未落库）—— 本段无样本域，不是「榜外无异动」")
         return []
 
     # 名称：快照自 2026-09-18 起带 f14；此前落库的行没有，回落到 appearances

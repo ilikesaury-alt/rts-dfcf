@@ -561,6 +561,34 @@ class TestCollect:
         assert "SZ300001" in result
         assert "SZ300999" in saved.get("fund_flow", {}), "取到的非候选行同样落库（读侧宇宙不得塌缩）"
 
+    def test_empty_symbols_without_ensure_universe_skips_everything(self, monkeypatch):
+        """旧语义不变：候选集为空且未要求全集 ⇒ 零请求、零落库。"""
+        net = _NetCounter(rows_by_code=_ff_table("300001"))
+        monkeypatch.setattr(me._requests, "get", net.get)
+        monkeypatch.setattr(me, "get_market_extra_cache", lambda *a, **k: {})
+        saved = {}
+        monkeypatch.setattr(me, "save_market_extra_cache", lambda conn, m, dt: saved.update({dt: dict(m)}))
+        assert me.collect_market_extra(None, [], include_zt=False) == {}
+        assert net.calls == 0
+        assert saved == {}
+
+    def test_ensure_universe_pulls_and_saves_without_candidates(self, monkeypatch):
+        """`ensure_universe`：候选集为空仍拉全市场资金流并落库（2026-11-13）。
+
+        为什么：B 段（榜外异动）/榜内异动段的样本域取自 `get_market_extra_snapshot`
+        （全市场），与候选池无关；候选池为 0 的那一轮若整块 return ⇒ 快照整天零行 ⇒
+        两段静默无样本域。返回值仍为空（本批无票要增强），落库才是目的。
+        """
+        net = _NetCounter(rows_by_code=_ff_table("300001"))
+        monkeypatch.setattr(me._requests, "get", net.get)
+        monkeypatch.setattr(me, "get_market_extra_cache", lambda *a, **k: {})
+        saved = {}
+        monkeypatch.setattr(me, "save_market_extra_cache", lambda conn, m, dt: saved.update({dt: dict(m)}))
+        result = me.collect_market_extra(None, [], include_zt=False, ensure_universe=True)
+        assert result == {}, "返回值仍是「本批命中」，无候选时必为空"
+        assert net.calls > 0, "必须真的拉一次全集"
+        assert "SZ300001" in saved.get("fund_flow", {})
+
     def test_db_hit_skips_fetch(self, monkeypatch):
         fake = FakeAk()
         monkeypatch.setattr(me, "_get_ak", lambda: fake)

@@ -522,32 +522,73 @@ def _biaosheng_circuit_breaker(raw_items: list[dict], success: bool = True) -> l
         return []
 
 
+#: 飙升榜一次扫描的**最大翻页数**（见 `fetch_biaosheng` docstring）。
+#: 上限取 15 ≈ ceil(100/8)+1：单页被上游压到 8 条时的翻页轮数 + 一页余量。
+_BIAOSHENG_MAX_PAGES = 15
+
+
 def fetch_biaosheng(session: requests.Session, size: int = 100) -> list[dict]:
+    """飙升榜前 `size` 条（跨页拼装，按 symbol 去重、保持上游顺序）。
+
+    🔴 **必须翻页**（2026-11-13 实测）：上游把单页上限压到 8 条 —— 传 `size=100`
+    也只回 `data.items_size=8`（换 `order_by` / 加 `count`,`limit` 等参数 / 换新会话
+    都一样）。旧实现只取第 1 页 ⇒ 「飙升榜」退化成「飙升榜前 8 名」⇒ 当日创业板
+    候选 1~2 只、多数翻绿 ⇒ v1 候选池整天 **0 只**（面板「创业板共 0 只」），
+    且候选池为空会连带 `collect_market_extra` 不落资金流快照 ⇒ B/C 段一起哑掉。
+
+    停止条件三条（缺一个就会死循环或少取）：
+    ① 取满 `size`；② 某页条数 < 首页容量（= 末页）；③ 某页**零新增 symbol**
+    （上游若不认 `page` 参数会反复回同一批，此时必须停）。
+    正常日（单页就能给满 100）**第 2 页起不请求** —— 上游恢复旧行为时本函数零额外成本。
+    """
     now = time.time()
     with _cache_lock:
         if now < _biaosheng_cb["cooldown_until"]:
             logger.info("  [断路器] 熔断中(剩余%.0fs), 使用缓存数据", _biaosheng_cb["cooldown_until"] - now)
             return _biaosheng_cb.get("cached") or []
 
-    ts = int(now * 1000)
-    url = (
-        f"https://stock.xueqiu.com/v5/stock/hot_stock/new_list.json"
-        f"?page=1&size={size}&order=desc&order_by=rank_change&type=10&_={ts}"
-    )
-    try:
-        resp = _request_with_retry(session, url)
-        j = resp.json()
+    items: list[dict] = []
+    seen: set[str] = set()
+    page_cap = 0  # 首页实际容量（上游可能 < size）
+    for page in range(1, _BIAOSHENG_MAX_PAGES + 1):
+        ts = int(time.time() * 1000)
+        url = (
+            f"https://stock.xueqiu.com/v5/stock/hot_stock/new_list.json"
+            f"?page={page}&size={size}&order=desc&order_by=rank_change&type=10&_={ts}"
+        )
+        try:
+            resp = _request_with_retry(session, url)
+            j = resp.json()
+        except EXTERNAL_FAILURES as e:
+            logger.error("飙升榜获取失败(第%d页): %s", page, e)
+            # 前几页已到手 ⇒ 用部分数据（尾页抖动不该让整榜归零）；第 1 页就失败 ⇒
+            # 按软错误走熔断退避（原语义不变）。
+            if items:
+                return _biaosheng_circuit_breaker(items, success=True)
+            return _biaosheng_circuit_breaker([], success=False)
         data = j.get("data") if isinstance(j, dict) else None
-        items = (data or {}).get("items", []) if isinstance(data, dict) else []
+        page_items = (data or {}).get("items", []) if isinstance(data, dict) else []
         # 软错误（HTTP 200 但 data 缺失/为空）：视为失败走熔断退避，
         # 避免每次扫描重置熔断计数、持续轰击已挂掉的接口。
-        if not items:
+        if not page_items:
+            if items:
+                break  # 翻到末页之后（page > 总页数）
             logger.warning("飙升榜返回空 data（软错误），按失败处理")
             return _biaosheng_circuit_breaker([], success=False)
-        return _biaosheng_circuit_breaker(items, success=True)
-    except EXTERNAL_FAILURES as e:
-        logger.error("飙升榜获取失败: %s", e)
-        return _biaosheng_circuit_breaker([], success=False)
+        added = 0
+        for it in page_items:
+            sym = it.get("symbol") if isinstance(it, dict) else None
+            if sym:
+                if sym in seen:
+                    continue
+                seen.add(sym)
+            items.append(it)
+            added += 1
+        if page_cap == 0:
+            page_cap = len(page_items)
+        if added == 0 or len(page_items) < page_cap or len(items) >= size:
+            break
+    return _biaosheng_circuit_breaker(items, success=True)
 
 
 def _quote_high_pct(q: dict) -> float | None:

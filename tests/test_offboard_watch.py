@@ -1694,6 +1694,57 @@ def test_run_offboard_watch_empty_snapshot_returns_empty(db):
     assert run_offboard_watch(None, db, [], snapshot={}) == []
 
 
+def test_run_offboard_watch_db_path_self_heals_empty_snapshot(db, monkeypatch):
+    """快照为空时 B 段**自己**拉全市场资金流并落库（2026-11-13 整天静默哑掉的根因）。
+
+    故障链：飙升榜上游单页上限压到 8 条 ⇒ 创业板候选 0 只 ⇒ 主循环
+    `collect_market_extra(conn, [])` 整块 return ⇒ `market_extra_cache` 整天零行 ⇒
+    本段样本域为空。本段样本域是全市场口径（与候选池无关）⇒ 必须自愈而非静默留空。
+    """
+    day = now_beijing().date().isoformat()
+    sym = "SZ300101"
+    calls: list[tuple] = []
+
+    def _fake_collect(conn, symbols, include_zt=None, include_flow=None, ensure_universe=False):
+        calls.append((tuple(symbols), include_zt, ensure_universe))
+        # 模拟落库：全集拉取后写一行今日快照（列序同本文件 `db` 夹具）
+        conn.execute(
+            "INSERT INTO market_extra_cache VALUES (?,?,?,?)",
+            (sym, "fund_flow", day, json.dumps(_payload(vol_ratio=1.6, percent=2.5, main_pct=2.0))),
+        )
+        conn.commit()
+        return {}
+
+    monkeypatch.setattr("scanner.offboard_watch.collect_market_extra", _fake_collect)
+    monkeypatch.setattr("scanner.offboard_watch.fetch_fund_flow_rank", lambda: {})
+    rows = run_offboard_watch(None, db, [], top_n=5, klines={sym: _bars(_UP_SERIES, day)})
+
+    assert len(calls) == 1, "空快照应触发恰好一次全集补拉"
+    assert calls[0][1] is False, "自愈只要资金流，不得顺带拉涨停池"
+    assert calls[0][2] is True, "必须显式要求拉全集（否则空 symbols 又会被 early return）"
+    assert len(rows) == 1, "补拉到的快照必须被**本轮**消费，不是只落库"
+    assert db.execute("SELECT COUNT(*) FROM offboard_launch_log").fetchone()[0] == 1
+
+
+def test_run_offboard_watch_db_path_empty_snapshot_is_not_silent(db, monkeypatch, caplog):
+    """补拉后仍为空 ⇒ 留空是**降级**，必须留痕（不能读成「榜外无异动」）。"""
+    monkeypatch.setattr("scanner.offboard_watch.collect_market_extra", lambda *a, **k: {})
+    monkeypatch.setattr("scanner.offboard_watch.fetch_fund_flow_rank", lambda: {})
+    rows = run_offboard_watch(None, db, [], top_n=5, klines={})
+    assert rows == []
+    assert any("无样本域" in r.getMessage() for r in caplog.records), "空样本域必须告警"
+
+
+def test_run_offboard_watch_injected_snapshot_never_self_heals(db, monkeypatch):
+    """注入路径（测试/离线/CLI）不得联网补拉 —— 零联网纪律与自愈不冲突。"""
+
+    def _boom(*a, **k):
+        raise AssertionError("snapshot 注入路径不应触发全集补拉")
+
+    monkeypatch.setattr("scanner.offboard_watch.collect_market_extra", _boom)
+    assert run_offboard_watch(None, db, [], snapshot={}) == []
+
+
 def test_run_offboard_watch_none_conn_returns_empty():
     assert run_offboard_watch(None, None, [], snapshot={"SZ300101": _payload()}) == []
 

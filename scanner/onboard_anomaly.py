@@ -299,6 +299,11 @@ def run_onboard_anomaly(
     except EXTERNAL_FAILURES as e:
         logger.warning("榜内异动段量比快照取数失败（本段留空）: %s", e)
         return []
+    if not snapshot:
+        # 与 B 段同源：快照空 ⇒ 量比恒 0 ⇒ 本段必然零产出。留空是降级不是结论，
+        # 必须留痕（正常由 B 段先自愈拉取；走到这里说明全集取数真的失败了）。
+        logger.warning("榜内异动段资金流快照为空（全市场取数失败）—— 本段无样本域，不是「榜内无异动」")
+        return []
     # `bias` 显式传入（2026-11-12）：主循环已为榜外段算过一次 k(m)，本段**复用**
     # 同一个标量，而不是自己再读一次库 —— 两次读库之间若有写入，两段会拿到不同的
     # m ⇒ 不同的 k ⇒ 同一个 `MOMENTUM_LAUNCH_VOL` 被套两个尺度。

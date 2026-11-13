@@ -514,7 +514,11 @@ def _merge_from_db(
 
 
 def collect_market_extra(
-    conn, symbols: list[str], include_zt: bool | None = None, include_flow: bool | None = None
+    conn,
+    symbols: list[str],
+    include_zt: bool | None = None,
+    include_flow: bool | None = None,
+    ensure_universe: bool = False,
 ) -> dict[str, dict]:
     """收集候选符号的行情增强数据。
 
@@ -522,10 +526,18 @@ def collect_market_extra(
     仅返回本次有数据（涨停池/资金流至少一类命中）的 symbol。
     流程：进程 TTL 缓存 → DB 缓存（当日 + 盘中新鲜度，过期重拉）→ 全集
     （创业板全集 ∪ 注册码）一次拉取并落库。所有异常均已 fail-soft，返回空 dict 不影响主扫描。
+
+    `ensure_universe`（2026-11-13）：候选集为空时**仍拉全市场资金流并落库**（返回值仍空）。
+    为什么需要它 —— 旧实现 `if not symbols: return {}` 把两件事混成一件：
+    「本批要增强的票」与「全市场资金流快照」。而 B 段（榜外异动）/榜内异动段的样本域
+    取自 `get_market_extra_snapshot`（**全市场**，与候选池无关）。2026-11-13 实测：
+    飙升榜上游单页上限压到 8 条 ⇒ 当日创业板候选 0 只 ⇒ 本函数整块 return ⇒
+    `market_extra_cache` 整天零行 ⇒ B/C 段**静默**无样本域（不是「榜外无异动」）。
+    总拉取域仍是创业板全集（`fetch_fund_flow_rank` 自己枚举），故不因候选集为空而放大成本。
     """
     include_zt = ENABLE_ZT_POOL if include_zt is None else include_zt
     include_flow = ENABLE_FUND_FLOW if include_flow is None else include_flow
-    if not symbols or (not include_zt and not include_flow):
+    if (not symbols and not ensure_universe) or (not include_zt and not include_flow):
         return {}
     uniq = list(dict.fromkeys(symbols))
     result: dict[str, dict] = {}
@@ -554,7 +566,9 @@ def collect_market_extra(
         db_flow, miss_flow = _merge_from_db(conn, uniq, _FUND_FLOW, FUND_FLOW_TTL_SEC)
         for sym, payload in db_flow.items():
             result.setdefault(sym, {})["fund_flow"] = payload
-        if miss_flow:
+        # `ensure_universe` + 空候选集 ⇒ `miss_flow` 必空（没有白名单要补），此时仍要
+        # 拉一次全集并落库。稳态下本函数被主循环每轮调用，进程 TTL 缓存 300s 兜底。
+        if miss_flow or (ensure_universe and not uniq):
             fetched = fetch_fund_flow_rank()
             if fetched:
                 mapped = {ak_to_xq(code): payload for code, payload in fetched.items()}
