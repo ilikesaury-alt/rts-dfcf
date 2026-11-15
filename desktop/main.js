@@ -32,6 +32,7 @@ const { app, BrowserWindow, shell, Menu, screen } = require("electron");
 const { execFile } = require("node:child_process");
 const fs = require("node:fs");
 const http = require("node:http");
+const net = require("node:net");
 const path = require("node:path");
 
 /** 与 `scanner.config.LOCAL_PANEL_PORT` 同值（改一处要同步另一处）。
@@ -39,9 +40,14 @@ const path = require("node:path");
  * `_local_panel_enabled` 的回退同口径。不校验的话探活会打在 NaN 上永远失败，
  * 而子进程已被 Python 侧兜底拉到 8899，两端分叉、窗口死等无提示。 */
 const _rawPort = Number(process.env.RTS_LOCAL_PANEL_PORT || 8899);
-const LOCAL_PORT =
+/** 看板端口。**运行时可变**：启动前探测，被占用则让位到空闲端口（见 `findFreePort`）。 */
+let LOCAL_PORT =
   Number.isInteger(_rawPort) && _rawPort >= 1 && _rawPort <= 65535 ? _rawPort : 8899;
+/** 动作面端口。**运行时可变**：同上，与看板端口错开，避免两个实例互相抢。 */
+let TASKS_PORT = TASKS_PORT_DEFAULT;
 const HOST = "127.0.0.1";
+/** 动作面端口：默认 8900，与 `scanner.tasks_server.DEFAULT_PORT` 同值。 */
+const TASKS_PORT_DEFAULT = 8900;
 /** 等 Python 起服的上限：首轮扫描要联网，起服本身只 DU 到几百毫秒，给足 40s。 */
 const SERVER_WAIT_MS = 40_000;
 const POLL_MS = 500;
@@ -283,6 +289,8 @@ function buildChildEnv(state) {
   for (const key of SCRUBBED_ENV) delete env[key];
   env.RTS_LOCAL_PANEL = "1"; // ⛔ 不带 --no-panel：那只关云端上报，本看板靠这个开关
   env.RTS_LOCAL_PANEL_PORT = String(LOCAL_PORT);
+  // 动作面端口：与看板端口错开，避免与终端实例抢同一个 8900（双绑 ⇒ 请求随机落到别人那）。
+  env.RTS_TASKS_PORT = String(TASKS_PORT);
   env.PYTHONUNBUFFERED = "1";
   env.PYTHONIOENCODING = "utf-8";
   // ⚠ 实测（2026-10-19）：删掉 PYTHONPATH 还不够 —— CPython 的 `site` 模块**默认**会把
@@ -364,6 +372,63 @@ function stopScanner() {
 }
 
 // ── 探活 ──────────────────────────────────────────────────────────────────────
+
+/**
+ * 端口是否已被占用。
+ *
+ * ⚠ 实现要点（2026-11-15 实测踩坑）：**不能用 `net.createServer().listen()` 探测**。
+ * Windows 上默认 `allow_reuse_address`，探测 socket 能绑上**已被别人占用**的端口，
+ * 于是 `findFreePort(8900)` 在 8900 被占时仍返回 8900 ⇒ 分配出两个相同端口。
+ * ⇒ 改用**主动 connect**：连得上 ⇒ 有人在监听 ⇒ 被占；连不上（ECONNREFUSED）⇒ 空闲。
+ */
+function isPortFree(port) {
+  return new Promise((resolve) => {
+    const sock = net.connect({ host: HOST, port });
+    const done = (free) => {
+      sock.removeAllListeners();
+      sock.destroy();
+      resolve(free);
+    };
+    sock.setTimeout(1200);
+    sock.once("connect", () => done(false)); // 连上了 ⇒ 被占
+    sock.once("timeout", () => done(true)); // 连不上且超时 ⇒ 空闲
+    sock.once("error", () => done(true)); // ECONNREFUSED ⇒ 空闲
+  });
+}
+
+/** 从 `start` 起找第一个空闲端口（最多试 20 个连续端口）。 */
+async function findFreePort(start, attempts = 20, exclude = null) {
+  for (let i = 0; i < attempts; i += 1) {
+    const port = start + i;
+    if (port > 65535) break;
+    if (port === exclude) continue; // 已被看板端口占用 ⇒ 跳过
+    // eslint-disable-next-line no-await-in-loop
+    if (await isPortFree(port)) return port;
+  }
+  return null;
+}
+
+/**
+ * 分配看板 + 动作面两个端口。
+ *
+ * 规则：**各自**找空闲端口，且两者**互不相同**（避免自己跟自己撞）。
+ * 若首选端口空闲就用首选（与旧行为逐字节一致）；被占才让位。
+ * 返回 null = 连续 20 个端口全被占 ⇒ 无法启动。
+ */
+async function allocatePorts() {
+  const panel = await findFreePort(LOCAL_PORT);
+  if (panel === null) return null;
+  LOCAL_PORT = panel;
+  // 动作面从默认端口找；**必须排除看板端口**（两者会同时起服，抢同一个端口 = 双绑）。
+  let tasks = await findFreePort(TASKS_PORT_DEFAULT, 20, LOCAL_PORT);
+  if (tasks === null) {
+    // 默认段用尽 ⇒ 从看板端口之后另起一段
+    tasks = await findFreePort(LOCAL_PORT + 1, 20, LOCAL_PORT);
+  }
+  if (tasks === null || tasks === LOCAL_PORT) return null;
+  TASKS_PORT = tasks;
+  return { panel: LOCAL_PORT, tasks: TASKS_PORT };
+}
 
 function probeMeta(port) {
   return new Promise((resolve) => {
@@ -472,6 +537,17 @@ async function createWindow() {
     shell.openExternal(url);
     return { action: "deny" };
   });
+
+  const ports = await allocatePorts();
+  if (!ports) {
+    await win.loadURL(
+      errorPage(
+        `端口 ${LOCAL_PORT}–${LOCAL_PORT + 19} 与 ${TASKS_PORT}–${TASKS_PORT + 19} 都被占用，桌面版无法启动。`,
+        null,
+      ),
+    );
+    return;
+  }
 
   const started = startScanner();
   if (started.error) {

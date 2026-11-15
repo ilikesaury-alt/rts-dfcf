@@ -180,6 +180,36 @@ def test_second_instance_does_not_start_second_scanner() -> None:
     assert "app.quit()" in code.split("requestSingleInstanceLock")[1], "拿不到锁必须直接退出"
 
 
+def test_ports_are_allocated_avoiding_conflicts_with_other_instances() -> None:
+    """端口让位：两个 HTTP server 都设了 allow_reuse_address ⇒ 第二个实例能**静默双绑**
+    同一端口（Windows 上先绑的优先响应）⇒ 桌面版窗口可能显示终端的数据、`#/tasks`
+    的任务可能落到终端那个服务上执行（在错误的库上跑）。
+
+    故桌面版启动前必须探测端口，被占则换空闲端口，并注入子进程 env。
+    """
+    code = _main_js()
+    assert "require(\"node:net\")" in code, "需要 net 模块探测端口占用"
+    assert "function isPortFree(" in code, "必须有端口占用探测"
+    assert "function findFreePort(" in code, "必须有空闲端口查找"
+    assert "function allocatePorts(" in code, "启动前必须分配端口"
+    # 分配结果必须注入子进程 env（否则 Python 仍绑旧端口）
+    assert "env.RTS_LOCAL_PANEL_PORT = String(LOCAL_PORT)" in code
+    assert "env.RTS_TASKS_PORT = String(TASKS_PORT)" in code, "动作面端口也要注入"
+    # 分配必须在拉起子进程**之前**
+    alloc = code.index("allocatePorts()")
+    start = code.index("startScanner()", alloc)
+    assert alloc < start, "必须先分配端口再拉起扫描器"
+
+
+def test_tasks_port_is_injected_and_never_hardcoded_in_shell() -> None:
+    """动作面端口可被 env 覆盖（与 Python 侧同口径），shell 不得写死 8900。"""
+    code = _main_js()
+    assert "RTS_TASKS_PORT" in code
+    # 允许「默认常量 8900」，但不允许把 8900 直接塞进 env 赋值
+    assert 'env.RTS_TASKS_PORT = String(TASKS_PORT)' in code
+    assert "String(8900)" not in code, "端口必须经变量注入，不能写死"
+
+
 # ── 6. 打包配置 ───────────────────────────────────────────────────────────────
 
 
