@@ -4,8 +4,26 @@
 > 交付：`SPEC.md`（本文）+ `prototype.html`（自包含可交互高保真原型）
 > 前置：v2 视觉已定稿并 commit（`fc57a32`）；本文沿用 `docs/features/desktop-design-polish/DESIGN.md` / `preview.html` / `rts-panel-cloud/web/src/index.css`，不另起视觉体系。
 > 本文件与原型**只创建新文件**；不改 `web/src/**`、`scanner/**`、`desktop/**`、`tests/**`，不动已 commit 的设计文档，不 commit、不装依赖、不跑构建。
+> **本次修正（2026-11-15）只改本 `SPEC.md`**；`prototype.html` 保持原样（其「一键调研」卡片名与剪贴板等价入口文案是旧口径演示态，以本文为准），仍不改生产代码、不 commit。
+
+> **口径修正说明（2026-11-15 Lichun 确认）** —— 推翻 v1.0 初稿的两条旧假设，接手时勿把两版混用：
+> 1. **数据库**：桌面版与终端共用本机那份有最新数据的活库 `scanner.db`（仓库根 `D:\everything\rts-dfcf-max\scanner.db`，11-13 的 227MB 活库）；**不再**从包内冷快照（2026-10-20、146MB）种出 `%APPDATA%\rts-desktop\scanner.db` 后「各记各的库」。任务管理器 / 子进程必须与主循环指向同一份库，桌面版**不得成为第二个写者**。
+> 2. **AI 分析**：主入口恒为 `python -m scanner.ai_digest`（默认 research：模型自查真实数据、出排序与判断、报告自动归档 `logs/ai_digest/YYYY-MM-DD/`、只归档不回灌、需 `MAGPIE_*` 凭据且出网）。`pick.py --clipboard` 降级为剪贴板清单的**等价 / 可选入口**，云端 `/api/ai-explain` 那套 LLM 转录**不是**本动作面口径。手工链路不再要求「按 `c` 复制 → `pick.py`」，直接跑主入口（默认读 `股票池.md` 面板原文，缺了自动回退 print → view → log）。
+>
+> 保留不改：只读镜像、colSpec 单源、`SCHEMA_VERSION=2` 零契约改动、结论词 grep 守卫、Node 侧不读 SQLite（D2）、`RTS_TASKS` 缺省关、CSRF 四层防护、单槽串行、不推飞书、不改 `webPreferences`。
+> **待 Lichun 拍板**：共用活库后，打包态默认 `RTS_SCANNER_OWNERSHIP=takeover`（壳自己拉起 `unified_scanner.py` 写同一份库）是否改为 `attach` / 桌面只读 —— 见 §2.4 / §2.6，实施前定。
 
 ---
+
+### 实现状态（2026-11-15 16:10）
+
+P0 最小闭环已落生产代码（未 commit）：`scanner/tasks_server.py`（独立 127.0.0.1:8900 服务、
+四层校验、单槽串行、白名单 catalog）、`local_panel_server.py` 对 `/api/tasks/*` 做同源反代、
+`unified_scanner.py` 挂点（RTS_TASKS 缺省关）、`web/src/pages/Tasks.tsx`（AI 分析动作面，
+hash 路由 `#/tasks`）、`tests/test_tasks_server.py`（10 例）。端到端实测 `--materials` → ok/exit 0、
+46 行日志、坏 Origin 403。另有两条实测修正：① `--demo` 仍走 research 工具链会联网，已从 R 档改判 N 档；
+② `desktop/main.js` 已改成优先解析本机最新活库（`RTS_DB_PATH`/`RTS_LIVE_DB`/`RTS_REPO_ROOT`），
+不再默认从包内冷快照种独立库。
 
 ## 0. 读过的东西（本规格的事实底座）
 
@@ -19,7 +37,7 @@
 | `rts-panel-cloud/web/src/index.css` | 实际 token：`--surface-0:#070b12` / `-1:#0c131e` / `-2:#141e2d` / `-3:#1c2a3e` / `--surface-pop:#243650`；`--brand:#4c8dff` / `--brand-soft:#22d3ee` / `--brand-wash:rgba(76,141,255,.12)`；`--text-1..4` / `--line*` / `--amber:#f5bb63` / `--coral:#ff7b8e`；`--up:#ef232a` / `--down:#14b143`；`--mono` / `--sans` / `--ease:140ms ease` / `--shadow-card` / `--shadow-pop` |
 | `scanner/local_panel_server.py` | 现状 **只读 GET + 静态托管**：`/api/health` `/api/regions` `/api/meta` `/api/stock/{sym}/kline` + `_static()` SPA 回退；`BIND_HOST="127.0.0.1"` 模块常量（无 env 覆盖）；`_ok/_err` 信封；`_ensure_file_log` 的 `propagate=False`；`handle_error` 不刷终端 |
 | `scanner/panel_serialize.py` / `web/src/api/types.ts` / `worker/src/serialize.ts` | `SCHEMA_VERSION=2` 三端镜像；`serialize_view` 的 7 个顶层键；`tests/test_panel_contract.py` 守字段集 |
-| `desktop/main.js` / `package.json` / `docs/desktop/IMPLEMENTATION.md` §5 | `execFile` 拉 `unified_scanner.py 60`；env 净化 7 变量 + `PYTHONNOUSERSITE=1`；`userData` 可写落点 + 首启种冷快照不覆盖；`probeMeta` 只认自己的信封；关窗 kill；**§5.3「启动会杀掉终端扫描器」** |
+| `desktop/main.js` / `package.json` / `docs/desktop/IMPLEMENTATION.md` §5 | `execFile` 拉 `unified_scanner.py 60`；env 净化 7 变量 + `PYTHONNOUSERSITE=1`；`userData` 可写落点 + 首启种冷快照不覆盖（**现状记录，已被 2026-11-15 口径推翻：不再种冷快照、不再分家**）；`probeMeta` 只认自己的信封；关窗 kill；**§5.3「启动会杀掉终端扫描器」** |
 | `scanner/single_instance.py` / `unified_scanner.py:891–915` | `stop_existing_scanners` 按**脚本路径 + 启动时间更早**杀旧（与锁路径无关）；`--no-lock` 跳过；内核级文件锁随进程退出释放 |
 | `AGENTS.md` | D2「Node 侧不读 SQLite（与主循环抢写锁）」；Fail-open 只 catch `EXTERNAL_FAILURES`、禁裸 `except Exception`；WAL 库不能 `cp`；`recommendations` 存冻结分；东财 push2 IP 限频；B 段脚本刻意不给结论；AI 归档不回灌 |
 | `requirements.lock` / `requirements.txt` | 只锁 5 个直接依赖（`python-dotenv==1.0.1` / `requests==2.34.2` / `wcwidth==0.2.13` / `psutil==7.2.2` / `akshare==1.18.64`）；**自承**「numpy/pandas 等传递依赖未全量固定」；`pywencai` 被注释掉（可选） |
@@ -126,9 +144,9 @@
 |---|---|
 | **SQLite WAL 写锁** | ① 任务子进程必须走同一个 `get_conn()`（脚本本来就这么写，禁止工作台绕过去拼 `sqlite3.connect`）；② **写库档全局单槽** `exclusive_slot`（容量 1，与外呼档共用），拿到槽才 spawn，拿不到保持 `queued`；③ 任务管理器与 `run_scanner` **同进程**，用进程内 `round_gate`：主循环每轮写事务提交后 `tasks.notify_round_done()`，写库任务在 spawn 前 `wait_for_round_boundary(timeout=70s)`；超时未等到 → `cancelled` + `TASK_BUSY`，**绝不硬闯**；④ 子进程若在 `busy_timeout` 内拿不到锁就 `failed`，不重试、不无限等。WAL 备份纪律（`Online Backup API` / 不 `cp`）不因动作面改变 |
 | **单实例锁** | `SingleInstanceLock` 是 `logs/scanner.lock` 上的内核文件锁，锁的是 `unified_scanner.py` 这一个主循环。任务 subprocess 跑的是**别的脚本**（`diag_health.py` / `stock_report.py` / `backfill_kline.py` …），`single_instance._runs_script()` 按 `unified_scanner.py` 路径匹配，**既不会被误杀也不会误抢锁**。任务管理器**不碰** `scanner.lock`、不读写 `.pid`。`unified_scanner.py` 本身**不进普通任务目录**，只由 P3 的唯一所有者管理（§2.6） |
-| **`scanner.db` 争用（含打包态分家）** | 任务 subprocess 必须继承**扫描器进程的那一份 `os.environ`**（`RTS_DB_PATH` → 打包态 `userData/scanner.db`、`RTS_LOG_DIR` → `userData/logs`、`RTS_ENV_FILE` → `userData/.env`、`PYTHONNOUSERSITE=1`、7 个已净化变量），`cwd = repoRoot()`，解释器用 **`sys.executable`**（在 Python 进程里它就是那个 standalone `python.exe`，天然对齐，不需要 `findPython()` 的字符串）。**禁止**另拼 env / 用系统 Python / 从仓库根 cwd 起（否则读到另一个库）。`test_desktop_shell.py` 的 env 净化守卫继续绿 |
+| **`scanner.db` 争用（共用本机活库，不再分家）** | **新口径（2026-11-15）**：桌面版与终端共用本机那份有最新数据的活库 `scanner.db`（仓库根 `scanner.db`）；打包态**不再**从包内冷快照种出 `userData/scanner.db` 独立库，也不再「各记各的」。任务管理器 / 任务子进程必须与主循环 `run_scanner` 指向**同一份库**：继承扫描器进程那一份 `os.environ`（`RTS_DB_PATH` 解析到同一份本机活库，`RTS_LOG_DIR` / `RTS_ENV_FILE` / `PYTHONNOUSERSITE=1` 与 7 个净化变量逐项相等），`cwd = repoRoot()`，解释器用 **`sys.executable`**。**禁止**另拼 env / 用系统 Python / 把 `RTS_DB_PATH` 改指 `userData/scanner.db` 或包内冷快照。**桌面版不得成为第二个写者**：不另起会写这份库的独立主循环；写库档仍走唯一主循环的 `round_gate` + `exclusive_slot` 单槽串行，只读档对该库只读。`test_desktop_shell.py` 的 env 净化守卫继续绿 |
 | **重复推飞书** | 唯一会推飞书的是主循环（`feishu.py` + `push_gate.py`）；`buy_priority_report.py` 明确「不进主循环/终端/飞书」，`ai_digest` 明确「不进库、不进飞书、不进提示词」。规避：① 工作台**不把 `unified_scanner.py` 做成一键任务**；② 任务 env **不注入也不放开** `RTS_FEISHU_WEBHOOK` / `RTS_PUSH_GATE`；③ 主循环只有一个（单实例锁 + P3 唯一所有者）；④ catalog 里每条命令硬标 `outbound: none\|eastmoney\|xueqiu\|feishu\|ai_gateway`，`feishu` 值恒为空集，新测断言 |
-| **重复外呼（AI 网关 / 东财 / 雪球 IP 限频）** | ① 外呼档与写库档**共用同一把 `exclusive_slot`**（因为东财 push2 有 IP 级限频，`AGENTS.md` 记「调试频繁 ulist 也不通，别误判代码故障」）；② 幂等：提交带 `idempotencyKey`（或 `catalogId+args` 指纹），5 分钟内重复 → `200` 返回既有 `task_id` + `deduplicated:true`，不二次 spawn；③ 同一 `catalogId` 60s 提交节流；④ 超时硬上限（外呼 180s，`--ai N` / `--max-calls` 类 900s），超时 `terminate()`→5s→`kill()`；⑤ **P0/P1 默认选零网络档**（`--no-ann` / `--materials` / `--demo` / `--offline-demo` / `--no-fetch` / `--quick`），把出网留到 P2 且必须过确认；⑥ `exit code` 语义原样呈现（`ai_digest`: 1 未配凭据 / 2 上游失败 / 3 触红线 / 5 幻觉巡检），工作台不替脚本重试 |
+| **重复外呼（AI 网关 / 东财 / 雪球 IP 限频）** | ① 外呼档与写库档**共用同一把 `exclusive_slot`**（因为东财 push2 有 IP 级限频，`AGENTS.md` 记「调试频繁 ulist 也不通，别误判代码故障」）；② 幂等：提交带 `idempotencyKey`（或 `catalogId+args` 指纹），5 分钟内重复 → `200` 返回既有 `task_id` + `deduplicated:true`，不二次 spawn；③ 同一 `catalogId` 60s 提交节流；④ 超时硬上限（外呼 180s，`--ai N` / `--max-calls` 类 900s），超时 `terminate()`→5s→`kill()`；⑤ **P0/P1 默认选零网络档**（`--no-ann` / `--materials` / `--offline-demo` / `--no-fetch` / `--quick`），把出网留到 P2 且必须过确认；⑥ **AI 分析主入口 `python -m scanner.ai_digest`** 的 `exit code` 语义原样呈现（1 未配凭据 / 2 上游失败 / 3 触红线 / 5 幻觉巡检），工作台不替脚本重试 |
 | **主循环被任务拖慢 / 效率前提** | `AGENTS.md`「效率是前提，慢手段只能进离线旁路，不进主循环/终端/飞书」。规避：`TaskSupervisor` 是 daemon 线程，不参与 `scan_with_raw`；只读任务可并发 3、`exclusive` 1、总 `running ≤ 4`；任务 stdout/stderr 一律写文件（`propagate=False` 同款纪律），**绝不回灌扫描器终端**（`handle_error` 的「终端是主输出面」同理）；任务不进主循环、不进终端渲染、不进飞书 |
 
 ### 2.5 打包态：standalone Python 能不能跑？依赖 / 落点 / env / 日志
@@ -137,10 +155,10 @@
 
 | 档 | 命令示例 | 打包态能跑吗 | 门禁 |
 |---|---|---|---|
-| **D0 纯标准库 + 已锁 5 依赖** | `-m scanner.hot_watch --offline-demo`、`-m scanner.historical_watch --offline-demo`、`-m scanner.offboard_watch --offline-demo`、`-m scanner.crosssection --health`、`python diag_health.py`、`python diag_capture.py`、`python query_today.py`、`python query_summary.py`、`-m scanner.ai_digest --materials`、`-m scanner.ai_digest --demo`、`python scripts/buy_priority_report.py --no-ann` | ✅ 能（零网络、零新增 import） | **P0 只放这一档** |
+| **D0 纯标准库 + 已锁 5 依赖** | `-m scanner.hot_watch --offline-demo`、`-m scanner.historical_watch --offline-demo`、`-m scanner.offboard_watch --offline-demo`、`-m scanner.crosssection --health`、`python diag_health.py`、`python diag_capture.py`、`python query_today.py`、`python query_summary.py`、`-m scanner.ai_digest --materials`、`python scripts/buy_priority_report.py --no-ann` | ✅ 能（零网络、零新增 import） | **P0 只放这一档** |
 | **D1 触发 `akshare` / `numpy` / `pandas` 传递依赖** | `python today_report.py`、`python stock_report.py 300319 --quick`、`python prevday_perf.py`、`-m scanner.backtest --days 60 --metric next_day_pct` | 🟡 **未保证**：lock 未固定传递依赖，`fetch-python.mjs` 装的版本可能漂移（`requirements.txt` 自己写了「无上界时 CI 每次全新安装都会拉最新版…静默返回不同数据」） | 进 catalog 前必须在 **standalone `python.exe`** 里真跑 `python -c "import <script 的模块级依赖>"`，逐条 exit 0；把 `prepare.mjs` 现有的 `import unified_scanner` 前置扩成「catalog import 清单」，任一失败即 `prepare` 红 |
 | **D2 需可选 / 未声明依赖** | `pywencai` 路径（`fundamentals.py` 兜底）、`ths_api_probe.py` | ⛔ 默认跳过（`fundamentals.py` 已「未安装自动跳过」）；工作台不把「可选依赖」做成一键任务 | catalog 标 `requiresOptional: true` 且默认隐藏 |
-| **D3 需 `MAGPIE_*` 凭据 + 联网** | `python pick.py --clipboard`、`-m scanner.ai_digest`（默认 research）、`buy_priority_report.py --ai N` | ⛔ **打包态默认缺凭据**（`.env` 不进包，指 `userData/.env`，用户要自己拷一次）⇒ 脚本 exit 1 | 工作台把「未配凭据」当**可呈现的 failed 态**（显示 exit 1 与日志），不崩、不重试、不弹内部纪律文案；P2 才开放 |
+| **D3 需 `MAGPIE_*` 凭据 + 联网（AI 分析主入口的默认档）** | `python -m scanner.ai_digest`（**AI 分析主入口**，默认 research）、`python pick.py --clipboard`（剪贴板清单的等价 / 可选入口）、`buy_priority_report.py --ai N` | ⛔ **打包态默认缺凭据**（`.env` 不进包）⇒ 脚本 exit 1 | 工作台把「未配凭据」当**可呈现的 failed 态**（显示 exit 1、日志与 `logs/ai_digest/YYYY-MM-DD/` 归档路径），不崩、不重试、不弹内部纪律文案；P2 才开放 |
 | **D4 会写库 / 会覆盖冻结值** | `backfill_kline.py`、`backfill_market_index.py --overwrite-live`、`ann_cache_sync.py --migrate-legacy` | ⚠ 能跑但**危险** | P2 才开放，且默认带 `--dry-run`，必须过确认弹层 |
 
 > **结论（不「看情况」）**：P0 catalog **只能是 D0**；任何命令进 catalog 的准入判据 = 在 `resources/python/python.exe` 下 `python -c "import …"` 全 exit 0 **且** `outbound=none` **且** `writesDb=false`。这一条写进 `prepare.mjs` 前置，失败即打包红 —— 复用了 §6「`python-dotenv` 漏声明，打包才炸」的实测教训。
@@ -155,11 +173,12 @@
   artifacts/       # --out 的报告只准落这里
 ```
 
-- **绝不写 `resources/repo`**（安装态可能只读）；若任务管理器自身需要持久化，用 `<userData>/tasks.db`，不新增 `scanner.db` 实例。
-- **种子不覆盖 / WAL 不进包 / `.env` 不进包**三条纪律原样保留；任务写的是同一个 `userData/scanner.db`。
+- **绝不写 `resources/repo`**（安装态可能只读）；若任务管理器自身需要持久化，用 `<userData>/tasks.db`，**不新增第二份 `scanner.db`**（本机活库唯一）。
+- **WAL 不进包 / `.env` 不进包**两条纪律保留；**「种子不覆盖 / 从包内冷快照种独立库」已被 2026-11-15 口径推翻**：打包态不再种 `userData/scanner.db`，桌面版与终端共用本机最新活库 `scanner.db`；任务、主循环、桌面版读到的都是这同一份，不存在「第二个库」，也不允许出现第二个独立写者。
 - **`--out` 路径守卫**：只接受**相对文件名**，服务端拼到 `artifacts/` 下；绝对路径、`..`、盘符、`%5C` 变体一律 `400 BAD_REQUEST`（复用 `_static()` 的 `normpath + startswith` 同款思路）。
+- **AI 归档路径（「结果在哪」）**：AI 分析主入口默认归档 `logs/ai_digest/YYYY-MM-DD/`。注意 `archive.DEFAULT_ARCHIVE_DIR` 是**相对 `cwd`**（`repoRoot()`），而打包态 `RTS_LOG_DIR` 指向 `userData/logs` —— 两者在打包态可能不一致，工作台「结果在哪」必须回显**实际解析到的归档目录**而非硬编码；统一方式留实施期由 Developer / Operator 定，本次不改生产代码。
 
-**env 净化**：任务 subprocess 用 `env = os.environ.copy()`（扫描器进程已净化的那份）+ `cwd=repoRoot()` + `sys.executable` + `shell=False` 的 `list[str]` argv。**不重新拼 env、不引入 `PYTHONPATH`**；额外只加非 Python 变量 `RTS_TASK_ID` / `RTS_TASK_DIR`。`SCRUBBED_ENV` 7 变量与 `PYTHONNOUSERSITE=1`、`PYTHONUNBUFFERED=1`、`PYTHONIOENCODING=utf-8` 天然继承（后者解决 `label_registry` 等需要 UTF-8 控制台的脚本）。
+**env 净化**：任务 subprocess 用 `env = os.environ.copy()`（扫描器进程已净化的那份）+ `cwd=repoRoot()` + `sys.executable` + `shell=False` 的 `list[str]` argv。**不重新拼 env、不引入 `PYTHONPATH`、不把 `RTS_DB_PATH` 改指 `userData/scanner.db` 或包内冷快照**；额外只加非 Python 变量 `RTS_TASK_ID` / `RTS_TASK_DIR`。`SCRUBBED_ENV` 7 变量与 `PYTHONNOUSERSITE=1`、`PYTHONUNBUFFERED=1`、`PYTHONIOENCODING=utf-8` 天然继承（后者解决 `label_registry` 等需要 UTF-8 控制台的脚本）。
 
 **日志落哪 / 不刷终端**：沿用 `_ensure_file_log` 的动机 —— 扫描器 stdout 是主输出面，`socketserver` 默认把 traceback 打 stderr 会刷屏。任务 stdout/stderr **只落文件**，UI 只从 `GET /api/tasks/{id}/log?offset=` 拉；任务 logger 同样 `propagate=False`。总日志量裁剪：保留最近 `MAX_HISTORY=200` 条任务的 `meta.json`（不可删，用于孤儿清扫），单任务 `stdout.log` 超 `MAX_LOG_BYTES=2 MiB` 只截尾部并记 `truncated:true`。
 
@@ -184,6 +203,7 @@
 4. **时间点隔离**：接管发生在 `createWindow()` 之前的启动阶段；工作台启停发生在之后的交互阶段。两者不是同一个动作，也不重叠 ⇒ 不自相矛盾。
 5. **分期**：P0/P1/P2 **完全不碰** `main.js` 的启动语义（沿用 §5.3 差异记录，工作台只显示状态、启停按钮置灰标「由桌面壳管理」）；**P3** 才引入 `RTS_SCANNER_OWNERSHIP` 与 `/api/tasks/scanner`，并给 `tests/test_desktop_shell.py` **追加**守卫（14 条既有字面量一个不动）。
 6. 保留既有开发态旁路 `RTS_DESKTOP_SCANNER_ARGS="--no-lock --no-feishu"`（`main.js` 文件头注释里的正当联调用法），规格注明「这是人工调试口，工作台表单不得复用」。
+7. **残留待拍板（口径修正带入）**：新口径要求「共用同一份本机活库 + 桌面版不得成为第二个写者」，但现状 `takeover` 默认会由壳自己拉起一份 `unified_scanner.py` 去写同一份库。实施前需 Lichun 定：打包态默认是否改为 `attach`（壳只连终端实例、零写），或桌面版对该库只读、启停一律交终端。此项未定前，§10「无第二写入者」判据不算闭环。
 
 ---
 
@@ -193,9 +213,9 @@
 
 | 档 | 定义 | 执行前确认 | 并发限制 | 超时（硬上限） | 日志留痕 |
 |---|---|---|---|---|---|
-| **R 只读** | 零写库、零外呼、零副作用；只读 `scanner.db` / `logs/` / 内置样本；`writesDb=false ∧ outbound=none` | **无**，一键执行 | 最多 **3** 并发（与总 `running ≤ 4` 取小）；`queued` 上限 20 | **60s**（`--offline-demo` / `--demo` / `--no-ann` 档 30s） | `task_id` / `catalogId` / 脱敏 argv / `createdAt·startedAt·finishedAt` / `exitCode` / `stdout.log` 字节数 / `artifacts[]`；日志落 `logs/tasks/<id>/`，meta 不可删 |
+| **R 只读** | 零写库、零外呼、零副作用；只读 `scanner.db` / `logs/` / 内置样本；`writesDb=false ∧ outbound=none` | **无**，一键执行 | 最多 **3** 并发（与总 `running ≤ 4` 取小）；`queued` 上限 20 | **60s**（`--offline-demo` / `--materials` / `--no-ann` 档 30s） | `task_id` / `catalogId` / 脱敏 argv / `createdAt·startedAt·finishedAt` / `exitCode` / `stdout.log` 字节数 / `artifacts[]`；日志落 `logs/tasks/<id>/`，meta 不可删 |
 | **W 写库** | 会 `INSERT/UPDATE/DELETE` `scanner.db`（`backfill*` / `repair*` 真写 / `--apply` / `--backfill` / `--migrate-legacy` / `--overwrite-live`） | **必须显式确认弹层**：列出命令原文、目标表 / 影响面、是否 `--dry-run`、`RTS_DB_PATH`、预计耗时；且「确认执行」默认 disabled，须勾选一个显式 checkbox 才启用。**默认一律带 `--dry-run`**，去掉 dry-run 要二次勾选 | **全局串行 1**：`exclusive_slot` 容量 1（与 N 档共用）；且必须过 `round_gate`（等主循环本轮写事务提交，70s 等不到 → `cancelled` + `TASK_BUSY`）；排队态 `queued` | **600s**（回填类可 1800s，但必须在 catalog 里逐条声明） | R 档全部 **+**：确认时刻、确认者「本机」、`dryRun: true/false`、DB 路径、`round_gate` 等待时长、任务前后不主动 `wal_checkpoint`；日志**不可删**（供孤儿清扫与审计） |
-| **N 外呼** | 联网 AI 网关（MAGPIE）/ 东财 / 雪球 / 公告 / 龙虎榜 / 分时；`outbound ∈ {ai_gateway,eastmoney,xueqiu}` | **必须显式确认弹层**：列出会访问哪类上游、是否消耗凭据、是否推飞书（恒为「否」）、调用预算 / 预计耗时；`--ai N` / `--max-calls` 需填预算 | **全局串行 1**（与 W 共用 `exclusive_slot`，理由见 §2.4 东财 IP 限频）；幂等键 5 分钟去重；同 `catalogId` 60s 节流 | **180s**（`--ai N` / `--max-calls` 类 900s） | R 档全部 **+**：上游类别、幂等键、**不记任何凭据 / token**、`exit code` 语义原样（1/2/3/5）、产出路径；上游失败不重试 |
+| **N 外呼** | 联网 AI 网关（MAGPIE）/ 东财 / 雪球 / 公告 / 龙虎榜 / 分时；`outbound ∈ {ai_gateway,eastmoney,xueqiu}`；**AI 分析主入口 `python -m scanner.ai_digest` 默认档归此类** | **必须显式确认弹层**：列出会访问哪类上游、是否消耗凭据、**是否会自动归档文件**、是否推飞书（恒为「否」）、调用预算 / 预计耗时；`--ai N` / `--max-calls` 需填预算 | **全局串行 1**（与 W 共用 `exclusive_slot`，理由见 §2.4 东财 IP 限频）；幂等键 5 分钟去重；同 `catalogId` 60s 节流 | **180s**（`--ai N` / `--max-calls` 类 900s） | R 档全部 **+**：上游类别、幂等键、**不记任何凭据 / token**、`exit code` 语义原样（1/2/3/5）、产出路径与「结果在哪」（含 AI 分析主入口自动归档的 `logs/ai_digest/YYYY-MM-DD/`）；上游失败不重试 |
 
 **横切硬规则**
 
@@ -203,6 +223,7 @@
 - **飞书永不入档**：catalog 的 `outbound` 枚举里没有 `feishu`；任何任务都不注入 / 不放开 `RTS_FEISHU_WEBHOOK` 与 `RTS_PUSH_GATE`。
 - **失败 fail-open 边界**：任务管理器自身异常（写日志失败、meta 落盘失败）按 `AGENTS.md` 只 catch `EXTERNAL_FAILURES`（`OSError`/`timeout`/`requests`/`sqlite3.Error`/`ValueError`/`KeyError`），编程错误冒泡，不裸 `except Exception`；任务失败**不阻断**扫描主循环（与 `panel_reporter` / `start_server` 的同款纪律）。
 - **不重算、不第二结论源**：`--mode analyze` / `--mode transcribe` / `buy_priority_report.py` 的报告内容**只作为文件产出**，UI 不渲染成判断；`ai_digest` 档案「只归档、不回灌」纪律不变。
+- **AI 分析主入口的分级（2026-11-15 口径）**：`python -m scanner.ai_digest`（默认 research）属 **N 档** —— 出网、耗 `MAGPIE_*` 凭据、**会自动归档文件**到 `logs/ai_digest/YYYY-MM-DD/`，必须显式确认 + `exclusive_slot` 全局串行 + 幂等，失败按 exit code 1/2/3/5 原样呈现，**不重试、不把报告渲染成判断**；`--materials` 属 **R 档零出网零写库**（工作台侧对 R 档任务不注入 / 不放开 `MAGPIE_*`，把「零出网」写成可判定断言），无需确认、可一键；`--demo` / `--json --demo` **只跳过读库，仍走 research 工具链会联网**，实测 2026-11-15 归 **N 档需确认**；`pick.py --clipboard` 与主入口同属 N:ai，但只是剪贴板清单的**等价 / 可选入口**。「结果在哪」只回显 `logs/ai_digest/YYYY-MM-DD/` 归档路径，不回显报告内容。
 
 ---
 
@@ -221,8 +242,8 @@
 | `python unified_scanner.py --no-feishu` | **D** | — | 同上；且工作台不提供放开飞书的开关，只在 P3 的启动参数里做只读回显 |
 | `python unified_scanner.py --no-panel` | **D** | — | 会关掉看板本身（看板靠 `RTS_LOCAL_PANEL`，`--no-panel` 只关云端上报，语义易混）；不给用户这个开关 |
 | `python unified_scanner.py --no-lock` | **D（禁搬）** | — | **危险**：跳过单实例锁「会和已有实例抢库」（`COMMANDS.md` §1 原文），与 §2.4 全部规避方案冲突；catalog 白名单硬拒该 token，新测断言 |
-| 终端按 `c` 复制两区完整原文 | **D（收编，不模拟按键）** | — | 是主循环内键盘交互（`scanner/terminal_copy.py`），工作台不在那个进程。改由「一键调研」一步提交等价入口（见 §4.3），**不重写抽码 / 提示词** |
-| `RTS_CROSSSECTION=0` / `RTS_HOT_WATCH=0` 等 §8 开关 | **D（映射到状态面板，不是任务）** | — | env 开关归 P3「扫描器状态与开关」；`RTS_DB_PATH` / `RTS_ENV_FILE` / `RTS_LOG_DIR` **禁止**工作台改（破 `userData` 纪律） |
+| 终端按 `c` 复制两区完整原文 | **D（收编，不模拟按键）** | — | 是主循环内键盘交互（`scanner/terminal_copy.py`），工作台不在那个进程。**新口径不再要求先按 `c`**：直接一步提交 AI 分析主入口 `python -m scanner.ai_digest`（默认读 `股票池.md` 面板原文）；剪贴板只作可选等价入口（见 §4.3），**不重写抽码 / 提示词** |
+| `RTS_CROSSSECTION=0` / `RTS_HOT_WATCH=0` 等 §8 开关 | **D（映射到状态面板，不是任务）** | — | env 开关归 P3「扫描器状态与开关」；`RTS_DB_PATH` / `RTS_ENV_FILE` / `RTS_LOG_DIR` **禁止**工作台改（新口径下尤其不得把 `RTS_DB_PATH` 改指分家库 / 包内冷快照） |
 
 ### 4.2 §2 看盘 / 报表 · §2.1 买入优先级反馈报告
 
@@ -248,42 +269,45 @@
 | `python scripts/buy_priority_report.py --minute N` | **B** | N:xq | 雪球分时，+18s；需输入 N 并提示耗时 |
 | `python scripts/buy_priority_report.py --ai N` | **B** | N:ai | **≈60s/只**，AI 深度复核；需预算输入 + 确认 + 900s 硬超时；P2 才开放 |
 
-### 4.3 §3 AI 分析（含「一键调研」）
+### 4.3 §3 AI 分析（主入口 `python -m scanner.ai_digest`）
+
+> **主入口（2026-11-15 Lichun 确认）**：`python -m scanner.ai_digest` 系列 = **AI 分析主入口**（默认 research，模型自查真实数据、出排序与判断、自动归档 `logs/ai_digest/YYYY-MM-DD/`、只归档不回灌、需 `MAGPIE_*` 且出网）。`pick.py --clipboard` 只是剪贴板清单的**等价 / 可选入口 / 次要选项**，不是默认入口、不是核心命令；云端 `/api/ai-explain` 那套 LLM 转录**不属于本动作面口径**。手工链路不再走「按 `c` → `pick.py`」。
 
 | 命令 | 分类 | 档 | 理由 |
 |---|---|---|---|
-| `python -m scanner.ai_digest` | **C** | N:ai | 默认 research，模型自己查真实数据 + 自动归档；出网且耗凭据 ⇒ 需确认；报告只作文件产出 |
-| `python -m scanner.ai_digest --brief` | **C** | N:ai | 一屏报告；同上 |
+| `python -m scanner.ai_digest` | **C** | N:ai | **AI 分析主入口（默认 research）**：默认读 `股票池.md` 面板原文、模型自己查真实数据并出排序与判断；报告自动归档 `logs/ai_digest/YYYY-MM-DD/`、只归档不回灌库；**出网 + 耗 `MAGPIE_*` 凭据 + 会归档文件** ⇒ 需确认 + 全局串行 + 幂等；报告只作文件产出，UI 只回显「结果在哪」 |
+| `python -m scanner.ai_digest --brief` | **C** | N:ai | 主入口的一屏报告档；同上（N 档确认 + 串行） |
 | `python -m scanner.ai_digest --limit 3` | **B** | N:ai | 「每区只取前 3 只（按区截断）」需输入；口径说明原样带进表单帮助文字 |
-| `python -m scanner.ai_digest --materials` | **A** | R | **只打模型会收到的提示词，不出网**；核对输入用，零副作用；**P0 首选** |
-| `python -m scanner.ai_digest --source print --materials` | **A** | R | 核对输入 = 终端最后打印行（带 seq 与「数据 X 分钟前 / 非实时」）；零出网 |
-| `python -m scanner.ai_digest --demo` | **A** | R | 内置样例，**零库零网，验证整条链路**；**P0 首选** |
-| `python -m scanner.ai_digest --json` | **A** | R/N:ai | `--json` 单独跑仍需出网；与 `--demo`/`--materials` 组合才是 R 档 |
+| `python -m scanner.ai_digest --materials` | **A** | R | **R 档零出网零写库**：只打模型会收到的提示词，不出网、不耗凭据、不归档；核对输入用；**P0 首选** |
+| `python -m scanner.ai_digest --source print --materials` | **A** | R | **R 档零出网**：核对输入 = 终端最后打印行（带 seq 与「数据 X 分钟前 / 非实时」）；`--source print` 是可选来源，主入口默认 `auto` 优先 `股票池.md` 面板原文 |
+| `python -m scanner.ai_digest --demo` | **C** | N | **实测修正（2026-11-15）**：只跳过读库，仍走 research 工具链、会联网耗凭据；需确认 + 串行，不进 P0 |
+| `python -m scanner.ai_digest --json` | **C** | N:ai | 主入口的机器可读出口；单独跑仍走默认 research ⇒ 出网 + 耗凭据，N 档需确认 |
+| `python -m scanner.ai_digest --json --demo` | **C** | N | 同 `--demo`：仍走工具链会联网；机器可读输出，需确认，不进 P0 |
 | `python -m scanner.ai_digest --out 报告.txt --max-calls 40` | **B** | N:ai | 落盘路径 + 调用预算双参数 |
 | `python -m scanner.ai_digest --mode analyze` | **C** | N:ai | 按历史分层命中率算账，`AGENTS.md` 明写「无第二结论源纪律的**有意例外**」⇒ 必须确认；UI 只显示「结果在哪」，不渲染判断 |
-| `python -m scanner.ai_digest --mode transcribe` | **C** | N:ai | 纯转述过全部红线，触红线 exit 3；失败态要原样呈现 exit code |
-| `python -m scanner.ai_digest --no-archive` / `--archive-dir D:/复盘` | **B** | N:ai | 归档开关 / 根目录需表单；`--archive-dir` 绝对路径必须被服务端重写到 `artifacts/`（路径守卫） |
-| `python pick.py` （交互粘贴，空行结束） | **D** | — | 交互式 stdin，桌面表单不做粘贴会话；改走 `--clipboard` / `--symbols-file` / 直接给代码 |
+| `python -m scanner.ai_digest --mode transcribe` | **C** | N:ai | 纯转述过全部红线（与云端 `/api/ai-explain` 同款纪律，但本动作面只跑本机命令、不接云端端点），触红线 exit 3；失败态要原样呈现 exit code |
+| `python -m scanner.ai_digest --no-archive` / `--archive-dir D:/复盘` | **B** | N:ai | 默认归档 `logs/ai_digest/YYYY-MM-DD/`；`--no-archive` / `--archive-dir` 需表单，绝对路径必须被服务端重写到 `artifacts/`（路径守卫）；「结果在哪」回显实际归档目录 |
+| `python pick.py` （交互粘贴，空行结束） | **D** | — | 交互式 stdin，桌面表单不做粘贴会话；改由主入口 `python -m scanner.ai_digest --symbols` / `--symbols-file` 给代码，`--clipboard` 仅作可选 |
 | `python pick.py 300319 300666 SZ300770` | **B** | N:ai | 直接给代码（一次 ≤50 只）需清单输入与数量校验 |
-| `python pick.py --clipboard` | **C** | N:ai | **一键调研的核心命令**：读 Windows 剪贴板；出网 + ≈60s/只 ⇒ 确认 + 串行 + 幂等 |
+| `python pick.py --clipboard` | **C** | N:ai | **等价 / 可选入口（已降级，非默认入口、非核心命令）**：仅当用户已按 `c` 把两区原文放进剪贴板时，读 Windows 剪贴板并转交同一 `ai_digest` 主入口；出网 + 耗凭据 ⇒ 确认 + 串行 + 幂等 |
 | `python pick.py --symbols-file list.txt` | **B** | N:ai | 文件清单需表单；路径只准相对 `artifacts/` |
 | `python pick.py --clipboard --limit 10` | **B** | N:ai | 「面板票多时只取前 10 只（按面板顺序）」需输入 |
 | `python pick.py --clipboard --out 报告.txt --max-calls 50` | **B** | N:ai | 落盘 + 预算 |
-| `python -m scanner.ai_digest --symbols ...` | **B** | N:ai | 等价长命令（`pick.py` 只是简写）；不重复做两个按钮，表单里给「等价入口」说明 |
-| `scripts/` 里另写报告脚本 | **D（禁止）** | — | `COMMANDS.md` §7.1 原文「B 段 AI 分析走 `python -m scanner.ai_digest` / `pick.py`，**不要另写报告脚本**」 |
+| `python -m scanner.ai_digest --symbols ...` | **B** | N:ai | **主入口的自选清单档**；`pick.py` 只是它的**简写**（反向说明），目录里以 `-m scanner.ai_digest` 为主命令串，不重复做两个按钮；表单里给「等价入口」说明 |
+| `scripts/` 里另写报告脚本 | **D（禁止）** | — | `COMMANDS.md` §7.1 原文「B 段 AI 分析走 `python -m scanner.ai_digest`（`pick.py` 为简写），**不要另写报告脚本**」；主入口恒为 `-m scanner.ai_digest` |
 | §3.2 TradingAgents-astock | **D** | — | 已评估、已删除（2026-11-03 用户决策）；不进 catalog |
-| `ls logs/ai_digest/YYYY-MM-DD/` | **D（映射到历史）** | — | shell 命令不是 python 任务；由任务中心的「产出文件」呈现 |
+| `ls logs/ai_digest/YYYY-MM-DD/` | **D（映射到历史）** | — | shell 命令不是 python 任务；由任务中心「结果在哪 / 产出文件」呈现归档路径 `logs/ai_digest/YYYY-MM-DD/` |
 
-**「一键调研」怎么把手工链路收成一步（不重写业务逻辑）：**
+**AI 分析主入口怎么把手工链路收成一步（不重写业务逻辑）：**
 
-> 手工链路（§1/§3.1）：终端按 `c` → 两区完整原文进剪贴板 → `python pick.py --clipboard` → 报告。
-> 工作台一步 = 提交 **一个** subprocess 任务，命令来自 `COMMANDS.md`，参数由服务端 catalog 固定：
-> `python -m scanner.ai_digest --brief --source print`
-> - `--source print` = `offboard_print_snapshot`「终端最后一次打印的行，含留存行、顺序即屏幕顺序」（`AGENTS.md` Key facts 指定的终端真源），输出自带 `print_seq` 与「数据 X 分钟前 / 非实时」；来源缺失时脚本自己回退 print → view → log（`COMMANDS.md` §3.0），**工作台不实现回退、不拼提示词、不抽码**。
-> - 表单里可选 `--source auto|print|view|log` 与 `--limit N`；默认 `print`。
-> - UI 在按钮旁显示输入事实：`输入 = 终端最后打印行 · seq N · 数据 X 分钟前 / 非实时`；**不显示任何报告结论**。
-> - 若用户已手动按过 `c`，表单提供 `--clipboard` 等价入口（`pick.py --clipboard`），二选一，不并行。
-> - P0/P1 默认给 `--materials` / `--demo` 档（零出网）验证链路；真出网 `--brief` 留到 P2 且必须过确认弹层。
+> 旧链路（**已被 2026-11-15 口径推翻**）：终端按 `c` → 两区完整原文进剪贴板 → `python pick.py --clipboard` → 报告。
+> 新链路（**权威口径**）：**直接跑 `python -m scanner.ai_digest`**（默认 research，读 `logs/panel_md/股票池.md` 面板原文），报告自动归档 `logs/ai_digest/YYYY-MM-DD/`；面板文件缺失时脚本自己回退 print → view → log。
+> 工作台一步 = 提交 **一个** subprocess 任务，命令原文取 **AI 分析主入口**，参数由服务端 catalog 固定：`python -m scanner.ai_digest`（可加 `--brief` / `--limit N` / `--source ...`）。
+> - `--source auto`（默认）优先 `股票池.md` 面板原文（`v1 池选` + `沪深飙升` 三段，保留全部列与各区口径），缺失时自动回退 print → view → log（`COMMANDS.md` §3.0）；**工作台不实现回退、不拼提示词、不抽码**。`--source print` 可读 `offboard_print_snapshot`「终端最后一次打印的行，含留存行、顺序即屏幕顺序」，输出自带 seq 与「数据 X 分钟前 / 非实时」。
+> - 表单里可选 `--source auto|panel|print|view|log` 与 `--limit N`；默认 `auto`（即面板原文），不再默认 `print`。
+> - UI 在按钮旁显示输入事实与「结果在哪」：`输入 = 股票池.md 面板原文 · 本轮轮次 …`、归档路径 `logs/ai_digest/YYYY-MM-DD/`；**不显示任何报告结论、不把报告渲染成判断**。
+> - 若用户已手动按过 `c`，表单可提供剪贴板**等价 / 可选入口**（`pick.py --clipboard` 或 `-m scanner.ai_digest --clipboard`），二选一，不并行；它不替代主入口。
+> - P0/P1 默认给 `--materials`（**R 档零出网零写库**）验证链路；`--demo` / `--json --demo` 实测仍联网，归 N 档不进 P0；默认 research 真出网档留到 P2 且必须过确认弹层，失败态按 exit code 1/2/3/5 原样呈现、**不重试**。
 
 ### 4.4 §4 数据回填 / 修复 / 诊断
 
@@ -362,7 +386,7 @@
 ### 4.8 最该先做的一档
 
 > **P0 = R 档「零参数 + 零写库 + 零外呼」一键化**，具体 8 条：
-> `-m scanner.hot_watch --offline-demo`、`-m scanner.historical_watch --offline-demo`、`-m scanner.offboard_watch --offline-demo`、`-m scanner.crosssection --health`、`python diag_health.py`、`python diag_capture.py`、`python query_today.py`、`python query_summary.py`，外加 `-m scanner.ai_digest --demo` / `--materials`、`python scripts/buy_priority_report.py --no-ann`、`python backfill_kline.py --dry-run --days 120`、`python scripts/shadow_feature_backtest.py --no-fetch`。
+> `-m scanner.hot_watch --offline-demo`、`-m scanner.historical_watch --offline-demo`、`-m scanner.offboard_watch --offline-demo`、`-m scanner.crosssection --health`、`python diag_health.py`、`python diag_capture.py`、`python query_today.py`、`python query_summary.py`，外加 `-m scanner.ai_digest --materials`（**R 档零出网零写库**；`--demo` 实测仍联网归 N 档；**主入口默认 research 出网档不进 P0**）、`python scripts/buy_priority_report.py --no-ann`、`python backfill_kline.py --dry-run --days 120`、`python scripts/shadow_feature_backtest.py --no-fetch`。
 > 理由：① 全部满足 §2.5 的 D0 门禁（standalone 解释器必能 import）；② 零 `scanner.db` 写、零出网 ⇒ §2.4 的 WAL 写锁 / 重复推飞书 / IP 限频三条风险**全部不存在**；③ 无需确认弹层与 `exclusive_slot`，任务管理器可以先只做「提交 / 查询 / 日志回显」最小闭环；④ 三条 `--offline-demo` 自带 exit 0 断言，是天然验收信号。
 >
 > **逐字门禁注**：`COMMANDS.md` §2 把 `query_today.py` / `query_summary.py` 写在**同一行合并单元格**（`| \`python query_today.py\` / \`query_summary.py\` |`），故 `python query_summary.py` 这一整串在文档里 `grep -F` 不命中。`prototype.html` 的动作目录为满足 §10「假任务名逐条 `grep -F` 命中」，该位改用逐字出现的 `python today_report.py`（`COMMANDS.md:47`）；生产 catalog 仍按 §4.2 同时收录 `query_today.py` 与 `query_summary.py`（以脚本文件名为准，不依赖文档排版）。
@@ -479,7 +503,7 @@
 
 **任务管理器放哪：`scanner/local_tasks.py` 的 `TaskSupervisor`，跑在扫描器 Python 进程内的一条 daemon 线程。**
 
-选它的 4 条可判定理由：① 与扫描器共享**同一份已净化 env / `sys.executable` / `RTS_DB_PATH` / `LOG_DIR`**（§2.5 的硬前提，独立进程会全部丢掉）；② 不需要第二端口 / 第二探活 / 第二套 env 净化守卫；③ 与 `run_scanner` **同进程**才能做 `round_gate`（§2.4），把写库任务排到主循环写事务之后；④ 零新增进程类型、零新增依赖。
+选它的 4 条可判定理由：① 与扫描器共享**同一份已净化 env / `sys.executable` / `RTS_DB_PATH` / `LOG_DIR`**（§2.5 的硬前提，独立进程会全部丢掉；新口径下 `RTS_DB_PATH` 恒指向同一份本机最新活库 `scanner.db`）；② 不需要第二端口 / 第二探活 / 第二套 env 净化守卫；③ 与 `run_scanner` **同进程**才能做 `round_gate`（§2.4），把写库任务排到主循环写事务之后；④ 零新增进程类型、零新增依赖。
 **否决「独立进程管理器」**：独立进程拿不到主循环的轮边界，写库并发只能退化为 `busy_timeout` 硬等；且要重做 env 净化与 `userData` 推导，`IMPLEMENTATION.md` §6 的三个实测坑会复现。
 
 **与主循环的关系**
@@ -527,17 +551,17 @@ unified_scanner.py (主进程)
 | **Title** | 全宽 48px，`--surface-0` + 品牌径向光晕 | 左：logo 30×30 + 产品名 15.5px + 副名 10px `--brand-soft`；右：`本机 · 动作面` chip（26px 高）+ 238×34 状态胶囊（沿用 v2 五态，`aria-live`） |
 | **Readout** | 全宽 76px，`--surface-1` | 只读任务事实：`运行中 1` / `排队 2` / `最近一次 <command>` / `成功 12 · 失败 1`（22px tabular-nums）；**不派生指标、不放 KPI 墙** |
 | **动作目录** | 侧栏 208px（含顶部 36px 分段），每项 44px | 按安全档分组「只读 / 写库 / 外呼」，组标签 10px `micro`；每项 = 档位色点（6px，**不用涨跌色**）+ 13px 命令短名 + 右对齐档位徽章；选中态 `--surface-3` + 左 3px `--brand` 色条（与 v2 `.nav-item` 同款） |
-| **卡 A · 参数表单** | 主区上部，card-head 58px + body ≈ 200px（`--surface-2` / 10px 圆角 / 顶部内高光 / 单层浅阴影） | 两列字段，每行 32px：下拉（等价入口 / `--source` / `--mode`）、输入（`--date` / `--top` / `--days` / `--symbols` / `--limit` / `--out`）、开关（`--quick` / `--no-ann` / `--json` / `--dry-run` / `--materials`）；标签 11px `--text-3`，控件 30px、`--surface-0` 底 + 1px `--line`；**所有控件能改值**，底部一条 11px mono「将执行：`python …`」实时预览（服务端下发 argv，前端只拼展示串） |
-| **卡 A 内 · 一键调研** | 主区，紧接表单，高 72px（card 内独立分区，1px `--line-soft` 分隔） | 左：13px 主句「一键调研」+ 11px/1.65 口径句「输入 = 终端最后打印行 · seq 99 · 数据 3 分钟前 / 非实时」（事实，不推断）；右：主按钮「执行调研」（34px 高，`--brand` 底，三态齐全）。提交 `-m scanner.ai_digest --brief --source print`；P0 原型默认 `--materials` 零出网档，真出网走确认弹层 |
+| **卡 A · 参数表单** | 主区上部，card-head 58px + body ≈ 200px（`--surface-2` / 10px 圆角 / 顶部内高光 / 单层浅阴影） | 两列字段，每行 32px：下拉（主入口档位 / `--source` / `--mode`）、输入（`--date` / `--top` / `--days` / `--symbols` / `--limit` / `--out`）、开关（`--quick` / `--no-ann` / `--json` / `--dry-run` / `--materials`）；标签 11px `--text-3`，控件 30px、`--surface-0` 底 + 1px `--line`；**所有控件能改值**，底部一条 11px mono「将执行：`python …`」实时预览（服务端下发 argv，前端只拼展示串） |
+| **卡 A 内 · AI 分析主入口**（原型卡片名仍叫「一键调研」，本次不改 `prototype.html`，以本文口径为准） | 主区，紧接表单，高 72px（card 内独立分区，1px `--line-soft` 分隔） | 左：13px 主句「AI 分析 · 主入口 `python -m scanner.ai_digest`」+ 11px/1.65 口径句「输入 = `股票池.md` 面板原文 · 数据 X 分钟前 / 非实时 · 结果在哪：`logs/ai_digest/YYYY-MM-DD/`」（事实，不推断）；右：主按钮「执行 AI 分析」（34px 高，`--brand` 底，三态齐全）。提交 `python -m scanner.ai_digest`（可加 `--brief` / `--limit N` / `--source`）；P0 原型默认 `--materials` 零出网档（`--demo` 实测仍联网归 N 档），默认 research 真出网档留到 P2 且必须过确认弹层；剪贴板链路（`pick.py --clipboard`）只作可选等价入口 |
 | **卡 B · 任务中心** | 主区下部，head 58px + 列表 ≈ 240px + 日志区 200px | 列表每行 44px：状态徽章（`queued`/`running`/`ok`/`failed`/`cancelled`，配文字，色用 `--brand-soft`/`--brand`/`--amber`/`--coral`/`--text-4`，**不占涨跌色语义位**）+ 命令原文 mono 11.5px + 4px 进度条 + 耗时 + 「日志 / 取消 / 产出」按钮；日志区 `--surface-0` 底、mono 11px / 18px 行高、逐行追加、`overflow:auto` |
 | **卡 C · 扫描器状态与开关** | 右栏顶部 ≈ 168px | 状态点 + `seq` / 轮次时间（沿用 v2 五态语义，只显示不解释）+ 「启动 / 停止」34px 按钮；**P0–P2 置灰**并标「由桌面壳管理」（P3 才启用，见 §2.6）；**不出现 `--no-lock`** |
-| **卡 D · 历史记录** | 右栏 `flex:1`（`side-scroll`，padding 18） | 终态任务每行 36px：`state` / 命令短名 / `finishedAt` / `exitCode` / 产出路径；点击把该任务的日志回填到卡 B 日志区；空态沿用 v2 语法（纯 CSS 图形 + 「本轮无数据」+ `—（本轮无数据）`） |
-| **Footer** | 全宽 40px，`--surface-0`，10.5px | `动作在本机执行 · 结果落 logs/tasks/<id>/ · 命令来自本机脚本 · 数据版本 v2`；**不写内部纪律宣言、不写结论词** |
+| **卡 D · 历史记录** | 右栏 `flex:1`（`side-scroll`，padding 18） | 终态任务每行 36px：`state` / 命令短名 / `finishedAt` / `exitCode` / 产出路径（含 AI 分析主入口归档 `logs/ai_digest/YYYY-MM-DD/`）；点击把该任务的日志回填到卡 B 日志区；空态沿用 v2 语法（纯 CSS 图形 + 「本轮无数据」+ `—（本轮无数据）`） |
+| **Footer** | 全宽 40px，`--surface-0`，10.5px | `动作在本机执行 · 结果落 logs/tasks/<id>/ · AI 归档 logs/ai_digest/YYYY-MM-DD/ · 命令来自本机脚本 · 数据版本 v2`；**不写内部纪律宣言、不写结论词** |
 
 ### 7.3 危险操作确认弹层
 
 - `--surface-pop` 表面 + 10px 圆角 + `--shadow-pop` + 顶部内高光；140ms 淡入 + 4px 下沉（不是 toast、不自动消失）。
-- 内容（**只列执行事实，不替用户判断**）：命令原文（mono）、安全档、`会写 scanner.db 的目标表` 或 `会访问的上游类别`、`是否 dry-run`、`RTS_DB_PATH`、预计耗时、产出目录。
+- 内容（**只列执行事实，不替用户判断**）：命令原文（mono）、安全档、`会写 scanner.db 的目标表` 或 `会访问的上游类别`、`是否 dry-run`、`RTS_DB_PATH`（本机最新活库 `scanner.db`，与终端同一份）、预计耗时、产出目录（任务 `artifacts/` 与 AI 分析主入口归档 `logs/ai_digest/YYYY-MM-DD/`）。
 - 两个按钮「取消」「确认执行」；**W 档「确认执行」默认 disabled**，须勾选一个显式 checkbox（文案为「已核对命令与 dry-run 状态」，不是结论文案）才启用；N 档须勾「已知会出网并消耗调用预算」。
 - `Esc` / 外部点击关闭并把焦点还给触发按钮；`role=dialog aria-modal=true`，焦点进入时落在取消按钮；reduced-motion 时去掉淡入位移。
 - 点「确认执行」后请求体带 `confirm:{acknowledged:true, shown:[...]}`；服务端独立校验（前端勾了不算数）。
@@ -548,7 +572,7 @@ unified_scanner.py (主进程)
 
 ### 7.5 文案纪律
 
-- **动作面只呈现「执行了什么、结果在哪」**：命令原文、状态、进度、exit code、日志行、产出路径、耗时。
+- **动作面只呈现「执行了什么、结果在哪」**：命令原文、状态、进度、exit code、日志行、产出路径（含 AI 分析主入口自动归档的 `logs/ai_digest/YYYY-MM-DD/` 目录回显，只回显路径、不回显报告内容）、耗时。
 - 不出现 `推荐 / 建议 / 应该买 / 综合判断 / 更可能涨`（以及 `DESIGN.md` §8 / `test_panel_web_cols.py` 的 9 词表：`短名单/买入/卖出/持仓/目标价/止盈/止损`）。命令路径里的 `buy_priority_report.py` 是**真实文件名**，照抄；中文说明写「盘中反馈报告 · 纯本地档」，不写「买入优先级」。
 - 不把内部纪律写成 UI 文案（G5 / colSpec 单源 / 三端镜像 / `SCHEMA_VERSION` / D2 留在测试与注释里）。
 - 空态不推断原因（`COMMANDS.md` §10「B 段脚本刻意不给结论」同款）。
@@ -581,25 +605,25 @@ unified_scanner.py (主进程)
 | **范围** | §4.8 的 R 档一键命令；动作面视图骨架、分段切换、动作目录、命令预览、任务中心最小闭环（提交 / 查询 / 日志增量轮询）、原型四态 |
 | **文件** | 新增 `scanner/local_tasks.py`（catalog + Supervisor + `dispatch`）；`scanner/local_panel_server.py` **仅加 `do_POST` ≤8 行**；`unified_scanner.py` 启动段加一行 `local_tasks.install(...)`（不改主循环体）；新增 `web/src/lib/taskTypes.ts`（纯类型）、`web/src/components/workbench/{Workbench,TaskCenter,ParamForm,ConfirmDialog}.tsx`（纯渲染）、`web/src/index.css` 追加 `.wb-*` 结构类（**既有 token 值零改动**）、`web/src/api/client.ts` 加 `apiTasksGet/apiTasksPost`；新增 `tests/test_local_tasks.py`；`desktop/prepare.mjs` 的 CHECKS 追加「P0 catalog import 清单」 |
 | **风险** | ① 新增 `do_POST` 是否让 `test_local_panel.py` 红（不会，全是 GET 断言；加哈希基线守卫）；② standalone Python 缺传递依赖（用 D0 门禁 + `prepare.mjs` 真 import 拦）；③ 新 `.tsx` 触发 hygiene 守卫（不写 11 个列名 / 9 个结论词 / 裸 `fetch`）；④ `RTS_TASKS` 缺省关漏实现 → 端口一开就可写 |
-| **验证命令** | `python -m pytest tests/test_local_panel.py tests/test_local_tasks.py tests/test_desktop_shell.py tests/test_panel_contract.py -q`<br>`python -m scanner.hot_watch --offline-demo`（exit 0）<br>`python -m scanner.historical_watch --offline-demo` / `python -m scanner.offboard_watch --offline-demo`<br>`python -m scanner.crosssection --health`<br>`python diag_health.py`、`python query_today.py`、`python query_summary.py`<br>`python -m scanner.ai_digest --demo`、`python -m scanner.ai_digest --materials`<br>`python scripts/buy_priority_report.py --no-ann`<br>`python backfill_kline.py --dry-run --days 120`<br>打包态：`resources\python\python.exe -c "import scanner.hot_watch, scanner.historical_watch, scanner.offboard_watch, scanner.crosssection, diag_health, query_today, query_summary"`（exit 0）<br>`pnpm typecheck && pnpm build` |
+| **验证命令** | `python -m pytest tests/test_local_panel.py tests/test_local_tasks.py tests/test_desktop_shell.py tests/test_panel_contract.py -q`<br>`python -m scanner.hot_watch --offline-demo`（exit 0）<br>`python -m scanner.historical_watch --offline-demo` / `python -m scanner.offboard_watch --offline-demo`<br>`python -m scanner.crosssection --health`<br>`python diag_health.py`、`python query_today.py`、`python query_summary.py`<br>`python -m scanner.ai_digest --materials`<br>`python scripts/buy_priority_report.py --no-ann`<br>`python backfill_kline.py --dry-run --days 120`<br>打包态：`resources\python\python.exe -c "import scanner.hot_watch, scanner.historical_watch, scanner.offboard_watch, scanner.crosssection, diag_health, query_today, query_summary"`（exit 0）<br>`pnpm typecheck && pnpm build` |
 
 ### P1 · 报表参数化 + 任务中心
 
 | 项 | 内容 |
 |---|---|
-| **范围** | B 档命令（§4.2/§4.5/§4.6 表单）、参数校验与白名单 argv 拼装、任务列表四态 + 进度 + 逐行日志、历史记录、一键调研（`--materials`/`--demo` 零出网档先上）、`/api/tasks/catalog` / `history` / `{id}/log?offset=`、产出文件清单 |
+| **范围** | B 档命令（§4.2/§4.5/§4.6 表单）、参数校验与白名单 argv 拼装、任务列表四态 + 进度 + 逐行日志、历史记录、**AI 分析主入口 `python -m scanner.ai_digest` 的 R 档可呈现闭环**（提交 `-m scanner.ai_digest --materials` → `logs/tasks/<id>/` 日志与 `logs/ai_digest/YYYY-MM-DD/` 归档路径回显 → exit code 原样；零出网零写库、**不重试、不把报告渲染成判断**）、`/api/tasks/catalog` / `history` / `{id}/log?offset=`、产出文件清单 |
 | **文件** | `local_tasks.py` 扩 catalog 参数 schema + 路径守卫；`web/src/components/workbench/ParamForm.tsx` 成型；`client.ts` 扩 GET；`tests/test_local_tasks.py` 加注入 / 穿越 / 幂等用例；`index.css` 追加表单与进度条结构类 |
 | **风险** | ① **参数注入**：只收 `catalogId` + 白名单参数值，服务端拼 `list[str]` + `shell=False`，绝不接整条命令；② **`--out` / `--archive-dir` 路径穿越**（复用 `_static()` 的 normpath+startswith，绝对路径 / `..` / 盘符 / `%5C` 全 400）；③ 进度编造（无进度能力的任务 `progress=null`，不填假百分比）；④ 日志轮询把 `Content-Length` 纪律破掉（每响应显式长度） |
-| **验证命令** | `python -m pytest tests/test_local_tasks.py tests/test_panel_web_hygiene.py tests/test_panel_web_cols.py -q`<br>`python -m scanner.ai_digest --demo`（零库零网，验整条链路）<br>`python scripts/buy_priority_report.py --no-ann --top 10`<br>`python -m scanner.crosssection --date 2026-11-13 --json`<br>注入用例：`POST {"catalogId":"..","args":{"__argv":"; calc"}}` → 400 `BAD_REQUEST`<br>`ruff check scanner/local_tasks.py && mypy scanner/local_tasks.py` |
+| **验证命令** | `python -m pytest tests/test_local_tasks.py tests/test_panel_web_hygiene.py tests/test_panel_web_cols.py -q`<br>`python -m scanner.ai_digest --materials`（零出网，验素材链路）<br>`python scripts/buy_priority_report.py --no-ann --top 10`<br>`python -m scanner.crosssection --date 2026-11-13 --json`<br>注入用例：`POST {"catalogId":"..","args":{"__argv":"; calc"}}` → 400 `BAD_REQUEST`<br>`ruff check scanner/local_tasks.py && mypy scanner/local_tasks.py` |
 
 ### P2 · 写库与外呼类（带确认与串行）
 
 | 项 | 内容 |
 |---|---|
-| **范围** | W/N 档、确认弹层、`exclusive_slot`、`round_gate`、幂等键、超时与回收、`cancel-all` 收尾、孤儿清扫、L1–L4 鉴权 + token 注入、`RTS_TASKS=1` 显式开关、`userData/logs/tasks/` |
+| **范围** | W/N 档、确认弹层、`exclusive_slot`、`round_gate`、幂等键、超时与回收、`cancel-all` 收尾、孤儿清扫、L1–L4 鉴权 + token 注入、`RTS_TASKS=1` 显式开关、`userData/logs/tasks/`；**AI 分析主入口 `python -m scanner.ai_digest` 默认 research 的可呈现闭环**（提交 `-m scanner.ai_digest` → 日志 / `logs/ai_digest/YYYY-MM-DD/` 归档路径回显 → 失败态按 exit code 1/2/3/5 原样呈现；**不重试、不把报告渲染成判断**） |
 | **文件** | `local_tasks.py` 加槽 / gate / token 校验 / write-ahead meta；`main.js` 加 token 生成 + `onBeforeSendHeaders` + `cancel-all` 收尾（**14 条既有守卫字面量不动**）；`web/src/components/workbench/ConfirmDialog.tsx`；`tests/test_local_tasks.py` 加鉴权 / 并发 / 超时 / 孤儿用例；`desktop/prepare.mjs` 加 `RTS_TASKS` 默认关检查 |
-| **风险** | **本期最大**：① SQLite WAL 写锁与主循环争用（`round_gate` + 单槽）；② 重复外呼 / 东财 IP 限频 / 误推飞书（幂等 + 节流 + `outbound` 枚举无 feishu）；③ **孤儿进程**（write-ahead + cancel-all + 清扫）；④ `requirements.lock` 覆盖不到 D3 脚本凭据与 D1 传递依赖（缺凭据当可呈现 failed，不崩）；⑤ 确认弹层只做前端勾选会被绕过（服务端独立校验 `confirm`） |
-| **验证命令** | `python -m pytest tests/test_local_tasks.py tests/test_migrations.py tests/test_desktop_shell.py -q`<br>`python backfill_kline.py --dry-run --days 120` / `python backfill_market_index.py --dry-run`（零写库验模板）<br>`python scripts/offboard_nextday.py --repair-next-day`（默认 dry-run）<br>并发：连提两个 W 档 → 第一个 `running`、第二个 `queued`，`GET /api/tasks?status=running&level=write` 计数 ≤1<br>鉴权四连（见 §2.3）全部 403<br>关窗：`tasklist \| findstr python` 无 catalog 残留；重启后 history 有 `ORPHAN_REAPED` 记录 |
+| **风险** | **本期最大**：① SQLite WAL 写锁与主循环争用（`round_gate` + 单槽）；② 重复外呼 / 东财 IP 限频 / 误推飞书（幂等 + 节流 + `outbound` 枚举无 feishu）；③ **孤儿进程**（write-ahead + cancel-all + 清扫）；④ `requirements.lock` 覆盖不到 D3 脚本凭据与 D1 传递依赖（缺凭据当可呈现 failed，不崩）；⑤ 确认弹层只做前端勾选会被绕过（服务端独立校验 `confirm`）；⑥ **AI 分析主入口的报告是主观判断**（只归档不回灌）：UI 只回显命令 / 日志 / `logs/ai_digest/YYYY-MM-DD/` 归档路径，不解析、不渲染成判断、不替脚本重试 |
+| **验证命令** | `python -m pytest tests/test_local_tasks.py tests/test_migrations.py tests/test_desktop_shell.py -q`<br>`python backfill_kline.py --dry-run --days 120` / `python backfill_market_index.py --dry-run`（零写库验模板）<br>`python scripts/offboard_nextday.py --repair-next-day`（默认 dry-run）<br>并发：连提两个 W 档 → 第一个 `running`、第二个 `queued`，`GET /api/tasks?status=running&level=write` 计数 ≤1<br>鉴权四连（见 §2.3）全部 403<br>关窗：`tasklist \| findstr python` 无 catalog 残留；重启后 history 有 `ORPHAN_REAPED` 记录<br>AI 分析主入口闭环：提交 `python -m scanner.ai_digest`（未配 `MAGPIE_*` ⇒ `exitCode=1`）⇒ 失败态原样呈现、零重试、`logs/ai_digest/YYYY-MM-DD/` 归档路径回显、报告内容不渲染 |
 
 ### P3 · 扫描器生命周期接管
 
@@ -641,13 +665,19 @@ unified_scanner.py (主进程)
 - [ ] 幂等键 5 分钟内重复提交 ⇒ `200` + `deduplicated:true` + 同一 `task_id`，无第二次 spawn；同 `catalogId` 60s 节流生效。
 - [ ] 超时任务有 `exitCode` 与可读末行日志，无 `running` 残留超过 `2×timeoutSec`；`queued` 超过 `QUEUE_TTL=300s` 自动 `cancelled`。
 - [ ] `ai_digest` 退出码 1/2/3/5 与 `--offline-demo` 的 0 **原样进 `exitCode`**，工作台不重试、不翻译、不渲染报告结论。
+- [ ] **AI 分析主入口**：`GET /api/tasks/catalog` 中 `python -m scanner.ai_digest` 系列标为 AI 分析主入口（默认 research），`pick.py --clipboard` 标为等价 / 可选入口且非默认入口；全文 `grep` 复核旧表述「`pick.py --clipboard` = 核心 / 默认入口」命中 0，无「默认入口 = `pick.py --clipboard`」或把云端 `/api/ai-explain` 当主入口的表述。
+- [ ] **AI 分析安全档**：默认 `python -m scanner.ai_digest` = N 档（出网 + 耗 `MAGPIE_*` 凭据 + 会归档文件）⇒ 需确认 + 全局串行 + 幂等；`--materials` / `--demo` / `--json --demo` = R 档零出网零写库（工作台侧不注入 `MAGPIE_*`，无需确认）。
+- [ ] **AI 分析可呈现闭环**：提交 `-m scanner.ai_digest` 后任务中心回显 `logs/tasks/<id>/` 日志与 `logs/ai_digest/YYYY-MM-DD/` 归档路径（「结果在哪」）；失败态按 exit code 1/2/3/5 原样呈现，**不重试、不把报告内容渲染成判断**。
 
 **生命周期 / 打包态**
 
 - [ ] 任务 stdout/stderr 只落 `<LOG_DIR>/tasks/<id>/stdout.log`；扫描器终端 stdout 与 `desktop_child.log` 中**不含任何任务日志行**（不刷屏，`propagate=False`）。
 - [ ] 关窗后所有 `meta.json` 中无 `state=running`；`tasklist | findstr python` 无 catalog 白名单脚本孤儿；重启后 `/api/tasks/history` 能读到 `ORPHAN_REAPED`。
-- [ ] 打包态 `resources\python\python.exe` 逐条 import P0 catalog 的脚本全 exit 0；任务产出落 `%APPDATA%\rts-desktop\logs\tasks\`，`resources\repo` 无新写文件；`scanner.db-wal/-shm` 不进包、种子不覆盖纪律不变。
-- [ ] 任务 subprocess 的 `RTS_DB_PATH` / `RTS_LOG_DIR` / `RTS_ENV_FILE` / `PYTHONNOUSERSITE=1` 与扫描器子进程**逐项相等**（同一份 env）；Node 侧仍不读 SQLite。
+- [ ] 打包态 `resources\python\python.exe` 逐条 import P0 catalog 的脚本全 exit 0；任务产出落 `%APPDATA%\rts-desktop\logs\tasks\`，`resources\repo` 无新写文件；`scanner.db-wal/-shm` 不进包、`.env` 不进包。
+- [ ] **桌面版读到的库 = 本机最新 `scanner.db`**：以仓库根 `scanner.db` 的 mtime 或 `/api/meta` 最新一轮 `(date,time)` / 轮次时间比对，桌面版与任务读库结果一致；不是包内 2026-10-20 的 146MB 冷快照，也不是 `%APPDATA%\rts-desktop\scanner.db` 那份旧分家库。
+- [ ] **无第二写入者**：打包态不另起会写本机活库的独立主循环；所有写库任务经唯一主循环的 `round_gate` + `exclusive_slot` 单槽串行；任务 / 主循环 / 桌面版的 `RTS_DB_PATH` 解析到同一份本机活库。
+- [ ] **不再从包内冷快照种库**：`userData/scanner.db` 不作为数据源，不存在「种子不覆盖后各记各的」；打包链不复制冷快照种独立库，桌面版只读或共用本机活库。
+- [ ] 任务 subprocess 的 `RTS_DB_PATH` / `RTS_LOG_DIR` / `RTS_ENV_FILE` / `PYTHONNOUSERSITE=1` 与扫描器子进程**逐项相等**（同一份 env），且 `RTS_DB_PATH` 指向同一份本机最新活库 `scanner.db`（不再是 `userData/scanner.db`）；Node 侧仍不读 SQLite。
 - [ ] `pnpm typecheck && pnpm build` 通过；`node prepare.mjs` 通过；打包态 DevTools 冒烟（`IMPLEMENTATION.md` §4.1）零 console error。
 - [ ] P3 三态：`attach` 时终端扫描器进程仍在（零杀）；`refuse` 时不启动不杀；默认 `takeover` 关窗后 0 残留、端口释放、重启正常。
 
@@ -667,7 +697,7 @@ unified_scanner.py (主进程)
 > **打包态 standalone Python 的依赖覆盖 + 写库任务与主循环的 WAL 写者互斥，这两件事叠在 P2。**
 >
 > `requirements.lock` 只精确锁了 5 个直接依赖，且文件头**自承**「numpy/pandas 等传递依赖未全量固定」；`pywencai` 是注释掉的可选项，`MAGPIE_*` 凭据在打包态默认不存在（`.env` 不进包）。开发态「本机碰巧装过」的脚本，一到 `resources/python/python.exe` 就可能 `ModuleNotFoundError` 或 exit 1 —— 这正是 `IMPLEMENTATION.md` §6 里 `python-dotenv` 漏声明「打包成功但双击炸」的同款坑，只是这次一口气铺到几十条命令上。
-> 同时 P2 才第一次让动作面成为 `scanner.db` 的**第二个写者**：WAL 只保证「写不阻塞读」，不保证「两个写者不互斥」；主循环每 60s 写一批，`round_gate` / `exclusive_slot` 任一处漏掉，就会表现为「任务卡住、标签错冻结、或把主循环轮内事务提前提交」这类**静默数据错误**（`IMPLEMENTATION.md` §8 已经修过一次 `persist_latest` 在共享连接上 `commit()` 的同类问题）。
+> 同时 P2 才第一次让动作面在**同一份本机活库**上执行写库任务（新口径下**不得成为第二个独立写者**：打包态不另起主循环，所有写仍经唯一主循环的 `round_gate` + `exclusive_slot` 单槽串行）：WAL 只保证「写不阻塞读」，不保证「两个写者不互斥」；主循环每 60s 写一批，`round_gate` / `exclusive_slot` 任一处漏掉，就会表现为「任务卡住、标签错冻结、或把主循环轮内事务提前提交」这类**静默数据错误**（`IMPLEMENTATION.md` §8 已经修过一次 `persist_latest` 在共享连接上 `commit()` 的同类问题）。
 >
 > **缓解是可判定的**：P0 只放 §4.8 的 D0 档（零写库、零出网、零新增 import），把依赖门禁做成 `prepare.mjs` 里「standalone 解释器逐条真 import」，把写库并发做成「单槽 + `round_gate` + 默认 `--dry-run` + 确认留痕」四件套，且 P2 单独验收、不与 P0/P1 混一个 diff。若这两条门禁任一无法写成断言，**就不放 W/N 档进 catalog** —— 这是本规格的硬止损线。
 
@@ -680,5 +710,5 @@ unified_scanner.py (主进程)
 | **Researcher** | §0 事实底座、§2.5 依赖分档 D0–D4 | 在 `resources/python/python.exe` 下逐条实测 P0 catalog 的 `import` 与 `--offline-demo` exit code；核实 `akshare/numpy/pandas` 传递依赖在打包链里的实际版本，给「D1 哪些能进 catalog」的清单 |
 | **Designer** | §7 逐屏尺寸、`prototype.html`、v2 `DESIGN.md` / `preview.html` | 复核动作面与看板「同一个产品」的观感一致性、确认弹层的措辞与焦点归还、四态任务徽章不占涨跌色语义位；确认「不把内部纪律写成 UI 文案」 |
 | **Developer** | §2（六条红线）、§5 契约、§6 生命周期、§9 分期、§10 验收 | P0 先落 `local_tasks.py` + `do_POST` 8 行 + 哈希基线守卫；`shell=False` / 白名单 argv / 路径穿越 / 信封复用逐条写成测试；不碰三端镜像与看板组件 |
-| **Operator** | §2.3 token 与 `RTS_TASKS`、§2.5 `userData` 落点、§2.6 `RTS_SCANNER_OWNERSHIP`、§9 P2/P3 | 管 `RTS_TASKS` 默认关、`RTS_TASK_TOKEN` 注入链、`userData/logs/tasks/` 权限与日志保留策略、`prepare.mjs` 的打包前置；P3 三态在真机各跑一遍并留冒烟证据 |
+| **Operator** | §2.3 token 与 `RTS_TASKS`、§2.5 `LOG_DIR` 落点与**共用本机活库口径**、§2.6 `RTS_SCANNER_OWNERSHIP`、§9 P2/P3 | 管 `RTS_TASKS` 默认关、`RTS_TASK_TOKEN` 注入链、`logs/tasks/` 权限与日志保留策略、`prepare.mjs` 的打包前置；**核实 `RTS_DB_PATH` 指向本机最新活库 `scanner.db`、不再从包内冷快照种独立库、无第二写入者**；`MAGPIE_*` 凭据只在 N 档出网任务注入；P3 三态在真机各跑一遍并留冒烟证据 |
 | **Evaluator**（验收期） | §10 全部 checkbox | 按 §10 逐条判绿/红；特别验「四连 403」「两 W 并发 ≤1」「关窗无孤儿」「全文无结论词」「两个新文件零生产 diff」 |

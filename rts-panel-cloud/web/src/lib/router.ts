@@ -12,9 +12,10 @@
 
 import { useEffect, useState } from "react";
 
-export type Route = { name: "list" } | { name: "stock"; symbol: string };
+export type Route = { name: "list" } | { name: "stock"; symbol: string } | { name: "tasks" };
 
 const STOCK_PREFIX = "#/stock/";
+const TASKS_HASH = "#/tasks";
 
 /**
  * 与本地 `local_panel_server._SYMBOL_RE` 同款（6 位代码，可带 0~2 位市场前缀）。
@@ -25,6 +26,7 @@ const SYMBOL_RE = /^[A-Za-z]{0,2}\d{6}$/;
 
 /** 解析 `location.hash` → 路由（未知 / 格式非法 hash 一律回列表，不抛错）。 */
 export function parseHash(hash: string): Route {
+  if (hash === TASKS_HASH) return { name: "tasks" };
   if (hash.startsWith(STOCK_PREFIX)) {
     let symbol = "";
     try {

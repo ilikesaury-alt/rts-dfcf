@@ -216,19 +216,50 @@ function findPython() {
 }
 
 /**
- * 打包态的**可写落点**准备（开发态直接返回 null：用仓库根的原生布局）。
+ * 本机「有最新数据的」活库路径（Lichun 2026-11-15 口径）。
  *
- * `scanner.db` 与 `logs/` 都必须离开 `resources/`：
- * - WAL 需要写权限，安装态 `resources/` 可能只读；
- * - 库与日志是**运行时状态**，不属于程序本体（升级不覆盖）。
+ * 开发态用不到：`preparePackagedState()` 直接返回 null，Python 侧
+ * `resolve_db_path()` 默认就落在仓库根 `scanner.db` —— 与终端同一份活库。
+ * 打包态 `resources/repo/scanner.db` 是**打包当天的冷快照**（实测 2026-10-20、
+ * 146 MB；仓库根活库 11-13、227 MB），继续把它种进 userData 就是
+ * 「桌面版永远看旧数据」。故打包态优先解析外部活库，解析不到才降级，
+ * 且降级要在日志里可见，不能静默。
+ */
+function resolveLiveDb() {
+  // 1) 既有覆盖口 RTS_DB_PATH（终端/用户启动时已给出）
+  // 2) 新增显式指针 RTS_LIVE_DB
+  // 3) RTS_REPO_ROOT（安装器/快捷方式知道仓库位置时）
+  const candidates = [
+    process.env.RTS_DB_PATH,
+    process.env.RTS_LIVE_DB,
+    process.env.RTS_REPO_ROOT ? path.join(process.env.RTS_REPO_ROOT, "scanner.db") : null,
+  ];
+  for (const p of candidates) {
+    try {
+      if (p && fs.statSync(p).isFile()) return p;
+    } catch {
+      // 路径不存在 / 无权限：跳过，继续下一个候选
+    }
+  }
+  return null;
+}
+
+/**
+ * 打包态落点准备（开发态直接返回 null：用仓库根的原生布局）。
  *
- * ⚠ 种子拷贝只在 `userData/scanner.db` **不存在**时做一次：
- * 覆盖会把用户跑到一半的库抹掉。种子本身是打包时的冷快照（不含 `-wal`）。
+ * `scanner.db` 优先**共用本机最新活库**，绝不拷贝（WAL 是活文件，冷拷贝必不一致），
+ * 也不在 userData 另起一份 ⇒ 桌面版与主循环读同一份库。
+ * `logs/` 与 `.env` 仍在 userData：运行时状态不写进可能只读的 `resources/`。
+ *
+ * ⚠ 仅当解析不到任何外部活库时才回退：把包内冷快照种进
+ * `userData/scanner.db`，且只在目标不存在时做一次（覆盖会抹掉用户跑到一半的库）。
+ * 这是**已知旧数据路径**，设 RTS_LIVE_DB / RTS_DB_PATH / RTS_REPO_ROOT 即走正路。
  */
 function preparePackagedState() {
   if (!app.isPackaged) return null;
   const userData = app.getPath("userData");
-  const dbPath = path.join(userData, "scanner.db");
+  const live = resolveLiveDb();
+  const dbPath = live || path.join(userData, "scanner.db");
   const logDir = path.join(userData, "logs");
   fs.mkdirSync(logDir, { recursive: true });
   if (!fs.existsSync(dbPath)) {
@@ -237,7 +268,7 @@ function preparePackagedState() {
       fs.copyFileSync(bundled, dbPath);
     }
   }
-  return { dbPath, logDir, envFile: path.join(userData, ".env") };
+  return { dbPath, liveDb: Boolean(live), logDir, envFile: path.join(userData, ".env") };
 }
 
 // ── 子进程 ────────────────────────────────────────────────────────────────────
@@ -260,6 +291,10 @@ function buildChildEnv(state) {
   // `sys.path`，且**排在自带 site-packages 之前** ⇒ 打包态可能 import 到用户那份依赖
   // （版本不同即静默漂移），也正是 `fetch-python.mjs` 里 pip 报 sqlfluff 依赖冲突的原因。
   env.PYTHONNOUSERSITE = "1";
+  // 桌面壳是「本机任务控制面」的**唯一显式开启者**：终端直接跑 unified_scanner.py
+  // 不带这个 env ⇒ local_panel_server 不注册 /api/tasks/*（缺省关，与 RTS_LOCAL_PANEL
+  // 同纪律）。放顶层而非 `if (state)`：开发态桌面壳同样要有 AI 分析入口。
+  env.RTS_TASKS = "1";
   if (state) {
     // 用户显式设过就尊重用户（`RTS_DB_PATH` / `RTS_LOG_DIR` 是既有的覆盖入口）
     env.RTS_DB_PATH = env.RTS_DB_PATH || state.dbPath;

@@ -70,6 +70,11 @@ BIND_HOST = "127.0.0.1"
 # 前端构建产物（`pnpm build` 输出）。缺失时静态路由 404，不致命。
 DEFAULT_STATIC_DIR = os.path.join(BASE_DIR, "rts-panel-cloud", "web", "dist")
 
+# 动作面开关（RTS_TASKS 缺省关）：关时连 tasks_server 模块都不导入，4 个只读 GET
+# 逐字节保持原样。开时本服务只对 `/api/tasks/*` 做**同源转发**，任务执行/子进程全在
+# tasks_server 里（逻辑隔离，不把写操作塞进只读数据面）。由桌面壳注入 =1。
+TASKS_ENABLED = (os.environ.get("RTS_TASKS") or "").strip().lower() in ("1", "true", "yes", "on")
+
 # 与云端 `ingest.ts` 的 SYMBOL_RE 同**意图**（只放行本仓的雪球符号形态），但形态更宽：
 # 本仓 `daily_kline.symbol` 的实际格式是「2 位市场前缀 + 6 位数字」（如 `SZ300001`，
 # 见 AGENTS.md 的 volume 单位条目），而云端那条 `^\d{6}$` 在本仓数据上**永不匹配**
@@ -188,6 +193,64 @@ class _Handler(BaseHTTPRequestHandler):
             _log.warning("local panel: 请求处理异常 %r", e)
             self._send_json(_err("INTERNAL", "服务内部错误"), 500)
 
+    def do_POST(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler 契约)
+        """动作面开时把 `/api/tasks/*` **同源反代**到 8900；其余 POST 一律 404。"""
+        try:
+            if not (TASKS_ENABLED and urlsplit(self.path).path.startswith("/api/tasks/")):
+                return self._send_json(_err("NOT_FOUND", "无此端点"), 404)
+            return self._proxy_tasks("POST")
+        except Exception as e:
+            _log.warning("local panel: 任务请求异常 %r", e)
+            return self._send_json(_err("INTERNAL", "服务内部错误"), 500)
+
+    def _proxy_tasks(self, method: str) -> None:
+        """纯转发：只读服务不执行任务、不碰 tasks_server 的业务状态。
+
+        任务服务是独立 127.0.0.1 端口（默认 8900）；本层只把同源请求原样送过去，
+        响应头里带回它下发的一次性 token（前端从 catalog/health 读取）。
+        """
+        import http.client
+
+        from scanner import tasks_server
+
+        port = int(os.environ.get("RTS_TASKS_PORT") or tasks_server.DEFAULT_PORT or 8900)
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(min(length, 64 * 1024)) if length > 0 else None
+        headers = {}
+        for key in ("Content-Type", "X-RTS-Task-Token", "Origin"):
+            v = self.headers.get(key)
+            if v:
+                headers[key] = v
+        headers["Host"] = f"{BIND_HOST}:{port}"
+        conn = http.client.HTTPConnection(BIND_HOST, port, timeout=15)
+        try:
+            conn.request(method, self.path, body=body, headers=headers)
+            resp = conn.getresponse()
+            payload = resp.read()
+            token = resp.getheader("X-RTS-Task-Token") or ""
+            # token 也塞进 data：前端 `apiGet` 只拿到 `data`，拿不到响应头。
+            # 仅 health / catalog 这类非敏感公开端点补，不改动任务状态/日志载荷。
+            if token and urlsplit(self.path).path.rstrip("/") in ("/api/tasks/health", "/api/tasks/catalog"):
+                try:
+                    obj = json.loads(payload)
+                    if isinstance(obj, dict) and isinstance(obj.get("data"), dict):
+                        obj["data"]["token"] = token
+                        payload = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+                except (ValueError, TypeError):
+                    pass
+            self.send_response(resp.status)
+            for k, v in resp.getheaders():
+                kl = k.lower()
+                if kl == "content-length":
+                    self.send_header(k, str(len(payload)))
+                elif kl in ("content-type", "cache-control", "x-rts-task-token"):
+                    self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(payload)
+        finally:
+            conn.close()
+        return None
+
     # ── 路由 ──────────────────────────────────────────────────────────────
 
     def _route(self) -> None:
@@ -200,6 +263,10 @@ class _Handler(BaseHTTPRequestHandler):
             return self._meta()
         if path.startswith("/api/stock/") and path.endswith("/kline"):
             return self._stock(path[len("/api/stock/") : -len("/kline")])
+        if path.startswith("/api/tasks/"):
+            if not TASKS_ENABLED:
+                return self._send_json(_err("NOT_FOUND", "无此端点"), 404)
+            return self._proxy_tasks("GET")
         if path.startswith("/api/"):
             return self._send_json(_err("NOT_FOUND", "无此端点"), 404)
         return self._static(path)

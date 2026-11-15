@@ -408,6 +408,23 @@ def _local_panel_enabled() -> tuple[bool, int]:
     return True, port
 
 
+def _tasks_enabled() -> tuple[bool, int]:
+    """桌面版动作面开关（2026-11-15）。返回 `(enabled, port)`。
+
+    `RTS_TASKS` **缺省关**：关闭时连 `tasks_server` 模块都不导入，与
+    `RTS_LOCAL_PANEL` 同纪律。端口 `RTS_TASKS_PORT` 脏值一律回退 8900
+    （与 `tasks_server._tasks_enabled()` 同口径，别让两端分叉）。
+    """
+    raw = (os.environ.get("RTS_TASKS") or "").strip().lower()
+    if raw not in ("1", "true", "yes", "on"):
+        return False, 8900
+    try:
+        candidate = int((os.environ.get("RTS_TASKS_PORT") or "").strip())
+    except ValueError:
+        candidate = 0
+    return True, candidate if 1 <= candidate <= 65535 else 8900
+
+
 def _observe_crosssection(conn, board_items: list[dict] | None) -> None:
     """横截面观察层接线点（2026-11-13）。
 
@@ -470,6 +487,19 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
             # 端口冲突等只告警、不阻断扫描（fail-open，与 panel_reporter 同纪律）
             print(f"  [!] 本地看板启动失败（扫描不受影响）: {type(e).__name__}: {e}")
             local_on = False
+    # 桌面版动作面（`RTS_TASKS=1` 才起；缺省关，连模块都不导入）。
+    # AI 分析主入口 = `python -m scanner.ai_digest`，由任务服务白名单执行；
+    # 与只读数据面逻辑隔离（独立端口 + 同源反代），扫描主循环语义零改动。
+    tasks_on, tasks_port = _tasks_enabled()
+    if tasks_on:
+        try:
+            from scanner import tasks_server
+
+            tasks_server.start_server(tasks_port)
+            print(f"  ⚙  动作面: http://{tasks_server.BIND_HOST}:{tasks_port}/api/tasks/health （仅本机）")
+        except Exception as e:
+            print(f"  [!] 动作面启动失败（扫描不受影响）: {type(e).__name__}: {e}")
+            tasks_on = False
     # 本地看板的进程内轮号（仅供展示；「取最新一轮」从不按它排序，同 panel seq 口径）。
     local_seq = 0
     # 进程内单调轮号：仅供面板**展示**与幂等覆盖列，任何「取最新一轮」的判定都用
@@ -882,6 +912,12 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                     _silence_stdout()
                 time.sleep(min(interval, 60))
     finally:
+        if tasks_on:
+            try:
+                from scanner import tasks_server
+                tasks_server.stop_server()
+            except Exception:
+                pass
         try:
             conn.close()
         except sqlite3.Error:

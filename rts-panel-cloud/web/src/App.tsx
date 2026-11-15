@@ -36,6 +36,7 @@ import { useSnapshot } from "./lib/useSnapshot";
 import { consumeOpener, goToList, useRoute } from "./lib/router";
 import { useUiState } from "./lib/uiState";
 import Stock from "./pages/Stock";
+import Tasks from "./pages/Tasks";
 
 /**
  * 区块标题（设计规定文案，逐字守卫：`test_panel_web_cols.py::test_region_titles_match_terminal_wording`）。
@@ -340,7 +341,7 @@ export default function App() {
         e.preventDefault();
         setStatusOpen(false);
         pillRef.current?.focus();
-      } else if (route.name === "stock") {
+      } else if (route.name === "stock" || route.name === "tasks") {
         e.preventDefault();
         goToList();
       }
@@ -440,6 +441,7 @@ export default function App() {
               })}
             </div>
             <div className="readout-end">
+              <a className="tasks-entry" href="#/tasks">AI 分析</a>
               <span className="scope-chip"><i />本机回环 127.0.0.1</span>
               <span className="round-pill">{freshLabel} · seq {snapshot ? snapshot.seq : "—"}</span>
             </div>
@@ -447,7 +449,9 @@ export default function App() {
         )}
       </section>
 
-      {route.name === "stock" ? (
+      {route.name === "tasks" ? (
+        <Tasks />
+      ) : route.name === "stock" ? (
         /* 详情视图沿用同一个壳：隐藏侧栏与右栏，避免「单只股票」与「本轮卡片集合」混屏。 */
         <div className="workspace detail-workspace">
           <Stock symbol={route.symbol} name={stockName || undefined} />

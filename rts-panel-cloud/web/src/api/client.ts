@@ -31,6 +31,8 @@ type RequestInitLite = {
   signal?: AbortSignal;
   /** 覆盖超时；默认 15s —— 够慢也不至于让状态条一直转。 */
   timeoutMs?: number;
+  /** 额外请求头（动作面 token 等）；只在此收口，组件不许自己拼 header。 */
+  headers?: Record<string, string>;
 };
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -43,7 +45,7 @@ const DEFAULT_TIMEOUT_MS = 15_000;
  *  3. 业务错误（`ok:false` 或 HTTP 非 2xx）→ 按信封里的 `code`
  */
 async function request<T>(path: string, init: RequestInitLite, method: "GET" | "POST", body?: unknown): Promise<T> {
-  const { signal, timeoutMs = DEFAULT_TIMEOUT_MS } = init;
+  const { signal, timeoutMs = DEFAULT_TIMEOUT_MS, headers: extraHeaders } = init;
 
   // 组合外部 signal 与超时：AbortSignal.any 需要较新运行时，这里手写以免
   // 在老 Safari 上直接崩（AbortSignal.any 缺失会抛 TypeError）。
@@ -60,7 +62,10 @@ async function request<T>(path: string, init: RequestInitLite, method: "GET" | "
   try {
     res = await fetch(path, {
       method,
-      headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+      headers: {
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+        ...(extraHeaders || {}),
+      },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: ctl.signal,
     });
@@ -121,6 +126,13 @@ export const API = {
   stockKline: (symbol: string) => `/api/stock/${encodeURIComponent(symbol)}/kline`,
   /** AI 解读（只读端点；请求面只有 symbol，无自由文本）。 */
   aiExplain: (symbol: string) => `/api/ai-explain?symbol=${encodeURIComponent(symbol)}`,
+  /** 动作面（RTS_TASKS=1 时由本机服务同源转发；缺省则 404，前端按不可用呈现）。 */
+  tasksHealth: "/api/tasks/health",
+  tasksCatalog: "/api/tasks/catalog",
+  tasksSubmit: "/api/tasks/submit",
+  tasksCancel: "/api/tasks/cancel",
+  tasksStatus: (id: string) => `/api/tasks/status?id=${encodeURIComponent(id)}`,
+  tasksLog: (id: string, offset = 0) => `/api/tasks/log?id=${encodeURIComponent(id)}&offset=${offset}`,
   history: "/api/history",
   historyRounds: "/api/history/rounds",
   metaDates: "/api/meta/dates",
