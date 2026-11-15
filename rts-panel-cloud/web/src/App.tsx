@@ -97,7 +97,7 @@ function RegionList({ snapshot, activeKey, collapsed, onToggle }: RegionListProp
   const warnings = snapshot.ctx?.warnings ?? [];
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-[18px]">
       {warnings.length > 0 ? (
         <div className="ctx-note" role="status">
           {warnings.map((w) => (
