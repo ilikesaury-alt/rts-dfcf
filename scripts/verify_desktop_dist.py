@@ -60,22 +60,15 @@ def main() -> int:
         js = sorted(assets.glob("*.js")) if assets.is_dir() else []
         check(bool(js), f"web/dist 有 JS 产物：{[j.name for j in js]}")
 
-    # 3) 包内库：应与仓库根同一份（打包时整仓拷贝 ⇒ 大小/时间应一致）
-    #    ⚠ 若大小相同，说明包里带的是**当下这份活库**（新鲜），不是旧冷快照。
+    # 3) 包内**不得有**库本体（A1：瘦身 + 消灭冷快照病根）
     bundled_db = RES_REPO / "scanner.db"
+    check(
+        not bundled_db.exists(),
+        "包内不含 scanner.db（A1：安装包瘦身，降级改由 Python 建空库）",
+    )
+    # 本机活库应仍在（打包不该动它）
     live_db = REPO / "scanner.db"
-    if bundled_db.is_file() and live_db.is_file():
-        b = bundled_db.stat().st_size
-        l = live_db.stat().st_size
-        bt = bundled_db.stat().st_mtime
-        lt = live_db.stat().st_mtime
-        fresh = abs(bt - lt) < 300  # 5 分钟内 ⇒ 同一次打包产物
-        check(
-            b == l and fresh,
-            f"包内库与仓库活库同源（{b/1024/1024:.0f}MB，mtime 差 {abs(bt-lt):.0f}s）",
-        )
-    else:
-        check(False, "scanner.db 有一侧缺失（包内 or 仓库根）")
+    check(live_db.is_file(), f"本机活库仍在：{live_db}")
 
     # 4) 关键口径：main.js 里必须仍是「优先解析外部活库」
     main_js = UNPACKED / "resources" / "app.asar"

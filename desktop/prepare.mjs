@@ -63,12 +63,13 @@ if (existsSync(PY_EXE)) {
 
 const db = path.join(REPO, "scanner.db");
 if (existsSync(db)) {
-  console.log(`[prepare] ok    ${db}（${(statSync(db).size / 1024 / 1024).toFixed(0)} MB）`);
-  console.log("[prepare] 提示  打包态**优先共用本机这份活库**（RTS_DB_PATH / RTS_LIVE_DB / RTS_REPO_ROOT 命中即走它，");
-  console.log("            绝不拷贝 —— WAL 是活文件，冷拷贝必不一致）；仅当解析不到任何外部活库时，");
-  console.log("            才把包内冷快照种进 userData/scanner.db（只种一次，不覆盖已有）。");
+  console.log(`[prepare] ok    ${db}（${(statSync(db).size / 1024 / 1024).toFixed(0)} MB，本机活库）`);
+  console.log("[prepare] 提示  安装包**不携带** scanner.db（A1）⇒ 安装包瘦到 ~63MB；");
+  console.log("            打包态优先共用本机这份活库（RTS_DB_PATH / RTS_LIVE_DB / RTS_REPO_ROOT 命中即走它，");
+  console.log("            绝不拷贝 —— WAL 是活文件，冷拷贝必不一致）；解析不到时由 Python 在");
+  console.log("            userData 建空库，桌面版自己的扫描器会把它填起来。");
 } else {
-  console.warn("[prepare] 提示  仓库根没有 scanner.db：打包产物解析不到外部活库时将退到包内快照（若也没有则建空库，K 线/历史要重新积累）");
+  console.warn("[prepare] 提示  仓库根没有 scanner.db：打包态无外部活库可用，首启将由 Python 建空库");
 }
 
 if (failed) {

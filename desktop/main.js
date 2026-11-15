@@ -15,7 +15,8 @@
  * - `env` 净化：删掉 `PYTHONHOME/PYTHONPATH/...`，避免指向用户系统 Python 串味
  *   （打包态的 standalone Python 被系统 env 一冲就废）；
  * - 打包态的**可写落点**只有 `userData`：`scanner.db` 与 `logs/` 都指到那里
- *   （`resources/` 只读；WAL 需要写权限）。种子拷贝**只在首次**做，绝不覆盖既有库。
+ *   （`resources/` 只读；WAL 需要写权限）。**安装包已不带 `scanner.db`**（2026-11-15 A1），
+ *   故无「种子拷贝」这一步：无外部活库时由 Python `init_db()` 在 userData 建空库。
  *
  * 调试用的两个 env（不改生产语义）：
  * - `RTS_PYTHON`：指定解释器，跳过 `findPython()` 的推导；
@@ -220,10 +221,10 @@ function findPython() {
  *
  * 开发态用不到：`preparePackagedState()` 直接返回 null，Python 侧
  * `resolve_db_path()` 默认就落在仓库根 `scanner.db` —— 与终端同一份活库。
- * 打包态 `resources/repo/scanner.db` 是**打包当天的冷快照**（实测 2026-10-20、
- * 146 MB；仓库根活库 11-13、227 MB），继续把它种进 userData 就是
- * 「桌面版永远看旧数据」。故打包态优先解析外部活库，解析不到才降级，
- * 且降级要在日志里可见，不能静默。
+ * 打包态**安装包已不带 `scanner.db`**（2026-11-15 A1 决策：瘦身 + 消灭冷快照病根），
+ * 故不存在「把包内旧库种进 userData」这条路。打包态优先解析外部活库；
+ * 解析不到就在 `userData/scanner.db` **建空库**，由桌面版自己的扫描器填起来。
+ * 降级要在日志里可见，不能静默。
  */
 function resolveLiveDb() {
   // 1) 既有覆盖口 RTS_DB_PATH（终端/用户启动时已给出）
@@ -251,9 +252,11 @@ function resolveLiveDb() {
  * 也不在 userData 另起一份 ⇒ 桌面版与主循环读同一份库。
  * `logs/` 与 `.env` 仍在 userData：运行时状态不写进可能只读的 `resources/`。
  *
- * ⚠ 仅当解析不到任何外部活库时才回退：把包内冷快照种进
- * `userData/scanner.db`，且只在目标不存在时做一次（覆盖会抹掉用户跑到一半的库）。
- * 这是**已知旧数据路径**，设 RTS_LIVE_DB / RTS_DB_PATH / RTS_REPO_ROOT 即走正路。
+ * ⚠ 降级（2026-11-15 A1）：安装包**不再携带** `scanner.db`（227MB ⇒ 安装包瘦到 ~63MB，
+ * 也消灭「包内冷快照导致首启数据陈旧」这个病根）。故解析不到外部活库时：
+ * 直接让 Python 在 `userData/scanner.db` **建空库**（`init_db()` 幂等建表 + 跑迁移），
+ * 桌面版自己的扫描器会把它填起来。不再有「包内快照可种」这条路径。
+ * 设 RTS_LIVE_DB / RTS_DB_PATH / RTS_REPO_ROOT 即走正路（读本机最新活库）。
  */
 function preparePackagedState() {
   if (!app.isPackaged) return null;
@@ -262,12 +265,8 @@ function preparePackagedState() {
   const dbPath = live || path.join(userData, "scanner.db");
   const logDir = path.join(userData, "logs");
   fs.mkdirSync(logDir, { recursive: true });
-  if (!fs.existsSync(dbPath)) {
-    const bundled = path.join(repoRoot(), "scanner.db");
-    if (fs.existsSync(bundled)) {
-      fs.copyFileSync(bundled, dbPath);
-    }
-  }
+  // ⚠ 不存在**不报错**：Python 侧 `init_db()` 会建表 + 跑迁移，空库照样能用。
+  // （包内已无 scanner.db，这里刻意不再拷贝任何东西。）
   return { dbPath, liveDb: Boolean(live), logDir, envFile: path.join(userData, ".env") };
 }
 

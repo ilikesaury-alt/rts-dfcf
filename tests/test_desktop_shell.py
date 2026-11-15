@@ -10,7 +10,7 @@
 | 注入 `RTS_LOCAL_PANEL=1` 且不带 `--no-panel` | 不带看板开关 ⇒ 窗口起来但是空页；顺手带 `--no-panel` ⇒ 云端上报被关（那是另一个开关） |
 | env 净化 `PYTHONHOME/PYTHONPATH` | 打包态的 standalone Python 被系统 Python 串味（design §7.1/§7.4） |
 | 打包态走 `resourcesPath` | 走 PATH 上的 `python` ⇒ 用户机器上没有就 ENOENT（Issue D 的原始动机） |
-| 可写落点 = `userData`（含种子不覆盖） | 写 `resources/` ⇒ 安装态只读、WAL 起不来；覆盖 ⇒ 抹掉用户跑到一半的库 |
+| 可写落点 = `userData`（A1：无库拷贝，建空库） | 写 `resources/` ⇒ 安装态只读、WAL 起不来；覆盖 ⇒ 抹掉用户跑到一半的库 |
 | 关窗 kill 子进程 | 残留后台扫描器 + 锁被占（验收 7） |
 | Node 侧不读 sqlite | 与主循环抢 SQLite 写锁（design D2） |
 | `.env` 不进包、改指 userData | 密钥躺进安装目录；或反过来读不到 Key |
@@ -99,10 +99,12 @@ def test_writable_state_goes_to_user_data_without_overwriting() -> None:
     code = _main_js()
     assert 'app.getPath("userData")' in code
     assert "RTS_DB_PATH" in code and "RTS_LOG_DIR" in code
-    # 种子拷贝必须是「不存在才拷」：覆盖会把用户跑到一半的库抹掉
-    seed = re.search(r"if \(!fs\.existsSync\(dbPath\)\) \{(.*?)\n  \}", code, re.S)
-    assert seed, "找不到种子拷贝块（改名/改结构要同步本守卫）"
-    assert "copyFileSync" in seed.group(1)
+    # A1（2026-11-15）：安装包**不再携带** scanner.db ⇒ 没有「种子拷贝」这一步。
+    # 守卫意图不变：**绝不覆盖**用户已有的库。
+    #   · 有外部活库（RTS_LIVE_DB / RTS_DB_PATH / RTS_REPO_ROOT）⇒ 直接用它，不碰 userData；
+    #   · 无 ⇒ 让 Python 在 userData 建空库（init_db 幂等建表），不拷贝任何文件。
+    assert "copyFileSync" not in code, "⛔ 不该再有库拷贝（A1：包内无库，改由 Python 建空库）"
+    assert "resolveLiveDb()" in code, "必须优先解析外部活库"
     assert "mkdirSync(logDir" in code, "logs/ 必须显式建好（扫描器的落盘全走它）"
     # 用户显式设过就尊重用户（RTS_DB_PATH / RTS_LOG_DIR 是既有覆盖口）
     assert "env.RTS_DB_PATH || state.dbPath" in code
@@ -110,10 +112,14 @@ def test_writable_state_goes_to_user_data_without_overwriting() -> None:
 
 
 def test_node_side_never_reads_sqlite_directly() -> None:
-    """design D2：Node 读 `scanner.db` 会与主循环抢锁。库只在**打包种子**里被碰一次（整文件拷贝）。"""
+    """design D2：Node 读 `scanner.db` 会与主循环抢锁。
+
+    A1（2026-11-15）后 Node **连拷贝都不做**了（包内无库），比「只拷一次」更严格。
+    """
     code = _main_js()
     assert "better-sqlite3" not in code and 'require("node:sqlite")' not in code
-    assert "copyFileSync" in code  # 唯一允许的文件级接触
+    assert "copyFileSync" not in code  # 唯一允许的文件级接触已随 A1 移除
+    assert "fs.statSync" in code  # 解析外部活库时的存在性探测（只读元数据，不碰内容）
 
 
 # ── 4. env 位置 ───────────────────────────────────────────────────────────────
@@ -183,6 +189,7 @@ def test_extra_resources_bundle_python_and_repo_but_not_secrets() -> None:
     assert "python" in sources and "repo" in sources, "打包态需要 resources/python + resources/repo"
     filters = sources["repo"]["filter"]
     assert "!.env" in filters, "⛔ 密钥文件（飞书/THS）不得进分发包"
+    assert "!scanner.db" in filters, "⛔ 库本体不进包（A1：227MB ⇒ 安装包瘦到 ~63MB，且消灭冷快照病根）"
     assert "!scanner.db-wal" in filters, "WAL 是活文件，冷拷贝会得到不一致快照"
     assert "!scanner.db.bak*" in filters, "备份库（~100MB）不进包"
     assert "!desktop/**" in filters, "别把 desktop/ 自己套进 resources/repo（递归膨胀）"
