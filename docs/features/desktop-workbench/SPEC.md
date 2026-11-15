@@ -12,7 +12,17 @@
 >
 > **§2.6 第 7 条的归属权分歧按「分期已定」收口，不再阻塞打包**：P0/P1/P2 **完全不碰** `main.js` 的启动语义（§2.6 第 5 条），故打包态仍是**既有的 `takeover`**（壳拉起自己的 `unified_scanner.py` 写同一份库，与改动前逐字节一致）。`RTS_SCANNER_OWNERSHIP` 三态（`takeover` / `attach` / `refuse`）与 `/api/tasks/scanner` 原属 P3 —— **2026-11-15 17:32 Lichun 决定不实现**（实际用法是「以后多用桌面版，不会终端 + 桌面版一起用」，`attach` / `refuse` 两态没有使用场景，`takeover` 即所需）。**当前 P0 阶段「无第二写入者」判据的准确表述**：桌面壳是**该库在本机桌面路径下的唯一拉起者**（终端手动跑 `unified_scanner.py` 时由 `stop_existing_scanners` 交接），**不是**「桌面版只读」——只读约束锁的是**看板数据面**（`/api/{health,meta,regions,stock/*}`），不锁动作面（§2.1 第 3 条）。
 >
-> **A1（2026-11-15 17:32 Lichun 决定）—— 安装包不再携带 `scanner.db`**：① 安装包 290MB → **~63MB**；② 消灭「包内冷快照 ⇒ 首启数据陈旧」这个病根（实测旧 `userData` 副本停在 2026-10-19，落后活库 19 个交易日）；③ 降级路径改为：解析不到外部活库 ⇒ 由 Python `init_db()`（幂等建表 + 跑迁移，实测空库建 31 张表）在 `userData/scanner.db` **建空库**，桌面版自己的扫描器填起来。**代价**：全新安装且无外部活库时，首启无历史 K 线，需自行积累几轮。
+> **A1（2026-11-15 17:32 Lichun 决定）—— 安装包不再携带 `scanner.db`**：① 安装包 **290MB → 180MB**（实测；`resources/repo` 160MB → **7.8MB**，顺带剔掉误入的 `.alma-snapshots/` 151MB 与 sourcemap；余下大头是 Python 运行时 290MB，硬下限）；② 消灭「包内冷快照 ⇒ 首启数据陈旧」这个病根（实测旧 `userData` 副本停在 2026-10-19，落后活库 19 个交易日）；③ 降级路径改为：解析不到外部活库 ⇒ 由 Python `init_db()`（幂等建表 + 跑迁移，实测空库建 31 张表）在 `userData/scanner.db` **建空库**，桌面版自己的扫描器填起来。**代价**：全新安装且无外部活库时，首启无历史 K 线，需自行积累几轮。
+>
+> **同时使用（2026-11-15 17:50 Lichun 确认「库不共用 ⇒ 独立互不影响 ⇒ 可以同时使用」）** —— 实测成立，且**四重隔离**：
+> | 维度 | 机制 | 结论 |
+> |---|---|---|
+> | 进程 | `single_instance._runs_script()` 按**绝对路径**匹配 `unified_scanner.py` | 终端 `D:\...\unified_scanner.py` vs 桌面版 `<安装目录>\resources\repo\unified_scanner.py` ⇒ **互不杀** |
+> | 单实例锁 | `logs/scanner.lock` 是**相对路径** | 终端 = 仓库根 `logs/`，桌面版 = `userData/logs/` ⇒ **两把独立锁** |
+> | 数据库 | 各自 `RTS_DB_PATH` | 各写各的，零争抢 |
+> | 端口 | 桌面版启动前探测，被占则让位（`isPortFree`/`findFreePort`/`allocatePorts`），注入 `RTS_LOCAL_PANEL_PORT` / `RTS_TASKS_PORT` | 首选空闲时与改前逐字节一致（8899/8900）；被占则错开（实测 8899/8900 → 8901/8902），**零双绑** |
+>
+> ⚠ 端口探测**不能用** `net.createServer().listen()`：Windows 默认 `allow_reuse_address`，探测 socket 能绑上**已被占用**的端口 ⇒ 误判空闲。必须用**主动 connect**（连上 = 被占，`ECONNREFUSED` = 空闲）。且 `findFreePort` 必须 **exclude 看板端口**（两者同时起服，抢同一端口 = 自我双绑）。
 >
 > 保留不改：只读镜像、colSpec 单源、`SCHEMA_VERSION=2` 零契约改动、结论词 grep 守卫、Node 侧不读 SQLite（D2）、`RTS_TASKS` 缺省关、CSRF 四层防护、单槽串行、不推飞书、不改 `webPreferences`。
 
