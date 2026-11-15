@@ -1,30 +1,32 @@
 /**
- * 个股详情页（验收 5）：K 线 + 成交量（`kline-component`，纯 Canvas）+ 评分分解 + 出现史。
+ * 个股详情页（v2 §5.2）：沿用同一外壳（标题栏 / 读数带 / 页脚），隐藏侧栏与右栏。
  *
- * 三点约定：
- *
+ * 三点约定（不变）：
  * 1. **数据全部来自 `/api/stock/{symbol}/kline`**（本地服务现算 `daily_kline` +
  *    `recommendations`）。列表页不预先抓 K 线（D4），所以这一页是唯一会碰 K 线的视图。
  * 2. **K 线元组顺序是 `[date, open, close, low, high, volume]`** —— `close` 在
- *    `low/high` 之前（ECharts 约定，见 `api/types.ts` 的 `Stock.kline`）。映射到
- *    `kline-component` 的 `KLineData` 时必须逐位对齐，看错位不会报错，只会画出一根
- *    上下影线互换的蜡烛。
- * 3. **评分分解只显示、不重算**：面板把 `score_breakdown` 的数值项列出并给出合计，
- *    不解释成评分结论（G5 零第二结论源）。非 v1 票没有分解 → 显「无评分分解」。
+ *    `low/high` 之前（ECharts 约定）。映射到 `KLineData` 时必须逐位对齐。
+ * 3. **分解只显示、不重算**：面板把 `score_breakdown` 的数值项列出并给出合计，
+ *    不解释成结论（G5 零第二结论源）。
+ *
+ * v2 交互：返回按钮 + Esc 返回 `#/list`（`lib/router.ts`），返回后焦点还给来源行；
+ * 进详情后返回按钮自动获得焦点。K 线仍是真实数据（本页不做「无行情数值」占位 ——
+ * 那是静态预览稿的示意，真实页面必须呈现服务端下发的真实 K 线）。
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { KLineChart, darkTheme, type KLineData, type KLineTheme } from "kline-component";
 
 import { API, ApiError, apiGet } from "../api/client";
 import type { ExplainResponse, KlineResponse } from "../api/types";
 import { fmtPct, num } from "../lib/cols";
-import { listHref } from "../lib/router";
+import { goToList } from "../lib/router";
+import EmptyState from "../components/EmptyState";
 
 /**
  * A 股口径暗色主题：组件自带暗色底，只翻涨跌色（**红涨绿跌**，与面板其余部分一致）。
- * 不做整套自绘主题 —— 换配色只该换这几个变量，散落的自定义色会与 `styles.css` 分叉。
+ * 与 `index.css` 的 `--color-up/down` 持有同一组字面值 —— 改色必须两处同步。
  */
 const ASHARE_THEME: KLineTheme = {
   ...darkTheme,
@@ -53,7 +55,7 @@ function toKLineData(kline: number[][]): KLineData[] {
   });
 }
 
-/** 分解项的展示文本（**异质 dict**：既有数值也有字符串，`stock_report.py` 同款原样列出）。 */
+/** 分解项的展示文本（**异质 dict**：既有数值也有字符串，原样列出）。 */
 function breakdownText(v: unknown): string {
   if (typeof v === "number") return Number.isFinite(v) ? v.toFixed(2) : "—";
   if (typeof v === "string") return v;
@@ -62,9 +64,7 @@ function breakdownText(v: unknown): string {
 
 /**
  * 分解项的数值视图：`items` 原样列出（含非数值项），`total` **只累加数值项**。
- *
- * ⚠ 合计是「各分项之和」，**不是**评分：`score_breakdown` 是诊断用的异质 dict
- * （含 `concept` 这类字符串），面板不重算、不解释（G5）。
+ * ⚠ 合计是「各分项之和」，**不是**评分：面板不重算、不解释（G5）。
  */
 function breakdownItems(breakdown: Record<string, number> | null | undefined) {
   const entries = Object.entries(breakdown ?? {});
@@ -73,12 +73,13 @@ function breakdownItems(breakdown: Record<string, number> | null | undefined) {
   return { items: entries.map(([key, v]) => ({ key, text: breakdownText(v) })), total };
 }
 
-type Props = { symbol: string };
+type Props = { symbol: string; name?: string };
 
-export default function Stock({ symbol }: Props) {
+export default function Stock({ symbol, name }: Props) {
   const [data, setData] = useState<KlineResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const backRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -100,77 +101,107 @@ export default function Stock({ symbol }: Props) {
     };
   }, [symbol]);
 
+  // 进详情后把焦点交给返回按钮（Esc 与点击都从这里回到列表）。
+  useEffect(() => {
+    backRef.current?.focus({ preventScroll: true });
+  }, [symbol]);
+
   const klineData = useMemo(() => toKLineData(data?.kline ?? []), [data]);
   const { items, total } = useMemo(() => breakdownItems(data?.scoreBreakdown), [data]);
 
   return (
-    <div className="flex min-w-0 flex-col gap-3">
-      <div className="flex flex-wrap items-baseline gap-3">
-        <a className="text-text-dim no-underline hover:text-text" href={listHref}>
-          ← 返回列表
-        </a>
-        <h1 className="m-0 text-[15px] font-semibold">
-          {symbol}
-          <span className="text-[12px] font-normal text-text-dim">
-            {data ? ` · K 线截至 ${data.klineDate}（日线 ${data.kline.length} 根）` : ""}
-          </span>
-        </h1>
-      </div>
+    <main className="detail-main" data-scroll-root="main">
+      <div className="detail-wrap">
+        <div className="detail-toolbar">
+          <button type="button" className="back-btn" ref={backRef} onClick={goToList}>
+            <span className="arrow" aria-hidden="true">←</span>返回列表
+          </button>
+          <span className="detail-note">按 Esc 也可返回 · 列表位置保持切换前状态</span>
+        </div>
 
-      {loading ? <p className="m-0 text-text-dim">加载中…</p> : null}
-      {error ? <p className="m-0 text-err">{errorText(error)}</p> : null}
-
-      {data ? (
-        <>
-          <section className="flex min-w-0 flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-sm">
-            {klineData.length > 0 ? (
-              <div className="w-full rounded bg-[#1a1a2e]" style={{ height: CHART_HEIGHT }}>
-                <KLineChart data={klineData} theme={ASHARE_THEME} indicators={["MA", "VOL", "MACD"]} />
+        <div className="detail-left">
+          <section className="detail-card">
+            <div className="detail-card-head">
+              <span className="card-accent" style={{ background: "var(--brand)" }} aria-hidden="true" />
+              <div className="card-title-wrap">
+                <h2>
+                  <span className="mono">{symbol}</span>
+                  {name ? ` · ${name}` : ""}
+                </h2>
+                <p>
+                  日线 · 主图 / 副图 · 口径同本机扫描器最后一轮快照
+                  {data ? ` · K 线截至 ${data.klineDate}（日线 ${data.kline.length} 根）` : ""}
+                </p>
               </div>
-            ) : (
-              <p className="m-0 text-text-dim">该票无本地日线数据</p>
-            )}
+            </div>
+            <div className="detail-card-body">
+              {loading ? <p className="state-line">加载中…</p> : null}
+              {error ? <p className="state-line is-error">{errorText(error)}</p> : null}
+              {data ? (
+                klineData.length > 0 ? (
+                  <div className="chart-frame" style={{ height: CHART_HEIGHT }}>
+                    <KLineChart data={klineData} theme={ASHARE_THEME} indicators={["MA", "VOL", "MACD"]} />
+                  </div>
+                ) : (
+                  <EmptyState note="该票在本机日线数据中没有可绘制的 K 线；口径与上方区块独立。" />
+                )
+              ) : null}
+            </div>
           </section>
+        </div>
 
-          <section className="flex min-w-0 flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-sm">
-            <h2 className="m-0 text-[13px] font-semibold">评分分解</h2>
-            {items.length === 0 ? (
-              <p className="m-0 text-text-dim">无评分分解</p>
-            ) : (
-              <table className="border-collapse text-[12px] tabular-nums">
+        <div className="detail-right">
+          <section className="detail-card">
+            <div className="detail-card-head">
+              <span className="card-accent" aria-hidden="true" />
+              <div className="card-title-wrap">
+                <h2>本轮字段</h2>
+                <p>该股在最后一轮快照中的分解项 · 只读呈现</p>
+              </div>
+            </div>
+            {data && items.length > 0 ? (
+              <table className="mini-table">
                 <tbody>
                   {items.map((item) => (
                     <tr key={item.key}>
-                      <th className="pl-0 text-left font-normal text-text-dim">{item.key}</th>
-                      <td className="text-right">{item.text}</td>
+                      <th className="font-normal text-text-dim">{item.key}</th>
+                      <td className="r">{item.text}</td>
                     </tr>
                   ))}
                   <tr className="kv-total">
                     <th>合计</th>
-                    <td className="text-right">{total === null ? "—" : total.toFixed(2)}</td>
+                    <td className="r">{total === null ? "—" : total.toFixed(2)}</td>
                   </tr>
                 </tbody>
               </table>
+            ) : (
+              <div className="detail-card-body">
+                <EmptyState note="该股在本轮快照里没有分解项；不补写历史记录。" />
+              </div>
             )}
-            {items.length > 0 ? <p className="mt-1.5 mb-0 text-[12px] text-text-dim">合计为各分项之和；面板不做评分判断。</p> : null}
+            {data && items.length > 0 ? (
+              <p className="gate-foot">合计为各分项之和；面板不做评分判断。</p>
+            ) : null}
           </section>
 
-          <AiExplain symbol={symbol} />
-
-          <section className="flex min-w-0 flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-sm">
-            <h2 className="m-0 text-[13px] font-semibold">出现史（最近 {data.appearances.length} 条）</h2>
-            {data.appearances.length === 0 ? (
-              <p className="m-0 text-text-dim">无出现记录</p>
-            ) : (
+          <section className="detail-card">
+            <div className="detail-card-head">
+              <span className="card-accent" aria-hidden="true" />
+              <div className="card-title-wrap">
+                <h2>出现史</h2>
+                <p>本轮快照中的出现记录 · 只读呈现</p>
+              </div>
+            </div>
+            {data && data.appearances.length > 0 ? (
               <div className="max-w-full overflow-x-auto">
-                <table className="w-full border-collapse text-[12px] tabular-nums">
+                <table className="mini-table">
                   <thead>
                     <tr>
-                      <th className="text-left">日期</th>
-                      <th className="text-left">时间</th>
-                      <th className="text-left">类别</th>
-                      <th className="text-right">评分</th>
-                      <th className="text-right">涨幅</th>
+                      <th>日期</th>
+                      <th>时间</th>
+                      <th>类别</th>
+                      <th className="r">评分</th>
+                      <th className="r">涨幅</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -178,22 +209,30 @@ export default function Stock({ symbol }: Props) {
                       const pct = num(row.percent);
                       return (
                         <tr key={`${String(row.date)}-${String(row.time)}-${i}`}>
-                          <td className="text-left">{String(row.date ?? "")}</td>
-                          <td className="text-left">{String(row.time ?? "")}</td>
-                          <td className="text-left">{String(row.category ?? "")}</td>
-                          <td className="text-right">{num(row.score)?.toFixed(0) ?? "—"}</td>
-                          <td className={`text-right${pct === null ? "" : pct > 0 ? " text-up" : " text-down"}`}>{fmtPct(pct)}</td>
+                          <td>{String(row.date ?? "")}</td>
+                          <td>{String(row.time ?? "")}</td>
+                          <td>{String(row.category ?? "")}</td>
+                          <td className="r">{num(row.score)?.toFixed(0) ?? "—"}</td>
+                          <td className={`r${pct === null ? "" : pct > 0 ? " tone-up" : " tone-down"}`}>
+                            {fmtPct(pct)}
+                          </td>
                         </tr>
                       );
                     })}
                   </tbody>
                 </table>
               </div>
+            ) : (
+              <div className="detail-card-body">
+                <EmptyState note="该股在本轮快照里没有出现记录；不补写历史。" />
+              </div>
             )}
           </section>
-        </>
-      ) : null}
-    </div>
+
+          <AiExplain symbol={symbol} />
+        </div>
+      </div>
+    </main>
   );
 }
 
@@ -209,12 +248,9 @@ function errorText(code: string): string {
 
 /**
  * AI 解读区块（E3，ADR 0001）。
- *
- * 三条设计决定：
- * 1. **点击才请求**（P4）：进页不自动打模型，调用量 = 主动点击数（成本可控）。
+ * 1. **点击才请求**（P4）：进页不自动打模型，调用量 = 主动点击数。
  * 2. `label` 只渲染服务端下发的 `data.label`，**本文件不写那句标签文案** ——
- *    前端自拼就能被改成任意文案，红线标签必须单源在服务端
- *    （守卫：`tests/test_panel_web_hygiene.py::test_ai_label_not_hardcoded_in_web`）。
+ *    红线标签必须单源在服务端（守卫 `test_ai_label_not_hardcoded_in_web`）。
  * 3. `text` 原样展示，不重写、不摘要；`redlined=true` 时用错误色提醒「已被拦下」。
  */
 function AiExplain({ symbol }: { symbol: string }) {
@@ -233,68 +269,58 @@ function AiExplain({ symbol }: { symbol: string }) {
   };
 
   return (
-    <section className="flex min-w-0 flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-sm">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="m-0 text-[13px] font-semibold">AI 解读</h2>
-        <button
-          type="button"
-          onClick={run}
-          disabled={loading}
-          className="rounded-md border border-border px-2 py-1 text-[12px] text-text-dim transition-colors outline-none hover:bg-white/5 hover:text-text focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-        >
+    <section className="detail-card">
+      <div className="detail-card-head">
+        <span className="card-accent" aria-hidden="true" />
+        <div className="card-title-wrap">
+          <h2>AI 解读</h2>
+          <p>点击才请求 · 素材逐项可核对</p>
+        </div>
+        <button type="button" className="ai-btn" onClick={run} disabled={loading}>
           {loading ? "生成中…" : data ? "重新解读" : "生成解读"}
         </button>
       </div>
-
-      <p className="m-0 text-[12px] text-text-dim">
-        解读由模型转述本轮已上报的数据生成，素材逐项列在下方可核对；系统不由此产生任何新的评分或推荐。
-      </p>
-
-      {error ? <p className="m-0 text-err">{errorText(error)}</p> : null}
-
-      {data ? (
-        <>
-          <p className={`m-0 text-[12px] font-semibold ${data.redlined ? "text-err" : "text-text-dim"}`}>{data.label}</p>
-          <p className={`m-0 text-[13px] whitespace-pre-wrap ${data.redlined ? "text-err" : ""}`}>{data.text}</p>
-          {data.missing.length > 0 ? (
-            <p className="m-0 text-[12px] text-text-dim">
-              缺失来源：{data.missing.join("、")}（模型未收到这些数据，不得补）
-            </p>
-          ) : null}
-          <div className="flex flex-wrap items-center gap-2 text-[12px] text-text-dim">
-            <button
-              type="button"
-              onClick={() => setShowMaterials((v) => !v)}
-              className="rounded border border-border px-2 py-0.5 text-text-dim transition-colors outline-none hover:bg-white/5 hover:text-text focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              {showMaterials ? "收起素材" : `查看素材（${data.materials.length} 项）`}
-            </button>
-            {data.generatedFrom ? (
-              <span>
-                依据快照 {data.generatedFrom.date} {data.generatedFrom.time}
-                {data.generatedFrom.klineDate ? ` · K 线截至 ${data.generatedFrom.klineDate}` : ""}
-              </span>
-            ) : (
-              <span>依据已上报的 K 线缓存</span>
-            )}
-            {data.cached ? <span>· 缓存命中</span> : null}
-          </div>
-          {showMaterials ? (
-            <div className="max-w-full overflow-x-auto">
-              <table className="w-full border-collapse text-[12px]">
-                <tbody>
-                  {data.materials.map((m) => (
-                    <tr key={m.id}>
-                      <th className="pl-0 text-left align-top font-normal whitespace-nowrap text-text-dim">{m.label}</th>
-                      <td className="pl-2 text-left break-all">{m.value}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+      <div className="detail-card-body flex flex-col gap-2">
+        <p className="state-line">解读由模型转述本轮已上报的数据生成，素材逐项列在下方可核对；系统不由此产生任何新的评分或判断。</p>
+        {error ? <p className="state-line is-error">{errorText(error)}</p> : null}
+        {data ? (
+          <>
+            <p className={`state-line font-semibold ${data.redlined ? "is-error" : ""}`}>{data.label}</p>
+            <p className={`ai-text ${data.redlined ? "is-error" : ""}`}>{data.text}</p>
+            {data.missing.length > 0 ? (
+              <p className="state-line">缺失来源：{data.missing.join("、")}（模型未收到这些数据，不得补）</p>
+            ) : null}
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" className="ai-btn" onClick={() => setShowMaterials((v) => !v)}>
+                {showMaterials ? "收起素材" : `查看素材（${data.materials.length} 项）`}
+              </button>
+              {data.generatedFrom ? (
+                <span className="detail-note">
+                  依据快照 {data.generatedFrom.date} {data.generatedFrom.time}
+                  {data.generatedFrom.klineDate ? ` · K 线截至 ${data.generatedFrom.klineDate}` : ""}
+                </span>
+              ) : (
+                <span className="detail-note">依据已上报的 K 线缓存</span>
+              )}
+              {data.cached ? <span className="detail-note">· 缓存命中</span> : null}
             </div>
-          ) : null}
-        </>
-      ) : null}
+            {showMaterials ? (
+              <div className="max-w-full overflow-x-auto">
+                <table className="mini-table">
+                  <tbody>
+                    {data.materials.map((m) => (
+                      <tr key={m.id}>
+                        <th className="font-normal whitespace-nowrap text-text-dim">{m.label}</th>
+                        <td className="break-all">{m.value}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+          </>
+        ) : null}
+      </div>
     </section>
   );
 }

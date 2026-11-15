@@ -1,45 +1,46 @@
 /**
- * 面板主体（2026-10 桌面 UI 现代化后）：状态条 / 侧边导航 / 可拖拽分栏 /
- * 四区块卡片 / 本轮计数图 / 过门区 / 页脚。
+ * 面板主体（v2「有温度的精致」）：标题栏 / 本轮读数带 / 侧边导航 / 可拖拽分栏 /
+ * 四区块卡片 / 过门区 / 产品语言页脚 / 个股详情。
  *
- * 版面纪律（与终端同意图，与 design §7.1 的「终端 → 面板」映射一致）：
- * - 区块**顺序与终端一致**，前端**不另行排序**（FR-V2：排序已在
- *   `assemble.build_scan_view` 完成，面板只渲染）。
- * - 区块标题里写死的是**展示文案**（设计规定的那几句），不是列定义 —— 列定义一律来自
- *   下发的 `colSpec`（`components/**` 由 grep 守卫不得出现列名）。
- * - 面板**不新增**任何结论：没有短名单、没有综合判断、没有持仓建议，也没有「评分高=更
- *   可能大涨」这类暗示（G5）。
+ * 版面纪律（与终端同意图，纯只读镜像）：
+ * - 区块**顺序与终端一致**，前端**不另行排序**（排序已在 `assemble.build_scan_view`
+ *   完成，面板只渲染）。列头只吃服务端下发 `colSpec`。
+ * - 面板**不新增**任何结论：没有短名单、没有综合判断、没有持仓建议。
+ * - 路由只有「列表 / 个股详情」两页（`lib/router.ts` 的 hash 路由）；侧栏是锚点滚动，
+ *   **不是**第二个路由器。
+ * - `TITLES.*.full` 三串与 `hotSubtitle` / `offboardSubtitle` 模板逐字守卫
+ *   （`test_panel_web_cols.py`），Python `scanner/view/model.py` 是逐字真源，不动。
  *
- * 2026-10 版面变化（`docs/features/desktop-ui-modernize/CONTEXT.md`，纯展示层）：
- * - 左侧**可折叠侧边导航**（锚点滚动，**不是**第二个路由器 —— 路由仍只有
- *   「列表 / 个股详情」两个页面，`lib/router.ts`）；
- * - 主区与过门侧栏改为 **`react-resizable-panels` 可拖拽分栏**（窄屏仍堆叠）；
- * - 区块包进 `RegionCard`（表头 sticky + 横向滚动冻结首列，纯 CSS）；
- * - ~~新增 `StatsCharts`~~（2026-10 重构已删，见下方 `App` 上方注释）。
+ * v2 落地的交互（全部是视图层，零新增请求、零新增业务字段、零新增依赖）：
+ * - 侧栏图标化 + 折叠态 tooltip + 强选中色条，复用 `scrollMainTo` / `useActiveSection`；
+ * - 卡片折叠 / 侧栏折叠 / 分段位置写 `lib/uiState.ts` 的单一 localStorage 键；
+ * - 表格整行 hover + 「查看 →」+ Enter/Space 进详情；返回按钮 / Esc 返回并归还焦点；
+ * - 过门区滑动分段（← → / Home / End）；状态胶囊多态 + 一句解释弹层；
+ * - 空态用纯 CSS 图形 + 口径说明 + `—（本轮无数据）`；删掉右栏遗留空卡片。
  *
  * ⚠ 已知口径差异（不是 bug，但必须让人看见）：载荷的 `regions` 只有
  * `main / hist / hot / offboard` 四个键，**终端的「榜内异动」段不在契约里**
- * （加它要动 SCHEMA_VERSION，本轮冻结为 2）。故本区的标题写「分段并列」而非终端的
- * 「三段并列」—— 面板确实只有两段，标题不能替不存在的东西作保。
+ * （加它要动 SCHEMA_VERSION，本轮冻结为 2）。故本区标题写「分段并列」而非「三段并列」。
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Group as PanelGroup, Panel, Separator as PanelResizeHandle, useDefaultLayout } from "react-resizable-panels";
 
 import type { ColSpec, RegionsResponse } from "./api/types";
 import GatePanel from "./components/GatePanel";
+import EmptyState from "./components/EmptyState";
 import RegionCard from "./components/RegionCard";
-import Sidebar, { NAV_ITEMS } from "./components/Sidebar";
-import StatusBar from "./components/StatusBar";
+import Sidebar, { NAV_ITEMS, type NavCounts } from "./components/Sidebar";
+import StatusBar, { deriveStatus } from "./components/StatusBar";
 import { useSnapshot } from "./lib/useSnapshot";
-import { useRoute } from "./lib/router";
+import { consumeOpener, goToList, useRoute } from "./lib/router";
+import { useUiState } from "./lib/uiState";
 import Stock from "./pages/Stock";
 
 /**
  * 区块标题（设计规定文案，逐字守卫：`test_panel_web_cols.py::test_region_titles_match_terminal_wording`）。
- *
- * 2026-10 UI 重构：卡片头**两级化** —— `short` 作视觉锚点、`full` 逐字渲染在弱化副行
- * （守卫 grep 的是完整串，必须原样在此出现，不重措辞；`RegionCard` 会剥去 `◆ ` 前缀）。
+ * 卡片头两级化 —— `short` 作视觉锚点、`full` 逐字渲染在弱化副行（守卫 grep 完整串，
+ * 必须原样在此出现，不重措辞；`RegionCard` 会剥去 `◆ ` 前缀）。
  */
 const TITLES = {
   pool: { short: "v1 池选", full: "◆ v1 池选 — 新票优先·类别优先·排名升序·资金流降序" },
@@ -60,7 +61,35 @@ function colsOf(snapshot: RegionsResponse, key: string): ColSpec[] {
   return snapshot.regions.cols?.[key] ?? [];
 }
 
-function RegionList({ snapshot }: { snapshot: RegionsResponse }) {
+/** 个股名称：从本轮快照的行集合里读展示名（纯展示读，不新增请求/不重算口径）。 */
+function nameFor(snapshot: RegionsResponse | null, symbol: string): string {
+  if (!snapshot) return "";
+  const r = snapshot.regions;
+  const all = [
+    ...r.main,
+    ...r.hist,
+    ...r.hot,
+    ...r.offboard,
+    ...r.gate.main,
+    ...r.gate.hist,
+    ...r.gate.hot,
+    ...r.gate.offboard,
+  ];
+  for (const row of all) {
+    const sym = (typeof row.symbol === "string" ? row.symbol : typeof row.code === "string" ? row.code : "") as string;
+    if (sym === symbol && typeof row.name === "string") return row.name;
+  }
+  return "";
+}
+
+type RegionListProps = {
+  snapshot: RegionsResponse;
+  activeKey: string | null;
+  collapsed: Record<string, boolean>;
+  onToggle: (key: string) => void;
+};
+
+function RegionList({ snapshot, activeKey, collapsed, onToggle }: RegionListProps) {
   const marks = snapshot.regions.marks ?? EMPTY_MARKS;
   const { main, hist, hot, offboard } = snapshot.regions;
   const flowFiltered = snapshot.ctx?.flowFiltered ?? 0;
@@ -69,25 +98,29 @@ function RegionList({ snapshot }: { snapshot: RegionsResponse }) {
   return (
     <div className="flex flex-col gap-3">
       {warnings.length > 0 ? (
-        <ul className="m-0 list-disc pl-4 text-lag-warn">
+        <div className="ctx-note" role="status">
           {warnings.map((w) => (
-            <li key={w}>{w}</li>
+            <div key={w}>{w}</div>
           ))}
-        </ul>
+        </div>
       ) : null}
       {flowFiltered > 0 ? (
-        <p className="m-0 text-lag-warn">▸ 资金流出已剔除 {flowFiltered} 只（全区域统一口径）</p>
+        <p className="ctx-note">▸ 资金流出已剔除 {flowFiltered} 只（全区域统一口径）</p>
       ) : null}
 
       <RegionCard
         anchorId={NAV_ITEMS[0].key}
         title={TITLES.pool.short}
         fullTitle={TITLES.pool.full}
+        tag="主线"
         specs={colsOf(snapshot, "pool")}
         rows={main}
         profile="pool"
         marks={marks}
         count={main.length}
+        active={activeKey === NAV_ITEMS[0].key}
+        collapsed={Boolean(collapsed[NAV_ITEMS[0].key])}
+        onToggleCollapse={() => onToggle(NAV_ITEMS[0].key)}
       />
 
       <RegionCard
@@ -100,6 +133,9 @@ function RegionList({ snapshot }: { snapshot: RegionsResponse }) {
         profile="hist"
         marks={marks}
         count={hist.length}
+        active={activeKey === NAV_ITEMS[1].key}
+        collapsed={Boolean(collapsed[NAV_ITEMS[1].key])}
+        onToggleCollapse={() => onToggle(NAV_ITEMS[1].key)}
       />
 
       <RegionCard
@@ -107,6 +143,7 @@ function RegionList({ snapshot }: { snapshot: RegionsResponse }) {
         title={TITLES.hot.short}
         fullTitle={TITLES.hot.full}
         sub="（创业板 · 分段并列·互不排名 · 与上方主线口径独立）"
+        tag="分段并列"
         specs={colsOf(snapshot, "hot")}
         rows={hot}
         profile="hot"
@@ -116,12 +153,16 @@ function RegionList({ snapshot }: { snapshot: RegionsResponse }) {
           { title: `— 榜内飙升${hotSubtitle(hot.length)}`, rows: hot, profile: "hot" },
           { title: `— 榜外异动${offboardSubtitle(offboard.length)}`, rows: offboard, profile: "offboard" },
         ]}
+        active={activeKey === NAV_ITEMS[2].key}
+        collapsed={Boolean(collapsed[NAV_ITEMS[2].key])}
+        onToggleCollapse={() => onToggle(NAV_ITEMS[2].key)}
       />
     </div>
   );
 }
 
 const MAIN_SCROLL_SELECTOR = "[data-scroll-root='main']";
+const SIDE_SCROLL_SELECTOR = "[data-scroll-root='side']";
 
 function scrollMainTo(key: string) {
   const el = document.getElementById(`anchor-${key}`);
@@ -147,25 +188,26 @@ function scrollMainTo(key: string) {
 /** 侧栏高亮：当前「正在看」的区块 = 主区里最后一个顶部已滚过容器 1/4 线的区块。
  *
  *  ⚠ 为什么**不用** IntersectionObserver（2026-10-19 实测否掉）：
- *  1. 主区与右栏是两个滚动容器、各有一套观察器，而右栏那个高 536px 的
- *     `anchor-gate` 长期处于 intersecting ⇒ 它会把主区滚到哪都盖掉
- *     （现象：点「v1 池选」却高亮「飞书过门」）。要么给两套观察器分优先级，
- *     要么像现在这样只让主区发言。
- *  2. `rootMargin` 负边距那条「带」在高容器里很难调：带落在哪个区块上纯看
- *     滚动位置与各区块高度的比例，实测「滚到沪深飙升却高亮 v1 回捞」。
+ *  1. 主区与右栏是两个滚动容器、各有一套观察器，而右栏那个高容器里的
+ *     `anchor-gate` 长期处于 intersecting ⇒ 它会把主区滚到哪都盖掉。
+ *  2. `rootMargin` 负边距那条「带」在高容器里很难调。
  *  直接按滚动位置算「最后一个越过阈值线的区块」是确定性的，易验、易解释。
  *
  *  ⚠ 另两个必须配对的条件（少一个就静默失效，而这是纯交互退化、无测试会红）：
  *  - 首轮 `snapshot` 还是 null ⇒ 锚点**尚不存在**，用 `MutationObserver` 等它们挂上来；
- *  - 只监听**主区**容器的 scroll（区块导航的四个锚点里三个在主区；`gate` 在右栏，
- *    由点击导航时直接置高亮，见 `App` 里的 `onNavigate`）。
+ *  - 只监听**主区**容器的 scroll（`gate` 在右栏，由点击导航时直接置高亮）。
  */
-function useActiveSection(keys: string[]): string | null {
+function useActiveSection(keys: string[], viewKey: string): string | null {
   const [active, setActive] = useState<string | null>(null);
   const keysKey = keys.join(",");
 
+  // ⚠ viewKey（列表 / 详情）必须进依赖：切到详情时主区滚动容器会**整体卸载**，
+  //   切回列表时又是一个全新的 DOM 节点。若不在切换时重挂监听，滚动高亮会在
+  //   第一次「详情 → 返回」之后永久停在旧值（纯交互退化，无测试会红）。
   useEffect(() => {
-    if (keys.length === 0) return;
+    // 详情视图里锚点会整体卸载：此时不挂 MutationObserver，否则它会随着 K 线
+    // Canvas / 解读区的每次 DOM 变化反复唤醒，却永远等不到主区锚点出现。
+    if (keys.length === 0 || viewKey === "stock") return;
     let mo: MutationObserver | null = null;
     let detach: (() => void) | null = null;
 
@@ -212,7 +254,7 @@ function useActiveSection(keys: string[]): string | null {
       detach?.();
       mo?.disconnect();
     };
-  }, [keys, keysKey]);
+  }, [keys, keysKey, viewKey]);
 
   return active;
 }
@@ -221,22 +263,22 @@ function useActiveSection(keys: string[]): string | null {
 const PANEL_GROUP_ID = "rts-panel-main";
 
 /**
- * 右侧「过门」侧栏（2026-10 UI 重构）。
- *
+ * 右侧「过门」侧栏。
  * **删掉了 `StatsCharts`**（Recharts 懒加载那块）：它把 `gate.stats` 的同一组七个
  * 数字用「条形图 + 饼图 + 明细表」画了三遍，右栏本来就窄，三重冗余只是消耗纵向
- * 空间；且它为了占位饼图把 bundle 拖大 330KB（gzip 99KB）。同一组数字在
- * `GatePanel` 的紧凑账目区一处展示，不再重复。复原方式：git 历史
- * `StatsCharts.tsx` + `lazy()` 引入两行。
+ * 空间；且它为了占位饼图把 bundle 拖大 330KB。同一组数字在 `GatePanel` 的紧凑账目区
+ * 一处展示，不再重复；右栏顶部的空占位容器也一并移除。
  */
 export default function App() {
   const route = useRoute();
   const { snapshot, meta, error } = useSnapshot();
   const [now, setNow] = useState(() => Date.now());
-  const [collapsed, setCollapsed] = useState(false);
+  const { ui, update, toggleCard } = useUiState();
+  const [statusOpen, setStatusOpen] = useState(false);
+  const pillRef = useRef<HTMLButtonElement | null>(null);
 
-  // 分栏宽度持久化（react-resizable-panels v4：`defaultLayout` + `onLayoutChanged`，
-  // 取代 v2 的 `autoSaveId`）。只存 layout，不存任何业务状态。
+  // 分栏宽度持久化（react-resizable-panels v4：`defaultLayout` + `onLayoutChanged`）。
+  // 只存 layout，不存任何业务状态。
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({ id: PANEL_GROUP_ID });
 
   useEffect(() => {
@@ -246,15 +288,16 @@ export default function App() {
 
   const configured = snapshot?.ctx?.config?.refreshInterval;
   const intervalMs = (typeof configured === "number" && configured > 0 ? configured : 60) * 1000;
+  const status = deriveStatus(snapshot, error, intervalMs, now);
 
   const navKeys = useMemo(() => NAV_ITEMS.map((i) => i.key), []);
-  const active = useActiveSection(navKeys);
+  const active = useActiveSection(navKeys, route.name);
   // `gate` 锚点在右栏（不在主滚动容器里），主区的 scroll 监听算不到它 ⇒ 点导航
   // 进 gate 时直接置高亮，避免「滚到了却不高亮」。
   const [gateActive, setGateActive] = useState(false);
 
-  // 导航计数徽章：四个区块的行数（纯计数事实，来自载荷本身，零重算）。
-  const counts = useMemo(() => {
+  // 导航计数徽章 / 读数带区块计数：四个区块的行数（纯计数事实，来自载荷本身，零重算）。
+  const counts = useMemo<NavCounts>(() => {
     const r = snapshot?.regions;
     return {
       pool: r?.main.length ?? 0,
@@ -264,67 +307,163 @@ export default function App() {
     };
   }, [snapshot]);
 
-  const scrollToSection = useCallback(
-    (key: string) => {
-      if (key === "gate") setGateActive(true);
-      else setGateActive(false);
-      scrollMainTo(key);
-    },
-    [],
-  );
+  const scrollToSection = useCallback((key: string) => {
+    if (key === "gate") {
+      setGateActive(true);
+      // `飞书过门` 对应右栏卡片，滚右栏到顶（不在主区滚动容器里）。
+      const side = document.querySelector<HTMLElement>(SIDE_SCROLL_SELECTOR);
+      if (side) side.scrollTop = 0;
+      return;
+    }
+    setGateActive(false);
+    scrollMainTo(key);
+  }, []);
   const activeKey = gateActive ? "gate" : active;
 
+  // `gate` 的高亮是「点击后的短暂覆盖」（设计 §5.6：短暂锁定后高亮跟随滚动）。
+  // 用户一旦重新滚主区，就交还给 useActiveSection 的滚动高亮；否则 gate 会
+  // 永久占住高亮，回看上面三张卡片时侧栏仍亮着「飞书过门」。
+  // 只监听主区容器：gate 导航滚的是右栏，不会触发这里的清除。
+  useEffect(() => {
+    const box = document.querySelector<HTMLElement>(MAIN_SCROLL_SELECTOR);
+    if (!box) return;
+    const clear = () => setGateActive(false);
+    box.addEventListener("scroll", clear, { passive: true });
+    return () => box.removeEventListener("scroll", clear);
+  }, [snapshot, route.name]);
+
+  // Esc：优先关状态弹层并归还焦点，其次从详情返回列表。统一入口，避免双监听抢事件。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (statusOpen) {
+        e.preventDefault();
+        setStatusOpen(false);
+        pillRef.current?.focus();
+      } else if (route.name === "stock") {
+        e.preventDefault();
+        goToList();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [statusOpen, route.name]);
+
+  // 回到列表时把焦点还给来源行 / 门内按钮（详情 → 列表这一次）。
+  const prevRoute = useRef(route.name);
+  useEffect(() => {
+    const wasStock = prevRoute.current === "stock";
+    prevRoute.current = route.name;
+    if (route.name !== "list" || !wasStock) return;
+    const id = consumeOpener();
+    if (!id) return;
+    const raf = requestAnimationFrame(() => {
+      document.getElementById(id)?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [route.name]);
+
+  const stockName = route.name === "stock" ? nameFor(snapshot, route.symbol) : "";
+  const freshLabel =
+    status.kind === "fresh" ? "本轮新鲜"
+    : status.kind === "lag" ? `滞后 ${status.lag} 轮`
+    : status.kind === "history" ? "历史快照 · 非交易时段"
+    : status.kind === "error" ? "服务无响应"
+    : "等待首轮";
+
   return (
-    <div className="flex h-dvh flex-col overflow-hidden bg-bg text-text">
-      <StatusBar meta={meta} snapshot={snapshot} error={error} intervalMs={intervalMs} now={now} />
+    <div className="app-shell">
+      <StatusBar
+        meta={meta}
+        snapshot={snapshot}
+        error={error}
+        intervalMs={intervalMs}
+        now={now}
+        statusOpen={statusOpen}
+        onStatusToggle={() => setStatusOpen((v) => !v)}
+        onStatusClose={() => setStatusOpen(false)}
+        pillRef={pillRef}
+      />
+
+      {/* ── 本轮读数带：哪一轮 / 是否新鲜 / 本轮各区块多少只（只用已有快照字段） ── */}
+      <section className="readout" aria-label="本轮读数">
+        {route.name === "stock" ? (
+          <>
+            <div className="readout-metrics">
+              <div className="metric">
+                <span className="metric-label">当前视图</span>
+                <span className="metric-value" style={{ fontSize: 16 }}>个股</span>
+              </div>
+            </div>
+            <div className="readout-divider" />
+            <div className="round-copy">
+              <div className="round-line">
+                个股 <span className="mono">{route.symbol}</span>
+                {stockName ? <span> {stockName}</span> : null}
+              </div>
+              <div className="round-sub">数据口径：该股在本轮快照中的字段与本地日线 · 返回列表后保持原列表位置</div>
+            </div>
+            <div className="readout-end">
+              <span className="scope-chip"><i />本机回环 127.0.0.1</span>
+              <span className="round-pill">{snapshot ? `seq ${snapshot.seq}` : "seq —"}</span>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="readout-metrics">
+              <div className="metric">
+                <span className="metric-label">池选</span>
+                <span className="metric-value">{counts.pool}<small>行</small></span>
+              </div>
+              <div className="metric">
+                <span className="metric-label">过门通过</span>
+                <span className="metric-value is-brand">{counts.gate}<small>只</small></span>
+              </div>
+            </div>
+            <div className="readout-divider" />
+            <div className="round-copy">
+              <div className="round-line">
+                本轮轮次 <span className="mono">{snapshot ? `${snapshot.date} ${snapshot.time}` : "—"}</span>
+                {" · "}<span className="mono">seq {snapshot ? snapshot.seq : "—"}</span>
+                {snapshot ? ` · ${status.session}` : ""}
+              </div>
+              <div className="round-sub">数据口径：本机扫描器最后一轮快照 · 轮次、时段与区块口径随快照呈现</div>
+            </div>
+            <div className="readout-regions" aria-label="本轮各区块行数">
+              {NAV_ITEMS.map((item) => {
+                const n = counts[item.key as keyof NavCounts];
+                return (
+                  <span key={item.key} className={`r-chip${n > 0 ? "" : " is-zero"}`}>
+                    {item.label} <b>{n > 0 ? n : "—"}</b>
+                  </span>
+                );
+              })}
+            </div>
+            <div className="readout-end">
+              <span className="scope-chip"><i />本机回环 127.0.0.1</span>
+              <span className="round-pill">{freshLabel} · seq {snapshot ? snapshot.seq : "—"}</span>
+            </div>
+          </>
+        )}
+      </section>
 
       {route.name === "stock" ? (
-        <main className="min-w-0 flex-1 overflow-y-auto p-3">
-          <Stock symbol={route.symbol} />
-        </main>
+        /* 详情视图沿用同一个壳：隐藏侧栏与右栏，避免「单只股票」与「本轮卡片集合」混屏。 */
+        <div className="workspace detail-workspace">
+          <Stock symbol={route.symbol} name={stockName || undefined} />
+        </div>
       ) : (
-        <div className="flex min-h-0 flex-1">
-          {/* ── 侧边导航（可折叠，带行数徽章）────────────────────────────────── */}
-          <aside
-            className={`flex shrink-0 flex-col border-r border-border ${collapsed ? "w-11" : "w-44"}`}
-            aria-label="侧边导航"
-          >
-            <div className="flex h-8 items-center justify-end border-b border-border px-1">
-              <button
-                type="button"
-                onClick={() => setCollapsed((v) => !v)}
-                className="rounded px-1.5 py-0.5 text-[12px] text-text-dim outline-none hover:bg-white/5 hover:text-text focus-visible:ring-2 focus-visible:ring-ring"
-                aria-expanded={!collapsed}
-                aria-label={collapsed ? "展开导航" : "收起导航"}
-              >
-                {collapsed ? "»" : "«"}
-              </button>
-            </div>
-            {collapsed ? (
-              <nav className="flex flex-col gap-1 p-1.5" aria-label="区块导航">
-                {NAV_ITEMS.map((item) => (
-                  <button
-                    key={item.key}
-                    type="button"
-                    onClick={() => {
-                      setCollapsed(false);
-                      scrollToSection(item.key);
-                    }}
-                    title={item.label}
-                    className={`rounded px-1 py-1.5 text-[12px] outline-none hover:bg-white/5 hover:text-text focus-visible:ring-2 focus-visible:ring-ring ${
-                      activeKey === item.key ? "bg-white/8 text-text" : "text-text-dim"
-                    }`}
-                  >
-                    {item.label.slice(0, 2)}
-                  </button>
-                ))}
-              </nav>
-            ) : (
-              <Sidebar active={activeKey} onNavigate={scrollToSection} counts={counts} />
-            )}
-          </aside>
+        <div className="workspace">
+          {/* ── 侧边导航（可折叠，图标 + tooltip + 选中品牌色条）────────────── */}
+          <Sidebar
+            active={activeKey}
+            onNavigate={scrollToSection}
+            counts={counts}
+            collapsed={ui.sidebarCollapsed}
+            onToggle={() => update({ sidebarCollapsed: !ui.sidebarCollapsed })}
+          />
 
-          {/* ── 主区：区块列表 + 右侧「本轮计数 / 过门」侧栏，可拖拽分栏 ── */}
+          {/* ── 主区：区块列表 + 右侧「过门」侧栏，可拖拽分栏 ── */}
           {snapshot ? (
             <PanelGroup
               id={PANEL_GROUP_ID}
@@ -336,16 +475,18 @@ export default function App() {
               {/* Panel 自身是 flex 容器：内层 `<main>` 必须 `min-h-0` 才会被高度约束，
                   否则它会「内容多高就多高」地把 Panel 撑高、页面整体滚（分栏就废了）。 */}
               <Panel id="main-table" minSize={45} defaultSize={74} className="overflow-hidden">
-                <main className="h-full min-h-0 overflow-y-auto p-3" data-scroll-root="main">
-                  <RegionList snapshot={snapshot} />
+                <main className="main-scroll h-full min-h-0" data-scroll-root="main">
+                  <RegionList
+                    snapshot={snapshot}
+                    activeKey={activeKey}
+                    collapsed={ui.collapsed}
+                    onToggle={toggleCard}
+                  />
                 </main>
               </Panel>
-              <PanelResizeHandle className="w-1 shrink-0 cursor-col-resize bg-border transition-colors hover:bg-text-dim" />
+              <PanelResizeHandle className="panel-resize" />
               <Panel id="side-stats" minSize={18} defaultSize={26} className="overflow-hidden">
-                <aside
-                  className="flex h-full min-h-0 flex-col gap-2.5 overflow-y-auto p-3"
-                  data-scroll-root="side"
-                >
+                <aside className="side-scroll h-full min-h-0" data-scroll-root="side">
                   <GatePanel
                     gate={snapshot.regions.gate}
                     regions={{
@@ -354,23 +495,46 @@ export default function App() {
                       hot: snapshot.regions.hot,
                       offboard: snapshot.regions.offboard,
                     }}
+                    tab={ui.gateTab}
+                    onTabChange={(tab) => update({ gateTab: tab })}
+                    active={activeKey === "gate"}
+                    collapsed={Boolean(ui.collapsed.gate)}
+                    onToggleCollapse={() => toggleCard("gate")}
                   />
                 </aside>
               </Panel>
             </PanelGroup>
           ) : (
-            <main className="min-w-0 flex-1 overflow-y-auto p-3">
-              <div className="flex flex-col gap-1.5 text-text-dim">
-                {error ? `本地服务无响应（${error}）` : "等待扫描器首轮上报…"}
-                <span className="text-[12px]">扫描器在本机运行；首轮（约 60s 内）完成后本页自动刷新。</span>
+            /* 首轮未上报 / 服务无响应：沿用「不白屏」语义，换成完整版面空态。 */
+            <main className="workspace-empty min-w-0 flex-1">
+              <div className="region-card" style={{ maxWidth: 560 }}>
+                <div className="region-head">
+                  <span className="card-accent" aria-hidden="true" />
+                  <div className="card-title-wrap">
+                    <h2 className="region-title">
+                      {error ? `本地服务无响应（${error}）` : "等待扫描器首轮上报"}
+                    </h2>
+                    <p className="region-fulltitle">
+                      {error ? "本机服务暂时未响应；尚无已读取到的快照可呈现。" : "扫描器在本机运行"}
+                    </p>
+                  </div>
+                </div>
+                <EmptyState note="扫描器在本机运行；首轮快照到达后本页自动呈现，页面每 60s 读取一次。" />
               </div>
             </main>
           )}
         </div>
       )}
 
-      <footer className="shrink-0 border-t border-border px-3 py-2 text-text-dim">
-        只读视图：不新增筛选、不新增排序、不新增判断。数据来自本机扫描器的最后一轮，页面每 {Math.round(intervalMs / 1000)}s 轮询一次。
+      <footer className="footer">
+        <span>数据来源：本机扫描器最后一轮快照</span>
+        <span className="sep" />
+        <span>本机回环 127.0.0.1 · 每 {Math.round(intervalMs / 1000)}s 读取一次</span>
+        <span className="sep" />
+        <span>轮次、时段与区块口径随快照呈现</span>
+        <span className="right">
+          数据版本 v2 · {snapshot ? `${snapshot.date} ${snapshot.time} · seq ${snapshot.seq}` : "seq —"}
+        </span>
       </footer>
     </div>
   );

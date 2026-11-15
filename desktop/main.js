@@ -244,7 +244,7 @@ function errorPage(message, logPath) {
   const tail = logPath ? readLogTail(logPath).trim() : "";
   const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8">
 <style>
- body{margin:0;background:#0f1115;color:#e6e8ee;font:13px/1.7 "Microsoft YaHei",system-ui,sans-serif;
+ body{margin:0;background:#070b12;color:#e6e8ee;font:13px/1.7 "Microsoft YaHei",system-ui,sans-serif;
       display:flex;align-items:center;justify-content:center;height:100vh}
  .box{max-width:720px;padding:20px 24px}
  h1{font-size:15px;margin:0 0 8px}
@@ -270,7 +270,7 @@ async function createWindow() {
     height: 900,
     minWidth: 900,
     minHeight: 600,
-    backgroundColor: "#0f1115",
+    backgroundColor: "#070b12",
     title: "创业板飙升榜 · 桌面看板",
     autoHideMenuBar: false,
     webPreferences: {

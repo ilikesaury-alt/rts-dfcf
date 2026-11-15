@@ -1,32 +1,24 @@
 /**
  * 五区块通用表格（验收 2）：**列头与列数只认下发的 `colSpec`**。
  *
- * ⛔ 本文件（以及 `components/**` 下任何文件）**不得出现列名字面量**——
- *   列名只许写在 `lib/cols.ts` 的投影表里，由
- *   `tests/test_panel_web_hygiene.py::test_table_components_have_no_hardcoded_column_labels`
- *   用 grep 守着。这里取值一律走 `cellsFor(row, specs, profile, ctx)`。
+ * ⛔ 本文件（以及 `components/**` 下任何文件）**不得出现列名字面量** ——
+ *   列名只许写在 `lib/cols.ts` 的投影表里，由 grep 守卫守着。这里取值一律走
+ *   `cellsFor(row, specs, profile, ctx)`；表头一律渲染 `spec.label`。
  *
- * 2026-10 UI 重构新增（纯展示层，均属 FR-V2 / 验收 2 既有授权范围）：
- * - **临时排序**：可排序列的表头渲染成按钮，点击按该列原始数值降序（再点还原）。
- *   可排集合 = `SORTABLE[profile]`（FR-V2 白名单：评分/涨幅/量比），排序状态由
- *   调用方（`RegionCard` → `App`）持有并**在区块标题旁显式标「临时排序」**——
- *   排序一经触达立刻可见，绝无静默重排。还原后恢复服务端下发的原始顺序。
- * - **键盘**：行 Tab 可达、Enter 打开详情（原有）；表头按钮原生焦点即可。
- * - **两级强调**：涨跌色只在 ≥5% 的行加粗（`cols.ts` `pctCell`），长列表不逐格喊。
+ * v2 表现层（不改变任何列集合 / 取值口径 / 排序白名单）：
+ * - 整行 hover 抬到 `--surface-3`、active 抬到 `--surface-pop`、右侧「查看 →」淡入；
+ * - 整行 `role="link"` + `tabIndex=0`，点击 / Enter / Space 进详情（`lib/router.ts` hash）；
+ * - 焦点环内缩 2px；行尾标记仍在 `colSpec` 之外的窄列；
+ * - 冻结首列 sticky 与表头 sticky 不变。
  *
- * 两处刻意与终端一致（不变）：
- * - **行尾标记在定宽列之外**（终端 `_table_row(...) + _suffix` 同款）：另起一个
- *   窄单元格承载 `新 / ⚡ / 稳 / ▼`，不混进任何一列的语义里。
- * - **空区块显 `—（本轮无数据）`**，不留一张只有列头的空表 —— 与终端「无结果整段跳过」
- *   同意图，但面板是固定版面，故留一句占位而不是整块消失。
+ * 「临时排序」仍限 FR-V2 既有白名单并由 `RegionCard` 显式标注（本轮不扩大）。
  */
 
 import type { ColSpec, Row } from "../api/types";
 import { cn } from "../lib/utils";
 import { cellsFor, rowMarks, rowSymbol, SORTABLE, type Profile } from "../lib/cols";
-import { stockHref } from "../lib/router";
-
-const EMPTY_TEXT = "—（本轮无数据）";
+import { openStock } from "../lib/router";
+import EmptyState from "./EmptyState";
 
 type Props = {
   /** 列定义投影（来自 `regions.cols.*`，随载荷下发）。 */
@@ -68,16 +60,16 @@ function sortRows(rows: Row[], key: string, specs: ColSpec[], profile: Profile):
 
 export default function RegionTable({ specs, rows, profile, marks, onNavigate, sortKey, onSortToggle, frozen }: Props) {
   if (rows.length === 0) {
-    return <div className="region-empty">{EMPTY_TEXT}</div>;
+    return <EmptyState />;
   }
 
   const sortable = SORTABLE[profile] ?? [];
   const sorted = sortKey && sortable.includes(sortKey) ? sortRows(rows, sortKey, specs, profile) : rows;
 
-  const open = (symbol: string) => {
+  const open = (symbol: string, fromId?: string) => {
     if (!symbol) return;
     if (onNavigate) onNavigate(symbol);
-    else window.location.hash = stockHref(symbol);
+    else openStock(symbol, fromId);
   };
 
   return (
@@ -122,14 +114,21 @@ export default function RegionTable({ specs, rows, profile, marks, onNavigate, s
             const symbol = rowSymbol(row);
             const cells = cellsFor(row, specs, profile, { index, marks });
             const rowMarkList = rowMarks(row, profile, { index, marks });
+            const clickable = Boolean(symbol);
             return (
               <tr
                 key={`${symbol}-${index}`}
-                className={cn("row", symbol && "row-clickable")}
-                tabIndex={symbol ? 0 : undefined}
-                onClick={() => open(symbol)}
+                id={clickable ? `row-${symbol}` : undefined}
+                className={cn("row", clickable && "row-clickable")}
+                role={clickable ? "link" : undefined}
+                aria-label={clickable ? `查看 ${symbol} 详情` : undefined}
+                tabIndex={clickable ? 0 : undefined}
+                onClick={() => open(symbol, clickable ? `row-${symbol}` : undefined)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") open(symbol);
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    open(symbol, clickable ? `row-${symbol}` : undefined);
+                  }
                 }}
               >
                 {cells.map((cell, i) => (
@@ -142,7 +141,7 @@ export default function RegionTable({ specs, rows, profile, marks, onNavigate, s
                       cell.strong && "cell-strong",
                     )}
                   >
-                    {cell.text}
+                    {cell.text === "—" ? <span className="nil">{cell.text}</span> : cell.text}
                   </td>
                 ))}
                 <td className="marks-cell">
@@ -151,6 +150,11 @@ export default function RegionTable({ specs, rows, profile, marks, onNavigate, s
                       {mark.text}
                     </span>
                   ))}
+                  {clickable ? (
+                    <span className="row-cta" aria-hidden="true">
+                      查看 →
+                    </span>
+                  ) : null}
                 </td>
               </tr>
             );

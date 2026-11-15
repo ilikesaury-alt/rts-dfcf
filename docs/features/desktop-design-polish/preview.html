@@ -1,0 +1,913 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rts-desktop · 有温度的精致只读看板 · v2</title>
+<style>
+/* ============================================================
+   rts-desktop · v2 方向修正 · 自包含交互预览
+   1600×900 桌面观感。无 CDN、无外链图片/字体、无生产代码依赖。
+   ============================================================ */
+:root{
+  /* 四级表面：窗口底 → 工作区 → 卡片 → hover/选中 → 弹层 */
+  --surface-0:#070b12;
+  --surface-1:#0c131e;
+  --surface-2:#141e2d;
+  --surface-3:#1c2a3e;
+  --surface-pop:#243650;
+
+  --line-soft:rgba(255,255,255,.075);
+  --line:rgba(255,255,255,.12);
+  --line-strong:rgba(255,255,255,.20);
+
+  --text-1:#f2f6fc;
+  --text-2:#b9c5d6;
+  --text-3:#8d9cb0;
+  --text-4:#64748b;
+
+  /* 克制的青蓝品牌色：只用于身份、选中、状态、焦点、极淡光晕 */
+  --brand:#4c8dff;
+  --brand-soft:#22d3ee;
+  --brand-wash:rgba(76,141,255,.12);
+  --brand-wash-2:rgba(34,211,238,.10);
+
+  /* A 股数据专用色：只在涨跌数值与 K 线数据语义中出现 */
+  --up:#ef232a;
+  --down:#14b143;
+
+  --amber:#f5bb63;
+  --coral:#ff7b8e;
+  --mark-new:#e4ae6b;
+  --mark-bolt:#f5bb63;
+  --mark-steady:#22d3ee;
+  --mark-down:#ff9a86;
+
+  --mono:"JetBrains Mono","Cascadia Mono",Consolas,"SFMono-Regular",monospace;
+  --sans:"Inter","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+  --ease:140ms ease;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0;height:100%;overflow:hidden;background:#05080d;color:var(--text-2);font-family:var(--sans);font-size:12px}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+button,[role="link"]{transition:background-color var(--ease),border-color var(--ease),color var(--ease),box-shadow var(--ease),transform var(--ease),opacity var(--ease)}
+button:focus-visible,[role="link"]:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+button:active{transform:translateY(1px)}
+button:hover{background-color:rgba(255,255,255,.055)}
+.num,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lining-nums;font-feature-settings:"tnum" 1,"lnum" 1}
+.up{color:var(--up)}.down{color:var(--down)}.nil{color:var(--text-4)}
+.brand-ink{color:var(--brand)}.soft-ink{color:var(--brand-soft)}
+
+/* 预览外框：固定 1600×900 桌面观感，窄视口整体缩放 */
+#stage{--fit:1;width:1600px;height:900px;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%) scale(var(--fit));transform-origin:center center;overflow:hidden;border:1px solid #26364d;border-radius:6px;background:var(--surface-0);box-shadow:0 22px 70px rgba(0,0,0,.66)}
+.app{width:100%;height:100%;display:flex;flex-direction:column;overflow:hidden;background:var(--surface-1)}
+
+/* ── 标题栏：应用身份 + 允许的第一处渐变（极淡品牌光晕） ── */
+.titlebar{height:48px;flex:0 0 48px;position:relative;z-index:20;display:flex;align-items:center;padding:0 16px;background:var(--surface-0);border-bottom:1px solid var(--line)}
+.titlebar:before{content:"";position:absolute;left:-90px;top:-100px;width:480px;height:210px;pointer-events:none;background:radial-gradient(ellipse at 22% 50%,rgba(76,141,255,.13),transparent 72%)}
+.titlebar>*{position:relative}
+.brand{display:flex;align-items:center;gap:11px;min-width:320px}
+.logo{width:30px;height:30px;border-radius:9px;border:1px solid rgba(76,141,255,.42);background:rgba(76,141,255,.09);display:flex;align-items:center;justify-content:center;box-shadow:inset 0 1px 0 rgba(255,255,255,.08)}
+.logo svg{width:21px;height:21px}
+.brand-name{font-size:15.5px;line-height:19px;font-weight:650;color:var(--text-1);letter-spacing:.01em}
+.brand-sub{margin-top:1px;font-size:10px;line-height:13px;letter-spacing:.12em;color:var(--brand-soft);font-weight:650}
+.title-meta{display:flex;align-items:center;gap:11px;color:var(--text-3);font-size:11px;white-space:nowrap}
+.title-meta .sep{width:1px;height:14px;background:var(--line)}
+.title-meta b{color:var(--text-2);font-weight:600}
+.title-spacer{flex:1}
+.readonly-chip{height:26px;display:flex;align-items:center;gap:7px;padding:0 11px;border:1px solid var(--line);border-radius:8px;color:var(--text-2);background:rgba(255,255,255,.025);font-size:11px}
+.readonly-chip i{width:6px;height:6px;border-radius:50%;background:var(--brand-soft);box-shadow:0 0 0 3px var(--brand-wash-2)}
+
+/* 状态指示：点击展开一句口径解释，演示四态 */
+.status-wrap{position:relative;margin-left:12px}
+.status-pill{width:238px;height:34px;display:flex;align-items:center;gap:9px;padding:0 10px;border:1px solid var(--line);border-radius:9px;background:var(--surface-2);text-align:left;box-shadow:inset 0 1px 0 rgba(255,255,255,.05)}
+.status-pill:hover{background:var(--surface-3);border-color:rgba(76,141,255,.34)}
+.status-pill:active{background:var(--surface-pop)}
+.status-pill:focus-visible{outline-offset:3px}
+.status-dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--brand);box-shadow:0 0 0 4px var(--brand-wash);transition:background-color var(--ease),box-shadow var(--ease)}
+.status-copy{min-width:0;display:flex;flex-direction:column;line-height:14px;flex:1}
+.status-main{font-size:11.5px;color:var(--text-1);font-weight:650;white-space:nowrap}
+.status-sub{margin-top:1px;font-size:10px;color:var(--text-3);white-space:nowrap;font-family:var(--mono)}
+.status-chevron{width:7px;height:7px;border-right:1.5px solid var(--text-3);border-bottom:1.5px solid var(--text-3);transform:rotate(45deg) translate(-1px,-1px);transition:transform var(--ease)}
+.status-pill[aria-expanded="true"] .status-chevron{transform:rotate(225deg) translate(-2px,-2px)}
+.status-wrap[data-state="fresh"] .status-dot{background:var(--brand-soft);box-shadow:0 0 0 4px var(--brand-wash-2)}
+.status-wrap[data-state="lag"] .status-dot{background:var(--amber);box-shadow:0 0 0 4px var(--brand-wash),0 0 0 7px rgba(245,187,99,.10)}
+.status-wrap[data-state="lag"] .status-pill{border-color:rgba(245,187,99,.34)}
+.status-wrap[data-state="error"] .status-dot{background:var(--coral);box-shadow:0 0 0 4px var(--brand-wash),0 0 0 7px rgba(255,123,142,.10)}
+.status-wrap[data-state="error"] .status-pill{border-color:rgba(255,123,142,.38)}
+.status-pop{position:absolute;right:0;top:41px;width:356px;padding:14px;border:1px solid rgba(76,141,255,.26);border-radius:10px;background:var(--surface-pop);box-shadow:inset 0 1px 0 rgba(255,255,255,.06),0 18px 40px rgba(0,0,0,.42);animation:pop-in 140ms ease both;z-index:30}
+@keyframes pop-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
+.pop-head{display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--text-1);font-weight:650}
+.pop-head span{font-size:10px;color:var(--brand-soft);font-weight:600;letter-spacing:.05em}
+.status-explain{margin:8px 0 12px;font-size:11px;line-height:1.65;color:var(--text-2)}
+.status-options{display:grid;grid-template-columns:repeat(2,1fr);gap:7px}
+.status-options button{height:28px;padding:0 8px;border-radius:7px;border:1px solid var(--line);color:var(--text-2);font-size:11px;text-align:center;background:rgba(255,255,255,.025)}
+.status-options button:hover{background:var(--surface-3);border-color:rgba(76,141,255,.34)}
+.status-options button[aria-pressed="true"]{background:rgba(76,141,255,.18);border-color:rgba(76,141,255,.52);color:var(--text-1);font-weight:650}
+.status-options button:active{background:var(--surface-3)}
+
+/* ── 本轮读数带：关键读数拉到 22px，语气仍克制 ── */
+.readout{height:76px;flex:0 0 76px;display:flex;align-items:center;padding:0 18px;background:var(--surface-1);border-bottom:1px solid var(--line)}
+.readout-metrics{display:flex;align-items:center;gap:18px}
+.metric{min-width:92px;display:flex;flex-direction:column;justify-content:center}
+.metric-label{font-size:11px;color:var(--text-3);line-height:16px}
+.metric-value{font-size:22px;line-height:26px;font-weight:650;color:var(--text-1);font-family:var(--mono);font-variant-numeric:tabular-nums}
+.metric-value small{font-size:11px;color:var(--text-3);font-family:var(--sans);font-weight:500;margin-left:5px}
+.metric-value.is-brand{color:var(--brand-soft)}
+.readout-divider{width:1px;height:38px;background:var(--line);margin:0 24px}
+.round-copy{display:flex;flex-direction:column;gap:4px;min-width:0}
+.round-line{font-size:12px;color:var(--text-2);white-space:nowrap}
+.round-line .mono{color:var(--text-1)}
+.round-sub{font-size:11px;line-height:1.55;color:var(--text-3)}
+.readout-end{margin-left:auto;display:flex;align-items:center;gap:10px}
+.scope-chip{height:27px;display:flex;align-items:center;padding:0 11px;border:1px solid var(--line);border-radius:8px;color:var(--text-3);font-size:11px;background:rgba(255,255,255,.022)}
+.scope-chip i{width:6px;height:6px;border-radius:50%;background:var(--brand);box-shadow:0 0 0 3px var(--brand-wash);margin-right:7px}
+.round-pill{height:27px;display:flex;align-items:center;padding:0 11px;border-radius:8px;background:rgba(76,141,255,.10);color:var(--brand-soft);font-size:11px;font-family:var(--mono)}
+
+/* ── Workspace：侧栏 208 / 主区 / 右栏 386 ── */
+.workspace{flex:1;min-height:0;display:flex}
+.sidebar{width:208px;flex:0 0 208px;background:var(--surface-0);border-right:1px solid var(--line);display:flex;flex-direction:column;transition:width var(--ease),flex-basis var(--ease)}
+.sidebar-label{height:42px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;font-size:10px;letter-spacing:.13em;color:var(--text-4);font-weight:700;border-bottom:1px solid var(--line-soft)}
+.sidebar-label .label-mark{width:16px;height:2px;border-radius:2px;background:var(--brand);opacity:.8}
+.nav{display:flex;flex-direction:column;padding:10px 9px;gap:5px}
+.nav-item{height:44px;width:100%;display:flex;align-items:center;gap:11px;padding:0 12px;border-radius:9px;position:relative;text-align:left;color:var(--text-3);border:1px solid transparent}
+.nav-item svg{width:17px;height:17px;flex:none;stroke-width:1.6}
+.nav-item .nav-text{font-size:13px;font-weight:600;color:var(--text-2);flex:1;white-space:nowrap}
+.nav-item .nav-count{font-size:11px;color:var(--text-3);font-family:var(--mono);min-width:18px;text-align:right}
+.nav-item:hover{background:var(--surface-3);color:var(--text-1);border-color:rgba(76,141,255,.18)}
+.nav-item:hover .nav-text{color:var(--text-1)}
+.nav-item:active{background:var(--surface-pop)}
+.nav-item.is-active{background:var(--surface-3);color:var(--brand);border-color:rgba(76,141,255,.28)}
+.nav-item.is-active:before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:0 3px 3px 0;background:var(--brand)}
+.nav-item.is-active .nav-text{color:var(--text-1);font-weight:650}
+.nav-item.is-active .nav-count{color:var(--brand-soft)}
+.nav-item:focus-visible{outline-offset:-2px}
+.sidebar-foot{margin-top:auto;height:50px;border-top:1px solid var(--line-soft);display:flex;align-items:center;justify-content:space-between;padding:0 14px;font-size:10.5px;color:var(--text-3)}
+.local{display:flex;align-items:center;gap:8px;white-space:nowrap}
+.local i{width:7px;height:7px;border-radius:50%;background:var(--brand);box-shadow:0 0 0 3px var(--brand-wash)}
+.sidebar-toggle{width:28px;height:28px;border:1px solid var(--line);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text-3);position:relative}
+.sidebar-toggle:hover,.sidebar-toggle:active{background:var(--surface-3);color:var(--text-1)}
+.toggle-icon{width:13px;height:11px;border:1px solid currentColor;border-radius:2px;position:relative}
+.toggle-icon:before{content:"";position:absolute;left:3px;top:0;bottom:0;width:1px;background:currentColor;opacity:.7}
+.toggle-icon:after{content:"";position:absolute;right:2px;top:3px;width:4px;height:4px;border-right:1.2px solid currentColor;border-bottom:1.2px solid currentColor;transform:rotate(-45deg)}
+.sidebar.is-collapsed{width:64px;flex-basis:64px}
+.sidebar.is-collapsed .sidebar-label{justify-content:center;padding:0}
+.sidebar.is-collapsed .sidebar-label .label-text,.sidebar.is-collapsed .nav-text,.sidebar.is-collapsed .nav-count,.sidebar.is-collapsed .local span{display:none}
+.sidebar.is-collapsed .nav{padding:10px 8px}
+.sidebar.is-collapsed .nav-item{justify-content:center;padding:0}
+.sidebar.is-collapsed .sidebar-foot{justify-content:center;padding:0}
+.sidebar.is-collapsed .toggle-icon:after{transform:rotate(135deg);left:3px;right:auto}
+.sidebar.is-collapsed .nav-item:after,.sidebar.is-collapsed .sidebar-toggle:after{content:attr(data-tip);position:absolute;left:calc(100% + 12px);top:50%;transform:translateY(-50%) translateX(-4px);padding:6px 9px;border-radius:7px;background:var(--surface-pop);border:1px solid var(--line);color:var(--text-1);font-size:11px;white-space:nowrap;box-shadow:0 10px 24px rgba(0,0,0,.35);opacity:0;pointer-events:none;z-index:40;transition:opacity var(--ease),transform var(--ease)}
+.sidebar.is-collapsed .nav-item:hover:after,.sidebar.is-collapsed .nav-item:focus-visible:after,.sidebar.is-collapsed .sidebar-toggle:hover:after,.sidebar.is-collapsed .sidebar-toggle:focus-visible:after{opacity:1;transform:translateY(-50%) translateX(0)}
+
+.main{flex:1;min-width:0;background:var(--surface-1);position:relative;border-right:1px solid var(--line)}
+.main-scroll{position:relative;height:100%;overflow-y:auto;overflow-x:hidden;padding:18px;display:flex;flex-direction:column;gap:18px}
+.main-scroll::-webkit-scrollbar,.side-scroll::-webkit-scrollbar,.table-scroll::-webkit-scrollbar,.detail-main::-webkit-scrollbar,.status-pop::-webkit-scrollbar{width:8px;height:8px}
+.main-scroll::-webkit-scrollbar-thumb,.side-scroll::-webkit-scrollbar-thumb,.table-scroll::-webkit-scrollbar-thumb,.detail-main::-webkit-scrollbar-thumb{background:#30425c;border-radius:8px}
+.main-scroll::-webkit-scrollbar-track,.side-scroll::-webkit-scrollbar-track,.table-scroll::-webkit-scrollbar-track,.detail-main::-webkit-scrollbar-track{background:transparent}
+
+/* ── 卡片：浮起的表面、1px 顶部内高光、单层轻阴影、9~10px 圆角 ── */
+.card{background:var(--surface-2);border:1px solid var(--line);border-radius:10px;overflow:hidden;box-shadow:inset 0 1px 0 rgba(255,255,255,.055),0 9px 24px rgba(0,0,0,.20);transition:border-color var(--ease),box-shadow var(--ease)}
+.card:hover{border-color:rgba(76,141,255,.22)}
+.card.is-active{border-color:rgba(76,141,255,.30)}
+.card-head{min-height:58px;display:flex;align-items:center;gap:13px;padding:11px 15px;background:rgba(255,255,255,.022);border-bottom:1px solid var(--line-soft);transition:background-color var(--ease),border-color var(--ease)}
+.card.is-active .card-head{background:var(--surface-3)}
+.card-accent{width:3px;height:28px;border-radius:3px;background:var(--text-4);flex:none;transition:background-color var(--ease)}
+.card.is-active .card-accent{background:var(--brand)}
+.card-title-wrap{min-width:0;flex:1}
+.card-title{font-size:14.5px;line-height:20px;font-weight:650;color:var(--text-1);margin:0;display:flex;align-items:center;gap:9px}
+.card-title .tag{font-size:10px;font-weight:650;color:var(--brand-soft);border:1px solid rgba(34,211,238,.28);background:rgba(34,211,238,.07);border-radius:5px;padding:1px 6px;letter-spacing:.04em}
+.card-full{margin-top:3px;font-size:11px;line-height:1.55;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card-head-actions{display:flex;align-items:center;gap:9px;flex:none}
+.count-badge{font-size:10.5px;color:var(--text-2);background:var(--surface-3);border:1px solid var(--line);border-radius:7px;padding:4px 9px;font-family:var(--mono)}
+.count-badge em{font-style:normal;color:var(--text-3);font-family:var(--sans)}
+.card-toggle{width:28px;height:28px;border:1px solid var(--line);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text-3)}
+.card-toggle:hover,.card-toggle:active{background:var(--surface-3);color:var(--brand-soft);border-color:rgba(76,141,255,.32)}
+.card-toggle .chevron{width:7px;height:7px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(45deg) translate(-1px,-1px);transition:transform var(--ease)}
+.card[data-collapsed="true"] .card-toggle .chevron{transform:rotate(-45deg) translate(-1px,1px)}
+.card[data-collapsed="true"] .card-head{border-bottom-color:transparent}
+.card-body{display:grid;grid-template-rows:1fr;opacity:1;transition:grid-template-rows 150ms ease,opacity 150ms ease}
+.card[data-collapsed="true"] .card-body{grid-template-rows:0fr;opacity:0}
+.card-body-inner{min-height:0;overflow:hidden}
+.card[data-collapsed="true"] .card-body-inner{pointer-events:none}
+
+/* ── 表格：28px 行高、真实 hover/active、右侧淡入「查看 →」 ── */
+.table-scroll{overflow-x:auto;max-width:100%}
+table.grid{width:100%;min-width:920px;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:12.5px;table-layout:auto}
+.grid th,.grid td{height:28px;padding:0 10px;white-space:nowrap;border-bottom:1px solid rgba(255,255,255,.055)}
+.grid thead th{position:sticky;top:0;z-index:2;height:29px;background:var(--surface-3);color:var(--text-3);font-size:11px!important;font-weight:650;letter-spacing:.025em;border-bottom:1px solid var(--line-strong);text-align:left}
+.grid tbody tr{position:relative;transition:background-color var(--ease)}
+.grid tbody tr[role="link"]{cursor:pointer}
+.grid tbody tr:hover{background:var(--surface-3)}
+.grid tbody tr:active{background:var(--surface-pop)}
+.grid tbody tr:focus-visible{outline:2px solid var(--brand);outline-offset:-2px}
+.grid tbody tr:last-child td{border-bottom:0}
+.grid th.r,.grid td.r{text-align:right}
+.grid th.c,.grid td.c{text-align:center}
+.grid td.code{font-family:var(--mono);color:var(--text-2);font-size:11.5px;min-width:96px}
+.grid td.name{color:var(--text-1);font-weight:600;min-width:84px}
+.grid td.pct{font-family:var(--mono);font-size:12.5px}
+.grid td.plain{color:var(--text-2)}
+.grid td.score{font-family:var(--mono);color:var(--text-1)}
+.grid td.strategy{font-family:var(--mono);font-size:11px;color:var(--text-3);letter-spacing:.04em}
+.grid th.idx,.grid td.idx{position:sticky;left:0;z-index:1;width:36px;color:var(--text-4);font-family:var(--mono);font-size:10.5px;text-align:right;padding-right:8px;background:var(--surface-2);border-right:1px solid var(--line-soft)}
+.grid th.code,.grid td.code{position:sticky;left:36px;z-index:1;background:var(--surface-2);border-right:1px solid var(--line-strong)}
+.grid thead th.idx,.grid thead th.code{z-index:4;background:var(--surface-3)}
+.grid tbody tr:hover .idx,.grid tbody tr:hover .code,.grid tbody tr:active .idx,.grid tbody tr:active .code{background:var(--surface-3)}
+.grid tbody tr:active .idx,.grid tbody tr:active .code{background:var(--surface-pop)}
+.marks-cell{position:relative;width:112px;text-align:right;padding-right:16px}
+.mark{display:inline-block;width:24px;text-align:left;font-size:10px;font-weight:700}
+.mark-new{color:var(--mark-new)}.mark-bolt{color:var(--mark-bolt)}.mark-steady{color:var(--mark-steady)}.mark-down{color:var(--mark-down)}
+.row-cta{position:absolute;right:14px;top:50%;transform:translateY(-50%) translateX(-5px);opacity:0;color:var(--brand-soft);font-size:11px;font-weight:650;white-space:nowrap;pointer-events:none;transition:opacity var(--ease),transform var(--ease)}
+.grid tbody tr:hover .row-cta,.grid tbody tr:focus-visible .row-cta,.grid tbody tr:active .row-cta{opacity:1;transform:translateY(-50%) translateX(0)}
+
+/* ── 空态：纯 CSS 图形 + 口径说明 + 终端同源标记 ── */
+.empty{height:136px;display:flex;align-items:center;gap:16px;padding:0 20px;position:relative}
+.empty-art{width:58px;height:48px;position:relative;flex:none;border:1px solid rgba(76,141,255,.22);border-radius:10px;background:rgba(76,141,255,.035)}
+.empty-art:before{content:"";position:absolute;left:9px;right:9px;top:11px;height:1px;background:var(--line)}
+.empty-art:after{content:"—";position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-family:var(--mono);font-size:16px;color:var(--brand-soft)}
+.empty-art .art-line{position:absolute;left:11px;height:4px;border-radius:3px;background:rgba(185,197,214,.22)}
+.empty-art .art-line.one{top:20px;width:24px}.empty-art .art-line.two{top:29px;width:34px;background:rgba(76,141,255,.34)}.empty-art .art-line.three{top:38px;width:17px}
+.empty-copy{display:flex;flex-direction:column;gap:6px;min-width:0}
+.empty-title{font-size:13px;color:var(--text-1);font-weight:650}
+.empty-note{font-size:11px;line-height:1.65;color:var(--text-3)}
+.empty-terminal{position:absolute;right:16px;bottom:11px;font-size:10.5px;color:var(--text-4);font-family:var(--mono)}
+.segment-head{height:32px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;background:rgba(255,255,255,.018);border-top:1px solid var(--line-soft);font-size:11px;color:var(--text-3)}
+.segment-head:first-child{border-top:0}
+.segment-head .seg-name{color:var(--text-1);font-weight:650}
+.segment-empty{height:90px;display:flex;align-items:center;gap:13px;padding:0 18px;position:relative}
+.segment-empty .empty-art{width:44px;height:37px;border-radius:8px}
+.segment-empty .empty-art:before{top:9px;left:8px;right:8px}.segment-empty .empty-art:after{font-size:13px}
+.segment-empty .art-line{display:none}
+.segment-empty .empty-copy{gap:3px}.segment-empty .empty-title{font-size:12px}.segment-empty .empty-note{font-size:10.5px}
+.segment-empty .empty-terminal{right:16px;bottom:8px}
+
+/* ── 右栏：飞书过门 ── */
+.side{width:386px;flex:0 0 386px;background:var(--surface-1);min-width:0}
+.side-scroll{height:100%;overflow-y:auto;padding:18px}
+.gate-card{min-height:calc(100% - 2px);display:flex;flex-direction:column}
+.gate-card .card-head{align-items:flex-start}
+.gate-sub{margin-top:4px;font-size:11px;line-height:1.55;color:var(--text-3)}
+.gate-body{padding:16px;display:flex;flex-direction:column;gap:15px;flex:1}
+.ledger-primary{display:grid;grid-template-columns:repeat(3,1fr);background:var(--surface-3);border:1px solid var(--line);border-radius:9px;overflow:hidden;box-shadow:inset 0 1px 0 rgba(255,255,255,.045)}
+.ledger-primary>div{padding:11px 8px 10px;text-align:center;border-right:1px solid var(--line-soft)}
+.ledger-primary>div:last-child{border-right:0}
+.ledger-primary .k{font-size:10.5px;color:var(--text-3);line-height:15px}
+.ledger-primary .v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:22px;line-height:27px;color:var(--text-1);font-weight:650;margin-top:2px}
+.ledger-primary .v.is-brand{color:var(--brand-soft)}
+.ledger-secondary{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line-soft);border:1px solid var(--line-soft);border-radius:8px;overflow:hidden}
+.ledger-secondary>div{background:var(--surface-2);padding:8px 4px;text-align:center}
+.ledger-secondary .k{font-size:10px;color:var(--text-3);line-height:14px;white-space:nowrap}
+.ledger-secondary .v{font-family:var(--mono);font-size:12px;color:var(--text-2);line-height:17px;margin-top:1px}
+
+/* 分段控件：允许的第二处渐变（滑块细微过渡） */
+.segmented{position:relative;height:36px;display:grid;grid-template-columns:repeat(2,1fr);padding:0;border:1px solid var(--line);border-radius:9px;background:var(--surface-3);overflow:hidden}
+.segment-indicator{position:absolute;left:0;top:0;bottom:0;width:50%;border-radius:8px;background:linear-gradient(100deg,rgba(76,141,255,.92),rgba(34,211,238,.82));box-shadow:inset 0 1px 0 rgba(255,255,255,.18);transform:translateX(0);transition:transform 150ms ease}
+.segmented[data-active="outside"] .segment-indicator{transform:translateX(100%)}
+.segmented button{position:relative;z-index:1;font-size:11.5px;color:var(--text-3);border-radius:8px}
+.segmented button:hover{background:rgba(255,255,255,.055);color:var(--text-1)}
+.segmented button[aria-selected="true"]{background:transparent;color:#fff;font-weight:650}
+.segmented button[aria-selected="true"]:hover{background:transparent}
+.segmented button:active{background:rgba(255,255,255,.08)}
+.segmented button:focus-visible{outline-offset:-3px}
+.gate-panel{display:flex;flex-direction:column;gap:13px}
+.gate-sec-head{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line-soft);padding-bottom:7px}
+.gate-sec-head .t{font-size:11.5px;color:var(--text-1);font-weight:650;letter-spacing:.02em}
+.gate-sec-head .n{font-family:var(--mono);font-size:11px;color:var(--brand-soft)}
+.gate-list{display:grid;grid-template-columns:1fr 1fr;gap:3px 8px}
+.gate-row{display:flex;align-items:center;gap:7px;height:27px;padding:0 7px;border-radius:7px;text-align:left;border:1px solid transparent;color:var(--text-2)}
+.gate-row:hover{background:var(--surface-3);border-color:rgba(76,141,255,.18);color:var(--text-1)}
+.gate-row:active{background:var(--surface-pop)}
+.gate-row .sym{font-family:var(--mono);font-size:10px;color:var(--text-3);flex:none}
+.gate-row .nm{font-size:11.5px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.gate-zeros{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.gate-zero{border:1px solid var(--line-soft);border-radius:8px;padding:8px 9px;background:rgba(255,255,255,.018)}
+.gate-zero .t{font-size:10px;color:var(--text-3)}
+.gate-zero .v{font-family:var(--mono);font-size:12px;color:var(--text-2);margin-top:4px;display:flex;justify-content:space-between}
+.gate-foot{font-size:10.5px;line-height:1.55;color:var(--text-4);border-top:1px solid var(--line-soft);padding:11px 16px}
+
+/* ── 个股详情：同一外壳，返回 + Esc，K 线占位不编造行情 ── */
+.detail-workspace{background:var(--surface-1)}
+.detail-main{flex:1;min-width:0;overflow-y:auto}
+.detail-wrap{padding:18px;display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:18px;align-items:start}
+.detail-toolbar{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between}
+.back-btn{height:30px;display:inline-flex;align-items:center;gap:8px;padding:0 12px;border:1px solid var(--line);border-radius:8px;font-size:11.5px;color:var(--text-2);background:var(--surface-2)}
+.back-btn:hover,.back-btn:active{background:var(--surface-3);color:var(--text-1);border-color:rgba(76,141,255,.30)}
+.back-btn .arrow{font-size:14px;color:var(--brand-soft)}
+.detail-note{font-size:11px;line-height:1.55;color:var(--text-3)}
+.detail-left{display:flex;flex-direction:column;gap:18px;min-width:0}
+.detail-right{display:flex;flex-direction:column;gap:18px;min-width:0}
+.kline-body{padding:16px 16px 12px 54px;position:relative;height:438px}
+.kline-legend{position:absolute;left:16px;right:16px;top:12px;display:flex;align-items:center;gap:9px;z-index:2}
+.kline-legend .legend-chip{height:22px;display:flex;align-items:center;padding:0 8px;border-radius:6px;background:var(--surface-3);border:1px solid var(--line);font-size:10px;color:var(--text-2)}
+.kline-legend .legend-chip.brand{color:var(--brand-soft);border-color:rgba(34,211,238,.24)}
+.y-axis{position:absolute;left:0;top:48px;bottom:82px;width:52px;display:flex;flex-direction:column;justify-content:space-between;text-align:right;padding-right:9px;font-family:var(--mono);font-size:10px;color:var(--text-4)}
+.chart-plot{position:relative;height:322px;margin-top:30px;border:1px solid var(--line-soft);border-radius:8px;background:var(--surface-1);overflow:hidden}
+.h-line,.v-line{position:absolute;background:var(--line-soft);pointer-events:none}
+.h-line{left:0;right:0;height:1px}.v-line{top:0;bottom:0;width:1px}
+.placeholder-candles{position:absolute;left:12px;right:12px;bottom:16px;top:18px;display:flex;align-items:flex-end;gap:5px}
+.placeholder-candles i{flex:1;min-width:7px;max-width:15px;height:36px;border:1px solid rgba(76,141,255,.34);border-radius:2px;background:rgba(76,141,255,.075)}
+.placeholder-candles i:nth-child(3n){height:58px;border-color:rgba(34,211,238,.30);background:rgba(34,211,238,.055)}
+.placeholder-candles i:nth-child(4n){height:46px}
+.placeholder-candles i:nth-child(5n){height:72px}
+.placeholder-watermark{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-size:11px;color:var(--text-4);letter-spacing:.08em;background:rgba(12,19,30,.82);border:1px solid var(--line-soft);border-radius:7px;padding:7px 12px}
+.volume-area{height:56px;margin-top:10px;display:flex;align-items:flex-end;gap:5px;padding:0 12px;border-bottom:1px solid var(--line-soft)}
+.volume-area i{flex:1;max-width:15px;height:18px;background:rgba(185,197,214,.18);border-radius:2px 2px 0 0}
+.volume-area i:nth-child(3n){height:30px;background:rgba(76,141,255,.24)}
+.x-axis{display:flex;justify-content:space-between;padding:7px 12px 0;font-family:var(--mono);font-size:10px;color:var(--text-4)}
+.mini-table{width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums}
+.mini-table th,.mini-table td{height:30px;padding:0 14px;border-bottom:1px solid var(--line-soft);text-align:left}
+.mini-table th{font-size:11px;color:var(--text-3);font-weight:650;letter-spacing:.02em}
+.mini-table td{color:var(--text-2)}
+.mini-table td.r,.mini-table th.r{text-align:right;font-family:var(--mono)}
+.mini-table tr:last-child td{border-bottom:0}
+.detail-empty{height:132px}
+.detail-empty .empty-terminal{right:14px}
+
+/* ── 页脚：数据来源与口径，产品语言 ── */
+.footer{height:40px;flex:0 0 40px;display:flex;align-items:center;gap:14px;padding:0 18px;background:var(--surface-0);border-top:1px solid var(--line);font-size:10.5px;color:var(--text-3)}
+.footer .sep{width:1px;height:12px;background:var(--line)}
+.footer .right{margin-left:auto;color:var(--text-4);font-family:var(--mono);letter-spacing:.03em}
+.preview-hint{position:fixed;left:14px;bottom:12px;font-size:10.5px;color:#8d9cb0;letter-spacing:.02em;z-index:50;pointer-events:none}
+.preview-hint b{color:#cbd7e8;font-weight:650}
+
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
+  button:active,[role="link"]:active{transform:none}
+}
+</style>
+</head>
+<body>
+<div id="stage">
+<div class="app">
+
+  <!-- ══ 标题栏：身份 / 轮次 / 多态状态 ══ -->
+  <header class="titlebar">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 22 22" fill="none"><path d="M2.5 15.4L7 9.8l3.2 2.3 5.1-7 4.2 2.5" stroke="#4c8dff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.5 18.7h17" stroke="#22d3ee" stroke-width="1.2" stroke-linecap="round" opacity=".75"/><circle cx="17.3" cy="5.1" r="1.6" fill="#22d3ee"/></svg>
+      </div>
+      <div>
+        <div class="brand-name">创业板飙升榜</div>
+        <div class="brand-sub">RTS DESKTOP · LOCAL MIRROR</div>
+      </div>
+    </div>
+    <div class="title-meta">
+      <span>轮次 <b class="mono">2026-10-19 16:41:20</b></span><span class="sep"></span>
+      <span>seq <b class="mono">99</b></span><span class="sep"></span>
+      <span>非交易时段</span>
+    </div>
+    <div class="title-spacer"></div>
+    <div class="readonly-chip"><i></i>本机 · 只读</div>
+    <div class="status-wrap" id="statusWrap" data-state="history">
+      <button class="status-pill" id="statusToggle" aria-expanded="false" aria-controls="statusPop">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span class="status-copy" role="status" aria-live="polite">
+          <span class="status-main" id="statusMain">历史快照 · 非交易时段</span>
+          <span class="status-sub" id="statusSub">2026-10-19 16:41:20 · seq 99</span>
+        </span>
+        <span class="status-chevron" aria-hidden="true"></span>
+      </button>
+      <div class="status-pop" id="statusPop" role="region" aria-label="状态说明" hidden>
+        <div class="pop-head">状态口径 <span>预览形态</span></div>
+        <p class="status-explain" id="statusExplain">非交易时段展示最后一轮历史快照；轮次、时段与 seq 按快照原值呈现。</p>
+        <div class="status-options" role="group" aria-label="状态形态">
+          <button type="button" data-status="fresh">本轮新鲜</button>
+          <button type="button" data-status="lag">滞后 N 轮</button>
+          <button type="button" data-status="history">历史快照</button>
+          <button type="button" data-status="error">服务无响应</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ══ 本轮读数带 ══ -->
+  <section class="readout" aria-label="本轮读数">
+    <div class="readout-metrics">
+      <div class="metric"><span class="metric-label">池选</span><span class="metric-value">10<small>行</small></span></div>
+      <div class="metric"><span class="metric-label">过门通过</span><span class="metric-value is-brand">6<small>只</small></span></div>
+    </div>
+    <div class="readout-divider"></div>
+    <div class="round-copy" id="listRound">
+      <div class="round-line">本轮轮次 <span class="mono">2026-10-19 16:41:20</span> · <span class="mono">seq 99</span> · 非交易时段</div>
+      <div class="round-sub">数据口径：本机扫描器最后一轮快照 · 轮次、时段与区块口径随快照呈现</div>
+    </div>
+    <div class="round-copy" id="detailRound" hidden>
+      <div class="round-line">个股 <span class="mono" id="detailRoundCode">SZ300302</span> <span id="detailRoundName">同有科技</span></div>
+      <div class="round-sub">数据口径：该股在本轮快照中的字段 · K 线为布局占位，不展示行情数值</div>
+    </div>
+    <div class="readout-end">
+      <span class="scope-chip"><i></i>本机回环 127.0.0.1</span>
+      <span class="round-pill">seq 99 · 非交易时段</span>
+    </div>
+  </section>
+
+  <!-- ══ 列表页 ══ -->
+  <div class="workspace" id="listView">
+    <aside class="sidebar" id="sidebar" aria-label="区块导航">
+      <div class="sidebar-label"><span class="label-text">区块 / SECTIONS</span><span class="label-mark"></span></div>
+      <nav class="nav" id="nav" aria-label="区块">
+        <button class="nav-item is-active" type="button" data-section="pool" data-tip="v1 池选 · 10 行" title="v1 池选 · 10 行" aria-current="location">
+          <svg viewBox="0 0 18 18" fill="none" aria-hidden="true"><rect x="2.5" y="2.5" width="5" height="5" rx="1.3" stroke="currentColor"/><rect x="10.5" y="2.5" width="5" height="5" rx="1.3" stroke="currentColor"/><rect x="2.5" y="10.5" width="5" height="5" rx="1.3" stroke="currentColor"/><rect x="10.5" y="10.5" width="5" height="5" rx="1.3" stroke="currentColor"/></svg>
+          <span class="nav-text">v1 池选</span><span class="nav-count num">10</span>
+        </button>
+        <button class="nav-item" type="button" data-section="hist" data-tip="v1 回捞 · 本轮无数据" title="v1 回捞 · 本轮无数据">
+          <svg viewBox="0 0 18 18" fill="none" aria-hidden="true"><path d="M14.4 7.1A5.6 5.6 0 1 0 14 12" stroke="currentColor" stroke-linecap="round"/><path d="M14.4 3.4v3.9h-3.9" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="nav-text">v1 回捞</span><span class="nav-count num">—</span>
+        </button>
+        <button class="nav-item" type="button" data-section="hot" data-tip="沪深飙升 · 本轮无数据" title="沪深飙升 · 本轮无数据">
+          <svg viewBox="0 0 18 18" fill="none" aria-hidden="true"><path d="M2 14.4l4.1-5 3 2.2 4.2-7 2.7 2" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 16.2h14" stroke="currentColor" opacity=".6"/></svg>
+          <span class="nav-text">沪深飙升</span><span class="nav-count num">—</span>
+        </button>
+        <button class="nav-item" type="button" data-section="gate" data-tip="飞书过门 · 门内 6" title="飞书过门 · 门内 6">
+          <svg viewBox="0 0 18 18" fill="none" aria-hidden="true"><path d="M3 15.4V3.2h12v12.2" stroke="currentColor" stroke-linejoin="round"/><path d="M6 15.4V6.2h6v9.2" stroke="currentColor" opacity=".7"/><path d="M9 6.2v9.2" stroke="currentColor" opacity=".5"/></svg>
+          <span class="nav-text">飞书过门</span><span class="nav-count num">6</span>
+        </button>
+      </nav>
+      <div class="sidebar-foot">
+        <span class="local"><i></i><span>本机 · 只读</span></span>
+        <button class="sidebar-toggle" type="button" id="sidebarToggle" data-tip="展开导航" title="展开导航" aria-label="收起导航" aria-expanded="true"><span class="toggle-icon" aria-hidden="true"></span></button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="main-scroll" id="mainScroll" data-scroll-root="main">
+
+        <!-- 卡片 1：v1 池选 -->
+        <section class="card is-active" id="anchor-pool" data-card="pool" data-title="v1 池选">
+          <div class="card-head">
+            <span class="card-accent"></span>
+            <div class="card-title-wrap">
+              <h2 class="card-title">v1 池选 <span class="tag">主线</span></h2>
+              <div class="card-full">v1 池选 — 新票优先·类别优先·排名升序·资金流降序</div>
+            </div>
+            <div class="card-head-actions">
+              <span class="count-badge num">10 <em>本轮行</em></span>
+              <button class="card-toggle" type="button" data-collapse="pool" aria-expanded="true" aria-controls="body-pool" aria-label="折叠 v1 池选"><span class="chevron" aria-hidden="true"></span></button>
+            </div>
+          </div>
+          <div class="card-body" id="body-pool">
+            <div class="card-body-inner">
+              <div class="table-scroll">
+                <table class="grid">
+                  <thead><tr>
+                    <th class="idx r">#</th><th class="code">代码</th><th>名称</th><th class="r">涨幅</th><th class="r">5日累计</th><th class="r">现价</th><th class="r">排名</th><th>板块</th><th class="r">评分</th><th>策略</th><th class="marks-cell">标记</th>
+                  </tr></thead>
+                  <tbody id="poolRows"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 卡片 2：v1 回捞空态 -->
+        <section class="card" id="anchor-hist" data-card="hist" data-title="v1 回捞">
+          <div class="card-head">
+            <span class="card-accent"></span>
+            <div class="card-title-wrap">
+              <h2 class="card-title">v1 回捞</h2>
+              <div class="card-full">v1 回捞（前若干交易日进过 v1、今日回调到位 · 与上方口径独立）</div>
+            </div>
+            <div class="card-head-actions">
+              <span class="count-badge num">— <em>本轮行</em></span>
+              <button class="card-toggle" type="button" data-collapse="hist" aria-expanded="true" aria-controls="body-hist" aria-label="折叠 v1 回捞"><span class="chevron" aria-hidden="true"></span></button>
+            </div>
+          </div>
+          <div class="card-body" id="body-hist">
+            <div class="card-body-inner">
+              <div class="empty">
+                <div class="empty-art" aria-hidden="true"><span class="art-line one"></span><span class="art-line two"></span><span class="art-line three"></span></div>
+                <div class="empty-copy"><div class="empty-title">本轮无数据</div><div class="empty-note">该区块在本轮口径下没有行；口径与上方区块独立。</div></div>
+                <div class="empty-terminal">—（本轮无数据）</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 卡片 3：沪深飙升两段空态 -->
+        <section class="card" id="anchor-hot" data-card="hot" data-title="沪深飙升 · 极有可能大涨">
+          <div class="card-head">
+            <span class="card-accent"></span>
+            <div class="card-title-wrap">
+              <h2 class="card-title">沪深飙升 · 极有可能大涨 <span class="tag">分段并列</span></h2>
+              <div class="card-full">沪深飙升 · 极有可能大涨（创业板 · 分段并列·互不排名 · 与上方主线口径独立）</div>
+            </div>
+            <div class="card-head-actions">
+              <span class="count-badge num">— <em>本轮行</em></span>
+              <button class="card-toggle" type="button" data-collapse="hot" aria-expanded="true" aria-controls="body-hot" aria-label="折叠 沪深飙升 · 极有可能大涨"><span class="chevron" aria-hidden="true"></span></button>
+            </div>
+          </div>
+          <div class="card-body" id="body-hot">
+            <div class="card-body-inner">
+              <div class="segment-head"><span class="seg-name">— 榜内飙升</span><span>创业板 · 分段并列 · 与上方主线口径独立</span></div>
+              <div class="segment-empty">
+                <div class="empty-art" aria-hidden="true"><span class="art-line one"></span><span class="art-line two"></span><span class="art-line three"></span></div>
+                <div class="empty-copy"><div class="empty-title">本轮无数据</div><div class="empty-note">该段在本轮口径下没有行；两段并列、互不排名。</div></div>
+                <div class="empty-terminal">—（本轮无数据）</div>
+              </div>
+              <div class="segment-head"><span class="seg-name">— 榜外异动</span><span>创业板 · 分段并列 · 与上方主线口径独立</span></div>
+              <div class="segment-empty">
+                <div class="empty-art" aria-hidden="true"><span class="art-line one"></span><span class="art-line two"></span><span class="art-line three"></span></div>
+                <div class="empty-copy"><div class="empty-title">本轮无数据</div><div class="empty-note">该段在本轮口径下没有行；两段并列、互不排名。</div></div>
+                <div class="empty-terminal">—（本轮无数据）</div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <!-- 右栏：飞书过门 -->
+    <aside class="side" aria-label="飞书过门">
+      <div class="side-scroll" id="sideScroll" data-scroll-root="side">
+        <section class="card gate-card" id="anchor-gate" data-card="gate" data-title="飞书过门">
+          <div class="card-head">
+            <span class="card-accent"></span>
+            <div class="card-title-wrap">
+              <h2 class="card-title">飞书过门</h2>
+              <div class="gate-sub">下一张卡会推什么（非已推内容）</div>
+            </div>
+            <div class="card-head-actions">
+              <span class="count-badge num">6 <em>门内</em></span>
+              <button class="card-toggle" type="button" data-collapse="gate" aria-expanded="true" aria-controls="body-gate" aria-label="折叠 飞书过门"><span class="chevron" aria-hidden="true"></span></button>
+            </div>
+          </div>
+          <div class="card-body" id="body-gate">
+            <div class="card-body-inner">
+              <div class="gate-body">
+                <div class="ledger-primary">
+                  <div><div class="k">候选总数</div><div class="v num">10</div></div>
+                  <div><div class="k">通过</div><div class="v num is-brand">6</div></div>
+                  <div><div class="k">无兜底丢弃</div><div class="v num">4</div></div>
+                </div>
+                <div class="ledger-secondary">
+                  <div><div class="k">A档</div><div class="v num">4</div></div>
+                  <div><div class="k">B档</div><div class="v num">2</div></div>
+                  <div><div class="k">C档兜底</div><div class="v num">0</div></div>
+                  <div><div class="k">否决</div><div class="v num">0</div></div>
+                </div>
+                <div class="segmented" id="gateTabs" data-active="inside" role="tablist" aria-label="门内门外">
+                  <span class="segment-indicator" aria-hidden="true"></span>
+                  <button type="button" role="tab" id="tab-inside" data-tab="inside" aria-selected="true" aria-controls="panel-inside" tabindex="0">门内</button>
+                  <button type="button" role="tab" id="tab-outside" data-tab="outside" aria-selected="false" aria-controls="panel-outside" tabindex="-1">门外</button>
+                </div>
+                <div class="gate-panel" id="panel-inside" role="tabpanel" aria-labelledby="tab-inside">
+                  <div class="gate-sec-head"><span class="t">v1池选</span><span class="n num">6</span></div>
+                  <div class="gate-list">
+                    <button class="gate-row" type="button" data-code="SZ300302" id="gate-SZ300302"><span class="sym">SZ300302</span><span class="nm">同有科技</span></button>
+                    <button class="gate-row" type="button" data-code="SZ300862" id="gate-SZ300862"><span class="sym">SZ300862</span><span class="nm">蓝盾光电</span></button>
+                    <button class="gate-row" type="button" data-code="SZ300209" id="gate-SZ300209"><span class="sym">SZ300209</span><span class="nm">行云科技</span></button>
+                    <button class="gate-row" type="button" data-code="SZ301311" id="gate-SZ301311"><span class="sym">SZ301311</span><span class="nm">昆船智能</span></button>
+                    <button class="gate-row" type="button" data-code="SZ301606" id="gate-SZ301606"><span class="sym">SZ301606</span><span class="nm">绿联科技</span></button>
+                    <button class="gate-row" type="button" data-code="SZ300936" id="gate-SZ300936"><span class="sym">SZ300936</span><span class="nm">中英科技</span></button>
+                  </div>
+                  <div class="gate-zeros">
+                    <div class="gate-zero"><div class="t">v1回捞</div><div class="v"><span>0</span><span class="nil">—</span></div></div>
+                    <div class="gate-zero"><div class="t">榜内飙升</div><div class="v"><span>0</span><span class="nil">—</span></div></div>
+                    <div class="gate-zero"><div class="t">榜外异动</div><div class="v"><span>0</span><span class="nil">—</span></div></div>
+                  </div>
+                </div>
+                <div class="gate-panel" id="panel-outside" role="tabpanel" aria-labelledby="tab-outside" hidden>
+                  <div class="gate-sec-head"><span class="t">无兜底丢弃</span><span class="n num">4</span></div>
+                  <div class="gate-list">
+                    <button class="gate-row" type="button" data-code="SZ300589" id="gate-SZ300589"><span class="sym">SZ300589</span><span class="nm">江龙船艇</span></button>
+                    <button class="gate-row" type="button" data-code="SZ301069" id="gate-SZ301069"><span class="sym">SZ301069</span><span class="nm">凯盛新材</span></button>
+                    <button class="gate-row" type="button" data-code="SZ300779" id="gate-SZ300779"><span class="sym">SZ300779</span><span class="nm">惠城环保</span></button>
+                    <button class="gate-row" type="button" data-code="SZ300747" id="gate-SZ300747"><span class="sym">SZ300747</span><span class="nm">锐科激光</span></button>
+                  </div>
+                  <div class="gate-zeros">
+                    <div class="gate-zero"><div class="t">v1回捞</div><div class="v"><span>0</span><span class="nil">—</span></div></div>
+                    <div class="gate-zero"><div class="t">榜内飙升</div><div class="v"><span>0</span><span class="nil">—</span></div></div>
+                    <div class="gate-zero"><div class="t">榜外异动</div><div class="v"><span>0</span><span class="nil">—</span></div></div>
+                  </div>
+                </div>
+              </div>
+              <div class="gate-foot">门内 = 本轮通过集合 · 卡片按集合变化推送</div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ══ 个股详情页 ══ -->
+  <div class="workspace detail-workspace hidden" id="detailView">
+    <main class="detail-main">
+      <div class="detail-wrap">
+        <div class="detail-toolbar">
+          <button class="back-btn" type="button" id="backBtn"><span class="arrow" aria-hidden="true">←</span>返回列表</button>
+          <span class="detail-note">按 Esc 也可返回 · 列表位置保持刷新前状态</span>
+        </div>
+        <div class="detail-left">
+          <section class="card">
+            <div class="card-head">
+              <span class="card-accent" style="background:var(--brand)"></span>
+              <div class="card-title-wrap">
+                <h2 class="card-title"><span class="mono" id="detailCode">SZ300302</span> <span id="detailName">同有科技</span></h2>
+                <div class="card-full">日线布局占位 · 主图 / 副图 / 时间轴 · 口径同本机扫描器最后一轮快照</div>
+              </div>
+              <div class="card-head-actions"><span class="count-badge">布局示意</span></div>
+            </div>
+            <div class="kline-body">
+              <div class="kline-legend"><span class="legend-chip brand">K 线占位</span><span class="legend-chip">无行情数值</span><span class="legend-chip">日线布局</span></div>
+              <div class="y-axis" aria-hidden="true"><span>—</span><span>—</span><span>—</span><span>—</span><span>—</span><span>—</span></div>
+              <div class="chart-plot" id="chartPlot" aria-label="K 线布局占位，无行情数值">
+                <div class="placeholder-candles" id="placeholderCandles" aria-hidden="true"></div>
+                <div class="placeholder-watermark">占位 · 无行情数值</div>
+              </div>
+              <div class="volume-area" id="volumeArea" aria-hidden="true"></div>
+              <div class="x-axis" aria-hidden="true"><span>—</span><span>—</span><span>—</span><span>—</span><span>—</span><span>—</span><span>—</span></div>
+            </div>
+          </section>
+        </div>
+        <div class="detail-right">
+          <section class="card">
+            <div class="card-head"><span class="card-accent"></span><div class="card-title-wrap"><h2 class="card-title">本轮字段</h2><div class="card-full">该股在最后一轮快照中的字段 · 只读呈现</div></div></div>
+            <table class="mini-table">
+              <tbody id="detailFields"></tbody>
+            </table>
+          </section>
+          <section class="card">
+            <div class="card-head"><span class="card-accent"></span><div class="card-title-wrap"><h2 class="card-title">出现史</h2><div class="card-full">本预览仅呈现给定快照字段</div></div></div>
+            <div class="empty detail-empty">
+              <div class="empty-art" aria-hidden="true"><span class="art-line one"></span><span class="art-line two"></span><span class="art-line three"></span></div>
+              <div class="empty-copy"><div class="empty-title">本轮无数据</div><div class="empty-note">该区块在本轮口径下没有行；不补写历史记录。</div></div>
+              <div class="empty-terminal">—（本轮无数据）</div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <footer class="footer">
+    <span>数据来源：本机扫描器最后一轮快照</span><span class="sep"></span>
+    <span>本机回环 127.0.0.1 · 每 60s 读取一次</span><span class="sep"></span>
+    <span>轮次、时段与区块口径随快照呈现</span>
+    <span class="right">数据版本 v2 · 2026-10-19 16:41:20 · seq 99</span>
+  </footer>
+</div>
+</div>
+<div class="preview-hint"><b>v2 交互预览</b> · 点表格行进详情 / Esc 返回 · 卡片可折叠 · 状态可展开 · 侧栏可收起</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ── 1600×900 自适应缩放 ─────────────────────────────── */
+  var stage=document.getElementById('stage');
+  function fit(){stage.style.setProperty('--fit',Math.min(window.innerWidth/1620,window.innerHeight/920,1).toFixed(4));}
+  fit();window.addEventListener('resize',fit);
+
+  /* ── 任务给定假数据：逐字录入，不派生新指标 ─────────────── */
+  var rows=[
+    {code:'SZ300302',name:'同有科技',pct:'+3.69%',five:'-3.96%',price:'—',rank:'—',sector:'专精特新',score:'69',strategy:'RBD',mark:'new',markText:'新'},
+    {code:'SZ300862',name:'蓝盾光电',pct:'+3.22%',five:'-3.05%',price:'—',rank:'—',sector:'专精特新',score:'56',strategy:'RBD',mark:'new',markText:'新'},
+    {code:'SZ300209',name:'行云科技',pct:'+3.16%',five:'-1.34%',price:'—',rank:'—',sector:'人工智能',score:'35',strategy:'kNF',mark:'steady',markText:'稳'},
+    {code:'SZ301311',name:'昆船智能',pct:'+3.20%',five:'+12.70%',price:'—',rank:'—',sector:'人工智能',score:'67',strategy:'MOM',mark:'bolt',markText:'⚡'},
+    {code:'SZ301606',name:'绿联科技',pct:'+6.31%',five:'-0.73%',price:'—',rank:'—',sector:'电子',score:'23',strategy:'NEW',mark:'new',markText:'新'},
+    {code:'SZ300936',name:'中英科技',pct:'+1.22%',five:'-1.56%',price:'—',rank:'—',sector:'专精特新',score:'27',strategy:'NEW',mark:'steady',markText:'稳'},
+    {code:'SZ300589',name:'江龙船艇',pct:'+4.74%',five:'+13.29%',price:'—',rank:'—',sector:'专精特新',score:'71',strategy:'ST',mark:'down',markText:'▼'},
+    {code:'SZ301069',name:'凯盛新材',pct:'+4.74%',five:'+7.41%',price:'—',rank:'—',sector:'新能源车',score:'68',strategy:'ST',mark:'down',markText:'▼'},
+    {code:'SZ300779',name:'惠城环保',pct:'+3.65%',five:'+2.89%',price:'—',rank:'—',sector:'专精特新',score:'69',strategy:'ST',mark:'steady',markText:'稳'},
+    {code:'SZ300747',name:'锐科激光',pct:'+3.14%',five:'+25.19%',price:'—',rank:'—',sector:'新能源车',score:'60',strategy:'ST',mark:'bolt',markText:'⚡'}
+  ];
+  var byCode={};rows.forEach(function(r){byCode[r.code]=r;});
+  function esc(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+  function pctClass(s){return s.charAt(0)==='+'?'up':'down';}
+  function strong(s){return Math.abs(parseFloat(s))>=5?' font-weight:650':'';}
+  document.getElementById('poolRows').innerHTML=rows.map(function(r,i){
+    return '<tr id="row-'+esc(r.code)+'" role="link" tabindex="0" data-code="'+esc(r.code)+'" aria-label="查看 '+esc(r.code)+' '+esc(r.name)+' 详情">'+
+      '<td class="idx r num">'+String(i+1)+'</td>'+
+      '<td class="code">'+esc(r.code)+'</td>'+
+      '<td class="name">'+esc(r.name)+'</td>'+
+      '<td class="r pct '+pctClass(r.pct)+'" style="'+strong(r.pct)+'">'+esc(r.pct)+'</td>'+
+      '<td class="r pct '+pctClass(r.five)+'" style="'+strong(r.five)+'">'+esc(r.five)+'</td>'+
+      '<td class="r plain nil">—</td><td class="r plain nil">—</td>'+
+      '<td class="plain">'+esc(r.sector)+'</td>'+
+      '<td class="r score">'+esc(r.score)+'</td>'+
+      '<td class="strategy">'+esc(r.strategy)+'</td>'+
+      '<td class="marks-cell"><span class="mark mark-'+r.mark+'">'+esc(r.markText)+'</span><span class="row-cta" aria-hidden="true">查看 →</span></td>'+
+    '</tr>';
+  }).join('');
+
+  /* K 线 / 成交量：纯 CSS 占位块，无行情数值、无坐标数据 */
+  var plot=document.getElementById('chartPlot');
+  var hLines=[16,32,48,64,80],vLines=[12,24,36,48,60,72,84];
+  hLines.forEach(function(top){var i=document.createElement('span');i.className='h-line';i.style.top=top+'%';plot.insertBefore(i,plot.firstChild);});
+  vLines.forEach(function(left){var i=document.createElement('span');i.className='v-line';i.style.left=left+'%';plot.insertBefore(i,plot.firstChild);});
+  document.getElementById('placeholderCandles').innerHTML=Array.from({length:28},function(){return '<i></i>';}).join('');
+  document.getElementById('volumeArea').innerHTML=Array.from({length:28},function(){return '<i></i>';}).join('');
+
+  /* ── 单一 UI 偏好键：折叠 / 侧栏 / 分段 / 状态形态 ───────── */
+  var STORE_KEY='rts-desktop-preview-v2';
+  var ui={collapsed:{},sidebarCollapsed:false,gateTab:'inside',status:'history'};
+  try{
+    var saved=JSON.parse(localStorage.getItem(STORE_KEY)||'{}');
+    if(saved.collapsed&&typeof saved.collapsed==='object')Object.assign(ui.collapsed,saved.collapsed);
+    if(typeof saved.sidebarCollapsed==='boolean')ui.sidebarCollapsed=saved.sidebarCollapsed;
+    if(saved.gateTab==='inside'||saved.gateTab==='outside')ui.gateTab=saved.gateTab;
+    if(['fresh','lag','history','error'].indexOf(saved.status)>=0)ui.status=saved.status;
+  }catch(e){}
+  function saveUI(){try{localStorage.setItem(STORE_KEY,JSON.stringify(ui));}catch(e){}}
+
+  /* ── 卡片折叠：150ms 过渡 + aria-expanded + inert + localStorage ── */
+  function setFocusable(inner,collapsed){
+    var nodes=inner.querySelectorAll('button,[tabindex],[role="link"]');
+    Array.prototype.forEach.call(nodes,function(el){
+      if(collapsed){
+        if(el.dataset.prevTabindex===undefined)el.dataset.prevTabindex=el.getAttribute('tabindex')||'';
+        el.setAttribute('tabindex','-1');
+      }else if(el.dataset.prevTabindex!==undefined){
+        var prev=el.dataset.prevTabindex;
+        if(prev==='')el.removeAttribute('tabindex');else el.setAttribute('tabindex',prev);
+        delete el.dataset.prevTabindex;
+      }
+    });
+    inner.inert=collapsed;
+    if(collapsed)inner.setAttribute('aria-hidden','true');else inner.removeAttribute('aria-hidden');
+  }
+  function applyCollapsed(card,btn,body,collapsed){
+    card.setAttribute('data-collapsed',String(collapsed));
+    btn.setAttribute('aria-expanded',String(!collapsed));
+    btn.setAttribute('aria-label',(collapsed?'展开 ':'折叠 ')+card.getAttribute('data-title'));
+    setFocusable(body.querySelector('.card-body-inner'),collapsed);
+  }
+  document.querySelectorAll('[data-collapse]').forEach(function(btn){
+    var key=btn.dataset.collapse,card=btn.closest('.card'),body=document.getElementById(btn.getAttribute('aria-controls'));
+    applyCollapsed(card,btn,body,!!ui.collapsed[key]);
+    btn.addEventListener('click',function(){
+      var next=card.getAttribute('data-collapsed')!=='true';
+      ui.collapsed[key]=next;saveUI();applyCollapsed(card,btn,body,next);
+      setTimeout(syncActiveFromScroll,160);
+    });
+  });
+
+  /* ── 侧栏折叠 + 折叠态 tooltip ─────────────────────────── */
+  var sidebar=document.getElementById('sidebar'),sidebarToggle=document.getElementById('sidebarToggle');
+  function applySidebar(collapsed){
+    sidebar.classList.toggle('is-collapsed',collapsed);
+    sidebarToggle.setAttribute('aria-expanded',String(!collapsed));
+    sidebarToggle.setAttribute('aria-label',collapsed?'展开导航':'收起导航');
+    sidebarToggle.setAttribute('title',collapsed?'展开导航':'收起导航');
+    sidebarToggle.setAttribute('data-tip',collapsed?'展开导航':'收起导航');
+  }
+  applySidebar(ui.sidebarCollapsed);
+  sidebarToggle.addEventListener('click',function(){ui.sidebarCollapsed=!ui.sidebarCollapsed;saveUI();applySidebar(ui.sidebarCollapsed);});
+
+  /* ── 导航滚动 + 高亮跟随 ──────────────────────────────── */
+  var mainScroll=document.getElementById('mainScroll'),sideScroll=document.getElementById('sideScroll');
+  var mainSections=Array.prototype.slice.call(mainScroll.querySelectorAll('[data-card]'));
+  var navButtons=Array.prototype.slice.call(document.querySelectorAll('[data-section].nav-item'));
+  var navLockUntil=0,syncRaf=0;
+  function reduced(){return window.matchMedia('(prefers-reduced-motion: reduce)').matches;}
+  function scrollPanel(el,top){
+    if(el._raf)cancelAnimationFrame(el._raf);
+    if(reduced()){el.scrollTop=top;return;}
+    var start=el.scrollTop,dist=top-start,t0=performance.now(),dur=150;
+    function frame(now){
+      var p=Math.min(1,(now-t0)/dur),e=1-Math.pow(1-p,3);
+      el.scrollTop=start+dist*e;
+      if(p<1)el._raf=requestAnimationFrame(frame);else el._raf=0;
+    }
+    el._raf=requestAnimationFrame(frame);
+  }
+  function setActive(key){
+    navButtons.forEach(function(b){
+      var on=b.dataset.section===key;b.classList.toggle('is-active',on);
+      if(on)b.setAttribute('aria-current','location');else b.removeAttribute('aria-current');
+    });
+    document.querySelectorAll('.card').forEach(function(c){c.classList.toggle('is-active',c.getAttribute('data-card')===key);});
+  }
+  function syncActiveFromScroll(){
+    if(performance.now()<navLockUntil)return;
+    var y=mainScroll.scrollTop+96,key='pool';
+    mainSections.forEach(function(sec){if(sec.offsetTop<=y)key=sec.getAttribute('data-card');});
+    setActive(key);
+  }
+  mainScroll.addEventListener('scroll',function(){
+    if(syncRaf)return;
+    syncRaf=requestAnimationFrame(function(){syncRaf=0;syncActiveFromScroll();});
+  });
+  navButtons.forEach(function(btn){
+    btn.addEventListener('click',function(){
+      var key=btn.dataset.section;setActive(key);navLockUntil=performance.now()+230;
+      if(key==='gate'){scrollPanel(sideScroll,0);return;}
+      var target=mainScroll.querySelector('#anchor-'+key);
+      if(target){
+        var top=target.getBoundingClientRect().top-mainScroll.getBoundingClientRect().top+mainScroll.scrollTop-18;
+        scrollPanel(mainScroll,Math.max(0,top));
+      }
+    });
+  });
+
+  /* ── 门内 / 门外：滑动指示条 + 键盘方向键 ───────────────── */
+  var gateTabs=document.getElementById('gateTabs');
+  var tabButtons=Array.prototype.slice.call(gateTabs.querySelectorAll('[role="tab"]'));
+  function setGateTab(key,focus){
+    ui.gateTab=key;saveUI();
+    gateTabs.setAttribute('data-active',key);
+    tabButtons.forEach(function(b){
+      var on=b.dataset.tab===key;
+      b.setAttribute('aria-selected',String(on));b.setAttribute('tabindex',on?'0':'-1');
+      if(on&&focus)b.focus();
+    });
+    document.getElementById('panel-inside').hidden=key!=='inside';
+    document.getElementById('panel-outside').hidden=key!=='outside';
+  }
+  setGateTab(ui.gateTab,false);
+  tabButtons.forEach(function(b){b.addEventListener('click',function(){setGateTab(b.dataset.tab,false);});});
+  gateTabs.addEventListener('keydown',function(e){
+    var i=tabButtons.indexOf(document.activeElement);if(i<0)return;
+    var next=null;
+    if(e.key==='ArrowRight')next=(i+1)%tabButtons.length;
+    else if(e.key==='ArrowLeft')next=(i-1+tabButtons.length)%tabButtons.length;
+    else if(e.key==='Home')next=0;
+    else if(e.key==='End')next=tabButtons.length-1;
+    if(next!==null){e.preventDefault();setGateTab(tabButtons[next].dataset.tab,true);}
+  });
+
+  /* ── 状态四态：点击展开一句解释，切换后仍保持可解释 ─────── */
+  var statusStates={
+    fresh:{main:'本轮新鲜',sub:'seq 99 · 16:41:20',explain:'当前显示本机扫描器最近一轮快照；轮次、时段与 seq 保持原值。'},
+    lag:{main:'滞后 N 轮',sub:'显示最后一轮快照',explain:'轮次间隔超过一轮时，画面保留最后一轮快照与 seq 原值。'},
+    history:{main:'历史快照 · 非交易时段',sub:'2026-10-19 16:41:20 · seq 99',explain:'非交易时段展示最后一轮历史快照；轮次、时段与 seq 按快照原值呈现。'},
+    error:{main:'服务无响应 · 显示最后一份快照',sub:'16:41:20 · seq 99',explain:'本机服务暂时未响应；当前画面保留已读取到的最后一轮快照，不补写行。'}
+  };
+  var statusWrap=document.getElementById('statusWrap'),statusToggle=document.getElementById('statusToggle'),statusPop=document.getElementById('statusPop');
+  function setStatus(key){
+    var s=statusStates[key]||statusStates.history;key=statusStates[key]?key:'history';
+    ui.status=key;saveUI();statusWrap.setAttribute('data-state',key);
+    document.getElementById('statusMain').textContent=s.main;
+    document.getElementById('statusSub').textContent=s.sub;
+    document.getElementById('statusExplain').textContent=s.explain;
+    document.querySelectorAll('[data-status]').forEach(function(b){b.setAttribute('aria-pressed',String(b.dataset.status===key));});
+  }
+  function openStatus(open){statusPop.hidden=!open;statusToggle.setAttribute('aria-expanded',String(open));}
+  setStatus(ui.status);
+  statusToggle.addEventListener('click',function(){openStatus(statusPop.hidden);});
+  document.querySelectorAll('[data-status]').forEach(function(b){b.addEventListener('click',function(){setStatus(b.dataset.status);});});
+  document.addEventListener('pointerdown',function(e){if(!statusWrap.contains(e.target))openStatus(false);});
+
+  /* ── 列表 ↔ 详情：hash 路由，刷新 / 前进后退都不乱 ─────── */
+  var listView=document.getElementById('listView'),detailView=document.getElementById('detailView');
+  var lastOpenerId='';
+  function showList(){
+    listView.hidden=false;detailView.hidden=true;
+    document.getElementById('listRound').hidden=false;document.getElementById('detailRound').hidden=true;
+    openStatus(false);
+  }
+  function showDetail(row){
+    listView.hidden=true;detailView.hidden=false;
+    document.getElementById('listRound').hidden=true;document.getElementById('detailRound').hidden=false;
+    document.getElementById('detailRoundCode').textContent=row.code;
+    document.getElementById('detailRoundName').textContent=row.name;
+    document.getElementById('detailCode').textContent=row.code;
+    document.getElementById('detailName').textContent=row.name;
+    var fields=[
+      ['涨幅','<span class="'+pctClass(row.pct)+'">'+esc(row.pct)+'</span>'],
+      ['5日累计','<span class="'+pctClass(row.five)+'">'+esc(row.five)+'</span>'],
+      ['现价','<span class="nil">—</span>'],['排名','<span class="nil">—</span>'],
+      ['板块',esc(row.sector)],['评分','<span class="mono">'+esc(row.score)+'</span>'],
+      ['策略','<span class="mono">'+esc(row.strategy)+'</span>'],
+      ['标记','<span class="mark mark-'+row.mark+'">'+esc(row.markText)+'</span>']
+    ];
+    document.getElementById('detailFields').innerHTML=fields.map(function(f){return '<tr><td>'+f[0]+'</td><td class="r">'+f[1]+'</td></tr>';}).join('');
+    openStatus(false);
+    document.getElementById('backBtn').focus({preventScroll:true});
+  }
+  function applyRoute(){
+    var hash=location.hash;
+    if(hash.indexOf('#/stock/')===0){
+      var code=decodeURIComponent(hash.slice(8));
+      var row=byCode[code];
+      if(row){showDetail(row);return;}
+      history.replaceState(null,'','#/list');showList();return;
+    }
+    if(hash!=='#/list')history.replaceState(null,'','#/list');
+    showList();
+    var opener=lastOpenerId&&document.getElementById(lastOpenerId);
+    if(opener)opener.focus({preventScroll:true});
+  }
+  function openStock(code,opener){
+    lastOpenerId=opener&&opener.id?opener.id:'';
+    var next='#/stock/'+encodeURIComponent(code);
+    if(location.hash===next)applyRoute();else location.hash=next;
+  }
+  function rowActivate(e){if(e.type==='click'||e.key==='Enter'||e.key===' '){e.preventDefault();openStock(this.dataset.code,this);}}
+  document.querySelectorAll('[data-code]').forEach(function(el){el.addEventListener('click',rowActivate);el.addEventListener('keydown',rowActivate);});
+  function goList(){if(location.hash==='#/list')applyRoute();else location.hash='#/list';}
+  document.getElementById('backBtn').addEventListener('click',goList);
+  document.addEventListener('keydown',function(e){
+    if(e.key!=='Escape')return;
+    if(!detailView.hidden){e.preventDefault();goList();}
+    else if(!statusPop.hidden){e.preventDefault();openStatus(false);statusToggle.focus();}
+  });
+  window.addEventListener('hashchange',applyRoute);
+  applyRoute();
+  syncActiveFromScroll();
+})();
+</script>
+</body>
+</html>
