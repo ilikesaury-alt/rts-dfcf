@@ -6,12 +6,13 @@
 > 本文件与原型**只创建新文件**；不改 `web/src/**`、`scanner/**`、`desktop/**`、`tests/**`，不动已 commit 的设计文档，不 commit、不装依赖、不跑构建。
 > **本次修正（2026-11-15）只改本 `SPEC.md`**；`prototype.html` 保持原样（其「一键调研」卡片名与剪贴板等价入口文案是旧口径演示态，以本文为准），仍不改生产代码、不 commit。
 
-> **口径修正说明（2026-11-15 Lichun 确认）** —— 推翻 v1.0 初稿的两条旧假设，接手时勿把两版混用：
+> **口径说明（2026-11-15 17:05 Lichun 确认「开始吧」，按现状推进）** —— 归属权**不再作为打包前的阻塞项**：
 > 1. **数据库**：桌面版与终端共用本机那份有最新数据的活库 `scanner.db`（仓库根 `D:\everything\rts-dfcf-max\scanner.db`，11-13 的 227MB 活库）；**不再**从包内冷快照（2026-10-20、146MB）种出 `%APPDATA%\rts-desktop\scanner.db` 后「各记各的库」。任务管理器 / 子进程必须与主循环指向同一份库，桌面版**不得成为第二个写者**。
 > 2. **AI 分析**：主入口恒为 `python -m scanner.ai_digest`（默认 research：模型自查真实数据、出排序与判断、报告自动归档 `logs/ai_digest/YYYY-MM-DD/`、只归档不回灌、需 `MAGPIE_*` 凭据且出网）。`pick.py --clipboard` 降级为剪贴板清单的**等价 / 可选入口**，云端 `/api/ai-explain` 那套 LLM 转录**不是**本动作面口径。手工链路不再要求「按 `c` 复制 → `pick.py`」，直接跑主入口（默认读 `股票池.md` 面板原文，缺了自动回退 print → view → log）。
 >
+> **§2.6 第 7 条的归属权分歧按「分期已定」收口，不再阻塞打包**：P0/P1/P2 **完全不碰** `main.js` 的启动语义（§2.6 第 5 条），故打包态仍是**既有的 `takeover`**（壳拉起自己的 `unified_scanner.py` 写同一份库，与改动前逐字节一致）。`RTS_SCANNER_OWNERSHIP` 三态（`takeover` / `attach` / `refuse`）与 `/api/tasks/scanner` 属 **P3**，届时再定默认态与「桌面版是否对该库只读」。**当前 P0 阶段「无第二写入者」判据的准确表述**：桌面壳是**该库在本机桌面路径下的唯一拉起者**（终端手动跑 `unified_scanner.py` 时由 `stop_existing_scanners` 交接），**不是**「桌面版只读」——只读约束锁的是**看板数据面**（`/api/{health,meta,regions,stock/*}`），不锁动作面（§2.1 第 3 条）。
+>
 > 保留不改：只读镜像、colSpec 单源、`SCHEMA_VERSION=2` 零契约改动、结论词 grep 守卫、Node 侧不读 SQLite（D2）、`RTS_TASKS` 缺省关、CSRF 四层防护、单槽串行、不推飞书、不改 `webPreferences`。
-> **待 Lichun 拍板**：共用活库后，打包态默认 `RTS_SCANNER_OWNERSHIP=takeover`（壳自己拉起 `unified_scanner.py` 写同一份库）是否改为 `attach` / 桌面只读 —— 见 §2.4 / §2.6，实施前定。
 
 ---
 
@@ -203,7 +204,7 @@ hash 路由 `#/tasks`）、`tests/test_tasks_server.py`（10 例）。端到端�
 4. **时间点隔离**：接管发生在 `createWindow()` 之前的启动阶段；工作台启停发生在之后的交互阶段。两者不是同一个动作，也不重叠 ⇒ 不自相矛盾。
 5. **分期**：P0/P1/P2 **完全不碰** `main.js` 的启动语义（沿用 §5.3 差异记录，工作台只显示状态、启停按钮置灰标「由桌面壳管理」）；**P3** 才引入 `RTS_SCANNER_OWNERSHIP` 与 `/api/tasks/scanner`，并给 `tests/test_desktop_shell.py` **追加**守卫（14 条既有字面量一个不动）。
 6. 保留既有开发态旁路 `RTS_DESKTOP_SCANNER_ARGS="--no-lock --no-feishu"`（`main.js` 文件头注释里的正当联调用法），规格注明「这是人工调试口，工作台表单不得复用」。
-7. **残留待拍板（口径修正带入）**：新口径要求「共用同一份本机活库 + 桌面版不得成为第二个写者」，但现状 `takeover` 默认会由壳自己拉起一份 `unified_scanner.py` 去写同一份库。实施前需 Lichun 定：打包态默认是否改为 `attach`（壳只连终端实例、零写），或桌面版对该库只读、启停一律交终端。此项未定前，§10「无第二写入者」判据不算闭环。
+7. **原「残留待拍板」已按分期收口（2026-11-15 17:05）**：本条原为「实施前需 Lichun 定：打包态默认是否改为 `attach`（壳只连终端实例、零写），或桌面版对该库只读、启停一律交终端」。**结论：P0 阶段按既有 `takeover` 推进，不阻塞打包** —— 依据是 §2.6 第 5 条（P0/P1/P2 完全不碰 `main.js` 的启动语义）与 §2.1 第 3 条（只读锁的是看板数据面，不锁动作面）；`takeover` 与改动前**逐字节一致**，不引入新行为。三态切换（`takeover` / `attach` / `refuse`）与 `/api/tasks/scanner` 仍属 **P3**，届时再定默认态与「桌面版是否对该库只读」，并给 `tests/test_desktop_shell.py` 追加守卫（14 条既有字面量一个不动）。
 
 ---
 

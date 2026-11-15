@@ -63,9 +63,12 @@ if (existsSync(PY_EXE)) {
 
 const db = path.join(REPO, "scanner.db");
 if (existsSync(db)) {
-  console.log(`[prepare] ok    ${db}（${(statSync(db).size / 1024 / 1024).toFixed(0)} MB，打包态首启会种进 userData）`);
+  console.log(`[prepare] ok    ${db}（${(statSync(db).size / 1024 / 1024).toFixed(0)} MB）`);
+  console.log("[prepare] 提示  打包态**优先共用本机这份活库**（RTS_DB_PATH / RTS_LIVE_DB / RTS_REPO_ROOT 命中即走它，");
+  console.log("            绝不拷贝 —— WAL 是活文件，冷拷贝必不一致）；仅当解析不到任何外部活库时，");
+  console.log("            才把包内冷快照种进 userData/scanner.db（只种一次，不覆盖已有）。");
 } else {
-  console.warn("[prepare] 提示  仓库根没有 scanner.db：打包产物首启将建空库（K 线/历史要重新积累）");
+  console.warn("[prepare] 提示  仓库根没有 scanner.db：打包产物解析不到外部活库时将退到包内快照（若也没有则建空库，K 线/历史要重新积累）");
 }
 
 if (failed) {

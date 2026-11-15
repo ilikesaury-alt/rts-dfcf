@@ -7,7 +7,7 @@
   "scripts": {
     "start": "electron .",
     "dist": "node prepare.mjs && electron-builder --win --dir",
-    "dist:installer": "node prepare.mjs && electron-builder --win",
+    "dist:installer": "node prepare.mjs && electron-builder --win --config.win.target=nsis",
     "fetch-python": "node fetch-python.mjs"
   },
   "build": {
@@ -59,6 +59,12 @@
         "dir"
       ],
       "icon": "icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "RTSPanel"
     }
   },
   "devDependencies": {
