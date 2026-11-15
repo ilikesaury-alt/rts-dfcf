@@ -63,6 +63,28 @@ const STATE_CLASS: Record<string, string> = {
   cancelled: "is-cancelled",
 };
 
+/**
+ * 退出码 → 人话（逐字对齐 `scanner/ai_digest/__main__.py` 头部文档串的语义）。
+ *
+ * 为什么需要（2026-11-15 实测）：空库首启时任务以 `state=failed / exitCode=4` 结束，
+ * 但服务端 `error: null` ⇒ UI 只显示「失败 / 退出码 4」，原因那句
+ * （`[!] ...都没有数据`）只在日志区里 —— 不翻日志就不知道要「先跑一轮扫描器」。
+ * 此处按退出码给一句人话，失败态时直接显示在任务中心。
+ */
+const EXIT_CODE_HINT: Record<number, string> = {
+  1: "未配置模型凭据（MAGPIE_*），在 .env 里补齐后重试。",
+  2: "上游模型网关调用失败，稍后重试；退出码原样保留、不自动重试。",
+  3: "输出触到安全红线被拦（仅转述模式）。",
+  4: "本机还没有数据 —— 让扫描器跑一轮（交易时段 09:30-11:30 / 13:00-15:00）后再试；全新安装首日属正常现象。",
+  5: "幻觉巡检发现疑似编造数字，报告已打印但建议不要采信。",
+};
+
+/** 取退出码人话；非失败态或未知码返回 null（不硬造解释）。 */
+function exitHint(exitCode: number | null): string | null {
+  if (exitCode === null || exitCode === 0) return null;
+  return EXIT_CODE_HINT[exitCode] ?? null;
+}
+
 export default function Tasks() {
   const [catalog, setCatalog] = useState<CatalogData | null>(null);
   const [token, setToken] = useState("");
@@ -322,6 +344,9 @@ export default function Tasks() {
           )}
           {task?.error ? (
             <p className="state-line is-error">{task.error.code} · {task.error.message}</p>
+          ) : null}
+          {task && task.state === "failed" && exitHint(task.exitCode) ? (
+            <p className="task-exit-hint">{exitHint(task.exitCode)}</p>
           ) : null}
         </div>
       </section>
