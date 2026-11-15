@@ -38,6 +38,43 @@ hash 路由 `#/tasks`）、`tests/test_tasks_server.py`（10 例）。端到端�
 ② `desktop/main.js` 已改成优先解析本机最新活库（`RTS_DB_PATH`/`RTS_LIVE_DB`/`RTS_REPO_ROOT`），
 不再默认从包内冷快照种独立库。
 
+### 视觉落地（2026-11-15 18:20 · 按 `prototype.html` 落地）
+
+Lichun 反馈「当前项目的工作台总感觉差点意思」。诊断结论：**根因不是没设计，是实现没照原型做**
+—— 本目录早有 1600×900 高保真原型 `prototype.html`（动作面 3 功能区 / 三档按钮 / 卡片色条 /
+6 级字号 / 终端日志区），但生产 `Tasks.tsx` 退化成了「一块灰底 + 一串同号灰字 + 一个 28px 小按钮」。
+
+**原型先修**：`prototype.html` 的 tab 切换**从未生效**（点了没反应）。根因是 JS 里
+`var history = [...]` 与浏览器内置 `window.history` 撞名，全局作用域覆盖失败 ⇒ `renderLog()` 抛错
+⇒ 首屏初始化在 `renderAll()` 处中断 ⇒ 后续 `setView('board')` 与 tab 绑定全部没执行。
+改名 `taskHistory`（8 处）后：catalog 28 项 / 任务 4 条 / 历史 4 条正常渲染，tab 可切。
+
+**生产落地**（`web/src/pages/Tasks.tsx` + `web/src/index.css` 新增 ~225 行组件层）：
+| 组件 | 落地内容 |
+|---|---|
+| `.btn` 体系 | 34px / `.btn-primary` 实心品牌蓝 / `.btn-ghost` / `.btn-sm` 26px / `.btn-danger`（替换单一 `ai-btn` 28px 灰底） |
+| `.detail-card-accent` | 14px 竖色条（生产原先完全没有） |
+| `.task-state` | 排队=蓝 / 运行中=琥珀+脉动 / 完成=绿 / 失败=红 / 取消=灰 |
+| `.tasks-log-*` | 终端日志区：路径 + 行数 + 带行号时间戳列 |
+| `.tasks-history-row` | 任务历史行：状态点 + 命令 + 退出码 |
+| `.tasks-empty` | 空态引导（纯 CSS 小方框 + 主句 + 说明），无任务时不再是空白 |
+| `.tasks-facts` / `.tasks-fact` | 信息分层（标题值对），替代一串同权重 `state-line` |
+| `.tasks-cmd` | 命令原文独立成块（等宽），与说明文字分层 |
+| 扫描器状态卡 | 只读回显（原型有、生产缺） |
+
+**行为零改动**：argv 仍由服务端白名单下发、前端不拼命令；不解释报告正文、不生成结论；
+结论词禁令与 `SCHEMA_VERSION=2` 均未触碰。
+
+**实跑验证**（浏览器实点，非只看代码）：`ai_materials` → 完成（is-ok 绿）/ 46 行日志 / exit 0；
+`ai_research` → 确认弹层正常 → 运行中（is-running 琥珀脉动）→ 取消 → 已取消；
+任务历史行按状态着色；`tsc --noEmit` + `vite build` 通过。
+
+**主看板同步修正**：卡片容器用 Tailwind `gap-3`（12px），而 §3.3 规定「主区内边距/卡片间距 18px」
+（主区内边距实测已是 18px，只有卡片间距漏了）⇒ 改 `gap-[18px]`。
+⚠ 同时纠正一条先前的误判：「主看板卡片头 44px」「12.5px 占 216 处 = 层级压平」**不成立** ——
+实测 `region-head` 66/82/86px（min-height 58px 被内容撑高，正常）；12.5px 集中在**表格数据格**，
+§3.2 规定数据行正是 12~13px tabular-nums。
+
 ## 0. 读过的东西（本规格的事实底座）
 
 | 来源 | 用到的结论 |
