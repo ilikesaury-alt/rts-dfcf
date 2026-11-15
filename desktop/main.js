@@ -27,7 +27,7 @@
 
 "use strict";
 
-const { app, BrowserWindow, shell } = require("electron");
+const { app, BrowserWindow, shell, Menu, screen } = require("electron");
 const { execFile } = require("node:child_process");
 const fs = require("node:fs");
 const http = require("node:http");
@@ -45,6 +45,17 @@ const HOST = "127.0.0.1";
 const SERVER_WAIT_MS = 40_000;
 const POLL_MS = 500;
 
+/** 窗口默认尺寸（`index.html` 的 `viewport width=1440` 与之软耦合）。 */
+const DEFAULT_WIDTH = 1440;
+const DEFAULT_HEIGHT = 900;
+const MIN_WIDTH = 900;
+const MIN_HEIGHT = 600;
+/** 窗口记忆落点：打包态/开发态都在 `userData`（与 `scanner.db`/`logs/` 同命运，
+ * 升级不覆盖）。只有 `close` 时写一次，不在每次 resize/move 落盘。 */
+const WINDOW_STATE_FILE = "window-state.json";
+/** 产品图标（`build.win.icon` 与 `build.files` 同款，打包态经 asar 取 `__dirname`）。 */
+const APP_ICON = path.join(__dirname, "icon.ico");
+
 /** 子进程 env 里必须删掉的变量（指向用户系统 Python，会污染 standalone 解释器）。 */
 const SCRUBBED_ENV = [
   "PYTHONHOME",
@@ -58,12 +69,141 @@ const SCRUBBED_ENV = [
 let child = null;
 let win = null;
 let childLog = null;
+/** 所有会影响窗口位置的事件（move/resize/maximize/close…）都收敛到这里，最后一次读覆盖。 */
+let windowStateListenerBound = false;
 
 // ── 路径解析（开发态 / 打包态两条）────────────────────────────────────────────
 
 /** 仓库根：开发态 = `desktop/` 的上一级；打包态 = `resources/repo`（extraResources）。 */
 function repoRoot() {
   return app.isPackaged ? path.join(process.resourcesPath, "repo") : path.join(__dirname, "..");
+}
+
+// ── 窗口尺寸/位置记忆 ──────────────────────────────────────────────────────────
+//
+// 只认「可见屏幕」：拔掉外接显示器后，老坐标可能落在已不存在的显示器上，
+// 此时必须回退默认，否则窗口会开在屏幕外看不见。判据用**所有**显示器的 `workArea`
+// （`screen.getAllDisplays()`，可见区，去掉任务栏），把持久化矩形逐一比对：任意一块
+// 屏幕能「可见地」容纳即恢复（副屏仍插着时记住副屏位置），一块都不命中 = 老屏幕已被
+// 拔掉 → 回退默认。比只看主屏更贴合「窗口是否还在可见屏幕内」的口径。
+//
+// 校验分两层：
+//   - 纯函数层（`validateWindowState`）：不依赖 Electron，可离线单测脏值/越界/极小值；
+//     `display` 可传单块显示器对象或其数组（离线单测给纯数据对象即可）。
+//   - 环境层（`loadWindowState`）：拿真实显示器几何再过一遍可见性。
+
+/** 干净整数？脏值（NaN/Infinity/浮点/字符串）一律拒（不含符号判断）。 */
+function isCleanInt(v) {
+  return typeof v === "number" && Number.isInteger(v);
+}
+
+/**
+ * 校验一份持久化的窗口状态；不合法一律回退默认 1440×900（x/y 省略、非最大化）。
+ * `display` 可传单块显示器 `{ workArea: { x, y, width, height } }` 或**显示器数组**
+ * （纯数据对象即可，无需真 Electron）；多屏时任意一块能容纳即恢复。
+ * 规则：
+ *   - 持久化的 x/y 必须是整数且 >= 0（简化：多显示器负坐标一律回退，避免半屏在外）；
+ *     脏 x/y 与非整数、越界 w/h 一样**整份回退默认**（不半信半疑地只保留尺寸）；
+ *   - width/height 必须是整数且不小于 `MIN_WIDTH/MIN_HEIGHT`（也挡 <=0、非整数、字符串）；
+ *   - 窗口左上 + 尺寸必须能「可见地」落进某块工作区：右上角至少留 100px、下边至少留 100px
+ *     （超过可见区 → 拔显示器/改分辨率的典型症状，回退默认）；
+ *   - `maximized` 只接受严格布尔，其余当成未最大化。
+ * 返回规范化后的 `{ x, y, width, height, maximized }`（x/y 可能省略）。
+ */
+function validateWindowState(raw, display) {
+  const fallback = () => ({
+    width: DEFAULT_WIDTH,
+    height: DEFAULT_HEIGHT,
+    maximized: false,
+  });
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fallback();
+  // 统一成数组：离线单测可只给一块，环境层给全部显示器
+  const displays = Array.isArray(display) ? display : [display];
+  // 只保留几何干净的显示器（workArea 的 x/y 可为负 —— 副屏在左/上，是 Electron 给的
+  // 可信几何，不拒；宽高必须为正整数）。一块干净几何都没有 → 回退默认。
+  const areas = displays
+    .map((d) => d && d.workArea)
+    .filter((wa) =>
+      wa &&
+      isCleanInt(wa.x) && isCleanInt(wa.y) &&
+      isCleanInt(wa.width) && isCleanInt(wa.height) &&
+      wa.width > 0 && wa.height > 0,
+    );
+  if (areas.length === 0) return fallback();
+
+  const w = raw.width;
+  const h = raw.height;
+  if (!Number.isInteger(w) || !Number.isInteger(h)) return fallback();
+  if (w < MIN_WIDTH || h < MIN_HEIGHT) return fallback();
+  // 尺寸至少能塞进某一块屏幕的工作区（否则是全屏都放不下的脏值）
+  if (!areas.some((wa) => w <= wa.width && h <= wa.height)) return fallback();
+
+  const maximized = raw.maximized === true; // 只认严格布尔
+  // 最大化状态交给系统恢复，不强求 x/y；但要确保尺寸仍合法
+  if (maximized) return { width: w, height: h, maximized: true };
+
+  const x = raw.x;
+  const y = raw.y;
+  // x/y 为负（副屏在左侧/上方）、非整数或缺省 → 整份回退默认（与任务口径一致：
+  // 脏坐标不值得信任，连尺寸一并丢弃；否则会留下「默认窗口大小却没位置」的半吊子状态）
+  if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0) {
+    return fallback();
+  }
+  const VISIBLE_MARGIN = 100;
+  const visibleOn = areas.some((wa) =>
+    x >= wa.x &&
+    y >= wa.y &&
+    x + VISIBLE_MARGIN <= wa.x + wa.width &&
+    y + VISIBLE_MARGIN <= wa.y + wa.height &&
+    x + w <= wa.x + wa.width + VISIBLE_MARGIN &&
+    y + h <= wa.y + wa.height + VISIBLE_MARGIN,
+  );
+  // 一块屏幕都容不下（拔掉外接显示器、改分辨率）→ 回退默认
+  if (!visibleOn) return fallback();
+  return { x, y, width: w, height: h, maximized: false };
+}
+
+/** 读持久化状态：文件缺失/坏 JSON/字段脏/窗口已不在可见屏幕 → 一律默认。
+ * 用 `screen.getAllDisplays()`（全部显示器）判可见性：副屏仍插着时记住副屏位置，
+ * 全部屏幕都容纳不下（外接显示器被拔掉）才回退默认。 */
+function loadWindowState() {
+  try {
+    const file = path.join(app.getPath("userData"), WINDOW_STATE_FILE);
+    const raw = JSON.parse(fs.readFileSync(file, "utf-8"));
+    const displays = screen.getAllDisplays();
+    return validateWindowState(raw, displays);
+  } catch {
+    // 缺文件 / 坏 JSON / screen 未就绪：都走默认，绝不因记忆文件把启动带崩（fail-open）
+    return validateWindowState(null, null);
+  }
+}
+
+/** 从当前窗口读回状态（最大化时保留 `restoreBounds`，否则会用掉最大化后的整屏尺寸）。 */
+function captureWindowState(w) {
+  if (!w || (typeof w.isDestroyed === "function" && w.isDestroyed())) return null;
+  const maximized = w.isMaximized();
+  const b = maximized ? w.getNormalBounds() : w.getBounds();
+  return {
+    x: b.x,
+    y: b.y,
+    width: b.width,
+    height: b.height,
+    maximized,
+  };
+}
+
+/** 只在关闭路径写一次磁盘（见 `close` / `before-quit`），不逐次 resize 落盘。
+ * `target` 默认为当前窗口；显式传窗口对象便于离线单测（不依赖模块内 `win`）。 */
+function saveWindowState(target = win) {
+  const state = captureWindowState(target);
+  if (!state) return;
+  try {
+    const dir = app.getPath("userData");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, WINDOW_STATE_FILE), JSON.stringify(state));
+  } catch (e) {
+    console.error("[desktop] 窗口状态写入失败:", e.message);
+  }
 }
 
 /** Python 解释器：`RTS_PYTHON` 覆盖 > 打包态 standalone > 开发态 PATH 上的 python。 */
@@ -265,13 +405,16 @@ function errorPage(message, logPath) {
 }
 
 async function createWindow() {
+  const state = loadWindowState();
   win = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 900,
-    minHeight: 600,
+    width: state.width,
+    height: state.height,
+    ...(state.x === undefined ? {} : { x: state.x, y: state.y }),
+    minWidth: MIN_WIDTH,
+    minHeight: MIN_HEIGHT,
     backgroundColor: "#070b12",
     title: "创业板飙升榜 · 桌面看板",
+    icon: fs.existsSync(APP_ICON) ? APP_ICON : undefined,
     autoHideMenuBar: false,
     webPreferences: {
       contextIsolation: true,
@@ -279,9 +422,17 @@ async function createWindow() {
       sandbox: true,
     },
   });
+  // 最大化状态由系统恢复（必须在 show 之后；显式 maximize 会让「取消最大化」回到记忆的尺寸）
+  if (state.maximized) win.maximize();
   win.on("closed", () => {
     win = null;
   });
+  // 关窗前落一次盘：所有位置/尺寸变化都在这一刻收敛，避免每次 resize/move 写盘。
+  // 只绑一次（createWindow 理论上只跑一次，这里防御性兜底）。
+  if (!windowStateListenerBound) {
+    windowStateListenerBound = true;
+    win.on("close", () => saveWindowState(win));
+  }
   // 外链一律走系统浏览器：看板是只读本地页，不需要在应用内开任何外部站点
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
@@ -311,30 +462,60 @@ async function createWindow() {
 
 // ── 生命周期 ──────────────────────────────────────────────────────────────────
 
-// 应用自身的单实例：第二个实例只把已有窗口顶到前台，**不再拉起第二个扫描器**
-// （扫描器侧另有自己的锁，但那边会「杀掉旧实例」，两个锁语义不同，别混）。
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) {
-  app.quit();
-} else {
-  app.on("second-instance", () => {
-    if (win) {
-      if (win.isMinimized()) win.restore();
-      win.focus();
-    }
-  });
+// 纯函数导出（放在入口分支之外）：让窗口状态的「脏值/越界回退」与「关闭时写盘」能被
+// 离线 Node 脚本验证，不必真起 Electron 窗口（那会拉起扫描器子进程、碰 scanner.db）。
+module.exports = {
+  validateWindowState,
+  loadWindowState,
+  captureWindowState,
+  saveWindowState,
+  WINDOW_STATE_FILE,
+  DEFAULT_WIDTH,
+  DEFAULT_HEIGHT,
+  MIN_WIDTH,
+  MIN_HEIGHT,
+};
 
-  app.whenReady().then(createWindow);
-
-  app.on("window-all-closed", () => {
-    // 关窗 = 退出应用（Windows 单窗口语义）⇒ 一并收掉 Python，不留后台扫描器
+// 判据用「Electron 主进程 API 是否可用」，**不是** `require.main === module`：
+// Electron 的 default_app 用 `await import(url)`（ESM 动态导入 CJS 入口）加载本文件，
+// 那条路径下 `require.main` 是 `undefined`，`require.main === module` 恒为 false ⇒
+// 生命周期整块不执行（窗口不开、子进程不拉、关窗不 kill）——空壳应用。
+// 真实主进程里单实例 API 必存在；离线 `require('./main.js')` 时
+// `require('electron')` 只给一个路径字符串、app 为 undefined ⇒ 纯函数可用、零副作用。
+if (app && typeof app.getPath === "function") {
+  // 应用自身的单实例：第二个实例只把已有窗口顶到前台，**不再拉起第二个扫描器**
+  // （扫描器侧另有自己的锁，但那边会「杀掉旧实例」，两个锁语义不同，别混）。
+  const gotLock = app.requestSingleInstanceLock();
+  if (!gotLock) {
     app.quit();
+  } else {
+    app.on("second-instance", () => {
+      if (win) {
+        if (win.isMinimized()) win.restore();
+        win.focus();
+      }
+    });
+
+    app.whenReady().then(() => {
+      // 去掉 Electron 默认的开发/调试菜单（File/Edit/View/Window/Help）。本期不引入
+      // 任何自定义菜单；与 autoHideMenuBar:false 不冲突（没有菜单可显示/隐藏）。
+      Menu.setApplicationMenu(null);
+      return createWindow();
+    });
+
+    app.on("window-all-closed", () => {
+      // 关窗 = 退出应用（Windows 单窗口语义）⇒ 一并收掉 Python，不留后台扫描器
+      app.quit();
+    });
+  }
+
+  app.on("before-quit", () => {
+    app.isQuiting = true;
+    // 兜底：非常规退出（没走窗口 close）也留一份最后的窗口状态。
+    // 正常关窗时 close 已写过、且此时 win 多为 null，这里自然 no-op，不重复落盘。
+    saveWindowState();
+    stopScanner();
   });
+
+  process.on("exit", stopScanner);
 }
-
-app.on("before-quit", () => {
-  app.isQuiting = true;
-  stopScanner();
-});
-
-process.on("exit", stopScanner);
