@@ -869,7 +869,7 @@ var tasks=[
     ['10:38:02','上游未调用','dim']]}),
   mk(CATALOG[4],'queued',{time:'10:42:40',progress:0,logs:[['10:42:40','排队中 · 等待 read 槽','dim']]})
 ];
-var history=[
+var taskHistory=[
   mk(CATALOG[1],'ok',{time:'10:36:18',logs:[['10:36:18','$ python -m scanner.historical_watch --offline-demo','cmd'],['10:36:19','全绿 · exit 0','ok']]}),
   mk(CATALOG[3],'ok',{time:'10:31:07',logs:[['10:31:07','$ python -m scanner.crosssection --health','cmd'],['10:31:07','离线只读 · 未联网','dim'],['10:31:08','汇总完成 · exit 0','ok']]}),
   mk(CATALOG[6],'ok',{time:'10:24:55',logs:[['10:24:55','$ python query_today.py','cmd'],['10:24:55','汇总输出 · exit 0','ok']]}),
@@ -895,7 +895,7 @@ function renderTasks(){
       cb.addEventListener('click',function(){
         t.state='cancelled';t.progress=0;t.frozen=true;
         t.logs.push([stamp(),'已取消 · 未产生新写入','dim']);
-        if(!history.some(function(h){return h.id===t.id}))history.unshift(t);
+        if(!taskHistory.some(function(h){return h.id===t.id}))taskHistory.unshift(t);
         activeTaskId=t.id;renderAll();
       });acts.appendChild(cb);
     }
@@ -905,19 +905,19 @@ function renderTasks(){
   $('taskCount').innerHTML=tasks.length+' <em>项</em>';
   $('roRunning').innerHTML=tasks.filter(function(t){return t.state==='running'}).length+'<small>项</small>';
   $('roQueued').innerHTML=tasks.filter(function(t){return t.state==='queued'}).length+'<small>项</small>';
-  $('roHistory').innerHTML=history.length+'<small>条</small>';
+  $('roHistory').innerHTML=taskHistory.length+'<small>条</small>';
   $('roLast').textContent=tasks[tasks.length-1]?tasks[tasks.length-1].cmd:'—';
 }
 function renderHistory(){
   var list=$('historyList');list.innerHTML='';
-  if(!history.length){
+  if(!taskHistory.length){
     var e=el('div','history-empty');
     var art=el('div','empty-art');art.setAttribute('aria-hidden','true');
     ['one','two','three'].forEach(function(c){art.appendChild(el('span','art-line '+c))});e.appendChild(art);
     var cp=el('div','empty-copy');cp.appendChild(el('div','empty-title','本轮无数据'));cp.appendChild(el('div','empty-note','终态任务会按执行时序出现在这里。'));e.appendChild(cp);
     e.appendChild(el('div','empty-terminal','—（本轮无数据）'));list.appendChild(e);
   }else{
-    history.forEach(function(h){
+    taskHistory.forEach(function(h){
       var b=el('button','history-row');b.type='button';
       var dot=el('span','h-dot');dot.style.background=h.state==='ok'?'var(--brand)':(h.state==='failed'?'var(--coral)':'var(--text-4)');b.appendChild(dot);
       b.appendChild(el('span','h-cmd',h.cmd));
@@ -926,7 +926,7 @@ function renderHistory(){
       list.appendChild(b);
     });
   }
-  $('historyCount').innerHTML=history.length+' <em>条</em>';
+  $('historyCount').innerHTML=taskHistory.length+' <em>条</em>';
 }
 function renderLog(){
   var box=$('logBox');box.innerHTML='';
@@ -966,7 +966,7 @@ function submitTask(c,preview){
         clearInterval(timer);
         t.state=c.exit===0?'ok':'failed';t.exit=c.exit;t.frozen=true;
         t.logs.push([stamp(),'产出：logs/tasks/'+t.id+'/stdout.log','dim']);
-        history.unshift(t);
+        taskHistory.unshift(t);
         if(tasks.length>7)tasks.shift();
         renderAll();
       }
@@ -993,7 +993,7 @@ $('researchSource').addEventListener('click',function(){
 });
 $('clearDone').addEventListener('click',function(){
   tasks=tasks.filter(function(t){return t.state==='running'||t.state==='queued'});
-  if(!tasks.some(function(t){return t.id===activeTaskId}))activeTaskId=(tasks[0]||history[0]||{id:''}).id;
+  if(!tasks.some(function(t){return t.id===activeTaskId}))activeTaskId=(tasks[0]||taskHistory[0]||{id:''}).id;
   renderAll();
 });
 
