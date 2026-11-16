@@ -91,6 +91,46 @@ if (!failed) {
   }
 }
 
+// 「漏 git 追踪的 Python 文件」检查（2026-11-16 补）。
+//
+// 起因：当天写了 `scanner/ai_digest/crosssection.py` + `crosssection_view.py`（横截面层
+// 专属 AI 分析），**忘了 `git add`** ⇒ 它们是 untracked。
+// 而 electron-builder 的 `extraResources` 从 **git 追踪的文件**取内容
+// ⇒ 这两个文件**根本没进包**（实测 `diff -rq` 才发现：包内 `ai_digest/` 缺这两个）。
+// 后果很阴：包能装、能跑，只有那一个功能静默失效（`ModuleNotFoundError` 在运行时才炸）。
+//
+// ⇒ 打包前把「仓库里存在、但 git 没追踪」的 .py 文件列出来 —— 有就**中止打包**，
+// 逼开发者先 `git add`。（本仓纪律：发布内容必须进 git，否则 CI/回滚都对不上。）
+if (!failed) {
+  try {
+    const out = execFileSync("git", ["ls-files", "--others", "--exclude-standard"], {
+      cwd: REPO,
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    const strays = out
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .filter((p) => p.endsWith(".py"))
+      // `.alma-snapshots/` 是本地版本快照目录，不参与发布
+      .filter((p) => !p.startsWith(".alma-snapshots/"));
+    if (strays.length) {
+      failed = true;
+      console.error(
+        `[prepare] 失败  以下 .py 文件存在但**未被 git 追踪**，不会进安装包：\n` +
+          strays.map((p) => `            ${p}`).join("\n"),
+      );
+      console.error("            → electron-builder 从 git 追踪的文件取内容；先 `git add` 再打包");
+    } else {
+      console.log("[prepare] ok    无漏追踪的 .py 文件（untracked 检查通过）");
+    }
+  } catch (e) {
+    // git 不可用（无 git 环境 / 非仓库目录）⇒ 不阻断打包，只提示
+    console.warn(`[prepare] 提示  无法执行 git 未追踪检查（跳过）：${String(e.message).slice(0, 120)}`);
+  }
+}
+
 const db = path.join(REPO, "scanner.db");
 if (existsSync(db)) {
   console.log(`[prepare] ok    ${db}（${(statSync(db).size / 1024 / 1024).toFixed(0)} MB，本机活库）`);
