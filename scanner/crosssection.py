@@ -85,6 +85,8 @@ from scanner.config import (
     CS_DIVERGENCE_TOL,
     CS_ENABLED,
     CS_KEEP_ROUNDS,
+    CS_LIMIT_UP_NEAR,
+    CS_LIMIT_UP_PCT,
     CS_MIN_AMOUNT,
     CS_NOMINAL_ROUND_SEC,
     CS_P95,
@@ -94,8 +96,12 @@ from scanner.config import (
     CS_STALE_WARN_INTERVAL_SEC,
     CS_TOP_N,
     CS_TTL_SEC,
+    CS_SOURCE,
     CS_VOL_RATIO_WEIGHT,
     CS_WARMUP_ROUNDS,
+    CS_XQ_PAGES,
+    CS_XQ_PAGE_SIZE,
+    CS_XQ_RANK_WINDOW,
 )
 from scanner.data_source import ak_to_xq
 from scanner.trading_session import is_trading_time
@@ -122,6 +128,8 @@ _state: dict[str, Any] = {
     "stale_rounds": 0,
     "last_stale_warn_ts": 0.0,
     "last_signals": [],
+    # 当日各票「出现过信号」的轮次数（层内持续性，2026-11-16）。跨日清零。
+    "persist": {},
     "health": {
         "enabled": CS_ENABLED,
         "state": "no_data",
@@ -132,6 +140,8 @@ _state: dict[str, Any] = {
         "max_divergence": None,
         "divergence_samples": 0,
         "divergence_ok": True,
+        "native_speed": False,
+        "sealed_skipped": 0,
         "buffer_depth": 0,
         "warmup": False,
         "signals": 0,
@@ -161,6 +171,119 @@ def _now() -> datetime:
     `BEIJING_TZ` + `_clock()` 自己组装，与其等价。
     """
     return datetime.fromtimestamp(_clock(), tz=BEIJING_TZ)
+
+
+# ── 数据源：雪球 screener（2026-11-16 新增，默认源）──
+#
+# 为什么换源：东财 `ulist.np/get` 是**无参全量**接口 —— 本层要 p95 就必须拉 3000 个
+# secid（6 请求/轮）自己算分位，且每轮 force=True 强制新取数 ⇒ 计入 push2 家族
+# **IP 级限频**（AGENTS.md 已记这个坑）。2026-11-16 10:58 起整族 TLS 断连，本层哑掉。
+#
+# 雪球 screener 提供**服务端排序分页**（`order_by=percent5m`），只取前 N 页即可，
+# 且 `percent5m` 是原生字段（东财 ulist 根本没有这个字段，f11/f22 恒为 0）。
+#
+# ⚠ 口径差异（必须记住）：东财是真全市场分位（分母 ~1500），雪球是「前 N 页内位次」
+# （分母 CS_XQ_RANK_WINDOW=200）。尾部（percent5m<=0）拿不到真实分位 —— 但本层
+# 只留 >=CS_P95 的票，那部分必落在前 N 页内，故不影响入选集合，只影响展示的分位值。
+
+_xq_session: Any = None
+_xq_lock = threading.Lock()
+
+
+def _xq_get_session() -> Any:
+    """复用 `scanner.api` 的雪球会话（含 WAF 握手兜底 UA 轮试），惰性创建。"""
+    global _xq_session
+    with _xq_lock:
+        if _xq_session is None:
+            from scanner import api as _api  # 惰性：避免 import 期依赖重量级模块
+
+            _xq_session = _api.make_session()
+    return _xq_session
+
+
+def _fetch_from_xueqiu() -> dict[str, dict]:
+    """从雪球 screener 取创业板 `percent5m` 降序前 N 页。
+
+    返回结构与东财路径**完全同形**（`{6位码或xq符号: 报价dict}`），供下游
+    `_valid_snapshot` / `_speed_pct` 等原样消费 —— 这是换源不改口径的关键。
+
+    雪球行字段 → 本层字段映射：
+      `percent5m`  → `percent5m`（**原生涨速**，无需环形缓冲差分）
+      `percent`    → `percent`（当日涨幅）
+      `current`    → `price`    `amount` → `amount`
+      `volume`     → `volume`   `volume_ratio` → `vol_ratio`
+      `turnover_rate` → `turnover`
+      `main_net_inflows` → `main_net`（注意：雪球给的是**净流入额**）
+      `float_market_capital` → `float_cap`
+    另带 `name`，与东财 f14 同用途。
+    """
+    import requests as _rq
+
+    session = _xq_get_session()
+    base = "https://stock.xueqiu.com/v5/stock/screener/quote/list.json"
+    out: dict[str, dict] = {}
+    for page in range(1, max(1, CS_XQ_PAGES) + 1):
+        try:
+            resp = session.get(
+                base,
+                params={
+                    "page": page,
+                    "size": CS_XQ_PAGE_SIZE,
+                    "order": "desc",
+                    "order_by": "percent5m",
+                    "market": "CN",
+                    "type": "cyb",  # 创业板（实测 count=1412，正是本层取数域）
+                },
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                logger.warning("横截面雪球取数 HTTP %s（第 %d 页）", resp.status_code, page)
+                break
+            data = (resp.json() or {}).get("data") or {}
+            rows = data.get("list") or []
+        except Exception as e:  # noqa: BLE001 - 诚实吞掉并降级，由调用点判空
+            logger.warning("横截面雪球取数失败（第 %d 页）: %s: %s", page, type(e).__name__, e)
+            break
+        if not rows:
+            break
+        for row in rows:
+            sym = _normalize_symbol(row.get("symbol"))
+            if not sym:
+                continue
+            price = to_float(row.get("current"), None)
+            volume = to_float(row.get("volume"), None)
+            amount = to_float(row.get("amount"), None)
+            if price is None or volume is None or amount is None:
+                continue
+            pct5 = to_float(row.get("percent5m"), None)
+            out[sym] = {
+                "price": price,
+                "percent": to_float(row.get("percent"), 0.0) or 0.0,
+                "volume": volume,
+                "amount": amount,
+                "vol_ratio": to_float(row.get("volume_ratio"), None),
+                "name": str(row.get("name") or ""),
+                # 雪球原生 5 分钟涨速（%）。东财路径没有该字段，靠环形缓冲差分算。
+                "percent5m": pct5,
+                "turnover": to_float(row.get("turnover_rate"), None),
+                "main_net": to_float(row.get("main_net_inflows"), None),
+                "float_cap": to_float(row.get("float_market_capital"), None),
+            }
+        # 已取够 CS_XQ_RANK_WINDOW 就停（省请求）
+        if len(out) >= CS_XQ_RANK_WINDOW:
+            break
+    return out
+
+
+def fetch_crosssection_snapshot(*, force: bool = False) -> dict[str, dict]:
+    """**本层取数唯一入口**：按 `CS_SOURCE` 选择源，返回同形快照。
+
+    - `xueqiu`（默认）：雪球 screener 服务端排序，2 页/轮，原生 percent5m。
+    - `eastmoney`：东财 ulist 全量 + 本地环形缓冲差分（旧路径，保留可回退）。
+    """
+    if CS_SOURCE == "eastmoney":
+        return fetch_fund_flow_rank(force=force)
+    return _fetch_from_xueqiu()
 
 
 def fetch_fund_flow_rank(*, force: bool = False) -> dict[str, dict]:
@@ -206,6 +329,8 @@ def _valid_snapshot(payload: dict[str, dict]) -> dict[str, dict[str, Any]]:
             "amount": amount,
             "vol_ratio": to_float(row.get("vol_ratio"), None),
             "name": str(row.get("name") or ""),
+            # 雪球原生 5 分钟涨速（东财路径恒为 None）。保留原始值供 _native_speed。
+            "percent5m": to_float(row.get("percent5m"), None),
         }
     return out
 
@@ -231,6 +356,61 @@ def _speed(
     for sym, row in symbols.items():
         prev = prior.get(sym)
         out[sym] = _speed_pct(row["price"], prev["price"], elapsed, rounds_n) if prev else None
+    return out
+
+
+def _limit_up_price(row: dict) -> float | None:
+    """由 `price` 与 `percent` **反推**该票涨停价（**纯层内**，不借外部数据）。
+
+    推导：`percent = (price / prev_close - 1) * 100`
+    ⇒ `prev_close = price / (1 + percent/100)`
+    ⇒ `涨停价 = prev_close * (1 + CS_LIMIT_UP_PCT/100)`
+
+    精度实测（2026-11-16，已封板票）：领湃科技反推涨停价 27.83 = 其现价 27.83，
+    北鼎股份 8.60 = 8.60 ⇒ 误差 < 0.01 元。故无需额外取 `prev_close` 字段
+    （雪球 screener 也不直接给昨收）。
+
+    `percent <= -100`（异常值）或价格非正 ⇒ None（不参与判定，fail-open 放行）。
+    """
+    price = row.get("price")
+    pct = row.get("percent")
+    if not isinstance(price, (int, float)) or not isinstance(pct, (int, float)):
+        return None
+    if not math.isfinite(price) or not math.isfinite(pct) or price <= 0:
+        return None
+    denom = 1.0 + pct / 100.0
+    if denom <= 1e-6:
+        return None
+    return price / denom * (1.0 + CS_LIMIT_UP_PCT / 100.0)
+
+
+def _is_limit_up_sealed(row: dict) -> bool:
+    """是否**已封涨停**（现价 ≥ 涨停价 × CS_LIMIT_UP_NEAR）。
+
+    为什么剔除：封板后价格不再变动（`percent5m=0`），但量比极高仍能把复合分顶到
+    p95 以上 ⇒ 持续占据观察位。**买不进的东西不该占观察位**。
+    """
+    limit = _limit_up_price(row)
+    if limit is None:
+        return False
+    return row["price"] >= limit * CS_LIMIT_UP_NEAR
+
+
+def _native_speed(symbols: dict[str, dict]) -> dict[str, float | None]:
+    """**雪球原生 5 分钟涨速**（`percent5m`），无则 None。
+
+    东财路径没有这个字段（f11/f22 实测恒为 0），只能靠环形缓冲差分估算，
+    并且必须等满 `CS_WARMUP_ROUNDS=6` 轮才出第一个 `speed_5`。
+    雪球直接给 ⇒ **本层不再需要预热**（这是换源最大的实收益，不只是省请求）。
+
+    ⚠ 语义对齐：`percent5m` 是「5 分钟涨速」，对应本地 5 轮窗口（60s/轮）。
+    本地把它填进 `speed_5`；`speed_1`/`speed_3` 仍由差分算（雪球只给 5 分钟档）。
+    ```
+    """
+    out: dict[str, float | None] = {}
+    for sym, row in symbols.items():
+        v = row.get("percent5m")
+        out[sym] = v if isinstance(v, (int, float)) and math.isfinite(v) else None
     return out
 
 
@@ -393,6 +573,7 @@ def observe(conn: sqlite3.Connection, board_items: list[dict] | None = None) -> 
             _state["date"] = today
             _state["stale_rounds"] = 0
             _state["last_signals"] = []
+            _state["persist"] = {}
 
     board = _board_map(board_items)
     if board:
@@ -402,7 +583,7 @@ def observe(conn: sqlite3.Connection, board_items: list[dict] | None = None) -> 
         # 的缓存会因「注册码 ⊄ 上次拉取域」失效 ⇒ 同轮多打一次全集请求。先注册即消除。
         market_extra.register_fund_flow_codes(board.keys())
 
-    payload = fetch_fund_flow_rank(force=True)
+    payload = fetch_crosssection_snapshot(force=True)
     symbols = _valid_snapshot(payload)
 
     stamp = now.strftime("%H:%M:%S")
@@ -450,14 +631,29 @@ def observe(conn: sqlite3.Connection, board_items: list[dict] | None = None) -> 
         _stale_warn(now_ts, stale_rounds)
 
     signals: list[dict[str, Any]] = []
-    warm = depth >= CS_WARMUP_ROUNDS
+    sealed_skipped = 0
+    cur_native = _native_speed(rounds[-1]["symbols"]) if rounds else {}
+    has_native = any(v is not None for v in cur_native.values())
+    # 雪球源给原生 percent5m ⇒ **不需要预热**（东财路径仍需 CS_WARMUP_ROUNDS 轮攒差分）。
+    warm = has_native or depth >= CS_WARMUP_ROUNDS
     if warm and not stale:
         cur_round = rounds[-1]["symbols"]
         # elapsed 一律取**相邻快照实际墙钟差**（不假定 60s）；N 轮窗口 = 当前与
         # N 轮前快照的差值，等价于逐轮经过秒数累加。
-        speeds1 = _speed(cur_round, rounds[-2]["symbols"], now_ts - rounds[-2]["ts"], 1)
-        speeds3 = _speed(cur_round, rounds[-4]["symbols"], now_ts - rounds[-4]["ts"], 3)
-        speeds5 = _speed(cur_round, rounds[-6]["symbols"], now_ts - rounds[-6]["ts"], 5)
+        # 深度不足时（雪球首轮）短窗口取 None，_zscore 里当 0 参与。
+        def _diff_win(back: int, n: int) -> dict[str, float | None]:
+            if depth < back + 1:
+                return {sym: None for sym in cur_round}
+            prior = rounds[-(back + 1)]["symbols"]
+            return _speed(cur_round, prior, now_ts - rounds[-(back + 1)]["ts"], n)
+
+        speeds1 = _diff_win(1, 1)
+        speeds3 = _diff_win(3, 3)
+        speeds5 = _diff_win(5, 5)
+        # 原生值优先（雪球 percent5m = 5 分钟涨速 ⇒ 填 speed_5 同档）
+        for sym, v in cur_native.items():
+            if v is not None:
+                speeds5[sym] = v
         surges = _amount_surge(cur_round, [r["symbols"] for r in rounds[-5:]])
         z1 = _zscore(speeds1)
         z3 = _zscore(speeds3)
@@ -471,6 +667,13 @@ def observe(conn: sqlite3.Connection, board_items: list[dict] | None = None) -> 
             for sym in cur_round
         }
         pcts = _percentile_ranks(scores)
+        sealed_skipped = 0
+        # 先累计本轮各票的持续性（在过滤前计数：只要本轮进了 p95+ 就算一次出现）。
+        with _lock:
+            persist_counts = _state["persist"]
+        for sym in cur_round:
+            if pcts[sym] >= CS_P95:
+                persist_counts[sym] = persist_counts.get(sym, 0) + 1
         for sym, row in cur_round.items():
             if pcts[sym] < CS_P95:
                 continue  # 只留当轮横截面 p95+
@@ -478,6 +681,11 @@ def observe(conn: sqlite3.Connection, board_items: list[dict] | None = None) -> 
                 continue  # 榜内票只作跨源校验样本，不算「榜外异动」
             if row["amount"] < CS_MIN_AMOUNT:
                 continue  # 与 B 段同源的成交额门（p95 之后再加，不进分位分母）
+            if _is_limit_up_sealed(row):
+                # 已封涨停：买不进的票不该占观察位（封板后 percent5m=0 但量比极高，
+                # 复合分仍能顶到 p95 以上 ⇒ 纯噪音）。剔除以计数留痕，不静默。
+                sealed_skipped += 1
+                continue
             signals.append(
                 {
                     "symbol": sym,
@@ -491,6 +699,11 @@ def observe(conn: sqlite3.Connection, board_items: list[dict] | None = None) -> 
                     "vol_ratio": row["vol_ratio"],
                     "pct_rank": pcts[sym],
                     "on_board": False,
+                    # 层内一致性判据（2026-11-16）：全部由本层自算字段得出，
+                    # 不引入任何外部区域数据。供终端 `≡` 段直接展示。
+                    "consistency": _consistency(speeds1.get(sym), speeds3.get(sym), speeds5.get(sym)),
+                    "volume_price": _volume_price(surges.get(sym), speeds1.get(sym)),
+                    "persist": persist_counts.get(sym, 1),
                 }
             )
         signals.sort(key=lambda s: (s["pct_rank"], s["amount_surge"] or 0.0), reverse=True)
@@ -519,6 +732,8 @@ def observe(conn: sqlite3.Connection, board_items: list[dict] | None = None) -> 
         divergence_samples=div_samples,
         divergence_ok=divergence_ok,
         last_refresh=refreshed,
+        native_speed=has_native,
+        sealed_skipped=sealed_skipped,
     )
 
 
@@ -566,6 +781,42 @@ def health() -> dict:
         return dict(_state["health"])
 
 
+def _consistency(speed_1: float | None, speed_3: float | None, speed_5: float | None) -> str:
+    """三窗口方向一致性（**纯层内**：全部来自本层环形缓冲的 1/3/5 轮差分）。
+
+    为什么要它：单窗口为正可能只是一次噪声尖刺；三个窗口同号才说明价格在
+    **持续朝一个方向走**。这是本层唯一能自证的「信号真伪」判据 —— 不需要
+    任何外部区域（榜单/资金流/B 段）的数据参与。
+
+    返回 `全正` / `全负` / `混合`。
+    """
+    vals = [v for v in (speed_1, speed_3, speed_5) if isinstance(v, (int, float)) and math.isfinite(v)]
+    if len(vals) < 3:
+        return "混合"
+    if all(v > 0 for v in vals):
+        return "全正"
+    if all(v < 0 for v in vals):
+        return "全负"
+    return "混合"
+
+
+def _volume_price(amount_surge: float | None, speed_1: float | None) -> str:
+    """量价配合（**纯层内**：`amount_surge` 与 `speed_1` 都是本层自算字段）。
+
+    `配合` = 放量且价在动；`背离` = 明显放量但价格没跟（滞涨/派发嫌疑）；
+    其余记 `—`（不足判断）。
+    """
+    if not isinstance(amount_surge, (int, float)) or not isinstance(speed_1, (int, float)):
+        return "—"
+    if not math.isfinite(amount_surge) or not math.isfinite(speed_1):
+        return "—"
+    if amount_surge > 2.0 and speed_1 <= 0:
+        return "背离"
+    if amount_surge > 1.0 and speed_1 > 0:
+        return "配合"
+    return "—"
+
+
 def _fmt_num(v: float | None, digits: int = 2, suffix: str = "") -> str:
     if v is None or not isinstance(v, (int, float)) or not math.isfinite(v):
         return "—"
@@ -598,6 +849,10 @@ def format_terminal_block() -> str:
         f"缓冲 {depth}/{CS_BUFFER_ROUNDS} | p95 {CS_P95:.3f} | "
         f"信号 {h.get('signals', 0)} | {div_txt}"
     )
+    sealed = int(h.get("sealed_skipped") or 0)
+    if sealed:
+        # 剔除必留痕：不允许静默少票（与 push_gate 的 gate_note 同一纪律）。
+        header += f" | 已剔封板 {sealed}"
     lines = [header]
     if state == "throttled":
         lines.append("  本轮快照节流（沿用上一轮结果，未重新取数）")
@@ -606,17 +861,30 @@ def format_terminal_block() -> str:
     elif state == "stale":
         lines.append(f"  陈旧轮：上游快照与上轮相同，本轮不产出（累计 {h.get('stale_rounds', 0)} 轮）")
     elif not h.get("warmup"):
-        left = max(CS_WARMUP_ROUNDS - depth, 0)
-        lines.append(f"  预热中 {depth}/{CS_WARMUP_ROUNDS}（60s 一轮，约 {left} 分钟后产出）")
+        if h.get("native_speed"):
+            pass  # 有原生涨速时不需要预热（不该走到这里，防御性留白）
+        else:
+            left = max(CS_WARMUP_ROUNDS - depth, 0)
+            lines.append(f"  预热中 {depth}/{CS_WARMUP_ROUNDS}（60s 一轮，约 {left} 分钟后产出）")
 
     with _lock:
         top = list(_state["last_signals"])[:CS_TOP_N]
+    if top:
+        # 图例（层内判据，见 _consistency / _volume_price）：
+        # 一致性 = 1m/3m/5m 是否同号；量价 = 放量是否伴随价格；轮次 = 当日出现过几轮。
+        lines.append("  判据：一致性(全正/全负/混合) · 量价(配合/背离/—) · 轮次(当日出现过几轮)")
     for i, s in enumerate(top, 1):
+        # 层内一致性三件套（2026-11-16）：持续轮次 / 三窗口同向 / 量价配合。
+        # 全部由本层自算字段得出 —— 不读榜单、不读资金流缓存、不读 B 段。
+        cons = s.get("consistency") or "混合"
+        vp = s.get("volume_price") or "—"
+        persist = s.get("persist") or 1
         lines.append(
             f"  {i}. {s['symbol']} {s['name']} {s['price']:.2f} {s['percent']:+.2f}% | "
             f"1m {_fmt_num(s.get('speed_1'), 2, '%')} 3m {_fmt_num(s.get('speed_3'), 2, '%')} "
             f"5m {_fmt_num(s.get('speed_5'), 2, '%')} | 额涌 {_fmt_num(s.get('amount_surge'), 2, '×')} "
-            f"量比 {_fmt_num(s.get('vol_ratio'), 2)} 分位 {s['pct_rank']:.3f}"
+            f"量比 {_fmt_num(s.get('vol_ratio'), 2)} 分位 {s['pct_rank']:.3f} | "
+            f"{cons}·{vp}·{persist}轮"
         )
     if h.get("warmup") and state not in ("stale", "no_data") and not top:
         lines.append("  （本轮无 p95+ 榜外异动）")

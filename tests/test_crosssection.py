@@ -53,6 +53,9 @@ def _offline(monkeypatch, db):
     cs._state.update(copy.deepcopy(_INITIAL_STATE))
     monkeypatch.setattr(cs, "is_trading_time", lambda now=None: True)
     monkeypatch.setattr(cs, "CS_ENABLED", True)
+    # 现有用例全部针对「东财全量 + 环形缓冲差分」这条路径（测的是差分/分位/陈旧判定），
+    # 故强制走 eastmoney 源；雪球源有独立的类单独覆盖（TestXueqiuSource）。
+    monkeypatch.setattr(cs, "CS_SOURCE", "eastmoney")
     yield
     cs._ring.clear()
 
@@ -375,3 +378,281 @@ class TestCLI:
         assert cs.main(["--date", "2026-11-13"]) == 0
         out = capsys.readouterr().out
         assert "SZ300999" in out and "100600" in out
+
+# ── 9. 层内一致性判据（2026-11-16）──
+#
+# 这三条判据的**唯一数据源是本层自算字段**（环形缓冲差分 / 成交额增量）。
+# 它们的存在理由是：用户要「在区域展示时就直接看到」，不必另跑命令；
+# 且必须**不引入任何外部区域**（榜单/资金流缓存/B 段）的数据 ——
+# 本层的存在理由就是与榜单解耦，借外部数据等于把滞后加回来。
+
+
+class TestConsistency:
+    """`_consistency`：1m/3m/5m 是否同号。"""
+
+    def test_all_positive(self):
+        assert cs._consistency(0.5, 1.0, 1.5) == "全正"
+
+    def test_all_negative(self):
+        assert cs._consistency(-0.5, -1.0, -1.5) == "全负"
+
+    def test_mixed_signs(self):
+        assert cs._consistency(0.5, -1.0, 1.5) == "混合"
+
+    def test_zero_is_not_positive(self):
+        # 0 不算「朝上走」：三窗口必须严格同号才算一致
+        assert cs._consistency(0.0, 1.0, 1.5) == "混合"
+
+    def test_missing_value_degrades_to_mixed(self):
+        # 不足 5 轮快照时 speed_5 为 None ⇒ 无法判定，保守记「混合」
+        assert cs._consistency(0.5, 1.0, None) == "混合"
+
+    def test_nan_degrades_to_mixed(self):
+        assert cs._consistency(0.5, 1.0, float("nan")) == "混合"
+
+
+class TestVolumePrice:
+    """`_volume_price`：放量是否伴随价格。"""
+
+    def test_cooperating(self):
+        # 放量（>1×）且 1m 在涨
+        assert cs._volume_price(2.0, 0.3) == "配合"
+
+    def test_divergence(self):
+        # 明显放量（>2×）但 1m 不涨 ⇒ 滞涨/派发嫌疑
+        assert cs._volume_price(3.0, 0.0) == "背离"
+        assert cs._volume_price(3.0, -0.2) == "背离"
+
+    def test_neutral_when_surge_mild(self):
+        assert cs._volume_price(0.5, 0.3) == "—"
+
+    def test_neutral_when_missing(self):
+        assert cs._volume_price(None, 0.3) == "—"
+        assert cs._volume_price(2.0, None) == "—"
+
+
+class TestPersistCounter:
+    """持续性计数器：当日出现过几轮，跨日清零。"""
+
+    def test_persist_accumulates_across_rounds(self, monkeypatch, db):
+        feed = _Feed()
+        _install_feed(monkeypatch, feed)
+        # 预热 6 轮后才出信号；ROCKET 每轮都在
+        _run_rounds(monkeypatch, db, feed, 7)
+        with cs._lock:
+            sigs = list(cs._state["last_signals"])
+            persist = dict(cs._state["persist"])
+        assert sigs, "预热后应有信号"
+        rocket = [s for s in sigs if s["symbol"] == "SZ" + ROCKET]
+        assert rocket, "ROCKET 应在信号里"
+        # 出现轮次应随轮数增长（>=2 而不是恒为 1）
+        assert rocket[0]["persist"] >= 2
+        assert persist.get("SZ" + ROCKET, 0) >= 2
+
+    def test_persist_resets_on_new_day(self, monkeypatch, db):
+        feed = _Feed()
+        _install_feed(monkeypatch, feed)
+        _run_rounds(monkeypatch, db, feed, 7)
+        with cs._lock:
+            before = dict(cs._state["persist"])
+        assert before, "跨日前应有累计"
+
+        # 推进到次日（跨日重置分支）
+        next_day = _T0 + 24 * 3600
+        monkeypatch.setattr(cs, "_clock", lambda: next_day)
+        cs.observe(db, [])
+        with cs._lock:
+            after = dict(cs._state["persist"])
+        # 跨日先清空再累计本轮 ⇒ 不可能保留昨天的轮次数
+        assert all(v <= 1 for v in after.values()), f"跨日未清零: {after}"
+
+
+class TestTerminalBlockShowsJudgement:
+    """`≡` 段**直接展示**层内判据（用户要求：不用另跑命令）。"""
+
+    def test_block_contains_judgement_columns(self, monkeypatch, db):
+        feed = _Feed()
+        _install_feed(monkeypatch, feed)
+        _run_rounds(monkeypatch, db, feed, 7)
+        block = cs.format_terminal_block()
+        assert block.startswith("≡")
+        # 图例 + 每条信号尾部都有「一致性·量价·轮次」
+        assert "判据：一致性" in block
+        assert "轮" in block
+        # 至少一条信号带判据后缀
+        assert "·" in block
+
+    def test_block_still_avoids_panel_delimiters(self, monkeypatch, db):
+        """`≡` 块的续行不得以 `◆` / `—` 起头（否则污染 ai_digest/panel.py 解析）。"""
+        feed = _Feed()
+        _install_feed(monkeypatch, feed)
+        _run_rounds(monkeypatch, db, feed, 7)
+        block = cs.format_terminal_block()
+        for line in block.splitlines()[1:]:
+            assert not line.lstrip().startswith("◆")
+            assert not line.lstrip().startswith("—")
+
+# -- 10. 雪球数据源（2026-11-16）--
+#
+# 换源动机：东财 ulist 是**无参全量**接口，本层要 p95 就必须拉 3000 个 secid
+# 自己算分位（6 请求/轮），计入 push2 家族 IP 级限频。雪球 screener 是**服务端
+# 排序**接口（order_by=percent5m），且 percent5m 原生可用。
+# 这些用例全离线（假 session），只验证「映射正确/分页正确/坏行不炸」。
+
+
+class _FakeResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+        self.text = str(payload)
+
+    def json(self):
+        return self._payload
+
+
+class _FakeXqSession:
+    """按 page 返回预置行；记录调用，便于断言分页停止条件。"""
+
+    def __init__(self, pages):
+        self.pages = pages
+        self.calls = []
+
+    def get(self, url, params=None, timeout=None):
+        assert url.endswith("/screener/quote/list.json")
+        assert params["order_by"] == "percent5m" and params["order"] == "desc"
+        assert params["type"] == "cyb"  # 必须锁创业板，别把 B 股/主板混进来
+        page = int(params["page"])
+        self.calls.append(page)
+        rows = self.pages.get(page)
+        if rows is None:
+            return _FakeResponse({"data": {"count": 0, "list": []}})
+        return _FakeResponse({"data": {"count": len(rows), "list": rows}})
+
+
+def _xq_row(symbol, name, pct5m, percent=1.0, current=10.0, volume=1e6, amount=2e8, vr=2.0):
+    return {
+        "symbol": symbol, "name": name, "percent5m": pct5m, "percent": percent,
+        "current": current, "volume": volume, "amount": amount, "volume_ratio": vr,
+        "turnover_rate": 3.0, "main_net_inflows": 1e7, "float_market_capital": 5e9,
+    }
+
+
+class TestXueqiuSource:
+    def test_fields_mapped_to_crosssection_shape(self, monkeypatch):
+        sess = _FakeXqSession({1: [_xq_row("SZ300001", "T", 2.5, percent=3.3)]})
+        monkeypatch.setattr(cs, "_xq_get_session", lambda: sess)
+        out = cs._fetch_from_xueqiu()
+        row = out["SZ300001"]
+        # 与东财路径同形的键，下游 _valid_snapshot/_speed_pct 原样消费
+        assert row["price"] == 10.0
+        assert row["percent"] == 3.3
+        assert row["volume"] == 1e6
+        assert row["amount"] == 2e8
+        assert row["vol_ratio"] == 2.0
+        assert row["name"] == "T"
+        # 雪球特有字段
+        assert row["percent5m"] == 2.5
+        assert row["turnover"] == 3.0
+        assert row["main_net"] == 1e7
+        assert row["float_cap"] == 5e9
+
+    def test_pagination_stops_when_empty_page(self, monkeypatch):
+        sess = _FakeXqSession({1: [_xq_row("SZ300001", "A", 1.0)], 2: []})
+        monkeypatch.setattr(cs, "_xq_get_session", lambda: sess)
+        monkeypatch.setattr(cs, "CS_XQ_PAGES", 5)
+        cs._fetch_from_xueqiu()
+        assert sess.calls == [1, 2]  # 第 2 页空即停
+
+    def test_bad_rows_are_skipped_not_fatal(self, monkeypatch):
+        rows = [
+            _xq_row("SZ300001", "ok1", 1.0),
+            {"symbol": "SZ300002"},  # 缺 current/volume/amount
+            {"symbol": "", "current": 1, "volume": 1, "amount": 1},  # 无 symbol
+            _xq_row("SZ300003", "ok2", 0.5),
+        ]
+        monkeypatch.setattr(cs, "_xq_get_session", lambda: _FakeXqSession({1: rows}))
+        out = cs._fetch_from_xueqiu()
+        assert set(out) == {"SZ300001", "SZ300003"}
+
+    def test_http_error_returns_empty_not_raises(self, monkeypatch):
+        class _BadSession:
+            def get(self, *a, **k):
+                return _FakeResponse({}, status_code=567)
+
+        monkeypatch.setattr(cs, "_xq_get_session", lambda: _BadSession())
+        assert cs._fetch_from_xueqiu() == {}
+
+    def test_network_exception_returns_empty_not_raises(self, monkeypatch):
+        class _BoomSession:
+            def get(self, *a, **k):
+                raise ConnectionError("boom")
+
+        monkeypatch.setattr(cs, "_xq_get_session", lambda: _BoomSession())
+        assert cs._fetch_from_xueqiu() == {}
+
+    def test_source_switch_respects_config(self, monkeypatch):
+        """CS_SOURCE 决定走哪条路径 —— 换源必须可回退。"""
+        called = {}
+
+        def _fake_em(*, force=False):
+            called["eastmoney"] = True
+            return {"SZ300001": {"price": 1.0, "volume": 1, "amount": 1, "percent": 0}}
+
+        monkeypatch.setattr(cs, "fetch_fund_flow_rank", _fake_em)
+        monkeypatch.setattr(cs, "_fetch_from_xueqiu", lambda: {"SZ9X": {}})
+
+        monkeypatch.setattr(cs, "CS_SOURCE", "eastmoney")
+        out = cs.fetch_crosssection_snapshot(force=True)
+        assert called.get("eastmoney") and "SZ300001" in out
+
+        called.clear()
+        monkeypatch.setattr(cs, "CS_SOURCE", "xueqiu")
+        out = cs.fetch_crosssection_snapshot(force=True)
+        assert not called.get("eastmoney") and "SZ9X" in out
+
+# -- 11. 封板剔除（2026-11-16）--
+#
+# 用户实测反馈：涨停票封板后仍持续占据本区域（领湃 +20.01%、北鼎 +19.94%）。
+# 封板后价格不再变动（percent5m=0），但量比极高（实测 62.78/34.52）仍能把
+# 复合分顶到 p95 以上 ⇒ 纯噪音，买不进的东西不该占观察位。
+#
+# 判定完全层内：由 price 与 percent 反推昨收再算涨停价，不借外部数据。
+
+
+class TestLimitUpPrice:
+    def test_reverse_derive_matches_real_sealed_cases(self):
+        """实测校准：已封板票反推出的涨停价应等于其现价（误差<0.01）。"""
+        # 2026-11-16 真实数据
+        for price, pct in ((27.83, 20.01), (8.60, 19.94)):
+            limit = cs._limit_up_price({"price": price, "percent": pct})
+            assert limit is not None
+            assert abs(limit - price) < 0.02, f"反推涨停价 {limit} != 现价 {price}"
+
+    def test_not_sealed_returns_none(self):
+        assert cs._limit_up_price({"price": 0, "percent": 5}) is None
+        assert cs._limit_up_price({"price": None, "percent": 5}) is None
+        assert cs._limit_up_price({"price": 10, "percent": None}) is None
+        assert cs._limit_up_price({"price": 10, "percent": -100}) is None
+
+    def test_gem_is_20pct_not_5pct(self):
+        """创业板一律 20%（含 ST）—— ST创意 +12.39% 仍在涨即证明不是 5% 档。"""
+        limit = cs._limit_up_price({"price": 5.08, "percent": 12.39})
+        # 若误按 5% 算，涨停价会是 4.75（现价已超过）—— 那是错的
+        assert limit > 5.08
+
+
+class TestIsLimitUpSealed:
+    def test_sealed_stocks_detected(self):
+        assert cs._is_limit_up_sealed({"price": 27.83, "percent": 20.01}) is True
+        assert cs._is_limit_up_sealed({"price": 8.60, "percent": 19.94}) is True
+
+    def test_near_but_not_sealed_kept(self):
+        # 节能铁汉 +13.71%：现价/涨停 = 0.948，未达 0.985 ⇒ 保留
+        assert cs._is_limit_up_sealed({"price": 1.99, "percent": 13.71}) is False
+        # ST创意 +12.39%：0.937 ⇒ 保留
+        assert cs._is_limit_up_sealed({"price": 5.08, "percent": 12.39}) is False
+
+    def test_missing_fields_fail_open(self):
+        """字段缺失 fail-open（放行），绝不因算不出就误剔。"""
+        assert cs._is_limit_up_sealed({"price": None, "percent": 10}) is False
+        assert cs._is_limit_up_sealed({}) is False
