@@ -13,9 +13,9 @@ type Props = SVGProps<SVGSVGElement>;
 export function BrandMark(props: Props) {
   return (
     <svg viewBox="0 0 22 22" fill="none" aria-hidden="true" {...props}>
-      <path d="M2.5 15.4L7 9.8l3.2 2.3 5.1-7 4.2 2.5" stroke="#4c8dff" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M2.5 18.7h17" stroke="#22d3ee" strokeWidth="1.2" strokeLinecap="round" opacity=".75" />
-      <circle cx="17.3" cy="5.1" r="1.6" fill="#22d3ee" />
+      <path d="M2.5 15.4L7 9.8l3.2 2.3 5.1-7 4.2 2.5" stroke="#2563eb" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M2.5 18.7h17" stroke="#0e8fa8" strokeWidth="1.2" strokeLinecap="round" opacity=".75" />
+      <circle cx="17.3" cy="5.1" r="1.6" fill="#0e8fa8" />
     </svg>
   );
 }

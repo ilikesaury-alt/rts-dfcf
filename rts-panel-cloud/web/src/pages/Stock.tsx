@@ -16,7 +16,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { KLineChart, darkTheme, type KLineData, type KLineTheme } from "kline-component";
+import { KLineChart, lightTheme, type KLineData, type KLineTheme } from "kline-component";
 
 import { API, ApiError, apiGet } from "../api/client";
 import type { ExplainResponse, KlineResponse } from "../api/types";
@@ -25,17 +25,27 @@ import { goToList } from "../lib/router";
 import EmptyState from "../components/EmptyState";
 
 /**
- * A 股口径暗色主题：组件自带暗色底，只翻涨跌色（**红涨绿跌**，与面板其余部分一致）。
- * 与 `index.css` 的 `--color-up/down` 持有同一组字面值 —— 改色必须两处同步。
+ * A 股口径**浅色**主题（2026-11-16 v3 主题重做：面板整体转浅底，K 线跟随）。
+ *
+ * 库自带的 `lightTheme` 已给出白底 + 浅网格，这里只翻两样：
+ * 1. **涨跌色**改成 A 股口径（红涨绿跌，库默认是欧美口径绿涨红跌）；
+ * 2. 网格/十字线压到本项目 `--line` 同一档，避免和卡片边框抢眼。
+ *
+ * ⚠ 与 `index.css` 的 `--color-up/down` 持有同一组字面值 —— 改色必须两处同步
+ *   （K 线是 Canvas，读不到 CSS 变量，这是既有约定，不是疏漏）。
  */
 const ASHARE_THEME: KLineTheme = {
-  ...darkTheme,
-  upColor: "#ef232a",
-  downColor: "#14b143",
-  upWickColor: "#ef232a",
-  downWickColor: "#14b143",
-  macdBarUpColor: "#ef232a",
-  macdBarDownColor: "#14b143",
+  ...lightTheme,
+  upColor: "#d9222a",
+  downColor: "#0a8f3c",
+  upWickColor: "#d9222a",
+  downWickColor: "#0a8f3c",
+  macdBarUpColor: "#d9222a",
+  macdBarDownColor: "#0a8f3c",
+  gridColor: "rgba(15, 23, 42, 0.06)",
+  crosshairColor: "rgba(15, 23, 42, 0.22)",
+  crosshairTextBg: "rgba(255, 255, 255, 0.96)",
+  crosshairTextColor: "#0f1b2d",
 };
 
 /** K 线区高度（px）。固定像素：Canvas 需要一个确定的高度才不会画在 0 高画布上。 */
