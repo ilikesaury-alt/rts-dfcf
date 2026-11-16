@@ -28,15 +28,15 @@
      浅底要「纸感分层」：壳最浅、工作区略沉、卡片纯白浮起、hover 再压一档。
      ⚠ v3 主题变更（2026-11-16，Lichun「不要黑色主题，重新设计」）：
         本文件原为「暗色唯一形态」，现改为浅色唯一形态。 */
-  --surface-0: #eef1f6;
-  --surface-1: #f6f8fb;
-  --surface-2: #ffffff;
-  --surface-3: #f1f4f9;
+  --surface-0: #e4e9f1;   /* 窗口壳：最沉，让工作区「浮」出来 */
+  --surface-1: #f7f9fc;   /* 工作区：近白 */
+  --surface-2: #ffffff;   /* 卡片：纯白（与工作区靠投影+细线分层，不靠底色） */
+  --surface-3: #eef2f8;   /* hover/选中/表头 */
   --surface-pop: #ffffff;
 
-  --line-soft: rgba(15, 23, 42, 0.055);
-  --line: rgba(15, 23, 42, 0.1);
-  --line-strong: rgba(15, 23, 42, 0.17);
+  --line-soft: rgba(15, 23, 42, 0.07);
+  --line: rgba(15, 23, 42, 0.13);
+  --line-strong: rgba(15, 23, 42, 0.24);
 
   --text-1: #0f1b2d;
   --text-2: #38455c;
@@ -68,8 +68,9 @@
   --sans: "Inter", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
   --ease: 140ms ease;
   --ease-slider: 150ms ease;
-  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.05), 0 2px 8px rgba(15, 23, 42, 0.055);
-  --shadow-pop: 0 4px 10px rgba(15, 23, 42, 0.09), 0 16px 36px rgba(15, 23, 42, 0.14);
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.06), 0 3px 10px rgba(15, 23, 42, 0.06),
+    0 10px 24px rgba(15, 23, 42, 0.045);
+  --shadow-pop: 0 6px 14px rgba(15, 23, 42, 0.11), 0 22px 48px rgba(15, 23, 42, 0.16);
 }
 
 /* ── 全局：焦点环 / 三态 / 数字等宽 ──────────────────────────────────────── */
@@ -430,12 +431,12 @@ button:active,
 
 /* ── 本轮读数带：关键读数 22px、语气仍克制 ───────────────────────────────── */
 .readout {
-  height: 76px;
-  flex: 0 0 76px;
+  height: 84px;
+  flex: 0 0 84px;
   display: flex;
   align-items: center;
-  gap: 18px;
-  padding: 0 18px;
+  gap: 22px;
+  padding: 0 22px;
   background: var(--surface-1);
   /* 显式给全边透明：只写 border-bottom 时其余三边落 currentColor(=文字色)，
      浅底上会显出一条深色实线（v3 实测 .titlebar / .readout 中招）。 */
@@ -460,8 +461,8 @@ button:active,
   line-height: 16px;
 }
 .metric-value {
-  font-size: 22px;
-  line-height: 26px;
+  font-size: 26px;
+  line-height: 30px;
   font-weight: 650;
   color: var(--text-1);
   font-family: var(--mono);
@@ -848,7 +849,7 @@ button:active,
 .region-card {
   background: var(--surface-2);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
   box-shadow: var(--shadow-card);
   transition: border-color var(--ease), box-shadow var(--ease);
@@ -866,9 +867,9 @@ button:active,
   display: flex;
   align-items: center;
   gap: 13px;
-  padding: 11px 15px;
-  background: rgba(15, 23, 42, 0.028);
-  border-bottom: 1px solid var(--line-soft);
+  padding: 12px 16px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
   transition: background-color var(--ease), border-color var(--ease);
 }
 .region-card.is-active .region-head {
@@ -878,8 +879,8 @@ button:active,
   border-bottom-color: transparent;
 }
 .card-accent {
-  width: 3px;
-  height: 28px;
+  width: 4px;
+  height: 30px;
   border-radius: 3px;
   background: var(--text-4);
   flex: none;
@@ -894,8 +895,8 @@ button:active,
 }
 .region-title {
   margin: 0;
-  font-size: 14.5px;
-  line-height: 20px;
+  font-size: 15.5px;
+  line-height: 21px;
   font-weight: 650;
   color: var(--text-1);
   display: flex;
@@ -915,7 +916,7 @@ button:active,
 }
 .region-fulltitle {
   margin: 3px 0 0;
-  font-size: 11px;
+  font-size: 11.5px;
   line-height: 1.55;
   color: var(--text-3);
   white-space: nowrap;
@@ -1042,11 +1043,11 @@ button:active,
   position: sticky;
   top: 0;
   z-index: 2;
-  height: 29px;
+  height: 31px;
   background: var(--surface-3);
-  color: var(--text-3);
+  color: var(--text-2);
   font-size: 11px !important;
-  font-weight: 650;
+  font-weight: 680;
   letter-spacing: 0.025em;
   border-bottom: 1px solid var(--line-strong);
   text-align: left;
@@ -1802,17 +1803,17 @@ button:active,
   --color-flat: #6b7688;
 
   /* 版面（浅色唯一形态，v3 2026-11-16） */
-  --color-bg: #f6f8fb;
+  --color-bg: #f7f9fc;
   --color-card: #ffffff;
-  --color-border: rgba(15, 23, 42, 0.1);
+  --color-border: rgba(15, 23, 42, 0.13);
   --color-text: #0f1b2d;
   --color-text-dim: #667287;
 
   /* 四级表面（供工具类使用，与 :root 同值） */
-  --color-surface-0: #eef1f6;
-  --color-surface-1: #f6f8fb;
+  --color-surface-0: #e4e9f1;
+  --color-surface-1: #f7f9fc;
   --color-surface-2: #ffffff;
-  --color-surface-3: #f1f4f9;
+  --color-surface-3: #eef2f8;
   --color-surface-pop: #ffffff;
   --color-brand: #2563eb;
   --color-brand-soft: #0e8fa8;
