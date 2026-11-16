@@ -170,6 +170,24 @@ python -m scanner.ai_digest --brief --out 简报.md  # 落盘同一份简洁报�
 python -m scanner.ai_digest --source print --materials  # 核对输入=终端最后打印行（带 seq 与数据年龄）
 ```
 
+### 横截面异动层专属 AI 分析（输入源只有 `crosssection_signal` 一张表）
+
+```bash
+python -m scanner.ai_digest.crosssection                  # 最新一日结构解读
+python -m scanner.ai_digest.crosssection --materials      # 只打素材，不出网（先看模型会看到什么）
+python -m scanner.ai_digest.crosssection --date 2026-11-16
+python -m scanner.ai_digest.crosssection --brief          # 不打印素材核对表
+python -m scanner.ai_digest.crosssection --json           # 机器可读
+```
+
+**与上面的区别**：上面那套 `--source panel/print/view/log` 读的是 B 段榜外异动；
+这一条**只读横截面层的表**，零跨表、零联网（见 `docs/CROSSSECTION-TERMINAL-BLOCK.md`）。
+它**过红线词表**（本层是观察层，不产生结论，与 `--mode analyze` 不同、不豁免），
+也过幻觉巡检。退出码同主命令：0/1/2/3/4/5。
+
+> ⚠ 素材里已预置「出现≥2轮 / ≥11轮 / 全部」三个合计 —— 模型常会自己把分桶相加，
+> 算错就被幻觉巡检判成编造数字（实测踩过两次）。给合计既省得它算，也免误报。
+
 数据源 `--source auto|print|view|log`（默认 auto / print = `offboard_print_snapshot` 终端最后
 一次打印的行，含留存行、顺序即屏幕顺序；输出带 `print_seq` 与「数据 X 分钟前 / 非实时」）。
 `view`=桌面版 view_snapshot，`log`=launch_log 整日过门账。`--limit N` 控制分析前 N 只。

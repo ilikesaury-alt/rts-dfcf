@@ -37,6 +37,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from scanner.ai_digest.archive import ArchivePayload, render_archive, write_archive
 from scanner.ai_digest.crosssection_view import (
     CrosssectionSummary,
     build_summary,
@@ -47,9 +48,13 @@ from scanner.ai_digest.guard import is_redlined
 from scanner.ai_digest.llm import AIUpstreamError, chat, magpie_config
 from scanner.ai_digest.material import unverified_numbers
 
-__all__ = ["SYSTEM_PROMPT", "main", "run"]
+__all__ = ["LABEL", "SYSTEM_PROMPT", "main", "run"]
 
 _CST = timezone(timedelta(hours=8))
+
+#: 报告标签 —— 对齐主管线 `__main__.LABELS` 的纪律：命令侧保证，不是模型给的。
+#: 本层比 analyze 更严（不豁免红线），所以措辞按 transcribe 档而非 analyze 档。
+LABEL = "横截面层结构解读 · 仅解读，非投资建议 · 不产生结论"
 
 #: 本层专属提示词。刻意与 `llm.SYSTEM_PROMPT_ANALYZE` 分开写：
 #: 那边的任务是「从榜外异动段挑候选」，这里是「读一层结构、说清它长什么样」。
@@ -147,9 +152,17 @@ def _open_db(path: Path) -> sqlite3.Connection:
 
 
 def run(
-    *, date: str | None = None, db: Path | None = None, brief: bool = False
+    *,
+    date: str | None = None,
+    db: Path | None = None,
+    brief: bool = False,
+    no_archive: bool = False,
 ) -> tuple[int, str]:
-    """跑一次分析，返回 `(退出码, 纯文本报告)`。不打印、不归档 —— 由 `main` 决定出口。"""
+    """跑一次分析，返回 `(退出码, 纯文本报告)`。不打印 —— 由 `main` 决定出口。
+
+    归档在本函数内完成（沿用主管线「报告即档案」的纪律）；
+    `no_archive=True` 跳过（测试与 --materials 场景用）。
+    """
     path = db or _db_path()
     if not path.exists():
         return 0, f"[!] 数据库不存在：{path}\n    先跑一轮扫描器（交易时段 09:30-11:30 / 13:00-15:00）。"
@@ -184,9 +197,13 @@ def run(
     except AIUpstreamError as e:
         return 2, f"{materials}\n\n[!] 模型调用失败：{e}"
 
-    text = (result.get("content") or "").strip()
+    # ⚠ 清洗纪律沿用 `llm.transcribe()`（2026-11-03 实测）：真实模型会输出 Markdown
+    #   硬换行的「行尾双空格」（5 行里 4 行）—— 直接打出来看不出、复制出去却是脏字符。
+    #   **只去行尾空白**，不动任何非空白字符 ⇒ 正文仍算「原样展示」。
+    raw = result.get("content")
+    text = "\n".join(line.rstrip() for line in (raw or "").strip().splitlines())
     if not text:
-        return 2, f"{materials}\n\n[!] 模型返回空内容。"
+        return 2, f"{materials}\n\n[!] 模型服务返回空内容。"
 
     # ① 红线：本层不豁免（与 analyze 模式不同 —— 本层本就不该产生结论）。
     if is_redlined(text):
@@ -197,25 +214,37 @@ def run(
     # ② 幻觉巡检：基准 = 素材全文。
     unverified = unverified_numbers(text, materials)
 
-    header = f"横截面异动层 · {summary.date} · AI 结构解读"
-    body = "\n".join(
-        [
-            header,
-            "─" * 60,
-            f"数据：{summary.rounds} 轮 | {summary.first_time}~{summary.last_time} | "
-            f"唯一只数 {summary.symbols}",
-            "",
-            text,
-        ]
+    # ③ 归档 —— 沿用主管线 `archive.py` 单源（2026-11-16 Lichun 指出该沿用而漏掉的三件之一）。
+    #    与主命令同纪律：只归档不回灌；`--no-archive` 可关。
+    payload = ArchivePayload(
+        title=f"横截面异动层 · {summary.date} · AI 结构解读",
+        label=LABEL,
+        mode="crosssection",
+        source="crosssection_signal",
+        source_desc=f"crosssection_signal（{summary.rounds} 轮窗口 "
+        f"{summary.first_time}~{summary.last_time}）",
+        model=cfg.model,
+        total=summary.symbols,
+        shown=len(summary.samples),
+        text=text,
+        generated_at=datetime.now(_CST),
+        unverified=tuple(unverified),
     )
+    archive_note = ""
+    if not no_archive:
+        path = write_archive(payload)
+        archive_note = f"\n（已归档：{path}）" if path else ""
+
+    body = render_archive(payload)
     if not brief:
-        body += "\n\n" + "─" * 60 + "\n【模型看到的素材】\n" + materials
+        body += "\n\n" + "─" * 78 + "\n【模型看到的素材】\n" + materials
     if unverified:
         body += (
             f"\n\n[!] 幻觉巡检：以下数字在素材里找不到（{chr(12289).join(unverified)}）。\n"
             "    常见无害情形：模型自己做加减或四舍五入；\n"
             "    需警惕的是素材里**根本没有对应量级**的数字。"
         )
+    body += archive_note
     return (5 if unverified else 0), body
 
 
@@ -228,6 +257,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--db", help="指定 scanner.db 路径（默认按环境变量/仓库根解析）")
     p.add_argument("--materials", action="store_true", help="只打印素材，不调用模型")
     p.add_argument("--brief", action="store_true", help="不打印素材核对表")
+    p.add_argument("--out", help="报告落盘到指定文件（不进库）")
+    p.add_argument("--no-archive", action="store_true", help="不写 logs/ai_digest 归档")
     p.add_argument("--json", action="store_true", help="机器可消费输出")
     args = p.parse_args(argv)
     _load_env()
@@ -252,7 +283,18 @@ def main(argv: list[str] | None = None) -> int:
         print(render_materials(summary))
         return 0
 
-    code, text = run(date=args.date, db=Path(args.db) if args.db else None, brief=args.brief)
+    code, text = run(
+        date=args.date,
+        db=Path(args.db) if args.db else None,
+        brief=args.brief,
+        no_archive=args.no_archive,
+    )
+
+    if args.out:
+        try:
+            Path(args.out).write_text(text, encoding="utf-8")
+        except OSError as e:  # pragma: no cover - 磁盘/权限问题
+            print(f"[!] 落盘失败：{e}", file=sys.stderr)
 
     if args.json:
         print(json.dumps({"exit_code": code, "report": text}, ensure_ascii=False, indent=2))

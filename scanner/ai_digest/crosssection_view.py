@@ -255,6 +255,10 @@ def render_materials(s: CrosssectionSummary) -> str:
     long_lived = s.persist_buckets.get("11-30轮", 0) + s.persist_buckets.get("30轮以上", 0)
     repeated = s.symbols - s.persist_buckets.get("1轮", 0)
     lines.append(f"  合计：出现≥2轮 {repeated} 只 · 出现≥11轮 {long_lived} 只 · 全部 {s.symbols} 只")
+    # ⚠ 同因第三例（2026-11-16）：模型算了「平均每只 3.7 次」= 信号行÷只数。
+    #    预置平均值 + 明确口径，省得它算除法。
+    avg = (s.total_rows / s.symbols) if s.symbols else 0.0
+    lines.append(f"  平均每只进入 {avg:.1f} 轮（= 信号行 {s.total_rows} ÷ 只数 {s.symbols}）")
     if s.max_persist:
         lines.append(
             f"  最长持续：{s.max_persist_symbol} {s.max_persist_name} {s.max_persist} 轮"

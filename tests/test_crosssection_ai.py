@@ -232,3 +232,52 @@ def test_summary_dataclass_defaults() -> None:
     s = CrosssectionSummary(date="2026-11-16")
     assert s.rounds == 0 and s.samples == []
     assert render_materials(s).startswith("【横截面异动层 · 2026-11-16】")
+
+
+# ── 与主公用管线的一致性（2026-11-16 Lichun 追问「函数调用也一样吗」）──
+
+
+def test_chat_call_signature_matches_main_pipeline() -> None:
+    """`chat()` 调用方式必须与主管线同款：**不传 tools**、用默认 timeout。
+
+    本层是「读素材写解读」，不该让模型自由取数 —— 那会把数据源从
+    `crosssection_signal` 扩到全库/全网络，直接违反输入源唯一契约。
+    """
+    from scanner.ai_digest import crosssection as mod
+
+    src = mod.__dict__.get("__file__") and Path(mod.__file__).read_text(encoding="utf-8")
+    # 断言调用形态：`chat(cfg, messages)` —— 不带 tools=、不带 timeout=
+    assert "chat(cfg, messages)" in src, "应使用 chat(cfg, messages) 同款调用"
+    assert "tools=" not in src, "本层不得传 tools（会破坏输入源唯一契约）"
+
+
+def test_shared_guard_chain_is_imported_not_reimplemented() -> None:
+    """三条 AI 纪律必须 import 单源，不许在本模块重写一份。"""
+    src = _CLI_SRC.read_text(encoding="utf-8")
+    for imp in (
+        "from scanner.ai_digest.guard import is_redlined",
+        "from scanner.ai_digest.llm import AIUpstreamError, chat, magpie_config",
+        "from scanner.ai_digest.material import unverified_numbers",
+        "from scanner.ai_digest.archive import ArchivePayload, render_archive, write_archive",
+    ):
+        assert imp in src, f"必须沿用主管线实现：{imp}"
+
+
+def test_report_has_label_and_archive_metadata() -> None:
+    """报告必须带命令侧标签 + 归档头（主管线 `render_archive` 的同款纪律）。"""
+    from scanner.ai_digest.crosssection import LABEL
+
+    # 标签由命令侧保证（不是模型给的），且按 transcribe 档措辞：明确非建议、不产生结论
+    assert "非投资建议" in LABEL
+    assert "不产生结论" in LABEL
+    assert "建议" in LABEL  # 出现在「非投资建议」里，不是推荐语
+    src = _CLI_SRC.read_text(encoding="utf-8")
+    assert "render_archive(payload)" in src, "正文必须走 render_archive（元数据在前）"
+    assert "write_archive(payload)" in src, "必须归档"
+
+
+def test_trailing_whitespace_is_stripped_like_transcribe() -> None:
+    """行尾空白清洗沿用 `llm.transcribe()` 纪律（Markdown 硬换行会带脏尾空格）。"""
+    src = _CLI_SRC.read_text(encoding="utf-8")
+    assert "line.rstrip()" in src, "必须清洗行尾空白（同 transcribe）"
+    assert "raw" in src, "清洗应作用于模型原文"
