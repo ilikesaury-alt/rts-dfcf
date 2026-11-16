@@ -78,6 +78,33 @@ _DATA_ROW_RE = re.compile(r"^\s{1,6}\d{1,3}\s+\S")
 #: 行尾标记（不在列规格里，渲染时列在最后一列之后，例如 `稳` / `先强资弱` / `⚡`）。
 _TRAILING_MARKS = ("先强资弱", "稳", "妖", "⚡", "▼", "★", "⚠")
 
+# ── 横截面异动区（`≡` 区块，2026-11-16）───────────────────────────────────────
+#
+# 为什么单独一套：这一区的行**不是** `view/render._table_row` 生成的表格，
+# 而是 `scanner/crosssection.format_terminal_block()` 手工拼的字符串
+# （`1. 代码 名称 价 涨幅% | 1m .. 3m .. 5m .. | 额涌 .. 量比 .. 分位 .. | 判据·判据·N轮`），
+# 列宽对齐切格那套**解不了**。
+#
+# ⚠ 它**已经**在 `股票池.md` 里（终端每轮整份覆盖写入 ⇒ 横截面块被一并写进去），
+#   只是解析器此前不认 `≡` ⇒ 整块被**静默丢弃**。这��修。
+_CROSSSECTION_REGION_RE = re.compile(r"^\s*≡\s*横截面异动(?:\s|$)(.*)$")
+#: 数据行：`序号. 代码 名称 现价 涨幅% | 1m x 3m x 5m x | 额涌 x 量比 x 分位 x | 判据·判据·N轮`
+#: 缺值一律 `—`（U+2014），所以取值用 `\S+` 而不是数字类。
+_CROSSSECTION_ROW_RE = re.compile(
+    r"^\s{1,6}(?P<idx>\d{1,3})\.\s+"
+    r"(?P<symbol>[A-Z]{2}\d{6})\s+"
+    r"(?P<name>\S+)\s+"
+    r"(?P<price>[\d.]+)\s+"
+    r"(?P<percent>[+-]?[\d.]+)%\s*\|\s*"
+    r"1m\s+(?P<s1>\S+?)\s+3m\s+(?P<s3>\S+?)\s+5m\s+(?P<s5>\S+?)\s*\|\s*"
+    r"额涌\s+(?P<as>\S+?)\s+量比\s+(?P<vr>\S+?)\s+分位\s+(?P<rank>[\d.]+)\s*\|\s*"
+    r"(?P<cons>[^·|\s]+)·(?P<vp>[^·|\s]+)·(?P<persist>\d+)轮\s*$"
+)
+#: 横截面区的列（供素材构建与「一只票一行」的核对视图使用）。
+COLS_CROSSSECTION: tuple[str, ...] = (
+    "代码", "名称", "现价", "涨幅", "1m", "3m", "5m", "额涌", "量比", "分位", "判据", "轮次",
+)
+
 
 def _vis_width(s: str) -> int:
     """终端可见宽度（中文全角 2 列）。复用渲染侧同一依赖，不手写区间表。"""
@@ -205,10 +232,23 @@ def parse_panel_text(text: str) -> PanelSnapshot | None:
     cur_spec: tuple[tuple[str, int, str], ...] | None = None
     cur_cols: tuple[str, ...] = ()
     cur_rows: list[dict[str, Any]] = []
+    #: 当前区类型：`table`（`◆` 区 + `#` 表头 + 对齐表格行）/ `cs`（`≡` 横截面区）。
+    cur_kind = "table"
 
     def flush() -> None:
-        nonlocal cur_title, cur_note, cur_spec, cur_cols, cur_rows
-        if cur_spec is not None and cur_rows:
+        nonlocal cur_title, cur_note, cur_spec, cur_cols, cur_rows, cur_kind
+        if cur_kind == "cs":
+            # 横截面区：列规格是固定的（不是从 `#` 表头行推出来的）。
+            if cur_rows:
+                regions.append(
+                    PanelRegion(
+                        title=cur_title or "横截面异动",
+                        columns=COLS_CROSSSECTION,
+                        rows=tuple(cur_rows),
+                        note=cur_note,
+                    )
+                )
+        elif cur_spec is not None and cur_rows:
             regions.append(
                 PanelRegion(
                     title=cur_title or "（未标注区名）",
@@ -217,7 +257,7 @@ def parse_panel_text(text: str) -> PanelSnapshot | None:
                     note=cur_note,
                 )
             )
-        cur_title, cur_note, cur_spec, cur_cols, cur_rows = "", "", None, (), []
+        cur_title, cur_note, cur_spec, cur_cols, cur_rows, cur_kind = "", "", None, (), [], "table"
 
     in_block = False
     for line in lines:
@@ -229,6 +269,17 @@ def parse_panel_text(text: str) -> PanelSnapshot | None:
             continue
         if not in_block:
             continue  # 卷头说明（标题/更新方式/数据来源）不是面板正文
+
+        # 横截面异动区（`≡`）：**它已经在股票池.md 里**（终端每轮整份覆盖写入），
+        # 但此前解析器只认 `◆`/`—` ⇒ 整块被静默丢弃。这里把它认成一个**并列区**。
+        csm = _CROSSSECTION_REGION_RE.match(line)
+        if csm:
+            flush()
+            cur_title = "横截面异动"
+            cur_note = csm.group(1).strip()
+            cur_kind = "cs"
+            cur_rows = []
+            continue
 
         rm = _REGION_RE.match(line)
         if rm:
@@ -256,6 +307,30 @@ def parse_panel_text(text: str) -> PanelSnapshot | None:
             else:
                 continue
             cur_rows = []
+            continue
+
+        # 横截面区的数据行：`1. 代码 名称 价 涨幅% | ... | 判据·判据·N轮`
+        if cur_kind == "cs":
+            cm = _CROSSSECTION_ROW_RE.match(line)
+            if cm is None:
+                continue
+            g = cm.groupdict()
+            cur_rows.append(
+                {
+                    "symbol": g["symbol"],
+                    "名称": g["name"],
+                    "现价": g["price"],
+                    "涨幅": f"{g['percent']}%",
+                    "1m": g["s1"],
+                    "3m": g["s3"],
+                    "5m": g["s5"],
+                    "额涌": g["as"],
+                    "量比": g["vr"],
+                    "分位": g["rank"],
+                    "判据": f"{g['cons']}·{g['vp']}",
+                    "轮次": g["persist"],
+                }
+            )
             continue
 
         # 数据行：首列是序号。**只有长得像数据行却解析失败才计 dropped** ——

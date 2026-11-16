@@ -170,26 +170,35 @@ python -m scanner.ai_digest --brief --out 简报.md  # 落盘同一份简洁报�
 python -m scanner.ai_digest --source print --materials  # 核对输入=终端最后打印行（带 seq 与数据年龄）
 ```
 
-### 横截面异动层专属 AI 分析（输入源只有 `crosssection_signal` 一张表）
+### 横截面异动层（**并入统一 AI 分析**，不是独立命令）
 
 ```bash
-python -m scanner.ai_digest.crosssection                  # 最新一日结构解读
-python -m scanner.ai_digest.crosssection --materials      # 只打素材，不出网（先看模型会看到什么）
-python -m scanner.ai_digest.crosssection --date 2026-11-16
-python -m scanner.ai_digest.crosssection --brief          # 不打印素材核对表
-python -m scanner.ai_digest.crosssection --json           # 机器可读
+python -m scanner.ai_digest --source crosssection --mode analyze   # 只分析横截面层
+python -m scanner.ai_digest --source crosssection --materials      # 只打素材，不出网
+python -m scanner.ai_digest --source crosssection --brief          # 一屏报告
+python -m scanner.ai_digest --source all --mode analyze            # 两区合并一次分析
 ```
 
-**与上面的区别**：上面那套 `--source panel/print/view/log` 读的是 B 段榜外异动；
-这一条**只读横截面层的表**，零跨表、零联网（见 `docs/CROSSSECTION-TERMINAL-BLOCK.md`）。
-它**过红线词表**（本层是观察层，不产生结论，与 `--mode analyze` 不同、不豁免），
-也过幻觉巡检。退出码同主命令：0/1/2/3/4/5。
+**数据源 = `logs/panel_md/股票池.md` 的 `≡ 横截面异动` 区**（终端每轮整份覆盖写入，
+是终端面板的**第三个并列区**：v1 池选 / 沪深飙升 / 横截面异动）。
 
-> ⚠ 素材里已预置「出现≥2轮 / ≥11轮 / 全部」三个合计 —— 模型常会自己把分桶相加，
-> 算错就被幻觉巡检判成编造数字（实测踩过两次）。给合计既省得它算，也免误报。
+- **唯一真源是文件**，不是数据库表、不是独立命令（`panel.py` 此前只认 `◆`/`—`，
+  `≡` 区被静默丢弃；已修）。
+- **区域之间彼此独立**：两区各自成素材（id 前缀 `sb.` / `cs.`）、各自用合适的提示词、
+  **不跨区混排**。横截面层**无历史命中率基准**（结构上无法自证胜率）⇒ 不挂 `baseline.stats`。
+- 走**完全相同**的管线：素材构建 / 提示词 / 幻觉巡检 / 归档 / 报告格式。
+  退出码同主命令：0/1/2/3/4/5。
 
-数据源 `--source auto|print|view|log`（默认 auto / print = `offboard_print_snapshot` 终端最后
-一次打印的行，含留存行、顺序即屏幕顺序；输出带 `print_seq` 与「数据 X 分钟前 / 非实时」）。
+⚠ **代价**：面板存档只保留**最近一次快照** ⇒ 盘后复盘看到的是**最后一轮**，不是全天。
+这是「单一真源」的固有取舍（另见 `CS_KEEP_ROUNDS`，见下）。
+⇒ 为此**归档文件带模型实际看到的素材**（正文之后、免责声明之前），
+面板被覆盖后仍可用同一份输入复算核对。
+
+详见 `docs/CROSSSECTION-TERMINAL-BLOCK.md` §11。
+
+数据源 `--source auto|print|view|log|crosssection|all`（默认 auto / print =
+`offboard_print_snapshot` 终端最后一次打印的行，含留存行、顺序即屏幕顺序；输出带 `print_seq`
+与「数据 X 分钟前 / 非实时」）。`crosssection`/`all` 见上一节。
 `view`=桌面版 view_snapshot，`log`=launch_log 整日过门账。`--limit N` 控制分析前 N 只。
 `--brief` 只压篇幅与命令侧附加内容：system 提示词、红线守卫、基准率排序、幻觉巡检全部照旧。
 

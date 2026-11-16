@@ -107,6 +107,47 @@ class OffboardMaterials:
     items: tuple[MaterialItem, ...]
     missing: tuple[str, ...]
     symbols: tuple[str, ...]
+    #: 多区域合并时的分区表：`((区域标签, 该区的代码元组), ...)`。
+    #: 单区域时留空 ⇒ `render_materials_block` 走老路径（`symbols` + 固定列），
+    #: 输出与合并前**逐字一致**（不因为并入新区域而改动既有区域的呈现）。
+    groups: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    #: 本区的素材 id 前缀（`sb` = 榜外段 / `cs` = 横截面层）。
+    #: ⚠ **必须有**：核对视图按前缀找数据 —— 前缀不对 ⇒ 整张表「暂无数据」。
+    #:   实测踩过：横截面区单跑时核对表全空（`build_materials` 默认 `sb`，
+    #:   而素材项是 `cs.` 前缀 ⇒ 一行都取不到 ⇒ 核对能力形同虚设）。
+    prefix: str = "sb"
+
+
+def merge_materials(parts: Sequence[tuple[str, OffboardMaterials]]) -> OffboardMaterials:
+    """多个区域的素材合并成一份（2026-11-16：横截面层并入统一 AI 分析）。
+
+    ⚠ **合并的是「区域」，不是「把两只票的字段混在一行」**：
+    B 段（榜外异动）与横截面层的字段集根本不同（tier/主力占比 vs 1m/3m/分位/判据），
+    硬拼成一行会出现大半字段「暂无数据」，读者与模型都无法读。
+    ⇒ 合并后仍是**两个分区**，各自一行一只票、各自的列；提示词里以分区小标题隔开。
+
+    合并后的 `symbols` = 各区代码按顺序去重（供旧路径与 JSON 输出使用）。
+    """
+    if not parts:
+        raise ValueError("merge_materials 需要至少一个区域")
+    items: list[MaterialItem] = []
+    missing: list[str] = []
+    symbols: list[str] = []
+    groups: list[tuple[str, tuple[str, ...]]] = []
+    for label, m in parts:
+        items.extend(m.items)
+        missing.extend(m.missing)
+        symbols.extend(m.symbols)
+        groups.append((label, m.symbols))
+    return OffboardMaterials(
+        date=parts[0][1].date,
+        items=tuple(items),
+        missing=tuple(missing),
+        symbols=tuple(dict.fromkeys(symbols)),
+        groups=tuple(groups),
+        # 合并后各区前缀不同 ⇒ 单区路径不适用（走 groups 分支）。
+        prefix="",
+    )
 
 
 def _num(v: Any) -> float | None:
@@ -150,6 +191,11 @@ def _fmt(kind: str, v: Any) -> str:
         return f"{n:.2f}"
     if kind == "dec2":
         return f"{n:.2f}"
+    if kind == "dec3":
+        return f"{n:.3f}"
+    if kind == "int":
+        # 整数展示：`14.0` → `14`（持续轮次是计数，带 .0 是噪声）。
+        return str(int(round(n)))
     if kind == "yi":
         return f"{n / 1e8:.2f}"
     return f"{n}"
@@ -188,6 +234,11 @@ def build_materials(
     mode: str = "analyze",
     market: Mapping[str, Any] | None = None,
     baseline: str | None = None,
+    fields: Sequence[tuple[str, str, str]] | None = None,
+    segment_note: str | None = None,
+    id_prefix: str = "sb",
+    sort_key: Any = None,
+    with_market: bool = True,
 ) -> OffboardMaterials:
     """源行 → 素材（纯函数）。
 
@@ -197,15 +248,24 @@ def build_materials(
     `baseline`：analyze 模式下附一条**本区历史分层命中率**（`source.render_baseline_text`
     的产物，948 条标签实测）。这是「模型自己调研」的替代实现 —— 进程内的模型没有联网、
     没有 tool，唯一能给它真证据的方式就是把项目自己的统计当素材喂进去。
+
+    ⚠ **多区域支持（2026-11-16：横截面层并入）**：
+    - `fields`：本区的字段白名单（`(列名, 中文标签, 格式)`）。不给则用 B 段默认集。
+    - `segment_note`：本区口径说明（模型据此知道「这是什么区域」）。
+    - `id_prefix`：素材 id 前缀（`sb` = 榜外段；`cs` = 横截面层）。**必须不同**，
+      否则两区同代码的票会互相覆盖。
+    - `sort_key`：排序键（默认 `_order_key`）。横截面层按「持续轮次降序」排。
+    - `with_market`：是否附市况条目（B 段有，横截面层独立 ⇒ 不附）。
     """
-    ordered = sorted(rows, key=_order_key)
+    ordered = sorted(rows, key=sort_key or _order_key)
     if limit is not None:
         ordered = ordered[: max(limit, 0)]
 
-    fields = _FIELDS + (_ANALYZE_EXTRA if mode == "analyze" else ())
+    if fields is None:
+        fields = _FIELDS + (_ANALYZE_EXTRA if mode == "analyze" else ())
 
     items: list[MaterialItem] = [
-        MaterialItem(id="segment.note", label="本段口径", value=SEGMENT_NOTE),
+        MaterialItem(id="segment.note", label="本段口径", value=segment_note or SEGMENT_NOTE),
         MaterialItem(id="segment.count", label="本次只数", value=f"{len(ordered)} 只"),
     ]
     if mode == "analyze" and baseline:
@@ -216,7 +276,7 @@ def build_materials(
                 value=baseline,
             )
         )
-    if mode == "analyze" and market is not None:
+    if mode == "analyze" and with_market and market is not None:
         idx = market.get("market_idx_pct")
         weak = market.get("weak")
         items.append(
@@ -243,13 +303,20 @@ def build_materials(
             value = _fmt(kind, row.get(key))
             if value == NA:
                 missing.append(f"{symbol}.{key}")
-            items.append(MaterialItem(id=f"sb.{symbol}.{key}", label=f"第{len(symbols)}只·{label}", value=value))
+            items.append(
+                MaterialItem(
+                    id=f"{id_prefix}.{symbol}.{key}",
+                    label=f"第{len(symbols)}只·{label}",
+                    value=value,
+                )
+            )
 
     return OffboardMaterials(
         date=date,
         items=tuple(items),
         missing=tuple(missing),
         symbols=tuple(symbols),
+        prefix=id_prefix,
     )
 
 
@@ -258,29 +325,82 @@ def render_materials_block(m: OffboardMaterials) -> str:
 
     为什么要打出来：转述的价值前提是「人能把文案和数字对上」。云端 UI 用可折叠表格做这件事，
     终端没有折叠，就用一行一只票 —— 读者一眼能发现「解读说的量比和这行不一样」。
+
+    ⚠ **多区域（2026-11-16）**：`m.groups` 非空时按区渲染，每区一套列。
+    单区域（`groups` 为空）走老路径，输出与合并前**逐字一致**。
     """
+    if not m.groups:
+        # ⚠ 用 `m.prefix`（不是写死 "sb"）—— 否则横截面区单跑时整张表取不到数据。
+        _cols = _COLUMNS_BY_PREFIX.get(m.prefix, _SB_COLUMNS)
+        return _render_segment_rows(_cols, m.prefix, m.symbols, m.items)
+
+    lines: list[str] = []
+    for label, symbols in m.groups:
+        prefix = "sb" if label.startswith("榜外") else "cs"
+        lines.append(f"【{label}】")
+        lines.append(_render_segment_rows(_COLUMNS_BY_PREFIX[prefix], prefix, symbols, m.items))
+    return "\n".join(lines)
+
+
+#: B 段（榜外异动）的紧凑列（**逐字沿用旧格式**，改动即破坏既有输出）。
+_SB_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("name", ""),
+    ("tier", ""),
+    ("percent", "涨幅"),
+    ("vol_ratio", "量比"),
+    ("main_pct", "主占"),
+    ("accum_5d", "5日"),
+    ("amount", "成交额"),
+    ("float_cap", "流通"),
+    ("price", "价"),
+    ("first_time", "首发"),
+)
+
+
+#: 横截面区的紧凑列（`cs.` 前缀的素材项）。
+_CS_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("name", ""),
+    ("percent", "涨幅"),
+    ("price", "价"),
+    ("vol_ratio", "量比"),
+    ("speed_1", "1m"),
+    ("speed_3", "3m"),
+    ("speed_5", "5m"),
+    ("amount_surge", "额涌"),
+    ("pct_rank", "分位"),
+    ("persist", "轮次"),
+    ("consistency", "一致性"),
+    ("volume_price", "量价"),
+)
+
+#: 前缀 → 列规格。
+_COLUMNS_BY_PREFIX: dict[str, tuple[tuple[str, str], ...]] = {
+    "sb": _SB_COLUMNS,
+    "cs": _CS_COLUMNS,
+}
+
+
+def _render_segment_rows(
+    columns: Sequence[tuple[str, str]],
+    prefix: str,
+    symbols: Sequence[str],
+    items: Sequence[MaterialItem],
+) -> str:
+    """一只票一行。`columns` = `(字段名, 前缀文字)`；前缀文字为空则直接显示值。"""
     per_symbol: dict[str, dict[str, str]] = {}
-    for item in m.items:
-        if not item.id.startswith("sb."):
+    for item in items:
+        if not item.id.startswith(f"{prefix}."):
             continue
         _, symbol, key = item.id.split(".", 2)
         per_symbol.setdefault(symbol, {})[key] = item.value
 
     lines: list[str] = []
-    for symbol in m.symbols:
+    for symbol in symbols:
         cells = per_symbol.get(symbol, {})
-        parts = [
-            cells.get("name", NA),
-            cells.get("tier", NA),
-            f"涨幅{cells.get('percent', NA)}",
-            f"量比{cells.get('vol_ratio', NA)}",
-            f"主占{cells.get('main_pct', NA)}",
-            f"5日{cells.get('accum_5d', NA)}",
-            f"成交额{cells.get('amount', NA)}亿",
-            f"流通{cells.get('float_cap', NA)}亿",
-            f"价{cells.get('price', NA)}",
-            f"首发{cells.get('first_time', NA)}",
-        ]
+        parts = []
+        for key, label in columns:
+            v = cells.get(key, NA)
+            parts.append(f"{label}{v}" if label else v)
         lines.append(f"  {symbol} " + " | ".join(parts))
     return "\n".join(lines)
 

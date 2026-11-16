@@ -66,6 +66,7 @@ from scanner.ai_digest.archive import (
 from scanner.ai_digest.guard import REFUSAL, is_redlined
 from scanner.ai_digest.material import (
     build_materials,
+    merge_materials,
     render_material_items,
     render_materials_block,
     unverified_numbers,
@@ -495,12 +496,17 @@ def _archive_report(
     unverified: list[str],
     tool_summary: str = "",
     redlined: bool = False,
+    materials: str = "",
 ) -> str:
     """渲染归档全文并按开关写盘（返回全文，便于测试与调用方复用）。
 
     ⚠ 刻意**不接收** `next_day_pct` / 任何绩效字段：档案只记「当时说了什么」，
     不记「后来涨没涨」。前者是复盘材料，后者一旦混进来并被回灌就是前视偏差。
     `demo` / `materials` / `no_archive` 时只渲染不写盘（`--out` 仍需这份全文兜底）。
+
+    ⚠ `materials` = **模型实际看到的素材**（2026-11-16）：输入源若是「只保留最近一次
+    快照」的文件（`股票池.md`），面板一被下一轮覆盖，那份报告的输入就再也找不回来
+    ⇒ 报告成了无法核对的孤本。把素材存进档案 ⇒ 任何时候都能拿同一份输入复算。
     """
     payload = ArchivePayload(
         title=title,
@@ -516,6 +522,7 @@ def _archive_report(
         unverified=tuple(unverified),
         tool_summary=tool_summary,
         redlined=redlined,
+        materials=materials,
     )
     body = render_archive(payload)
     skip = getattr(args, "demo", False) or getattr(args, "materials", False) or getattr(args, "no_archive", False)
@@ -657,10 +664,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     p.add_argument(
         "--source",
-        choices=("auto", "panel", "print", "view", "log"),
+        choices=("auto", "panel", "print", "view", "log", "crosssection", "all"),
         default="auto",
         help="auto/panel=终端面板原文（股票池.md：v1 池选 + 沪深飙升三段，保留全部列与各区口径）；"
-        "print=终端最后一次打印的榜外行；view=桌面版 view_snapshot；log=launch_log 整日过门账",
+        "print=终端最后一次打印的榜外行；view=桌面版 view_snapshot；log=launch_log 整日过门账；"
+        "crosssection=横截面异动层（只读 crosssection_signal）；"
+        "all=榜外异动段 + 横截面异动层**两区合并**一次分析",
     )
     p.add_argument("--date", help="信号日 YYYY-MM-DD（仅 log 源；默认取最新）")
     p.add_argument(
@@ -678,20 +687,106 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _resolve_offboard(
+    args: argparse.Namespace, conn: Any, baseline: str
+) -> dict[str, Any]:
+    """榜外异动段（B 段）的区域解析 —— 与合并前**逐字一致**的逻辑。
+
+    单独抽出来是为了让 `--source all` 能把 B 段与横截面层**合并**成一次分析，
+    而不必改动 B 段原有的回退链（panel → print → view → log）。
+    """
+    # ⓪ panel 源（**默认优先**）：终端面板原文 —— 唯一同时含 v1 池选 与 沪深飙升三段、
+    #    且保留全部列与各区口径的来源。用户口径 =「分析我屏幕上那份」，故 auto 先试它。
+    #    ⚠ 只服务 `research` 模式：analyze/transcribe 按设计就是**榜外异动段转述**，
+    #      它们吃的是 B 段素材（冻结信号字段），面板行喂不进 `build_materials`。
+    if args.source in ("panel", "auto") and args.mode == "research":
+        from scanner.ai_digest.panel import load_panel_md
+
+        panel_snap, panel_path = load_panel_md()
+        if panel_snap is not None and panel_snap.total:
+            return {
+                "date": panel_snap.date,
+                "rows": [r for reg in panel_snap.regions for r in reg.rows],
+                "source": "panel",
+                "time": panel_snap.time,
+                "market": None,
+                "baseline": baseline,
+                "panel": panel_snap,
+                "panel_path": panel_path,
+            }
+        if args.source == "panel":
+            raise OffboardSourceError(
+                f"面板原文不可用（{panel_path}）—— 终端还没跑过一轮，或 RTS_PANEL_MD=0 关了存档。"
+                " 可加 --source log 读当日榜外过门账。"
+            )
+
+    # ① print 源：终端最后一次打印的那几行（含留存行，顺序即屏幕顺序）
+    if args.source in ("print", "auto"):
+        snap = latest_print_snapshot(conn)
+        if snap is not None:
+            date, time_str, rows, seq = snap
+            return {
+                "date": date,
+                "rows": rows,
+                "source": "print",
+                "time": time_str,
+                "seq": seq,
+                "market": None,
+                "baseline": baseline,
+            }
+        if args.source == "print":
+            raise OffboardSourceError(
+                "offboard_print_snapshot 里没有数据（终端还没跑过榜外异动段，或库里是未迁移的老库）。"
+                " 加 --source log 可直接读当日过门账。"
+            )
+
+    # ② view 源（桌面版快照）
+    view_snap = load_latest_view_offboard(conn)
+    if args.source in ("view", "auto") and view_snap is not None:
+        date, time_str, rows, market = view_snap
+        return {
+            "date": date,
+            "rows": rows,
+            "source": "view",
+            "time": time_str,
+            "market": market,
+            "baseline": baseline,
+        }
+    if args.source == "view":
+        raise OffboardSourceError("view_snapshot 里没有可用的榜外异动行（扫描器一轮都没跑过？）")
+
+    # ③ log 源（launch_log 整日累加）
+    log_date = args.date or latest_signal_date(conn)
+    if not log_date:
+        raise OffboardSourceError("offboard_print_snapshot / view_snapshot / offboard_launch_log 都没有数据")
+    rows = load_offboard_rows(conn, log_date)
+    if not rows:
+        raise OffboardSourceError(f"{log_date} 没有过门行（该日榜外段可能整段为空）")
+    return {"date": log_date, "rows": rows, "source": "log", "time": "", "market": None, "baseline": baseline}
+
+
 def _resolve_rows(args: argparse.Namespace) -> dict[str, Any]:
-    """→ {"date", "rows", "source", "time", "market"}。读库失败/无数据抛 `OffboardSourceError`。
+    """→ {"date", "rows", "source", "time", "market", "regions"}。读库失败/无数据抛 `OffboardSourceError`。
 
     源优先级（`--source print` 默认）：`print`（终端最后一次打印）→ `view`（桌面版快照）
     → `log`（launch_log 整日累加）。逐级回退是为了「今天没跑扫描器」时仍能出结果，
     但**默认永远优先屏幕上的那几只** —— 用户的口径就是「我看到什么就分析什么」。
+
+    ⚠ **多区域源（2026-11-16）**：
+    - `crosssection`：**只**读横截面异动层（`crosssection_signal` 一张表）。
+    - `all`：**榜外异动段 + 横截面异动层**两区合并，一次分析。
+    两区由 `regions` 字段描述（`(标签, rows)` 列表）；单区域时只有一项，
+    与合并前的行为**逐字一致**。
     """
     if args.demo:
+        demo_rows = [dict(r) for r in DEMO_ROWS]
         return {
             "date": "（内置样例）",
-            "rows": [dict(r) for r in DEMO_ROWS],
+            "rows": demo_rows,
             "source": "demo",
             "time": "",
             "market": DEMO_MARKET,
+            "regions": [("榜外异动段", demo_rows)],
         }
 
     conn = connect_readonly(resolve_db_path())
@@ -700,74 +795,53 @@ def _resolve_rows(args: argparse.Namespace) -> dict[str, Any]:
         label_map={"vol_ratio": "量比", "main_pct": "主力净占比", "accum_5d": "5日累计", "amount": "成交额"},
     )
     try:
-        # ⓪ panel 源（**默认优先**）：终端面板原文 —— 唯一同时含 v1 池选 与 沪深飙升三段、
-        #    且保留全部列与各区口径的来源。用户口径 =「分析我屏幕上那份」，故 auto 先试它。
-        #    ⚠ 只服务 `research` 模式：analyze/transcribe 按设计就是**榜外异动段转述**，
-        #      它们吃的是 B 段素材（冻结信号字段），面板行喂不进 `build_materials`。
-        if args.source in ("panel", "auto") and args.mode == "research":
+        # ⓪⓪ 横截面异动层（2026-11-16）：数据来自 **`股票池.md`**（终端面板存档），
+        #     与榜外段**同源同文件** —— 「终端面板是唯一真源」的既有设计。
+        #     ⚠ 它在文件里是**第三个并列区**（`≡ 横截面异动`），此前解析器不认 ⇒ 静默丢弃。
+        cs_part: tuple[str, list[dict]] | None = None
+        if args.source in ("crosssection", "all"):
+            from scanner.ai_digest.crosssection_view import from_panel_rows
             from scanner.ai_digest.panel import load_panel_md
 
             panel_snap, panel_path = load_panel_md()
-            if panel_snap is not None and panel_snap.total:
-                return {
-                    "date": panel_snap.date,
-                    "rows": [r for reg in panel_snap.regions for r in reg.rows],
-                    "source": "panel",
-                    "time": panel_snap.time,
-                    "market": None,
-                    "baseline": baseline,
-                    "panel": panel_snap,
-                    "panel_path": panel_path,
-                }
-            if args.source == "panel":
-                raise OffboardSourceError(
-                    f"面板原文不可用（{panel_path}）—— 终端还没跑过一轮，或 RTS_PANEL_MD=0 关了存档。"
-                    " 可加 --source log 读当日榜外过门账。"
-                )
+            cs_region = None
+            if panel_snap is not None:
+                for reg in panel_snap.regions:
+                    if "横截面" in reg.title:
+                        cs_region = reg
+                        break
+            if cs_region is None:
+                if args.source == "crosssection":
+                    raise OffboardSourceError(
+                        f"股票池.md 里没有横截面异动区（{panel_path}）—— "
+                        "终端还没跑过一轮，或 RTS_PANEL_MD=0 关了存档。"
+                    )
+            else:
+                cs_rows = from_panel_rows(cs_region.rows)
+                if args.source == "crosssection":
+                    if not cs_rows:
+                        raise OffboardSourceError("股票池.md 的横截面异动区没有数据行。")
+                    return {
+                        "date": panel_snap.date,
+                        "rows": cs_rows,
+                        "source": "crosssection",
+                        "time": panel_snap.time,
+                        "market": None,
+                        # 本层无历史命中率基准（结构上无法自证）⇒ 不挂 baseline。
+                        "baseline": None,
+                        "regions": [("横截面异动层", cs_rows)],
+                    }
+                # source == "all"：横截面区先行，B 段区随后（两区各自成素材）
+                cs_part = ("横截面异动层", cs_rows)
 
-        # ① print 源：终端最后一次打印的那几行（含留存行，顺序即屏幕顺序）
-        if args.source in ("print", "auto"):
-            snap = latest_print_snapshot(conn)
-            if snap is not None:
-                date, time_str, rows, seq = snap
-                return {
-                    "date": date,
-                    "rows": rows,
-                    "source": "print",
-                    "time": time_str,
-                    "seq": seq,
-                    "market": None,
-                    "baseline": baseline,
-                }
-            if args.source == "print":
-                raise OffboardSourceError(
-                    "offboard_print_snapshot 里没有数据（终端还没跑过榜外异动段，或库里是未迁移的老库）。"
-                    " 加 --source log 可直接读当日过门账。"
-                )
-
-        # ② view 源（桌面版快照）
-        view_snap = load_latest_view_offboard(conn)
-        if args.source in ("view", "auto") and view_snap is not None:
-            date, time_str, rows, market = view_snap
-            return {
-                "date": date,
-                "rows": rows,
-                "source": "view",
-                "time": time_str,
-                "market": market,
-                "baseline": baseline,
-            }
-        if args.source == "view":
-            raise OffboardSourceError("view_snapshot 里没有可用的榜外异动行（扫描器一轮都没跑过？）")
-
-        # ③ log 源（launch_log 整日累加）
-        log_date = args.date or latest_signal_date(conn)
-        if not log_date:
-            raise OffboardSourceError("offboard_print_snapshot / view_snapshot / offboard_launch_log 都没有数据")
-        rows = load_offboard_rows(conn, log_date)
-        if not rows:
-            raise OffboardSourceError(f"{log_date} 没有过门行（该日榜外段可能整段为空）")
-        return {"date": log_date, "rows": rows, "source": "log", "time": "", "market": None, "baseline": baseline}
+        sb = _resolve_offboard(args, conn, baseline)
+        if cs_part is not None:
+            sb["regions"] = [cs_part, ("榜外异动段", sb["rows"])]
+            sb["source"] = "all"
+            sb["rows"] = cs_part[1] + sb["rows"]
+        else:
+            sb["regions"] = [("榜外异动段", sb["rows"])]
+        return sb
     finally:
         conn.close()
 
@@ -806,27 +880,53 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[!] {e}")
         return 4
 
-    mats = build_materials(
-        info["date"],
-        info["rows"],
-        limit=args.limit if args.limit and args.limit > 0 else OFFBOARD_DISPLAY_TOP,
-        mode=args.mode,
-        market=info.get("market"),
-        baseline=info.get("baseline"),
-    )
+    # 素材按**区域**分别构建再合并（2026-11-16：横截面层并入统一输入源）。
+    # ⚠ 两区字段集不同（B 段 tier/主力占比 vs 横截面 1m/3m/分位/判据），
+    #   硬拼成一行会出现大半「暂无数据」⇒ 各自成素材、各自的列，合并后分区呈现。
+    _lim = args.limit if args.limit and args.limit > 0 else OFFBOARD_DISPLAY_TOP
+    _regions = info.get("regions") or [("榜外异动段", info["rows"])]
+    _parts: list[tuple[str, Any]] = []
+    for _label, _rows in _regions:
+        if _label == "横截面异动层":
+            from scanner.ai_digest.crosssection_view import build_crosssection_materials
+
+            _parts.append(
+                (
+                    _label,
+                    build_crosssection_materials(
+                        info["date"], _rows, limit=_lim, mode=args.mode
+                    ),
+                )
+            )
+        else:
+            _parts.append(
+                (
+                    _label,
+                    build_materials(
+                        info["date"],
+                        _rows,
+                        limit=_lim,
+                        mode=args.mode,
+                        market=info.get("market"),
+                        baseline=info.get("baseline"),
+                    ),
+                )
+            )
+    mats = merge_materials(_parts)
     # 面板源的「共 N 只 / 本次 M 只」必须与**模型实际收到的**一致（`--limit` 按每区截断）。
     # 不能用 `build_materials` 的 `mats.symbols` —— 那是 B 段素材口径，面板行喂不进它。
     if info["source"] == "panel" and info.get("panel") is not None:
         _panel = info["panel"]
-        _lim = args.limit if args.limit and args.limit > 0 else None
+        _lim2 = args.limit if args.limit and args.limit > 0 else None
         total = _panel.total
-        shown = sum(min(len(r.rows), _lim) if _lim else len(r.rows) for r in _panel.regions)
-        if _lim:
+        shown = sum(min(len(r.rows), _lim2) if _lim2 else len(r.rows) for r in _panel.regions)
+        if _lim2:
             from scanner.ai_digest.panel import limit_per_region
 
-            info["panel"] = limit_per_region(_panel, _lim)
+            info["panel"] = limit_per_region(_panel, _lim2)
     else:
-        shown, total = len(mats.symbols), len(info["rows"])
+        shown = sum(len(p.symbols) for _, p in _parts)
+        total = sum(len(r) for _, r in _regions)
     source_desc = {
         "panel": f"面板原文 {info['date']} {info['time']}"
         f"（{info.get('panel_path')} · {(len(info['panel'].regions) if info.get('panel') else 0)} 个区 · "
@@ -835,6 +935,9 @@ def main(argv: list[str] | None = None) -> int:
         f"（终端最后一次打印的行，顺序即屏幕顺序）{_freshness(info.get('time') or '', info['date'])}",
         "view": f"view_snapshot {info['date']} {info['time']}（桌面版快照 · 含留存行/实时值）",
         "log": f"offboard_launch_log {info['date']}（整日过门账 · 信号值冻结快照）",
+        "crosssection": f"股票池.md 横截面异动区 {info['date']} {info['time']}"
+        f"（横截面异动层 · 终端面板存档 · 持续轮次降序）",
+        "all": f"榜外异动段 + 横截面异动层（两区合并 · {info['date']} · 榜外段读库、横截面读股票池.md）",
         "demo": "内置样例",
     }[info["source"]]
 
@@ -843,7 +946,13 @@ def main(argv: list[str] | None = None) -> int:
     # 都不再只是榜外异动段 ⇒ 标题按实际来源写，别让报告标题与内容对不上。
     # 提前到这里：归档文件与终端报告共用同一个标题（单一来源）。
     _research_title = "终端面板 · AI 调研（v1 池选 + 沪深飙升）" if info["source"] == "panel" else "自选清单 · AI 调研"
-    report_title = {
+    # ⚠ 标题必须与**实际来源**一致（2026-11-16）：横截面层的报告不该顶着
+    #   「榜外异动」的名字 —— 那是另一个区域。
+    _source_title = {
+        "crosssection": "横截面异动 · AI 综合分析",
+        "all": "榜外异动 + 横截面异动 · AI 综合分析",
+    }.get(info["source"], "")
+    report_title = _source_title or {
         "analyze": "榜外异动 · AI 综合分析",
         "research": _research_title,
         "transcribe": "榜外异动 · AI 转述",
@@ -1012,6 +1121,10 @@ def main(argv: list[str] | None = None) -> int:
         text=text,
         unverified=unverified,
         tool_summary=tool_summary,
+        # ⚠ 归档带素材（2026-11-16）：输入源若是「只保留最近一次快照」的文件
+        #   （股票池.md），面板一被下一轮覆盖，报告的输入就再也找不回来
+        #   ⇒ 报告成了无法核对的孤本。存进档案即可随时复算。
+        materials=check_blob,
         redlined=redlined,
     )
 

@@ -1,291 +1,163 @@
-"""横截面异动层的 **AI 分析素材构建器**（2026-11-16，Lichun 要求）。
+"""横截面异动层 → **统一 AI 分析管线**的区域实现（2026-11-16）。
 
-## 边界（硬性契约，不可协商）
+## 这个模块做什么
 
-本模块的输入源**只有一张表**：`crosssection_signal`。
+把 `股票池.md` 里 `≡ 横截面异动` 那一区（由 `panel.py` 解析）翻译成
+主管线 `material.build_materials()` 认识的**源行**，让它作为**一个区域**
+并入 `python -m scanner.ai_digest` —— 走完全相同的素材构建 / 提示词 /
+幻觉巡检 / 归档 / 报告格式，而不是另起一条命令。
 
-- ❌ 不读 `appearances` / `offboard_launch_log` / `offboard_print_snapshot`
-- ❌ 不读 `recommendations` / `market_extra_cache` / `daily_kline` / `concept_cache`
-- ❌ 不联网、不查行情、不补任何外部数据
+## 边界（硬性契约）
 
-这是 Lichun 2026-11-16 定下的产品纪律：**区域与区域之间不该有任何关联**。
-横截面层的存在理由就是与飙升榜解耦（榜滞后 ⇒ 本层要早一步看到异动）；
-往分析里掺入榜单/B 段数据，等于把滞后性加回来，自我否定。
+- **唯一真源 = `股票池.md`**（终端面板存档）。本模块**零 I/O**：
+  不连库、不联网、不读文件 —— 只做「panel 行 → 素材行」的翻译。
+  读取由 `panel.py` 负责（那是全项目读面板的既有入口）。
+- **区域之间彼此独立**：本区的素材 id 前缀是 `cs.`（榜外段是 `sb.`），
+  同一只票在两区都有时不会互相覆盖；提示词也各用各的（见 `llm.py`）。
+- **不预判涨跌方向**：跌得快的票同样是异常，一样会进这个层。
+- **无历史命中率基准**：本层结构上无法自证胜率（票掉榜后表里就没有它的价格 ⇒
+  前瞻样本有偏），所以**不挂** `baseline.stats`。
 
-⚠ **方向说明**：禁止的是「本层去读别人的表」。让 AI 分析来读本层的表
-（即本模块做的事）不影响本层的独立性 —— 本层自身仍然不读任何人。
-两者不是一回事，不要混。
+## 为什么用面板存档而不是数据库表
 
-## 为什么直接读表而不是解析终端文本
+Lichun 2026-11-16 拍板：「数据源都是从文件 `<股票.md>` 读取」。
+横截面块本来就**已经**在 `股票池.md` 里（终端每轮整份覆盖写入），
+只是解析器此前不认 `≡` ⇒ 整块被静默丢弃。修好解析器之后，
+它就是终端面板的**第三个并列区**（v1 池选 / 沪深飙升 / 横截面异动）——
+与「终端面板是唯一真源」的既有设计一致。
 
-终端 `≡` 块来自进程内存（`_state["last_signals"]`），**扫描器一停就没了**；
-盘后想复盘必须从表重建。因此本模块**复刻判定逻辑**（`_consistency` /
-`_volume_price` 直接 import，不重写），从表重建同一套判据。
-
-`docs/CROSSSECTION-TERMINAL-BLOCK.md` 是两边共同的口径真源。
-
-## 定位：结构摘要，不是选股
-
-素材刻意只给**分布与结构**（多少只、判据怎么分布、哪些持续），
-外加少量代表样本。理由：
-
-1. 全量 43~68 行塞进 prompt 成本高且无助于理解结构；
-2. 只给结构能**大幅降低模型编造数字的空间**（幻觉巡检更容易过）；
-3. 本层本身不判方向、不推荐 —— 素材若筛成"最好的几只"，就变成了推荐，
-   违背本层设计契约。
+⚠ 代价：面板存档只保留**最近一次快照** ⇒ 盘后复盘看到的是最后一轮，
+不是全天。这是「单一真源」设计的固有取舍，不是 bug。
 """
 
 from __future__ import annotations
 
-import sqlite3
-from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
 from typing import Any
 
-from scanner.crosssection import _consistency, _volume_price
+from scanner.ai_digest.material import OffboardMaterials, build_materials
 
 __all__ = [
-    "CrosssectionSummary",
-    "build_summary",
-    "resolve_date",
-    "render_materials",
+    "CROSSSECTION_FIELDS",
+    "CROSSSECTION_NOTE",
+    "build_crosssection_materials",
+    "from_panel_rows",
 ]
 
-# 代表样本上限：持续性最高的前 N + 分位最高的前 N，去重后合并展示。
-_SAMPLE_PERSIST = 5
-_SAMPLE_RANK = 5
+#: 本区口径说明（发给模型的一条素材，避免它自己发明「横截面层是什么」）。
+CROSSSECTION_NOTE = (
+    "横截面异动层（并行观察层）：与榜外异动段**彼此独立**，靠 1/3/5 分钟涨速、"
+    "成交额增量、量比四项横截面分位，找出创业板里当下异动最显著的票，"
+    "目的是**早于飙升榜**看到动静。本层**不预判涨跌方向**（跌得快的票同样是异常），"
+    "也不产生操作建议；本层暂无历史命中率基准（结构上无法自证），"
+    "排序只能依据字段本身的相对强弱。"
+)
+
+#: 本区的字段白名单（`(列名, 中文标签, 格式)`）。
+CROSSSECTION_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("name", "名称", "text"),
+    ("percent", "当日涨幅", "pct"),
+    ("price", "价格", "price"),
+    ("vol_ratio", "量比", "dec2"),
+    ("speed_1", "1m涨速", "pct"),
+    ("speed_3", "3m涨速", "pct"),
+    ("speed_5", "5m涨速", "pct"),
+    ("amount_surge", "额涌", "dec2"),
+    ("pct_rank", "横截面分位", "dec3"),
+    ("persist", "持续轮次", "int"),
+    ("consistency", "一致性", "text"),
+    ("volume_price", "量价", "text"),
+)
 
 
-@dataclass
-class CrosssectionSummary:
-    """一层一日横截面异动的结构摘要（全部数据来自 `crosssection_signal`）。"""
+def _num(v: Any) -> float | None:
+    """`'−3.95%'` / `'1005.24×'` / `'—'` → 数值；解析不了返回 None。
 
-    date: str
-    rounds: int = 0
-    first_time: str = ""
-    last_time: str = ""
-    total_rows: int = 0
-    # 去重后的只数
-    symbols: int = 0
-    # 判据分布（按「只」统计，不按行 —— 同一只票多轮只算一次）
-    consistency: dict[str, int] = field(default_factory=dict)
-    volume_price: dict[str, int] = field(default_factory=dict)
-    # 持续性分桶
-    persist_buckets: dict[str, int] = field(default_factory=dict)
-    max_persist: int = 0
-    max_persist_symbol: str = ""
-    max_persist_name: str = ""
-    # 当日涨幅分布的粗统计（只给区间计数，不给推论）
-    pct_up: int = 0
-    pct_down: int = 0
-    pct_flat: int = 0
-    pct_min: float | None = None
-    pct_max: float | None = None
-    # 代表样本（每项 = 一只票的一条最终轮记录）
-    samples: list[dict[str, Any]] = field(default_factory=list)
-
-
-def resolve_date(conn: sqlite3.Connection, date: str | None = None) -> str | None:
-    """`date=None` ⇒ 取表里最大的日期。表空或无该表 ⇒ `None`。"""
+    ⚠ 缺值必须返回 `None`（⇒ 素材显示「暂无数据」），**不能变成 0.0** ——
+    `0.0` 的语义是「算了，确实是零」，与「没数据」完全不同。
+    """
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int | float):
+        return float(v)
+    if not isinstance(v, str):
+        return None
+    t = v.strip().rstrip("%×").strip()
+    if not t or t == "—":
+        return None
     try:
-        if date:
-            row = conn.execute(
-                "SELECT 1 FROM crosssection_signal WHERE date=? LIMIT 1", (date,)
-            ).fetchone()
-            return date if row else None
-        row = conn.execute("SELECT MAX(date) AS d FROM crosssection_signal").fetchone()
-        return (row[0] if row else None) or None
-    except sqlite3.Error:
+        return float(t)
+    except ValueError:
         return None
 
 
-def _select_rows(conn: sqlite3.Connection, date: str) -> list[sqlite3.Row]:
-    """查本层当日全部行。
+def from_panel_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """`panel.py` 解析出的横截面区行 → **统一管线的源行**（字段名对齐素材白名单）。
 
-    ⚠ `row_factory` 必须在**查询之前**设：设晚了拿到裸 tuple，后面按列名取会 TypeError。
-    用 try/finally 保证还原 —— 调用方可能共用连接并依赖原 factory，
-    在每个 `return` 点手工还原迟早漏一个（这里踩过）。
+    panel 的行键是**中文列名**（`现价`/`涨幅`/`1m`/…，与其它区同一套约定），
+    这里翻译成素材层要的字段名。
     """
-    prev = conn.row_factory
-    conn.row_factory = sqlite3.Row
-    try:
-        return conn.execute(
-            "SELECT round_seq, symbol, name, price, percent, speed_1, speed_3, speed_5, "
-            "amount_surge, vol_ratio, pct_rank, updated_at "
-            "FROM crosssection_signal WHERE date=? ORDER BY round_seq, pct_rank DESC",
-            (date,),
-        ).fetchall()
-    except sqlite3.Error:
-        return []
-    finally:
-        conn.row_factory = prev
-
-
-def build_summary(conn: sqlite3.Connection, date: str) -> CrosssectionSummary | None:
-    """从 `crosssection_signal` 重建一层一日的结构摘要。无数据 ⇒ `None`。
-
-    只做 SQL 聚合 + 复用 `crosssection` 的判据函数；不引入任何其他表。
-    """
-    # ⚠ `row_factory` 必须在查询**之前**设：设晚了拿到的是裸 tuple，按列名取会 TypeError。
-    rows = _select_rows(conn, date)
-    if not rows:
-        return None
-
-    s = CrosssectionSummary(date=date)
-    s.total_rows = len(rows)
-    s.rounds = len({r["round_seq"] for r in rows})
-    stamps = sorted({r["updated_at"] for r in rows if r["updated_at"]})
-    if stamps:
-        s.first_time = _hhmmss(stamps[0])
-        s.last_time = _hhmmss(stamps[-1])
-
-    # ── 按「只」聚合：每只票取最后一次出现的记录做判据快照 ──
-    # 为什么取最后一次：判据（一致性/量价）是**当轮**状态，
-    # 取最后一轮才代表"收盘时它是什么样"。
-    last: dict[str, sqlite3.Row] = {}
-    seen_rounds: dict[str, set[int]] = {}
+    out: list[dict[str, Any]] = []
     for r in rows:
-        sym = r["symbol"]
-        last[sym] = r  # 行已按 round_seq 升序，后来者覆盖 ⇒ 最后一条
-        seen_rounds.setdefault(sym, set()).add(int(r["round_seq"]))
-
-    s.symbols = len(last)
-    for sym, r in last.items():
-        c = _consistency(r["speed_1"], r["speed_3"], r["speed_5"])
-        v = _volume_price(r["amount_surge"], r["speed_1"])
-        s.consistency[c] = s.consistency.get(c, 0) + 1
-        s.volume_price[v] = s.volume_price.get(v, 0) + 1
-
-    # ── 持续性：当日出现过几轮 ──
-    for sym, rounds in seen_rounds.items():
-        n = len(rounds)
-        key = _persist_bucket(n)
-        s.persist_buckets[key] = s.persist_buckets.get(key, 0) + 1
-        if n > s.max_persist:
-            s.max_persist = n
-            s.max_persist_symbol = sym
-            s.max_persist_name = last[sym]["name"] or sym
-
-    # ── 当日涨幅分布（按只，取最后一条）──
-    pcts = [r["percent"] for r in last.values() if r["percent"] is not None]
-    if pcts:
-        s.pct_up = sum(1 for p in pcts if p > 0)
-        s.pct_down = sum(1 for p in pcts if p < 0)
-        s.pct_flat = sum(1 for p in pcts if p == 0)
-        s.pct_min = min(pcts)
-        s.pct_max = max(pcts)
-
-    # ── 代表样本：持续性最高 + 分位最高，去重合并 ──
-    picked: dict[str, dict[str, Any]] = {}
-    by_persist = sorted(seen_rounds.items(), key=lambda kv: (-len(kv[1]), kv[0]))
-    for sym, rounds in by_persist[:_SAMPLE_PERSIST]:
-        picked[sym] = _sample_row(sym, last[sym], len(rounds))
-    by_rank = sorted(last.items(), key=lambda kv: -(kv[1]["pct_rank"] or 0.0))
-    for sym, r in by_rank[:_SAMPLE_RANK]:
-        picked.setdefault(sym, _sample_row(sym, r, len(seen_rounds[sym])))
-    s.samples = list(picked.values())
-    return s
-
-
-def _sample_row(sym: str, r: sqlite3.Row, persist: int) -> dict[str, Any]:
-    return {
-        "symbol": sym,
-        "name": r["name"] or sym,
-        "price": r["price"],
-        "percent": r["percent"],
-        "speed_1": r["speed_1"],
-        "speed_3": r["speed_3"],
-        "speed_5": r["speed_5"],
-        "amount_surge": r["amount_surge"],
-        "vol_ratio": r["vol_ratio"],
-        "pct_rank": r["pct_rank"],
-        "consistency": _consistency(r["speed_1"], r["speed_3"], r["speed_5"]),
-        "volume_price": _volume_price(r["amount_surge"], r["speed_1"]),
-        "persist": persist,
-    }
-
-
-def _persist_bucket(n: int) -> str:
-    if n <= 1:
-        return "1轮"
-    if n <= 3:
-        return "2-3轮"
-    if n <= 10:
-        return "4-10轮"
-    if n <= 30:
-        return "11-30轮"
-    return "30轮以上"
-
-
-def _hhmmss(stamp: str) -> str:
-    """`2026-11-16T13:05:01.24+08:00` → `13:05:01`。解析失败原样返回。"""
-    t = stamp.split("T", 1)
-    if len(t) == 2:
-        return t[1][:8]
-    return stamp
-
-
-def _fmt(v: Any, digits: int = 2, suffix: str = "") -> str:
-    if v is None or not isinstance(v, (int, float)):
-        return "—"
-    return f"{v:.{digits}f}{suffix}"
-
-
-def render_materials(s: CrosssectionSummary) -> str:
-    """把摘要渲染成**给模型看的素材文本**（纯结构，不含任何推论）。"""
-    lines = [
-        f"【横截面异动层 · {s.date}】",
-        f"数据范围：{s.rounds} 轮 | {s.first_time} ~ {s.last_time} | "
-        f"唯一只数 {s.symbols} | 信号行 {s.total_rows}",
-        "",
-        "【判据分布（按只，取各票当日最后一次出现的状态）】",
-        f"  一致性：全正 {s.consistency.get('全正', 0)} · "
-        f"全负 {s.consistency.get('全负', 0)} · 混合 {s.consistency.get('混合', 0)}",
-        f"  量价：配合 {s.volume_price.get('配合', 0)} · "
-        f"背离 {s.volume_price.get('背离', 0)} · — {s.volume_price.get('—', 0)}",
-        "",
-        "【持续性分布（当日进入 p95+ 的轮次数）】",
-    ]
-    for key in ("1轮", "2-3轮", "4-10轮", "11-30轮", "30轮以上"):
-        n = s.persist_buckets.get(key, 0)
-        if n:
-            lines.append(f"  {key}：{n} 只")
-    # ⚠ 预置常用分组合计：否则模型会自己把分桶相加，算错即被判「编造数字」。
-    #    实测踩过两次（578 / 31 都是这样来的）—— 不是模型编造，是它做了算术。
-    #    给出合计既省得它算，也让幻觉巡检不再误报。
-    long_lived = s.persist_buckets.get("11-30轮", 0) + s.persist_buckets.get("30轮以上", 0)
-    repeated = s.symbols - s.persist_buckets.get("1轮", 0)
-    lines.append(f"  合计：出现≥2轮 {repeated} 只 · 出现≥11轮 {long_lived} 只 · 全部 {s.symbols} 只")
-    # ⚠ 同因第三例（2026-11-16）：模型算了「平均每只 3.7 次」= 信号行÷只数。
-    #    预置平均值 + 明确口径，省得它算除法。
-    avg = (s.total_rows / s.symbols) if s.symbols else 0.0
-    lines.append(f"  平均每只进入 {avg:.1f} 轮（= 信号行 {s.total_rows} ÷ 只数 {s.symbols}）")
-    if s.max_persist:
-        lines.append(
-            f"  最长持续：{s.max_persist_symbol} {s.max_persist_name} {s.max_persist} 轮"
+        判据 = str(r.get("判据") or "")
+        cons, _, vp = 判据.partition("·")
+        out.append(
+            {
+                "symbol": r.get("symbol"),
+                "name": r.get("名称"),
+                "price": _num(r.get("现价")),
+                "percent": _num(r.get("涨幅")),
+                "vol_ratio": _num(r.get("量比")),
+                "speed_1": _num(r.get("1m")),
+                "speed_3": _num(r.get("3m")),
+                "speed_5": _num(r.get("5m")),
+                "amount_surge": _num(r.get("额涌")),
+                "pct_rank": _num(r.get("分位")),
+                "persist": _num(r.get("轮次")),
+                "consistency": cons,
+                "volume_price": vp,
+            }
         )
+    return out
 
-    lines += [
-        "",
-        "【当日涨跌幅分布（按只，各票最后一条）】",
-        f"  上涨 {s.pct_up} · 下跌 {s.pct_down} · 平盘 {s.pct_flat}",
-        f"  区间：{_fmt(s.pct_min, 2, '%')} ~ {_fmt(s.pct_max, 2, '%')}",
-        "",
-        "【代表样本（持续性最高 / 分位最高，去重合并）】",
-        # ⚠ 口径必读：样本行是**当日最后一次出现时**的快照，不是"该票最猛的那一刻"。
-        # 少了这句，模型会把「当日累计跌幅」和「短窗口急拉」读成矛盾（实际是不同时点），
-        # 实测踩过：把 10:09 的短窗口值当收盘状态描述。
-        "  （口径：每行是该票当日**最后一次进入本层**时的快照；"
-        "「当日」= 相对昨收的累计涨跌幅，「1m/3m/5m」= 该时点的短窗口涨速。"
-        "两者时点相同但含义不同，累计为跌的票仍可能短窗口急拉。）",
-    ]
-    for x in s.samples:
-        lines.append(
-            f"  {x['symbol']} {x['name']} 价 {_fmt(x['price'])} "
-            f"当日 {_fmt(x['percent'], 2, '%')} | "
-            f"1m {_fmt(x['speed_1'], 2, '%')} 3m {_fmt(x['speed_3'], 2, '%')} "
-            f"5m {_fmt(x['speed_5'], 2, '%')} | "
-            f"额涌 {_fmt(x['amount_surge'], 2, '×')} 量比 {_fmt(x['vol_ratio'])} "
-            f"分位 {x['pct_rank']:.3f} | "
-            f"{x['consistency']}·{x['volume_price']}·{x['persist']}轮"
-        )
-    return "\n".join(lines)
+
+def _cs_sort_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
+    """排序：**持续轮次降序 → 分位降序 → 代码**（与终端展示口径一致）。
+
+    为什么不用 B 段的 `_order_key`：那是按榜外段的字段排的，
+    横截面层没有 tier/主力占比等字段，套用会得到无意义的顺序。
+    """
+    persist = row.get("persist")
+    rank = row.get("pct_rank")
+    return (
+        -(persist if isinstance(persist, int | float) else 0),
+        -(rank if isinstance(rank, int | float) else 0.0),
+        str(row.get("symbol") or ""),
+    )
+
+
+def build_crosssection_materials(
+    date: str,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    limit: int | None = None,
+    mode: str = "analyze",
+) -> OffboardMaterials:
+    """本区源行 → 素材（走主管线同一套 `build_materials`）。
+
+    - `id_prefix="cs"`：与 B 段的 `sb` 区分 ⇒ 同一只票在两个区域都有时不会互相覆盖。
+    - `segment_note`：本区口径（模型据此知道这是什么区域、有什么约束）。
+    - `with_market=False`：市况是 B 段那条链路的，跨区引用会把两层口径绑在一起。
+    - **不带 baseline**：本层没有历史命中率基准（结构上无法自证），不硬塞。
+    """
+    return build_materials(
+        date,
+        rows,
+        limit=limit,
+        mode=mode,
+        fields=CROSSSECTION_FIELDS,
+        segment_note=CROSSSECTION_NOTE,
+        id_prefix="cs",
+        sort_key=_cs_sort_key,
+        with_market=False,
+    )

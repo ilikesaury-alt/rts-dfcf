@@ -61,6 +61,16 @@ class ArchivePayload:
     unverified: tuple[str, ...] = ()
     tool_summary: str = ""
     redlined: bool = False
+    #: **模型实际看到的素材**（纯文本，可为空）。
+    #:
+    #: ⚠ 为什么归档要带素材（2026-11-16）：归档的用途是**人工复盘**。
+    #:   若输入源是「只保留最近一次快照」的文件（如 `股票池.md`），
+    #:   面板一被下一轮覆盖，那份报告的输入就**再也找不回来** ⇒
+    #:   报告成了无法核对的孤本（数值无从验证）。
+    #:   把素材一起存进档案 ⇒ 任何时候都能拿同一份输入复算/核对。
+    #:
+    #: 空 ⇒ 不渲染这一节（既有归档格式**逐字不变**）。
+    materials: str = ""
 
 
 def render_archive(p: ArchivePayload) -> str:
@@ -89,6 +99,17 @@ def render_archive(p: ArchivePayload) -> str:
         RULE,
         DISCLAIMER,
     ]
+    if p.materials:
+        # 素材附在**末尾**（正文之后、免责声明之前）：正文是最该先看到的东西，
+        # 素材是「要核对时再往下翻」的附录。
+        # ⚠ 用切片插入而不是 append —— 免责声明必须始终收尾（它约定「档案内不含
+        #   次日绩效数据」，放中间会破坏那个语义）。
+        lines[-2:-2] = [
+            "",
+            RULE,
+            "模型看到的素材（同一份输入，可逐行核对上面的数字）：",
+            p.materials.rstrip(),
+        ]
     return "\n".join(lines) + "\n"
 
 
