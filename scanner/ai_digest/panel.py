@@ -276,7 +276,9 @@ def parse_panel_text(text: str) -> PanelSnapshot | None:
         if csm:
             flush()
             cur_title = "横截面异动"
-            cur_note = csm.group(1).strip()
+            # 捕获组带着「· 14:45:09 | …」的「· 」前缀（表头分隔符）⇒ 去掉，
+            # 否则渲染进提示词会变成「本区口径（面板原文）：· 14:45:09 …」。
+            cur_note = csm.group(1).strip().lstrip("·").strip()
             cur_kind = "cs"
             cur_rows = []
             continue

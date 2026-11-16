@@ -440,3 +440,45 @@ def test_archive_makes_report_self_verifiable() -> None:
     mat = body.split(marker, 1)[1].split("─" * 78)[0]
     unv = unverified_numbers(text, mat)
     assert not unv, f"归档不自包含：正文里有素材中找不到的数字 {unv}"
+
+
+# ── research 模式接入（三区统一分档）─────────────────────────────
+
+
+def test_region_lines_render_crosssection_names() -> None:
+    """`_region_lines` 必须兼容横截面区的**中文名称键**。
+
+    ⚠ 踩过的坑：横截面区的行键是中文 `名称`（panel.py 按 ≡ 块的中文列名建行），
+    而 B 段区是英文 `name`。写死 `row.get('name')` 会让横截面区每行渲染成
+    "None" ⇒ 模型拿到 8 只「None」——既没法引用名字，幻觉巡检也会乱。
+    """
+    from scanner.ai_digest.agent import _region_lines
+    from scanner.ai_digest.panel import PanelRegion
+
+    region = PanelRegion(
+        title="横截面异动",
+        columns=("代码", "名称", "现价", "涨幅"),
+        rows=(
+            {"symbol": "SZ300163", "名称": "先锋新材", "现价": "5.10", "涨幅": "-3.95%"},
+        ),
+        note="",
+    )
+    lines = _region_lines(region)
+    assert "None" not in lines[1], f"名称键没取到：{lines[1]}"
+    assert "先锋新材" in lines[1]
+
+
+def test_research_prompt_explains_crosssection_region() -> None:
+    """research 的 **user** 提示词必须教模型读横截面区（字段/不判方向/无基准率）。
+
+    ⚠ 位置：那段口径说明在 `build_research_prompt`（user 消息）里，不在
+    `RESEARCH_SYSTEM_PROMPT`（system 消息）里 —— user 才是逐区渲染的地方。
+    """
+    import inspect
+
+    from scanner.ai_digest import agent
+
+    src = inspect.getsource(agent.build_research_prompt)
+    assert "横截面异动区怎么读" in src
+    assert "不预判方向" in src
+    assert "没有历史命中率基准" in src

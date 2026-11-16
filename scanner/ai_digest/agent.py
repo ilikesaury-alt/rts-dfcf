@@ -213,7 +213,11 @@ def _region_lines(region: PanelRegion) -> list[str]:
     if region.note:
         lines.append(f"本区口径（面板原文）：{region.note}")
     for i, row in enumerate(region.rows, 1):
-        parts = [f"{i} {row.get('symbol')} {row.get('name')}"]
+        # ⚠ 区名键不统一：B 段区用英文 `name`，横截面区用中文 `名称`
+        #   （panel.py 解析 ≡ 区时按终端块的中文列名建行）。
+        #   写死 `name` 会让横截面区每行渲染成 "None"（实测踩过）。
+        nm = row.get("name") or row.get("名称") or ""
+        parts = [f"{i} {row.get('symbol')} {nm}"]
         parts += [f"{c}{row[c]}" for c in cols if row.get(c) not in (None, "")]
         marks = str(row.get("marks") or "").strip()
         if marks:
@@ -250,6 +254,15 @@ def build_research_prompt(
             f"以下是终端面板最近一次打印的原文（{panel.date} {panel.time}），共 "
             f"{panel.total} 只，分 {len(panel.regions)} 个区。",
             "**各区口径互不相同，不要跨区排名** —— 它们本就是并列的独立观察段。",
+            "",
+            "【横截面异动区怎么读（若存在）】",
+            "该区是创业板全集的**横截面分位**观察层（与飙升榜解耦、抢在榜单之前看到异动），",
+            "字段：现价/当日涨幅（相对昨收，可能为负）/1m/3m/5m 短窗涨速/额涌（成交额增量倍数）/",
+            "量比/分位（复合分在全市场的横截面分位，越高越异常）/判据/轮次（当日进入该区的轮次）。",
+            "判据两段：一致性（全正/全负/混合 = 三窗是否同号）·量价（配合/背离/— = 放量是否被价格确认）。",
+            "⚠ 该区**不预判方向**：当日涨幅为负不是利空证据；「累计跌但短窗全正」是正常组合。",
+            "⚠ 该区**没有历史命中率基准**（结构上无法自证胜率）—— 分档只能依据字段相对强弱与",
+            "  你工具查到的其它证据，不要引用不存在的基准率。",
             "",
         ]
         body: list[str] = []
