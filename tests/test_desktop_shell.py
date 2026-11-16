@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -208,6 +210,55 @@ def test_tasks_port_is_injected_and_never_hardcoded_in_shell() -> None:
     # 允许「默认常量 8900」，但不允许把 8900 直接塞进 env 赋值
     assert 'env.RTS_TASKS_PORT = String(TASKS_PORT)' in code
     assert "String(8900)" not in code, "端口必须经变量注入，不能写死"
+
+
+def test_main_js_actually_loads_without_throwing() -> None:
+    """⚠ 唯一一条**会真执行** main.js 的守卫（2026-11-16 补）。
+
+    起因：整包启动即崩 —— `let TASKS_PORT = TASKS_PORT_DEFAULT;` 写在
+    `const TASKS_PORT_DEFAULT = 8900;` **之前**，`const` 的 TDZ 让主进程一 require
+    就抛 `ReferenceError: Cannot access 'TASKS_PORT_DEFAULT' before initialization`。
+
+    上面 16 条全是文本 grep 检查，`node --check` 也只做语法解析 —— **TDZ 是运行期错误**，
+    两者都查不出来，于是这个「装完双击就炸」的 bug 一路绿灯溜进安装包。
+    ⇒ 必须真的 `require()` 一次：模块顶层一执行，这类顺序/初始化错误立刻暴露。
+
+    `main.js` 尾部用 `if (app && typeof app.getPath === "function")` 把生命周期整块包住，
+    离线 `require('electron')` 只返回一个路径字符串 ⇒ 纯函数可加载、零副作用。
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("无 node，跳过 main.js 加载守卫")
+
+    proc = subprocess.run(
+        [node, "-e", "require(process.argv[1])", str(DESKTOP / "main.js")],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+    )
+    _err = proc.stderr or proc.stdout
+    assert proc.returncode == 0, (
+        "main.js 顶层执行抛错（装完双击即崩那一类）" + chr(10) + _err
+    )
+
+
+def test_tasks_port_default_is_declared_before_first_use() -> None:
+    """TDZ 的顺序性守卫：`TASKS_PORT_DEFAULT` 的声明必须先于 `TASKS_PORT` 的初始化。
+
+    与上面那条互补 —— 那条证明「现在没崩」，这条说明「别再改回去」，
+    失败信息直接指向行号，比读堆栈快。
+    """
+    code = _code_only(_main_js())
+    decl = re.search(r"const\s+TASKS_PORT_DEFAULT\s*=", code, flags=re.M)
+    use = re.search(r"let\s+TASKS_PORT\s*=\s*TASKS_PORT_DEFAULT", code, flags=re.M)
+    assert decl, "必须有 `const TASKS_PORT_DEFAULT = ...`"
+    assert use, "必须有 `let TASKS_PORT = TASKS_PORT_DEFAULT`（端口运行时可让位）"
+    assert decl.start() < use.start(), (
+        "⛔ `TASKS_PORT_DEFAULT` 的 const 声明必须在 `let TASKS_PORT = TASKS_PORT_DEFAULT` "
+        "之前 —— 否则 const 的 TDZ 会让主进程启动即抛 ReferenceError（2026-11-16 事故）"
+    )
 
 
 # ── 6. 打包配置 ───────────────────────────────────────────────────────────────

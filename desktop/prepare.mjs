@@ -61,6 +61,36 @@ if (existsSync(PY_EXE)) {
   }
 }
 
+// 主进程 `main.js` 能否**真的加载**：把「装完双击就崩」前移到打包时。
+//
+// 为什么必须真 require 一次：2026-11-16 亡羊事故 —— `let TASKS_PORT = TASKS_PORT_DEFAULT;`
+// 写在 `const TASKS_PORT_DEFAULT = 8900;` 之前，`const` 的 TDZ 让主进程一 require 就抛
+// `ReferenceError: Cannot access 'TASKS_PORT_DEFAULT' before initialization`，
+// 整包**启动即崩**（用户只看到 Electron 的错误对话框）。
+// 而当时的 16 条守卫全是文本 grep、`node --check` 只做语法解析 —— **TDZ 是运行期错误**，
+// 两者都查不出来，于是这个包一路绿灯发了出去。⇒ 打包前必须执行一遍。
+//
+// 离线 `require("electron")` 只返回一个路径字符串，`main.js` 尾部用
+// `if (app && typeof app.getPath === "function")` 把生命周期整块包住 ⇒ 零副作用。
+if (!failed) {
+  try {
+    execFileSync(process.execPath, ["-e", "require(process.argv[1])", path.join(HERE, "main.js")], {
+      stdio: "pipe",
+      timeout: 60_000,
+    });
+    console.log("[prepare] ok    主进程 main.js 能正常加载（无 TDZ/初始化顺序错误）");
+  } catch (e) {
+    failed = true;
+    const detail = String(e.stderr || e.message)
+      .trim()
+      .split("\n")
+      .slice(0, 8)
+      .join("\n");
+    console.error(`[prepare] 失败  主进程 main.js 加载即抛错：\n${detail}`);
+    console.error("            → 这类错**装上也打不开**（启动即崩），必须先修好再打包");
+  }
+}
+
 const db = path.join(REPO, "scanner.db");
 if (existsSync(db)) {
   console.log(`[prepare] ok    ${db}（${(statSync(db).size / 1024 / 1024).toFixed(0)} MB，本机活库）`);

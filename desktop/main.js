@@ -43,11 +43,14 @@ const _rawPort = Number(process.env.RTS_LOCAL_PANEL_PORT || 8899);
 /** 看板端口。**运行时可变**：启动前探测，被占用则让位到空闲端口（见 `findFreePort`）。 */
 let LOCAL_PORT =
   Number.isInteger(_rawPort) && _rawPort >= 1 && _rawPort <= 65535 ? _rawPort : 8899;
+/** 动作面端口：默认 8900，与 `scanner.tasks_server.DEFAULT_PORT` 同值。
+ * ⚠ 必须声明在 `TASKS_PORT` **之前**：`const` 有 TDZ，先读后声明 = 启动即
+ * `ReferenceError: Cannot access 'TASKS_PORT_DEFAULT' before initialization`。
+ * 曾因顺序反了让整包启动崩（2026-11-16）。 */
+const TASKS_PORT_DEFAULT = 8900;
 /** 动作面端口。**运行时可变**：同上，与看板端口错开，避免两个实例互相抢。 */
 let TASKS_PORT = TASKS_PORT_DEFAULT;
 const HOST = "127.0.0.1";
-/** 动作面端口：默认 8900，与 `scanner.tasks_server.DEFAULT_PORT` 同值。 */
-const TASKS_PORT_DEFAULT = 8900;
 /** 等 Python 起服的上限：首轮扫描要联网，起服本身只 DU 到几百毫秒，给足 40s。 */
 const SERVER_WAIT_MS = 40_000;
 const POLL_MS = 500;
