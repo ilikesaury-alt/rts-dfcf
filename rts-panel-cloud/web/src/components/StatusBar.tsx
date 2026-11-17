@@ -18,7 +18,7 @@
 
 import { useEffect, useRef, type RefObject } from "react";
 
-import type { MetaResponse, RegionsResponse } from "../api/types";
+import type { RegionsResponse } from "../api/types";
 import { BrandMark } from "./icons";
 
 const SHANGHAI_OFFSET = "+08:00";
@@ -102,13 +102,28 @@ export function deriveStatus(
     };
   }
   if (lag > 1) {
+    /* ⚠ v4：文案按**跨度**分档，不再一律喊「滞后 N 轮」。
+       问题（视觉评审抓到、我核对了算式的确是真实值而非 bug）：
+       `lagRounds` = (now − 快照时间) / 刷新间隔。一份放了一整天的快照会算出
+       「滞后 27532 轮」，而读数带同时写着「seq 75」⇒ 两个数并排，读者无法判断
+       这份数据到底是「刚跑完的第 75 轮」还是「19 天前的」。
+       数字是对的，但**表达方式**让人读不懂新鲜度。
+       分档不改任何计算，只改怎么说：
+         · 超过一天（≥1440 轮）⇒ 直接给「距快照 N 天」，天数是人真正需要的尺度；
+         · 一小时到一天 ⇒ 给「N 小时」；
+         · 一轮到一小时 ⇒ 保留「滞后 N 轮」（这是原本的语义，此时轮次才是合适单位）。 */
+    const roundsPerDay = (24 * 60 * 60 * 1000) / intervalMs;
+    const stale = lag >= roundsPerDay ? `${Math.floor(lag / roundsPerDay)} 天` : null;
+    const staleHours = !stale && lag >= 3600_000 / intervalMs ? `${Math.floor((lag * intervalMs) / 3600_000)} 小时` : null;
     return {
       kind: "lag",
       lag,
       session,
-      main: `滞后 ${lag} 轮`,
-      sub: "显示最后一轮快照",
-      explain: "轮次间隔超过一轮时，画面保留最后一轮快照与 seq 原值。",
+      main: stale ? `快照已 ${stale}未更新` : staleHours ? `快照已 ${staleHours}未更新` : `滞后 ${lag} 轮`,
+      sub: stale || staleHours ? "非实时 · 显示最后一轮快照" : "显示最后一轮快照",
+      explain: stale
+        ? `本机扫描器最近一轮快照发生在 ${round}（${seq}），距今约 ${stale}；期间扫描器未产出新轮次（非交易时段或未运行）。画面按快照原值呈现，不补写行。`
+        : "轮次间隔超过一轮时，画面保留最后一轮快照与 seq 原值。",
     };
   }
   return {
@@ -122,7 +137,6 @@ export function deriveStatus(
 }
 
 type Props = {
-  meta: MetaResponse | null;
   snapshot: RegionsResponse | null;
   error: string | null;
   intervalMs: number;
@@ -135,7 +149,6 @@ type Props = {
 };
 
 export default function StatusBar({
-  meta,
   snapshot,
   error,
   intervalMs,
@@ -170,18 +183,11 @@ export default function StatusBar({
         </div>
       </div>
 
-      <div className="title-meta">
-        <span>
-          轮次 <b className="mono">{snapshot ? `${snapshot.date} ${snapshot.time}` : meta?.ready === false ? "尚无任何一轮" : FALLBACK_ROUND}</b>
-        </span>
-        <span className="sep" />
-        <span>
-          seq <b className="mono">{snapshot ? snapshot.seq : FALLBACK_ROUND}</b>
-        </span>
-        <span className="sep" />
-        <span>{snapshot ? info.session : FALLBACK_ROUND}</span>
-      </div>
-
+      {/* ⚠ v4（2026-11-16 视觉重做）：**删掉 title-meta 整块**。
+          原先顶栏、读数带、页脚三处各写一遍「轮次 date time · seq N · 时段」，
+          同一事实重复三遍，且字号/灰阶几乎同权重 ⇒ 状态信息盖过交易数据。
+          现在轮次口径只由读数带 `round-line` 承担（见 App.tsx），
+          seq 只由读数带右端状态胶囊承担；顶栏回到「应用身份起点」这一件事。 */}
       <div className="title-spacer" />
       <div className="readonly-chip">
         <i />本机 · 只读

@@ -3,8 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=1440" />
-    <meta name="color-scheme" content="dark" />
-    <meta name="theme-color" content="#070b12" />
+    <!-- ⚠ 2026-11-16 修复：这里原为 `color-scheme: dark` + `theme-color: #070b12`，
+         是 v3「暗色唯一」时代的残留。v3 已整体转为浅色，CSS 里有 `color-scheme: light`，
+         但 HTML 这两个 meta 一直没跟着改 ⇒ 浏览器在首帧/表单控件/滚动条上仍按暗色渲染
+         （浅底上出现深色控件闪烁）。现与 CSS 对齐，theme-color 取窗口壳色 --surface-0。 -->
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#ffffff" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
     <title>创业板飙升榜 · 本机只读看板</title>
   </head>
   <body>

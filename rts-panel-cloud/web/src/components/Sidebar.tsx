@@ -84,10 +84,10 @@ export default function Sidebar({ active, onNavigate, counts, collapsed, onToggl
       </nav>
 
       <div className="sidebar-foot">
-        <span className="local">
-          <i />
-          <span>本机 · 只读</span>
-        </span>
+        {/* ⚠ v4：删掉这里的「本机 · 只读」徽章。
+            顶栏右侧已有同文案徽章，页脚也写了「本机只读镜像」——同一句话三处出现，
+            而这句是**应用级属性**（只读镜像），不是区块级信息，
+            放在区块导航的页脚里既错位又重复。只读属性归顶栏那一处唯一持有。 */}
         <button
           type="button"
           className="sidebar-toggle"

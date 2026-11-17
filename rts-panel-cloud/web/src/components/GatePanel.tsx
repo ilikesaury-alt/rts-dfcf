@@ -108,7 +108,7 @@ export default function GatePanel({
           <h2 className="region-title" style={{ fontSize: 13.5 }}>
             {TITLE.startsWith("◆ ") ? TITLE.slice(2) : TITLE}
           </h2>
-          <p className="gate-sub">下一张卡会推什么（非已推内容）</p>
+          <p className="gate-sub">下一张卡将推送的集合 · 非已推记录</p>
         </div>
         <div className="card-head-actions">
           <span className="region-count">
@@ -187,7 +187,7 @@ export default function GatePanel({
               aria-labelledby="tab-inside"
               hidden={!inside}
             >
-              <GateGroups rowsFor={rowsFor} open={open} />
+              <GateGroups rowsFor={rowsFor} open={open} inside={inside} source={regions} />
             </div>
             <div
               className="gate-panel"
@@ -196,7 +196,7 @@ export default function GatePanel({
               aria-labelledby="tab-outside"
               hidden={inside}
             >
-              <GateGroups rowsFor={rowsFor} open={open} />
+              <GateGroups rowsFor={rowsFor} open={open} inside={inside} source={regions} />
             </div>
           </div>
           <div className="gate-foot">门内 = 本轮通过集合 · 卡片按集合变化推送</div>
@@ -210,9 +210,14 @@ export default function GatePanel({
 function GateGroups({
   rowsFor,
   open,
+  inside,
+  source,
 }: {
   rowsFor: (key: keyof Omit<Gate, "stats">) => Row[];
   open: (symbol: string) => void;
+  inside: boolean;
+  /** 四个区的**原始**行集合（未做差集）。只用于区分「本来 0 行」与「有行但全通过」。 */
+  source: Record<string, Row[]>;
 }) {
   return (
     <>
@@ -225,9 +230,22 @@ function GateGroups({
               <span className="n">{rows.length}</span>
             </div>
             {rows.length === 0 ? (
-              <div className="gate-zero-row">
-                本轮无数据 <span>—</span>
-              </div>
+              /* ⚠ v4：空态文案**必须区分「本来就没有」与「有但都通过了」**。
+                 两种 0 混写会谎报，这两个方向我都实测踩过：
+                 ① 一律写「本轮无数据」：某区本轮 7 行但全部通过时，主表显示 7、
+                    右栏门外显示 0 并写「本轮无数据」⇒ 自相矛盾（评审截图抓到过）。
+                 ② 一律写「本区已全部通过」：某区本轮本来就是 0 行（`regions.hist`
+                    实测 0 行、`gate.hist` 也 0 行）⇒ 说成「全部通过」是**无中生有**。
+                 判据只能用载荷事实：**该区本轮有没有行**（`source[g.key].length`）。
+                 有行而这里为 0 ⇒ 全通过；本来就是 0 行 ⇒ 无数据。 */
+              (() => {
+                const hadRows = (source[g.key] ?? []).length > 0;
+                return (
+                  <div className="gate-zero-row">
+                    {inside ? "本轮无数据" : hadRows ? "本区已全部通过" : "本轮无数据"} <span>—</span>
+                  </div>
+                );
+              })()
             ) : (
               <ul className="gate-list m-0 list-none p-0">
                 {rows.map((row, i) => {

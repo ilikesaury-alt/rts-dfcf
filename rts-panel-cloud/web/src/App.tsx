@@ -106,7 +106,7 @@ function RegionList({ snapshot, activeKey, collapsed, onToggle }: RegionListProp
         </div>
       ) : null}
       {flowFiltered > 0 ? (
-        <p className="ctx-note">▸ 资金流出已剔除 {flowFiltered} 只（全区域统一口径）</p>
+        <p className="ctx-note">资金流出已剔除 {flowFiltered} 只 · 全区域统一口径</p>
       ) : null}
 
       <RegionCard
@@ -272,7 +272,7 @@ const PANEL_GROUP_ID = "rts-panel-main";
  */
 export default function App() {
   const route = useRoute();
-  const { snapshot, meta, error } = useSnapshot();
+  const { snapshot, error } = useSnapshot();
   const [now, setNow] = useState(() => Date.now());
   const { ui, update, toggleCard } = useUiState();
   const [statusOpen, setStatusOpen] = useState(false);
@@ -365,17 +365,10 @@ export default function App() {
   }, [route.name]);
 
   const stockName = route.name === "stock" ? nameFor(snapshot, route.symbol) : "";
-  const freshLabel =
-    status.kind === "fresh" ? "本轮新鲜"
-    : status.kind === "lag" ? `滞后 ${status.lag} 轮`
-    : status.kind === "history" ? "历史快照 · 非交易时段"
-    : status.kind === "error" ? "服务无响应"
-    : "等待首轮";
 
   return (
     <div className="app-shell">
       <StatusBar
-        meta={meta}
         snapshot={snapshot}
         error={error}
         intervalMs={intervalMs}
@@ -402,7 +395,7 @@ export default function App() {
                 个股 <span className="mono">{route.symbol}</span>
                 {stockName ? <span> {stockName}</span> : null}
               </div>
-              <div className="round-sub">数据口径：该股在本轮快照中的字段与本地日线 · 返回列表后保持原列表位置</div>
+              {/* v4：说明句收进页脚，读数带只留读数本身（见下方 footer 注释）。 */}
             </div>
             <div className="readout-end">
               <span className="scope-chip"><i />本机回环 127.0.0.1</span>
@@ -428,22 +421,19 @@ export default function App() {
                 {" · "}<span className="mono">seq {snapshot ? snapshot.seq : "—"}</span>
                 {snapshot ? ` · ${status.session}` : ""}
               </div>
-              <div className="round-sub">数据口径：本机扫描器最后一轮快照 · 轮次、时段与区块口径随快照呈现</div>
+              {/* v4：这行 11px 灰字原本横贯读数带中部，是全页最长的一句，
+                却只重复页脚已有的口径说明（且把读数挤到右边）。已移入页脚。 */}
             </div>
-            <div className="readout-regions" aria-label="本轮各区块行数">
-              {NAV_ITEMS.map((item) => {
-                const n = counts[item.key as keyof NavCounts];
-                return (
-                  <span key={item.key} className={`r-chip${n > 0 ? "" : " is-zero"}`}>
-                    {item.label} <b>{n > 0 ? n : "—"}</b>
-                  </span>
-                );
-              })}
-            </div>
+            {/* ⚠ v4：删掉原有的四颗 `r-chip`。
+                它们与侧栏导航的计数徽章是**同一组数字**（同一 `counts` 来源），
+                同屏出现两次、相隔不到 300px，还各自带一套样式 ⇒ 读者要判断
+                「这两个 13 是不是同一件事」。计数归侧栏徽章唯一持有（它是常驻导航，
+                滚动时一直可见）；读数带只留「本轮几个数」这一件事。 */}
+            {/* ⚠ v4：右端原先挤了三个 pill（AI 分析 / 本机回环 / 状态·seq），
+                与顶栏状态胶囊、页脚又名三处重复。现在只留「AI 分析」入口；
+                新鲜度与 seq 由顶栏那颗状态胶囊唯一承担（`freshLabel` 随之删除）。 */}
             <div className="readout-end">
               <a className="tasks-entry" href="#/tasks">AI 分析</a>
-              <span className="scope-chip"><i />本机回环 127.0.0.1</span>
-              <span className="round-pill">{freshLabel} · seq {snapshot ? snapshot.seq : "—"}</span>
             </div>
           </>
         )}
@@ -530,15 +520,17 @@ export default function App() {
         </div>
       )}
 
+      {/* ⚠ v4：页脚是「数据说明」不是「轮次第三次播报」。
+          原先右侧又写一遍 `date time · seq`，与顶栏 + 读数带三处重复，
+          且让页脚只剩重复内容。现在页脚只留「来源 / 读取节奏 / 口径边界 / 契约版本」，
+          轮次与 seq 归读数带与状态胶囊唯一持有。 */}
       <footer className="footer">
-        <span>数据来源：本机扫描器最后一轮快照</span>
+        <span>数据来源：本机扫描器最后一轮快照 · 本机回环 127.0.0.1</span>
         <span className="sep" />
-        <span>本机回环 127.0.0.1 · 每 {Math.round(intervalMs / 1000)}s 读取一次</span>
+        <span>每 {Math.round(intervalMs / 1000)}s 读取一次</span>
         <span className="sep" />
         <span>轮次、时段与区块口径随快照呈现</span>
-        <span className="right">
-          数据版本 v2 · {snapshot ? `${snapshot.date} ${snapshot.time} · seq ${snapshot.seq}` : "seq —"}
-        </span>
+        <span className="right">数据契约 v2 · 本机只读镜像</span>
       </footer>
     </div>
   );

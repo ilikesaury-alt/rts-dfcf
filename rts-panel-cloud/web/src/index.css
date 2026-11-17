@@ -1,5 +1,5 @@
 /**
- * rts-desktop · v2「有温度的精致」设计系统（Tailwind v4 `@theme` + 纯 CSS 结构类）。
+ * rts-desktop · v5「通透工作台」设计系统（Tailwind v4 `@theme` + 纯 CSS 结构类）。
  *
  * 三条纪律（原样保留）：
  * 1. **涨跌色变量名原样保留**（`--up` / `--down` / `--flat` ↔ `--color-up/down/flat`）：
@@ -11,9 +11,14 @@
  * 3. **浅色为唯一形态**（2026-11-16 v3 主题重做：Lichun 要求「不要黑色主题」；
  *    原「暗色唯一」条款作废，不再引入 dark 模式，也不做主题切换）。
  *
- * v2 变更（纯表现层）：四级表面 `--surface-0..3` + `--surface-pop`；字号拉到 5 级；
- * 卡片顶部内高光 + 单层浅阴影；两处白名单渐变（标题栏径向光晕、分段滑块）；
- * 所有可点元素 hover/focus-visible/active 三态 140ms；prefers-reduced-motion 兜底。
+ * v5 变更（2026-11-16，按「灰盒子堆叠」评审重做视觉语言，纯表现层）：
+ *   - 画布从蓝灰改暖白（#f7f8fa），卡片纯白但**去掉边框与投影**，靠 1px 分隔线与
+ *     8px 圆角定义区块 —— 从「白卡片+灰边+投影摞十张」变成「连续内容画布」；
+ *   - 卡片头去掉灰底，与卡体同白，标题左 3px 品牌锚点（仅激活区）做扫读定位；
+ *   - 表头从灰底改纯白 + 1px 底边，正文行靠细分隔线与 hover 分层；
+ *   - 侧栏 / 标题栏 / 读数带 / 页脚去掉边框感，统一用背景差 + 细分隔线。
+ *   - 所有可点元素 hover/focus-visible/active 三态 140ms；prefers-reduced-motion 兜底。
+ *   - ⚠ 涨跌色三处（:root / @theme / Stock.tsx ASHARE_THEME）字面值冻结不动。
  *
  * ⚠ `:root` 里的语义变量**不能**塞进 `@theme`：Tailwind v4 默认只输出被工具类
  *   引用过的 `@theme` 变量，结构 CSS 里的 `var(--surface-2)` 不会被扫描器认作「使用」，
@@ -24,24 +29,30 @@
 
 /* ── 语义 token（结构类用；与下方 @theme 同值，改色两处同改） ─────────────── */
 :root {
-  /* 四级表面（浅色）：窗口壳 → 工作区 → 卡片 → hover/选中 → 弹层
-     浅底要「纸感分层」：壳最浅、工作区略沉、卡片纯白浮起、hover 再压一档。
-     ⚠ v3 主题变更（2026-11-16，Lichun「不要黑色主题，重新设计」）：
-        本文件原为「暗色唯一形态」，现改为浅色唯一形态。 */
-  --surface-0: #e4e9f1;   /* 窗口壳：最沉，让工作区「浮」出来 */
-  --surface-1: #f7f9fc;   /* 工作区：近白 */
-  --surface-2: #ffffff;   /* 卡片：纯白（与工作区靠投影+细线分层，不靠底色） */
-  --surface-3: #eef2f8;   /* hover/选中/表头 */
+  /* v6「连续纸面」：内容区（画布/卡片/表格）全域纯白 —— 消除「白卡片浮在灰画布
+     上」的盒子感；框架区（标题/读数/侧栏/页脚）用一档极淡冷白界定。区块不靠
+     围合边框，而靠标题竖锚点 + 1px 分隔线 + 留白划分。
+     ⚠ 涨跌色字面值冻结；下面 surface/line/text 是本次唯一的视觉调色面。 */
+  --surface-0: #ffffff;   /* 标题栏：纯白 */
+  --surface-1: #ffffff;   /* 工作画布：纯白，与卡片同色（去灰底盒子感的关键） */
+  --surface-2: #ffffff;   /* 卡片内容区：纯白，无边框无投影无圆角 */
+  --surface-3: #f4f6fa;   /* hover/选中：极淡冷灰，只在交互瞬间出现 */
+  /* ⚠ 2026-11-16 修正：框架区底色原为 #fafbfd，与纯白画布对比度只有 **1.035**，
+     低于肉眼可辨的阈值 ⇒ 侧栏/标题栏/页脚与内容区**糊成一整片白**，全屏 96% 面积同色，
+     本来要去掉的「盒子感」变成了「没有边界感」。
+     现取 #f3f5f9：与白画布 1.091、与结构线 #e7eaf0 1.104 —— 两个方向都刚好可辨，
+     且仍是「极淡冷白」而非灰底（不回到 v4 那种灰盒子观感）。 */
+  --surface-rail: #f3f5f9;/* 框架区（读数带/侧栏/页脚）：极淡冷白，靠色差而非边框界定 */
   --surface-pop: #ffffff;
 
-  --line-soft: rgba(15, 23, 42, 0.07);
-  --line: rgba(15, 23, 42, 0.13);
-  --line-strong: rgba(15, 23, 42, 0.24);
+  --line-soft: #eef1f6;   /* 行分隔线：几乎不可见，只做扫读引导 */
+  --line: #e7eaf0;        /* 结构分隔线：区与区之间 */
+  --line-strong: #d9dee7; /* 强调分隔线：表头底部 */
 
-  --text-1: #0f1b2d;
-  --text-2: #38455c;
-  --text-3: #667287;
-  --text-4: #8d99ab;
+  --text-1: #161b26;      /* 主标题/名称：近黑，不再是蓝灰 */
+  --text-2: #3d4658;      /* 正文：中性深灰 */
+  --text-3: #6e7789;      /* 次级说明 */
+  --text-4: #98a1b2;      /* 弱化/空值：保持足够淡但不糊 */
 
   /* 克制的品牌色：只用于身份、选中、状态、焦点、极淡光晕
      浅底下 #2563eb 偏亮，压深一档保证 AA 对比度 */
@@ -68,9 +79,14 @@
   --sans: "Inter", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
   --ease: 140ms ease;
   --ease-slider: 150ms ease;
-  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.06), 0 3px 10px rgba(15, 23, 42, 0.06),
-    0 10px 24px rgba(15, 23, 42, 0.045);
-  --shadow-pop: 0 6px 14px rgba(15, 23, 42, 0.11), 0 22px 48px rgba(15, 23, 42, 0.16);
+  /* v6：卡片与弹层都不投影 —— 纸面上不放盒子。 */
+  --shadow-card: none;
+  --shadow-pop: 0 1px 2px rgba(16, 24, 40, 0.05), 0 8px 24px rgba(16, 24, 40, 0.08);
+  /* v7：一套圆角尺度（4/6/8/10），避免「4px 统计格 + 8px 按钮 + 12px 卡」的拼装感。 */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 10px;
 }
 
 /* ── 全局：焦点环 / 三态 / 数字等宽 ──────────────────────────────────────── */
@@ -191,7 +207,7 @@ button:active,
   background: transparent;
 }
 
-/* ── 标题栏：应用身份 + 允许的第一处渐变（极淡品牌光晕） ─────────────────── */
+/* ── 标题栏：纯白 + 1px 底分隔线（v5：去掉径向光晕，身份靠 logo 与字重） ──── */
 .titlebar {
   position: relative;
   z-index: 20;
@@ -201,23 +217,8 @@ button:active,
   flex: 0 0 48px;
   padding: 0 16px;
   background: var(--surface-0);
-  /* 显式给全边透明：只写 border-bottom 时其余三边落 currentColor(=文字色)，
-     浅底上会显出一条深色实线（v3 实测 .titlebar / .readout 中招）。 */
   border: 0;
   border-bottom: 1px solid var(--line);
-}
-.titlebar::before {
-  content: "";
-  position: absolute;
-  left: -90px;
-  top: -100px;
-  width: 480px;
-  height: 210px;
-  pointer-events: none;
-  background: radial-gradient(ellipse at 22% 50%, rgba(37, 99, 235, 0.07), transparent 72%);
-}
-.titlebar > * {
-  position: relative;
 }
 .brand {
   display: flex;
@@ -228,13 +229,14 @@ button:active,
 .logo {
   width: 30px;
   height: 30px;
-  border-radius: 9px;
-  border: 1px solid rgba(37, 99, 235, 0.3);
-  background: rgba(37, 99, 235, 0.07);
+  border-radius: 8px;
+  background: var(--brand);
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+.logo svg {
+  color: #fff;
 }
 .logo svg {
   width: 21px;
@@ -252,8 +254,8 @@ button:active,
   font-size: 10px;
   line-height: 13px;
   letter-spacing: 0.12em;
-  color: var(--brand-soft);
-  font-weight: 650;
+  color: var(--text-4);
+  font-weight: 600;
 }
 .title-meta {
   display: flex;
@@ -281,10 +283,10 @@ button:active,
   align-items: center;
   gap: 7px;
   padding: 0 11px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 7px;
   color: var(--text-2);
-  background: rgba(15, 23, 42, 0.032);
+  background: var(--surface-rail);
+  border: 1px solid var(--line);
   font-size: 11px;
 }
 .readonly-chip i {
@@ -308,14 +310,13 @@ button:active,
   gap: 9px;
   padding: 0 10px;
   border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--surface-2);
+  border-radius: 8px;
+  background: var(--surface-rail);
   text-align: left;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
 }
 .status-pill:hover {
   background: var(--surface-3);
-  border-color: rgba(37, 99, 235, 0.34);
+  border-color: var(--line-strong);
 }
 .status-pill:active {
   background: var(--surface-pop);
@@ -431,13 +432,15 @@ button:active,
 
 /* ── 本轮读数带：关键读数 22px、语气仍克制 ───────────────────────────────── */
 .readout {
-  height: 84px;
-  flex: 0 0 84px;
+  /* v4：84 → 72px。说明句移走后这带只剩「两个读数 + 一轮次 + 区块计数」，
+     84px 会显得空而松散（评审：顶栏+统计行堆叠过多）。72px 仍容得下 24px 读数。 */
+  height: 72px;
+  flex: 0 0 72px;
   display: flex;
   align-items: center;
   gap: 22px;
   padding: 0 22px;
-  background: var(--surface-1);
+  background: var(--surface-rail);
   /* 显式给全边透明：只写 border-bottom 时其余三边落 currentColor(=文字色)，
      浅底上会显出一条深色实线（v3 实测 .titlebar / .readout 中招）。 */
   border: 0;
@@ -461,12 +464,17 @@ button:active,
   line-height: 16px;
 }
 .metric-value {
-  font-size: 26px;
-  line-height: 30px;
-  font-weight: 650;
+  /* v4：26 → 28px 并收紧行高。评审「13/10 要成为真正的大数字」——
+     这两个数是「本轮有多少票」的答案，应当一眼可读；26px 夹在 11px 标签
+     与 12px 轮次之间，相对差距不够。单位 <small> 保持 11px，
+     靠「大数小单位」形成读数的经典配对。 */
+  font-size: 28px;
+  line-height: 28px;
+  font-weight: 700;
   color: var(--text-1);
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
+  letter-spacing: -0.015em;
 }
 .metric-value small {
   font-size: 11px;
@@ -490,13 +498,18 @@ button:active,
   gap: 4px;
   min-width: 0;
 }
+/* v4：轮次行从「与读数同级」降为「口径副行」。
+   评审原话：「seq 75 · 尾盘」不该和「13/10」一样抢眼。
+   字号 12 → 11.5px、颜色 --text-2 → --text-3，时间值也不再抬到 --text-1
+   （它只是标注「这是哪一轮」，不是本轮结论）。 */
 .round-line {
-  font-size: 12px;
-  color: var(--text-2);
+  font-size: 11.5px;
+  color: var(--text-3);
   white-space: nowrap;
 }
 .round-line .mono {
-  color: var(--text-1);
+  color: var(--text-3);
+  font-weight: 500;
 }
 .round-sub {
   font-size: 11px;
@@ -579,7 +592,7 @@ button:active,
 .sidebar {
   width: 208px;
   flex: 0 0 208px;
-  background: var(--surface-0);
+  background: var(--surface-rail);
   border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
@@ -646,18 +659,16 @@ button:active,
 .nav-item:hover {
   background: var(--surface-3);
   color: var(--text-1);
-  border-color: rgba(37, 99, 235, 0.18);
 }
 .nav-item:hover .nav-text {
   color: var(--text-1);
 }
 .nav-item:active {
-  background: var(--surface-pop);
+  background: var(--surface-3);
 }
 .nav-item.is-active {
-  background: var(--surface-3);
+  background: var(--brand-wash);
   color: var(--brand);
-  border-color: rgba(37, 99, 235, 0.28);
 }
 .nav-item.is-active::before {
   content: "";
@@ -845,49 +856,50 @@ button:active,
   width: 2px;
 }
 
-/* ── 卡片：浮起的表面 + 顶部内高光 + 单层轻阴影 + 10px 圆角 ──────────────── */
+/* ── 卡片（v6）：纸面上不画盒子 —— 无边框、无圆角、无投影 ──────────────────
+   「灰盒子堆叠」的根因：白卡 + 灰画布 + 围合边框/圆角 ×10。v6 把画布也改成纯白，
+   卡片不再是可辨识的「盒子」，而是连续纸面上的一段：边界靠 ①卡片间 1px 顶分隔线
+   ②标题左 3px 竖锚点（激活态品牌蓝）③22px 段间留白。信息仍分区，壳感消失。 */
 .region-card {
   background: var(--surface-2);
-  border: 1px solid var(--line);
-  border-radius: 12px;
+  border: 0;
+  border-radius: 0;
   overflow: hidden;
-  box-shadow: var(--shadow-card);
-  transition: border-color var(--ease), box-shadow var(--ease);
+  box-shadow: none;
   display: flex;
   flex-direction: column;
 }
-.region-card:hover {
-  border-color: rgba(37, 99, 235, 0.22);
-}
-.region-card.is-active {
-  border-color: rgba(37, 99, 235, 0.3);
+/* 相邻区块之间只留一条极淡的顶分隔线（第一张卡片没有，上方通常是提示/留白）。 */
+.region-card + .region-card {
+  border-top: 1px solid var(--line-soft);
 }
 .region-head {
-  min-height: 58px;
+  min-height: 56px;
   display: flex;
   align-items: center;
   gap: 13px;
-  padding: 12px 16px;
+  padding: 11px 16px;
   background: var(--surface-2);
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--line-soft);
   transition: background-color var(--ease), border-color var(--ease);
 }
 .region-card.is-active .region-head {
-  background: var(--surface-3);
+  background: var(--surface-2);
 }
 .region-card[data-collapsed="true"] .region-head {
   border-bottom-color: transparent;
 }
 .card-accent {
-  width: 4px;
-  height: 30px;
-  border-radius: 3px;
-  background: var(--text-4);
+  width: 3px;
+  height: 22px;
+  border-radius: 2px;
+  background: var(--line-strong);
   flex: none;
-  transition: background-color var(--ease);
+  transition: background-color var(--ease), height var(--ease);
 }
 .region-card.is-active .card-accent {
   background: var(--brand);
+  height: 26px;
 }
 .card-title-wrap {
   min-width: 0;
@@ -906,12 +918,11 @@ button:active,
 .card-tag {
   font-size: 10px;
   font-weight: 650;
-  color: var(--brand-soft);
-  border: 1px solid rgba(14, 143, 168, 0.28);
-  background: rgba(14, 143, 168, 0.07);
-  border-radius: 5px;
-  padding: 1px 6px;
-  letter-spacing: 0.04em;
+  color: var(--brand);
+  background: var(--brand-wash);
+  border-radius: 4px;
+  padding: 2px 7px;
+  letter-spacing: 0.03em;
   flex: none;
 }
 .region-fulltitle {
@@ -940,10 +951,9 @@ button:active,
 }
 .region-count {
   font-size: 10.5px;
-  color: var(--text-2);
-  background: var(--surface-3);
-  border: 1px solid var(--line);
-  border-radius: 7px;
+  color: var(--text-3);
+  background: var(--surface-rail);
+  border-radius: 6px;
   padding: 4px 9px;
   font-family: var(--mono);
   white-space: nowrap;
@@ -977,19 +987,17 @@ button:active,
 .card-toggle {
   width: 28px;
   height: 28px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-3);
+  color: var(--text-4);
   flex: none;
 }
 .card-toggle:hover,
 .card-toggle:active {
   background: var(--surface-3);
-  color: var(--brand-soft);
-  border-color: rgba(37, 99, 235, 0.32);
+  color: var(--brand);
 }
 .chevron {
   width: 7px;
@@ -1029,26 +1037,31 @@ button:active,
   width: 100%;
   border-collapse: collapse;
   font-variant-numeric: tabular-nums;
-  font-size: 12.5px;
+  /* v4：正文 12.5 → 13px。原先 216 个文本节点挤在 12.5px，与表头 11px 只差 1.5px，
+     层级读不出来。13px 是「能扫读数字」的下限，再靠字重/颜色拉开与表头的距离。 */
+  font-size: 13px;
   table-layout: auto;
 }
 .region-table th,
 .region-table td {
-  height: 28px;
+  /* 行高 30px 保持一屏 13 行不变。 */
+  height: 30px;
   padding: 0 10px;
   white-space: nowrap;
-  border-bottom: 1px solid rgba(15, 23, 42, 0.07);
+  border-bottom: 1px solid var(--line-soft);
 }
+/* v5：表头不再灰底。纯白 + 一条稍重的底边 + 小字号大写字距，
+   靠「字重/颜色/位置」而非「填色块」与表体分层。 */
 .region-table thead th {
   position: sticky;
   top: 0;
   z-index: 2;
   height: 31px;
-  background: var(--surface-3);
-  color: var(--text-2);
-  font-size: 11px !important;
-  font-weight: 680;
-  letter-spacing: 0.025em;
+  background: var(--surface-2);
+  color: var(--text-4);
+  font-size: 10.5px !important;
+  font-weight: 650;
+  letter-spacing: 0.04em;
   border-bottom: 1px solid var(--line-strong);
   text-align: left;
 }
@@ -1086,11 +1099,11 @@ button:active,
   left: 0;
   z-index: 1;
   background: var(--surface-2);
-  border-right: 1px solid var(--line-strong);
+  border-right: 1px solid var(--line);
 }
 .region-table thead .sticky-col {
   z-index: 4;
-  background: var(--surface-3);
+  background: var(--surface-2);
 }
 .region-table tbody tr:hover .sticky-col {
   background: var(--surface-3);
@@ -1106,6 +1119,47 @@ button:active,
 }
 .cell-strong {
   font-weight: 650;
+}
+
+/* ── v4 行内角色：代码退次级、名称做主行 ──────────────────────────────────
+   编辑器/终端类表格的通行读法：**人按名称找票，按代码核对**。
+   原先两者同字号同灰阶同字重，一行里最该被眼睛抓住的名称反而淹没在 10 列数字里。
+   这里只做「谁是主行」的呈现分工，不动任何取值与列序：
+   - `.cell-code`：降一档灰阶（--text-3）+ 等宽，退成可核对的次级键；
+   - `.cell-name`：升到 --text-1 + 650，成为扫读锚点。 */
+.cell-code {
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+.cell-name {
+  color: var(--text-1);
+  font-weight: 650;
+}
+/* 当日涨幅 = 数值主行：比正文大一档、加粗、等宽对齐。
+   只给第一个涨跌列（`toneColIndex`），5 日累计仍是正文，避免「两列都强调=都不强调」。 */
+.region-table td.cell-pct {
+  font-size: 13.5px;
+  font-weight: 700;
+  font-family: var(--mono);
+  letter-spacing: -0.01em;
+}
+
+/* ── v4 整列皆空的列：降噪，不删列 ────────────────────────────────────────
+   列集合是服务端 `colSpec` 契约（SCHEMA_VERSION=2），前端不得删列；
+   但「本轮该列全行都是 `—`」仍按有值列同宽铺开，就是纯噪声。
+   压成次级：表头更淡、单元格更淡、最小宽度收到刚好放得下一个 `—`。
+   值是原样渲染的，`—` 仍是 `—`（不伪造 0），只是不再抢注意力。 */
+.region-table th.col-empty {
+  color: var(--text-4);
+  font-weight: 500;
+}
+.region-table td.col-empty {
+  color: var(--text-4);
+}
+.region-table td.col-empty .nil {
+  color: var(--text-4);
 }
 .marks-head,
 .marks-cell {
@@ -1312,7 +1366,7 @@ button:active,
   line-height: 32px;
   margin: 0;
   padding: 0 16px;
-  background: rgba(15, 23, 42, 0.022);
+  background: transparent;
   border-top: 1px solid var(--line-soft);
   font-size: 11px;
   font-weight: 500;
@@ -1352,23 +1406,20 @@ button:active,
   flex-direction: column;
   gap: 15px;
   flex: 1;
+  padding-bottom: 28px;
 }
 .ledger-primary {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  background: var(--surface-3);
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  overflow: hidden;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+  border-bottom: 1px solid var(--line-soft);
 }
 .ledger-primary > div {
-  padding: 11px 8px 10px;
-  text-align: center;
-  border-right: 1px solid var(--line-soft);
+  padding: 2px 8px 10px;
+  text-align: left;
 }
-.ledger-primary > div:last-child {
-  border-right: 0;
+.ledger-primary > div + div {
+  border-left: 1px solid var(--line-soft);
+  padding-left: 14px;
 }
 .ledger-primary .k {
   font-size: 10.5px;
@@ -1390,16 +1441,15 @@ button:active,
 .ledger-secondary {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 1px;
-  background: var(--line-soft);
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
-  overflow: hidden;
+  margin-top: -2px;
 }
 .ledger-secondary > div {
-  background: var(--surface-2);
-  padding: 8px 4px;
-  text-align: center;
+  padding: 2px 4px;
+  text-align: left;
+}
+.ledger-secondary > div + div {
+  border-left: 1px solid var(--line-soft);
+  padding-left: 10px;
 }
 .ledger-secondary .k {
   font-size: 10px;
@@ -1417,24 +1467,22 @@ button:active,
 /* 允许的第二处渐变：滑块细微过渡 */
 .segmented {
   position: relative;
-  height: 36px;
+  height: 34px;
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  padding: 0;
-  border: 1px solid var(--line);
-  border-radius: 9px;
+  padding: 3px;
+  border-radius: var(--r-md);
   background: var(--surface-3);
   overflow: hidden;
 }
 .segment-indicator {
   position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 50%;
-  border-radius: 8px;
-  background: linear-gradient(100deg, rgba(37, 99, 235, 0.95), rgba(14, 143, 168, 0.9));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  left: 3px;
+  top: 3px;
+  bottom: 3px;
+  width: calc(50% - 3px);
+  border-radius: 6px;
+  background: var(--brand);
   transform: translateX(0);
   transition: transform var(--ease-slider);
 }
@@ -1508,11 +1556,10 @@ button:active,
 }
 .gate-row:hover {
   background: var(--surface-3);
-  border-color: rgba(37, 99, 235, 0.18);
   color: var(--text-1);
 }
 .gate-row:active {
-  background: var(--surface-pop);
+  background: var(--surface-3);
 }
 .gate-row:focus-visible {
   outline-offset: -2px;
@@ -1535,11 +1582,10 @@ button:active,
   justify-content: space-between;
   height: 27px;
   padding: 0 8px;
-  border: 1px solid var(--line-soft);
-  border-radius: 7px;
-  background: rgba(15, 23, 42, 0.022);
+  border-radius: var(--r-sm);
+  background: transparent;
   font-size: 11px;
-  color: var(--text-3);
+  color: var(--text-4);
 }
 .gate-zero-row span {
   font-family: var(--mono);
@@ -1632,10 +1678,11 @@ button:active,
   min-width: 0;
 }
 .detail-card {
-  border-radius: 10px;
-  border: 1px solid var(--line);
+  border-radius: 0;
+  border: 0;
+  border-top: 1px solid var(--line);
   background: var(--surface-2);
-  box-shadow: var(--shadow-card);
+  box-shadow: none;
   overflow: hidden;
 }
 .detail-card-head {
@@ -1663,9 +1710,10 @@ button:active,
 }
 .chart-frame {
   width: 100%;
-  border-radius: 8px;
+  border-radius: 0;
   overflow: hidden;
-  background: var(--surface-1);
+  background: var(--surface-rail);
+  border: 1px solid var(--line-soft);
 }
 .mini-table {
   width: 100%;
@@ -1802,24 +1850,25 @@ button:active,
   --color-down: #0a8f3c;
   --color-flat: #6b7688;
 
-  /* 版面（浅色唯一形态，v3 2026-11-16） */
-  --color-bg: #f7f9fc;
+  /* 版面（v6 连续纸面，与 :root 同值） */
+  --color-bg: #ffffff;
   --color-card: #ffffff;
-  --color-border: rgba(15, 23, 42, 0.13);
-  --color-text: #0f1b2d;
-  --color-text-dim: #667287;
+  --color-border: #e7eaf0;
+  --color-text: #161b26;
+  --color-text-dim: #6e7789;
 
-  /* 四级表面（供工具类使用，与 :root 同值） */
-  --color-surface-0: #e4e9f1;
-  --color-surface-1: #f7f9fc;
+  /* 表面（供工具类使用，与 :root 同值） */
+  --color-surface-0: #ffffff;
+  --color-surface-1: #ffffff;
   --color-surface-2: #ffffff;
-  --color-surface-3: #eef2f8;
+  --color-surface-3: #f4f6fa;
+  --color-surface-rail: #f3f5f9;
   --color-surface-pop: #ffffff;
   --color-brand: #2563eb;
   --color-brand-soft: #0e8fa8;
-  --color-text-2: #38455c;
-  --color-text-3: #667287;
-  --color-text-4: #8d99ab;
+  --color-text-2: #3d4658;
+  --color-text-3: #6e7789;
+  --color-text-4: #98a1b2;
 
   /* 状态条 / 告警 */
   --color-lag-warn: #b45309;

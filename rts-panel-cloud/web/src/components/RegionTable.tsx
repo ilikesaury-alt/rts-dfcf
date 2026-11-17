@@ -66,6 +66,74 @@ export default function RegionTable({ specs, rows, profile, marks, onNavigate, s
   const sortable = SORTABLE[profile] ?? [];
   const sorted = sortKey && sortable.includes(sortKey) ? sortRows(rows, sortKey, specs, profile) : rows;
 
+  /**
+   * 「整列皆空」的列（v4 视觉重做的降噪，**不是删列**）。
+   *
+   * 背景：`colSpec` 由服务端下发，列集合是契约（`SCHEMA_VERSION=2`），前端删列
+   * 会让列头与载荷脱钩。但实测本轮 10 列里有「评分」「策略」两列**全行都是 `—`**，
+   * 仍按有值列同宽铺开 ⇒ 每行 2 格噪声、横向挤压真数据。
+   *
+   * 做法：只把「该列在**本段所有行**里都是空值」的列压成次级呈现（表头与单元格降一档
+   * 灰阶、收窄最小宽度）。**列不少、值不改、可点可读**：值仍原样渲染，`—` 仍是 `—`。
+   * 只要该列有一行有值，就恢复常态 —— 不引入任何业务判断，纯粹是对「本轮无值」的
+   * 呈现让位。
+   */
+  const emptyCols = (() => {
+    const flags = specs.map(() => true);
+    for (const row of sorted) {
+      const cells = cellsFor(row, specs, profile, { index: 0, marks: { breakout: {}, beauty: {} } });
+      cells.forEach((cell, i) => {
+        if (cell.text !== "—") flags[i] = false;
+      });
+    }
+    return flags;
+  })();
+
+  /**
+   * 代码列 / 名称列的识别（v4 视觉重做：名称做主行、代码退为次级键）。
+   *
+   * ⚠ **不写中文列名**：`components/**` 由
+   * `test_table_components_have_no_hardcoded_column_labels` 守着，列头只许来自
+   * 服务端 `colSpec`。这里改按**数据形态**识别，与列名解耦：
+   * 某列所有非空单元格都形如 `SZ300136`（2 位大写交易所前缀 + 6 位数字）⇒ 代码列；
+   * 紧随其后的一列 ⇒ 名称列（终端与载荷的列序都如此，`cols.ts` 的同序契约保证）。
+   * 识别不到就都不加类，退化为现状 —— 不猜、不硬编码。
+   */
+  const codeRe = /^[A-Z]{2}\d{6}$/;
+  const codeCol = (() => {
+    for (let i = 0; i < specs.length; i++) {
+      const vals = sorted
+        .map((row) => cellsFor(row, specs, profile, { index: 0, marks: { breakout: {}, beauty: {} } })[i]?.text)
+        .filter((t): t is string => typeof t === "string" && t !== "—" && t.trim() !== "");
+      if (vals.length > 0 && vals.every((v) => codeRe.test(v))) return i;
+    }
+    return -1;
+  })();
+  const nameCol = codeCol >= 0 && codeCol + 1 < specs.length ? codeCol + 1 : -1;
+
+  /** 单元格的角色类（代码弱化 / 名称主行）。`col-empty` 与它们正交。 */
+  const roleClass = (i: number) =>
+    i === codeCol ? "cell-code" : i === nameCol ? "cell-name" : undefined;
+
+  /**
+   * 涨幅列 = **第一个带涨跌色的列**（v4：涨幅做数值主行）。
+   *
+   * 同样按数据形态识别、不写列名：`cellsFor` 里只有涨跌量会给 `tone`
+   * （`pctCell` / `accumCell`），列序上第一个就是当日涨幅，其后是 5 日累计。
+   * 只给**第一个**加类 —— 当日涨幅是决策主量，5 日累计是背景量，两个都加粗
+   * 就等于都没加粗（这正是原先「10 列一个权重」的老问题）。
+   */
+  const toneColIndex = (() => {
+    for (let i = 0; i < specs.length; i++) {
+      const hasTone = sorted.some(
+        (row) => cellsFor(row, specs, profile, { index: 0, marks: { breakout: {}, beauty: {} } })[i]?.tone,
+      );
+      if (hasTone) return i;
+    }
+    return -1;
+  })();
+  const numRoleClass = (i: number) => (i === toneColIndex ? "cell-pct" : undefined);
+
   const open = (symbol: string, fromId?: string) => {
     if (!symbol) return;
     if (onNavigate) onNavigate(symbol);
@@ -83,7 +151,12 @@ export default function RegionTable({ specs, rows, profile, marks, onNavigate, s
               return (
                 <th
                   key={spec.key}
-                  className={cn(alignClass(spec.align), frozen && i === 0 && "sticky-col")}
+                  className={cn(
+                    alignClass(spec.align),
+                    frozen && i === 0 && "sticky-col",
+                    emptyCols[i] && "col-empty",
+                    roleClass(i),
+                  )}
                   style={{ minWidth: `${spec.width}ch` }}
                   aria-sort={isActive ? ("descending" as const) : undefined}
                 >
@@ -139,6 +212,9 @@ export default function RegionTable({ specs, rows, profile, marks, onNavigate, s
                       frozen && i === 0 && "sticky-col",
                       cell.tone && `tone-${cell.tone}`,
                       cell.strong && "cell-strong",
+                      emptyCols[i] && "col-empty",
+                      roleClass(i),
+                      numRoleClass(i),
                     )}
                   >
                     {cell.text === "—" ? <span className="nil">{cell.text}</span> : cell.text}
