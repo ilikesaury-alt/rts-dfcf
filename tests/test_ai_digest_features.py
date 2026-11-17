@@ -216,6 +216,13 @@ def _bar_db(rows: list[tuple[str, str, float, float, int]]) -> sqlite3.Connectio
         "CREATE TABLE announcement_cache (symbol TEXT, notice_date TEXT, title TEXT, "
         "ann_type TEXT, source_url TEXT, content_hash TEXT, fetched_at TEXT)"
     )
+    c.execute(
+        "CREATE TABLE market_extra_cache (symbol TEXT, date TEXT, data_type TEXT, "
+        "payload_json TEXT, updated TEXT)"
+    )
+    c.execute(
+        "CREATE TABLE recommendations (symbol TEXT, date TEXT, category TEXT, next_day_pct REAL)"
+    )
     for sym, day, vol, close, fin in rows:
         c.execute(
             "INSERT INTO daily_kline VALUES (?,?,?,?,?,?,?,?,?)",
@@ -223,6 +230,41 @@ def _bar_db(rows: list[tuple[str, str, float, float, int]]) -> sqlite3.Connectio
         )
     c.commit()
     return c
+
+
+def test_fund_pct_and_system_history_are_preloaded_locally() -> None:
+    """主力净占比 + 系统出现史走本地缓存预加载，模型不必逐票调两个工具。
+
+    `market_extra_cache` 是主循环每轮已在写的；`recommendations` 是历史账。
+    两者都不该触发新网络请求，且必须进同一份提示词（幻觉巡检基准同源）。
+    """
+    import json
+
+    from scanner.config import now_beijing
+
+    rows = [("SZ300001", f"2026-11-{d:02d}", 1000.0, 10.0, 1) for d in range(1, 13)]
+    conn = _bar_db(rows)
+    today = now_beijing().date().isoformat()
+    conn.execute(
+        "INSERT INTO market_extra_cache VALUES (?,?,?,?,?)",
+        ("300001", today, "fund_flow", json.dumps({"main_pct": 4.01}), today),
+    )
+    conn.executemany(
+        "INSERT INTO recommendations VALUES (?,?,?,?)",
+        [
+            ("SZ300001", "2026-11-10", "T2", 5.2),
+            ("SZ300001", "2026-11-16", "T1", -1.3),
+        ],
+    )
+    conn.commit()
+
+    feat = build_features(conn, ["SZ300001"])["SZ300001"]
+    assert feat.fund_pct == 4.01
+    assert feat.history is not None and "系统史 2次" in feat.history
+    assert "最近11-16/T1/次日-1.3%" in feat.history
+
+    block = render_feature_block({"SZ300001": feat}, ["SZ300001"])
+    assert any("主力 +4.0%" in line and "系统史 2次" in line for line in block)
 
 
 def test_intraday_partial_bar_does_not_produce_vol_ratio() -> None:
@@ -315,6 +357,45 @@ def test_intraday_note_only_shown_when_partial() -> None:
 #
 # 「目的是要修复旧数据的问题，而不是找出来提示」。
 # 故：陈旧票先联网补取实时日线、用真值重算特征；补不到才降级点名。
+
+
+def test_research_preload_backfills_stale_bars(monkeypatch) -> None:
+    """研究入口的本地预加载会把陈旧票补成可用特征，不写库只改提示词对象。"""
+    rows = [("SZ300612", f"2026-07-{d:02d}", 1000.0, 10.0, 1) for d in range(20, 28)]
+    rows += [("SZ300999", "2026-11-12", 1000.0, 10.0, 1)]
+    conn = _bar_db(rows)
+    remote = [
+        {"date": f"2026-10-{d:02d}", "close": 10.0 + d * 0.1, "high": 12.0, "volume": 1000.0}
+        for d in range(1, 26)
+    ]
+
+    class _Session:
+        def close(self):
+            pass
+
+    monkeypatch.setattr("scanner.api.make_session", lambda: _Session())
+    monkeypatch.setattr("scanner.api.fetch_kline", lambda session, sym, days: remote)
+
+    feat = build_features(conn, ["SZ300612"], backfill=True)["SZ300612"]
+    assert feat.backfilled is True
+    assert feat.is_stale is False
+    assert feat.pct_5d is not None
+
+
+def test_default_preload_never_fetches_remote(monkeypatch) -> None:
+    """`--materials` / 测试走默认路径：即便有陈旧票也不许出网。"""
+
+    def boom(*args, **kwargs):
+        raise AssertionError("默认预加载不得联网")
+
+    monkeypatch.setattr("scanner.api.fetch_kline", boom)
+    rows = [("SZ300612", f"2026-07-{d:02d}", 1000.0, 10.0, 1) for d in range(20, 28)]
+    rows += [("SZ300999", "2026-11-12", 1000.0, 10.0, 1)]
+    conn = _bar_db(rows)
+
+    feat = build_features(conn, ["SZ300612"])["SZ300612"]
+    assert feat.is_stale is True
+    assert feat.pct_5d is None
 
 
 def test_stale_symbol_is_backfilled_with_remote_bars() -> None:

@@ -27,11 +27,14 @@
 - `5日` / `10日` 累计涨幅 —— 位置（是不是已经涨过了）
 - `距20日高` —— 上方还有多少空间 / 是不是在冲前高
 - `量能` —— 今日量 / 前 5 日均量（放量确认）
-- `公告` —— 最近 3 条标题（雷点/催化）
+- `公告` —— 最近 2 条标题（雷点/催化）
+- `主力净占比` —— 主循环每轮已写 `market_extra_cache`，零新增请求
+- `系统史` —— `recommendations` 汇总成「出现次数 + 最近类别/次日」，不返回 15 行原文
 
 ## 纪律
 
-1. **纯本地**：只读 SQLite，零网络、零时钟（"今日"取 `daily_kline` 的 `MAX(date)`）。
+1. **本地优先**：只读 SQLite / 本地缓存，零新增网络；K 线 "今日"取 `daily_kline` 的
+   `MAX(date)`，资金流快照取 `market_extra_cache` 当日行（主循环已落库）。
 2. **不猜**：某票缺数据就**明说缺**（`5日 —`），不填 0、不留空 —— 模型会把空缺读成"没有异动"。
 3. **可失败**：任何异常退回"无特征"并让调用方照常构造提示词（预加载是增强，不是前置条件）。
 """
@@ -41,6 +44,9 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import date
+
+from scanner.db.queries import get_market_extra_cache
+from scanner.utils import EXTERNAL_FAILURES
 
 __all__ = [
     "SymbolFeatures",
@@ -64,6 +70,9 @@ _ANN_TITLE_CHARS = 28
 #: 同时能挡住所有真正的陈旧数据。用交易日历会把周末误判成陈旧。
 _MAX_STALE_DAYS = 7
 
+#: 预加载补取日线时回溯多少天（够算 10 日累计 + 20 日高点）。
+_BACKFILL_DAYS = 25
+
 
 @dataclass
 class SymbolFeatures:
@@ -81,6 +90,10 @@ class SymbolFeatures:
     stale_days: int = 0
     #: 特征由**联网补取的实时日线**算出（不是本地库）—— 说明本地曾陈旧、已补齐。
     backfilled: bool = False
+    #: 当日主力净占比（来自 `market_extra_cache`，主循环已写，零新增请求）。
+    fund_pct: float | None = None
+    #: 系统出现史压缩成一行（次数 + 最近类别/次日），避免模型逐票调 `get_stock_record`。
+    history: str | None = None
 
     @property
     def is_stale(self) -> bool:
@@ -101,13 +114,108 @@ def _pct_text(v: float | None, *, signed: bool = True) -> str:
     return f"{v:+.1f}%" if signed else f"{v:.1f}%"
 
 
+def _bare_symbol(symbol: str) -> str:
+    """`SZ300001` → `300001` —— `market_extra_cache` 存的是裸代码。"""
+    return symbol[2:] if len(symbol) == 8 and symbol[:2] in ("SH", "SZ", "BJ") else symbol
+
+
+def _system_history(conn: sqlite3.Connection, symbols: list[str]) -> dict[str, str]:
+    """一次 IN 查询把 `recommendations` 压成「次数 + 最近类别/次日」一行/票。
+
+    不返回逐条明细：实测模型为 8 只票调 3~8 次 `get_stock_record`，而它真正用的只有
+    「是不是老面孔 + 最近一次表现」。失败/表缺失 fail-open（返回空 dict）。
+    """
+    if not symbols:
+        return {}
+    ph = ",".join("?" * len(symbols))
+    try:
+        rows = conn.execute(
+            f"SELECT symbol, date, category, next_day_pct FROM recommendations "  # noqa: S608
+            f"WHERE symbol IN ({ph}) ORDER BY symbol, date DESC",  # noqa: S608
+            symbols,
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    grouped: dict[str, list[tuple]] = {}
+    for sym, day, category, ndp in rows:
+        grouped.setdefault(str(sym), []).append((day, category, ndp))
+    out: dict[str, str] = {}
+    for sym, items in grouped.items():
+        day, category, ndp = items[0]
+        out[sym] = (
+            f"系统史 {len(items)}次 最近{str(day)[5:]}/{category or '—'}/次日{_pct_text(_f(ndp))}"
+        )
+    return out
+
+
+def _fund_flow_pct(conn: sqlite3.Connection, symbols: list[str]) -> dict[str, float]:
+    """当日主力净占比（`market_extra_cache`）—— 主循环已在写，零新增外呼。"""
+    if not symbols:
+        return {}
+    # 生产库里个股用带前缀键（SZ300001），ETF 用裸键（159915）——两种都试。
+    bare = [_bare_symbol(s) for s in symbols]
+    keys = list(dict.fromkeys([*symbols, *bare]))
+    cached = get_market_extra_cache(conn, keys, "fund_flow")  # 内部已兜 sqlite3.Error
+    reverse = dict(zip(bare, symbols, strict=True))
+    out: dict[str, float] = {}
+    for key, payload in cached.items():
+        pct = _f(payload.get("main_pct"))
+        sym = key if key in symbols else reverse.get(key)
+        if sym is not None and pct is not None:
+            out[sym] = pct
+    return out
+
+
+def _backfill_missing(feats: dict[str, SymbolFeatures], symbols: list[str]) -> None:
+    """对陈旧 / 完全没有本地 bar 的票联网补日线，用真值重算特征。
+
+    ⚠ 只改**本次提示词用的特征对象**，不写 `daily_kline`：写库是单独的 data-only 回填动作，
+      分析期不碰库，避免把未定稿盘中 bar 当收盘值固化。补不到就保持置空（fail-open）。
+    """
+    missing = [s for s in symbols if (f := feats.get(s)) and (f.is_stale or f.pct_5d is None)]
+    if not missing:
+        return
+    from scanner.api import fetch_kline, make_session
+    from scanner.config import now_beijing
+
+    try:
+        session = make_session()
+    except EXTERNAL_FAILURES:
+        return
+    today = now_beijing().date().isoformat()
+    try:
+        for sym in missing:
+            try:
+                bars = fetch_kline(session, sym, days=_BACKFILL_DAYS) or []
+            except EXTERNAL_FAILURES:
+                continue
+            ordered = sorted(bars, key=lambda x: str(x["date"]))
+            rows: list[tuple[str, float | None, float | None, float | None]] = [
+                (str(b["date"]), b["close"], b["high"], b["volume"]) for b in ordered
+            ]
+            if not rows:
+                continue
+            # 远程最后一根可能正是今天盘中那根 ⇒ 量能置 None（与本地 finalized 同纪律）。
+            fresh = features_from_bars(
+                sym, rows, newest_finalized=rows[-1][0] != today, backfilled=True
+            )
+            fresh.announcements = list(feats[sym].announcements)
+            feats[sym] = fresh
+    finally:
+        session.close()
+
+
 def build_features(
     conn: sqlite3.Connection,
     symbols: list[str],
     *,
     ann_limit: int = _ANN_LIMIT,
+    backfill: bool = False,
 ) -> dict[str, SymbolFeatures]:
     """按票算本地特征。`symbols` 为空或查询失败时返回空 dict（调用方照常继续）。
+
+    `backfill=True` 时对陈旧 / 无本地 bar 的票联网补一次日线（仅研究入口用，
+    `--materials` 与测试默认 False ⇒ 零出网）。
 
     "今日" 取 `daily_kline` 的 `MAX(date)` —— **不用 `date.today()`**：盘前/周末跑分析时
     今天还没有 K 线，按自然日取会全表 miss，把「没数据」渲染成「没涨」。
@@ -232,6 +340,18 @@ def build_features(
                 title = title[:_ANN_TITLE_CHARS] + "…"
             target.announcements.append(f"{str(r[1])[5:]} {title}")
 
+    # 先补取（会替换 feat 对象），再补系统史/资金流，保证两者挂到最终对象上。
+    if backfill:
+        _backfill_missing(out, syms)
+
+    # 本地补充（零新增网络）：系统出现史 + 当日主力净占比。
+    # 这两项与 K 线新鲜度无关，故不放在 `features_from_bars` 里。
+    history = _system_history(conn, syms)
+    funds = _fund_flow_pct(conn, syms)
+    for sym, feat in out.items():
+        feat.history = history.get(sym)
+        feat.fund_pct = funds.get(sym)
+
     return out
 
 
@@ -293,7 +413,10 @@ def render_feature_block(features: dict[str, SymbolFeatures], order: list[str]) 
     """
     if not features:
         return []
-    lines = ["本地特征（已替你算好，**不必**再调 get_kline / get_announcements 重复取）："]
+    lines = [
+        "本地特征（已替你算好，**不必**再调 get_kline / get_announcements；"
+        "主力净占比/系统史也已带上，只有要净额明细或逐条出现史时才调 get_fund_flow / get_stock_record）："
+    ]
     if any(f.intraday_partial for f in features.values()):
         lines.append(
             "（⚠ 当前为**盘中**：今日成交量尚未走完，`量能` 无法与前 5 个完整交易日比较，"
@@ -326,6 +449,8 @@ def render_feature_block(features: dict[str, SymbolFeatures], order: list[str]) 
             parts.append("公告 " + "；".join(feat.announcements))
         else:
             parts.append("公告 —")
+        parts.append(f"主力 {_pct_text(feat.fund_pct)}")
+        parts.append(feat.history or "系统史 —")
         if feat.backfilled:
             # 标出「这行是联网补的」：与本地算的同样可信，但模型据此知道
             # 本地库对这只票覆盖不全（可解释它为什么在 daily_kline 里查不到）。
