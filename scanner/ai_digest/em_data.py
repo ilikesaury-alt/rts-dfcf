@@ -13,6 +13,8 @@
 
 ⚠ 分时资金流的 `klt` 必须是 **101**（当日分钟曲线）：`klt=1`（分时）返回 0 点 —— 实测。
 ⚠ 龙虎榜的 `TRADE_DATE` 是 `'2020-07-01 00:00:00'` 这种带时间戳的字符串，取日期要 split。
+⚠ 所有东财请求显式 `proxies=eastmoney_no_proxy()`：系统代理会把本应直连的东财请求打成
+  `ProxyError`（2026-10-22 资金流、2026-11-17 资金流趋势实测），此处与 `market_extra` 同源。
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from datetime import timedelta
 from typing import Any
 
 from scanner.config import now_beijing
+from scanner.net import EASTMONEY_HEADERS, eastmoney_no_proxy
 from scanner.utils import EXTERNAL_FAILURES
 
 __all__ = [
@@ -95,6 +98,8 @@ def fetch_announcements(symbol: str, limit: int = 8) -> list[dict[str, Any]]:
                 "client_source": "web",
                 "stock_list": _bare(symbol),
             },
+            headers=EASTMONEY_HEADERS,
+            proxies=eastmoney_no_proxy(),
             timeout=_TIMEOUT,
         )
         payload = resp.json()
@@ -148,6 +153,8 @@ def fetch_announcements_batch(symbols: list[str], *, days: int = 30) -> dict[str
                     "begin_time": begin.isoformat(),
                     "end_time": end.isoformat(),
                 },
+                headers=EASTMONEY_HEADERS,
+                proxies=eastmoney_no_proxy(),
                 timeout=_TIMEOUT,
             )
             payload = resp.json()
@@ -205,6 +212,8 @@ def fetch_market_announcements(day: str, page: int = 1, page_size: int = _ANN_PA
                 "begin_time": day,
                 "end_time": day,
             },
+            headers=EASTMONEY_HEADERS,
+            proxies=eastmoney_no_proxy(),
             timeout=_TIMEOUT,
         )
         payload = resp.json()
@@ -246,6 +255,8 @@ def fetch_intraday_fund_flow(symbol: str) -> list[dict[str, Any]]:
                 "klt": "101",
                 "lmt": "0",
             },
+            headers=EASTMONEY_HEADERS,
+            proxies=eastmoney_no_proxy(),
             timeout=_TIMEOUT,
         )
         payload = resp.json()
@@ -297,6 +308,8 @@ def fetch_dragon_tiger(symbol: str, limit: int = 5) -> list[dict[str, Any]]:
                 "source": "WEB",
                 "client": "WEB",
             },
+            headers=EASTMONEY_HEADERS,
+            proxies=eastmoney_no_proxy(),
             timeout=_TIMEOUT,
         )
         payload = resp.json()
