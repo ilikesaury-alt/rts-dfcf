@@ -39,11 +39,11 @@ python scripts/shadow_feature_backtest.py [--no-fetch]   # B 段新数据源的�
 python scripts/buy_priority_report.py    # 盘中买入优先级反馈报告（独立脚本·只读库·~8s）
 # 旧样本外验证门 / 概率校准 / P&L 回测已归档 legacy/，不进主程序命令（见 legacy/README.md）。
 
-# B 段 AI 分析（手动触发，不轮询，不挂主循环）
-python -m scanner.ai_digest                  # research（默认）：模型自己调工具查真实数据后给判断
-python -m scanner.ai_digest --mode analyze      # 按项目自己的历史分层命中率（948 条标签）算账
-python -m scanner.ai_digest --mode transcribe    # 纯转述（过全部红线；exit 3 = 被拦）
-python -m scanner.ai_digest --materials | --demo | --json
+# AI 分析（手动触发，不轮询，不挂主循环）
+python -m scanner.ai_digest                  # 常用：research 默认，读面板原文，模型自查后给判断
+python -m scanner.ai_digest --brief | --limit 3  # 一屏 / 每区前3只（想快就用）
+python pick.py --clipboard                   # 指定票：终端按 c → 剪贴板（等价 --symbols）
+python -m scanner.ai_digest --mode analyze | --mode transcribe | --materials | --demo | --json  # B段算账/转述·零出网自检
 # 退出码 0/1未配置凭据/2上游失败/3触红线/4读库失败/5幻觉巡检发现编造数字
 # 凭据 MAGPIE_* 放 .env。红线守卫与 worker 侧 explain/guard.ts 双端同源：
 # 只改一侧即红（test_ts_slot_vocabulary_is_covered_by_python_guard）。

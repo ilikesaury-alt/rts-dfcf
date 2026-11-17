@@ -99,126 +99,151 @@ python scripts/buy_priority_report.py --date 2026-11-04  # 复盘某个交易日
 
 ## 3. AI 分析
 
-### 3.0 面板原文调研（**默认入口，2026-11-11**）
+### 3.1 命令总表（一块看全，常用在前）
 
 ```bash
-python -m scanner.ai_digest                       # 读 logs/panel_md/股票池.md（终端最新一轮原文）
-python -m scanner.ai_digest --brief               # 一屏报告：每票一行 + 整体判断
-python -m scanner.ai_digest --limit 3             # 每区只取前 3 只（区是并列段，按区截断）
-python -m scanner.ai_digest --materials           # 只打模型会收到的提示词，不出网
-python -m scanner.ai_digest --out 报告.txt --max-calls 40
+# ① 常用
+python -m scanner.ai_digest                       # 默认：读面板全部区，research 自查后给判断
+python -m scanner.ai_digest --brief               # 一屏报告
+python -m scanner.ai_digest --limit 3             # 每区只取前 3 只（按区截断）
+python -m scanner.ai_digest --materials           # 零出网：先看模型会收到什么（排错第一命令）
+
+# ② 指定票
+python pick.py --clipboard                        # 终端按 c → 剪贴板（v1池选 + 沪深飙升三段）
+python pick.py 300319 300666 SZ300770             # 直接给代码
+python pick.py --clipboard --limit 5               # 只取前 5 只
+python pick.py --clipboard --out 报告.txt --max-calls 50
+python pick.py --symbols-file list.txt
+python -m scanner.ai_digest --symbols SZ300916,SZ300293
+
+# ③ 指定区域 / 数据源
+python -m scanner.ai_digest --source panel                         # 明确读 股票池.md 全部区
+python -m scanner.ai_digest --exclude crosssection                 # 只分析旧的 v1池选 + 沪深飙升两区
+python -m scanner.ai_digest --source print                         # 只看 B 段终端最后一次打印行
+python -m scanner.ai_digest --source view                          # 桌面版 view_snapshot
+python -m scanner.ai_digest --source log --date 2026-11-17         # B 段当日整日过门账
+python -m scanner.ai_digest --source crosssection                  # 只看 ≡ 横截面异动区
+python -m scanner.ai_digest --source crosssection --brief
+python -m scanner.ai_digest --source crosssection --materials
+python -m scanner.ai_digest --source crosssection --mode analyze
+python -m scanner.ai_digest --source all                           # B 段 + 横截面两区合并
+python -m scanner.ai_digest --source all --mode analyze
+python -m scanner.ai_digest --source print --materials             # 核对输入=终端最后打印行
+
+# ④ 模式
+python -m scanner.ai_digest --mode analyze                         # B 段按历史分层命中率算账（不落库）
+python -m scanner.ai_digest --mode transcribe                      # B 段纯转述（触红线 exit 3）
+
+# ⑤ 提速 / 输出控制
+python -m scanner.ai_digest --brief --out 简报.md
+python -m scanner.ai_digest --json
+python -m scanner.ai_digest --max-calls 10 --max-rounds 3          # 想快就压预算（默认 30/8）
+python -m scanner.ai_digest --no-prefetch-features                 # 不预加载本地特征
+python -m scanner.ai_digest --no-archive                           # 本次不留档
+python -m scanner.ai_digest --archive-dir D:/复盘
+
+# ⑥ 自检 / 找报告
+python -m scanner.ai_digest --demo                                 # 内置样例，零库零网
+ls -lt logs/ai_digest/ | head
+ls logs/ai_digest/2026-11-17/                                      # 按发起日分目录
 ```
 
-**输入 = 终端面板原文**（`◆ v1 池选` + `◆ 沪深飙升` 三段），不是扁平代码清单：模型拿到的是
-各区自己那一套列（池选的 `类别·先验` / 飙升段的 `层`·`量比`·`换手`）**和各自的口径原文**，
-并被明确要求「各区口径互不相同，不要跨区排名」。来源缺失时自动回退 print → view → log。
+**三条先记住**：
 
-⚠ `analyze` / `transcribe` 不吃面板 —— 它们按设计就是**榜外异动段（B 段）转述**，
-`--source panel` 只对 `--mode research`（默认）生效。
+1. 默认 = `research` + `auto`（先读 `logs/panel_md/股票池.md`，失败再回退 print → view → log）。
+   面板里 `v1 池选`、`沪深飙升` 三段、`≡ 横截面异动` 全都在，**日常不用加 `--source`**。
+2. `pick.py` 是 `--symbols` / `--clipboard` 的简写；终端按 `c` 复制的是
+   `v1 池选 + 沪深飙升三段`（不含 `≡` 区）。上限 50 只，票多用 `--limit N`。
+3. 每次成功都自动归档到 `logs/ai_digest/YYYY-MM-DD/`；`--demo` / `--materials` /
+   无凭据 / 上游失败不归档。
 
-### 3.1 自选清单批量调研（指定代码）
+默认 research 会让模型**自己查真实数据**：K线 / 实时报价 / 资金流 / 分时 / 多日资金流趋势 /
+概念板块 / 板块热力图 / 市场概览 / 飙升榜 / 公告 / 龙虎榜 / 系统出现史，最后给
+**排序 + 入选依据 + 风险 + 证据强弱 + 整体判断**。幻觉巡检：正文里的数字必须能在
+提示词或工具输出里找到，编造就标出（退出码 5）。
 
-```bash
-python pick.py                            # 交互粘贴（空行结束；粘贴整段文本也行）
-python pick.py 300319 300666 SZ300770     # 直接给代码（30/00/60/68 开头，一次 ≤50 只）
-python pick.py --clipboard                # 读 Windows 剪贴板（终端按 c 复制后用这个；完整表格也行）
-python pick.py --symbols-file list.txt    # 从文本文件读（一行一个代码或名字）
-python pick.py --clipboard --limit 10     # 面板票多时只取前 10 只（按面板顺序 = 优先级）
-python pick.py --clipboard --out 报告.txt --max-calls 50   # 存盘 + 调工具预算
-```
+本地已预加载：K线派生特征（陈旧票会先补取一次）、最近公告、当日主力净占比、系统出现史；
+只有要净额明细或逐条出现史时才让模型调 `get_fund_flow` / `get_stock_record`。
 
-等价长命令：`python -m scanner.ai_digest --symbols ...`（`pick.py` 只是简写）。
+### 3.2 三种模式
 
-**一条完整链路**：扫描器终端按 `c` → 两区完整原文进剪贴板 → `python pick.py --clipboard` → 报告。
-面板三段加起来常超 20 只，**上限 50**；超了用 `--limit N` 取前 N 只。
+| 模式 | 命令（见总表③/④） | 输入 / 用途 |
+|---|---|---|
+| **research（默认）** | `python -m scanner.ai_digest` | 面板原文（或 `--symbols` 清单）；模型自查后给分档判断 |
+| analyze | `--mode analyze` | 默认落回 **B 段**冻结素材；按项目历史分层命中率算账，主观判断、不落库 |
+| transcribe | `--mode transcribe` | 同上，纯转述；触红线 exit 3 |
 
-模型会**自己查真实数据**（K线 / 实时报价 / 资金流 / 分时 / 多日资金流趋势 / 概念板块 /
-板块热力图 / 市场概览 / 飙升榜 / 公告 / 龙虎榜 / 系统出现史），最后给**排序 + 入选依据 +
-风险 + 证据强弱 + 整体判断**。
-- 幻觉巡检：正文里每个数字必须在工具输出里逐字出现，编造就当场标出（退出码 5）。
-- 退出码：0 成功 / 1 未配凭据 / 2 上游失败 / 3 参数或代码有问题 / 5 幻觉巡检拦截。
-- 凭据：`MAGPIE_BASE_URL` / `MAGPIE_API_KEY` / `MAGPIE_MODEL` 放 `.env`。
-- ⚠ **网关连不上先 ping 域名**：`trycloudflare` 临时隧道进程一停域名就停止解析
-  （表现为 `ConnectionError`，与凭据/代码无关）。本地网关 `http://127.0.0.1:3425/v1`
-  是同一个 magpie 网关，但**依赖 pi 在跑**。
+⚠ `analyze` / `transcribe` 默认**不吃面板**；`--source panel` 只对 `--mode research` 生效。
+`--source crosssection --mode analyze` 是显式指定横截面层后的算账模式，两者不冲突。
 
-### 3.2 外部 AI 分析库（**已评估，不采用**）
+### 3.3 数据源 `--source`
 
-曾接入 `simonlin1212/TradingAgents-astock`（上游 TradingAgents 119k★ 的 A 股特化 fork：
-7 个 A 股分析师 + 多空辩论 + 三方风控），实测能出 17 段 / 2.5 万字的中文决策报告。
-**2026-11-03 用户决策：不采用，已删除。**
+| 值 | 读什么 | 什么时候用 |
+|---|---|---|
+| `auto`（默认） | panel → print → view → log 依次回退 | 日常 |
+| `panel` | `股票池.md` 全部区 | 明确要「我屏幕上那份」 |
+| `print` | `offboard_print_snapshot` 终端最后一次打印行 | 只要 B 段最后一次屏幕行；输出带 `print_seq` 与数据年龄 |
+| `view` / `log` | 桌面版 view_snapshot / 当日 launch_log 整日过门账 | B 段复盘 |
+| `crosssection` | `股票池.md` 的 `≡ 横截面异动` 区 | 只看横截面层 |
+| `all` | B 段（库）+ 横截面（面板）两区合并 | 明确只要这两个观察区、不要 v1 池选 |
 
-理由：**效率是前提**。外部库单只票 2~5 分钟（30~50 次 LLM 调用）、批量半小时以上，
-而次日异动是分钟级生意 —— 分析再好，出得晚就没用了。它的价值投资视角
-（财报/估值/护城河）与本项目的目标函数（次日 ≥7% hit 率）也不必然同向。
+`--exclude crosssection` 在 `panel/auto` 源上把 `≡ 区` 从提示词和素材里拿掉，等价于只分析旧的
+`v1 池选 + 沪深飙升` 两区；与 `--source crosssection` 互斥。观察层本身不受影响。
 
-⇒ 本项目只保留**自建 research 模式**（`python pick.py`，单只约 1~2 分钟）。
-新增维度一律先过延迟闸；慢手段只能进离线旁路，不进主循环/终端/飞书。
+横截面层的唯一真源是 `股票池.md` 的 `≡ 区`（终端第三个并列区），**不是数据库表**。
+横截面层无历史命中率基准（结构上无法自证胜率）⇒ 不挂 `baseline.stats`；与 B 段各自成
+素材（id 前缀 `sb.` / `cs.`），**不跨区混排**。面板存档只保留最近一轮快照，因此归档文件
+会带上模型实际看到的素材，面板被覆盖后仍可复算。详见 `docs/CROSSSECTION-TERMINAL-BLOCK.md` §11。
 
+⚠ `--limit N` 不是选区域，是**每区截断**；想只看某个区用上表的 `--source`。
 
-### 3.3 榜外异动（B 段）AI 分析
+### 3.4 常用参数
 
-```bash
-python -m scanner.ai_digest                      # 默认 research：模型自己查数据后给判断
-python -m scanner.ai_digest --mode analyze       # 按项目历史分层命中率算账（主观判断，不落库）
-python -m scanner.ai_digest --mode transcribe    # 纯转述（过全部红线；触红线 exit 3）
-python -m scanner.ai_digest --materials          # 只打素材，不出网
-python -m scanner.ai_digest --demo               # 内置样例（零库零网，验证整条链路）
-python -m scanner.ai_digest --json               # 机器可读（含幻觉巡检结果）
-python -m scanner.ai_digest --brief              # 简洁报告：每票一行、≤12 行，不打印查询记录/素材核对表
-python -m scanner.ai_digest --brief --out 简报.md  # 落盘同一份简洁报告（不进库）
-python -m scanner.ai_digest --source print --materials  # 核对输入=终端最后打印行（带 seq 与数据年龄）
-```
+| 参数 | 作用 |
+|---|---|
+| `--brief` | 一屏报告；只压篇幅，system 提示词 / 红线 / 幻觉巡检照旧 |
+| `--limit N` | 每区只取前 N 只（并列段各自截断，不是全表 top-N） |
+| `--materials` | 只打模型会收到的提示词/素材，零出网；排错先看这个 |
+| `--json` | 机器可读输出（含 `unverified_numbers`），仍归档 |
+| `--out FILE` | 在自动归档之外**额外**存一份到指定文件 |
+| `--no-archive` / `--archive-dir D:/复盘` | 本次不留档 / 改归档根目录 |
+| `--max-calls N` / `--max-rounds N` | 工具预算，默认 30 次 / 8 轮；⚠ 压到 2 轮会撞上「预算耗尽→总结器」多打一轮（实测反而 88s），别拿它当提速手段 |
+| `--no-prefetch-features` | 不把本地特征（5日/10日累计、距20日高、公告）预加载进提示词 |
+| `--summarize-always` | 强制独立总结器重写，**多一次 LLM 往返 ≈ +20~30s**，别为了排版开 |
 
-### 横截面异动层（**并入统一 AI 分析**，不是独立命令）
+**退出码**：0 成功 / 1 未配凭据 / 2 上游失败 / 3 触红线或参数错 / 4 读库失败 /
+5 幻觉巡检发现编造数字。
 
-```bash
-python -m scanner.ai_digest --source crosssection --mode analyze   # 只分析横截面层
-python -m scanner.ai_digest --source crosssection --materials      # 只打素材，不出网
-python -m scanner.ai_digest --source crosssection --brief          # 一屏报告
-python -m scanner.ai_digest --source all --mode analyze            # 两区合并一次分析
-```
+**凭据**：`MAGPIE_BASE_URL` / `MAGPIE_API_KEY` / `MAGPIE_MODEL` 放 `.env`。
 
-**数据源 = `logs/panel_md/股票池.md` 的 `≡ 横截面异动` 区**（终端每轮整份覆盖写入，
-是终端面板的**第三个并列区**：v1 池选 / 沪深飙升 / 横截面异动）。
+**模型档选择（2026-11-17 实测，同一面板每档 2 次）**：整次耗时几乎全在 LLM 往返，不在工具
+（工具 10~13s/轮已并行），且**最后一轮写报告**抖动最狠。`group/deepseek-v4-1-flash` 59/61s、
+末轮 27~30s 最稳；`group/cheap-routing` 80/185s（末轮 18~157s）；`group/hy4-flash` 55/88s；
+`group/think-routing`、`group/glm-5-3-flash` 单轮 12~15s 更慢；`group/tool-routing` 24s 但
+**一次工具都不调**（拿预取特征糊报告、17 只票全塞「再等等」）⇒ 快而不可用。
+每轮实测耗时看 stderr 的 `[i] LLM 往返 … [i] 工具取数 …`。
+⚠ 网关连不上先 ping 域名：`trycloudflare` 临时隧道进程一停域名就停止解析
+（表现为 `ConnectionError`，与凭据/代码无关）。本地网关 `http://127.0.0.1:3425/v1`
+是同一个 magpie 网关，但**依赖 pi 在跑**。
 
-- **唯一真源是文件**，不是数据库表、不是独立命令（`panel.py` 此前只认 `◆`/`—`，
-  `≡` 区被静默丢弃；已修）。
-- **区域之间彼此独立**：两区各自成素材（id 前缀 `sb.` / `cs.`）、各自用合适的提示词、
-  **不跨区混排**。横截面层**无历史命中率基准**（结构上无法自证胜率）⇒ 不挂 `baseline.stats`。
-- 走**完全相同**的管线：素材构建 / 提示词 / 幻觉巡检 / 归档 / 报告格式。
-  退出码同主命令：0/1/2/3/4/5。
-
-⚠ **代价**：面板存档只保留**最近一次快照** ⇒ 盘后复盘看到的是**最后一轮**，不是全天。
-这是「单一真源」的固有取舍（另见 `CS_KEEP_ROUNDS`，见下）。
-⇒ 为此**归档文件带模型实际看到的素材**（正文之后、免责声明之前），
-面板被覆盖后仍可用同一份输入复算核对。
-
-详见 `docs/CROSSSECTION-TERMINAL-BLOCK.md` §11。
-
-数据源 `--source auto|print|view|log|crosssection|all`（默认 auto / print =
-`offboard_print_snapshot` 终端最后一次打印的行，含留存行、顺序即屏幕顺序；输出带 `print_seq`
-与「数据 X 分钟前 / 非实时」）。`crosssection`/`all` 见上一节。
-`view`=桌面版 view_snapshot，`log`=launch_log 整日过门账。`--limit N` 控制分析前 N 只。
-`--brief` 只压篇幅与命令侧附加内容：system 提示词、红线守卫、基准率排序、幻觉巡检全部照旧。
-
-### 3.4 报告归档（每次跑完自动留一份，人工复盘用）
-
-```bash
-python -m scanner.ai_digest                       # 自动归档 + 终端打印（无需加参数）
-python -m scanner.ai_digest --no-archive          # 本次不留档
-python -m scanner.ai_digest --archive-dir D:/复盘  # 改归档根目录
-ls logs/ai_digest/2026-11-13/                   # 按发起日分目录，同秒跑两次加 _2 后缀
-```
+### 3.5 报告归档
 
 默认路径 `logs/ai_digest/YYYY-MM-DD/HHMMSS_<mode>_<source>.md`（在 gitignore 的 `/logs` 下）。
-`--out FILE` 是**额外**再存一份到指定路径；`--json` 也归档（`[归档]` 走 stderr，不污染 stdout）。
-`--demo` / `--materials` / 无凭据 / 上游失败不产生档案（那些没有模型报告）。
+`--out FILE` 是**额外**再存一份；`--json` 也归档（`[归档]` 走 stderr，不污染 stdout）。
 
 ⚠ **只归档，不回灌**：档案是「模型当时说了什么」的主观判断，不是事实。它不进库、
 不进飞书、不进主循环，**也不进任何提示词**；文件里刻意不含次日绩效（防前视偏差）。
 要验证 AI 判断有没有用，自己按 `(date, symbol)` 去库里 join 标签，别把结果补写回档案。
 真正持续累计的信息在 DB：冻结信号快照 + 次日标签 → 分层命中率。
+
+### 3.6 外部 AI 分析库（**已评估，不采用**）
+
+曾接入 `simonlin1212/TradingAgents-astock`（7 个 A 股分析师 + 多空辩论 + 三方风控），
+实测能出 17 段 / 2.5 万字报告。**2026-11-03 用户决策：不采用，已删除。**
+
+理由：**效率是前提**。外部库单只票 2~5 分钟（30~50 次 LLM 调用）、批量半小时以上，
+而次日异动是分钟级生意；其价值投资视角与本项目目标函数（次日 ≥7% hit）也不必然同向。
+新增维度一律先过延迟闸；慢手段只能进离线旁路，不进主循环/终端/飞书。
 
 ## 4. 数据回填 / 修复 / 诊断
 
@@ -268,6 +293,7 @@ python -m scanner.crosssection                   # 打印当日最新一轮 p95+
 ```
 > 并列观察层：只写 `crosssection_signal`，**不进 B 段冻结表、不改回测口径**；终端块用 `≡` 起头（`◆`/`—` 是面板区/段标题，会污染 `ai_digest/panel.py` 解析）。
 > ⚠ 快照刷新从 300s 缩到约 60s 会推高 push2delay 请求量，遇东财 IP 限频先 `RTS_CROSSSECTION=0` 关掉或调大 `RTS_CROSSSECTION_TTL_SEC`。
+> 读法（2026-11-17 改）：≡ 段按**当日出现轮次**分两组——`持续 ≥5 轮`（最多 5 条，先看这组）+ `新进 本轮首现`（最多 3 条，噪声高发只看动静），2~4 轮的中间带不展示；阈值单源 `config_crosssection`（`CS_PERSIST_MIN` / `CS_TOP_PERSIST` / `CS_TOP_NEW`）。
 
 ---
 
