@@ -36,6 +36,22 @@ CS_P95 = 0.95
 # 终端展示条数（落库仍是全部 p95+ 信号，不受此限）。
 CS_TOP_N = 8
 
+# 展示分组（2026-11-17 用户决策：「≡ 区变化太快，眼花缭乱不知道咋选」）。
+#
+# 实测依据（2026-11-17 当日 50 轮 / 756 只票）：展示行相邻两轮重疰**中位数只有 1/8**
+# （几乎整屏换新）；当日只出现 1 轮的票占 34%（261/756），但反复出现 ≥5 轮的有
+# 180 只、≥10 轮 52 只 —— 稳定子集确实存在，只是旧排序把「质量层」放在「轮次」
+# 之前，而 1 轮窗口里「全正·配合」噪声极易达成 ⇒ 稳定票被噪声顶下去了。
+#
+# ⇒ 终端按**出现轮次**分两组展示（同一份信号，只分组、不增删票、不给方向）：
+#   「持续」当日累计 >=CS_PERSIST_MIN 轮（最多 CS_TOP_PERSIST 条）
+#   「新进」当日首次出现（persist==1，最多 CS_TOP_NEW 条）
+#   中间 2~CS_PERSIST_MIN-1 轮**不展示**：实测这一带是换屏主贡献者，且还没证明持续性。
+# 两个上限之和 == CS_TOP_N，改总数时三处一起改（守卫 test_shows_persist_and_new_groups）。
+CS_PERSIST_MIN = 5
+CS_TOP_PERSIST = 5
+CS_TOP_NEW = CS_TOP_N - CS_TOP_PERSIST
+
 # 落库保留轮次：每轮最多 CS_TOP_N 量级的行，留 50 轮 ≈ 一个交易日，
 # 与 local_view_cache._SNAPSHOT_LIMIT 同款「只留最近」语义。
 CS_KEEP_ROUNDS = 50
@@ -123,6 +139,9 @@ __all__ = [
     "CS_WARMUP_ROUNDS",
     "CS_P95",
     "CS_TOP_N",
+    "CS_PERSIST_MIN",
+    "CS_TOP_PERSIST",
+    "CS_TOP_NEW",
     "CS_KEEP_ROUNDS",
     "CS_DIVERGENCE_TOL",
     "CS_MIN_AMOUNT",

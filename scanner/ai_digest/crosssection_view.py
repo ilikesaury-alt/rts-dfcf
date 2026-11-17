@@ -36,6 +36,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from scanner.ai_digest.material import OffboardMaterials, build_materials
+from scanner.crosssection import signal_sort_key
 
 __all__ = [
     "CROSSSECTION_FIELDS",
@@ -122,18 +123,13 @@ def from_panel_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _cs_sort_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
-    """排序：**持续轮次降序 → 分位降序 → 代码**（与终端展示口径一致）。
+    """排序：**展示分组(持续>中间>新进) → 质量层 → 轮次 → 分位 → 额涌 → 量比**
+    （与终端展示同源，口径只写在 `crosssection.signal_sort_key`）。
 
-    为什么不用 B 段的 `_order_key`：那是按榜外段的字段排的，
-    横截面层没有 tier/主力占比等字段，套用会得到无意义的顺序。
+    排序键定义在 `scanner.crosssection.signal_sort_key`，终端 `≡` 块与这里
+    共用同一份，避免「面板看到一套顺序、AI 素材又是另一套」的漂移。
     """
-    persist = row.get("persist")
-    rank = row.get("pct_rank")
-    return (
-        -(persist if isinstance(persist, int | float) else 0),
-        -(rank if isinstance(rank, int | float) else 0.0),
-        str(row.get("symbol") or ""),
-    )
+    return signal_sort_key(row)
 
 
 def build_crosssection_materials(

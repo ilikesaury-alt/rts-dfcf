@@ -254,7 +254,8 @@ def build_materials(
     - `segment_note`：本区口径说明（模型据此知道「这是什么区域」）。
     - `id_prefix`：素材 id 前缀（`sb` = 榜外段；`cs` = 横截面层）。**必须不同**，
       否则两区同代码的票会互相覆盖。
-    - `sort_key`：排序键（默认 `_order_key`）。横截面层按「持续轮次降序」排。
+    - `sort_key`：排序键（默认 `_order_key`）。横截面层按「展示分组(持续/新进)→质量闸→轮次→分位」排
+      （口径单源 `crosssection.signal_sort_key`，2026-11-17 分组前提）。
     - `with_market`：是否附市况条目（B 段有，横截面层独立 ⇒ 不附）。
     """
     ordered = sorted(rows, key=sort_key or _order_key)

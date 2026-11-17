@@ -12,14 +12,12 @@
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
 
 from scanner.ai_digest import llm as llm_mod
 from scanner.ai_digest.crosssection_view import (
-    CROSSSECTION_FIELDS,
     build_crosssection_materials,
     from_panel_rows,
 )
@@ -45,6 +43,43 @@ _CROSS_LINE_MISSING = (
 
 
 # ── 契约 1：股票池.md 是唯一真源 ─────────────────────────────────
+
+
+def test_terminal_block_with_groups_survives_panel_parse(tmp_path: Path) -> None:
+    """分组后的真终端块（含「持续/新进」组标题行）必须仍被 panel 解析成全部数据行。
+
+    ⚠ 这是两端的唯一接触面：`format_terminal_block` 手工拼行，
+    `panel._CROSSSECTION_ROW_RE` 手工匹配 —— 改任一侧都要跑这条。
+    """
+    import scanner.crosssection as cs
+    from scanner.ai_digest.panel import parse_panel_md
+
+    def _sig(symbol: str, persist: int) -> dict:
+        return {
+            "symbol": symbol, "name": "票" + symbol[-2:], "price": 10.0, "percent": 1.0,
+            "speed_1": 0.1, "speed_3": 0.2, "speed_5": 0.3,
+            "amount_surge": 2.0, "vol_ratio": 1.5, "pct_rank": 0.99,
+            "consistency": "全正", "volume_price": "配合", "persist": persist,
+        }
+
+    sigs = sorted(
+        [_sig("SZ300001", 7), _sig("SZ300002", 6), _sig("SZ300003", 1)],
+        key=cs.signal_sort_key,
+    )
+    with cs._lock:
+        cs._state["last_signals"] = sigs
+    cs._set_health(enabled=True, state="ok", warmup=True, valid_rows=20, signals=len(sigs))
+    block = cs.format_terminal_block()
+    assert "持续（" in block and "新进（" in block, "本用例专测分组标题，块里必须有它们"
+
+    md = f"# 股票池\n\n## 快照 2026-11-17 10:00\n\n```text\n{block}\n```\n"
+    path = tmp_path / "股票池.md"
+    path.write_text(md, encoding="utf-8")
+    snap = parse_panel_md(str(path))
+    assert snap is not None
+    region = next(r for r in snap.regions if "横截面" in r.title)
+    assert [r["symbol"] for r in region.rows] == ["SZ300001", "SZ300002", "SZ300003"]
+    assert region.rows[0]["轮次"] == "7"
 
 
 def test_panel_parser_recognizes_crosssection_region() -> None:
@@ -313,6 +348,18 @@ def test_crosssection_materials_have_no_baseline() -> None:
     assert not any(i.id == "baseline.stats" for i in mats.items)
 
 
+def test_crosssection_sort_key_matches_terminal() -> None:
+    """AI 素材排序必须与终端 `≡` 块同源（改键只改 `signal_sort_key`）。"""
+    from scanner.ai_digest.crosssection_view import _cs_sort_key
+    from scanner.crosssection import signal_sort_key
+
+    row = {
+        "persist": 5, "pct_rank": 0.99, "amount_surge": 2.0, "vol_ratio": 1.5,
+        "consistency": "全正", "volume_price": "配合",
+    }
+    assert _cs_sort_key(row) == signal_sort_key(row)
+
+
 def test_crosssection_note_states_independence() -> None:
     """本区口径必须写明「与榜外异动段彼此独立」与「不预判方向」。"""
     from scanner.ai_digest.crosssection_view import CROSSSECTION_NOTE
@@ -380,18 +427,18 @@ def test_archive_payload_accepts_materials() -> None:
 
     from scanner.ai_digest.archive import ArchivePayload, render_archive
 
-    base = dict(
-        title="T",
-        label="L",
-        mode="analyze",
-        source="s",
-        source_desc="d",
-        model="m",
-        total=1,
-        shown=1,
-        text="正文",
-        generated_at=datetime(2026, 11, 16, 14, 0, 0),
-    )
+    base = {
+        "title": "T",
+        "label": "L",
+        "mode": "analyze",
+        "source": "s",
+        "source_desc": "d",
+        "model": "m",
+        "total": 1,
+        "shown": 1,
+        "text": "正文",
+        "generated_at": datetime(2026, 11, 16, 14, 0, 0),
+    }
     plain = render_archive(ArchivePayload(**base))
     with_mat = render_archive(ArchivePayload(**base, materials="素材行A\n素材行B"))
 

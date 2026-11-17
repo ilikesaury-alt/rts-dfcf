@@ -55,6 +55,13 @@
 靠这两个符号切区块与段，新段若用它们会污染面板解析。该块在 `capture_stdout()` 内
 打印，因此自动进入 `save_panel_round()` / 一键复制 / 面板上报，无需改 ScanView。
 
+**展示分两组（2026-11-17）**：`持续`（当日累计 `>=CS_PERSIST_MIN` 轮，最多
+`CS_TOP_PERSIST` 条）在前，`新进`（当轮首现，最多 `CS_TOP_NEW` 条）在后，中间
+2~4 轮的票不展示。动因：用户反馈「变化太快、眼花缭乱不知道咋选」；实测当日展示行
+相邻两轮重叠中位数只有 1/8，而反复出现 ≥5 轮的票有 180/756 只 —— 稳定子集本就在，
+只是旧排序把单轮噪声（「全正·配合」在 1 轮窗口极易达成）排在了轮次前面。
+分组只改展示，不增删票、不给方向、不改落库口径。
+
 ## 开关 / CLI
 
 `RTS_CROSSSECTION=0` 整体关闭；`RTS_CROSSSECTION_TTL_SEC` 调快照节流。
@@ -75,7 +82,7 @@ import time
 from collections import deque
 from datetime import datetime
 from statistics import median
-from typing import Any
+from typing import Any, Mapping
 
 from scanner import market_extra
 from scanner.config import (
@@ -90,17 +97,20 @@ from scanner.config import (
     CS_MIN_AMOUNT,
     CS_NOMINAL_ROUND_SEC,
     CS_P95,
+    CS_PERSIST_MIN,
+    CS_SOURCE,
     CS_SPEED_1_WEIGHT,
     CS_SPEED_3_WEIGHT,
     CS_STALE_RATIO,
     CS_STALE_WARN_INTERVAL_SEC,
     CS_TOP_N,
+    CS_TOP_NEW,
+    CS_TOP_PERSIST,
     CS_TTL_SEC,
-    CS_SOURCE,
     CS_VOL_RATIO_WEIGHT,
     CS_WARMUP_ROUNDS,
-    CS_XQ_PAGES,
     CS_XQ_PAGE_SIZE,
+    CS_XQ_PAGES,
     CS_XQ_RANK_WINDOW,
 )
 from scanner.data_source import ak_to_xq
@@ -117,7 +127,7 @@ if sys.platform == "win32":
     if callable(_reconfigure):
         _reconfigure(encoding="utf-8")
 
-__all__ = ["observe", "health", "format_terminal_block", "main"]
+__all__ = ["observe", "health", "format_terminal_block", "signal_sort_key", "main"]
 
 # 环形缓冲：主循环单线程写（observe），仅测试/CLI 读。deque 的 maxlen 自动淘汰最旧。
 _ring: deque[dict[str, Any]] = deque(maxlen=CS_BUFFER_ROUNDS)
@@ -217,8 +227,6 @@ def _fetch_from_xueqiu() -> dict[str, dict]:
       `float_market_capital` → `float_cap`
     另带 `name`，与东财 f14 同用途。
     """
-    import requests as _rq
-
     session = _xq_get_session()
     base = "https://stock.xueqiu.com/v5/stock/screener/quote/list.json"
     out: dict[str, dict] = {}
@@ -643,7 +651,7 @@ def observe(conn: sqlite3.Connection, board_items: list[dict] | None = None) -> 
         # 深度不足时（雪球首轮）短窗口取 None，_zscore 里当 0 参与。
         def _diff_win(back: int, n: int) -> dict[str, float | None]:
             if depth < back + 1:
-                return {sym: None for sym in cur_round}
+                return dict.fromkeys(cur_round)
             prior = rounds[-(back + 1)]["symbols"]
             return _speed(cur_round, prior, now_ts - rounds[-(back + 1)]["ts"], n)
 
@@ -706,7 +714,7 @@ def observe(conn: sqlite3.Connection, board_items: list[dict] | None = None) -> 
                     "persist": persist_counts.get(sym, 1),
                 }
             )
-        signals.sort(key=lambda s: (s["pct_rank"], s["amount_surge"] or 0.0), reverse=True)
+        signals.sort(key=signal_sort_key)
 
     round_seq = int(now.strftime("%H%M%S"))
     if signals:
@@ -817,6 +825,73 @@ def _volume_price(amount_surge: float | None, speed_1: float | None) -> str:
     return "—"
 
 
+def _rank_tier(s: Mapping[str, Any]) -> int:
+    """展示质量层：全正·配合 > 全正·— > 全正·背离/混合·配合 > 其余。
+
+    只看本层自算字段（consistency / volume_price），不引入外部区域数据。
+    """
+    cons = s.get("consistency")
+    vp = s.get("volume_price")
+    if cons == "全正" and vp == "配合":
+        return 3
+    if cons == "全正" and vp == "—":
+        return 2
+    if cons == "全正" and vp == "背离":
+        return 1
+    if cons == "混合" and vp == "配合":
+        return 1
+    return 0
+
+
+#: 展示分组码（`signal_sort_key` 的首个分量，也是一一对应）：越大越靠前。
+#: 终端 `≡` 块按它分两段展示；中间组（`_GROUP_MID`）**不展示**（见 config 注释）。
+_GROUP_PERSIST = 2
+_GROUP_MID = 1
+_GROUP_NEW = 0
+
+
+def _display_group(s: Mapping[str, Any]) -> int:
+    """展示分组（**纯层内**：只用 `persist`，即本层自己的轮次计数器）。
+
+    持续 = 当日累计出现 >=`CS_PERSIST_MIN` 轮；新进 = 当轮首现（persist <= 1）；
+    其余（2 <= persist < CS_PERSIST_MIN）归中间组，**不展示、但仍参与排序**
+    （要让 AI 素材与终端同源，就不能从排序里挖一个洞）。
+    """
+    persist = int(s.get("persist") or 0)
+    if persist >= CS_PERSIST_MIN:
+        return _GROUP_PERSIST
+    if persist <= 1:
+        return _GROUP_NEW
+    return _GROUP_MID
+
+
+def signal_sort_key(s: Mapping[str, Any]) -> tuple[float, ...]:
+    """终端 `≡` 块与 AI 素材**共用**的展示排序键（2026-11-17 改分组优先）。
+
+    先分组（稳定锚点），再比质量/持续/强度：
+      展示分组（持续 > 中间 > 新进）
+      → 质量层(全正·配合 > 全正·— > 其余) → 当日轮次 → 横截面分位 → 额涌 → 量比。
+    返回「越小越靠前」的元组（各键取负）。轮次/分位等缺值按 0 参与，
+    与 `_zscore` 的缺值纪律一致：缺值是「未知」而非「很强」。
+
+    ## 为什么分组提到质量层前面（2026-11-17）
+
+    旧键是「质量层 → 轮次 → 分位…」，而 `全正·配合` 在 **1 轮窗口**里噪声极易
+    达成 ⇒ 实测当日展示行相邻两轮重叠**中位数 1/8**（几乎整屏换新），人读不出重点
+    （用户原话：「变化太快，眼花缭乱不知道咋选」）。稳定的票确实存在（当日 756 只
+    里 180 只出现过 >=5 轮），但被单轮噪声顶下去了。
+    分组后：持续组内部仍按质量→轮次→分位排（组内质量闸不变）。
+    """
+    return (
+        -float(_display_group(s)),
+        -float(_rank_tier(s)),
+        -float(s.get("persist") or 0),
+        -float(s.get("pct_rank") or 0.0),
+        -float(s.get("amount_surge") or 0.0),
+        -float(s.get("vol_ratio") or 0.0),
+    )
+
+
 def _fmt_num(v: float | None, digits: int = 2, suffix: str = "") -> str:
     if v is None or not isinstance(v, (int, float)) or not math.isfinite(v):
         return "—"
@@ -868,26 +943,58 @@ def format_terminal_block() -> str:
             lines.append(f"  预热中 {depth}/{CS_WARMUP_ROUNDS}（60s 一轮，约 {left} 分钟后产出）")
 
     with _lock:
-        top = list(_state["last_signals"])[:CS_TOP_N]
+        signals = list(_state["last_signals"])
+    # 已按 `signal_sort_key` 排序（分组码在最前）⇒ 按组切片即保持组内顺序。
+    persist_rows = [s for s in signals if _display_group(s) == _GROUP_PERSIST][:CS_TOP_PERSIST]
+    new_rows = [s for s in signals if _display_group(s) == _GROUP_NEW][:CS_TOP_NEW]
+    top = (persist_rows + new_rows)[:CS_TOP_N]
     if top:
         # 图例（层内判据，见 _consistency / _volume_price）：
         # 一致性 = 1m/3m/5m 是否同号；量价 = 放量是否伴随价格；轮次 = 当日出现过几轮。
         lines.append("  判据：一致性(全正/全负/混合) · 量价(配合/背离/—) · 轮次(当日出现过几轮)")
-    for i, s in enumerate(top, 1):
+        lines.append(
+            f"  分组：持续 ≥{CS_PERSIST_MIN}轮(最多 {CS_TOP_PERSIST} 条) · "
+            f"新进 本轮首现(最多 {CS_TOP_NEW} 条) · 中间 2~{CS_PERSIST_MIN - 1} 轮不展示"
+        )
+        lines.append("  排序：组内质量(全正·配合 > 全正·— > 其余) → 轮次 → 分位 → 额涌 → 量比")
+
+    def _row(i: int, s: Mapping[str, Any]) -> str:
         # 层内一致性三件套（2026-11-16）：持续轮次 / 三窗口同向 / 量价配合。
         # 全部由本层自算字段得出 —— 不读榜单、不读资金流缓存、不读 B 段。
         cons = s.get("consistency") or "混合"
         vp = s.get("volume_price") or "—"
         persist = s.get("persist") or 1
-        lines.append(
+        return (
             f"  {i}. {s['symbol']} {s['name']} {s['price']:.2f} {s['percent']:+.2f}% | "
             f"1m {_fmt_num(s.get('speed_1'), 2, '%')} 3m {_fmt_num(s.get('speed_3'), 2, '%')} "
             f"5m {_fmt_num(s.get('speed_5'), 2, '%')} | 额涌 {_fmt_num(s.get('amount_surge'), 2, '×')} "
             f"量比 {_fmt_num(s.get('vol_ratio'), 2)} 分位 {s['pct_rank']:.3f} | "
             f"{cons}·{vp}·{persist}轮"
         )
-    if h.get("warmup") and state not in ("stale", "no_data") and not top:
+
+    # 组标题是**普通续行**：不以 `◆`/`—` 起头（那会污染 `ai_digest/panel.py` 切块），
+    # 也不匹配 `panel._CROSSSECTION_ROW_RE`（无 `序号.` 前缀）⇒ 解析器静默跳过它们。
+    idx = 0
+    if persist_rows:
+        lines.append(f"  持续（当日 ≥{CS_PERSIST_MIN} 轮 · {len(persist_rows)} 只，先看这组）")
+        for s in persist_rows:
+            idx += 1
+            lines.append(_row(idx, s))
+    elif top:
+        lines.append(f"  （本轮无 ≥{CS_PERSIST_MIN} 轮持续票）")
+    if new_rows:
+        lines.append(f"  新进（本轮首现 · {len(new_rows)} 只，单轮噪声高发，只看动静）")
+        for s in new_rows:
+            idx += 1
+            lines.append(_row(idx, s))
+    if h.get("warmup") and state not in ("stale", "no_data") and not top and not signals:
         lines.append("  （本轮无 p95+ 榜外异动）")
+    elif not top:
+        # 有信号但都不进两组（全在 2~5 轮的中间带）⇒ 如实说明，不能当成「没异动」。
+        lines.append(
+            f"  （本轮 {len(signals)} 只 p95+ 信号均不足 {CS_PERSIST_MIN} 轮，"
+            f"尚未证明持续性，本轮不展示）"
+        )
     return "\n".join(lines)
 
 

@@ -473,7 +473,8 @@ class TestTerminalBlockShowsJudgement:
     def test_block_contains_judgement_columns(self, monkeypatch, db):
         feed = _Feed()
         _install_feed(monkeypatch, feed)
-        _run_rounds(monkeypatch, db, feed, 7)
+        # 12 轮：预热 6 轮后 ROCKET 持续入选 ⇒ persist 达 7 轮，落「持续」组（会展示）。
+        _run_rounds(monkeypatch, db, feed, 12)
         block = cs.format_terminal_block()
         assert block.startswith("≡")
         # 图例 + 每条信号尾部都有「一致性·量价·轮次」
@@ -491,6 +492,141 @@ class TestTerminalBlockShowsJudgement:
         for line in block.splitlines()[1:]:
             assert not line.lstrip().startswith("◆")
             assert not line.lstrip().startswith("—")
+
+
+class TestSignalRanking:
+    """终端排序键：**展示分组**先于质量闸（2026-11-17 用户决策，见 config 注释）。"""
+
+    def test_persist_group_beats_quality(self):
+        # 持续组（persist>=CS_PERSIST_MIN）**整组在前** —— 哪怕它的质量层更差。
+        # 理由：单轮窗口里「全正·配合」噪声极易达成，实测展示行相邻两轮重叠中位数 1/8，
+        # 稳定的票被单轮噪声顶掉（用户原话「眼花缭乱不知道咋选」）。
+        fresh_good = {
+            "symbol": "SZ300001", "persist": 3, "pct_rank": 0.95,
+            "amount_surge": 1.2, "vol_ratio": 1.0,
+            "consistency": "全正", "volume_price": "配合",
+        }
+        steady_meh = {
+            "symbol": "SZ300002", "persist": 9, "pct_rank": 0.999,
+            "amount_surge": 3.0, "vol_ratio": 5.0,
+            "consistency": "混合", "volume_price": "配合",
+        }
+        assert cs.signal_sort_key(steady_meh) < cs.signal_sort_key(fresh_good)
+
+    def test_within_persist_group_quality_still_first(self):
+        """同组内质量闸不变：5 轮 全正·配合 排在 6 轮 混合·— 之前。"""
+        good = {
+            "symbol": "SZ300001", "persist": 5, "pct_rank": 0.95,
+            "amount_surge": 1.2, "vol_ratio": 1.0,
+            "consistency": "全正", "volume_price": "配合",
+        }
+        meh = {
+            "symbol": "SZ300002", "persist": 6, "pct_rank": 0.999,
+            "amount_surge": 3.0, "vol_ratio": 5.0,
+            "consistency": "混合", "volume_price": "—",
+        }
+        assert cs.signal_sort_key(good) < cs.signal_sort_key(meh)
+
+    def test_within_same_tier_persist_then_pct(self):
+        base = {
+            "symbol": "SZ300001", "persist": 4, "pct_rank": 0.99,
+            "amount_surge": 2.0, "vol_ratio": 1.5,
+            "consistency": "全正", "volume_price": "配合",
+        }
+        less_persist = {**base, "symbol": "SZ300002", "persist": 3, "pct_rank": 0.999}
+        lower_pct = {**base, "symbol": "SZ300003", "persist": 4, "pct_rank": 0.98}
+        assert cs.signal_sort_key(base) < cs.signal_sort_key(lower_pct)
+        assert cs.signal_sort_key(lower_pct) < cs.signal_sort_key(less_persist)
+
+    def test_block_shows_sort_legend_and_observe_sorts(self, monkeypatch, db):
+        feed = _Feed()
+        _install_feed(monkeypatch, feed)
+        _run_rounds(monkeypatch, db, feed, 12)
+        block = cs.format_terminal_block()
+        assert "排序：组内质量" in block
+        assert "分组：持续" in block
+        with cs._lock:
+            sigs = list(cs._state["last_signals"])
+        assert sigs == sorted(sigs, key=cs.signal_sort_key)
+
+
+class TestDisplayGrouping:
+    """终端按「持续 / 新进」两组展示（2026-11-17 用户决策）。
+
+    动因：`≡` 区每 60s 几乎整屏换新（实测展示行相邻两轮重叠中位数 1/8），
+    读不出重点。分组只改**展示**：不增删票、不给方向、不改落库口径。
+    """
+
+    @staticmethod
+    def _sig(symbol: str, *, persist: int, rank: float = 0.99) -> dict:
+        return {
+            "symbol": symbol, "name": "票" + symbol[-2:], "price": 10.0, "percent": 1.0,
+            "speed_1": 0.1, "speed_3": 0.2, "speed_5": 0.3,
+            "amount_surge": 2.0, "vol_ratio": 1.5, "pct_rank": rank,
+            "consistency": "全正", "volume_price": "配合", "persist": persist,
+        }
+
+    def _render(self, sigs: list[dict]) -> str:
+        sigs = sorted(sigs, key=cs.signal_sort_key)
+        with cs._lock:
+            cs._state["last_signals"] = sigs
+        cs._set_health(
+            enabled=True, state="ok", warmup=True, valid_rows=20, signals=len(sigs)
+        )
+        return cs.format_terminal_block()
+
+    def test_config_caps_sum_to_top_n(self):
+        from scanner.config import CS_PERSIST_MIN, CS_TOP_N, CS_TOP_NEW, CS_TOP_PERSIST
+
+        assert CS_TOP_PERSIST + CS_TOP_NEW == CS_TOP_N, "三处上限需同步改（展示总数不变）"
+        assert CS_PERSIST_MIN > 1, "持续门必须严于「新进」（persist<=1）"
+        assert CS_TOP_PERSIST >= 1 and CS_TOP_NEW >= 1
+
+    def test_persist_group_printed_before_new_group(self):
+        block = self._render([
+            self._sig("SZ300001", persist=1, rank=0.999),   # 新进（分位更高）
+            self._sig("SZ300002", persist=7, rank=0.960),   # 持续（分位更低）
+        ])
+        i_persist = block.index("持续（")
+        i_new = block.index("新进（")
+        assert i_persist < i_new
+        # 序号连续（面板解析器靠「序号.」取行，不重复编号）
+        assert "  1. SZ300002" in block
+        assert "  2. SZ300001" in block
+
+    def test_mid_band_is_not_displayed_but_counted(self):
+        block = self._render([self._sig("SZ300003", persist=3)])
+        assert "SZ300003" not in block, "2~4 轮属噪声带，不展示"
+        assert "均不足" in block and "1 只" in block, "有信号却不展示时必须如实说明"
+
+    def test_group_caps_are_enforced(self):
+        from scanner.config import CS_TOP_NEW, CS_TOP_PERSIST
+
+        persist = [self._sig(f"SZ30{i:04d}", persist=9 - i // 2) for i in range(1, 9)]
+        fresh = [self._sig(f"SZ31{i:04d}", persist=1) for i in range(1, 6)]
+        block = self._render(persist + fresh)
+        shown = [ln for ln in block.splitlines() if ln.lstrip()[:1].isdigit()]
+        assert len(shown) == CS_TOP_PERSIST + CS_TOP_NEW
+        # 每组各自的帽子生效：持续组的第 6 只不出现在块里
+        assert block.count("SZ30") == CS_TOP_PERSIST
+        assert block.count("SZ31") == CS_TOP_NEW
+
+    def test_empty_persist_group_says_so(self):
+        block = self._render([self._sig("SZ300004", persist=1)])
+        assert "本轮无 ≥5 轮持续票" in block
+        assert "新进（" in block
+
+    def test_group_headers_keep_panel_parsable(self):
+        """组标题行不得被 `panel._CROSSSECTION_ROW_RE` 当数据行匹配。"""
+        from scanner.ai_digest.panel import _CROSSSECTION_ROW_RE
+
+        block = self._render([
+            self._sig("SZ300005", persist=8), self._sig("SZ300006", persist=1),
+        ])
+        headers = [ln for ln in block.splitlines() if "（" in ln and "轮" in ln]
+        assert headers, "应有组标题行"
+        for ln in headers:
+            assert _CROSSSECTION_ROW_RE.match(ln) is None, f"组标题被误认为数据行：{ln}"
 
 # -- 10. 雪球数据源（2026-11-16）--
 #
