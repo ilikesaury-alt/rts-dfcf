@@ -63,3 +63,8 @@ graphify-out/
 .vitest/
 /.openchamber
 .alma-snapshots
+
+# 图标生成产物（`desktop/make_icon.py` 可重跑；入库的只有 electron 用的 icon.ico）
+/desktop/icon-*.ico
+/desktop/icon-*-preview.png
+/desktop/*.bak-*
