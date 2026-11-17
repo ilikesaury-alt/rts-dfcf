@@ -52,6 +52,7 @@ from scanner.view.model import COLS_HOT, COLS_POOL
 __all__ = [
     "PanelRegion",
     "PanelSnapshot",
+    "exclude_regions",
     "load_panel_md",
     "parse_panel_text",
     "parse_panel_md",
@@ -211,6 +212,22 @@ def limit_per_region(snap: PanelSnapshot, limit: int | None) -> PanelSnapshot:
             if r.rows
         ),
     )
+
+def exclude_regions(snap: PanelSnapshot, keywords: tuple[str, ...] | list[str]) -> PanelSnapshot:
+    """按区标题关键字排除区（`--exclude crosssection` 的单源实现）。
+
+    区标题原文由面板解析得来，这里只做包含匹配，不重写区名/口径。
+    """
+    keys = tuple(k for k in keywords if k)
+    if not keys:
+        return snap
+    return PanelSnapshot(
+        date=snap.date,
+        time=snap.time,
+        dropped=snap.dropped,
+        regions=tuple(r for r in snap.regions if not any(k in r.title for k in keys)),
+    )
+
 
 def parse_panel_text(text: str) -> PanelSnapshot | None:
     """面板原文（含 ```text 代码块）→ 结构化快照；找不到表格返回 None。"""

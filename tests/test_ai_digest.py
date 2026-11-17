@@ -462,6 +462,40 @@ def test_cli_demo_materials_offline(capsys):
     assert "segment.note" in out and "sb.SZ300758.tier" in out
 
 
+def test_exclude_crosssection_keeps_old_panel_regions(digest_db, monkeypatch, tmp_path):
+    """`--exclude crosssection` 必须把面板缩回旧的 v1 池选 + 沪深飙升两区。"""
+    import scanner.ai_digest.__main__ as cli
+    import scanner.ai_digest.panel as panel_mod
+    from scanner.ai_digest.panel import PanelRegion, PanelSnapshot
+
+    snap = PanelSnapshot(
+        date="2026-11-17",
+        time="11:00",
+        regions=(
+            PanelRegion(title="v1 池选 — 新票优先", columns=("代码",), rows=({"symbol": "SZ300001"},)),
+            PanelRegion(title="沪深飙升 · 极有可能大涨", columns=("代码",), rows=({"symbol": "SZ300002"},)),
+            PanelRegion(title="横截面异动 · 11:00", columns=("代码",), rows=({"symbol": "SZ300003"},)),
+        ),
+    )
+    monkeypatch.setattr(panel_mod, "load_panel_md", lambda: (snap, str(tmp_path / "股票池.md")))
+    monkeypatch.setattr(cli, "resolve_db_path", lambda: str(digest_db))
+
+    args = cli._parse_args(["--source", "panel", "--exclude", "crosssection"])
+    info = cli._resolve_rows(args)
+    assert info["source"] == "panel"
+    assert all("横截面" not in r.title for r in info["panel"].regions)
+    assert {r["symbol"] for r in info["rows"]} == {"SZ300001", "SZ300002"}
+
+
+def test_exclude_crosssection_conflicts_with_crosssection_source():
+    """两个互斥开关必须报错，不能静默返回空输入。"""
+    import scanner.ai_digest.__main__ as cli
+
+    args = cli._parse_args(["--source", "crosssection", "--exclude", "crosssection"])
+    with pytest.raises(cli.OffboardSourceError):
+        cli._resolve_rows(args)
+
+
 def test_cli_without_credentials_exits_1_and_still_prints_materials(capsys, monkeypatch):
     """未配置凭据：不出网、明说原因，但素材照打（用户能看到「AI 会看到什么」）。"""
     import scanner.ai_digest.__main__ as cli
@@ -880,7 +914,7 @@ class _FakeEmResp:
 def _fake_requests(payload):
     class _Mod:
         @staticmethod
-        def get(url, params=None, timeout=None):
+        def get(url, params=None, headers=None, proxies=None, timeout=None):
             return _FakeEmResp(payload)
 
     return _Mod
@@ -958,6 +992,40 @@ def test_dragon_tiger_returns_subsequent_returns(monkeypatch):
     assert rows[0]["date"] == "2020-07-01"  # 带时间戳的日期要截断
     assert rows[0]["d1"] == 2.22 and rows[0]["d10"] == 17.66
     assert rows[0]["reason"] == "2家机构卖出"
+
+
+def test_eastmoney_ai_tools_bypass_system_proxy(monkeypatch):
+    """AI 调研的五个东财请求都必须显式绕开系统代理（2026-11-17 ProxyError 事故）。
+
+    本机 Windows 系统代理开着：requests 默认路由会把本应直连的 push2his / datacenter
+    打成 `ProxyError`。`market_extra` / `data_source` 已有同款守卫，只有 em_data 漏了。
+    """
+    from scanner.ai_digest import em_data
+    from scanner.net import EASTMONEY_HEADERS
+
+    class _RecordingRequests:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        def get(self, url, **kwargs):
+            self.calls.append({"url": url, **kwargs})
+            return _FakeEmResp({})
+
+    cases = (
+        ("公告", lambda: em_data.fetch_announcements("SZ300770", 5)),
+        ("批量公告", lambda: em_data.fetch_announcements_batch(["SZ300770"], days=1)),
+        ("全市场公告", lambda: em_data.fetch_market_announcements("2026-11-17", 1)),
+        ("资金流趋势", lambda: em_data.fetch_intraday_fund_flow("SZ300770")),
+        ("龙虎榜", lambda: em_data.fetch_dragon_tiger("SZ300770")),
+    )
+    for label, call in cases:
+        rec = _RecordingRequests()
+        monkeypatch.setattr(em_data, "_requests", lambda rec=rec: rec)
+        call()  # 空 payload 合法：各函数都应返回空结果，不抛
+        assert len(rec.calls) == 1, f"{label} 应只发一次请求"
+        got = rec.calls[0]
+        assert got["proxies"] == {"http": None, "https": None}, f"{label} 未绕开系统代理"
+        assert got["headers"] == EASTMONEY_HEADERS, f"{label} 未带浏览器请求头"
 
 
 def test_tool_failure_returns_human_text_not_exception(digest_db):

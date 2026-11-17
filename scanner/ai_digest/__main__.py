@@ -671,6 +671,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "crosssection=横截面异动层（只读 crosssection_signal）；"
         "all=榜外异动段 + 横截面异动层**两区合并**一次分析",
     )
+    p.add_argument(
+        "--exclude",
+        action="append",
+        choices=("crosssection",),
+        default=[],
+        help="排除某个并列区（当前支持 crosssection）；用于只分析旧的 v1 池选 + 沪深飙升两区",
+    )
     p.add_argument("--date", help="信号日 YYYY-MM-DD（仅 log 源；默认取最新）")
     p.add_argument(
         "--limit",
@@ -778,6 +785,10 @@ def _resolve_rows(args: argparse.Namespace) -> dict[str, Any]:
     两区由 `regions` 字段描述（`(标签, rows)` 列表）；单区域时只有一项，
     与合并前的行为**逐字一致**。
     """
+    excluded = tuple(getattr(args, "exclude", ()) or ())
+    if "crosssection" in excluded and args.source == "crosssection":
+        raise OffboardSourceError("--exclude crosssection 与 --source crosssection 冲突，不能同时给")
+
     if args.demo:
         demo_rows = [dict(r) for r in DEMO_ROWS]
         return {
@@ -799,13 +810,15 @@ def _resolve_rows(args: argparse.Namespace) -> dict[str, Any]:
         #     与榜外段**同源同文件** —— 「终端面板是唯一真源」的既有设计。
         #     ⚠ 它在文件里是**第三个并列区**（`≡ 横截面异动`），此前解析器不认 ⇒ 静默丢弃。
         cs_part: tuple[str, list[dict]] | None = None
-        if args.source in ("crosssection", "all"):
+        if args.source in ("crosssection", "all") and "crosssection" not in excluded:
             from scanner.ai_digest.crosssection_view import from_panel_rows
             from scanner.ai_digest.panel import load_panel_md
 
             panel_snap, panel_path = load_panel_md()
             cs_region = None
+            cs_date = cs_time = ""
             if panel_snap is not None:
+                cs_date, cs_time = panel_snap.date, panel_snap.time
                 for reg in panel_snap.regions:
                     if "横截面" in reg.title:
                         cs_region = reg
@@ -822,10 +835,10 @@ def _resolve_rows(args: argparse.Namespace) -> dict[str, Any]:
                     if not cs_rows:
                         raise OffboardSourceError("股票池.md 的横截面异动区没有数据行。")
                     return {
-                        "date": panel_snap.date,
+                        "date": cs_date,
                         "rows": cs_rows,
                         "source": "crosssection",
-                        "time": panel_snap.time,
+                        "time": cs_time,
                         "market": None,
                         # 本层无历史命中率基准（结构上无法自证）⇒ 不挂 baseline。
                         "baseline": None,
@@ -835,6 +848,17 @@ def _resolve_rows(args: argparse.Namespace) -> dict[str, Any]:
                 cs_part = ("横截面异动层", cs_rows)
 
         sb = _resolve_offboard(args, conn, baseline)
+        if excluded and sb.get("panel") is not None:
+            from scanner.ai_digest.panel import exclude_regions
+
+            # CLI 用英文开关，面板区标题是中文；映射只在这里做一处。
+            title_keys = tuple(
+                {"crosssection": "横截面"}.get(k, k) for k in excluded
+            )
+            sb["panel"] = exclude_regions(sb["panel"], title_keys)
+            sb["rows"] = [r for reg in sb["panel"].regions for r in reg.rows]
+            if not sb["rows"]:
+                raise OffboardSourceError(f"排除 { '/'.join(excluded) } 后面板已无数据")
         if cs_part is not None:
             sb["regions"] = [cs_part, ("榜外异动段", sb["rows"])]
             sb["source"] = "all"
@@ -936,10 +960,12 @@ def main(argv: list[str] | None = None) -> int:
         "view": f"view_snapshot {info['date']} {info['time']}（桌面版快照 · 含留存行/实时值）",
         "log": f"offboard_launch_log {info['date']}（整日过门账 · 信号值冻结快照）",
         "crosssection": f"股票池.md 横截面异动区 {info['date']} {info['time']}"
-        f"（横截面异动层 · 终端面板存档 · 持续轮次降序）",
+        f"（横截面异动层 · 终端面板存档 · 持续/新进分组→质量闸→轮次→分位）",
         "all": f"榜外异动段 + 横截面异动层（两区合并 · {info['date']} · 榜外段读库、横截面读股票池.md）",
         "demo": "内置样例",
     }[info["source"]]
+    if getattr(args, "exclude", ()):
+        source_desc += "（已排除 " + "、".join(args.exclude) + "）"
 
     # ⚠ 默认模式是 research，别把它标成「AI 转述」（那是 transcribe 的标题）。
     # research 模式的输入可以是「面板原文」（v1 池选 + 沪深飙升三段）或自选清单，
@@ -1035,7 +1061,11 @@ def main(argv: list[str] | None = None) -> int:
                 _feats = None
                 if args.prefetch_features:
                     try:
-                        _feats = build_features(conn, [str(r.get("symbol")) for r in rows_for_model if r.get("symbol")])
+                        _feats = build_features(
+                            conn,
+                            [str(r.get("symbol")) for r in rows_for_model if r.get("symbol")],
+                            backfill=True,
+                        )
                     except EXTERNAL_FAILURES as _e:  # 预加载失败不拦调研
                         print(f"[!] 本地特征预加载跳过: {type(_e).__name__}: {_e}", file=sys.stderr)
                 user_prompt_research = build_research_prompt(
