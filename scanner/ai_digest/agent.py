@@ -17,6 +17,8 @@ tool_calls`），我们把 `research.build_tools()` 的真实数据工具交给�
 from __future__ import annotations
 
 import json
+import sys
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -255,16 +257,19 @@ def build_research_prompt(
             f"{panel.total} 只，分 {len(panel.regions)} 个区。",
             "**各区口径互不相同，不要跨区排名** —— 它们本就是并列的独立观察段。",
             "",
-            "【横截面异动区怎么读（若存在）】",
-            "该区是创业板全集的**横截面分位**观察层（与飙升榜解耦、抢在榜单之前看到异动），",
-            "字段：现价/当日涨幅（相对昨收，可能为负）/1m/3m/5m 短窗涨速/额涌（成交额增量倍数）/",
-            "量比/分位（复合分在全市场的横截面分位，越高越异常）/判据/轮次（当日进入该区的轮次）。",
-            "判据两段：一致性（全正/全负/混合 = 三窗是否同号）·量价（配合/背离/— = 放量是否被价格确认）。",
-            "⚠ 该区**不预判方向**：当日涨幅为负不是利空证据；「累计跌但短窗全正」是正常组合。",
-            "⚠ 该区**没有历史命中率基准**（结构上无法自证胜率）—— 分档只能依据字段相对强弱与",
-            "  你工具查到的其它证据，不要引用不存在的基准率。",
-            "",
         ]
+        if any("横截面" in r.title for r in panel.regions):
+            head += [
+                "【横截面异动区怎么读】",
+                "该区是创业板全集的**横截面分位**观察层（与飙升榜解耦、抢在榜单之前看到异动），",
+                "字段：现价/当日涨幅（相对昨收，可能为负）/1m/3m/5m 短窗涨速/额涌（成交额增量倍数）/",
+                "量比/分位（复合分在全市场的横截面分位，越高越异常）/判据/轮次（当日进入该区的轮次）。",
+                "判据两段：一致性（全正/全负/混合 = 三窗是否同号）·量价（配合/背离/— = 放量是否被价格确认）。",
+                "⚠ 该区**不预判方向**：当日涨幅为负不是利空证据；「累计跌但短窗全正」是正常组合。",
+                "⚠ 该区**没有历史命中率基准**（结构上无法自证胜率）—— 分档只能依据字段相对强弱与",
+                "  你工具查到的其它证据，不要引用不存在的基准率。",
+                "",
+            ]
         body: list[str] = []
         for region in panel.regions:
             body += _region_lines(region)
@@ -319,6 +324,9 @@ def _run_calls_parallel(
 
     实测（2026-11-11）：12 个工具**串行全跑一遍只要 15 秒**，而整次调研 47~72 秒 ——
     瓶颈是 **LLM 往返轮次**（网关后面是推理模型，一轮 20~30 秒），不是工具本身。
+    2026-11-17 逐轮实测补充（同一面板 4 次）：工具 3.8~12.7s/轮，LLM 单轮 4~30s，
+    但**写报告那一轮抖动最大**（18s~157s，同一模型同一提示词）⇒ 提速手段是换模型档
+    （见 COMMANDS.md「模型档选择」），不是压轮数（压到 2 轮会触发总结器多打一轮）。
     模型一轮里能同时发多个调用（OpenAI `parallel_tool_calls` 默认允许），串行执行等于把
     这些调用的耗时**相加**，并行则取最大值。
 
@@ -537,7 +545,13 @@ def run_research(
             names.append(name)
 
         # 同一轮里的多个调用**并行**执行（省 LLM 往返，见 `_run_calls_parallel`）。
+        _tool_t0 = time.monotonic()
         outputs = _run_calls_parallel(jobs, ctx)
+        if jobs:
+            print(
+                f"[i] 工具取数 {time.monotonic() - _tool_t0:.1f}s（{len(jobs)} 个）",
+                file=sys.stderr,
+            )
         for tc, name, args, out in zip(runnable, names, [j[1] for j in jobs], outputs, strict=True):
             calls.append({"name": name, "args": args, "ok": bool(out) and "失败" not in out[:40]})
             blob_parts.append(f"[{name}] {out}")

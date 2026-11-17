@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -370,6 +372,7 @@ def chat(
         body["tools"] = tools
         body["tool_choice"] = "auto"
 
+    _t0 = time.monotonic()
     try:
         resp = requests.post(
             f"{cfg.base_url}/chat/completions",
@@ -435,6 +438,15 @@ def chat(
 
     calls = [v for _k, v in sorted(calls_by_index.items())]
     content = "".join(content_parts) if content_parts else None
+    # 耗时诊断（stderr，不影响 stdout / --json）：research 的瓶颈历来是 **LLM 往返**
+    # 而非工具本身（见 `agent._run_calls_parallel` docstring）—— 每次往返打一行实测秒数，
+    # 「慢」到底是多打了几轮还是单轮变慢，一眼可辨。
+    _t1 = time.monotonic()
+    print(
+        f"[i] LLM 往返 {_t1 - _t0:.1f}s（工具调用 {len(calls)} 个 / 文本 "
+        f"{len(content or '')} 字）",
+        file=sys.stderr,
+    )
     return {"content": content, "tool_calls": calls}
 
 
