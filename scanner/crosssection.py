@@ -12,7 +12,7 @@
 
 1. **并列观察层，不是结论源**：不写 `offboard_launch_log` / `offboard_rejections` /
    `recommendations` / `market_extra_cache`，不改 B 段任何冻结列与回测口径。
-   唯一产物 = `crosssection_signal` 表（m027）+ 终端 `≡` 块。
+   唯一产物 = `crosssection_signal` 表（m027 建表 / m028 补存档维度）+ 终端 `≡` 块。
 2. **无前视**：信号只能由**已经观测到**的快照算出；`round_seq` 就是产出时刻。
 3. **不新增网络请求路径**：复用 `market_extra` 的 URL / 字段码 / 批次 / 代理绕过；
    每轮通过 `fetch_fund_flow_rank(force=True)` 跳过 300s 进程 TTL，但结果仍写回
@@ -62,6 +62,22 @@
 只是旧排序把单轮噪声（「全正·配合」在 1 轮窗口极易达成）排在了轮次前面。
 分组只改展示，不增删票、不给方向、不改落库口径。
 
+## 画像 / 分节（2026-11-19 方案二，用户决策）
+
+终端 `≡` 段的数字列（1m/3m/5m/额涌/量比/分位）全部撤出终端（仍落库供回看），
+改打**中文画像串**：`位置档·持续N轮·动向·主力资金`（单源 `profile_text()`）。
+
+- **位置档**：按当日涨幅分 蓄势(<3%)/启动(3~7%)/加速(7~12%)/高位(≥12%)，
+  阈值单源 `config_crosssection.CS_POS_*`。回答用户「低位启动 vs 已冲高」。
+- **动向**：一致性×量价压成一个短语（量价齐升/稳步走强/反复放量/放量滞涨/
+  一致回落/动向不明）。
+- **主力资金**：快照本就带的 `main_net`（雪球 main_net_inflows / 东财 f62，
+  **零新增请求**）拼成 `主力+4213万`/`主力-2.1亿`；东财回退源无此字段时显「资金—」。
+
+持续组内再按**分节**归堆（描述性归类，不是档位推荐）：
+`低位·资金强 → 持续走强 → 高位加速 → 量价背离`（单源 `_section()`）；
+新进组压成一行摘要（无逐行）。三条边界不变：零新增请求、不给结论、不改落库口径。
+
 ## 开关 / CLI
 
 `RTS_CROSSSECTION=0` 整体关闭；`RTS_CROSSSECTION_TTL_SEC` 调快照节流。
@@ -91,13 +107,16 @@ from scanner.config import (
     CS_BUFFER_ROUNDS,
     CS_DIVERGENCE_TOL,
     CS_ENABLED,
-    CS_KEEP_ROUNDS,
+    CS_KEEP_DAYS,
     CS_LIMIT_UP_NEAR,
     CS_LIMIT_UP_PCT,
     CS_MIN_AMOUNT,
     CS_NOMINAL_ROUND_SEC,
     CS_P95,
     CS_PERSIST_MIN,
+    CS_POS_ACCEL,
+    CS_POS_HIGH,
+    CS_POS_LAUNCH,
     CS_SOURCE,
     CS_SPEED_1_WEIGHT,
     CS_SPEED_3_WEIGHT,
@@ -115,7 +134,7 @@ from scanner.config import (
 )
 from scanner.data_source import ak_to_xq
 from scanner.trading_session import is_trading_time
-from scanner.utils import to_float
+from scanner.utils import EXTERNAL_FAILURES, to_float
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +146,7 @@ if sys.platform == "win32":
     if callable(_reconfigure):
         _reconfigure(encoding="utf-8")
 
-__all__ = ["observe", "health", "format_terminal_block", "signal_sort_key", "main"]
+__all__ = ["observe", "health", "format_terminal_block", "signal_sort_key", "backfill_next_day", "main"]
 
 # 环形缓冲：主循环单线程写（observe），仅测试/CLI 读。deque 的 maxlen 自动淘汰最旧。
 _ring: deque[dict[str, Any]] = deque(maxlen=CS_BUFFER_ROUNDS)
@@ -339,6 +358,9 @@ def _valid_snapshot(payload: dict[str, dict]) -> dict[str, dict[str, Any]]:
             "name": str(row.get("name") or ""),
             # 雪球原生 5 分钟涨速（东财路径恒为 None）。保留原始值供 _native_speed。
             "percent5m": to_float(row.get("percent5m"), None),
+            # 当日主力净流入（元）：雪球= main_net_inflows；东财路径 rows 本就带 main_net。
+            # 只进画像/分节展示，不参与任何评分（复合分口径不变）。
+            "main_net": to_float(row.get("main_net"), None),
         }
     return out
 
@@ -707,6 +729,7 @@ def observe(conn: sqlite3.Connection, board_items: list[dict] | None = None) -> 
                     "vol_ratio": row["vol_ratio"],
                     "pct_rank": pcts[sym],
                     "on_board": False,
+                    "main_net": row.get("main_net"),
                     # 层内一致性判据（2026-11-16）：全部由本层自算字段得出，
                     # 不引入任何外部区域数据。供终端 `≡` 段直接展示。
                     "consistency": _consistency(speeds1.get(sym), speeds3.get(sym), speeds5.get(sym)),
@@ -746,13 +769,18 @@ def observe(conn: sqlite3.Connection, board_items: list[dict] | None = None) -> 
 
 
 def _persist(conn: sqlite3.Connection, date: str, round_seq: int, signals: list[dict], now: datetime) -> None:
-    """写本轮 p95+ 榜外信号并淘汰旧轮次（用主循环已有 conn，不新开连接/线程）。"""
+    """写本轮 p95+ 榜外信号并按天淘汰旧轮次（用主循环已有 conn，不新开连接/线程）。
+
+    保留策略（2026-11-19 从「50 轮」改）：按**天**保留最近 `CS_KEEP_DAYS` 天的
+    **整日全部轮次** —— persist 可离线从行数派生，次日标签可回填（m028）。
+    `main_net` 同批落库（m028）：画像「主力资金」段的离线回放依据。
+    """
     updated = now.isoformat()
     conn.executemany(
         "INSERT OR REPLACE INTO crosssection_signal("
         "date, round_seq, symbol, name, price, percent, speed_1, speed_3, speed_5, "
-        "amount_surge, vol_ratio, pct_rank, updated_at) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "amount_surge, vol_ratio, pct_rank, main_net, updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         [
             (
                 date,
@@ -767,20 +795,109 @@ def _persist(conn: sqlite3.Connection, date: str, round_seq: int, signals: list[
                 s["amount_surge"],
                 s["vol_ratio"],
                 s["pct_rank"],
+                s.get("main_net"),
                 updated,
             )
             for s in signals
         ],
     )
-    # 只留最近 CS_KEEP_ROUNDS 个**轮次**（与 local_view_cache._SNAPSHOT_LIMIT 同款语义，
-    # 但按 (date, round_seq) 轮级淘汰——只按行数淘汰会把最新一轮截断成半轮）。
+    # 只留最近 CS_KEEP_DAYS 个**交易日**：按 date 整日淘汰（轮次行全留），
+    # 跨日历史不再被截断。date 是 ISO 字符串，字典序 = 时间序。
     conn.execute(
-        "DELETE FROM crosssection_signal WHERE (date, round_seq) NOT IN ("
-        "SELECT date, round_seq FROM crosssection_signal "
-        "GROUP BY date, round_seq ORDER BY date DESC, round_seq DESC LIMIT ?)",
-        (CS_KEEP_ROUNDS,),
+        "DELETE FROM crosssection_signal WHERE date NOT IN ("
+        "SELECT DISTINCT date FROM crosssection_signal ORDER BY date DESC LIMIT ?)",
+        (CS_KEEP_DAYS,),
     )
     conn.commit()
+
+
+def backfill_next_day(conn: sqlite3.Connection, adapter: Any, signal_date: str | None = None) -> int:
+    """回填 `crosssection_signal.next_day_pct`（信号日收盘 → 次一交易日收盘，%），返回回填行数。
+
+    动机（2026-11-19 用户决策「存档+次日标签」）：旧策略只留 50 轮且无标签，
+    这层永远无法验证。标签是**行情事实**，不是结论 —— 分析只进离线脚本，
+    终端/飞书不读它（不给结论纪律不变）。
+
+    口径与 B 段同款（`offboard_watch.backfill_next_day`）：收盘 → 收盘，
+    K 线数据复用**榜外 K 线池** `offboard_kline_cache`（横截面票本就是榜外创业板票，
+    不另建第三张 K 线表；`daily_kline` 是榜单衍生池，语义不容污染）。
+
+    三个必须的防呆（与 B 段/onboard 同源，防呆①②复用 `_next_bar_is_next_session`）：
+      ① 信号日必须早于今天（WHERE `date < ?`）；
+      ② `nxt` 必须是 `d` 之后**紧邻的下一个交易日**（不得夹已登记交易日，
+         否则停牌/跳空会把「几天后」误当「次日」）；
+      ③ 🔴 `nxt < today` —— K 线池末根可能是当日盘中 bar，放行 `nxt == today`
+         会把「次日收盘」冻结成「次日 09:45 盘中价」且永不修正（B 段实测偏差
+         46% 的行 >2pp）。代价：标签**延后一个交易日**（T+2 交易日起补），同 B 段。
+
+    同一 (date, symbol) 当天可能有多轮行，标签只算一次、UPDATE 该组全部行。
+    交易时段每轮调用（与 B 段同节奏）；NULL 集通常只剩近 1~2 个交易日，
+    K 线池命中后零网络请求。
+    """
+    if conn is None:
+        return 0
+    today = _now().date().isoformat()
+    sql = "SELECT DISTINCT date, symbol FROM crosssection_signal WHERE next_day_pct IS NULL AND date < ?"
+    params: tuple = (today,)
+    if signal_date:
+        sql += " AND date = ?"
+        params = (signal_date,)
+    try:
+        rows = conn.execute(sql, params).fetchall()
+    except EXTERNAL_FAILURES as e:
+        logger.warning("横截面次日标签回填查询失败: %s: %s", type(e).__name__, e)
+        return 0
+    if not rows:
+        return 0
+
+    # 惰性 import：`offboard_watch` 是重量级模块，且避免任何潜在环（它不依赖本层）。
+    # `_next_bar_is_next_session` 复用 B 段单源（onboard_anomaly 同款），不复制第二份。
+    from scanner.offboard_watch import _next_bar_is_next_session, load_offboard_klines
+
+    by_symbol: dict[str, list[str]] = {}
+    for d, sym in rows:
+        by_symbol.setdefault(str(sym), []).append(str(d))
+
+    filled = 0
+    now = _now().isoformat(timespec="seconds")
+    bars_map = load_offboard_klines(conn, adapter, list(by_symbol))
+    for sym, dates in by_symbol.items():
+        bars = bars_map.get(sym) or []
+        by_date = {k["date"]: k for k in bars if isinstance(k.get("date"), str)}
+        for d in dates:
+            later = sorted(x for x in by_date if x > d)
+            if not later:
+                continue
+            nxt = later[0]
+            # 防呆③：nxt 就是今天 ⇒ 那根是当日盘中 bar，绝不当「次日收盘」（冻结不可逆）。
+            if nxt >= today:
+                continue
+            # 防呆②：nxt 必须紧邻 d（中间不得夹已登记交易日），跨国庆/春节放行。
+            if not _next_bar_is_next_session(d, nxt):
+                continue
+            # 信号日/次日 bar 任一缺失（停牌/脏数据）⇒ 跳过（验不了就不产出，不编标签）。
+            b0 = by_date.get(d)
+            b1 = by_date.get(nxt)
+            p0 = (to_float(b0.get("close"), 0.0) or 0.0) if b0 else 0.0
+            p1 = (to_float(b1.get("close"), 0.0) or 0.0) if b1 else 0.0
+            if p0 <= 0 or p1 <= 0:
+                continue
+            try:
+                conn.execute(
+                    "UPDATE crosssection_signal SET next_day_pct=?, updated_at=? "
+                    "WHERE date=? AND symbol=?",
+                    (round((p1 - p0) / p0 * 100.0, 4), now, d, sym),
+                )
+            except EXTERNAL_FAILURES as e:
+                logger.warning("横截面次日标签写入失败 %s %s: %s", d, sym, e)
+                continue
+            filled += 1
+    if filled:
+        try:
+            conn.commit()
+        except EXTERNAL_FAILURES as e:
+            logger.warning("横截面次日标签提交失败: %s", e)
+    return filled
 
 
 def health() -> dict:
@@ -823,6 +940,105 @@ def _volume_price(amount_surge: float | None, speed_1: float | None) -> str:
     if amount_surge > 1.0 and speed_1 > 0:
         return "配合"
     return "—"
+
+
+#: 画像分节的展示顺序（描述性归类，非档位推荐；单源 `_section`，只进展示）。
+#: 背离放最后：它是负向提示，不是候选。
+SECTION_ORDER: tuple[str, ...] = ("低位·资金强", "持续走强", "高位加速", "量价背离")
+
+
+def _pos_tier(percent: float | None) -> str:
+    """当日涨幅 → 位置档（蓄势/启动/加速/高位；缺值 `—`）。阈值单源 `CS_POS_*`。
+
+    回答「低位启动 vs 已冲高」：同是 p95+ 异动，+4% 刚起步和 +14% 已冲高的
+    追入风险完全不同，但旧展示里这一信息淹没在数字列里。
+    """
+    if not isinstance(percent, (int, float)) or not math.isfinite(percent):
+        return "—"
+    if percent < CS_POS_LAUNCH:
+        return "蓄势"
+    if percent < CS_POS_ACCEL:
+        return "启动"
+    if percent < CS_POS_HIGH:
+        return "加速"
+    return "高位"
+
+
+def _motion(consistency: str | None, volume_price: str | None) -> str:
+    """一致性 × 量价 → 动向短语（画像串第三段；只压缩已知判据，不发明新含义）。
+
+    优先级：背离 > 全正 > 全负 > 其余 —— 背离是风险提示必须先说；
+    `量价齐升` = 三窗同向且放量被价格确认（旧「全正·配合」）；
+    `放量滞涨` = 明显放量但价没跟（旧「背离」）；`一致回落` = 三窗同负
+    （本层不预判方向，负向异动同样入围，如实描述）。
+    """
+    cons = consistency or "混合"
+    vp = volume_price or "—"
+    if vp == "背离":
+        return "放量滞涨"
+    if cons == "全正" and vp == "配合":
+        return "量价齐升"
+    if cons == "全正":
+        return "稳步走强"
+    if cons == "全负":
+        return "一致回落"
+    if vp == "配合":
+        return "反复放量"
+    return "动向不明"
+
+
+def _fmt_main_net(main_net: float | None) -> str:
+    """主力净流入（元）→ 人类可读短语（万/亿；与 ai_digest 工具同纪律：给人读单位）。"""
+    if not isinstance(main_net, (int, float)) or not math.isfinite(main_net):
+        return "资金—"
+    if main_net == 0:
+        return "主力持平"
+    sign = "+" if main_net > 0 else "-"
+    mag = abs(main_net)
+    if mag >= 1e8:
+        return f"主力{sign}{mag / 1e8:.1f}亿"
+    return f"主力{sign}{mag / 1e4:.0f}万"
+
+
+def profile_text(s: Mapping[str, Any]) -> str:
+    """单条信号 → **中文画像串**（终端 `≡` 行、面板 `画像` 列、AI 素材三出口同源）。
+
+    格式：`位置·持续N轮·动向·主力资金`，如 `启动·持续8轮·量价齐升·主力+4213万`。
+    全部由本层自算/快照自带字段派生（零新增请求、不读其它区域），改口径只改这里
+    与 `_pos_tier`/`_motion`/`_fmt_main_net` —— 不在终端/前端/提示词里重拼。
+    """
+    persist = int(s.get("persist") or 1)
+    return (
+        f"{_pos_tier(s.get('percent'))}·持续{persist}轮"
+        f"·{_motion(s.get('consistency'), s.get('volume_price'))}"
+        f"·{_fmt_main_net(s.get('main_net'))}"
+    )
+
+
+def _section(s: Mapping[str, Any]) -> str:
+    """持续组内的**分节**（描述性归类，非推荐档位；展示顺序见 `SECTION_ORDER`）。
+
+    判定优先级：低位·资金强 > 高位加速 > 量价背离 > 持续走强（默认）。
+    每票只归一节。判据全部层内自算 + 快照自带 main_net，不读其它区域数据。
+    """
+    percent = s.get("percent")
+    main_net = s.get("main_net")
+    if (
+        isinstance(percent, (int, float))
+        and math.isfinite(percent)
+        and percent < CS_POS_ACCEL
+        and isinstance(main_net, (int, float))
+        and math.isfinite(main_net)
+        and main_net > 0
+        and s.get("consistency") == "全正"
+        and s.get("volume_price") == "配合"
+    ):
+        return "低位·资金强"
+    if isinstance(percent, (int, float)) and math.isfinite(percent) and percent >= CS_POS_HIGH:
+        return "高位加速"
+    if s.get("volume_price") == "背离":
+        return "量价背离"
+    return "持续走强"
 
 
 def _rank_tier(s: Mapping[str, Any]) -> int:
@@ -900,20 +1116,17 @@ def _fmt_num(v: float | None, digits: int = 2, suffix: str = "") -> str:
 
 #: 本层**面向面板（web）的列投影**。终端 `≡` 块是自由文本（宽度靠 f-string 拼），
 #: 故这张表只服务面板 —— 但字段名与 `_row()` 逐个对应，改一边要同改另一边。
-#: 列名由 Python 单源下发（`panel_serialize.cols_payload`），前端不硬编码（hygiene 守卫）。
+#: 2026-11-19（方案二）：数字列撤出终端/面板（仍落库），改画像 + 分节；
+#: `画像` 列吃 `profile_text`（Python 拼，前端不重拼——重拼即第二份口径）。
 COLS_CS: tuple = (
     ("#", 3, "r"),
     ("代码", 12, "l"),
     ("名称", 10, "l"),
     ("现价", 8, "r"),
     ("涨幅", 8, "r"),
-    ("1m", 7, "r"),
-    ("3m", 7, "r"),
-    ("5m", 7, "r"),
-    ("额涌", 8, "r"),
-    ("量比", 6, "r"),
-    ("分位", 6, "r"),
-    ("判据", 16, "l"),
+    ("轮次", 6, "r"),
+    ("分节", 12, "l"),
+    ("画像", 34, "l"),
 )
 
 
@@ -921,27 +1134,17 @@ COLS_CS: tuple = (
 def _signal_row(s: Mapping[str, Any]) -> dict[str, Any]:
     """单条信号 → 面板行（**纯标量**，键名与 `COLS_CS` 的单元格取值一一对应）。
 
-    `signal_text` 是终端 `≡` 块里逐字同款的「判据」串（`一致性·量价·N轮`）——
-    由本模块拼、前端原样渲染，**不在 TS 里重拼**（重拼即第二份口径）。
+    `profile`/`section` 由 Python 单源拼（`profile_text`/`_section`），前端原样渲染，
+    **不在 TS 里重拼**（重拼即第二份口径）。数字列不再下发（仍落库可回查）。
     """
-    cons = s.get("consistency") or "混合"
-    vp = s.get("volume_price") or "—"
-    persist = int(s.get("persist") or 1)
     return {
         "symbol": s.get("symbol"),
         "name": s.get("name"),
         "price": s.get("price"),
         "percent": s.get("percent"),
-        "speed_1": s.get("speed_1"),
-        "speed_3": s.get("speed_3"),
-        "speed_5": s.get("speed_5"),
-        "amount_surge": s.get("amount_surge"),
-        "vol_ratio": s.get("vol_ratio"),
-        "pct_rank": s.get("pct_rank"),
-        "consistency": cons,
-        "volume_price": vp,
-        "persist": persist,
-        "signal_text": f"{cons}·{vp}·{persist}轮",
+        "persist": int(s.get("persist") or 1),
+        "profile": profile_text(s),
+        "section": _section(s),
     }
 
 
@@ -1040,44 +1243,54 @@ def format_terminal_block() -> str:
     new_rows = [s for s in signals if _display_group(s) == _GROUP_NEW][:CS_TOP_NEW]
     top = (persist_rows + new_rows)[:CS_TOP_N]
     if top:
-        # 图例（层内判据，见 _consistency / _volume_price）：
-        # 一致性 = 1m/3m/5m 是否同号；量价 = 放量是否伴随价格；轮次 = 当日出现过几轮。
-        lines.append("  判据：一致性(全正/全负/混合) · 量价(配合/背离/—) · 轮次(当日出现过几轮)")
+        # 图例（画像串是层内自算字段的中文压缩，单源 `profile_text`；
+        # 分节是描述性归类不是推荐档位，单源 `_section`，顺序见 `SECTION_ORDER`）：
         lines.append(
-            f"  分组：持续 ≥{CS_PERSIST_MIN}轮(最多 {CS_TOP_PERSIST} 条) · "
-            f"新进 本轮首现(最多 {CS_TOP_NEW} 条) · 中间 2~{CS_PERSIST_MIN - 1} 轮不展示"
+            "  画像：位置(蓄势<3/启动3~7/加速7~12/高位≥12%)·持续N轮·动向(量价齐升/稳步走强/"
+            "反复放量/放量滞涨/一致回落/动向不明)·主力资金(万/亿，—=源未给)"
         )
-        lines.append("  排序：组内质量(全正·配合 > 全正·— > 其余) → 轮次 → 分位 → 额涌 → 量比")
+        lines.append(
+            "  排序：持续 > 新进；持续组内分节("
+            + "→".join(SECTION_ORDER)
+            + ")，节内 质量 → 轮次 → 分位 → 额涌 → 量比"
+        )
 
     def _row(i: int, s: Mapping[str, Any]) -> str:
-        # 层内一致性三件套（2026-11-16）：持续轮次 / 三窗口同向 / 量价配合。
-        # 全部由本层自算字段得出 —— 不读榜单、不读资金流缓存、不读 B 段。
-        cons = s.get("consistency") or "混合"
-        vp = s.get("volume_price") or "—"
-        persist = s.get("persist") or 1
+        # 行 = 代码 名称 现价 涨幅 | 画像串（数字列已撤出终端，仍落库供回看）。
+        # 画像由 `profile_text` 单源拼 —— 前端/素材不重拼。
         return (
             f"  {i}. {s['symbol']} {s['name']} {s['price']:.2f} {s['percent']:+.2f}% | "
-            f"1m {_fmt_num(s.get('speed_1'), 2, '%')} 3m {_fmt_num(s.get('speed_3'), 2, '%')} "
-            f"5m {_fmt_num(s.get('speed_5'), 2, '%')} | 额涌 {_fmt_num(s.get('amount_surge'), 2, '×')} "
-            f"量比 {_fmt_num(s.get('vol_ratio'), 2)} 分位 {s['pct_rank']:.3f} | "
-            f"{cons}·{vp}·{persist}轮"
+            f"{profile_text(s)}"
         )
 
-    # 组标题是**普通续行**：不以 `◆`/`—` 起头（那会污染 `ai_digest/panel.py` 切块），
-    # 也不匹配 `panel._CROSSSECTION_ROW_RE`（无 `序号.` 前缀）⇒ 解析器静默跳过它们。
+    # 组标题/分节行是**普通续行**：不以 `◆`/`—` 起头（那会污染 `ai_digest/panel.py` 切块），
+    # 也不匹配 `panel._CROSSSECTION_ROW_RE`（无 `序号.` 前缀）⇒ 解析器跳过组标题，
+    # 但 `_CROSSSECTION_SECTION_RE` / `_CROSSSECTION_NEW_RE` 会读它们。
     idx = 0
     if persist_rows:
         lines.append(f"  持续（当日 ≥{CS_PERSIST_MIN} 轮 · {len(persist_rows)} 只，先看这组）")
+        # 持续组内按分节归堆：先算每节行数，再按 SECTION_ORDER 顺序出节。
+        by_sec: dict[str, list[Mapping[str, Any]]] = {}
         for s in persist_rows:
-            idx += 1
-            lines.append(_row(idx, s))
+            by_sec.setdefault(_section(s), []).append(s)
+        for sec in SECTION_ORDER:
+            rows = by_sec.get(sec)
+            if not rows:
+                continue
+            lines.append(f"  · {sec}（{len(rows)} 只）")
+            for s in rows:
+                idx += 1
+                lines.append(_row(idx, s))
     elif top:
         lines.append(f"  （本轮无 ≥{CS_PERSIST_MIN} 轮持续票）")
     if new_rows:
-        lines.append(f"  新进（本轮首现 · {len(new_rows)} 只，单轮噪声高发，只看动静）")
-        for s in new_rows:
-            idx += 1
-            lines.append(_row(idx, s))
+        # 新进组压成**一行摘要**（单轮噪声高发，不逐行展开；仍按 signal_sort_key 序）。
+        entries = " / ".join(
+            f"{s['symbol']} {s['name']} {s['price']:.2f} {s['percent']:+.2f}%" for s in new_rows
+        )
+        lines.append(
+            f"  新进（本轮首现 · {len(new_rows)} 只，单轮噪声高发，只看动静）：{entries}"
+        )
     if h.get("warmup") and state not in ("stale", "no_data") and not top and not signals:
         lines.append("  （本轮无 p95+ 榜外异动）")
     elif not top:

@@ -28,15 +28,10 @@ def test_cols_cs_is_web_only_projection_of_terminal_fields():
         "name": "翰宇药业",
         "price": 18.42,
         "percent": 2.84,
-        "speed_1": 0.31,
-        "speed_3": 0.68,
-        "speed_5": 1.05,
-        "amount_surge": 2.14,
-        "vol_ratio": 2.63,
-        "pct_rank": 0.947,
         "consistency": "全正",
         "volume_price": "配合",
         "persist": 9,
+        "main_net": 4.213e7,
     }
     row = crosssection._signal_row(sample)
     assert set(row) == {
@@ -44,36 +39,31 @@ def test_cols_cs_is_web_only_projection_of_terminal_fields():
         "name",
         "price",
         "percent",
-        "speed_1",
-        "speed_3",
-        "speed_5",
-        "amount_surge",
-        "vol_ratio",
-        "pct_rank",
-        "consistency",
-        "volume_price",
         "persist",
-        "signal_text",
+        "profile",
+        "section",
     }
-    # 列数 = 行字段数 + 序号列（`#` 由前端按行号填，不占数据键）
-    #        − `判据` 把 consistency / volume_price / persist 三个键**合成一列**（signal_text）。
-    assert len(crosssection.COLS_CS) == len(row) - 3 + 1
+    # 列数 = 行字段数 + 序号列（`#` 由前端按行号填，不占数据键；无合并列）。
+    assert len(crosssection.COLS_CS) == len(row) + 1
 
 
-def test_signal_text_is_same_string_as_terminal_block():
-    """`判据` 一列直接吃 `signal_text` —— 前端**不重拼**，故必须等于终端那句。"""
-    row = crosssection._signal_row({"consistency": "全正", "volume_price": "配合", "persist": 9})
-    assert row["signal_text"] == "全正·配合·9轮"
+def test_profile_text_is_same_string_as_terminal_block():
+    """`画像` 列直接吃 `profile_text` —— 前端**不重拼**，故必须等于终端那段。"""
+    row = crosssection._signal_row(
+        {"percent": 4.2, "consistency": "全正", "volume_price": "配合", "persist": 9, "main_net": 4.213e7}
+    )
+    assert row["profile"] == "启动·持续9轮·量价齐升·主力+4213万"
+    # 分节单源：低位（<启动上限）+ 主力净流入 + 全正·配合
+    assert row["section"] == "低位·资金强"
 
 
 def test_signal_row_tolerates_missing_fields():
     """缺值不是 0：`—`/缺省走终端同款兜底（缺字段不得让整块 payload 抛 KeyError）。"""
     row = crosssection._signal_row({"symbol": "SZ300001"})
     assert row["symbol"] == "SZ300001"
-    assert row["consistency"] == "混合"
-    assert row["volume_price"] == "—"
     assert row["persist"] == 1
-    assert row["signal_text"] == "混合·—·1轮"
+    assert row["profile"] == "—·持续1轮·动向不明·资金—"
+    assert row["section"] == "持续走强"
 
 
 def test_snapshot_payload_is_disabled_by_default():

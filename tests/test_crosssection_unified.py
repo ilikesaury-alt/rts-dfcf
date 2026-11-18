@@ -32,13 +32,23 @@ _PANEL_SRC = Path(__file__).resolve().parents[1] / "scanner" / "ai_digest" / "pa
 _CROSS_SRC = Path(__file__).resolve().parents[1] / "scanner" / "ai_digest" / "crosssection_view.py"
 _MAIN_SRC = Path(__file__).resolve().parents[1] / "scanner" / "ai_digest" / "__main__.py"
 
+_CROSS_HEADER = (
+    "≡ 横截面异动 · 14:00:01 | 有效 1378 只 | 缓冲 8/8 | p95 0.950 | 信号 3 | 跨源价差 未校验"
+)
+_CROSS_LEGEND = (
+    "  画像：位置(蓄势<3/启动3~7/加速7~12/高位≥12%)·持续N轮·"
+    "动向(量价齐升/稳步走强/反复放量/放量滞涨/一致回落/动向不明)·主力资金(万/亿，—=源未给)"
+)
+_CROSS_SEC_LOW = "  · 低位·资金强（1 只）"
+_CROSS_SEC_HIGH = "  · 高位加速（1 只）"
 _CROSS_LINE = (
-    "  1. SZ300163 先锋新材 5.10 -3.95% | 1m -0.39% 3m -0.20% 5m -0.20% | "
-    "额涌 1005.24× 量比 0.85 分位 0.999 | 全负·背离·3轮"
+    "  1. SZ300163 先锋新材 5.10 +4.20% | 启动·持续8轮·量价齐升·主力+4213万"
 )
 _CROSS_LINE_MISSING = (
-    "  4. SZ300824 北鼎股份 8.60 19.94% | 1m — 3m — 5m 0.00% | "
-    "额涌 — 量比 22.29 分位 1.000 | 混合·—·15轮"
+    "  4. SZ300824 北鼎股份 8.60 19.94% | 高位·持续15轮·动向不明·资金—"
+)
+_CROSS_NEW_LINE = (
+    "  新进（本轮首现 · 1 只，单轮噪声高发，只看动静）：SZ300999 票尾 10.00 +1.00%"
 )
 
 
@@ -94,10 +104,13 @@ def test_panel_parser_recognizes_crosssection_region() -> None:
   ◆ 沪深飙升 · 极有可能大涨（创业板）
     # 代码         名称           涨幅  5日累计    现价  排名上升      成交量    成交额   量比   换手%  市值(亿) 板块            评分  层  连击
     1 300706       阿石创       +4.54%   +1.19%    40.08         —   17.89万手    7.29亿   7.31    15.7        62 电子               —  T2     —
-≡ 横截面异动 · 14:00:01 | 有效 1378 只 | 缓冲 8/8 | p95 0.950 | 信号 2 | 跨源价差 未校验
-  判据：一致性(全正/全负/混合) · 量价(配合/背离/—) · 轮次(当日出现过几轮)
+{_CROSS_HEADER}
+{_CROSS_LEGEND}
+{_CROSS_SEC_LOW}
 {_CROSS_LINE}
+{_CROSS_SEC_HIGH}
 {_CROSS_LINE_MISSING}
+{_CROSS_NEW_LINE}
 ```
 """
     import tempfile
@@ -110,13 +123,21 @@ def test_panel_parser_recognizes_crosssection_region() -> None:
     titles = [r.title for r in snap.regions]
     assert any("横截面" in t for t in titles), f"横截面区没被解析出来：{titles}"
     cs = next(r for r in snap.regions if "横截面" in r.title)
-    assert len(cs.rows) == 2
+    # 持续组 2 行 + 新进摘要拆出的 1 行
+    assert len(cs.rows) == 3
     r0 = cs.rows[0]
     assert r0["symbol"] == "SZ300163"
     assert r0["名称"] == "先锋新材"
-    assert r0["涨幅"] == "-3.95%"
-    assert r0["判据"] == "全负·背离"
-    assert r0["轮次"] == "3"
+    assert r0["涨幅"] == "+4.20%"
+    assert r0["分节"] == "低位·资金强"
+    assert r0["画像"] == "启动·持续8轮·量价齐升·主力+4213万"
+    assert r0["轮次"] == "8"
+    assert cs.rows[1]["分节"] == "高位加速"
+    assert cs.rows[1]["资金"] == "资金—"
+    # 新进摘要行拆行：轮次=1、分节=新进
+    assert cs.rows[2]["symbol"] == "SZ300999"
+    assert cs.rows[2]["分节"] == "新进"
+    assert cs.rows[2]["轮次"] == "1"
 
 
 def test_crosssection_row_keeps_missing_values_as_none() -> None:
@@ -214,14 +235,12 @@ def test_single_region_block_uses_own_prefix() -> None:
                 "名称": "*ST香雪",
                 "现价": "6.17",
                 "涨幅": "+1.15%",
-                "1m": "+1.15%",
-                "3m": "+1.47%",
-                "5m": "+1.81%",
-                "额涌": "7.80×",
-                "量比": "0.70",
-                "分位": "0.999",
-                "判据": "全正·配合",
                 "轮次": "19",
+                "分节": "低位·资金强",
+                "位置": "启动",
+                "动向": "量价齐升",
+                "资金": "主力+8000万",
+                "画像": "启动·持续19轮·量价齐升·主力+8000万",
             }
         ]
     )
@@ -229,7 +248,7 @@ def test_single_region_block_uses_own_prefix() -> None:
     block = render_materials_block(mats)
     assert "*ST香雪" in block, "横截面区的核对视图取不到数据（prefix 用错）"
     assert "暂无数据" not in block, f"核对视图有缺项：{block}"
-    assert "+1.15%" in block and "全正" in block
+    assert "+1.15%" in block and "量价齐升" in block
 
 
 def test_single_region_block_output_unchanged() -> None:
@@ -308,37 +327,37 @@ def test_merged_prompt_forbids_cross_region_ranking() -> None:
 
 
 def test_crosssection_materials_use_own_field_set() -> None:
-    """横截面区用**自己的字段集**（1m/3m/额涌/分位/判据），不是 B 段的。"""
+    """横截面区用**自己的字段集**（画像/分节/轮次/位置/动向/资金），不是 B 段的。"""
     rows = from_panel_rows(
         [
             {
                 "symbol": "SZ300163",
                 "名称": "先锋新材",
                 "现价": "5.10",
-                "涨幅": "-3.95%",
-                "1m": "-0.39%",
-                "3m": "-0.20%",
-                "5m": "-0.20%",
-                "额涌": "1005.24×",
-                "量比": "0.85",
-                "分位": "0.999",
-                "判据": "全负·背离",
-                "轮次": "3",
+                "涨幅": "+4.20%",
+                "轮次": "8",
+                "分节": "低位·资金强",
+                "位置": "启动",
+                "动向": "量价齐升",
+                "资金": "主力+4213万",
+                "画像": "启动·持续8轮·量价齐升·主力+4213万",
             }
         ]
     )
     mats = build_crosssection_materials("2026-11-16", rows)
     vals = {i.id: i.value for i in mats.items}
-    assert vals["cs.SZ300163.percent"] == "-3.95%"
-    assert vals["cs.SZ300163.speed_1"] == "-0.39%"
-    assert vals["cs.SZ300163.amount_surge"] == "1005.24"
-    assert vals["cs.SZ300163.pct_rank"] == "0.999"
-    assert vals["cs.SZ300163.persist"] == "3"  # 整数，不带 .0
-    assert vals["cs.SZ300163.consistency"] == "全负"
-    assert vals["cs.SZ300163.volume_price"] == "背离"
+    assert vals["cs.SZ300163.percent"] == "+4.20%"
+    assert vals["cs.SZ300163.persist"] == "8"  # 整数，不带 .0
+    assert vals["cs.SZ300163.pos"] == "启动"
+    assert vals["cs.SZ300163.motion"] == "量价齐升"
+    assert vals["cs.SZ300163.main_flow"] == "主力+4213万"
+    assert vals["cs.SZ300163.section"] == "低位·资金强"
     # B 段字段不该出现
     assert "cs.SZ300163.tier" not in vals
     assert "cs.SZ300163.main_pct" not in vals
+    # 数字列已撤出终端/面板，素材也不再有
+    assert "cs.SZ300163.speed_1" not in vals
+    assert "cs.SZ300163.pct_rank" not in vals
 
 
 def test_crosssection_materials_have_no_baseline() -> None:

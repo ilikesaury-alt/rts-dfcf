@@ -725,6 +725,26 @@ def _check_crosssection_signal(conn: sqlite3.Connection) -> bool:
     return _has_table(conn, "crosssection_signal") and _has_index(conn, "idx_cs_signal_round")
 
 
+def _up_crosssection_archive(conn: sqlite3.Connection) -> None:
+    """m028（2026-11-19）：横截面信号表补存档维度。
+
+    背景：此前只留 50 轮（≈一个交易日）且不存 main_net，跨日历史为零 ⇒
+    这层永远无法回溯、无法验证画像是否有次日命中差异（用户决策「存档+次日标签」）。
+    - `main_net`：当日主力净流入（元），快照自带，画像「主力资金」段的落库依据；
+    - `next_day_pct`：信号日收盘 → **次一交易日**收盘（%），盘后由
+      `crosssection.backfill_next_day` 回填（复用 B 段三防呆与榜外 K 线池）。
+      标签是行情事实，分析只进离线脚本，不进终端/飞书（不给结论纪律不变）。
+    """
+    conn.execute("ALTER TABLE crosssection_signal ADD COLUMN main_net REAL")
+    conn.execute("ALTER TABLE crosssection_signal ADD COLUMN next_day_pct REAL")
+
+
+def _check_crosssection_archive(conn: sqlite3.Connection) -> bool:
+    return _has_column(conn, "crosssection_signal", "main_net") and _has_column(
+        conn, "crosssection_signal", "next_day_pct"
+    )
+
+
 # ── 迁移总表（顺序即执行顺序；只在末尾追加）──
 MIGRATIONS: list[Migration] = [
     add_column(
@@ -897,6 +917,12 @@ MIGRATIONS: list[Migration] = [
         desc="新增 crosssection_signal：创业板全集横截面异动信号（与飙升榜解耦的并列观察层）",
         check=_check_crosssection_signal,
         up=_up_crosssection_signal,
+    ),
+    Migration(
+        id="m028_crosssection_archive",
+        desc="crosssection_signal 补存档维度：main_net（画像资金）+ next_day_pct（次日收盘标签，盘后回填）",
+        check=_check_crosssection_archive,
+        up=_up_crosssection_archive,
     ),
 ]
 

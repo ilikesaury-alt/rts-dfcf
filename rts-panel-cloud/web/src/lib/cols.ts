@@ -250,24 +250,14 @@ const CS_CELLS: Record<string, CellFn> = {
   "名称": (row) => ({ text: text(row.name) }),
   "现价": (row) => priceCell(num(row.price)),
   "涨幅": (row) => pctCell(num(row.percent)),
-  "1m": (row) => speedCell(num(row.speed_1)),
-  "3m": (row) => speedCell(num(row.speed_3)),
-  "5m": (row) => speedCell(num(row.speed_5)),
-  "额涌": (row) => {
-    const v = num(row.amount_surge);
-    return { text: v === null ? DASH : `${v.toFixed(2)}×`, val: v ?? undefined };
+  "轮次": (row) => {
+    const v = num(row.persist);
+    return { text: v === null ? DASH : String(Math.round(v)) };
   },
-  "量比": (row) => {
-    const v = num(row.vol_ratio);
-    return { text: v === null || v <= 0 ? DASH : v.toFixed(2), val: v ?? undefined };
-  },
-  "分位": (row) => {
-    const v = num(row.pct_rank);
-    return { text: v === null ? DASH : v.toFixed(3), val: v ?? undefined };
-  },
-  // 判据串由 Python 拼（`crosssection._signal_row.signal_text`），前端**不重拼** ——
+  // 分节/画像由 Python 拼（`crosssection._section` / `profile_text`），前端**不重拼** ——
   // 重拼即第二份口径（终端 `≡` 块打印的是同一串）。
-  "判据": (row) => ({ text: text(row.signal_text) || DASH }),
+  "分节": (row) => ({ text: text(row.section) || DASH }),
+  "画像": (row) => ({ text: text(row.profile) || DASH }),
 };
 // #endregion
 

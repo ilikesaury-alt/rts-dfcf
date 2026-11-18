@@ -197,6 +197,7 @@ class TestMigrationCatalog:
             "m025_announcement_cache",
             "m026_offboard_evidence_chain",
             "m027_crosssection_signal",
+            "m028_crosssection_archive",
         ]
 
     def test_every_migration_has_desc(self):

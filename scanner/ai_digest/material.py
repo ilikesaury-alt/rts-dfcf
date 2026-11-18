@@ -358,20 +358,17 @@ _SB_COLUMNS: tuple[tuple[str, str], ...] = (
 )
 
 
-#: 横截面区的紧凑列（`cs.` 前缀的素材项）。
+#: 横截面区的紧凑列（`cs.` 前缀的素材项；2026-11-19 画像版：数字列已撤出，
+#: 与 `crosssection_view.CROSSSECTION_FIELDS` 同源字段集）。
 _CS_COLUMNS: tuple[tuple[str, str], ...] = (
     ("name", ""),
     ("percent", "涨幅"),
     ("price", "价"),
-    ("vol_ratio", "量比"),
-    ("speed_1", "1m"),
-    ("speed_3", "3m"),
-    ("speed_5", "5m"),
-    ("amount_surge", "额涌"),
-    ("pct_rank", "分位"),
     ("persist", "轮次"),
-    ("consistency", "一致性"),
-    ("volume_price", "量价"),
+    ("pos", "位置"),
+    ("motion", "动向"),
+    ("main_flow", "资金"),
+    ("section", "分节"),
 )
 
 #: 前缀 → 列规格。

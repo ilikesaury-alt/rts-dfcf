@@ -47,28 +47,38 @@ __all__ = [
 
 #: 本区口径说明（发给模型的一条素材，避免它自己发明「横截面层是什么」）。
 CROSSSECTION_NOTE = (
-    "横截面异动层（并行观察层）：与榜外异动段**彼此独立**，靠 1/3/5 分钟涨速、"
-    "成交额增量、量比四项横截面分位，找出创业板里当下异动最显著的票，"
+    "横截面异动层（并行观察层）：与榜外异动段**彼此独立**，取创业板全集快照做"
+    "横向（全市场分位）+纵向（相邻轮差分）比较，找出当下异动最显著的票（p95+），"
     "目的是**早于飙升榜**看到动静。本层**不预判涨跌方向**（跌得快的票同样是异常），"
     "也不产生操作建议；本层暂无历史命中率基准（结构上无法自证），"
     "排序只能依据字段本身的相对强弱。"
 )
 
 #: 本区的字段白名单（`(列名, 中文标签, 格式)`）。
+#: 2026-11-19（画像版）：数字列（1m/3m/5m/额涌/量比/分位）已撤出终端/面板，
+#: 素材与可见面板原文同源 —— 模型只能引用它看得见的画像/分节/轮次。
 CROSSSECTION_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("name", "名称", "text"),
     ("percent", "当日涨幅", "pct"),
     ("price", "价格", "price"),
-    ("vol_ratio", "量比", "dec2"),
-    ("speed_1", "1m涨速", "pct"),
-    ("speed_3", "3m涨速", "pct"),
-    ("speed_5", "5m涨速", "pct"),
-    ("amount_surge", "额涌", "dec2"),
-    ("pct_rank", "横截面分位", "dec3"),
     ("persist", "持续轮次", "int"),
-    ("consistency", "一致性", "text"),
-    ("volume_price", "量价", "text"),
+    ("pos", "位置", "text"),
+    ("motion", "动向", "text"),
+    ("main_flow", "主力资金", "text"),
+    ("section", "分节", "text"),
 )
+
+
+#: 「动向」短语 → (一致性, 量价) 的**保守还原**（排序层专用，见 from_panel_rows）。
+#: 键集必须与 `crosssection._motion` 的输出域一致；值取让质量层不升档的一侧。
+_MOTION_TO_JUDGE: dict[str, tuple[str, str]] = {
+    "量价齐升": ("全正", "配合"),
+    "稳步走强": ("全正", "—"),
+    "反复放量": ("混合", "配合"),
+    "放量滞涨": ("混合", "背离"),
+    "一致回落": ("全负", "—"),
+    "动向不明": ("混合", "—"),
+}
 
 
 def _num(v: Any) -> float | None:
@@ -95,28 +105,36 @@ def _num(v: Any) -> float | None:
 def from_panel_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """`panel.py` 解析出的横截面区行 → **统一管线的源行**（字段名对齐素材白名单）。
 
-    panel 的行键是**中文列名**（`现价`/`涨幅`/`1m`/…，与其它区同一套约定），
-    这里翻译成素材层要的字段名。
+    panel 的行键是**中文列名**（`现价`/`涨幅`/`画像`/…，与其它区同一套约定），
+    这里翻译成素材层要的字段名。画像串已在 panel 侧拆段（位置/轮次/动向/资金），
+    这里不再解析。
+
+    `consistency`/`volume_price` 是从「动向」短语**保守还原**的：
+    `signal_sort_key` 的质量层依赖这两个键（`_rank_tier`），而数字列撤出终端后
+    面板原文不再直接携带它们。还原表只覆盖 `crosssection._motion` 的输出域，
+    取保守侧（如「放量滞涨」可能是全正·背离或混合·背离，取 tier 更低的混合），
+    只用于排序，不回进展示/素材。
     """
     out: list[dict[str, Any]] = []
     for r in rows:
-        判据 = str(r.get("判据") or "")
-        cons, _, vp = 判据.partition("·")
+        cons, vp = _MOTION_TO_JUDGE.get(str(r.get("动向") or ""), ("混合", "—"))
         out.append(
             {
                 "symbol": r.get("symbol"),
                 "name": r.get("名称"),
                 "price": _num(r.get("现价")),
                 "percent": _num(r.get("涨幅")),
-                "vol_ratio": _num(r.get("量比")),
-                "speed_1": _num(r.get("1m")),
-                "speed_3": _num(r.get("3m")),
-                "speed_5": _num(r.get("5m")),
-                "amount_surge": _num(r.get("额涌")),
-                "pct_rank": _num(r.get("分位")),
                 "persist": _num(r.get("轮次")),
+                "pos": str(r.get("位置") or ""),
+                "motion": str(r.get("动向") or ""),
+                "main_flow": str(r.get("资金") or ""),
+                "section": str(r.get("分节") or ""),
+                # 排序层需要（缺值在 signal_sort_key 里按 0 参与，纪律同 _zscore）。
                 "consistency": cons,
                 "volume_price": vp,
+                "pct_rank": None,
+                "amount_surge": None,
+                "vol_ratio": None,
             }
         )
     return out

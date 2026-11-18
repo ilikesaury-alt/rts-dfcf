@@ -312,7 +312,8 @@ python -m scanner.crosssection                   # 打印当日最新一轮 p95+
 ```
 > 并列观察层：只写 `crosssection_signal`，**不进 B 段冻结表、不改回测口径**；终端块用 `≡` 起头（`◆`/`—` 是面板区/段标题，会污染 `ai_digest/panel.py` 解析）。
 > ⚠ 快照刷新从 300s 缩到约 60s 会推高 push2delay 请求量，遇东财 IP 限频先 `RTS_CROSSSECTION=0` 关掉或调大 `RTS_CROSSSECTION_TTL_SEC`。
-> 读法（2026-11-17 改）：≡ 段按**当日出现轮次**分两组——`持续 ≥5 轮`（最多 5 条，先看这组）+ `新进 本轮首现`（最多 3 条，噪声高发只看动静），2~4 轮的中间带不展示；阈值单源 `config_crosssection`（`CS_PERSIST_MIN` / `CS_TOP_PERSIST` / `CS_TOP_NEW`）。
+> 读法（2026-11-19 改，画像版）：≡ 段按**当日出现轮次**分两组——`持续 ≥5 轮`（最多 3 条，先看这组）+ `新进 本轮首现`（压成一行摘要，噪声高发只看动静），2~4 轮的中间带不展示。数字列（1m/3m/5m/额涌/量比/分位）已撤出终端/面板（仍落库，`python -m scanner.crosssection` 可回查），改打**画像串** `位置·持续N轮·动向·主力资金`（单源 `crosssection.profile_text`）；持续组内按分节归堆 `低位·资金强→持续走强→高位加速→量价背离`（描述性归类，非推荐档位，单源 `_section`）。阈值单源 `config_crosssection`（`CS_PERSIST_MIN` / `CS_TOP_PERSIST` / `CS_POS_*`）。
+> 存档（2026-11-19，m028）：信号**按天保留最近 `CS_KEEP_DAYS=90` 天的整日全部轮次**（跨日历史不再截断），含 `main_net`（画像资金）；`next_day_pct`（信号日收盘→次一交易日收盘）由主循环交易时段每轮回填（复用 B 段榜外 K 线池与三防呆，`nxt<today` ⇒ 标签 T+2 交易日起补、绝不冻结盘中值）。标签是行情事实，分析只进离线脚本。
 
 ---
 

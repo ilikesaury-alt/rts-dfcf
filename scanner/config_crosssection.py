@@ -47,14 +47,27 @@ CS_TOP_N = 8
 #   「持续」当日累计 >=CS_PERSIST_MIN 轮（最多 CS_TOP_PERSIST 条）
 #   「新进」当日首次出现（persist==1，最多 CS_TOP_NEW 条）
 #   中间 2~CS_PERSIST_MIN-1 轮**不展示**：实测这一带是换屏主贡献者，且还没证明持续性。
-# 两个上限之和 == CS_TOP_N，改总数时三处一起改（守卫 test_shows_persist_and_new_groups）。
+# 两个上限之和 == CS_TOP_N，改总数时三处一起改（守卫 test_config_caps_sum_to_top_n）。
+# 2026-11-19（用户决策「方案二」）：持续组 5→3 条、组内按**画像分节**归堆、新进组压成
+# 一行摘要 —— 「更少更精」，盘中瞄一眼 10 秒内可定位候选（见 crosssection.profile_text）。
 CS_PERSIST_MIN = 5
-CS_TOP_PERSIST = 5
+CS_TOP_PERSIST = 3
 CS_TOP_NEW = CS_TOP_N - CS_TOP_PERSIST
 
-# 落库保留轮次：每轮最多 CS_TOP_N 量级的行，留 50 轮 ≈ 一个交易日，
-# 与 local_view_cache._SNAPSHOT_LIMIT 同款「只留最近」语义。
-CS_KEEP_ROUNDS = 50
+# ── 画像位置档（2026-11-19 方案二）：按当日涨幅划分「涨幅位置」──
+# 用户选票看重「低位启动 vs 已冲高」，而本层快照本就带当日涨幅 percent ⇒ 零新增数据。
+# 档位只进**画像/分节**（描述性归类，不构成建议/档位推荐）；阈值改动只影响展示。
+#   蓄势 < CS_POS_LAUNCH ≤ 启动 < CS_POS_ACCEL ≤ 加速 < CS_POS_HIGH ≤ 高位
+CS_POS_LAUNCH = 3.0
+CS_POS_ACCEL = 7.0
+CS_POS_HIGH = 12.0
+
+# 落库保留：按**天**保留最近 CS_KEEP_DAYS 个交易日的**整日全部轮次**（2026-11-19 从
+# 「50 轮」改：50 轮 ≈ 一个交易日，跨日历史为零 ⇒ 这层永远无法回溯、无法验证）。
+# 按天保留整日轮次的收益：① persist 可离线从行数派生（重启不丢）；② 首现时刻可查；
+# ③ 次日标签可回填（`backfill_next_day`），画像分节未来可做样本外检验。
+# 体量实测：p95+ 信号 ≈44 行/轮 × 240 轮 ≈ 1 万行/天 ≈ 1MB/天量级，90 天 ≈ 100MB 内。
+CS_KEEP_DAYS = 90
 
 # 跨源价差容忍度（%）：榜内票的雪球现价/涨幅与本层东财快照的中位偏差超过它
 # 即告警（只告警不阻断——两源本就可能有秒级时差）。
@@ -128,6 +141,9 @@ CS_LIMIT_UP_NEAR = 0.985      # 现价 ≥ 涨停价 × 该系数 ⇒ 视为已�
 __all__ = [
     "CS_LIMIT_UP_PCT",
     "CS_LIMIT_UP_NEAR",
+    "CS_POS_LAUNCH",
+    "CS_POS_ACCEL",
+    "CS_POS_HIGH",
     "CS_SOURCE",
     "CS_XQ_PAGES",
     "CS_XQ_PAGE_SIZE",
@@ -142,7 +158,7 @@ __all__ = [
     "CS_PERSIST_MIN",
     "CS_TOP_PERSIST",
     "CS_TOP_NEW",
-    "CS_KEEP_ROUNDS",
+    "CS_KEEP_DAYS",
     "CS_DIVERGENCE_TOL",
     "CS_MIN_AMOUNT",
     "CS_STALE_RATIO",

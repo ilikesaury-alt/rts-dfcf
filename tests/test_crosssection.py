@@ -10,13 +10,16 @@ from __future__ import annotations
 import copy
 import sqlite3
 from datetime import datetime
+from datetime import timedelta as _td
 
 import pytest
 
 import scanner.crosssection as cs
 import scanner.market_extra as me
-from scanner.config import BEIJING_TZ
+from scanner.config import BEIJING_TZ, now_beijing
 from scanner.db.migrations import run_migrations
+from scanner.offboard_watch import _save_klines
+from scanner.trading_session import is_trading_day
 
 # 假时钟起点：2026-11-13（周五）10:00:00 北京时间；每轮 +60s。
 _T0 = datetime(2026, 11, 13, 10, 0, 0, tzinfo=BEIJING_TZ).timestamp()
@@ -73,6 +76,7 @@ def _payload(stable_volume_base: int, round_no: int) -> dict[str, dict]:
             "vol_ratio": 1.0 + i * 0.01,
             "name": f"稳{i}",
             "main_pct": 1.0,
+            "main_net": 1.0e6 + i,
         }
     price = 10.0 * (1.01 ** (round_no - 1))
     out[ROCKET] = {
@@ -84,6 +88,7 @@ def _payload(stable_volume_base: int, round_no: int) -> dict[str, dict]:
         "vol_ratio": 3.0,
         "name": "火箭",
         "main_pct": 5.0,
+        "main_net": 8.0e7,
     }
     return out
 
@@ -258,17 +263,36 @@ class TestWarmup:
 
 
 class TestPersistence:
-    def test_keep_rounds_prunes_old_rounds(self, monkeypatch, db):
-        monkeypatch.setattr(cs, "CS_KEEP_ROUNDS", 2)
+    def test_keep_days_prunes_old_dates(self, monkeypatch, db):
+        """淘汰按**天**保留（2026-11-19 从「50 轮」改）：整日轮次全留，跨日历史不再截断。"""
+        monkeypatch.setattr(cs, "CS_KEEP_DAYS", 1)
         feed = _Feed()
         _install_feed(monkeypatch, feed)
-        _run_rounds(monkeypatch, db, feed, 8)  # 第 6/7/8 轮各产出一轮信号
+        _run_rounds(monkeypatch, db, feed, 8)  # 第 6/7/8 轮各产出一轮信号（同一天）
 
+        # 同属一天的 3 轮全部保留（轮级淘汰已废）
         rounds = [
             r[0] for r in db.execute("SELECT DISTINCT round_seq FROM crosssection_signal ORDER BY round_seq").fetchall()
         ]
-        # 第 6/7/8 轮（10:05 / 10:06 / 10:07）各产出一轮信号；只留最近 2 轮
-        assert rounds == [100600, 100700]
+        assert rounds == [100500, 100600, 100700]
+
+        # 超出保留天数的旧日期**整日**淘汰
+        db.execute(
+            "INSERT INTO crosssection_signal(date, round_seq, symbol, updated_at) "
+            "VALUES('2026-08-01', 1, 'SZ300001', 'x')"
+        )
+        db.commit()
+        _run_rounds(monkeypatch, db, feed, 1, start=8)  # 再跑一轮触发淘汰
+        dates = [r[0] for r in db.execute("SELECT DISTINCT date FROM crosssection_signal").fetchall()]
+        assert "2026-08-01" not in dates, "超出 CS_KEEP_DAYS 的日期必须整日淘汰"
+
+    def test_main_net_persisted(self, monkeypatch, db):
+        """m028：快照自带的 main_net 落库（画像「主力资金」段的离线回放依据）。"""
+        feed = _Feed()
+        _install_feed(monkeypatch, feed)
+        _run_rounds(monkeypatch, db, feed, 6)
+        row = db.execute("SELECT main_net FROM crosssection_signal WHERE symbol=?", ("SZ" + ROCKET,)).fetchone()
+        assert row is not None and row[0] == pytest.approx(8.0e7)
 
     def test_rows_carry_required_columns(self, monkeypatch, db):
         feed = _Feed()
@@ -297,7 +321,7 @@ class TestWiring:
         calls: list[int] = []
         monkeypatch.setattr(us.crosssection, "CS_ENABLED", False)
         monkeypatch.setattr(us.crosssection, "observe", lambda *a, **k: calls.append(1))
-        us._observe_crosssection(None, [])
+        us._observe_crosssection(None, None, [])
         assert calls == []
 
     def test_enabled_switch_calls_observe(self, monkeypatch):
@@ -306,7 +330,8 @@ class TestWiring:
         calls: list[int] = []
         monkeypatch.setattr(us.crosssection, "CS_ENABLED", True)
         monkeypatch.setattr(us.crosssection, "observe", lambda *a, **k: calls.append(1))
-        us._observe_crosssection(None, [{"symbol": "SZ300001"}])
+        monkeypatch.setattr(us.crosssection, "backfill_next_day", lambda *a, **k: 0)
+        us._observe_crosssection(None, None, [{"symbol": "SZ300001"}])
         assert calls == [1]
 
     def test_observe_failure_is_swallowed_at_wiring(self, monkeypatch):
@@ -317,7 +342,7 @@ class TestWiring:
 
         monkeypatch.setattr(us.crosssection, "CS_ENABLED", True)
         monkeypatch.setattr(us.crosssection, "observe", _boom)
-        us._observe_crosssection(None, [])  # 不得抛出
+        us._observe_crosssection(None, None, [])  # 不得抛出
 
     def test_disabled_observe_is_noop(self, monkeypatch):
         monkeypatch.setattr(cs, "CS_ENABLED", False)
@@ -368,8 +393,11 @@ class TestCLI:
 
     def test_default_prints_latest_round(self, monkeypatch, db, capsys):
         db.execute(
-            "INSERT INTO crosssection_signal VALUES("
-            "'2026-11-13', 100600, 'SZ300999', '火箭', 10.5, 5.0, 1.0, 3.0, 5.0, 1.5, 3.0, 1.0, 'x')"
+            "INSERT INTO crosssection_signal("
+            "date, round_seq, symbol, name, price, percent, speed_1, speed_3, speed_5, "
+            "amount_surge, vol_ratio, pct_rank, main_net, next_day_pct, updated_at) VALUES("
+            "'2026-11-13', 100600, 'SZ300999', '火箭', 10.5, 5.0, 1.0, 3.0, 5.0, 1.5, 3.0, 1.0, "
+            "8.0e7, NULL, 'x')"
         )
         db.commit()
         import scanner.db.schema as schema_mod
@@ -378,6 +406,7 @@ class TestCLI:
         assert cs.main(["--date", "2026-11-13"]) == 0
         out = capsys.readouterr().out
         assert "SZ300999" in out and "100600" in out
+
 
 # ── 9. 层内一致性判据（2026-11-16）──
 #
@@ -477,11 +506,11 @@ class TestTerminalBlockShowsJudgement:
         _run_rounds(monkeypatch, db, feed, 12)
         block = cs.format_terminal_block()
         assert block.startswith("≡")
-        # 图例 + 每条信号尾部都有「一致性·量价·轮次」
-        assert "判据：一致性" in block
-        assert "轮" in block
-        # 至少一条信号带判据后缀
-        assert "·" in block
+        # 图例（画像/分节）+ 每条信号尾部都有画像串
+        assert "画像：位置" in block
+        assert "排序：持续 > 新进" in block
+        # 至少一条信号带画像串（位置档·持续N轮·动向·资金）
+        assert "·持续" in block and "·" in block
 
     def test_block_still_avoids_panel_delimiters(self, monkeypatch, db):
         """`≡` 块的续行不得以 `◆` / `—` 起头（否则污染 ai_digest/panel.py 解析）。"""
@@ -502,36 +531,56 @@ class TestSignalRanking:
         # 理由：单轮窗口里「全正·配合」噪声极易达成，实测展示行相邻两轮重叠中位数 1/8，
         # 稳定的票被单轮噪声顶掉（用户原话「眼花缭乱不知道咋选」）。
         fresh_good = {
-            "symbol": "SZ300001", "persist": 3, "pct_rank": 0.95,
-            "amount_surge": 1.2, "vol_ratio": 1.0,
-            "consistency": "全正", "volume_price": "配合",
+            "symbol": "SZ300001",
+            "persist": 3,
+            "pct_rank": 0.95,
+            "amount_surge": 1.2,
+            "vol_ratio": 1.0,
+            "consistency": "全正",
+            "volume_price": "配合",
         }
         steady_meh = {
-            "symbol": "SZ300002", "persist": 9, "pct_rank": 0.999,
-            "amount_surge": 3.0, "vol_ratio": 5.0,
-            "consistency": "混合", "volume_price": "配合",
+            "symbol": "SZ300002",
+            "persist": 9,
+            "pct_rank": 0.999,
+            "amount_surge": 3.0,
+            "vol_ratio": 5.0,
+            "consistency": "混合",
+            "volume_price": "配合",
         }
         assert cs.signal_sort_key(steady_meh) < cs.signal_sort_key(fresh_good)
 
     def test_within_persist_group_quality_still_first(self):
         """同组内质量闸不变：5 轮 全正·配合 排在 6 轮 混合·— 之前。"""
         good = {
-            "symbol": "SZ300001", "persist": 5, "pct_rank": 0.95,
-            "amount_surge": 1.2, "vol_ratio": 1.0,
-            "consistency": "全正", "volume_price": "配合",
+            "symbol": "SZ300001",
+            "persist": 5,
+            "pct_rank": 0.95,
+            "amount_surge": 1.2,
+            "vol_ratio": 1.0,
+            "consistency": "全正",
+            "volume_price": "配合",
         }
         meh = {
-            "symbol": "SZ300002", "persist": 6, "pct_rank": 0.999,
-            "amount_surge": 3.0, "vol_ratio": 5.0,
-            "consistency": "混合", "volume_price": "—",
+            "symbol": "SZ300002",
+            "persist": 6,
+            "pct_rank": 0.999,
+            "amount_surge": 3.0,
+            "vol_ratio": 5.0,
+            "consistency": "混合",
+            "volume_price": "—",
         }
         assert cs.signal_sort_key(good) < cs.signal_sort_key(meh)
 
     def test_within_same_tier_persist_then_pct(self):
         base = {
-            "symbol": "SZ300001", "persist": 4, "pct_rank": 0.99,
-            "amount_surge": 2.0, "vol_ratio": 1.5,
-            "consistency": "全正", "volume_price": "配合",
+            "symbol": "SZ300001",
+            "persist": 4,
+            "pct_rank": 0.99,
+            "amount_surge": 2.0,
+            "vol_ratio": 1.5,
+            "consistency": "全正",
+            "volume_price": "配合",
         }
         less_persist = {**base, "symbol": "SZ300002", "persist": 3, "pct_rank": 0.999}
         lower_pct = {**base, "symbol": "SZ300003", "persist": 4, "pct_rank": 0.98}
@@ -543,8 +592,8 @@ class TestSignalRanking:
         _install_feed(monkeypatch, feed)
         _run_rounds(monkeypatch, db, feed, 12)
         block = cs.format_terminal_block()
-        assert "排序：组内质量" in block
-        assert "分组：持续" in block
+        assert "排序：持续 > 新进" in block
+        assert "分节" in block
         with cs._lock:
             sigs = list(cs._state["last_signals"])
         assert sigs == sorted(sigs, key=cs.signal_sort_key)
@@ -560,19 +609,26 @@ class TestDisplayGrouping:
     @staticmethod
     def _sig(symbol: str, *, persist: int, rank: float = 0.99) -> dict:
         return {
-            "symbol": symbol, "name": "票" + symbol[-2:], "price": 10.0, "percent": 1.0,
-            "speed_1": 0.1, "speed_3": 0.2, "speed_5": 0.3,
-            "amount_surge": 2.0, "vol_ratio": 1.5, "pct_rank": rank,
-            "consistency": "全正", "volume_price": "配合", "persist": persist,
+            "symbol": symbol,
+            "name": "票" + symbol[-2:],
+            "price": 10.0,
+            "percent": 1.0,
+            "speed_1": 0.1,
+            "speed_3": 0.2,
+            "speed_5": 0.3,
+            "amount_surge": 2.0,
+            "vol_ratio": 1.5,
+            "pct_rank": rank,
+            "consistency": "全正",
+            "volume_price": "配合",
+            "persist": persist,
         }
 
     def _render(self, sigs: list[dict]) -> str:
         sigs = sorted(sigs, key=cs.signal_sort_key)
         with cs._lock:
             cs._state["last_signals"] = sigs
-        cs._set_health(
-            enabled=True, state="ok", warmup=True, valid_rows=20, signals=len(sigs)
-        )
+        cs._set_health(enabled=True, state="ok", warmup=True, valid_rows=20, signals=len(sigs))
         return cs.format_terminal_block()
 
     def test_config_caps_sum_to_top_n(self):
@@ -583,16 +639,19 @@ class TestDisplayGrouping:
         assert CS_TOP_PERSIST >= 1 and CS_TOP_NEW >= 1
 
     def test_persist_group_printed_before_new_group(self):
-        block = self._render([
-            self._sig("SZ300001", persist=1, rank=0.999),   # 新进（分位更高）
-            self._sig("SZ300002", persist=7, rank=0.960),   # 持续（分位更低）
-        ])
+        block = self._render(
+            [
+                self._sig("SZ300001", persist=1, rank=0.999),  # 新进（分位更高）
+                self._sig("SZ300002", persist=7, rank=0.960),  # 持续（分位更低）
+            ]
+        )
         i_persist = block.index("持续（")
         i_new = block.index("新进（")
         assert i_persist < i_new
-        # 序号连续（面板解析器靠「序号.」取行，不重复编号）
+        # 持续组逐行带序号（面板解析器靠「序号.」取行）；新进组是摘要行，无逐行序号
         assert "  1. SZ300002" in block
-        assert "  2. SZ300001" in block
+        assert "2. SZ300001" not in block
+        assert "SZ300001" in block[i_new:]
 
     def test_mid_band_is_not_displayed_but_counted(self):
         block = self._render([self._sig("SZ300003", persist=3)])
@@ -606,8 +665,9 @@ class TestDisplayGrouping:
         fresh = [self._sig(f"SZ31{i:04d}", persist=1) for i in range(1, 6)]
         block = self._render(persist + fresh)
         shown = [ln for ln in block.splitlines() if ln.lstrip()[:1].isdigit()]
-        assert len(shown) == CS_TOP_PERSIST + CS_TOP_NEW
-        # 每组各自的帽子生效：持续组的第 6 只不出现在块里
+        # 新进组是摘要行（无序号前缀）⇒ 数据行只剩持续组
+        assert len(shown) == CS_TOP_PERSIST
+        # 每组各自的帽子生效：持续组的第 4 只不出现在块里；新进 5 只全在摘要行里
         assert block.count("SZ30") == CS_TOP_PERSIST
         assert block.count("SZ31") == CS_TOP_NEW
 
@@ -620,13 +680,120 @@ class TestDisplayGrouping:
         """组标题行不得被 `panel._CROSSSECTION_ROW_RE` 当数据行匹配。"""
         from scanner.ai_digest.panel import _CROSSSECTION_ROW_RE
 
-        block = self._render([
-            self._sig("SZ300005", persist=8), self._sig("SZ300006", persist=1),
-        ])
+        block = self._render(
+            [
+                self._sig("SZ300005", persist=8),
+                self._sig("SZ300006", persist=1),
+            ]
+        )
         headers = [ln for ln in block.splitlines() if "（" in ln and "轮" in ln]
         assert headers, "应有组标题行"
         for ln in headers:
             assert _CROSSSECTION_ROW_RE.match(ln) is None, f"组标题被误认为数据行：{ln}"
+
+
+# ── 9.5 次日标签回填（m028，2026-11-19）──
+#
+# 口径与 B 段同款（收盘→收盘，复用榜外 K 线池），三防呆缺一不可：
+# ① 信号日 < 今天；② d 与 nxt 之间不得夹已登记交易日；③ nxt < today（盘中 bar 不冻结）。
+# 动态取「今天之前最近 N 个交易日」当测试日期（不写死日期，避免随日历漂移）。
+
+
+def _last_sessions(count: int) -> list[str]:
+    """今天之前最近的 `count` 个交易日（升序；跳过周末/登记假日）。"""
+    out: list[str] = []
+    cur = now_beijing().date()
+    while len(out) < count:
+        cur -= _td(days=1)
+        if is_trading_day(cur):
+            out.append(cur.isoformat())
+    return sorted(out)
+
+
+def _bars_by_date(pairs: list[tuple[str, float]], volume: float = 2.0e6) -> list[dict]:
+    """[(date, close)] → bar 列表（显式日期；与 tests/test_offboard_watch.py 同款）。"""
+    out = []
+    for i, (d, close) in enumerate(pairs):
+        prev = pairs[i - 1][1] if i else close
+        out.append(
+            {
+                "date": d,
+                "open": round(prev, 4),
+                "close": round(close, 4),
+                "high": round(max(close, prev) * 1.004, 4),
+                "low": round(min(close, prev) * 0.996, 4),
+                "volume": volume,
+                "percent": 0.0,
+            }
+        )
+    return out
+
+
+def _insert_cs_signal(db, sym: str, d: str, round_seq: int = 100500) -> None:
+    db.execute(
+        "INSERT INTO crosssection_signal(date, round_seq, symbol, name, price, percent, updated_at) "
+        "VALUES(?,?,?,?,?,?, 'x')",
+        (d, round_seq, sym, "票", 10.0, 1.0),
+    )
+
+
+class TestBackfillNextDay:
+    """`backfill_next_day`：标签是行情事实，三防呆与 B 段同源（复用单源不复制）。"""
+
+    def test_fills_adjacent_session_pct(self, db):
+        """相邻交易日 → 回填；同一 (date,symbol) 的多轮行**全部**拿到同一标签。"""
+        s1, s2 = _last_sessions(2)
+        sym = "SZ300201"
+        _save_klines(db, {sym: _bars_by_date([(s1, 10.0), (s2, 11.0)])}, now_beijing().date().isoformat())
+        _insert_cs_signal(db, sym, s1, round_seq=100500)
+        _insert_cs_signal(db, sym, s1, round_seq=100600)  # 同日第二轮
+
+        assert cs.backfill_next_day(db, None) == 1  # 按 (date,symbol) 算一次
+        rows = db.execute(
+            "SELECT round_seq, next_day_pct FROM crosssection_signal WHERE date=? AND symbol=? ORDER BY round_seq",
+            (s1, sym),
+        ).fetchall()
+        assert len(rows) == 2
+        assert all(r[1] == pytest.approx(10.0) for r in rows), f"多轮行必须全部拿到标签：{rows}"
+
+    def test_skips_when_interleaved_session(self, db):
+        """防呆②：d 与 nxt 之间夹已登记交易日（可能停牌）⇒ 验不了「次日」就不产出。"""
+        s1, _s2, s3 = _last_sessions(3)
+        sym = "SZ300201"
+        _save_klines(db, {sym: _bars_by_date([(s1, 10.0), (s3, 11.0)])}, now_beijing().date().isoformat())
+        _insert_cs_signal(db, sym, s1)
+        assert cs.backfill_next_day(db, None) == 0
+        pct = db.execute("SELECT next_day_pct FROM crosssection_signal WHERE symbol=?", (sym,)).fetchone()[0]
+        assert pct is None
+
+    def test_skips_intraday_next_bar(self, db):
+        """防呆③（最关键）：nxt == 今天 ⇒ 那根是当日盘中 bar，绝不当「次日收盘」
+        （B 段实测：冻结盘中值会让 46% 的行偏差 >2pp，且永不修正）。"""
+        today = now_beijing().date().isoformat()
+        prev = (now_beijing().date() - _td(days=1)).isoformat()
+        sym = "SZ300201"
+        _save_klines(db, {sym: _bars_by_date([(prev, 10.0), (today, 11.0)])}, today)
+        _insert_cs_signal(db, sym, prev)
+        assert cs.backfill_next_day(db, None) == 0
+        assert db.execute("SELECT next_day_pct FROM crosssection_signal").fetchone()[0] is None
+
+    def test_skips_today_signals(self, db):
+        """防呆①：信号日 < 今天 —— 今天的信号还没有「次日」可找。"""
+        today = now_beijing().date().isoformat()
+        sym = "SZ300201"
+        _save_klines(db, {sym: _bars_by_date([(today, 10.0)])}, today)
+        _insert_cs_signal(db, sym, today)
+        assert cs.backfill_next_day(db, None) == 0
+
+    def test_missing_bars_no_label(self, db):
+        """信号日/次日 bar 任一缺失（停牌/脏数据）⇒ 跳过，不编标签。"""
+        s1, s2 = _last_sessions(2)
+        sym = "SZ300201"
+        # 只给次一根，不给信号日 bar
+        _save_klines(db, {sym: _bars_by_date([(s2, 11.0)])}, now_beijing().date().isoformat())
+        _insert_cs_signal(db, sym, s1)
+        assert cs.backfill_next_day(db, None) == 0
+
 
 # -- 10. 雪球数据源（2026-11-16）--
 #
@@ -667,9 +834,17 @@ class _FakeXqSession:
 
 def _xq_row(symbol, name, pct5m, percent=1.0, current=10.0, volume=1e6, amount=2e8, vr=2.0):
     return {
-        "symbol": symbol, "name": name, "percent5m": pct5m, "percent": percent,
-        "current": current, "volume": volume, "amount": amount, "volume_ratio": vr,
-        "turnover_rate": 3.0, "main_net_inflows": 1e7, "float_market_capital": 5e9,
+        "symbol": symbol,
+        "name": name,
+        "percent5m": pct5m,
+        "percent": percent,
+        "current": current,
+        "volume": volume,
+        "amount": amount,
+        "volume_ratio": vr,
+        "turnover_rate": 3.0,
+        "main_net_inflows": 1e7,
+        "float_market_capital": 5e9,
     }
 
 
@@ -745,6 +920,7 @@ class TestXueqiuSource:
         monkeypatch.setattr(cs, "CS_SOURCE", "xueqiu")
         out = cs.fetch_crosssection_snapshot(force=True)
         assert not called.get("eastmoney") and "SZ9X" in out
+
 
 # -- 11. 封板剔除（2026-11-16）--
 #

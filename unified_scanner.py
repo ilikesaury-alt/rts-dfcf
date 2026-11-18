@@ -425,16 +425,20 @@ def _tasks_enabled() -> tuple[bool, int]:
     return True, candidate if 1 <= candidate <= 65535 else 8900
 
 
-def _observe_crosssection(conn, board_items: list[dict] | None) -> None:
-    """横截面观察层接线点（2026-11-13）。
+def _observe_crosssection(conn, adapter, board_items: list[dict] | None) -> None:
+    """横截面观察层接线点（2026-11-13；2026-11-19 加次日标签回填）。
 
     开关 `RTS_CROSSSECTION=0` 时**连取数都不发生**（用户可一键回滚，不残留请求量）。
-    取数/计算/落库异常按 `EXTERNAL_FAILURES` 兜住——观察层绝不影响主循环。
+    取数/计算/落库/回填异常按 `EXTERNAL_FAILURES` 兜住——观察层绝不影响主循环。
+    回填与 B 段同节奏（交易时段每轮，NULL 集小、K 线池命中后零请求）。
     """
     if not crosssection.CS_ENABLED:
         return
     try:
         crosssection.observe(conn, board_items)
+        filled = crosssection.backfill_next_day(conn, adapter)
+        if filled:
+            logger.info("横截面次日标签回填 %d 行", filled)
     except EXTERNAL_FAILURES as e:
         logger.warning("横截面观察跳过（不影响主循环）: %s: %s", type(e).__name__, e)
 
@@ -552,7 +556,7 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
                 # 横截面观察层（2026-11-13）：放在榜单熔断判断**之前** —— 即使雪球
                 # 榜空（`continue` 跳过整轮），东财创业板全集的快照与信号仍要记，
                 # 这样本层与飙升榜真正解耦。异常已在接线点内 fail-open。
-                _observe_crosssection(conn, xq_raw or [])
+                _observe_crosssection(conn, adapter, xq_raw or [])
                 if not xq_raw:
                     print("\r  [!] 飙升榜数据为空，等待刷新...", end="", flush=True)
                     time.sleep(interval)
