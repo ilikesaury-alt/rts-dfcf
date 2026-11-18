@@ -379,9 +379,7 @@ def _speed_pct(cur: float, then: float, elapsed: float, rounds_n: int) -> float 
     return (cur / then - 1.0) * 100.0 * (nominal / elapsed)
 
 
-def _speed(
-    symbols: dict[str, dict], prior: dict[str, dict], elapsed: float, rounds_n: int
-) -> dict[str, float | None]:
+def _speed(symbols: dict[str, dict], prior: dict[str, dict], elapsed: float, rounds_n: int) -> dict[str, float | None]:
     out: dict[str, float | None] = {}
     for sym, row in symbols.items():
         prev = prior.get(sym)
@@ -597,13 +595,15 @@ def observe(conn: sqlite3.Connection, board_items: list[dict] | None = None) -> 
         return _set_health(enabled=True, state="throttled", date=today)
 
     # 跨日重置：昨天的快照不能参与今天的差分（隔夜缺口会把跳空误读成 1 分钟涨速）。
+    # `persist` 从 DB 恢复（2026-11-19）：盘中午重启时当日轮次已在 `crosssection_signal`，
+    # 不恢复 ⇒ 「持续」组要重新攒满 CS_PERSIST_MIN 轮才出现（用户实测：每次重启持续组就空）。
     with _lock:
         if _state["date"] != today:
             _ring.clear()
             _state["date"] = today
             _state["stale_rounds"] = 0
             _state["last_signals"] = []
-            _state["persist"] = {}
+            _state["persist"] = _hydrate_persist(conn, today)
 
     board = _board_map(board_items)
     if board:
@@ -668,6 +668,7 @@ def observe(conn: sqlite3.Connection, board_items: list[dict] | None = None) -> 
     warm = has_native or depth >= CS_WARMUP_ROUNDS
     if warm and not stale:
         cur_round = rounds[-1]["symbols"]
+
         # elapsed 一律取**相邻快照实际墙钟差**（不假定 60s）；N 轮窗口 = 当前与
         # N 轮前快照的差值，等价于逐轮经过秒数累加。
         # 深度不足时（雪球首轮）短窗口取 None，_zscore 里当 0 参与。
@@ -884,8 +885,7 @@ def backfill_next_day(conn: sqlite3.Connection, adapter: Any, signal_date: str |
                 continue
             try:
                 conn.execute(
-                    "UPDATE crosssection_signal SET next_day_pct=?, updated_at=? "
-                    "WHERE date=? AND symbol=?",
+                    "UPDATE crosssection_signal SET next_day_pct=?, updated_at=? WHERE date=? AND symbol=?",
                     (round((p1 - p0) / p0 * 100.0, 4), now, d, sym),
                 )
             except EXTERNAL_FAILURES as e:
@@ -898,6 +898,28 @@ def backfill_next_day(conn: sqlite3.Connection, adapter: Any, signal_date: str |
         except EXTERNAL_FAILURES as e:
             logger.warning("横截面次日标签提交失败: %s", e)
     return filled
+
+
+def _hydrate_persist(conn: sqlite3.Connection, date: str) -> dict[str, int]:
+    """从当日的 `crosssection_signal` 行**恢复 persist 计数**（重启/跨日首轮）。
+
+    语义必须与写侧完全同源：写侧「本轮进了 p95+ 就算一次出现」⇒ 行数 =
+    该票当日出现过的**不同轮次**数（`COUNT(DISTINCT round_seq)`，`INSERT OR REPLACE`
+    保证同轮重写不重计）。不恢复的后果（用户实测 2026-11-19）：每次重启持续组就空，
+    要重新攒满 `CS_PERSIST_MIN` 轮才恢复。
+
+    fail-open：表未建/查询失败 ⇒ `{}`（退化成旧行为，绝不阻断 observe）；
+    每次进程/每日只跑一次（只在 `_state["date"] != today` 分支），开销可忽略。
+    """
+    try:
+        rows = conn.execute(
+            "SELECT symbol, COUNT(DISTINCT round_seq) FROM crosssection_signal WHERE date=? GROUP BY symbol",
+            (date,),
+        ).fetchall()
+    except EXTERNAL_FAILURES as e:
+        logger.warning("横截面 persist 恢复失败（退化为从零计数）: %s: %s", type(e).__name__, e)
+        return {}
+    return {str(sym): int(n) for sym, n in rows}
 
 
 def health() -> dict:
@@ -1130,7 +1152,6 @@ COLS_CS: tuple = (
 )
 
 
-
 def _signal_row(s: Mapping[str, Any]) -> dict[str, Any]:
     """单条信号 → 面板行（**纯标量**，键名与 `COLS_CS` 的单元格取值一一对应）。
 
@@ -1250,18 +1271,13 @@ def format_terminal_block() -> str:
             "反复放量/放量滞涨/一致回落/动向不明)·主力资金(万/亿，—=源未给)"
         )
         lines.append(
-            "  排序：持续 > 新进；持续组内分节("
-            + "→".join(SECTION_ORDER)
-            + ")，节内 质量 → 轮次 → 分位 → 额涌 → 量比"
+            "  排序：持续 > 新进；持续组内分节(" + "→".join(SECTION_ORDER) + ")，节内 质量 → 轮次 → 分位 → 额涌 → 量比"
         )
 
     def _row(i: int, s: Mapping[str, Any]) -> str:
         # 行 = 代码 名称 现价 涨幅 | 画像串（数字列已撤出终端，仍落库供回看）。
         # 画像由 `profile_text` 单源拼 —— 前端/素材不重拼。
-        return (
-            f"  {i}. {s['symbol']} {s['name']} {s['price']:.2f} {s['percent']:+.2f}% | "
-            f"{profile_text(s)}"
-        )
+        return f"  {i}. {s['symbol']} {s['name']} {s['price']:.2f} {s['percent']:+.2f}% | {profile_text(s)}"
 
     # 组标题/分节行是**普通续行**：不以 `◆`/`—` 起头（那会污染 `ai_digest/panel.py` 切块），
     # 也不匹配 `panel._CROSSSECTION_ROW_RE`（无 `序号.` 前缀）⇒ 解析器跳过组标题，
@@ -1285,20 +1301,13 @@ def format_terminal_block() -> str:
         lines.append(f"  （本轮无 ≥{CS_PERSIST_MIN} 轮持续票）")
     if new_rows:
         # 新进组压成**一行摘要**（单轮噪声高发，不逐行展开；仍按 signal_sort_key 序）。
-        entries = " / ".join(
-            f"{s['symbol']} {s['name']} {s['price']:.2f} {s['percent']:+.2f}%" for s in new_rows
-        )
-        lines.append(
-            f"  新进（本轮首现 · {len(new_rows)} 只，单轮噪声高发，只看动静）：{entries}"
-        )
+        entries = " / ".join(f"{s['symbol']} {s['name']} {s['price']:.2f} {s['percent']:+.2f}%" for s in new_rows)
+        lines.append(f"  新进（本轮首现 · {len(new_rows)} 只，单轮噪声高发，只看动静）：{entries}")
     if h.get("warmup") and state not in ("stale", "no_data") and not top and not signals:
         lines.append("  （本轮无 p95+ 榜外异动）")
     elif not top:
         # 有信号但都不进两组（全在 2~5 轮的中间带）⇒ 如实说明，不能当成「没异动」。
-        lines.append(
-            f"  （本轮 {len(signals)} 只 p95+ 信号均不足 {CS_PERSIST_MIN} 轮，"
-            f"尚未证明持续性，本轮不展示）"
-        )
+        lines.append(f"  （本轮 {len(signals)} 只 p95+ 信号均不足 {CS_PERSIST_MIN} 轮，尚未证明持续性，本轮不展示）")
     return "\n".join(lines)
 
 

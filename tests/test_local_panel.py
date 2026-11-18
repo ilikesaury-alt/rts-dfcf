@@ -539,6 +539,10 @@ def test_local_panel_module_not_imported_when_disabled(monkeypatch):
     import sys as _sys
 
     _clear_local_env(monkeypatch)
+    # 重新导入会触发 `unified_scanner` 的 `load_dotenv()` —— 本地 `.env` 若开了
+    # `RTS_LOCAL_PANEL=1`（开发机常见），会把开关读回来。指向不存在的 env 文件
+    # ⇒ load_dotenv 静默 no-op，本守卫只验代码路径，不验开发机配置。
+    monkeypatch.setenv("RTS_ENV_FILE", "___absent_env___.env")
     for name in ("scanner.local_panel_server", "scanner.local_view_cache", "unified_scanner"):
         _sys.modules.pop(name, None)
 

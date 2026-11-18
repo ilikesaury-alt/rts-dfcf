@@ -294,6 +294,40 @@ class TestPersistence:
         row = db.execute("SELECT main_net FROM crosssection_signal WHERE symbol=?", ("SZ" + ROCKET,)).fetchone()
         assert row is not None and row[0] == pytest.approx(8.0e7)
 
+    def test_persist_hydrates_after_restart(self, monkeypatch, db):
+        """重启后 persist 从 DB 恢复（2026-11-19 修）：不恢复则每次重启持续组都空，
+        要重新攒满 CS_PERSIST_MIN 轮才出现（用户实测的问题）。
+
+        语义同源：写侧「本轮进 p95+ 算一次」≡ 行数 COUNT(DISTINCT round_seq)，
+        故整日轮次落库（m028/CS_KEEP_DAYS）是恢复的前提。
+        """
+        feed = _Feed()
+        _install_feed(monkeypatch, feed)
+        _run_rounds(monkeypatch, db, feed, 10)  # 6~10 轮产出信号 ⇒ persist=5
+
+        # 模拟重启：进程内状态全清（环形缓冲 / persist / 当日标记）
+        cs._ring.clear()
+        cs._state["persist"] = {}
+        cs._state["date"] = ""
+        cs._state["last_signals"] = []
+
+        # 东财路径重启后仍有 6 轮预热（生产走雪球原生涨速无预热，首轮即恢复）；
+        # 轮数控在 ROCKET 封板（≈第 18 轮 +19.5%）之前，否则会被封板剔除。
+        _run_rounds(monkeypatch, db, feed, 6, start=10)
+        block = cs.format_terminal_block()
+        assert "持续（" in block, f"重启后持续组该直接出现（persist 已从 DB 恢复）：\n{block}"
+        assert f"SZ{ROCKET}" in block
+        # 不恢复则本轮 persist=1（中间带不展示）；恢复后串联为 5+1=6
+        assert "持续6轮" in block, "恢复值与新一轮累计应串联（5+1=6）"
+
+    def test_hydrate_persist_fail_open_without_table(self):
+        """表未建（m027 未应用）/查询失败 ⇒ {}（退化为从零计数，不阻断 observe）。"""
+        bare = sqlite3.connect(":memory:")
+        try:
+            assert cs._hydrate_persist(bare, "2026-11-13") == {}
+        finally:
+            bare.close()
+
     def test_rows_carry_required_columns(self, monkeypatch, db):
         feed = _Feed()
         _install_feed(monkeypatch, feed)
