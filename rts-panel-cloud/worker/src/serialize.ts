@@ -6,7 +6,10 @@
  *   → 每一轮都被云端 400 拒绝。改契约时**两端同改**并提版本
  *   （本地 `scanner/panel_serialize.py` 的同名常量）。
  */
-export const SCHEMA_VERSION = 2;
+// v3（2026-11-17，与 scanner/panel_serialize.py 同批）：regions 新增
+// `onboard`（榜内异动段）与 `crosssection`（≡ 横截面层）。ingest 的 payload 是
+// `{regions, ctx}` 原样 JSON，故云端**无需**改表结构 —— 只是版本号必须双端同值。
+export const SCHEMA_VERSION = 3;
 
 export type GateStats = {
   total: number;
@@ -35,7 +38,11 @@ export type Regions = {
   main: Row[];
   hist: Row[];
   hot: Row[];
+  /** 榜内异动段（v3）：与 `hot` 同表头（`cols.onboard`）。 */
+  onboard?: Row[];
   offboard: Row[];
+  /** 横截面观察层（v3）；`undefined` / `enabled:false` = 未启用/非交易时段。 */
+  crosssection?: CrossSection;
   gate: Gate;
   cols?: Record<string, ColSpec[]>;
   /**
@@ -43,6 +50,28 @@ export type Regions = {
    * 见 `panel_serialize._marks`）—— 云端**不要**试图再拼 `"sym|cat"`，原样用。
    */
   marks?: { breakout: Record<string, boolean | string>; beauty: Record<string, string> };
+};
+
+/** 横截面观察层（v3 新增；`crosssection.snapshot_payload` 原样透传，云端不重算）。 */
+export type CrossSection = {
+  enabled: boolean;
+  state?: string | null;
+  time?: string;
+  valid_rows?: number;
+  buffer_depth?: number;
+  buffer_rounds?: number;
+  p95?: number;
+  signals?: number;
+  divergence?: number | null;
+  divergence_ok?: boolean | null;
+  sealed_skipped?: number;
+  warmup?: boolean;
+  stale_rounds?: number;
+  persist_min?: number;
+  top_persist?: number;
+  top_new?: number;
+  hidden_mid?: number;
+  groups?: { persist: Row[]; new: Row[] };
 };
 
 export type Ctx = {

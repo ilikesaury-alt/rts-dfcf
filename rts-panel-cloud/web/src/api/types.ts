@@ -39,11 +39,40 @@ export type Gate = {
   stats: GateStats;
 };
 
+/** 横截面观察层（v3，`crosssection.snapshot_payload` 原样下发；前端不重算）。 */
+export type CrossSection = {
+  enabled: boolean;
+  state?: string | null;
+  time?: string;
+  valid_rows?: number;
+  buffer_depth?: number;
+  buffer_rounds?: number;
+  p95?: number;
+  signals?: number;
+  divergence?: number | null;
+  divergence_ok?: boolean | null;
+  sealed_skipped?: number;
+  warmup?: boolean;
+  stale_rounds?: number;
+  persist_min?: number;
+  top_persist?: number;
+  top_new?: number;
+  hidden_mid?: number;
+  groups?: { persist: Row[]; new: Row[] };
+};
+
 export type Regions = {
   main: Row[];
   hist: Row[];
   hot: Row[];
+  /**
+   * 榜内异动段（v3）。**可选**：旧快照（schema=2）回放时没有这个键 ——
+   * 面板必须照常显示其余区块，不得因此整页空白。
+   */
+  onboard?: Row[];
   offboard: Row[];
+  /** 横截面观察层（v3）；`undefined` / `enabled:false` = 未启用或非交易时段。 */
+  crosssection?: CrossSection;
   gate: Gate;
   cols?: Record<string, ColSpec[]>;
   /**

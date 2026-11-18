@@ -18,9 +18,9 @@
  * - 过门区滑动分段（← → / Home / End）；状态胶囊多态 + 一句解释弹层；
  * - 空态用纯 CSS 图形 + 口径说明 + `—（本轮无数据）`；删掉右栏遗留空卡片。
  *
- * ⚠ 已知口径差异（不是 bug，但必须让人看见）：载荷的 `regions` 只有
- * `main / hist / hot / offboard` 四个键，**终端的「榜内异动」段不在契约里**
- * （加它要动 SCHEMA_VERSION，本轮冻结为 2）。故本区标题写「分段并列」而非「三段并列」。
+ * v3（契约 2→3）：载荷 `regions` 补齐了终端的两块 —— `onboard`（榜内异动段）与
+ * `crosssection`（`≡` 横截面观察层）。故本区现在是**三段并列**（与终端一致）。
+ * ⚠ 两个新键都是**可选**：重启回放会灌入旧的 schema=2 快照，缺键一律按空处理。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -56,7 +56,44 @@ export const hotSubtitle = (n: number): string =>
 export const offboardSubtitle = (n: number): string =>
   `（榜外创业板·非榜单来源·层级 T1=量先动·价未动 / T2=启动首日·排序=T2 启动首日→T1 量先动→量比→主力净占比·开盘 5 分内不产出·量比按市场前置系数去偏·${n} 只·观察段·未回测）`;
 
+/** 榜内异动段（v3 补齐）：逐字 = `view.model.onboard_subtitle`。
+ *  本段与榜外段**同门同层**，唯一差别是样本域从榜外换成榜内；只有 T1 一层
+ *  （`T2=启动首日` 要求当日已涨，与本段「价未动」的前提互斥）。 */
+export const onboardSubtitle = (n: number): string =>
+  `（榜内创业板·榜单来源·层级 仅T1=量先动·价未动（T2=启动首日需已涨，与本段互斥）·排序=量比→主力净占比·开盘 5 分内不产出·量比按市场前置系数去偏·${n} 只·观察段·未回测·与榜外段同门同层）`;
+
 const EMPTY_MARKS = { breakout: {}, beauty: {} };
+
+/** 横截面层的**健康读数**（纯事实回显，不含任何评价）。
+ *  数据来自 Python `crosssection.snapshot_payload()`，前端不重算任何阈值。 */
+function csSummary(cs: NonNullable<RegionsResponse["regions"]["crosssection"]>): string {
+  const parts: string[] = [];
+  parts.push(`有效 ${cs.valid_rows ?? 0} 只`);
+  parts.push(`缓冲 ${cs.buffer_depth ?? 0}/${cs.buffer_rounds ?? 0}`);
+  if (typeof cs.p95 === "number") parts.push(`p95 ${cs.p95.toFixed(3)}`);
+  parts.push(`信号 ${cs.signals ?? 0}`);
+  if (typeof cs.divergence === "number") {
+    parts.push(`跨源价差 ${cs.divergence.toFixed(2)}%${cs.divergence_ok === false ? " ⚠超容忍" : ""}`);
+  } else {
+    parts.push("跨源价差 未校验");
+  }
+  if (cs.sealed_skipped) parts.push(`已剔封板 ${cs.sealed_skipped}`);
+  if (cs.state === "throttled") parts.push("本轮节流（沿用上轮）");
+  if (cs.state === "stale") parts.push(`陈旧轮 ×${cs.stale_rounds ?? 0}`);
+  if (cs.warmup) parts.push(`预热中 ${cs.buffer_depth ?? 0}/${cs.buffer_rounds ?? 0}`);
+  return `（${parts.join(" · ")}）`;
+}
+
+/** 横截面层的口径正文（收进「口径 ▾」）：分组/判据/排序与终端 `≡` 块同源。 */
+function csMouth(cs: NonNullable<RegionsResponse["regions"]["crosssection"]>): string {
+  const pm = cs.persist_min ?? 0;
+  return [
+    `持续 = 当日累计 ≥${pm} 轮（先看这组）· 新进 = 本轮首现（单轮噪声高发，只看动静）· 中间 2~${Math.max(pm - 1, 0)} 轮不展示`,
+    `判据：一致性（1m/3m/5m 是否同号）· 量价（放量是否伴随价格）· 轮次（当日出现过几轮）`,
+    "排序：组内质量（全正·配合 > 全正·— > 其余）→ 轮次 → 分位 → 额涌 → 量比",
+    "本层为并列观察层，与上升榜/主线/飞书口径解耦，不进任何回测口径",
+  ].join(" · ");
+}
 
 function colsOf(snapshot: RegionsResponse, key: string): ColSpec[] {
   return snapshot.regions.cols?.[key] ?? [];
@@ -70,6 +107,7 @@ function nameFor(snapshot: RegionsResponse | null, symbol: string): string {
     ...r.main,
     ...r.hist,
     ...r.hot,
+    ...(r.onboard ?? []),
     ...r.offboard,
     ...r.gate.main,
     ...r.gate.hist,
@@ -92,7 +130,10 @@ type RegionListProps = {
 
 function RegionList({ snapshot, activeKey, collapsed, onToggle }: RegionListProps) {
   const marks = snapshot.regions.marks ?? EMPTY_MARKS;
-  const { main, hist, hot, offboard } = snapshot.regions;
+  // ⚠ `onboard` / `crosssection` 是 v3 新键，**旧快照（schema=2）回放时缺省** ——
+  // 缺省按空处理，绝不因此整页空白（重启回放正是这条路径）。
+  const { main, hist, hot, offboard, crosssection } = snapshot.regions;
+  const onboard = snapshot.regions.onboard ?? [];
   const flowFiltered = snapshot.ctx?.flowFiltered ?? 0;
   const warnings = snapshot.ctx?.warnings ?? [];
 
@@ -134,6 +175,7 @@ function RegionList({ snapshot, activeKey, collapsed, onToggle }: RegionListProp
         profile="hist"
         marks={marks}
         count={hist.length}
+        foldWhenEmpty
         active={activeKey === NAV_ITEMS[1].key}
         collapsed={Boolean(collapsed[NAV_ITEMS[1].key])}
         onToggleCollapse={() => onToggle(NAV_ITEMS[1].key)}
@@ -143,21 +185,54 @@ function RegionList({ snapshot, activeKey, collapsed, onToggle }: RegionListProp
         anchorId={NAV_ITEMS[2].key}
         title={TITLES.hot.short}
         fullTitle={TITLES.hot.full}
-        sub="（创业板 · 分段并列·互不排名 · 与上方主线口径独立）"
+        sub="（创业板 · 三段并列·互不排名 · 与上方主线口径独立）"
         tag="分段并列"
         specs={colsOf(snapshot, "hot")}
         rows={hot}
         profile="hot"
         marks={marks}
-        count={hot.length + offboard.length}
+        count={hot.length + onboard.length + offboard.length}
         segments={[
-          { title: `— 榜内飙升${hotSubtitle(hot.length)}`, rows: hot, profile: "hot" },
-          { title: `— 榜外异动${offboardSubtitle(offboard.length)}`, rows: offboard, profile: "offboard" },
+          { title: "— 榜内飙升", note: hotSubtitle(hot.length), rows: hot, profile: "hot" },
+          { title: "— 榜内异动", note: onboardSubtitle(onboard.length), rows: onboard, profile: "onboard" },
+          { title: "— 榜外异动", note: offboardSubtitle(offboard.length), rows: offboard, profile: "offboard" },
         ]}
         active={activeKey === NAV_ITEMS[2].key}
         collapsed={Boolean(collapsed[NAV_ITEMS[2].key])}
         onToggleCollapse={() => onToggle(NAV_ITEMS[2].key)}
       />
+
+      {/* 横截面观察层（v3）：并列层，与上面各区口径解耦；未启用/非交易时段整块不画。 */}
+      {crosssection?.enabled ? (
+        <RegionCard
+          anchorId={NAV_ITEMS[3].key}
+          title="≡ 横截面异动"
+          sub={csSummary(crosssection)}
+          mouth={csMouth(crosssection)}
+          tag="并列观察层"
+          specs={colsOf(snapshot, "crosssection")}
+          rows={[]}
+          profile="crosssection"
+          marks={marks}
+          count={(crosssection.groups?.persist?.length ?? 0) + (crosssection.groups?.new?.length ?? 0)}
+          foldWhenEmpty
+          segments={[
+            {
+              title: `— 持续（当日 ≥${crosssection.persist_min ?? 0} 轮 · 先看这组）`,
+              rows: crosssection.groups?.persist ?? [],
+              profile: "crosssection",
+            },
+            {
+              title: "— 新进（本轮首现 · 单轮噪声高发，只看动静）",
+              rows: crosssection.groups?.new ?? [],
+              profile: "crosssection",
+            },
+          ]}
+          active={activeKey === NAV_ITEMS[3].key}
+          collapsed={Boolean(collapsed[NAV_ITEMS[3].key])}
+          onToggleCollapse={() => onToggle(NAV_ITEMS[3].key)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -262,6 +337,25 @@ function useActiveSection(keys: string[], viewKey: string): string | null {
 
 /** 主区分栏的 id：`useDefaultLayout` 用它把「用户拖出来的宽度」存进 localStorage。 */
 const PANEL_GROUP_ID = "rts-panel-main";
+/** 窄屏阈值：与原型 `@media (max-width:1180px)` 同值。
+ *  低于它时**不再**用可拖拽分栏（右栏会被挤到 200px 左右，标题竖排成一行一个字，
+ *  实测 1032px 下「飞书过门 — 下一张卡会推什么」被折成 6 行且被裁断）——
+ *  改为单列：主区在上、过门整块落到主区下方同一条滚动流里。 */
+const NARROW_QUERY = "(max-width: 1180px)";
+
+function useNarrow(): boolean {
+  const [narrow, setNarrow] = useState(() =>
+    typeof window !== "undefined" ? window.matchMedia(NARROW_QUERY).matches : false,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia(NARROW_QUERY);
+    const onChange = (e: MediaQueryListEvent) => setNarrow(e.matches);
+    mq.addEventListener("change", onChange);
+    setNarrow(mq.matches);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return narrow;
+}
 
 /**
  * 右侧「过门」侧栏。
@@ -281,6 +375,7 @@ export default function App() {
   // 分栏宽度持久化（react-resizable-panels v4：`defaultLayout` + `onLayoutChanged`）。
   // 只存 layout，不存任何业务状态。
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({ id: PANEL_GROUP_ID });
+  const narrow = useNarrow();
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
@@ -303,7 +398,8 @@ export default function App() {
     return {
       pool: r?.main.length ?? 0,
       hist: r?.hist.length ?? 0,
-      hot: (r?.hot.length ?? 0) + (r?.offboard.length ?? 0),
+      hot: (r?.hot.length ?? 0) + (r?.onboard?.length ?? 0) + (r?.offboard.length ?? 0),
+      cs: (r?.crosssection?.groups?.persist?.length ?? 0) + (r?.crosssection?.groups?.new?.length ?? 0),
       gate: r?.gate.stats.passed ?? 0,
     };
   }, [snapshot]);
@@ -313,7 +409,12 @@ export default function App() {
       setGateActive(true);
       // `飞书过门` 对应右栏卡片，滚右栏到顶（不在主区滚动容器里）。
       const side = document.querySelector<HTMLElement>(SIDE_SCROLL_SELECTOR);
-      if (side) side.scrollTop = 0;
+      if (side) {
+        side.scrollTop = 0;
+        return;
+      }
+      // 窄屏没有右栏（过门整块落在主区下面）⇒ 退回主区锚点滚动。
+      scrollMainTo("gate");
       return;
     }
     setGateActive(false);
@@ -458,7 +559,34 @@ export default function App() {
           />
 
           {/* ── 主区：区块列表 + 右侧「过门」侧栏，可拖拽分栏 ── */}
-          {snapshot ? (
+          {snapshot && narrow ? (
+            /* 窄屏：单列滚动（主区 + 过门同流），不用分栏（理由见 NARROW_QUERY 注释）。 */
+            <main className="main-scroll h-full min-h-0 min-w-0 flex-1" data-scroll-root="main">
+              <RegionList
+                snapshot={snapshot}
+                activeKey={activeKey}
+                collapsed={ui.collapsed}
+                onToggle={toggleCard}
+              />
+              <div className="narrow-gate">
+                <GatePanel
+                  gate={snapshot.regions.gate}
+                  regions={{
+                    main: snapshot.regions.main,
+                    hist: snapshot.regions.hist,
+                    hot: snapshot.regions.hot,
+                    onboard: snapshot.regions.onboard ?? [],
+                    offboard: snapshot.regions.offboard,
+                  }}
+                  tab={ui.gateTab}
+                  onTabChange={(tab) => update({ gateTab: tab })}
+                  active={activeKey === "gate"}
+                  collapsed={Boolean(ui.collapsed.gate)}
+                  onToggleCollapse={() => toggleCard("gate")}
+                />
+              </div>
+            </main>
+          ) : snapshot ? (
             <PanelGroup
               id={PANEL_GROUP_ID}
               orientation="horizontal"
@@ -487,6 +615,7 @@ export default function App() {
                       main: snapshot.regions.main,
                       hist: snapshot.regions.hist,
                       hot: snapshot.regions.hot,
+                      onboard: snapshot.regions.onboard ?? [],
                       offboard: snapshot.regions.offboard,
                     }}
                     tab={ui.gateTab}
@@ -530,7 +659,7 @@ export default function App() {
         <span>每 {Math.round(intervalMs / 1000)}s 读取一次</span>
         <span className="sep" />
         <span>轮次、时段与区块口径随快照呈现</span>
-        <span className="right">数据契约 v2 · 本机只读镜像</span>
+        <span className="right">数据契约 v3 · 本机只读镜像</span>
       </footer>
     </div>
   );

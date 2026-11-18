@@ -36,6 +36,25 @@ python -m pytest tests/ -q                # 全量测试
 
 终端三段结构（`v1 池选` 有序，其余三段各自成表、互不排名）：`榜内飙升 / 榜内异动 / 榜外异动`。
 
+### 1.1 网页版（浏览器里点按钮启动扫描）
+
+| 命令 | 说明 |
+|---|---|
+| **双击 `start-web.vbs`** | 推荐：**零窗口**起启动台并自动开浏览器（`pythonw` + WScript 隐藏窗口） |
+| 双击 `start-web.bat` | 同上，但会闪一个 cmd 窗口（要看启动日志时才用） |
+| `python -m scanner.web_launcher` | 终端里起（`--no-browser` 不开浏览器、`--port N` 换口） |
+
+**用户视角只有一个页面**：打开 `http://127.0.0.1:8901/` → 点「启动扫描」→ 首轮就绪后
+面板**就地嵌在同一个页面里**开始刷（细状态栏：运行中 / 在新标签打开 / 停止扫描）。
+不用再跳 8899、也不用开第二个窗口。
+
+* **先有页面，再拉扫描器**：启动台是常驻控制面（8901），扫描器由它 spawn（带 `RTS_LOCAL_PANEL=1`）。
+* **面板仍在 8899**（扫描器自己托管）：点「进入面板」跳过去。两个口是故意的 —— 动作面校验要求
+  `Origin` 逐字等于面板口，反代会 403（见 `scanner/web_launcher.py` docstring）。
+* **已有实例就拒绝**：锁被占（比如终端那个扫描器）时只提示、**不杀进程**；要停请去它的终端。
+* 停止只结束启动台自己拉起的那个子进程；日志在 `logs/console_child.log`（页面可展开看）。
+* 契约 v3：网页现在与终端同区数（含「榜内异动」与 `≡` 横截面层）。
+
 ---
 
 ## 2. 看盘 / 报表
@@ -358,7 +377,9 @@ python scripts/ann_cache_sync.py                              # 当日最后一�
 | `RTS_PUSH_GATE=0` | 关掉飞书过滤门（回滚用） |
 | `RTS_HOT_WATCH=0` | 整体关掉沪深飙升独立区 |
 | `RTS_CROSSSECTION=0` | 关掉创业板全集横截面观察层（`≡` 段 + `crosssection_signal` 写库）；`RTS_CROSSSECTION_TTL_SEC` 调快照节流（默认 55s，东财 IP 限频时调大） |
-| `RTS_LOCAL_PANEL` / `RTS_LOCAL_PANEL_PORT` | 本地 Web 面板开关 / 端口 |
+| `RTS_LOCAL_PANEL` / `RTS_LOCAL_PANEL_PORT` | 本地 Web 面板开关 / 端口（缺省 8899） |
+| `RTS_WEB_CONSOLE_PORT` | 网页版启动台端口（缺省 8901；脏值回退） |
+| `RTS_CONSOLE_SCANNER_ARGS` | 启动台拉起扫描器时的附加参数（空白分隔，联调常用 `--no-feishu`） |
 | `RTS_PANEL_URL` / `RTS_PANEL_SECRET` | 面板上报地址 / 密钥 |
 | `RTS_PANEL_MD=0` | 关掉面板逐轮存档（默认每轮**整份覆盖** `logs/panel_md/股票池.md`，只留最近一次） |
 | `RTS_PANEL_MD_PATH` | 存档 md 完整路径（整份覆盖，指向外部文件会替换其原有内容） |

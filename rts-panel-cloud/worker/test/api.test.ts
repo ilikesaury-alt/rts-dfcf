@@ -251,8 +251,33 @@ describe("GET /api/meta", () => {
 });
 
 describe("契约", () => {
-  it("SCHEMA_VERSION = 2（与 scanner/panel_serialize.py 同值）", () => {
-    expect(SCHEMA_VERSION).toBe(2);
+  it("SCHEMA_VERSION = 3（与 scanner/panel_serialize.py 同值）", () => {
+    expect(SCHEMA_VERSION).toBe(3);
+  });
+
+  it("v3 新增的 onboard / crosssection 原样落库并下发（云端不重算）", async () => {
+    const cs = {
+      enabled: true,
+      time: "10:31:00",
+      p95: 0.812,
+      groups: { persist: [{ symbol: "SZ300199", signal_text: "全正·配合·9轮" }], new: [] },
+    };
+    await post(
+      payload({
+        regions: {
+          main: [],
+          hist: [],
+          hot: [],
+          onboard: [{ symbol: "SZ300099", name: "尤洛卡", tier: "T1" }],
+          offboard: [],
+          crosssection: cs,
+        },
+      }),
+    );
+    const body = await (await call("/api/regions")).json<any>();
+    expect(body.data.regions.onboard).toHaveLength(1);
+    expect(body.data.regions.onboard[0].tier).toBe("T1");
+    expect(body.data.regions.crosssection).toEqual(cs);
   });
 
   it("regions 把 cols 原样下发（前端据此渲染表头，不硬编码列名）", async () => {

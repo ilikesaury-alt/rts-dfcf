@@ -24,12 +24,14 @@ export type NavItem = { key: string; label: string; hint?: string };
 export const NAV_ITEMS: NavItem[] = [
   { key: "pool", label: "v1 池选", hint: "新票优先·类别优先·排名升序·资金流降序" },
   { key: "hist", label: "v1 回捞", hint: "前 N 日进过 v1 · 今日回调到位" },
-  { key: "hot", label: "沪深飙升", hint: "榜内飙升 / 榜外异动 分段并列" },
+  { key: "hot", label: "沪深飙升", hint: "榜内飙升 / 榜内异动 / 榜外异动 三段并列" },
+  // 横截面观察层（v3）：与上升榜解耦的并列层。未启用时徽章为 0、区块整块不渲染。
+  { key: "cs", label: "横截面异动", hint: "持续 / 新进 两组 · 并列观察层" },
   { key: "gate", label: "飞书过门", hint: "下一张卡会推什么（非已推内容）" },
 ];
 
 /** 各区块的行数徽章值（`App.tsx` 从载荷行集合算好传入；纯计数，不评价）。 */
-export type NavCounts = { pool: number; hist: number; hot: number; gate: number };
+export type NavCounts = { pool: number; hist: number; hot: number; cs: number; gate: number };
 
 type Props = {
   /** 当前所在区块（用于高亮）。由 `App.tsx` 按滚动位置维护。 */

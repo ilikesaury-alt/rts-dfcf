@@ -898,6 +898,97 @@ def _fmt_num(v: float | None, digits: int = 2, suffix: str = "") -> str:
     return f"{v:.{digits}f}{suffix}"
 
 
+#: 本层**面向面板（web）的列投影**。终端 `≡` 块是自由文本（宽度靠 f-string 拼），
+#: 故这张表只服务面板 —— 但字段名与 `_row()` 逐个对应，改一边要同改另一边。
+#: 列名由 Python 单源下发（`panel_serialize.cols_payload`），前端不硬编码（hygiene 守卫）。
+COLS_CS: tuple = (
+    ("#", 3, "r"),
+    ("代码", 12, "l"),
+    ("名称", 10, "l"),
+    ("现价", 8, "r"),
+    ("涨幅", 8, "r"),
+    ("1m", 7, "r"),
+    ("3m", 7, "r"),
+    ("5m", 7, "r"),
+    ("额涌", 8, "r"),
+    ("量比", 6, "r"),
+    ("分位", 6, "r"),
+    ("判据", 16, "l"),
+)
+
+
+
+def _signal_row(s: Mapping[str, Any]) -> dict[str, Any]:
+    """单条信号 → 面板行（**纯标量**，键名与 `COLS_CS` 的单元格取值一一对应）。
+
+    `signal_text` 是终端 `≡` 块里逐字同款的「判据」串（`一致性·量价·N轮`）——
+    由本模块拼、前端原样渲染，**不在 TS 里重拼**（重拼即第二份口径）。
+    """
+    cons = s.get("consistency") or "混合"
+    vp = s.get("volume_price") or "—"
+    persist = int(s.get("persist") or 1)
+    return {
+        "symbol": s.get("symbol"),
+        "name": s.get("name"),
+        "price": s.get("price"),
+        "percent": s.get("percent"),
+        "speed_1": s.get("speed_1"),
+        "speed_3": s.get("speed_3"),
+        "speed_5": s.get("speed_5"),
+        "amount_surge": s.get("amount_surge"),
+        "vol_ratio": s.get("vol_ratio"),
+        "pct_rank": s.get("pct_rank"),
+        "consistency": cons,
+        "volume_price": vp,
+        "persist": persist,
+        "signal_text": f"{cons}·{vp}·{persist}轮",
+    }
+
+
+def snapshot_payload() -> dict[str, Any]:
+    """本层 → **面板载荷**（纯数据，无 ANSI、无文本块）。关闭/非交易时段 → `{"enabled": False}`。
+
+    与 `format_terminal_block()`（终端文本）是**同一份进程内状态的两种投影**：
+    分组/截断/排序全部复用 `_display_group` + `signal_sort_key`，不另写一套。
+    唯一的分叉是「怎么排版」（终端拼字符串、面板下发列 + 行），这正是 D1 的允许范围。
+
+    ⚠ 中间组（2~`CS_PERSIST_MIN-1` 轮）**不展示**，与终端一致；它不是「没异动」，
+    而是「尚未证明持续性」—— 终端会打印一句说明，面板侧见 `hidden_mid` 计数。
+    """
+    h = health()
+    if not h.get("enabled", True) or h.get("state") in ("disabled", "non_trading"):
+        return {"enabled": False}
+    with _lock:
+        signals = list(_state["last_signals"])
+    persist_rows = [s for s in signals if _display_group(s) == _GROUP_PERSIST][:CS_TOP_PERSIST]
+    new_rows = [s for s in signals if _display_group(s) == _GROUP_NEW][:CS_TOP_NEW]
+    shown = {id(s) for s in persist_rows + new_rows}
+    hidden_mid = sum(1 for s in signals if id(s) not in shown)
+    return {
+        "enabled": True,
+        "state": h.get("state"),
+        "time": h.get("time") or _now().strftime("%H:%M:%S"),
+        "valid_rows": int(h.get("valid_rows") or 0),
+        "buffer_depth": int(h.get("buffer_depth") or 0),
+        "buffer_rounds": CS_BUFFER_ROUNDS,
+        "p95": CS_P95,
+        "signals": int(h.get("signals") or 0),
+        "divergence": h.get("divergence"),
+        "divergence_ok": h.get("divergence_ok"),
+        "sealed_skipped": int(h.get("sealed_skipped") or 0),
+        "warmup": bool(h.get("warmup")),
+        "stale_rounds": int(h.get("stale_rounds") or 0),
+        "persist_min": CS_PERSIST_MIN,
+        "top_persist": CS_TOP_PERSIST,
+        "top_new": CS_TOP_NEW,
+        "hidden_mid": hidden_mid,
+        "groups": {
+            "persist": [_signal_row(s) for s in persist_rows],
+            "new": [_signal_row(s) for s in new_rows],
+        },
+    }
+
+
 def format_terminal_block() -> str:
     """终端 `≡` 块（多行纯文本，可 `print()`）。关闭/非交易时段 → 空串。
 

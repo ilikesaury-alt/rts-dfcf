@@ -23,7 +23,7 @@
 import type { ColSpec, Row } from "../api/types";
 
 /** 区块口径。列集相同而语义不同处靠它区分（与终端 `_hot_row_cells` 的 `board_segment` 同源）。 */
-export type Profile = "pool" | "hot" | "offboard" | "hist";
+export type Profile = "pool" | "hot" | "onboard" | "offboard" | "hist" | "crosssection";
 
 /** 涨跌色（红涨绿跌，A 股口径）。 */
 export type Tone = "up" | "down";
@@ -121,6 +121,17 @@ function accumCell(v: number | null): Cell {
 
 function priceCell(v: number | null): Cell {
   return v === null || v === 0 ? { text: DASH } : { text: v.toFixed(2), val: v };
+}
+
+/** 分钟级涨速格（横截面层自算，单位 %）：带符号显示、按符号着色。
+ *  与 `pctCell` 分开：涨速不用 ≥5% 加粗（它是分钟级量，5% 已在异常量级，加粗会满屏喊）。 */
+function speedCell(v: number | null): Cell {
+  if (v === null || !Number.isFinite(v)) return { text: DASH };
+  return {
+    text: fmtPct(v),
+    tone: v > 0 ? "up" : v < 0 ? "down" : undefined,
+    val: v,
+  };
 }
 
 /** 评分格：pool 取整（终端 `{row.score:.0f}`）、hot 一位小数（`{c.score:.1f}`）、hist 取整。 */
@@ -227,12 +238,46 @@ const HIST_CELLS: Record<string, CellFn> = {
 
 /** 榜外异动段与榜内飙升段**列集相同、语义不同**（同 `COLS_HOT`，`board=false`）。 */
 const OFFBOARD_CELLS = HOT_CELLS;
+/** 榜内异动段与榜内飙升段**同表头**（终端 `_render_hot_watch_region` 同款），
+ *  差别只在取值语义（`board=false`：无榜单专属量，层级列填 `T1`）。 */
+const ONBOARD_CELLS = HOT_CELLS;
+
+// ── 横截面异动（`crosssection.COLS_CS`；终端 `≡` 块是自由文本，本表只服务面板）──
+// #region COLS:crosssection
+const CS_CELLS: Record<string, CellFn> = {
+  "#": idxCell,
+  "代码": (row) => ({ text: text(row.symbol) }),
+  "名称": (row) => ({ text: text(row.name) }),
+  "现价": (row) => priceCell(num(row.price)),
+  "涨幅": (row) => pctCell(num(row.percent)),
+  "1m": (row) => speedCell(num(row.speed_1)),
+  "3m": (row) => speedCell(num(row.speed_3)),
+  "5m": (row) => speedCell(num(row.speed_5)),
+  "额涌": (row) => {
+    const v = num(row.amount_surge);
+    return { text: v === null ? DASH : `${v.toFixed(2)}×`, val: v ?? undefined };
+  },
+  "量比": (row) => {
+    const v = num(row.vol_ratio);
+    return { text: v === null || v <= 0 ? DASH : v.toFixed(2), val: v ?? undefined };
+  },
+  "分位": (row) => {
+    const v = num(row.pct_rank);
+    return { text: v === null ? DASH : v.toFixed(3), val: v ?? undefined };
+  },
+  // 判据串由 Python 拼（`crosssection._signal_row.signal_text`），前端**不重拼** ——
+  // 重拼即第二份口径（终端 `≡` 块打印的是同一串）。
+  "判据": (row) => ({ text: text(row.signal_text) || DASH }),
+};
+// #endregion
 
 const TABLES: Record<Profile, Record<string, CellFn>> = {
   pool: POOL_CELLS,
   hot: HOT_CELLS,
+  onboard: ONBOARD_CELLS,
   offboard: OFFBOARD_CELLS,
   hist: HIST_CELLS,
+  crosssection: CS_CELLS,
 };
 
 /**
@@ -248,8 +293,12 @@ const TABLES: Record<Profile, Record<string, CellFn>> = {
 export const SORTABLE: Record<Profile, string[]> = {
   pool: ["涨幅"],
   hot: ["评分", "涨幅", "量比"],
+  onboard: ["涨幅", "量比"],
   offboard: ["涨幅", "量比"],
   hist: ["评分", "涨幅", "量比"],
+  // 横截面层不给临时排序：组内顺序是「分组 → 质量 → 轮次 → 分位 → 额涌 → 量比」
+  // （`crosssection.signal_sort_key`），改排会把这个口径打散成另一套语义。
+  crosssection: [],
 };
 
 /**

@@ -21,7 +21,8 @@ from pathlib import Path
 
 import pytest
 
-from scanner.view.model import COLS_HIST, COLS_HOT, COLS_POOL, offboard_subtitle
+from scanner import crosssection
+from scanner.view.model import COLS_HIST, COLS_HOT, COLS_POOL, offboard_subtitle, onboard_subtitle
 from scanner.view.model import hot_subtitle as py_hot_subtitle
 
 WEB_SRC = Path(__file__).resolve().parents[1] / "rts-panel-cloud" / "web" / "src"
@@ -59,6 +60,8 @@ def _table_keys(ts: str, region: str) -> list[str]:
         ("pool", COLS_POOL),
         ("hot", COLS_HOT),
         ("hist", COLS_HIST),
+        # v3 新增：横截面层单独一套列（终端 `≡` 块是自由文本，这张表只服务面板）。
+        ("crosssection", crosssection.COLS_CS),
     ],
 )
 def test_col_projection_covers_every_terminal_column(region: str, cols: tuple) -> None:
@@ -68,6 +71,18 @@ def test_col_projection_covers_every_terminal_column(region: str, cols: tuple) -
     got = _table_keys(ts, region)
     assert got, f"{region} 投影表解析为空（正则失效会让本守卫空转，必须显式失败）"
     assert got == expected, f"{region} 列投影与 COLS_{region.upper()} 不一致\n期望 {expected}\n实际 {got}"
+
+
+def test_onboard_segment_reuses_hot_column_table() -> None:
+    """榜内异动段与榜内飙升段**同表头**（终端 `_render_hot_watch_region` 同款）。
+
+    它**不该**有自己的一套列：两段在同一区、共用同一张表，分叉即两段错列
+    （而错列不会报错，只会静默对不上）。真源 = 面板载荷 `cols.onboard == COLS_HOT`
+    （`tests/test_panel_serialize.py` 已断言），这里守前端没有另造一张表。
+    """
+    ts = _read("lib/cols.ts")
+    assert "const ONBOARD_CELLS = HOT_CELLS;" in ts, "榜内异动段必须复用 HOT_CELLS"
+    assert re.search(r"^\s*onboard: ONBOARD_CELLS,$", ts, re.M), "TABLES 未把 onboard 指向同一张表"
 
 
 def test_hot_highlight_streak_matches_python_source() -> None:
@@ -91,6 +106,7 @@ def test_segment_subtitles_are_verbatim_from_python_source() -> None:
     """段标题逐字一致（含**层级词表**与**排序键**两级），用真函数生成后比对。"""
     ts = _read("App.tsx")
     assert _ts_template(ts, "hotSubtitle").replace("${n}", "7") == py_hot_subtitle(7)
+    assert _ts_template(ts, "onboardSubtitle").replace("${n}", "7") == onboard_subtitle(7)
     assert _ts_template(ts, "offboardSubtitle").replace("${n}", "7") == offboard_subtitle(7)
 
 
@@ -110,8 +126,8 @@ def test_offboard_subtitle_keeps_both_tier_glossary_and_sort_text() -> None:
 def test_region_titles_match_terminal_wording() -> None:
     """区块标题是设计规定的展示文案：必须与终端 `render.py` 里的同串一致。
 
-    （面板不显示终端的「三段并列」是**已知契约缺口**：`regions` 只有四个键、
-    榜内异动段不在载荷里；App.tsx 已把这一点写在注释里，故这里只比对本就存在的三串。）
+    （v3 之前面板缺「榜内异动」段是已知契约缺口；契约 2→3 后已补齐，
+    故本区标题由「分段并列」恢复为与终端一致的「三段并列」。）
     """
     ts = _read("App.tsx")
     render_src = (Path(__file__).resolve().parents[1] / "scanner" / "view" / "render.py").read_text(encoding="utf-8")

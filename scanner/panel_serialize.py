@@ -1,4 +1,4 @@
-"""面板载荷序列化（design §3.1/§3.3/§3.6/§3.7，SCHEMA_VERSION=2）。
+"""面板载荷序列化（design §3.1/§3.3/§3.6/§3.7，SCHEMA_VERSION=3）。
 
 **纯函数模块：零 I/O、零网络、零云端依赖** —— 这是整个面板工程里最早能进 CI 的资产
 （T0.1/T0.2），也是两端契约（`worker/src/serialize.ts`）的唯一本地真源。
@@ -24,12 +24,15 @@ import json
 from typing import Any
 
 from scanner.config import REFRESH_INTERVAL
+from scanner.utils import EXTERNAL_FAILURES
 from scanner.view.model import COLS_HIST, COLS_HOT, COLS_POOL, ScanView
 
 # 契约版本。**必须**与 `rts-panel-cloud/worker/src/serialize.ts` 的同值常量相等 ——
-# 不等即云端 400 `SCHEMA_MISMATCH`（双端同值 2；改契约必须同步两端并提版本）。
-# ⚠ 该值**不进** wrangler vars（vars 一律字符串，会变成 `2 !== "2"`），见 design §4.1。
-SCHEMA_VERSION = 2
+# 不等即云端 400 `SCHEMA_MISMATCH`（双端同值 3；改契约必须同步两端并提版本）。
+# ⚠ 该值**不进** wrangler vars（vars 一律字符串，会变成 `3 !== "3"`），见 design §4.1。
+# v3（2026-11-17）：`regions` 新增 `onboard`（榜内异动段）与 `crosssection`（≡ 横截面层），
+# 面板由此与终端同区数。旧载荷（schema=2）仍可读 —— 新增键对旧读侧是「缺字段」。
+SCHEMA_VERSION = 3
 
 # FR-C2 规则 5：每轮最多带 20 只票的 K 线（≈160KB）。与云端 `ingest.ts` 的
 # `STOCK_QUOTA` 同一语义、同一数值 —— 双端各有一份是刻意的（云端不信任上报器自律）。
@@ -113,11 +116,25 @@ def col_spec(cols: tuple) -> list[dict]:
 
 
 def cols_payload() -> dict[str, list[dict]]:
-    """五区块的列定义投影（静态 ~1KB，随载荷下发 ⇒ 前端词表与运行时数据同源）。"""
+    """各区块的列定义投影（静态 ~1KB，随载荷下发 ⇒ 前端词表与运行时数据同源）。
+
+    | 键 | 真源 | 说明 |
+    |---|---|---|
+    | `pool` / `hist` / `hot` | `view.model.COLS_*` | 与终端逐列同序 |
+    | `onboard` | 复用 `COLS_HOT` | 榜内异动段与榜内飙升段同表头（终端同款）|
+    | `crosssection` | `crosssection.COLS_CS` | `≡` 块是自由文本，这张表只服务面板 |
+
+    ⚠ `offboard` 不在本表：它复用 `hot` 的列投影（前端 `isBoardSegment` 区分取哪个
+    cell 函数），与终端「同区不同段、同表头」的语义一致。
+    """
+    from scanner import crosssection
+
     return {
         "pool": col_spec(COLS_POOL),
         "hot": col_spec(COLS_HOT),
         "hist": col_spec(COLS_HIST),
+        "onboard": col_spec(COLS_HOT),
+        "crosssection": col_spec(crosssection.COLS_CS),
     }
 
 
@@ -171,6 +188,23 @@ def _ctx(view: ScanView) -> dict:
     }
 
 
+def _crosssection() -> dict[str, Any]:
+    """横截面观察层 → 面板载荷（`crosssection.snapshot_payload` 的唯一调用点）。
+
+    **不在 `extra` 里传**：`serialize_view` 有两个生产调用点（云端上报 / 本地面板），
+    让两边各传一份就必然有一个漏传 —— 而漏传的表现是「云端有、本地面板没有」，
+    没有任何东西会红。故在序列化层直接取（与 `_gate()` 直接调 `apply_push_gate` 同款）。
+
+    失败按 fail-open 处理：本层是旁路观察层，取不到就当作未启用，绝不拖垮主载荷。
+    """
+    from scanner import crosssection
+
+    try:
+        return crosssection.snapshot_payload()
+    except EXTERNAL_FAILURES:
+        return {"enabled": False}
+
+
 def serialize_view(view: ScanView, *, extra: dict | None = None) -> dict:
     """`ScanView` → 上报载荷 dict。
 
@@ -188,7 +222,13 @@ def serialize_view(view: ScanView, *, extra: dict | None = None) -> dict:
             "main": [_flat_row(r) for r in view.main_rows or []],
             "hist": [_flat_row(r) for r in view.hist_rows or []],
             "hot": [_flat_row(r) for r in view.hot_rows or []],
+            "onboard": [_flat_row(r) for r in view.onboard_rows or []],
             "offboard": [_flat_row(r) for r in view.offboard_rows or []],
+            # 横截面观察层（m027）：**不是 ScanView 字段** —— 它的状态在 `crosssection`
+            # 模块里（与终端 `≡` 块同一份进程内状态）。放在序列化层取而不让调用方传：
+            # 调用点有两个（云端上报 / 本地面板），让调用方传两份必然漂移一个。
+            # 关闭/非交易时段 → `{"enabled": False}`（前端整块跳过，不画空壳）。
+            "crosssection": _crosssection(),
             "gate": _gate(view),
             "cols": cols_payload(),
             "marks": {"breakout": _marks(view.breakout_mark), "beauty": _marks(view.beauty_mark)},

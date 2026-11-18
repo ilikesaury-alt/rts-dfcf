@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RTS 扫描器 · 启动台</title>
+<style>
+/* 与面板共用同一套「连续纸面」token（字面值与 web/src/index.css 同源）。
+   ⚠ 涨跌色不在此页出现：本页不做行情语义，只有交互与状态。 */
+:root{
+  --surface-0:#fff; --surface-3:#f4f6fa; --surface-rail:#f3f5f9;
+  --line-soft:#eef1f6; --line:#e7eaf0; --line-strong:#d9dee7;
+  --text-1:#161b26; --text-2:#3d4658; --text-3:#6e7789; --text-4:#98a1b2;
+  --brand:#2563eb; --brand-soft:#0e8fa8;
+  --amber:#b45309; --coral:#c8324b; --ok:#0a8f3c;
+  --mono:"JetBrains Mono","Cascadia Mono",Consolas,monospace;
+  --sans:"Inter","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+  --r-xs:4px; --r-sm:6px; --r-md:8px; --ease:140ms ease;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--surface-rail);color:var(--text-2);
+  font-family:var(--sans);font-size:13px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.wrap{max-width:760px;margin:0 auto;padding:56px 24px 80px}
+.tagline{font-size:11px;color:var(--text-4);letter-spacing:.06em;margin-bottom:22px}
+.head{display:flex;align-items:center;gap:11px;margin-bottom:4px}
+.head h1{margin:0;font-size:19px;font-weight:650;color:var(--text-1);letter-spacing:.01em}
+.dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
+.dot.idle{background:var(--text-4)} .dot.running{background:var(--ok)}
+.dot.starting{background:var(--amber);animation:pulse 1.4s ease-in-out infinite}
+.dot.external{background:var(--brand-soft)}
+@keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+.lead{margin:8px 0 22px;font-size:12.5px;color:var(--text-3);line-height:1.75}
+.lead b{color:var(--text-2);font-weight:600}
+.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+button{font:inherit;font-size:13px;padding:8px 20px;border-radius:var(--r-sm);
+  border:1px solid var(--line-strong);background:var(--surface-0);color:var(--text-2);
+  cursor:pointer;transition:all var(--ease)}
+button:hover:not(:disabled){background:var(--surface-3)}
+button.primary{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:600}
+button.primary:hover:not(:disabled){filter:brightness(1.06)}
+button:disabled{opacity:.4;cursor:not-allowed}
+.hint{font-size:11.5px;color:var(--text-4);margin-top:12px;line-height:1.8}
+.kv{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);
+  border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden;margin-top:22px}
+.kv div{background:var(--surface-0);padding:10px 13px}
+.kv span{display:block;font-size:10.5px;color:var(--text-4);margin-bottom:3px}
+.kv b{font-family:var(--mono);font-size:13px;color:var(--text-1);font-weight:600}
+.kv b.mut{color:var(--text-3)}
+.note{display:flex;gap:8px;padding:9px 11px;border-radius:var(--r-sm);margin-top:20px;
+  font-size:12px;line-height:1.7;background:rgba(180,83,9,.07);color:var(--amber)}
+.note.err{background:rgba(200,50,75,.07);color:var(--coral)}
+.note.info{background:rgba(14,143,168,.07);color:var(--brand-soft)}
+.note[hidden]{display:none}
+.log{margin-top:18px;border-top:1px solid var(--line);padding-top:12px}
+.log summary{cursor:pointer;font-size:12px;color:var(--text-3);list-style:none}
+.log summary::-webkit-details-marker{display:none}
+.log summary::before{content:"▸ ";color:var(--text-4)}
+.log[open] summary::before{content:"▾ "}
+pre{margin:10px 0 0;padding:12px;background:#12161f;color:#cdd5e0;border-radius:var(--r-sm);
+  font-family:var(--mono);font-size:11.5px;line-height:1.6;max-height:300px;overflow:auto;
+  white-space:pre-wrap;word-break:break-all}
+.foot{margin-top:40px;padding-top:14px;border-top:1px solid var(--line);
+  font-size:11px;color:var(--text-4);display:flex;gap:12px;flex-wrap:wrap}
+.foot .grow{flex:1}
+@media (max-width:640px){ .wrap{padding:32px 16px 60px} .kv{grid-template-columns:1fr} }
+
+/* ── live 模式：扫描器就绪后，面板**就地**嵌进来（同一个页面刷数据） ──
+   这样用户的角度只有一个页面：打开 → 点启动 → 等一会 → 数据在这里刷。
+   用 iframe 而不是反代：面板仍是它自己的 8899 源（Origin 自洽、动作面校验零改动）。 */
+.live{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--surface-rail)}
+.live[hidden]{display:none}
+.live-frame{flex:1;width:100%;border:0;background:#fff;min-height:0}
+.livebar{display:flex;align-items:center;gap:10px;padding:7px 14px;background:var(--surface-rail);
+  border-bottom:1px solid var(--line);font-size:12px;color:var(--text-3)}
+.livebar b{color:var(--text-1);font-weight:600;font-size:13px}
+.livebar .spacer{flex:1}
+.livebar .num{font-family:var(--mono)}
+.mini-btn{font:inherit;font-size:12px;padding:4px 12px;border-radius:var(--r-sm);
+  border:1px solid var(--line-strong);background:var(--surface-0);color:var(--text-2);cursor:pointer}
+.mini-btn:hover{background:var(--surface-3)}
+.mini-btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="tagline">RTS · 本机 <span class="num">127.0.0.1</span> · 控制面</div>
+
+  <div class="head"><span class="dot idle" id="dot"></span><h1>创业板飙升榜</h1></div>
+  <p class="lead" id="lead">正在读取扫描器状态…</p>
+
+  <div class="note" id="note" hidden></div>
+
+  <div class="row">
+    <button class="primary" id="btnStart" disabled>启动扫描</button>
+    <button id="btnStop" disabled>停止</button>
+    <button id="btnPanel" disabled>进入面板 →</button>
+  </div>
+  <p class="hint" id="hint"></p>
+
+  <div class="kv">
+    <div><span>本轮</span><b id="kvSeq" class="mut">—</b></div>
+    <div><span>运行时长</span><b id="kvUp" class="mut">—</b></div>
+    <div><span>进程</span><b id="kvPid" class="mut">—</b></div>
+  </div>
+
+  <details class="log" id="logBox">
+    <summary>扫描器输出（最近日志）</summary>
+    <pre id="logText">（未启动）</pre>
+  </details>
+
+  <div class="foot" >
+    <span>启动台 <span class="num" id="footConsole">:8901</span></span>
+    <span>面板 <span class="num" id="footPanel">:8899</span></span>
+    <span>动作面 <span class="num" id="footTasks">:8900</span></span>
+    <span class="grow"></span>
+    <span>仅本机 · 不代理任何面板数据</span>
+  </div>
+</div>
+
+<div class="live" id="live" hidden>
+  <div class="livebar">
+    <span class="dot running" id="liveDot"></span>
+    <b id="liveLabel">运行中</b>
+    <span class="num" id="liveMeta">面板 :8899</span>
+    <span id="liveHint" style="color:var(--text-4)"></span>
+    <span class="spacer"></span>
+    <button class="mini-btn" id="btnOpenTab">在新标签打开</button>
+    <button class="mini-btn" id="btnStopLive">停止扫描</button>
+  </div>
+  <iframe id="frame" class="live-frame" title="面板"></iframe>
+</div>
+
+<script>
+"use strict";
+/* 启动台前端：只做三件事 —— 读状态 / 发启停 / 显示日志。
+   所有请求同源（本页由启动台托管），故不需要 CORS，也不需要第二套契约。 */
+
+const API = {
+  health: "/api/console/health",
+  status: "/api/console/status",
+  start: "/api/console/start",
+  stop: "/api/console/stop",
+  log: (offset) => `/api/console/log?offset=${offset}`,
+};
+
+let token = "";
+let pollMs = 1500;
+let logOffset = 0;
+let lastState = "";
+let frameSrc = "";   // 只在变化时改 iframe.src，避免每 1.5s 重载面板
+
+const $ = (id) => document.getElementById(id);
+
+async function apiGet(path) {
+  const res = await fetch(path, { headers: { Accept: "application/json" } });
+  const body = await res.json();
+  if (!body.ok) throw new Error(body.error?.code || "ERROR");
+  return body.data;
+}
+
+async function apiPost(path) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-RTS-Console-Token": token },
+    body: "{}",
+  });
+  const body = await res.json();
+  if (!body.ok) throw new Error(body.error?.message || body.error?.code || "ERROR");
+  return body.data;
+}
+
+function showNote(text, kind) {
+  const el = $("note");
+  if (!text) { el.hidden = true; return; }
+  el.hidden = false;
+  el.className = "note" + (kind ? " " + kind : "");
+  el.textContent = text;
+}
+
+function fmtUptime(sec) {
+  if (!sec || sec < 0) return "—";
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return m > 0 ? `${m}m ${String(s).padStart(2, "0")}s` : `${s}s`;
+}
+
+function enterLive(st) {
+  const live = $("live");
+  const url = st.panelUrl;
+  if (frameSrc !== url) {
+    frameSrc = url;
+    $("frame").src = url;
+  }
+  live.hidden = false;
+  $("liveDot").className = "dot " + (st.state === "external" ? "external" : "running");
+  $("liveLabel").textContent = st.state === "external" ? "运行中（外部实例）" : "运行中";
+  $("liveMeta").textContent = "面板 " + url.replace(/^http:\/\/127\.0\.0\.1/, "127.0.0.1");
+  $("liveHint").textContent = st.state === "external" ? "由终端实例提供，本页只能看" : "";
+  $("btnStopLive").disabled = !st.ownProcess;
+  $("btnOpenTab").onclick = () => window.open(url, "_blank", "noopener");
+}
+
+function exitLive() {
+  if (!$("live").hidden) {
+    $("live").hidden = true;
+    frameSrc = "";
+    $("frame").removeAttribute("src");
+  }
+}
+
+function render(st) {
+  lastState = st.state;
+  const dot = $("dot");
+  dot.className = "dot " + st.state;
+
+  const running = st.state === "running" || st.state === "starting";
+  const external = st.state === "external";
+
+  $("btnStart").disabled = running || external;
+  $("btnStop").disabled = !st.ownProcess;
+  $("btnPanel").disabled = !(st.state === "running" || (external && st.ready));
+
+  const lead = $("lead");
+  if (st.state === "idle") {
+    lead.innerHTML = "扫描器当前<b>未运行</b>。启动后会按其自身节奏（默认 60 秒一轮）取数、评分，并把每轮结果推送到面板；" +
+      "终端输出与飞书推送仍按原开关执行，本页不改变任何扫描口径。";
+    showNote(st.lastExit ? `上次启动未成功：退出码 ${st.lastExit.code}（${st.lastExit.hint}）。展开下方日志看原因。` : "", "err");
+  } else if (st.state === "starting") {
+    lead.innerHTML = "已拉起扫描器，<b>等待首轮扫描完成</b>…（首轮含取数，实测 20~90 秒；就绪后自动变为运行中）";
+    showNote("", "");
+  } else if (st.state === "running") {
+    lead.innerHTML = "运行中 · 面板已就绪。点「进入面板」查看本轮区块；停止会结束本机扫描器进程（单实例锁随进程退出自动释放）。";
+    showNote("", "");
+  } else {
+    lead.innerHTML = "已有扫描器实例在运行（<b>不是本启动台拉起的</b>，多半是终端里那个）。本页只显示状态、不接管进程；" +
+      "要停止请到它的终端按 Ctrl+C。";
+    showNote("提示：此时若再点启动会被拒绝 —— 这是刻意设计，避免误杀你正在看的实例。", "info");
+  }
+
+  $("hint").innerHTML = external
+    ? "面板地址 <span class='num'>" + st.panelUrl + "</span>（收藏它即可直接看数据）"
+    : "面板 <span class='num'>" + st.panelUrl + "</span> · 启动台 <span class='num'>http://127.0.0.1:" + st.consolePort + "/</span>";
+
+  $("kvPid").textContent = st.pid ? String(st.pid) : "—";
+  $("kvPid").className = st.pid ? "" : "mut";
+  $("kvUp").textContent = fmtUptime(st.uptimeSec);
+  $("kvUp").className = st.uptimeSec ? "" : "mut";
+  $("footConsole").textContent = ":" + st.consolePort;
+  $("footPanel").textContent = ":" + st.panelPort;
+  $("footTasks").textContent = ":" + st.tasksPort;
+  $("btnPanel").onclick = () => { window.location.href = st.panelUrl; };
+  pollMs = st.pollIntervalMs || 1500;
+
+  // 就绪 ⇒ 就地进入面板（用户视角只剩一个页面：打开 → 点启动 → 数据在这里刷）。
+  if ((st.state === "running" || st.state === "external") && st.ready) {
+    enterLive(st);
+  } else {
+    exitLive();
+  }
+}
+
+async function refresh() {
+  try {
+    const st = await apiGet(API.status);
+    render(st);
+    if (st.state === "running" && $("logBox").open) await pullLog();
+    $("kvSeq").textContent = st.ready ? "已就绪" : (st.state === "idle" ? "—" : "等待首轮");
+    $("kvSeq").className = st.ready ? "" : "mut";
+  } catch (e) {
+    showNote("连不上启动台：" + e.message, "err");
+  }
+}
+
+async function pullLog() {
+  try {
+    const data = await apiGet(API.log(logOffset));
+    if (data.truncated) { logOffset = 0; return pullLog(); }
+    logOffset = data.offset;
+    if (data.text) {
+      const pre = $("logText");
+      pre.textContent = (pre.textContent === "（未启动）" ? "" : pre.textContent) + data.text;
+      pre.scrollTop = pre.scrollHeight;
+    }
+  } catch (e) { /* 日志是旁路：读不到不影响状态 */ }
+}
+
+async function act(fn, btn) {
+  btn.disabled = true;
+  try {
+    await fn();
+  } catch (e) {
+    showNote(String(e.message), "err");
+  } finally {
+    await refresh();
+  }
+}
+
+$("btnStart").onclick = () => act(async () => {
+  showNote("正在启动…", "info");
+  $("logText").textContent = "";
+  logOffset = 0;
+  await apiPost(API.start);
+}, $("btnStart"));
+
+$("btnStop").onclick = () => act(() => apiPost(API.stop), $("btnStop"));
+$("btnStopLive").onclick = () => act(() => apiPost(API.stop), $("btnStopLive"));
+
+$("logBox").addEventListener("toggle", () => { if ($("logBox").open) pullLog(); });
+
+(async function boot() {
+  try {
+    const h = await apiGet(API.health);
+    token = h.token;
+    $("btnStart").disabled = false;
+  } catch (e) {
+    showNote("启动台自检失败：" + e.message, "err");
+    return;
+  }
+  await refresh();
+  const tick = async () => {
+    await refresh();
+    setTimeout(tick, pollMs);
+  };
+  setTimeout(tick, pollMs);
+})();
+</script>
+</body>
+</html>

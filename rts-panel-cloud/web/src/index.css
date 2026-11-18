@@ -943,6 +943,70 @@ button:active,
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* v7「口径 ▾」：长口径串默认收起，点开才铺原文。
+   ⚠ 原文是**逐字契约串**（`view.model.*_subtitle`，含层级词表与排序键），
+   收起只改变版面，不删字 —— 守卫仍比对源码里的原串。 */
+.region-mouth {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--text-4);
+}
+.region-mouth > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  color: var(--text-3);
+  cursor: pointer;
+  list-style: none;
+  transition: all var(--ease);
+}
+.region-mouth > summary::-webkit-details-marker {
+  display: none;
+}
+.region-mouth > summary:hover {
+  background: var(--surface-3);
+  color: var(--text-2);
+}
+.region-mouth[open] > summary {
+  color: var(--text-2);
+  border-color: var(--line-strong);
+}
+/* 展开后的正文：与终端同一串逐字显示（允许换行，不再截断）。 */
+.region-mouth > p {
+  margin: 6px 0 0;
+  padding: 7px 9px;
+  background: var(--surface-3);
+  border-radius: var(--r-sm);
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--text-3);
+  white-space: normal;
+}
+/* 段级「口径」贴在段标题右侧，不与区头的那个混淆。 */
+.seg-mouth {
+  margin: -26px 16px 6px auto;
+  text-align: right;
+  max-width: 60%;
+}
+.seg-mouth > p {
+  text-align: left;
+}
+
+/* 窄屏（≤1180px）：过门整块下移进主区滚动流，用一条结构线分隔。 */
+.narrow-gate {
+  margin: 26px 0 0;
+  padding-top: 18px;
+  border-top: 1px solid var(--line-strong);
+}
+
+/* 本轮 0 行的区块：收起时只留一行头（不占整块版面），展开后照旧显示空态说明。 */
+.region-card.is-empty-folded .card-body {
+  display: none;
+}
 .card-head-actions {
   display: flex;
   align-items: center;

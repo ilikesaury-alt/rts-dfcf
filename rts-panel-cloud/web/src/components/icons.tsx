@@ -42,6 +42,12 @@ export const NAV_ICONS: Record<string, (p: Props) => ReactElement> = {
       <path d="M2 16.2h14" stroke="currentColor" opacity=".6" />
     </svg>
   ),
+  cs: (p) => (
+    <svg viewBox="0 0 18 18" fill="none" aria-hidden="true" {...p}>
+      <path d="M2.6 5h12.8M2.6 9h12.8M2.6 13h12.8" stroke="currentColor" strokeLinecap="round" />
+      <path d="M5.2 5v8" stroke="currentColor" opacity=".45" />
+    </svg>
+  ),
   gate: (p) => (
     <svg viewBox="0 0 18 18" fill="none" aria-hidden="true" {...p}>
       <path d="M3 15.4V3.2h12v12.2" stroke="currentColor" strokeLinejoin="round" />

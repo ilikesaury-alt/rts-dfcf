@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>启动台 · 原型 v7</title>
+<link rel="stylesheet" href="prototype.css">
+<style>
+/* 启动台特有条式（与面板共用 token，见 prototype.css） */
+.wrap{max-width:880px;margin:0 auto;padding:64px 24px}
+.card{background:var(--surface-0);border-top:1px solid var(--line-strong);
+  border-bottom:1px solid var(--line);padding:26px 0}
+.card+.card{margin-top:40px}
+.k{padding-top:18px}
+.state-row{display:flex;align-items:center;gap:12px;margin:0 0 6px}
+.dot{width:8px;height:8px;border-radius:50%}
+.dot.off{background:var(--text-4)} .dot.on{background:var(--down)}
+h1{margin:0;font-size:19px;font-weight:650;color:var(--text-1);letter-spacing:.01em}
+.lead{margin:6px 0 20px;font-size:12.5px;color:var(--text-3);line-height:1.7}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.btn-lg{font:inherit;font-size:13px;padding:9px 22px;border-radius:var(--r-sm);
+  border:1px solid var(--line-strong);background:var(--surface-0);color:var(--text-2);cursor:pointer}
+.btn-lg.primary{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:600}
+.btn-lg:disabled{opacity:.45;cursor:not-allowed}
+.hint{font-size:11.5px;color:var(--text-4);margin-top:10px;line-height:1.7}
+.kv{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);
+  border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden;margin:18px 0 0}
+.kv div{background:var(--surface-0);padding:10px 12px}
+.kv span{display:block;font-size:10.5px;color:var(--text-4);margin-bottom:3px}
+.kv b{font-family:var(--mono);font-size:13px;color:var(--text-1);font-weight:600}
+.kv b.mut{color:var(--text-3)}
+.warnbar{display:flex;gap:8px;align-items:flex-start;padding:9px 11px;border-radius:var(--r-sm);
+  background:rgba(180,83,9,.07);color:var(--amber);font-size:12px;margin:0 0 16px;line-height:1.6}
+.tagline{font-size:11px;color:var(--text-4);letter-spacing:.06em;margin-bottom:26px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="tagline">RTS · 本机 <span class="num">127.0.0.1</span> · 只读镜像</div>
+
+  <!-- 状态 A：扫描器未运行（这是「打开网页先看到的那一屏」） -->
+  <section class="card">
+    <div class="state-row"><span class="dot off"></span><h1>创业板飙升榜</h1></div>
+    <p class="lead">
+      扫描器当前未运行。启动后会按其自身节奏（默认 60 秒一轮）拉取雪球飙升榜、评分并推送到本页；
+      终端与飞书推送仍按原开关执行，本页不改变任何扫描口径。
+    </p>
+    <div class="row">
+      <button class="btn-lg primary">启动扫描</button>
+      <button class="btn-lg" disabled>进入面板</button>
+      <button class="btn-lg" disabled>停止</button>
+    </div>
+    <p class="hint">
+      检测到终端已有扫描器实例时，本页只显示状态、不接管进程 —— 直接进入面板即可。<br>
+      面板端口 <span class="num">8901</span> · 动作面 <span class="num">8902</span> · 本页 <span class="num">8899</span>
+    </p>
+    <div class="kv">
+      <div><span>最近一轮快照</span><b>2026-10-28 13:21</b></div>
+      <div><span>库内票数</span><b>1 842</b></div>
+      <div><span>上次运行</span><b class="mut">20 天前</b></div>
+    </div>
+  </section>
+
+  <!-- 状态 B：正在运行 -->
+  <section class="card">
+    <div class="state-row"><span class="dot on"></span><h1>创业板飙升榜</h1></div>
+    <div class="warnbar">
+      <span>⚠</span>
+      <span>这份快照已 20 天未更新（显示最后一轮存档）。启动扫描开始写入新的轮次后，本提示会自行消失。</span>
+    </div>
+    <p class="lead">
+      运行中 · 本轮 <span class="num">seq 75</span> · 尾盘 · 每轮约 <span class="num">58</span> 秒。
+      停止会结束本机扫描器进程（单实例锁随进程退出自动释放）。
+    </p>
+    <div class="row">
+      <button class="btn-lg primary">进入面板 →</button>
+      <button class="btn-lg">停止</button>
+      <button class="btn-lg">查看日志</button>
+    </div>
+    <p class="hint">面板地址 <span class="num">http://127.0.0.1:8901/</span> · 可收藏；停止后本页仍在，随时可再启动。</p>
+    <div class="kv">
+      <div><span>本轮</span><b>seq 75</b></div>
+      <div><span>池选/飙升/横截面</span><b>13 / 7 / 6</b></div>
+      <div><span>过门</span><b>10 / 20</b></div>
+    </div>
+  </section>
+
+  <p class="hint" style="margin-top:34px">
+    原型说明：两屏是同一个页面在两种状态下的样子。启动按钮的语义是「拒绝接管」——已有实例在跑就只提示、不杀进程。
+  </p>
+</div>
+</body>
+</html>

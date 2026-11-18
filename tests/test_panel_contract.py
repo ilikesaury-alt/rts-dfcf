@@ -42,11 +42,11 @@ def _ts_const(src: str, name: str) -> int:
 
 def test_schema_version_matches_both_ends():
     """双端 SCHEMA_VERSION 同值。不等即**每轮 400**（复核修 1）。"""
-    assert _ts_const(_ts("serialize.ts"), "SCHEMA_VERSION") == SCHEMA_VERSION == 2
+    assert _ts_const(_ts("serialize.ts"), "SCHEMA_VERSION") == SCHEMA_VERSION == 3
 
 
 def test_schema_version_not_in_wrangler_vars():
-    """复核修 1：`SCHEMA_VERSION` **不得**进 vars —— vars 一律字符串，`2 !== "2"`。"""
+    """复核修 1：`SCHEMA_VERSION` **不得**进 vars —— vars 一律字符串，`3 !== "3"`。"""
     cfg = (CLOUD_ROOT.parent / "wrangler.jsonc").read_text(encoding="utf-8")
     # 去掉注释行再查，避免注释里提到 SCHEMA_VERSION 造成误判
     code = "\n".join(ln for ln in cfg.splitlines() if not ln.strip().startswith("//"))

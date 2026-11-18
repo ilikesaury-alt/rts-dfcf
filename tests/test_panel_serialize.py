@@ -208,13 +208,19 @@ def test_col_spec_keys_match_model_cols(cols):
     assert [c["width"] for c in spec] == [c[1] for c in cols]
 
 
-def test_regions_cols_payload_contains_three_regions():
+def test_regions_cols_payload_covers_all_five_tables():
+    """列定义投影必须覆盖终端每一个表（多一块区就多一份投影，少一份就静默空白格）。"""
+    from scanner import crosssection
+
     payload = serialize_view(_view(), extra=_EXTRA)
     cols = payload["regions"]["cols"]
-    assert set(cols) == {"pool", "hot", "hist"}
+    assert set(cols) == {"pool", "hot", "hist", "onboard", "crosssection"}
     assert cols["pool"] == col_spec(COLS_POOL)
     assert cols["hot"] == col_spec(COLS_HOT)
     assert cols["hist"] == col_spec(COLS_HIST)
+    # 榜内异动段与榜内飙升段同表头（终端 `_render_hot_watch_region` 同款）。
+    assert cols["onboard"] == col_spec(COLS_HOT)
+    assert cols["crosssection"] == col_spec(crosssection.COLS_CS)
 
 
 def test_col_spec_is_json_safe():
@@ -271,16 +277,26 @@ def test_body_limit_keeps_small_payload_untouched():
 # ── 契约 / 门 ────────────────────────────────────────────────────────────
 
 
-def test_schema_version_is_2_and_matches_contract():
+def test_schema_version_is_3_and_matches_contract():
     """SCHEMA_VERSION 与 worker/src/serialize.ts 同值（改契约必须双端同步）。"""
-    assert SCHEMA_VERSION == 2
+    assert SCHEMA_VERSION == 3
 
 
 def test_payload_top_level_shape():
     p = serialize_view(_view(2), extra={**_EXTRA, "stocks": _stocks(1)})
     assert set(p) == {"schema", "seq", "date", "time", "durationMs", "regions", "ctx", "stocks"}
-    assert p["schema"] == 2 and p["seq"] == 7 and p["durationMs"] == 1234
-    assert set(p["regions"]) == {"main", "hist", "hot", "offboard", "gate", "cols", "marks"}
+    assert p["schema"] == 3 and p["seq"] == 7 and p["durationMs"] == 1234
+    assert set(p["regions"]) == {
+        "main",
+        "hist",
+        "hot",
+        "onboard",
+        "offboard",
+        "crosssection",
+        "gate",
+        "cols",
+        "marks",
+    }
     assert set(p["regions"]["gate"]) == {"main", "hist", "hot", "offboard", "stats"}
 
 
