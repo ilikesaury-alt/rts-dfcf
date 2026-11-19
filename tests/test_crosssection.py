@@ -146,6 +146,7 @@ class TestSpeedAndPercentile:
 
         assert calls == [1] * 6, "每轮都应强制取一次新快照（TTL 60s > 55s）"
         assert h["warmup"] is True and h["signals"] == 1
+        assert cs._state["last_signals"][0]["amount"] > 0, "画像占额的分母必须进信号（只展示、不落库）"
 
         rows = db.execute(
             "SELECT symbol, price, speed_1, speed_3, speed_5, amount_surge, pct_rank FROM crosssection_signal"

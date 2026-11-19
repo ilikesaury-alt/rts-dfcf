@@ -32,6 +32,7 @@ def test_cols_cs_is_web_only_projection_of_terminal_fields():
         "volume_price": "配合",
         "persist": 9,
         "main_net": 4.213e7,
+        "amount": 6.2e8,
     }
     row = crosssection._signal_row(sample)
     assert set(row) == {
@@ -50,9 +51,12 @@ def test_cols_cs_is_web_only_projection_of_terminal_fields():
 def test_profile_text_is_same_string_as_terminal_block():
     """`画像` 列直接吃 `profile_text` —— 前端**不重拼**，故必须等于终端那段。"""
     row = crosssection._signal_row(
-        {"percent": 4.2, "consistency": "全正", "volume_price": "配合", "persist": 9, "main_net": 4.213e7}
+        {
+            "percent": 4.2, "consistency": "全正", "volume_price": "配合", "persist": 9,
+            "main_net": 4.213e7, "amount": 6.2e8,
+        }
     )
-    assert row["profile"] == "启动·持续9轮·量价齐升·主力+4213万"
+    assert row["profile"] == "启动·持续9轮·量价齐升·主力+4213万(占额6.8%)"
     # 分节单源：低位（<启动上限）+ 主力净流入 + 全正·配合
     assert row["section"] == "低位·资金强"
 
@@ -64,6 +68,18 @@ def test_signal_row_tolerates_missing_fields():
     assert row["persist"] == 1
     assert row["profile"] == "—·持续1轮·动向不明·资金—"
     assert row["section"] == "持续走强"
+
+
+def test_profile_omits_share_when_denominator_unusable() -> None:
+    """净额有、成交额缺失/非正 ⇒ 不带占额（缺值不是 0，不硬凑比例）。"""
+    base = {"percent": 4.2, "consistency": "全正", "volume_price": "配合", "persist": 9, "main_net": 4.213e7}
+    assert crosssection.profile_text(base).endswith("主力+4213万")
+    assert crosssection.profile_text({**base, "amount": 0}).endswith("主力+4213万")
+    assert crosssection.profile_text({**base, "amount": -1}).endswith("主力+4213万")
+    # 净流出也照常给占比（符号跟净额走）
+    assert crosssection.profile_text({**base, "main_net": -2.1e8, "amount": 6.2e8}).endswith(
+        "主力-2.1亿(占额-33.9%)"
+    )
 
 
 def test_snapshot_payload_is_disabled_by_default():

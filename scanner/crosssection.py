@@ -8,6 +8,9 @@
 零新增外部接口/字段），在本地环形缓冲里做**横向（同一轮全市场分位）+ 纵向（相邻轮
 差分）**比较，把「榜外、但当轮价量异动最靠前」的票以 `≡` 段打印出来。
 
+本层输出是**当前截面快照**：不承诺、也不度量对飙升榜的领先时长（`appearances` 无上榜时刻，
+榜内票在信号侧被剔除，无法核对领先时长）。「持续」只是抗闪烁的展示分组，不是跟踪轨迹。
+
 三条边界（违反即破坏既有口径）：
 
 1. **并列观察层，不是结论源**：不写 `offboard_launch_log` / `offboard_rejections` /
@@ -72,7 +75,9 @@
 - **动向**：一致性×量价压成一个短语（量价齐升/稳步走强/反复放量/放量滞涨/
   一致回落/动向不明）。
 - **主力资金**：快照本就带的 `main_net`（雪球 main_net_inflows / 东财 f62，
-  **零新增请求**）拼成 `主力+4213万`/`主力-2.1亿`；东财回退源无此字段时显「资金—」。
+  **零新增请求**）拼成 `主力+4213万(占额6.8%)`/`主力-2.1亿(占额-3.2%)`——
+  净额给体量、占成交额比例给可比强度（`main_net / amount`，两者都是当日累计）。
+  东财回退源无该字段时显「资金—」、不带占额。
 
 持续组内再按**分节**归堆（描述性归类，不是档位推荐）：
 `低位·资金强 → 持续走强 → 高位加速 → 量价背离`（单源 `_section()`）；
@@ -722,6 +727,8 @@ def observe(conn: sqlite3.Connection, board_items: list[dict] | None = None) -> 
                     "symbol": sym,
                     "name": row["name"] or sym,
                     "price": row["price"],
+                    # 画像「占额」的分母；只进展示，不落库/不进评分。
+                    "amount": row["amount"],
                     "percent": row["percent"],
                     "speed_1": speeds1.get(sym),
                     "speed_3": speeds3.get(sym),
@@ -774,7 +781,8 @@ def _persist(conn: sqlite3.Connection, date: str, round_seq: int, signals: list[
 
     保留策略（2026-11-19 从「50 轮」改）：按**天**保留最近 `CS_KEEP_DAYS` 天的
     **整日全部轮次** —— persist 可离线从行数派生，次日标签可回填（m028）。
-    `main_net` 同批落库（m028）：画像「主力资金」段的离线回放依据。
+    `main_net` 同批落库（m028）：画像「主力资金」段的离线回放依据
+    （占额的分母 `amount` 未落库 ⇒ 占比只做实时展示，不回放）。
     """
     updated = now.isoformat()
     conn.executemany(
@@ -1022,18 +1030,32 @@ def _fmt_main_net(main_net: float | None) -> str:
     return f"主力{sign}{mag / 1e4:.0f}万"
 
 
+def _fmt_main_pct(main_net: Any, amount: Any) -> str:
+    """净额 ÷ 当日成交额（%）→ `(占额X.X%)`；分母缺失/非正时返回空串（不硬凑 0）。
+
+    只做展示：净额给体量、占比给跨票可比强度。两者都是当日累计，口径同源、零新增请求。
+    """
+    if not isinstance(main_net, (int, float)) or not isinstance(amount, (int, float)):
+        return ""
+    if not math.isfinite(main_net) or not math.isfinite(amount) or amount <= 0:
+        return ""
+    return f"(占额{main_net / amount * 100:.1f}%)"
+
+
 def profile_text(s: Mapping[str, Any]) -> str:
     """单条信号 → **中文画像串**（终端 `≡` 行、面板 `画像` 列、AI 素材三出口同源）。
 
-    格式：`位置·持续N轮·动向·主力资金`，如 `启动·持续8轮·量价齐升·主力+4213万`。
+    格式：`位置·持续N轮·动向·主力资金(占额X%)`，如
+    `启动·持续8轮·量价齐升·主力+4213万(占额6.8%)`。
     全部由本层自算/快照自带字段派生（零新增请求、不读其它区域），改口径只改这里
-    与 `_pos_tier`/`_motion`/`_fmt_main_net` —— 不在终端/前端/提示词里重拼。
+    与 `_pos_tier`/`_motion`/`_fmt_main_net`/`_fmt_main_pct` —— 不在终端/前端/提示词里重拼。
     """
     persist = int(s.get("persist") or 1)
     return (
         f"{_pos_tier(s.get('percent'))}·持续{persist}轮"
         f"·{_motion(s.get('consistency'), s.get('volume_price'))}"
         f"·{_fmt_main_net(s.get('main_net'))}"
+        f"{_fmt_main_pct(s.get('main_net'), s.get('amount'))}"
     )
 
 
@@ -1268,7 +1290,7 @@ def format_terminal_block() -> str:
         # 分节是描述性归类不是推荐档位，单源 `_section`，顺序见 `SECTION_ORDER`）：
         lines.append(
             "  画像：位置(蓄势<3/启动3~7/加速7~12/高位≥12%)·持续N轮·动向(量价齐升/稳步走强/"
-            "反复放量/放量滞涨/一致回落/动向不明)·主力资金(万/亿，—=源未给)"
+            "反复放量/放量滞涨/一致回落/动向不明)·主力资金(净额万/亿+占额%，—=源未给)"
         )
         lines.append(
             "  排序：持续 > 新进；持续组内分节(" + "→".join(SECTION_ORDER) + ")，节内 质量 → 轮次 → 分位 → 额涌 → 量比"
