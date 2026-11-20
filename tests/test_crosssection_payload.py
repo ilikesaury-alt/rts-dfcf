@@ -113,7 +113,12 @@ def test_snapshot_payload_applies_same_flow_gate_as_terminal(monkeypatch):
     assert [r["symbol"] for r in payload["groups"]["persist"]] == ["SZ300101"]
     assert [r["symbol"] for r in payload["groups"]["new"]] == ["SZ300103"]
     assert payload["hidden_flow"] == 2
+    assert payload["hidden_mid"] == 2  # 未进展示组的补数（此处即被闸挡下的那 2 只）
     assert payload["display_flow_min"] == 5_000_000.0
+    # 网页版口径与终端同一函数生成 —— 不另拼阈值单位/语义/剔除数。
+    assert payload["display_flow_note"] == crosssection._flow_gate_note(payload["hidden_flow"])
+    assert "500万" in payload["display_flow_note"]
+    assert "本轮剔 2 只" in payload["display_flow_note"]
 
 
 def test_snapshot_payload_is_disabled_by_default():

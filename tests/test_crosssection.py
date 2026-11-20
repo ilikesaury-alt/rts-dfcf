@@ -735,6 +735,15 @@ class TestDisplayGrouping:
         """快照没给资金字段 ⇒ 不能把「没数据」当「流出」，照常展示。"""
         assert "SZ300103" in self._render([self._sig("SZ300103", persist=7)])
 
+    def test_terminal_gate_line_uses_shared_note(self):
+        """终端文案与面板 `display_flow_note` 同一函数生成，防止两端各写一份漂移。"""
+        sigs = [
+            {**self._sig("SZ300105", persist=7), "main_net": 8e6},
+            {**self._sig("SZ300106", persist=7), "main_net": -1e6},
+        ]
+        block = self._render(sigs)
+        assert f"  {cs._flow_gate_note(1)}" in block
+
     def test_group_headers_keep_panel_parsable(self):
         """组标题行不得被 `panel._CROSSSECTION_ROW_RE` 当数据行匹配。"""
         from scanner.ai_digest.panel import _CROSSSECTION_ROW_RE

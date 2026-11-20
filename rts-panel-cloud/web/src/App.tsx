@@ -72,6 +72,14 @@ function csSummary(cs: NonNullable<RegionsResponse["regions"]["crosssection"]>):
   parts.push(`缓冲 ${cs.buffer_depth ?? 0}/${cs.buffer_rounds ?? 0}`);
   if (typeof cs.p95 === "number") parts.push(`p95 ${cs.p95.toFixed(3)}`);
   parts.push(`信号 ${cs.signals ?? 0}`);
+  // 隐藏数来自 Python 真源；终端不展示中间带/资金闸票时也会如实交代，网页版同步。
+  if (typeof cs.hidden_mid === "number" && cs.hidden_mid > 0) {
+    // hidden_mid 是「未进展示组」的补数（含轮次不足、组帽溢出、资金闸），不把它误说成单一原因。
+    parts.push(`未进展示组 ${cs.hidden_mid}`);
+  }
+  if (typeof cs.hidden_flow === "number" && cs.hidden_flow > 0) {
+    parts.push(`资金闸未展示 ${cs.hidden_flow}`);
+  }
   if (typeof cs.divergence === "number") {
     parts.push(`跨源价差 ${cs.divergence.toFixed(2)}%${cs.divergence_ok === false ? " ⚠超容忍" : ""}`);
   } else {
@@ -91,6 +99,8 @@ function csMouth(cs: NonNullable<RegionsResponse["regions"]["crosssection"]>): s
     `持续 = 当日累计 ≥${pm} 轮（先看这组）· 新进 = 本轮首现（单轮噪声高发，只看动静）· 中间 2~${Math.max(pm - 1, 0)} 轮不展示`,
     `判据：一致性（1m/3m/5m 是否同号）· 量价（放量是否伴随价格）· 轮次（当日出现过几轮）`,
     "排序：组内质量（全正·配合 > 全正·— > 其余）→ 轮次 → 分位 → 额涌 → 量比",
+    // 阈值/语义由 Python 单源拼好后下发，不在这个文件里重拼（重拼即第二份口径）。
+    ...(cs.display_flow_note ? [cs.display_flow_note] : []),
     "本层为并列观察层，与上升榜/主线/飞书口径解耦，不进任何回测口径",
   ].join(" · ");
 }

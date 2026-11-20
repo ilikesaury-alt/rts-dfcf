@@ -123,6 +123,17 @@ def test_offboard_subtitle_keeps_both_tier_glossary_and_sort_text() -> None:
     assert "未回测" in body and "观察段" in body, "缺证据强度 ⇒ 会被当成与榜内飙升段同强度"
 
 
+def test_crosssection_flow_gate_note_reaches_web_verbatim() -> None:
+    """资金闸说明由 Python 单源生成并下发，网页版只能原样渲染（不在 TS 里重拼）。"""
+    app = _read("App.tsx")
+    for field in ("display_flow_note", "hidden_flow", "hidden_mid"):
+        assert f"cs.{field}" in app, f"网页版未消费面板载荷字段 {field}（与终端 ≡ 块不一致）"
+    for rel in ("api/types.ts",):
+        assert "display_flow_note?: string;" in _read(rel), f"{rel} 缺字段声明"
+    worker = WEB_SRC.parent / "worker" / "src" / "serialize.ts"
+    assert "display_flow_note?: string;" in worker.read_text(encoding="utf-8")
+
+
 def test_region_titles_match_terminal_wording() -> None:
     """区块标题是设计规定的展示文案：必须与终端 `render.py` 里的同串一致。
 

@@ -1045,6 +1045,18 @@ def _fmt_flow_threshold(value: float) -> str:
     return f"{value:g}元"
 
 
+def _flow_gate_note(hidden_flow: int) -> str:
+    """展示资金闸的**人读说明**（终端 `≡` 块与网页版口径共用，前端不重拼）。
+
+    文案由本函数单源生成：终端直接打印，面板经 `snapshot_payload.display_flow_note`
+    原样渲染。任一端另写一份措辞即会漂移（阈值单位、fail-open 语义、剔除数）。
+    """
+    return (
+        f"展示资金闸：主力净流入 > {_fmt_flow_threshold(CS_DISPLAY_MIN_MAIN_NET)} 才占位"
+        f"（当日跌但流入保留；本轮剔 {hidden_flow} 只，仍落库，资金缺失照常展示）"
+    )
+
+
 def _fmt_main_pct(main_net: Any, amount: Any) -> str:
     """净额 ÷ 当日成交额（%）→ `(占额X.X%)`；分母缺失/非正时返回空串（不硬凑 0）。
 
@@ -1264,6 +1276,8 @@ def snapshot_payload() -> dict[str, Any]:
         "display_flow_min": CS_DISPLAY_MIN_MAIN_NET,
         "hidden_mid": hidden_mid,
         "hidden_flow": hidden_flow,
+        # 与终端 `≡` 块同一函数生成，网页版直接渲染（不在 TS 里重拼阈值/语义）。
+        "display_flow_note": _flow_gate_note(hidden_flow),
         "groups": {
             "persist": [_signal_row(s) for s in persist_rows],
             "new": [_signal_row(s) for s in new_rows],
@@ -1335,10 +1349,7 @@ def format_terminal_block() -> str:
         lines.append(
             "  排序：持续 > 新进；持续组内分节(" + "→".join(SECTION_ORDER) + ")，节内 质量 → 轮次 → 分位 → 额涌 → 量比"
         )
-        lines.append(
-            f"  展示资金闸：主力净流入 > {_fmt_flow_threshold(CS_DISPLAY_MIN_MAIN_NET)} 才占位"
-            f"（当日跌但流入保留；本轮剔 {hidden_flow} 只，仍落库，资金缺失照常展示）"
-        )
+        lines.append("  " + _flow_gate_note(hidden_flow))
 
     def _row(i: int, s: Mapping[str, Any]) -> str:
         # 行 = 代码 名称 现价 涨幅 | 画像串（数字列已撤出终端，仍落库供回看）。
