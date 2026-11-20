@@ -711,6 +711,30 @@ class TestDisplayGrouping:
         assert "本轮无 ≥5 轮持续票" in block
         assert "新进（" in block
 
+    def test_flow_gate_keeps_falling_stock_with_inflow(self):
+        """展示资金闸只看主力净额：当日大跌但净流入 >500 万的票照常占位。"""
+        sig = {**self._sig("SZ300101", persist=7), "percent": -8.5, "main_net": 8e6}
+        block = self._render([sig])
+        assert "SZ300101" in block
+        assert "主力+800万" in block
+
+    def test_flow_gate_drops_positive_day_with_outflow(self):
+        """主力净流出（即便当日上涨）不占终端展示位，但仍留在信号里。"""
+        sig = {**self._sig("SZ300102", persist=7), "percent": 5.0, "main_net": -8e6}
+        block = self._render([sig])
+        assert "SZ300102" not in block
+        assert "主力净流入不足" in block
+
+    def test_flow_gate_drops_inflow_at_or_below_5m(self):
+        """>500 万是严格大于：正好 500 万、以及更少的净流入都不占位。"""
+        for net in (5e6, 4.9e6):
+            sig = {**self._sig("SZ300104", persist=7), "main_net": net}
+            assert "SZ300104" not in self._render([sig])
+
+    def test_flow_gate_fails_open_when_source_omits_main_net(self):
+        """快照没给资金字段 ⇒ 不能把「没数据」当「流出」，照常展示。"""
+        assert "SZ300103" in self._render([self._sig("SZ300103", persist=7)])
+
     def test_group_headers_keep_panel_parsable(self):
         """组标题行不得被 `panel._CROSSSECTION_ROW_RE` 当数据行匹配。"""
         from scanner.ai_digest.panel import _CROSSSECTION_ROW_RE

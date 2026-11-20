@@ -70,7 +70,9 @@ export type CrossSection = {
   persist_min?: number;
   top_persist?: number;
   top_new?: number;
+  display_flow_min?: number;
   hidden_mid?: number;
+  hidden_flow?: number;
   groups?: { persist: Row[]; new: Row[] };
 };
 

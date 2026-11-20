@@ -83,6 +83,11 @@
 `低位·资金强 → 持续走强 → 高位加速 → 量价背离`（单源 `_section()`）；
 新进组压成一行摘要（无逐行）。三条边界不变：零新增请求、不给结论、不改落库口径。
 
+**展示资金闸（2026-11-20）**：`main_net <= CS_DISPLAY_MIN_MAIN_NET`（默认 500 万，
+严格大于才放行）的票不进终端/面板两组，避免资金不足的票占掉展示位；当日下跌但
+主力净流入 >500 万的票保留（只看资金、不看涨跌）。资金字段缺失时 fail-open 照常
+展示。`observe` 仍全部落库，排序键也不变 —— 只过滤展示，不制造第二结论源。
+
 ## 开关 / CLI
 
 `RTS_CROSSSECTION=0` 整体关闭；`RTS_CROSSSECTION_TTL_SEC` 调快照节流。
@@ -110,6 +115,7 @@ from scanner.config import (
     BEIJING_TZ,
     CS_AMOUNT_SURGE_WEIGHT,
     CS_BUFFER_ROUNDS,
+    CS_DISPLAY_MIN_MAIN_NET,
     CS_DIVERGENCE_TOL,
     CS_ENABLED,
     CS_KEEP_DAYS,
@@ -1030,6 +1036,15 @@ def _fmt_main_net(main_net: float | None) -> str:
     return f"主力{sign}{mag / 1e4:.0f}万"
 
 
+def _fmt_flow_threshold(value: float) -> str:
+    """展示资金闸阈值 → 人读单位（元/万/亿；与 `_fmt_main_net` 同纪律，别打 5000000 元）。"""
+    if value >= 1e8:
+        return f"{value / 1e8:g}亿"
+    if value >= 1e4:
+        return f"{value / 1e4:g}万"
+    return f"{value:g}元"
+
+
 def _fmt_main_pct(main_net: Any, amount: Any) -> str:
     """净额 ÷ 当日成交额（%）→ `(占额X.X%)`；分母缺失/非正时返回空串（不硬凑 0）。
 
@@ -1125,6 +1140,22 @@ def _display_group(s: Mapping[str, Any]) -> int:
     return _GROUP_MID
 
 
+def _display_flow_ok(s: Mapping[str, Any]) -> bool:
+    """展示层资金闸（2026-11-20）：只挡**明确**主力净流入不足的票。
+
+    判据只有 `main_net > CS_DISPLAY_MIN_MAIN_NET`（默认 500 万，严格大于），
+    **不看当日涨跌** —— 跌 8% 但主力净流入 >500 万的票照常留，涨 8% 但净流入
+    不足 500 万的票不占展示位。快照没给
+    `main_net` 时无法判资金 ⇒ fail-open 照常展示（不把「没数据」当「流出」）。
+    只在 `snapshot_payload` / `format_terminal_block` 出口调用：信号仍全部落库、
+    排序键不变，避免展示层变成第二结论源。
+    """
+    main_net = s.get("main_net")
+    if not isinstance(main_net, (int, float)) or not math.isfinite(main_net):
+        return True
+    return float(main_net) > CS_DISPLAY_MIN_MAIN_NET
+
+
 def signal_sort_key(s: Mapping[str, Any]) -> tuple[float, ...]:
     """终端 `≡` 块与 AI 素材**共用**的展示排序键（2026-11-17 改分组优先）。
 
@@ -1206,10 +1237,13 @@ def snapshot_payload() -> dict[str, Any]:
         return {"enabled": False}
     with _lock:
         signals = list(_state["last_signals"])
-    persist_rows = [s for s in signals if _display_group(s) == _GROUP_PERSIST][:CS_TOP_PERSIST]
-    new_rows = [s for s in signals if _display_group(s) == _GROUP_NEW][:CS_TOP_NEW]
+    persist_rows = [s for s in signals if _display_group(s) == _GROUP_PERSIST and _display_flow_ok(s)][:CS_TOP_PERSIST]
+    new_rows = [s for s in signals if _display_group(s) == _GROUP_NEW and _display_flow_ok(s)][:CS_TOP_NEW]
     shown = {id(s) for s in persist_rows + new_rows}
     hidden_mid = sum(1 for s in signals if id(s) not in shown)
+    hidden_flow = sum(
+        1 for s in signals if _display_group(s) in (_GROUP_PERSIST, _GROUP_NEW) and not _display_flow_ok(s)
+    )
     return {
         "enabled": True,
         "state": h.get("state"),
@@ -1227,7 +1261,9 @@ def snapshot_payload() -> dict[str, Any]:
         "persist_min": CS_PERSIST_MIN,
         "top_persist": CS_TOP_PERSIST,
         "top_new": CS_TOP_NEW,
+        "display_flow_min": CS_DISPLAY_MIN_MAIN_NET,
         "hidden_mid": hidden_mid,
+        "hidden_flow": hidden_flow,
         "groups": {
             "persist": [_signal_row(s) for s in persist_rows],
             "new": [_signal_row(s) for s in new_rows],
@@ -1282,8 +1318,12 @@ def format_terminal_block() -> str:
     with _lock:
         signals = list(_state["last_signals"])
     # 已按 `signal_sort_key` 排序（分组码在最前）⇒ 按组切片即保持组内顺序。
-    persist_rows = [s for s in signals if _display_group(s) == _GROUP_PERSIST][:CS_TOP_PERSIST]
-    new_rows = [s for s in signals if _display_group(s) == _GROUP_NEW][:CS_TOP_NEW]
+    persist_all = [s for s in signals if _display_group(s) == _GROUP_PERSIST]
+    new_all = [s for s in signals if _display_group(s) == _GROUP_NEW]
+    # 展示层资金闸：只挡明确净流入不足的票；信号仍全部落库、排序键不变。
+    persist_rows = [s for s in persist_all if _display_flow_ok(s)][:CS_TOP_PERSIST]
+    new_rows = [s for s in new_all if _display_flow_ok(s)][:CS_TOP_NEW]
+    hidden_flow = sum(1 for s in persist_all + new_all if not _display_flow_ok(s))
     top = (persist_rows + new_rows)[:CS_TOP_N]
     if top:
         # 图例（画像串是层内自算字段的中文压缩，单源 `profile_text`；
@@ -1294,6 +1334,10 @@ def format_terminal_block() -> str:
         )
         lines.append(
             "  排序：持续 > 新进；持续组内分节(" + "→".join(SECTION_ORDER) + ")，节内 质量 → 轮次 → 分位 → 额涌 → 量比"
+        )
+        lines.append(
+            f"  展示资金闸：主力净流入 > {_fmt_flow_threshold(CS_DISPLAY_MIN_MAIN_NET)} 才占位"
+            f"（当日跌但流入保留；本轮剔 {hidden_flow} 只，仍落库，资金缺失照常展示）"
         )
 
     def _row(i: int, s: Mapping[str, Any]) -> str:
@@ -1320,7 +1364,10 @@ def format_terminal_block() -> str:
                 idx += 1
                 lines.append(_row(idx, s))
     elif top:
-        lines.append(f"  （本轮无 ≥{CS_PERSIST_MIN} 轮持续票）")
+        if persist_all:
+            lines.append(f"  （本轮 {len(persist_all)} 只 ≥{CS_PERSIST_MIN} 轮持续票均主力净流入不足，不占展示位）")
+        else:
+            lines.append(f"  （本轮无 ≥{CS_PERSIST_MIN} 轮持续票）")
     if new_rows:
         # 新进组压成**一行摘要**（单轮噪声高发，不逐行展开；仍按 signal_sort_key 序）。
         entries = " / ".join(f"{s['symbol']} {s['name']} {s['price']:.2f} {s['percent']:+.2f}%" for s in new_rows)
@@ -1328,8 +1375,15 @@ def format_terminal_block() -> str:
     if h.get("warmup") and state not in ("stale", "no_data") and not top and not signals:
         lines.append("  （本轮无 p95+ 榜外异动）")
     elif not top:
-        # 有信号但都不进两组（全在 2~5 轮的中间带）⇒ 如实说明，不能当成「没异动」。
-        lines.append(f"  （本轮 {len(signals)} 只 p95+ 信号均不足 {CS_PERSIST_MIN} 轮，尚未证明持续性，本轮不展示）")
+        # 有信号但都不进两组：要么全在 2~5 轮中间带，要么被资金闸挡掉 ⇒ 如实说明，不能当成「没异动」。
+        if persist_all or new_all:
+            lines.append(
+                f"  （本轮 {len(signals)} 只 p95+ 信号均未进两组：轮次不足或主力净流入不足，不占展示位；仍落库）"
+            )
+        else:
+            lines.append(
+                f"  （本轮 {len(signals)} 只 p95+ 信号均不足 {CS_PERSIST_MIN} 轮，尚未证明持续性，本轮不展示）"
+            )
     return "\n".join(lines)
 
 

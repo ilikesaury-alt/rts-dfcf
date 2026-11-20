@@ -58,6 +58,13 @@ CS_PERSIST_MIN = 5
 CS_TOP_PERSIST = 5
 CS_TOP_NEW = CS_TOP_N - CS_TOP_PERSIST
 
+# 展示层资金闸（2026-11-20 用户决策）：主力净流入 <=500 万的票不再占终端/面板展示位，
+# 「当日跌但主力净流入」的票保留 —— 只看资金、不看涨跌。严格大于才放行：正 500 万
+# 整正好卡在线上，不算「超过 500 万」。只过滤展示，不改信号、落库或排序
+# （`crosssection.signal_sort_key` 不变）。快照没给 main_net 时无法判资金，
+# fail-open 照常展示（东财回退路径可能缺该字段）。
+CS_DISPLAY_MIN_MAIN_NET = 5_000_000.0
+
 # ── 画像位置档（2026-11-19 方案二）：按当日涨幅划分「涨幅位置」──
 # 用户选票看重「低位启动 vs 已冲高」，而本层快照本就带当日涨幅 percent ⇒ 零新增数据。
 # 档位只进**画像/分节**（描述性归类，不构成建议/档位推荐）；阈值改动只影响展示。
@@ -162,6 +169,7 @@ __all__ = [
     "CS_P95",
     "CS_TOP_N",
     "CS_PERSIST_MIN",
+    "CS_DISPLAY_MIN_MAIN_NET",
     "CS_TOP_PERSIST",
     "CS_TOP_NEW",
     "CS_KEEP_DAYS",

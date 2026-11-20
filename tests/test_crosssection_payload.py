@@ -82,6 +82,40 @@ def test_profile_omits_share_when_denominator_unusable() -> None:
     )
 
 
+def test_snapshot_payload_applies_same_flow_gate_as_terminal(monkeypatch):
+    """面板投影与终端共用 `_display_flow_ok`：净流出剔除、跌幅大但流入保留、缺值放行。"""
+
+    def _sig(symbol: str, persist: int, main_net: float | None) -> dict:
+        return {
+            "symbol": symbol,
+            "name": "票" + symbol[-2:],
+            "price": 10.0,
+            "percent": -8.5 if symbol == "SZ300101" else 5.0,
+            "consistency": "混合",
+            "volume_price": "—",
+            "persist": persist,
+            "main_net": main_net,
+        }
+
+    sigs = [
+        _sig("SZ300101", 7, 8e6),   # 跌但净流入 800 万 → 留
+        _sig("SZ300102", 7, -8e6),  # 涨但流出 → 剔
+        _sig("SZ300103", 1, None),  # 资金缺失 → fail-open
+        _sig("SZ300104", 7, 5e6),   # 正好 500 万，未超过闸 → 剔
+    ]
+    monkeypatch.setitem(crosssection._state, "last_signals", sigs)
+    monkeypatch.setitem(
+        crosssection._state,
+        "health",
+        {**crosssection._state["health"], "enabled": True, "state": "ok"},
+    )
+    payload = crosssection.snapshot_payload()
+    assert [r["symbol"] for r in payload["groups"]["persist"]] == ["SZ300101"]
+    assert [r["symbol"] for r in payload["groups"]["new"]] == ["SZ300103"]
+    assert payload["hidden_flow"] == 2
+    assert payload["display_flow_min"] == 5_000_000.0
+
+
 def test_snapshot_payload_is_disabled_by_default():
     """进程内还没观测过（或本层被关）⇒ 只有 `enabled: False`，不带任何行。"""
     payload = crosssection.snapshot_payload()
