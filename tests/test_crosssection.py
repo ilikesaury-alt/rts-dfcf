@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import sqlite3
 from datetime import datetime
 from datetime import timedelta as _td
@@ -294,6 +295,52 @@ class TestPersistence:
         _run_rounds(monkeypatch, db, feed, 6)
         row = db.execute("SELECT main_net FROM crosssection_signal WHERE symbol=?", ("SZ" + ROCKET,)).fetchone()
         assert row is not None and row[0] == pytest.approx(8.0e7)
+
+    def test_main_net_filled_from_f62_when_screener_omits_it(self, monkeypatch, db):
+        """主力资金单源（2026-11-20）：雪球快照不带资金字段 ⇒ 从 market_extra_cache 的 f62 补。
+
+        回归哨兵：曾把 screener 的 main_net_inflows 当净额，实测 42% 符号相反。
+        """
+        _advance(monkeypatch, 0)  # 先锁假时钟，否则 _now() 用真实日期与 observe 的 today 错位
+        day = cs._now().date().isoformat()
+        db.execute(
+            "INSERT INTO market_extra_cache(symbol,date,data_type,payload_json) VALUES(?,?,?,?)",
+            ("SZ" + ROCKET, day, "fund_flow", json.dumps({"main_net": -8.0e6})),
+        )
+        db.commit()
+
+        feed = _Feed()
+
+        def _fake_snapshot(*, force: bool = False):
+            payload = feed.next()
+            payload[ROCKET]["main_net"] = None  # 模拟雪球路径：只有 main_net_inflows，未映射
+            return payload
+
+        monkeypatch.setattr(cs, "fetch_crosssection_snapshot", _fake_snapshot)
+        for i in range(6):
+            _advance(monkeypatch, i)
+            cs.observe(db, [])
+        row = db.execute("SELECT main_net FROM crosssection_signal WHERE symbol=?", ("SZ" + ROCKET,)).fetchone()
+        assert row is not None and row[0] == pytest.approx(-8.0e6), "必须从 f62 取净额（含符号）"
+
+    def test_merge_main_net_f62_keeps_snapshot_value_and_fails_open(self, db):
+        """已有值保留（东财路径），缺失 fail-open（雪球路径且 DB 无该票）。"""
+        day = cs._now().date().isoformat()
+        db.execute(
+            "INSERT INTO market_extra_cache(symbol,date,data_type,payload_json) VALUES(?,?,?,?)",
+            ("SZ300001", day, "fund_flow", json.dumps({"main_net": 1.5e6})),
+        )
+        db.commit()
+        symbols = {
+            "SZ300001": {"main_net": None},  # 空 ⇒ 从 f62 补
+            "SZ300002": {"main_net": 7.0e6},  # 东财快照自带 ⇒ 保留
+            "SZ300003": {"main_net": None},  # DB 也没 ⇒ fail-open 留 None
+        }
+        filled = cs._merge_main_net_f62(db, symbols, day)
+        assert filled == 1
+        assert symbols["SZ300001"]["main_net"] == pytest.approx(1.5e6)
+        assert symbols["SZ300002"]["main_net"] == pytest.approx(7.0e6)
+        assert symbols["SZ300003"]["main_net"] is None
 
     def test_persist_hydrates_after_restart(self, monkeypatch, db):
         """重启后 persist 从 DB 恢复（2026-11-19 修）：不恢复则每次重启持续组都空，
@@ -932,7 +979,8 @@ class TestXueqiuSource:
         # 雪球特有字段
         assert row["percent5m"] == 2.5
         assert row["turnover"] == 3.0
-        assert row["main_net"] == 1e7
+        # main_net_inflows 非东财 f62 口径（2026-11-20），刻意不映射；由 observe() 补。
+        assert row["main_net"] is None
         assert row["float_cap"] == 5e9
 
     def test_pagination_stops_when_empty_page(self, monkeypatch):

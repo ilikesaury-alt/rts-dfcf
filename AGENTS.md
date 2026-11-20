@@ -255,7 +255,7 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
   聚合按 `reason_code`（门 ID），别按 `reason`（含当轮数值，数万条碎片）。
 
 ### 横截面异动观察层（`scanner/crosssection.py`，m027）
-并列观察层，与飙升榜解耦（榜空轮照记），只写 `crosssection_signal`、**不进 B 段冻结表/回测口径**。`RTS_CROSSSECTION=0` 一键关，`python -m scanner.crosssection --health` 离线核对；60s/轮·预热 6 轮·`≡` 段·限频注意等细节见 COMMANDS.md。
+并列观察层，与飙升榜解耦（榜空轮照记），只写 `crosssection_signal`、**不进 B 段冻结表/回测口径**。`RTS_CROSSSECTION=0` 一键关，`python -m scanner.crosssection --health` 离线核对；60s/轮·预热 6 轮·`≡` 段·限频注意等细节见 COMMANDS.md。⚠ 画像「主力资金」单源=东财 f62（`market_extra_cache`），**勿用**雪球 screener 的 `main_net_inflows`（非 f62 口径，42% 符号相反）。
 ## Architecture
 
 ```

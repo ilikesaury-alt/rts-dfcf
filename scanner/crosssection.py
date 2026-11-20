@@ -74,10 +74,13 @@
   阈值单源 `config_crosssection.CS_POS_*`。回答用户「低位启动 vs 已冲高」。
 - **动向**：一致性×量价压成一个短语（量价齐升/稳步走强/反复放量/放量滞涨/
   一致回落/动向不明）。
-- **主力资金**：快照本就带的 `main_net`（雪球 main_net_inflows / 东财 f62，
-  **零新增请求**）拼成 `主力+4213万(占额6.8%)`/`主力-2.1亿(占额-3.2%)`——
-  净额给体量、占成交额比例给可比强度（`main_net / amount`，两者都是当日累计）。
-  东财回退源无该字段时显「资金—」、不带占额。
+- **主力资金**：**单源 = 东财 f62**（`market_extra_cache.fund_flow.main_net`，主循环
+  每轮已在写，零新增请求），在 `observe()` 里合并进信号。⚠ 雪球 screener 的
+  `main_net_inflows` **不是**这个口径（2026-11-20 实测：同日 57 只信号票 42% 符号
+  相反、量级系统性偏大，且与雪球自身 `capital/history.json` 当日净额也矛盾），
+  已从取数映射中剔除，勿再加回。展示拼成 `主力+4213万(占额6.8%)`/`主力-2.1亿(占额-3.2%)`
+  ——净额给体量、占成交额比例给可比强度（`main_net / amount`，两者都是当日累计）。
+  f62 缺失时显「资金—」、不带占额，展示资金闸 fail-open。
 
 持续组内再按**分节**归堆（描述性归类，不是档位推荐）：
 `低位·资金强 → 持续走强 → 高位加速 → 量价背离`（单源 `_section()`）；
@@ -144,6 +147,7 @@ from scanner.config import (
     CS_XQ_RANK_WINDOW,
 )
 from scanner.data_source import ak_to_xq
+from scanner.db.queries import get_market_extra_snapshot
 from scanner.trading_session import is_trading_time
 from scanner.utils import EXTERNAL_FAILURES, to_float
 
@@ -253,7 +257,8 @@ def _fetch_from_xueqiu() -> dict[str, dict]:
       `current`    → `price`    `amount` → `amount`
       `volume`     → `volume`   `volume_ratio` → `vol_ratio`
       `turnover_rate` → `turnover`
-      `main_net_inflows` → `main_net`（注意：雪球给的是**净流入额**）
+      `main_net_inflows` → **不映射**（2026-11-20：实测非东财 f62 口径，见模块 docstring；
+        主力资金统一在 `observe()` 里从 `market_extra_cache` 的 f62 补）
       `float_market_capital` → `float_cap`
     另带 `name`，与东财 f14 同用途。
     """
@@ -304,7 +309,8 @@ def _fetch_from_xueqiu() -> dict[str, dict]:
                 # 雪球原生 5 分钟涨速（%）。东财路径没有该字段，靠环形缓冲差分算。
                 "percent5m": pct5,
                 "turnover": to_float(row.get("turnover_rate"), None),
-                "main_net": to_float(row.get("main_net_inflows"), None),
+                # 不映射 main_net_inflows：与 f62 口径不一致（见模块 docstring）。
+                "main_net": None,
                 "float_cap": to_float(row.get("float_market_capital"), None),
             }
         # 已取够 CS_XQ_RANK_WINDOW 就停（省请求）
@@ -369,11 +375,38 @@ def _valid_snapshot(payload: dict[str, dict]) -> dict[str, dict[str, Any]]:
             "name": str(row.get("name") or ""),
             # 雪球原生 5 分钟涨速（东财路径恒为 None）。保留原始值供 _native_speed。
             "percent5m": to_float(row.get("percent5m"), None),
-            # 当日主力净流入（元）：雪球= main_net_inflows；东财路径 rows 本就带 main_net。
-            # 只进画像/分节展示，不参与任何评分（复合分口径不变）。
+            # 当日主力净额（元）：东财路径 rows 本就带 f62；雪球路径不带，
+            # 由 observe() 从 market_extra_cache 合并。只进画像/展示，不进评分。
             "main_net": to_float(row.get("main_net"), None),
         }
     return out
+
+
+def _merge_main_net_f62(conn: sqlite3.Connection, symbols: dict[str, dict[str, Any]], date: str) -> int:
+    """把 `market_extra_cache` 的东财 f62 合并进快照 `main_net`，返回填入条数。
+
+    为什么不以快照自带字段为准（2026-11-20 实测）：雪球 screener 的
+    `main_net_inflows` 与 f62 在同日 57 只信号票里 42% 符号相反、量级系统性偏大，
+    也不是雪球自身 `capital/history.json` 的当日净额 ⇒ 不是「主力净额」口径，
+    已从 `_fetch_from_xueqiu` 的映射中剔除。东财回退路径的 `main_net` 本就是 f62。
+
+    合并规则：**快照已有非 None 值就保留**（东财路径已有本轮新鲜 f62），只把 None
+    填上 DB 当日 f62（雪球路径）；DB 无值则留 None ⇒ 画像「资金—」、展示资金闸
+    fail-open。只读库、零新增请求，与 B 段共用 `get_market_extra_snapshot`。
+    """
+    flow = get_market_extra_snapshot(conn, "fund_flow", as_of=date)
+    filled = 0
+    for sym, row in symbols.items():
+        if row.get("main_net") is not None:
+            continue
+        payload = flow.get(sym)
+        if not payload:
+            continue
+        net = to_float(payload.get("main_net"), None)
+        if net is not None:
+            row["main_net"] = net
+            filled += 1
+    return filled
 
 
 def _speed_pct(cur: float, then: float, elapsed: float, rounds_n: int) -> float | None:
@@ -626,6 +659,9 @@ def observe(conn: sqlite3.Connection, board_items: list[dict] | None = None) -> 
 
     payload = fetch_crosssection_snapshot(force=True)
     symbols = _valid_snapshot(payload)
+    # 主力资金单源（2026-11-20）：雪球 screener 的 main_net_inflows 非 f62 口径，
+    # 从主循环每轮已在写的 market_extra_cache 补当日 f62（零新增请求，缺失 fail-open）。
+    _merge_main_net_f62(conn, symbols, today)
 
     stamp = now.strftime("%H:%M:%S")
     refreshed = now.strftime("%Y-%m-%d %H:%M:%S")
