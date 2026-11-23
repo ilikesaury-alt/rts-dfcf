@@ -646,6 +646,58 @@ class TestFetchAllKlinesIntradayRefresh:
         assert res["300001"][-1]["close"] == 11.0
         assert res["300001"][-1]["date"] == kf.now_beijing().date().isoformat()
 
+    def test_restart_claims_same_day_cache_skips_first_refetch(self, monkeypatch):
+        """同日重启：DB 已有今日 bar 但进程内无拉取时刻 → 认领并复用，首轮不重拉。"""
+        from scanner.models import StockInfo
+
+        sym = "300555"
+        kf._last_kline_fetch.pop(sym, None)  # 模拟进程重启：进程内 TTL 状态清空
+        today = kf.now_beijing().date().isoformat()
+        cached = self._cached(today)
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: dict.fromkeys(syms, cached))
+        monkeypatch.setattr(kf, "is_trading_time", lambda: True)
+        monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
+        fetched: dict = {}
+
+        class _FakeAdapter:
+            def fetch_kline(self, symbol, days=15):
+                fetched["called"] = True
+                return cached
+
+        stock = StockInfo(symbol=sym, name="T", code=sym, percent=3.0,
+                          current=10.0, value=10000, rank_change=1000, rank=1)
+        res = kf.fetch_all_klines(None, _FakeAdapter(), [stock])
+        assert res[sym] is cached
+        assert "called" not in fetched  # 关键回归点：首轮不重拉
+        assert sym in kf._last_kline_fetch  # 已认领，后续按正常 TTL 计时
+
+    def test_restart_cross_day_still_fetches(self, monkeypatch):
+        """跨日重启：DB 里只有昨日 bar → 不认领，仍强制补拉取今日 bar。"""
+        from datetime import timedelta
+
+        from scanner.models import StockInfo
+
+        sym = "300556"
+        kf._last_kline_fetch.pop(sym, None)
+        yesterday = (kf.now_beijing().date() - timedelta(days=1)).isoformat()
+        cached = [{"date": yesterday, "close": 10.0}] * 40
+        monkeypatch.setattr(kf, "get_cached_klines", lambda conn, syms: dict.fromkeys(syms, cached))
+        monkeypatch.setattr(kf, "is_trading_time", lambda: True)
+        monkeypatch.setattr(kf, "save_kline_to_db", lambda *a, **k: None)
+        fetched: dict = {}
+        fresh = [{"date": kf.now_beijing().date().isoformat(), "close": 11.0}] * 45
+
+        class _FakeAdapter:
+            def fetch_kline(self, symbol, days=15):
+                fetched["called"] = True
+                return fresh
+
+        stock = StockInfo(symbol=sym, name="T", code=sym, percent=3.0,
+                          current=10.0, value=10000, rank_change=1000, rank=1)
+        res = kf.fetch_all_klines(None, _FakeAdapter(), [stock])
+        assert "called" in fetched  # 跨日必须补拉
+        assert res[sym][-1]["close"] == 11.0
+
 
 class TestTryCandidateHighRiskTrend:
     def test_high_risk_trend_rejected(self):

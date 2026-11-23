@@ -63,6 +63,12 @@ def fetch_all_klines(conn: sqlite3.Connection, adapter, stocks: list[StockInfo],
                 stale_cache[s.symbol] = cached
                 needs_fetch.append(s.symbol)
                 continue
+            # 同日重启认领：_last_kline_fetch 纯进程内，重启即空；DB 已有今日 bar
+            # 说明上一进程刚拉过（快照仍新鲜），认作此刻拉取，跳过首轮全量重拉
+            # （否则全部候选串行重拉、撞 45s deadline 拖慢首屏）。跨日 bar 日期
+            # 早于今天时不认领，仍走下方强制补拉分支，取数口径不变。
+            if max_date >= today and s.symbol not in _last_kline_fetch:
+                _last_kline_fetch[s.symbol] = now_beijing().timestamp()
             last_fetch = _last_kline_fetch.get(s.symbol, 0.0)
             within_ttl = (now_beijing().timestamp() - last_fetch) < KLINE_REFRESH_TTL
             if not is_trading_time():
