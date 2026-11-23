@@ -58,10 +58,14 @@ export type CrossSection = {
   top_persist?: number;
   top_new?: number;
   display_flow_min?: number;
+  display_pct_max?: number;
   hidden_mid?: number;
   hidden_flow?: number;
+  hidden_pct?: number;
   /** Python `crosssection._flow_gate_note` 生成的人读说明；前端原样渲染，不重拼。 */
   display_flow_note?: string;
+  /** Python `crosssection._pct_gate_note` 生成的人读说明；前端原样渲染，不重拼。 */
+  display_pct_note?: string;
   groups?: { persist: Row[]; new: Row[] };
 };
 

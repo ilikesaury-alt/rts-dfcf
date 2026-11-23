@@ -349,6 +349,7 @@ class TestPersistence:
         语义同源：写侧「本轮进 p95+ 算一次」≡ 行数 COUNT(DISTINCT round_seq)，
         故整日轮次落库（m028/CS_KEEP_DAYS）是恢复的前提。
         """
+        monkeypatch.setattr(cs, "CS_DISPLAY_MAX_PERCENT", 100.0)  # 样本随轮次涨到 +19%，与涨幅闸无关
         feed = _Feed()
         _install_feed(monkeypatch, feed)
         _run_rounds(monkeypatch, db, feed, 10)  # 6~10 轮产出信号 ⇒ persist=5
@@ -582,6 +583,7 @@ class TestTerminalBlockShowsJudgement:
     """`≡` 段**直接展示**层内判据（用户要求：不用另跑命令）。"""
 
     def test_block_contains_judgement_columns(self, monkeypatch, db):
+        monkeypatch.setattr(cs, "CS_DISPLAY_MAX_PERCENT", 100.0)  # 样本随轮次涨到 +19%，与本测无关
         feed = _Feed()
         _install_feed(monkeypatch, feed)
         # 12 轮：预热 6 轮后 ROCKET 持续入选 ⇒ persist 达 7 轮，落「持续」组（会展示）。
@@ -670,6 +672,7 @@ class TestSignalRanking:
         assert cs.signal_sort_key(lower_pct) < cs.signal_sort_key(less_persist)
 
     def test_block_shows_sort_legend_and_observe_sorts(self, monkeypatch, db):
+        monkeypatch.setattr(cs, "CS_DISPLAY_MAX_PERCENT", 100.0)  # 样本随轮次涨到 +19%，与本测无关
         feed = _Feed()
         _install_feed(monkeypatch, feed)
         _run_rounds(monkeypatch, db, feed, 12)

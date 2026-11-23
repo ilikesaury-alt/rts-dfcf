@@ -126,12 +126,14 @@ def test_offboard_subtitle_keeps_both_tier_glossary_and_sort_text() -> None:
 def test_crosssection_flow_gate_note_reaches_web_verbatim() -> None:
     """资金闸说明由 Python 单源生成并下发，网页版只能原样渲染（不在 TS 里重拼）。"""
     app = _read("App.tsx")
-    for field in ("display_flow_note", "hidden_flow", "hidden_mid"):
+    for field in ("display_flow_note", "hidden_flow", "hidden_mid", "display_pct_note", "hidden_pct"):
         assert f"cs.{field}" in app, f"网页版未消费面板载荷字段 {field}（与终端 ≡ 块不一致）"
     for rel in ("api/types.ts",):
         assert "display_flow_note?: string;" in _read(rel), f"{rel} 缺字段声明"
-    worker = WEB_SRC.parent / "worker" / "src" / "serialize.ts"
+        assert "display_pct_note?: string;" in _read(rel), f"{rel} 缺涨幅闸字段声明"
+    worker = WEB_SRC.parent.parent / "worker" / "src" / "serialize.ts"
     assert "display_flow_note?: string;" in worker.read_text(encoding="utf-8")
+    assert "display_pct_note?: string;" in worker.read_text(encoding="utf-8")
 
 
 def test_region_titles_match_terminal_wording() -> None:

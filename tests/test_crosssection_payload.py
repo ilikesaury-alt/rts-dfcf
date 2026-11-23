@@ -121,6 +121,41 @@ def test_snapshot_payload_applies_same_flow_gate_as_terminal(monkeypatch):
     assert "本轮剔 2 只" in payload["display_flow_note"]
 
 
+def test_snapshot_payload_applies_same_pct_gate_as_terminal(monkeypatch):
+    """涨幅闸：>10% 剔除、正好 10% 保留、缺值放行；落库不受影响（只滤展示）。"""
+
+    def _sig(symbol: str, pct: float | None) -> dict:
+        return {
+            "symbol": symbol,
+            "name": "票" + symbol[-2:],
+            "price": 10.0,
+            "percent": pct,
+            "speed_1": 0.5, "speed_3": 0.5, "speed_5": 0.5,
+            "amount_surge": 2.0, "vol_ratio": 3.0, "pct_rank": 0.98,
+            "consistency": "全正", "volume_price": "配合",
+            "persist": 7, "main_net": 8e6,
+        }
+
+    sigs = [
+        _sig("SZ300201", 15.0),   # 涨 15% → 剔
+        _sig("SZ300202", 10.0),   # 正好 10% → 留
+        _sig("SZ300203", None),   # 缺值 → fail-open 留
+        _sig("SZ300204", -3.0),   # 跌 → 留
+    ]
+    monkeypatch.setitem(crosssection._state, "last_signals", sigs)
+    monkeypatch.setitem(
+        crosssection._state,
+        "health",
+        {**crosssection._state["health"], "enabled": True, "state": "ok"},
+    )
+    payload = crosssection.snapshot_payload()
+    assert {r["symbol"] for r in payload["groups"]["persist"]} == {"SZ300202", "SZ300203", "SZ300204"}
+    assert payload["hidden_pct"] == 1
+    assert payload["display_pct_max"] == 10.0
+    assert payload["display_pct_note"] == crosssection._pct_gate_note(1)
+    assert "10%" in payload["display_pct_note"]
+
+
 def test_snapshot_payload_is_disabled_by_default():
     """进程内还没观测过（或本层被关）⇒ 只有 `enabled: False`，不带任何行。"""
     payload = crosssection.snapshot_payload()

@@ -34,8 +34,8 @@ CS_WARMUP_ROUNDS = 6
 CS_P95 = 0.95
 
 # 终端展示条数（落库仍是全部 p95+ 信号，不受此限）。
-# 2026-11-19（方案 B）：8→10（持续 5 + 新进 5），持续组名额足以装下前两节强票。
-CS_TOP_N = 10
+# 2026-11-23：10→13（持续 5→8 + 新进 5），持续组扩容装下更多低位启动票。
+CS_TOP_N = 13
 
 # 展示分组（2026-11-17 用户决策：「≡ 区变化太快，眼花缭乱不知道咋选」）。
 #
@@ -53,9 +53,10 @@ CS_TOP_N = 10
 # 一行摘要 —— 「更少更精」，盘中瞄一眼 10 秒内可定位候选（见 crosssection.profile_text）。
 # 2026-11-19 方案 B（同日改）：3→5 条 + CS_TOP_N 8→10 —— 用户实测痛点「强票被总帽
 # 截断（尤其是满足前两节条件的票）」；新进仍是**一行摘要**，5 只名字不占额外行。
+# 2026-11-23：持续组 5→8（CS_TOP_N 10→13）—— 低位启动票持续性弱、名额不足。
 # 无分节保底、节内质量优先（均为用户显式确认的偏好）。
 CS_PERSIST_MIN = 5
-CS_TOP_PERSIST = 5
+CS_TOP_PERSIST = 8
 CS_TOP_NEW = CS_TOP_N - CS_TOP_PERSIST
 
 # 展示层资金闸（2026-11-20 用户决策）：主力净流入 <=500 万的票不再占终端/面板展示位，
@@ -64,6 +65,10 @@ CS_TOP_NEW = CS_TOP_N - CS_TOP_PERSIST
 # （`crosssection.signal_sort_key` 不变）。快照没给 main_net 时无法判资金，
 # fail-open 照常展示（东财回退路径可能缺该字段）。
 CS_DISPLAY_MIN_MAIN_NET = 5_000_000.0
+
+# 展示层涨幅上限（2026-11-23 用户决策）：当日涨幅 > 10% 的票不占终端/面板展示位。
+# 只过滤展示，不改信号、落库或排序键；与资金闸同款（缺值 fail-open）。
+CS_DISPLAY_MAX_PERCENT = 10.0
 
 # ── 画像位置档（2026-11-19 方案二）：按当日涨幅划分「涨幅位置」──
 # 用户选票看重「低位启动 vs 已冲高」，而本层快照本就带当日涨幅 percent ⇒ 零新增数据。
@@ -170,6 +175,7 @@ __all__ = [
     "CS_TOP_N",
     "CS_PERSIST_MIN",
     "CS_DISPLAY_MIN_MAIN_NET",
+    "CS_DISPLAY_MAX_PERCENT",
     "CS_TOP_PERSIST",
     "CS_TOP_NEW",
     "CS_KEEP_DAYS",

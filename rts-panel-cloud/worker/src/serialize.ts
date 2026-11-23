@@ -73,8 +73,10 @@ export type CrossSection = {
   display_flow_min?: number;
   hidden_mid?: number;
   hidden_flow?: number;
+  hidden_pct?: number;
   /** Python `crosssection._flow_gate_note` 生成的人读说明；前端原样渲染，不重拼。 */
   display_flow_note?: string;
+  display_pct_note?: string;
   groups?: { persist: Row[]; new: Row[] };
 };
 

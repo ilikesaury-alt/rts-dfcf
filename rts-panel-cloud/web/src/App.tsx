@@ -80,6 +80,9 @@ function csSummary(cs: NonNullable<RegionsResponse["regions"]["crosssection"]>):
   if (typeof cs.hidden_flow === "number" && cs.hidden_flow > 0) {
     parts.push(`资金闸未展示 ${cs.hidden_flow}`);
   }
+  if (typeof cs.hidden_pct === "number" && cs.hidden_pct > 0) {
+    parts.push(`涨幅闸未展示 ${cs.hidden_pct}`);
+  }
   if (typeof cs.divergence === "number") {
     parts.push(`跨源价差 ${cs.divergence.toFixed(2)}%${cs.divergence_ok === false ? " ⚠超容忍" : ""}`);
   } else {
@@ -101,6 +104,7 @@ function csMouth(cs: NonNullable<RegionsResponse["regions"]["crosssection"]>): s
     "排序：组内质量（全正·配合 > 全正·— > 其余）→ 轮次 → 分位 → 额涌 → 量比",
     // 阈值/语义由 Python 单源拼好后下发，不在这个文件里重拼（重拼即第二份口径）。
     ...(cs.display_flow_note ? [cs.display_flow_note] : []),
+    ...(cs.display_pct_note ? [cs.display_pct_note] : []),
     "本层为并列观察层，与上升榜/主线/飞书口径解耦，不进任何回测口径",
   ].join(" · ");
 }

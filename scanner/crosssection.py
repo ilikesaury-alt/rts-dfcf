@@ -59,7 +59,7 @@
 打印，因此自动进入 `save_panel_round()` / 一键复制 / 面板上报，无需改 ScanView。
 
 **展示分两组（2026-11-17）**：`持续`（当日累计 `>=CS_PERSIST_MIN` 轮，最多
-`CS_TOP_PERSIST=5` 条）在前，`新进`（当轮首现，最多 `CS_TOP_NEW=5` 条，压成一行摘要）在后，中间
+`CS_TOP_PERSIST=8` 条）在前，`新进`（当轮首现，最多 `CS_TOP_NEW=5` 条，压成一行摘要）在后，中间
 2~4 轮的票不展示。动因：用户反馈「变化太快、眼花缭乱不知道咋选」；实测当日展示行
 相邻两轮重叠中位数只有 1/8，而反复出现 ≥5 轮的票有 180/756 只 —— 稳定子集本就在，
 只是旧排序把单轮噪声（「全正·配合」在 1 轮窗口极易达成）排在了轮次前面。
@@ -85,6 +85,9 @@
 持续组内再按**分节**归堆（描述性归类，不是档位推荐）：
 `低位·资金强 → 持续走强 → 高位加速 → 量价背离`（单源 `_section()`）；
 新进组压成一行摘要（无逐行）。三条边界不变：零新增请求、不给结论、不改落库口径。
+
+**展示涨幅闸（2026-11-23）**：`percent > CS_DISPLAY_MAX_PERCENT`（默认 10%）的票不占展示位；
+与资金闸同款 —— 只过滤展示，不改信号/落库/排序，缺值 fail-open。
 
 **展示资金闸（2026-11-20）**：`main_net <= CS_DISPLAY_MIN_MAIN_NET`（默认 500 万，
 严格大于才放行）的票不进终端/面板两组，避免资金不足的票占掉展示位；当日下跌但
@@ -118,6 +121,7 @@ from scanner.config import (
     BEIJING_TZ,
     CS_AMOUNT_SURGE_WEIGHT,
     CS_BUFFER_ROUNDS,
+    CS_DISPLAY_MAX_PERCENT,
     CS_DISPLAY_MIN_MAIN_NET,
     CS_DIVERGENCE_TOL,
     CS_ENABLED,
@@ -1093,6 +1097,14 @@ def _flow_gate_note(hidden_flow: int) -> str:
     )
 
 
+def _pct_gate_note(hidden_pct: int) -> str:
+    """展示涨幅闸的人读说明（终端/网页共用单源，与 `_flow_gate_note` 同纪律）。"""
+    return (
+        f"展示涨幅闸：当日涨幅 ≤ {CS_DISPLAY_MAX_PERCENT:g}% 才占位"
+        f"（本轮剔 {hidden_pct} 只，仍落库，涨幅缺失照常展示）"
+    )
+
+
 def _fmt_main_pct(main_net: Any, amount: Any) -> str:
     """净额 ÷ 当日成交额（%）→ `(占额X.X%)`；分母缺失/非正时返回空串（不硬凑 0）。
 
@@ -1186,6 +1198,16 @@ def _display_group(s: Mapping[str, Any]) -> int:
     if persist <= 1:
         return _GROUP_NEW
     return _GROUP_MID
+
+
+def _display_pct_ok(s: Mapping[str, Any]) -> bool:
+    """展示涨幅闸：只挡明确超过上限的票；缺值无法判 ⇒ fail-open 照常展示。
+    与 `_display_flow_ok` 同纪律：只在两个展示出口调用，信号仍全部落库、排序键不变。
+    """
+    pct = s.get("percent")
+    if not isinstance(pct, (int, float)) or not math.isfinite(pct):
+        return True
+    return float(pct) <= CS_DISPLAY_MAX_PERCENT
 
 
 def _display_flow_ok(s: Mapping[str, Any]) -> bool:
@@ -1285,13 +1307,23 @@ def snapshot_payload() -> dict[str, Any]:
         return {"enabled": False}
     with _lock:
         signals = list(_state["last_signals"])
-    persist_rows = [s for s in signals if _display_group(s) == _GROUP_PERSIST and _display_flow_ok(s)][:CS_TOP_PERSIST]
-    new_rows = [s for s in signals if _display_group(s) == _GROUP_NEW and _display_flow_ok(s)][:CS_TOP_NEW]
+    persist_rows = [
+        s for s in signals
+        if _display_group(s) == _GROUP_PERSIST and _display_flow_ok(s) and _display_pct_ok(s)
+    ][:CS_TOP_PERSIST]
+    new_rows = [
+        s for s in signals
+        if _display_group(s) == _GROUP_NEW and _display_flow_ok(s) and _display_pct_ok(s)
+    ][:CS_TOP_NEW]
     shown = {id(s) for s in persist_rows + new_rows}
     hidden_mid = sum(1 for s in signals if id(s) not in shown)
-    hidden_flow = sum(
-        1 for s in signals if _display_group(s) in (_GROUP_PERSIST, _GROUP_NEW) and not _display_flow_ok(s)
-    )
+    shown_groups = (s for s in signals if _display_group(s) in (_GROUP_PERSIST, _GROUP_NEW))
+    gate_stats = [
+        (not _display_flow_ok(s), not _display_pct_ok(s))
+        for s in shown_groups
+    ]
+    hidden_flow = sum(1 for f, _ in gate_stats if f)
+    hidden_pct = sum(1 for _, p in gate_stats if p)
     return {
         "enabled": True,
         "state": h.get("state"),
@@ -1312,8 +1344,11 @@ def snapshot_payload() -> dict[str, Any]:
         "display_flow_min": CS_DISPLAY_MIN_MAIN_NET,
         "hidden_mid": hidden_mid,
         "hidden_flow": hidden_flow,
+        "hidden_pct": hidden_pct,
+        "display_pct_max": CS_DISPLAY_MAX_PERCENT,
         # 与终端 `≡` 块同一函数生成，网页版直接渲染（不在 TS 里重拼阈值/语义）。
         "display_flow_note": _flow_gate_note(hidden_flow),
+        "display_pct_note": _pct_gate_note(hidden_pct),
         "groups": {
             "persist": [_signal_row(s) for s in persist_rows],
             "new": [_signal_row(s) for s in new_rows],
@@ -1370,10 +1405,11 @@ def format_terminal_block() -> str:
     # 已按 `signal_sort_key` 排序（分组码在最前）⇒ 按组切片即保持组内顺序。
     persist_all = [s for s in signals if _display_group(s) == _GROUP_PERSIST]
     new_all = [s for s in signals if _display_group(s) == _GROUP_NEW]
-    # 展示层资金闸：只挡明确净流入不足的票；信号仍全部落库、排序键不变。
-    persist_rows = [s for s in persist_all if _display_flow_ok(s)][:CS_TOP_PERSIST]
-    new_rows = [s for s in new_all if _display_flow_ok(s)][:CS_TOP_NEW]
+    # 展示层资金闸 + 涨幅闸：只挡明确不达标的票；信号仍全部落库、排序键不变。
+    persist_rows = [s for s in persist_all if _display_flow_ok(s) and _display_pct_ok(s)][:CS_TOP_PERSIST]
+    new_rows = [s for s in new_all if _display_flow_ok(s) and _display_pct_ok(s)][:CS_TOP_NEW]
     hidden_flow = sum(1 for s in persist_all + new_all if not _display_flow_ok(s))
+    hidden_pct = sum(1 for s in persist_all + new_all if not _display_pct_ok(s))
     top = (persist_rows + new_rows)[:CS_TOP_N]
     if top:
         # 图例（画像串是层内自算字段的中文压缩，单源 `profile_text`；
@@ -1386,6 +1422,7 @@ def format_terminal_block() -> str:
             "  排序：持续 > 新进；持续组内分节(" + "→".join(SECTION_ORDER) + ")，节内 质量 → 轮次 → 分位 → 额涌 → 量比"
         )
         lines.append("  " + _flow_gate_note(hidden_flow))
+        lines.append("  " + _pct_gate_note(hidden_pct))
 
     def _row(i: int, s: Mapping[str, Any]) -> str:
         # 行 = 代码 名称 现价 涨幅 | 画像串（数字列已撤出终端，仍落库供回看）。
