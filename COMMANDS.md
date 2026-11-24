@@ -136,17 +136,10 @@ python pick.py --symbols-file list.txt
 python -m scanner.ai_digest --symbols SZ300916,SZ300293
 
 # ③ 指定区域 / 数据源
-python -m scanner.ai_digest --source panel                         # 明确读 股票池.md 全部区
-python -m scanner.ai_digest --exclude crosssection                 # 只分析旧的 v1池选 + 沪深飙升两区
+python -m scanner.ai_digest --source panel                         # 明确读 股票池.md（v1 池选 + 沪深飙升三段）
 python -m scanner.ai_digest --source print                         # 只看 B 段终端最后一次打印行
 python -m scanner.ai_digest --source view                          # 桌面版 view_snapshot
 python -m scanner.ai_digest --source log --date 2026-11-17         # B 段当日整日过门账
-python -m scanner.ai_digest --source crosssection                  # 只看 ≡ 横截面异动区
-python -m scanner.ai_digest --source crosssection --brief
-python -m scanner.ai_digest --source crosssection --materials
-python -m scanner.ai_digest --source crosssection --mode analyze
-python -m scanner.ai_digest --source all                           # B 段 + 横截面两区合并
-python -m scanner.ai_digest --source all --mode analyze
 python -m scanner.ai_digest --source print --materials             # 核对输入=终端最后打印行
 
 # ④ 模式
@@ -170,7 +163,8 @@ ls logs/ai_digest/2026-11-17/                                      # 按发起�
 **三条先记住**：
 
 1. 默认 = `research` + `auto`（先读 `logs/panel_md/股票池.md`，失败再回退 print → view → log）。
-   面板里 `v1 池选`、`沪深飙升` 三段、`≡ 横截面异动` 全都在，**日常不用加 `--source`**。
+   面板里 `v1 池选`、`沪深飙升` 三段都在，**日常不用加 `--source`**。
+   `≡ 横截面异动` 仍照常展示/落库，但 2026-11-24 起**不进入 AI 分析**。
 2. `pick.py` 是 `--symbols` / `--clipboard` 的简写；终端按 `c` 复制的是
    `v1 池选 + 沪深飙升三段`（不含 `≡` 区）。上限 50 只，票多用 `--limit N`。
 3. 每次成功都自动归档到 `logs/ai_digest/YYYY-MM-DD/`；`--demo` / `--materials` /
@@ -193,7 +187,6 @@ ls logs/ai_digest/2026-11-17/                                      # 按发起�
 | transcribe | `--mode transcribe` | 同上，纯转述；触红线 exit 3 |
 
 ⚠ `analyze` / `transcribe` 默认**不吃面板**；`--source panel` 只对 `--mode research` 生效。
-`--source crosssection --mode analyze` 是显式指定横截面层后的算账模式，两者不冲突。
 
 ### 3.3 数据源 `--source`
 
@@ -203,18 +196,12 @@ ls logs/ai_digest/2026-11-17/                                      # 按发起�
 | `panel` | `股票池.md` 全部区 | 明确要「我屏幕上那份」 |
 | `print` | `offboard_print_snapshot` 终端最后一次打印行 | 只要 B 段最后一次屏幕行；输出带 `print_seq` 与数据年龄 |
 | `view` / `log` | 桌面版 view_snapshot / 当日 launch_log 整日过门账 | B 段复盘 |
-| `crosssection` | `股票池.md` 的 `≡ 横截面异动` 区 | 只看横截面层 |
-| `all` | B 段（库）+ 横截面（面板）两区合并 | 明确只要这两个观察区、不要 v1 池选 |
+⚠ `--limit N` 是**每区截断**，不是选区域。
 
-`--exclude crosssection` 在 `panel/auto` 源上把 `≡ 区` 从提示词和素材里拿掉，等价于只分析旧的
-`v1 池选 + 沪深飙升` 两区；与 `--source crosssection` 互斥。观察层本身不受影响。
-
-横截面层的唯一真源是 `股票池.md` 的 `≡ 区`（终端第三个并列区），**不是数据库表**。
-横截面层无历史命中率基准（结构上无法自证胜率）⇒ 不挂 `baseline.stats`；与 B 段各自成
-素材（id 前缀 `sb.` / `cs.`），**不跨区混排**。面板存档只保留最近一轮快照，因此归档文件
-会带上模型实际看到的素材，面板被覆盖后仍可复算。详见 `docs/CROSSSECTION-TERMINAL-BLOCK.md` §11。
-
-⚠ `--limit N` 不是选区域，是**每区截断**；想只看某个区用上表的 `--source`。
+`≡ 横截面异动` 是并列的展示/落库层，2026-11-24 起**不进入 AI 分析**：`ai_digest` 读面板
+的入口（`panel.load_panel_md`）会剔除该区，`--source crosssection` / `--source all` /
+`--exclude crosssection` 三个开关均已移除。观察层本身（终端/面板/看板/`crosssection_signal`）
+不受影响，详见 `docs/CROSSSECTION-TERMINAL-BLOCK.md`。
 
 ### 3.4 常用参数
 

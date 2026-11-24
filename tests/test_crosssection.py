@@ -762,7 +762,7 @@ class TestDisplayGrouping:
         assert "新进（" in block
 
     def test_flow_gate_keeps_falling_stock_with_inflow(self):
-        """展示资金闸只看主力净额：当日大跌但净流入 >500 万的票照常占位。"""
+        """展示资金闸只看主力净额：当日大跌但净流入超阈的票照常占位。"""
         sig = {**self._sig("SZ300101", persist=7), "percent": -8.5, "main_net": 8e6}
         block = self._render([sig])
         assert "SZ300101" in block
@@ -775,9 +775,11 @@ class TestDisplayGrouping:
         assert "SZ300102" not in block
         assert "主力净流入不足" in block
 
-    def test_flow_gate_drops_inflow_at_or_below_5m(self):
-        """>500 万是严格大于：正好 500 万、以及更少的净流入都不占位。"""
-        for net in (5e6, 4.9e6):
+    def test_flow_gate_drops_inflow_at_or_below_cap(self):
+        """严格大于才放行：正好上限、以及更少的净流入都不占位。"""
+        from scanner.crosssection import CS_DISPLAY_MIN_MAIN_NET
+
+        for net in (CS_DISPLAY_MIN_MAIN_NET, CS_DISPLAY_MIN_MAIN_NET - 1e5):
             sig = {**self._sig("SZ300104", persist=7), "main_net": net}
             assert "SZ300104" not in self._render([sig])
 

@@ -221,7 +221,7 @@ def limit_per_region(snap: PanelSnapshot, limit: int | None) -> PanelSnapshot:
     )
 
 def exclude_regions(snap: PanelSnapshot, keywords: tuple[str, ...] | list[str]) -> PanelSnapshot:
-    """按区标题关键字排除区（`--exclude crosssection` 的单源实现）。
+    """按区标题关键字排除区（`load_panel_md` 剔除横截面区的单源实现）。
 
     区标题原文由面板解析得来，这里只做包含匹配，不重写区名/口径。
     """
@@ -416,8 +416,16 @@ def parse_panel_md(path: str | Path) -> PanelSnapshot | None:
 
 
 def load_panel_md() -> tuple[PanelSnapshot | None, str]:
-    """按项目单源取存档路径（`RTS_PANEL_MD_PATH` 优先）→ `(快照, 路径文案)`。"""
+    """按项目单源取存档路径（`RTS_PANEL_MD_PATH` 优先）→ `(快照, 路径文案)`。
+
+    ⚠ 横截面区（`≡`）在 AI 入口剔除（2026-11-24 用户决策）：面板原文仍会写它，
+    但 AI 分析只看 `v1 池选` + `沪深飙升` 三段。这里是 AI 侧唯一读取入口，
+    在此过滤即保证所有下游（提示词 / 素材 / 预取特征）都拿不到该区数据。
+    """
     from scanner.panel_md import panel_md_path
 
     path = panel_md_path()
-    return parse_panel_md(path), str(path)
+    snap = parse_panel_md(path)
+    if snap is not None:
+        snap = exclude_regions(snap, ("横截面",))
+    return snap, str(path)

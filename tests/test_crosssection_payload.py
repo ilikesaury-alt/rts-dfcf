@@ -97,11 +97,12 @@ def test_snapshot_payload_applies_same_flow_gate_as_terminal(monkeypatch):
             "main_net": main_net,
         }
 
+    cap = crosssection.CS_DISPLAY_MIN_MAIN_NET
     sigs = [
-        _sig("SZ300101", 7, 8e6),   # 跌但净流入 800 万 → 留
-        _sig("SZ300102", 7, -8e6),  # 涨但流出 → 剔
-        _sig("SZ300103", 1, None),  # 资金缺失 → fail-open
-        _sig("SZ300104", 7, 5e6),   # 正好 500 万，未超过闸 → 剔
+        _sig("SZ300101", 7, cap + 5e6),  # 跌但净流入超阈 → 留
+        _sig("SZ300102", 7, -8e6),       # 涨但流出 → 剔
+        _sig("SZ300103", 1, None),       # 资金缺失 → fail-open
+        _sig("SZ300104", 7, cap),        # 正好上限，未超过 → 剔
     ]
     monkeypatch.setitem(crosssection._state, "last_signals", sigs)
     monkeypatch.setitem(
@@ -114,10 +115,10 @@ def test_snapshot_payload_applies_same_flow_gate_as_terminal(monkeypatch):
     assert [r["symbol"] for r in payload["groups"]["new"]] == ["SZ300103"]
     assert payload["hidden_flow"] == 2
     assert payload["hidden_mid"] == 2  # 未进展示组的补数（此处即被闸挡下的那 2 只）
-    assert payload["display_flow_min"] == 5_000_000.0
+    assert payload["display_flow_min"] == cap
     # 网页版口径与终端同一函数生成 —— 不另拼阈值单位/语义/剔除数。
     assert payload["display_flow_note"] == crosssection._flow_gate_note(payload["hidden_flow"])
-    assert "500万" in payload["display_flow_note"]
+    assert f"{cap / 1e4:g}万" in payload["display_flow_note"]
     assert "本轮剔 2 只" in payload["display_flow_note"]
 
 

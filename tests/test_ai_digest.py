@@ -462,8 +462,12 @@ def test_cli_demo_materials_offline(capsys):
     assert "segment.note" in out and "sb.SZ300758.tier" in out
 
 
-def test_exclude_crosssection_keeps_old_panel_regions(digest_db, monkeypatch, tmp_path):
-    """`--exclude crosssection` 必须把面板缩回旧的 v1 池选 + 沪深飙升两区。"""
+def test_panel_source_never_carries_crosssection(digest_db, monkeypatch, tmp_path):
+    """AI 面板源不得带 `≡` 横截面区（2026-11-24 用户决策）。
+
+    直接 patch `parse_panel_md` 让真实的 `load_panel_md()` 执行过滤 —— patch
+    `load_panel_md` 本身会绕过拦截点，等于没测。
+    """
     import scanner.ai_digest.__main__ as cli
     import scanner.ai_digest.panel as panel_mod
     from scanner.ai_digest.panel import PanelRegion, PanelSnapshot
@@ -477,23 +481,14 @@ def test_exclude_crosssection_keeps_old_panel_regions(digest_db, monkeypatch, tm
             PanelRegion(title="横截面异动 · 11:00", columns=("代码",), rows=({"symbol": "SZ300003"},)),
         ),
     )
-    monkeypatch.setattr(panel_mod, "load_panel_md", lambda: (snap, str(tmp_path / "股票池.md")))
+    monkeypatch.setattr(panel_mod, "parse_panel_md", lambda path: snap)
     monkeypatch.setattr(cli, "resolve_db_path", lambda: str(digest_db))
 
-    args = cli._parse_args(["--source", "panel", "--exclude", "crosssection"])
+    args = cli._parse_args(["--source", "panel"])
     info = cli._resolve_rows(args)
     assert info["source"] == "panel"
     assert all("横截面" not in r.title for r in info["panel"].regions)
     assert {r["symbol"] for r in info["rows"]} == {"SZ300001", "SZ300002"}
-
-
-def test_exclude_crosssection_conflicts_with_crosssection_source():
-    """两个互斥开关必须报错，不能静默返回空输入。"""
-    import scanner.ai_digest.__main__ as cli
-
-    args = cli._parse_args(["--source", "crosssection", "--exclude", "crosssection"])
-    with pytest.raises(cli.OffboardSourceError):
-        cli._resolve_rows(args)
 
 
 def test_cli_without_credentials_exits_1_and_still_prints_materials(capsys, monkeypatch):

@@ -664,19 +664,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     p.add_argument(
         "--source",
-        choices=("auto", "panel", "print", "view", "log", "crosssection", "all"),
+        choices=("auto", "panel", "print", "view", "log"),
         default="auto",
         help="auto/panel=终端面板原文（股票池.md：v1 池选 + 沪深飙升三段，保留全部列与各区口径）；"
-        "print=终端最后一次打印的榜外行；view=桌面版 view_snapshot；log=launch_log 整日过门账；"
-        "crosssection=横截面异动层（只读 crosssection_signal）；"
-        "all=榜外异动段 + 横截面异动层**两区合并**一次分析",
-    )
-    p.add_argument(
-        "--exclude",
-        action="append",
-        choices=("crosssection",),
-        default=[],
-        help="排除某个并列区（当前支持 crosssection）；用于只分析旧的 v1 池选 + 沪深飙升两区",
+        "print=终端最后一次打印的榜外行；view=桌面版 view_snapshot；log=launch_log 整日过门账。"
+        "横截面异动区不进入 AI 分析（2026-11-24 用户决策）",
     )
     p.add_argument("--date", help="信号日 YYYY-MM-DD（仅 log 源；默认取最新）")
     p.add_argument(
@@ -697,10 +689,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 def _resolve_offboard(
     args: argparse.Namespace, conn: Any, baseline: str
 ) -> dict[str, Any]:
-    """榜外异动段（B 段）的区域解析 —— 与合并前**逐字一致**的逻辑。
+    """榜外异动段（B 段）的区域解析。
 
-    单独抽出来是为了让 `--source all` 能把 B 段与横截面层**合并**成一次分析，
-    而不必改动 B 段原有的回退链（panel → print → view → log）。
+    回退链：panel → print → view → log。横截面区已在 AI 读面板入口剔除，
+    本函数不再处理多区域合并。
     """
     # ⓪ panel 源（**默认优先**）：终端面板原文 —— 唯一同时含 v1 池选 与 沪深飙升三段、
     #    且保留全部列与各区口径的来源。用户口径 =「分析我屏幕上那份」，故 auto 先试它。
@@ -779,16 +771,8 @@ def _resolve_rows(args: argparse.Namespace) -> dict[str, Any]:
     → `log`（launch_log 整日累加）。逐级回退是为了「今天没跑扫描器」时仍能出结果，
     但**默认永远优先屏幕上的那几只** —— 用户的口径就是「我看到什么就分析什么」。
 
-    ⚠ **多区域源（2026-11-16）**：
-    - `crosssection`：**只**读横截面异动层（`crosssection_signal` 一张表）。
-    - `all`：**榜外异动段 + 横截面异动层**两区合并，一次分析。
-    两区由 `regions` 字段描述（`(标签, rows)` 列表）；单区域时只有一项，
-    与合并前的行为**逐字一致**。
+    横截面层已于 2026-11-24 从 AI 分析整体剔除 —— `regions` 恒为单项（榜外异动段）。
     """
-    excluded = tuple(getattr(args, "exclude", ()) or ())
-    if "crosssection" in excluded and args.source == "crosssection":
-        raise OffboardSourceError("--exclude crosssection 与 --source crosssection 冲突，不能同时给")
-
     if args.demo:
         demo_rows = [dict(r) for r in DEMO_ROWS]
         return {
@@ -806,65 +790,8 @@ def _resolve_rows(args: argparse.Namespace) -> dict[str, Any]:
         label_map={"vol_ratio": "量比", "main_pct": "主力净占比", "accum_5d": "5日累计", "amount": "成交额"},
     )
     try:
-        # ⓪⓪ 横截面异动层（2026-11-16）：数据来自 **`股票池.md`**（终端面板存档），
-        #     与榜外段**同源同文件** —— 「终端面板是唯一真源」的既有设计。
-        #     ⚠ 它在文件里是**第三个并列区**（`≡ 横截面异动`），此前解析器不认 ⇒ 静默丢弃。
-        cs_part: tuple[str, list[dict]] | None = None
-        if args.source in ("crosssection", "all") and "crosssection" not in excluded:
-            from scanner.ai_digest.crosssection_view import from_panel_rows
-            from scanner.ai_digest.panel import load_panel_md
-
-            panel_snap, panel_path = load_panel_md()
-            cs_region = None
-            cs_date = cs_time = ""
-            if panel_snap is not None:
-                cs_date, cs_time = panel_snap.date, panel_snap.time
-                for reg in panel_snap.regions:
-                    if "横截面" in reg.title:
-                        cs_region = reg
-                        break
-            if cs_region is None:
-                if args.source == "crosssection":
-                    raise OffboardSourceError(
-                        f"股票池.md 里没有横截面异动区（{panel_path}）—— "
-                        "终端还没跑过一轮，或 RTS_PANEL_MD=0 关了存档。"
-                    )
-            else:
-                cs_rows = from_panel_rows(cs_region.rows)
-                if args.source == "crosssection":
-                    if not cs_rows:
-                        raise OffboardSourceError("股票池.md 的横截面异动区没有数据行。")
-                    return {
-                        "date": cs_date,
-                        "rows": cs_rows,
-                        "source": "crosssection",
-                        "time": cs_time,
-                        "market": None,
-                        # 本层无历史命中率基准（结构上无法自证）⇒ 不挂 baseline。
-                        "baseline": None,
-                        "regions": [("横截面异动层", cs_rows)],
-                    }
-                # source == "all"：横截面区先行，B 段区随后（两区各自成素材）
-                cs_part = ("横截面异动层", cs_rows)
-
         sb = _resolve_offboard(args, conn, baseline)
-        if excluded and sb.get("panel") is not None:
-            from scanner.ai_digest.panel import exclude_regions
-
-            # CLI 用英文开关，面板区标题是中文；映射只在这里做一处。
-            title_keys = tuple(
-                {"crosssection": "横截面"}.get(k, k) for k in excluded
-            )
-            sb["panel"] = exclude_regions(sb["panel"], title_keys)
-            sb["rows"] = [r for reg in sb["panel"].regions for r in reg.rows]
-            if not sb["rows"]:
-                raise OffboardSourceError(f"排除 { '/'.join(excluded) } 后面板已无数据")
-        if cs_part is not None:
-            sb["regions"] = [cs_part, ("榜外异动段", sb["rows"])]
-            sb["source"] = "all"
-            sb["rows"] = cs_part[1] + sb["rows"]
-        else:
-            sb["regions"] = [("榜外异动段", sb["rows"])]
+        sb["regions"] = [("榜外异动段", sb["rows"])]
         return sb
     finally:
         conn.close()
@@ -904,38 +831,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[!] {e}")
         return 4
 
-    # 素材按**区域**分别构建再合并（2026-11-16：横截面层并入统一输入源）。
-    # ⚠ 两区字段集不同（B 段 tier/主力占比 vs 横截面 1m/3m/分位/判据），
-    #   硬拼成一行会出现大半「暂无数据」⇒ 各自成素材、各自的列，合并后分区呈现。
+    # 素材：横截面层已从 AI 分析剔除（2026-11-24），仅剩榜外段单区。
     _lim = args.limit if args.limit and args.limit > 0 else OFFBOARD_DISPLAY_TOP
     _regions = info.get("regions") or [("榜外异动段", info["rows"])]
-    _parts: list[tuple[str, Any]] = []
-    for _label, _rows in _regions:
-        if _label == "横截面异动层":
-            from scanner.ai_digest.crosssection_view import build_crosssection_materials
-
-            _parts.append(
-                (
-                    _label,
-                    build_crosssection_materials(
-                        info["date"], _rows, limit=_lim, mode=args.mode
-                    ),
-                )
-            )
-        else:
-            _parts.append(
-                (
-                    _label,
-                    build_materials(
-                        info["date"],
-                        _rows,
-                        limit=_lim,
-                        mode=args.mode,
-                        market=info.get("market"),
-                        baseline=info.get("baseline"),
-                    ),
-                )
-            )
+    _parts: list[tuple[str, Any]] = [
+        (
+            _label,
+            build_materials(
+                info["date"],
+                _rows,
+                limit=_lim,
+                mode=args.mode,
+                market=info.get("market"),
+                baseline=info.get("baseline"),
+            ),
+        )
+        for _label, _rows in _regions
+    ]
     mats = merge_materials(_parts)
     # 面板源的「共 N 只 / 本次 M 只」必须与**模型实际收到的**一致（`--limit` 按每区截断）。
     # 不能用 `build_materials` 的 `mats.symbols` —— 那是 B 段素材口径，面板行喂不进它。
@@ -959,26 +871,14 @@ def main(argv: list[str] | None = None) -> int:
         f"（终端最后一次打印的行，顺序即屏幕顺序）{_freshness(info.get('time') or '', info['date'])}",
         "view": f"view_snapshot {info['date']} {info['time']}（桌面版快照 · 含留存行/实时值）",
         "log": f"offboard_launch_log {info['date']}（整日过门账 · 信号值冻结快照）",
-        "crosssection": f"股票池.md 横截面异动区 {info['date']} {info['time']}"
-        f"（横截面异动层 · 终端面板存档 · 持续/新进分组→质量闸→轮次→分位）",
-        "all": f"榜外异动段 + 横截面异动层（两区合并 · {info['date']} · 榜外段读库、横截面读股票池.md）",
         "demo": "内置样例",
     }[info["source"]]
-    if getattr(args, "exclude", ()):
-        source_desc += "（已排除 " + "、".join(args.exclude) + "）"
-
     # ⚠ 默认模式是 research，别把它标成「AI 转述」（那是 transcribe 的标题）。
     # research 模式的输入可以是「面板原文」（v1 池选 + 沪深飙升三段）或自选清单，
     # 都不再只是榜外异动段 ⇒ 标题按实际来源写，别让报告标题与内容对不上。
     # 提前到这里：归档文件与终端报告共用同一个标题（单一来源）。
     _research_title = "终端面板 · AI 调研（v1 池选 + 沪深飙升）" if info["source"] == "panel" else "自选清单 · AI 调研"
-    # ⚠ 标题必须与**实际来源**一致（2026-11-16）：横截面层的报告不该顶着
-    #   「榜外异动」的名字 —— 那是另一个区域。
-    _source_title = {
-        "crosssection": "横截面异动 · AI 综合分析",
-        "all": "榜外异动 + 横截面异动 · AI 综合分析",
-    }.get(info["source"], "")
-    report_title = _source_title or {
+    report_title = {
         "analyze": "榜外异动 · AI 综合分析",
         "research": _research_title,
         "transcribe": "榜外异动 · AI 转述",

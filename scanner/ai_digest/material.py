@@ -111,22 +111,16 @@ class OffboardMaterials:
     #: 单区域时留空 ⇒ `render_materials_block` 走老路径（`symbols` + 固定列），
     #: 输出与合并前**逐字一致**（不因为并入新区域而改动既有区域的呈现）。
     groups: tuple[tuple[str, tuple[str, ...]], ...] = ()
-    #: 本区的素材 id 前缀（`sb` = 榜外段 / `cs` = 横截面层）。
-    #: ⚠ **必须有**：核对视图按前缀找数据 —— 前缀不对 ⇒ 整张表「暂无数据」。
-    #:   实测踩过：横截面区单跑时核对表全空（`build_materials` 默认 `sb`，
-    #:   而素材项是 `cs.` 前缀 ⇒ 一行都取不到 ⇒ 核对能力形同虚设）。
+    #: 本区的素材 id 前缀（恒为 `sb` = 榜外段）。
+    #: ⚠ 核对视图按前缀找数据 —— 前缀不对 ⇒ 整张表「暂无数据」。
     prefix: str = "sb"
 
 
 def merge_materials(parts: Sequence[tuple[str, OffboardMaterials]]) -> OffboardMaterials:
-    """多个区域的素材合并成一份（2026-11-16：横截面层并入统一 AI 分析）。
+    """多个区域的素材合并成一份。
 
-    ⚠ **合并的是「区域」，不是「把两只票的字段混在一行」**：
-    B 段（榜外异动）与横截面层的字段集根本不同（tier/主力占比 vs 1m/3m/分位/判据），
-    硬拼成一行会出现大半字段「暂无数据」，读者与模型都无法读。
-    ⇒ 合并后仍是**两个分区**，各自一行一只票、各自的列；提示词里以分区小标题隔开。
-
-    合并后的 `symbols` = 各区代码按顺序去重（供旧路径与 JSON 输出使用）。
+    横截面层已从 AI 分析剔除（2026-11-24），当前恒为单区；保留合并函数只为
+    维持调用方接口不变。合并后的 `symbols` = 各区代码按顺序去重。
     """
     if not parts:
         raise ValueError("merge_materials 需要至少一个区域")
@@ -249,14 +243,8 @@ def build_materials(
     的产物，948 条标签实测）。这是「模型自己调研」的替代实现 —— 进程内的模型没有联网、
     没有 tool，唯一能给它真证据的方式就是把项目自己的统计当素材喂进去。
 
-    ⚠ **多区域支持（2026-11-16：横截面层并入）**：
-    - `fields`：本区的字段白名单（`(列名, 中文标签, 格式)`）。不给则用 B 段默认集。
-    - `segment_note`：本区口径说明（模型据此知道「这是什么区域」）。
-    - `id_prefix`：素材 id 前缀（`sb` = 榜外段；`cs` = 横截面层）。**必须不同**，
-      否则两区同代码的票会互相覆盖。
-    - `sort_key`：排序键（默认 `_order_key`）。横截面层按「展示分组(持续/新进)→质量闸→轮次→分位」排
-      （口径单源 `crosssection.signal_sort_key`，2026-11-17 分组前提）。
-    - `with_market`：是否附市况条目（B 段有，横截面层独立 ⇒ 不附）。
+    可选参数 `fields` / `segment_note` / `id_prefix` / `sort_key` / `with_market`
+    保留以兼容调用方；横截面层剔除后实际只使用 B 段默认值。
     """
     ordered = sorted(rows, key=sort_key or _order_key)
     if limit is not None:
@@ -327,19 +315,16 @@ def render_materials_block(m: OffboardMaterials) -> str:
     为什么要打出来：转述的价值前提是「人能把文案和数字对上」。云端 UI 用可折叠表格做这件事，
     终端没有折叠，就用一行一只票 —— 读者一眼能发现「解读说的量比和这行不一样」。
 
-    ⚠ **多区域（2026-11-16）**：`m.groups` 非空时按区渲染，每区一套列。
-    单区域（`groups` 为空）走老路径，输出与合并前**逐字一致**。
+    `m.groups` 按区渲染（当前恒为单区）。
     """
     if not m.groups:
-        # ⚠ 用 `m.prefix`（不是写死 "sb"）—— 否则横截面区单跑时整张表取不到数据。
         _cols = _COLUMNS_BY_PREFIX.get(m.prefix, _SB_COLUMNS)
         return _render_segment_rows(_cols, m.prefix, m.symbols, m.items)
 
     lines: list[str] = []
     for label, symbols in m.groups:
-        prefix = "sb" if label.startswith("榜外") else "cs"
         lines.append(f"【{label}】")
-        lines.append(_render_segment_rows(_COLUMNS_BY_PREFIX[prefix], prefix, symbols, m.items))
+        lines.append(_render_segment_rows(_SB_COLUMNS, "sb", symbols, m.items))
     return "\n".join(lines)
 
 
@@ -358,23 +343,9 @@ _SB_COLUMNS: tuple[tuple[str, str], ...] = (
 )
 
 
-#: 横截面区的紧凑列（`cs.` 前缀的素材项；2026-11-19 画像版：数字列已撤出，
-#: 与 `crosssection_view.CROSSSECTION_FIELDS` 同源字段集）。
-_CS_COLUMNS: tuple[tuple[str, str], ...] = (
-    ("name", ""),
-    ("percent", "涨幅"),
-    ("price", "价"),
-    ("persist", "轮次"),
-    ("pos", "位置"),
-    ("motion", "动向"),
-    ("main_flow", "资金"),
-    ("section", "分节"),
-)
-
-#: 前缀 → 列规格。
+#: 前缀 → 列规格（横截面层已剔除，仅剩 B 段）。
 _COLUMNS_BY_PREFIX: dict[str, tuple[tuple[str, str], ...]] = {
     "sb": _SB_COLUMNS,
-    "cs": _CS_COLUMNS,
 }
 
 
