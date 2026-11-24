@@ -122,7 +122,11 @@ def test_snapshot_payload_applies_same_flow_gate_as_terminal(monkeypatch):
 
 
 def test_snapshot_payload_applies_same_pct_gate_as_terminal(monkeypatch):
-    """涨幅闸：>10% 剔除、正好 10% 保留、缺值放行；落库不受影响（只滤展示）。"""
+    """涨幅闸：>上限剔除、正好上限保留、缺值放行；落库不受影响（只滤展示）。
+
+    阈值从 `CS_DISPLAY_MAX_PERCENT` 派生，避免配置调整时测试漂移；样本 15% 在任何
+    合理上限下都应被剔，正好上限/缺值/下跌三档分别验边界与 fail-open。
+    """
 
     def _sig(symbol: str, pct: float | None) -> dict:
         return {
@@ -136,11 +140,12 @@ def test_snapshot_payload_applies_same_pct_gate_as_terminal(monkeypatch):
             "persist": 7, "main_net": 8e6,
         }
 
+    cap = crosssection.CS_DISPLAY_MAX_PERCENT
     sigs = [
-        _sig("SZ300201", 15.0),   # 涨 15% → 剔
-        _sig("SZ300202", 10.0),   # 正好 10% → 留
-        _sig("SZ300203", None),   # 缺值 → fail-open 留
-        _sig("SZ300204", -3.0),   # 跌 → 留
+        _sig("SZ300201", cap + 3.0),  # 超上限 → 剔
+        _sig("SZ300202", cap),  # 正好上限 → 留
+        _sig("SZ300203", None),  # 缺值 → fail-open 留
+        _sig("SZ300204", -3.0),  # 跌 → 留
     ]
     monkeypatch.setitem(crosssection._state, "last_signals", sigs)
     monkeypatch.setitem(
@@ -151,9 +156,9 @@ def test_snapshot_payload_applies_same_pct_gate_as_terminal(monkeypatch):
     payload = crosssection.snapshot_payload()
     assert {r["symbol"] for r in payload["groups"]["persist"]} == {"SZ300202", "SZ300203", "SZ300204"}
     assert payload["hidden_pct"] == 1
-    assert payload["display_pct_max"] == 10.0
+    assert payload["display_pct_max"] == cap
     assert payload["display_pct_note"] == crosssection._pct_gate_note(1)
-    assert "10%" in payload["display_pct_note"]
+    assert f"{cap:g}%" in payload["display_pct_note"]
 
 
 def test_snapshot_payload_is_disabled_by_default():
