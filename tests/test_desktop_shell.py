@@ -230,7 +230,7 @@ def test_main_js_actually_loads_without_throwing() -> None:
     if not node:
         pytest.skip("无 node，跳过 main.js 加载守卫")
 
-    proc = subprocess.run(
+    proc = subprocess.run(  # noqa: S603 - node 来自 shutil.which，参数为固定字面量
         [node, "-e", "require(process.argv[1])", str(DESKTOP / "main.js")],
         capture_output=True,
         text=True,

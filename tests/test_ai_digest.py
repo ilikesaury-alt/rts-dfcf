@@ -1336,13 +1336,15 @@ def test_concepts_tool_batches_and_only_fetches_cache_misses(monkeypatch):
     """概念：本地命中的票零请求，只有 miss 的票才走 F10。"""
     import scanner.concept as concept_mod
     from scanner.ai_digest import research as R
+    from scanner.config import now_beijing
 
     conn = _batch_conn()
+    fresh = now_beijing().isoformat()  # 概念缓存 TTL=7 天，硬编码日期会随时间过期
     conn.executemany(
         "INSERT INTO concept_cache VALUES (?,?,?)",
         [
-            ("SZ300001", '["CPO概念","光模块"]', "2026-11-11"),
-            ("SZ300002", '["存储芯片"]', "2026-11-11"),
+            ("SZ300001", '["CPO概念","光模块"]', fresh),
+            ("SZ300002", '["存储芯片"]', fresh),
         ],
     )
     fetched: list[list[str]] = []
@@ -1446,13 +1448,15 @@ def test_concepts_batch_over_budget_keeps_every_symbol_visible(monkeypatch):
     把最后 4 只票整段切掉 —— 模型会把「输出里没有」读成「这票没有概念板块」。
     """
     from scanner.ai_digest import research as R
+    from scanner.config import now_beijing
 
     conn = _batch_conn()
     syms = [f"SZ30{i:04d}" for i in range(1, 21)]
     long_boards = [f"概念标签{i:02d}" for i in range(30)]
+    fresh = now_beijing().isoformat()  # 同上：概念缓存 TTL 会随硬编码日期漂移
     conn.executemany(
         "INSERT INTO concept_cache VALUES (?,?,?)",
-        [(s, json.dumps(long_boards, ensure_ascii=False), "2026-11-11") for s in syms],
+        [(s, json.dumps(long_boards, ensure_ascii=False), fresh) for s in syms],
     )
     out = R._tool_get_concepts({"symbols": syms}, R.ResearchContext(conn=conn))
     assert len(out) <= R._MAX_TOOL_CHARS, f"输出必须落在预算内，实际 {len(out)}"

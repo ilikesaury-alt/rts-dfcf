@@ -31,7 +31,7 @@ SUPERSAMPLE = 4            # 超采样倍率：1024 实际按 4096 画，再缩�
 
 
 def _lerp(c1, c2, t):
-    return tuple(round(a + (b - a) * t) for a, b in zip(c1, c2))
+    return tuple(round(a + (b - a) * t) for a, b in zip(c1, c2, strict=True))
 
 
 def _bg_gradient(size: int) -> Image.Image:

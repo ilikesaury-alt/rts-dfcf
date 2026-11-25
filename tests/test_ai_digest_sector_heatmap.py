@@ -33,35 +33,40 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import timedelta
 from typing import Any
 
 import pytest
 
 import scanner.api as api_mod
 from scanner.ai_digest.research import _tool_get_sector_heatmap
+from scanner.config import now_beijing
 
 
 @pytest.fixture()
 def conn() -> sqlite3.Connection:
     """3 只成分股：1 只有今日本地数据，2 只没有（须联网补）。"""
     c = sqlite3.connect(":memory:")
+    today = now_beijing()
+    day = today.date().isoformat()  # stale 闸按「距今 ≤7 天」判，硬编码日期会随时间漂移
+    stale = (today.date() - timedelta(days=60)).isoformat()
     c.execute("CREATE TABLE daily_kline (symbol TEXT, date TEXT, percent REAL, close REAL)")
     c.execute("CREATE TABLE concept_cache (symbol TEXT, concepts TEXT, updated TEXT)")
     c.execute(
         "INSERT INTO concept_cache VALUES (?,?,?)",
-        ("SZ300001", '["人工智能","算力"]', "2026-11-12T09:00:00+08:00"),
+        ("SZ300001", '["人工智能","算力"]', today.isoformat()),
     )
     c.execute(
         "INSERT INTO concept_cache VALUES (?,?,?)",
-        ("SZ300002", '["人工智能"]', "2026-11-12T09:00:00+08:00"),
+        ("SZ300002", '["人工智能"]', today.isoformat()),
     )
     c.execute(
         "INSERT INTO concept_cache VALUES (?,?,?)",
-        ("SZ300003", '["人工智能"]', "2026-11-12T09:00:00+08:00"),
+        ("SZ300003", '["人工智能"]', today.isoformat()),
     )
     # 只有 SZ300001 有当日数据
-    c.execute("INSERT INTO daily_kline VALUES (?,?,?,?)", ("SZ300001", "2026-11-12", 5.0, 10.0))
-    c.execute("INSERT INTO daily_kline VALUES (?,?,?,?)", ("SZ300002", "2026-10-01", 99.0, 10.0))
+    c.execute("INSERT INTO daily_kline VALUES (?,?,?,?)", ("SZ300001", day, 5.0, 10.0))
+    c.execute("INSERT INTO daily_kline VALUES (?,?,?,?)", ("SZ300002", stale, 99.0, 10.0))
     c.commit()
     return c
 

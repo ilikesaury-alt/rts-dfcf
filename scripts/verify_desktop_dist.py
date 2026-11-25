@@ -11,7 +11,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -71,7 +70,6 @@ def main() -> int:
     check(live_db.is_file(), f"本机活库仍在：{live_db}")
 
     # 4) 关键口径：main.js 里必须仍是「优先解析外部活库」
-    main_js = UNPACKED / "resources" / "app.asar"
     src_js = REPO / "desktop" / "main.js"
     if src_js.is_file():
         txt = src_js.read_text(encoding="utf-8", errors="ignore")

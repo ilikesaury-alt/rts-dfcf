@@ -658,3 +658,29 @@ tests/                      # pytest suite
 - `test_data_source.py` / `test_market_extra.py` depend on optional `pandas`/akshare — may fail on different environments.
 - Integration tests (`--run-smoke`, ~16 cases) require `scanner.db` with real data + network access.
 - **Avoid vacuous assertions**: If a test depends on a mock callback being called, explicitly assert the call happened.
+
+---
+
+## 2026-11-25 从 AGENTS.md 迁出的证据数字（瘦身存档）
+
+以下只供复核口径与沿革，**不进入口文档**；原文出处为当时 AGENTS.md 的「目标函数 / Key facts」。
+硬约束（三条防呆、单源路径、守卫名）仍留在 AGENTS.md，此处不重复。
+
+- **v1 池选评分列**：类内 IC −0.020 vs 类别先验 +0.027（n=70 天 walkforward）⇒ 分数不进排序/不进表。
+  全池 top-3 口径会把类别构成效应误读成「分数有效」（score 看着 +3.10pp）。证据 `legacy/scripts/rerank_backtest.py`。
+- **AI 排序下线**：Phase 2 模型排序 vs 确定性排序 ΔIC +0.0300 [−0.020,+0.080]（30 天重建池 / 29 天可比，不显著）；
+  机制：`system_p` 在池内 86% 行并列，模型优势全来自「它也用了主力净占比」。数字出自守卫 v3 回放；
+  v4 修「当日已冲高」误拦（1/30 天）后结论不变。`ai_digest/rerank.py` 保留为证据载体，无 CLI 入口。
+- **B 段 N 日主力净流入门**（唯一有样本外证据的 B 段新门）：948 条已标注样本 / 25 个交易日，按日等权配对 bootstrap：
+  Δ命中 +1.43pp CI[+0.33,+2.67]，逐日正 17 / 负 4（符号检验 p=0.0009），jackknife Δ∈[+1.10,+1.65]，窗口 10~30 全正。
+  与当日主力净占比不共线（r=+0.051）⇒ 增量信息。序列来自 `market_extra_cache`，零新增请求；与 `ann_event_backtest.py` 的公告门两门合并即失效 ⇒ 分门用。
+  已否决伪信号：龙虎榜 bootstrap CI +9.19pp 但逐日正 8 / 负 9（p=0.815）= 少数天拉起来的；公告在 B 段参与日仅 2~5 天。
+  v1 主线公告结论段特异：「对外担保」「股权激励类」Δ −6.6pp、逐日 0/12~0/14、p≤0.001、分半同向。
+- **幻觉巡检容差**：认下 721（前四项和）需 0.1% 容差，而该容差下真编造数字误放率 53.8% ⇒ 宁可偶尔误报，闸门不焊死。
+- **research 工具实测**：网关支持 tool-calling（`finish_reason=tool_calls`）；非流式被 CDN 以 524 掐断 100s，流式 5s；
+  requests 对无 charset 的 text/* 默认 ISO-8859-1 ⇒ SSE 必须显式 UTF-8 解码；
+  东财 fflow `klt=101` 是日频（121 个交易日，`klt=1` 取不到 0 点）；东财公告 `columns` 是字符串列表；
+  `daily_kline.percent` 不是 `pct`、`appearances` 无 category/score/excluded、东财是 `main_net`/`super_net`/`turnover`。
+- **pool_pick 退池**时存量 988 行仍在 DB ⇒ 三处映射不能跟着删（见 AGENTS.md 硬约束）。
+- **`offboard_rejections` 不同锚实测**：`SZ300063` launch +2.05 vs rej −1.83 ⇒ 跨表 join 会拼出两个时刻。
+- **慢框架**：TradingAgents-Astock 单只票 2~5 分钟（延迟闸上限 2 分钟），且价值投资视角与 next_day hit 口径不必然同向 ⇒ 已删除。

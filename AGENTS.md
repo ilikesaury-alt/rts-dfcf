@@ -16,6 +16,7 @@ A-share (创业板) stock scanner: watches Xueqiu biaosheng (飙升) leaderboard
   ③一行踩坑提醒。原理、口径推导、证据数字、沿革史一律写进模块 docstring、
   测试与 commit message。
 - **新条目单条 ≤ 2 行**；本文件总行数 ≤ 330（`tests/test_agents_doc.py` 守）。
+- **证据数字 / 口径推导 / 沿革史** → `docs/HISTORY-agents-full-2026-11.md`；本文件只留硬约束。
 - **写之前自问**：删掉这条会不会有人踩坑？不会 ⇒ 不写。已写进去的可删就删。
 
 ## Commands
@@ -69,8 +70,7 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
 **效率是前提**（2026-11-03 用户决策）：次日异动是**分钟级**生意 —— 分析再好、
 出来晚了就没用了。新增维度/分析手段**一律先过延迟闸**（单只票 ≤ 2 分钟出结论），
 慢的手段只能进**离线旁路**，不得进主循环/终端/飞书。
-⚠ 曾评估并接入外部多智能体框架（TradingAgents-Astock），**已删除**：
-单只票 2~5 分钟太慢，且价值投资视角与本目标函数不必然同向。
+⚠ 慢框架（含 TradingAgents-Astock）已评估并删除，勿恢复（理由见 HISTORY）。
 **次日≥7% hit 率**是系统唯一类别先验口径——排序、档位、🎯 画像、类别准入全用它。
 **唯一手抄源 = `config_scoring.CATEGORY_HIT_RATE`**（+ `_DEFAULT`），下游一律派生不得复制：
 `config_scoring.COMPOSITE_CAT_BASE` = `(hit−基准)/(最高hit−基准)×10`。
@@ -131,8 +131,7 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
   词表与排序链分两处写（`=` vs 带空格的排序键），守卫认带空格的 `T2 启动首日`。
 - **只有 `v1 池选` 有序**：新票优先 → 类别优先级 → 榜单排名升序 → 资金流降序 → 形态加分
   （`scanner/view/assemble.py::build_scan_view`）。终端标题 = 前四键，**改键必须同批改标题**。
-- **v1 池选「评分」列已删（2026-11-04）**：分数在类别内无区分力（类内 IC −0.020）⇒
-  改显「类别·先验」列（`RBD·17.9%`，单源 `view.model.category_prior_pct`）。
+- **v1 池选「评分」列已删**：改显「类别·先验」列（单源 `view.model.category_prior_pct`），勿恢复分数列。
   ⚠ 跨端同源：终端 `COLS_POOL` / 飞书 `_fmt_row` / 面板 `cols.ts` 的 `POOL_CELLS` 三处
   必须同步（守卫 `test_panel_web_cols.py` 比对逐项同序）。
   「新票」= 本轮新进今日推荐池（跨轮票集差集 `new_symbols`），**不是** `recommendations.time`
@@ -178,25 +177,12 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
 - **`scripts/offboard_nextday.py` 刻意不给结论**：B 段无常设样本外裁决通道
   （旧验证门已归档 `legacy/`，它本就看不见 B 段）；阈值归属 `config_hot_watch.py` docstring。
   统计脚本一旦给「建议」就成了第二结论源（守卫 `test_report_contains_no_verdict_wording`）。
-- **B 段 N 日主力累计净流入门（2026-11-03，唯一有样本外证据的 B 段新门）**：
-  `config_hot_watch.OFFBOARD_FLOW_WINDOW=10` / `OFFBOARD_FLOW_MIN_SUM=0.0`，
-  实现 `scanner/offboard_flow.py` + `offboard_watch._flow_gate_reason`。
-  证据（`scripts/shadow_feature_backtest.py`，948 条已标注样本 / 25 个交易日，
-  **配对 bootstrap** 按日等权 + 逐日 CI）：
-  Δ命中 **+1.43pp** CI[+0.33,+2.67]，逐日 **正17/负4**（符号检验 p=0.0009），
-  jackknife Δ∈[+1.10,+1.65]，窗口 10~30 全部为正。
-  三条硬约束：**①只取已收盘交易日**（`date < 今日` —— 当天那行会被当天后续快照覆盖成
-  「接近收盘」的值，而信号是盘中产生的 ⇒ 含当天行 = 前视偏差；剔除后两个**独立**数据源
-  本地库/东财 fflow 仍一致显著）；**②不可判定 ≠ 净流出**（历史不足 N 天 ⇒ fail-open
-  放行，否则上市越晚越容易被砍）；**③阈值取零**（阈值越高 Δ 越大同时过滤后样本骤减
-  = 分母效应）。序列来自 `market_extra_cache`（主循环每天已在写）⇒ **零新增网络请求**；
-  与「当日主力净占比」**不共线**（r=+0.051）⇒ 是增量信息不是重复。
-  ⚠ **已否决的伪信号**（别加）：**龙虎榜** bootstrap CI 看着显著（+9.19pp）但逐日
-  正8/负9（p=0.815）= 少数几天拉起来的假信号；**公告**在 B 段亦不可用（参与日仅 2~5 天）。
-  ⚠ **2026-11-05**：公告结论**总体特异**，别跨段搬 —— v1 主线为负的是「对外担保」「股权激励类」
-  （Δ −6.6pp、逐日 0/12~0/14、p≤0.001、分半同向），旧结论只在 B 段成立；且**两门合并即失效**
-  ⇒ 分门用；验证 `python scripts/ann_event_backtest.py`（按日配对 bootstrap + 逐日符号检验）。
-  ⚠ 回退：`OFFBOARD_FLOW_WINDOW=0` 或把 `_flow_gate_reason` 的调用摘掉。
+- **B 段 N 日主力累计净流入门**：`OFFBOARD_FLOW_WINDOW=10` / `OFFBOARD_FLOW_MIN_SUM=0.0`，
+  实现 `offboard_flow.py` + `offboard_watch._flow_gate_reason`；序列来自 `market_extra_cache`，零新增请求。
+  三条硬约束（缺一即前视/误杀）：**①只取已收盘日**（`date < 今日`，当天行会被后续快照覆盖）；
+  **②历史不足 N 天 fail-open 放行**（不可判定≠净流出）；**③阈值取零**（高阈值=分母效应）。
+  ⚠ 别加龙虎榜/公告门：逐日不稳定，且公告结论**段特异**（v1 主线为负、两门合并失效）。
+  证据数字与推导见 HISTORY / `config_hot_watch.py` docstring；回退 `OFFBOARD_FLOW_WINDOW=0`。
 - **ai_digest 素材口径**：值取自 launch_log 冻结快照（「信号时涨幅」= 被推出时的涨幅）；
   段内顺序用 `offboard_watch.sort_key`；`next_day_pct` 刻意不进素材（防绩效读数变成判断）。
   历史基准率（`source.load_baseline_stats`）是素材一部分，标签文本自带「本项目实测、
@@ -207,52 +193,27 @@ python -m scanner.hot_watch --offline-demo   # 12 条内置样本逐条核对，
   ⚠ 全池 top-3 口径会把**类别构成效应**误读成「分数有效」（score 看着 +3.10pp）。证据：`legacy/scripts/rerank_backtest.py`。
 - **「先强资弱」标记（2026-11-04）**：类别档位=A 且主力净占比<0 ⇒ 排序位置与资金证据矛盾，
   行尾标出（判定单源 `view.model.prior_flow_conflict`；终端/飞书/面板三出口同待遇）。
-- **AI 排序已下线（2026-11-04）**：Phase 2 实测模型排序 vs 确定性排序 ΔIC **+0.0300**
-  [−0.020,+0.080]（30 天重建池 / 29 天可比，**不显著**；机制：`system_p` 在池内 86% 的行
-  上并列 ⇒ 确定性排序在并列里任意；模型优势全来自「它用了主力净占比」）⇒ **CLI 入口移除**，
-  `ai_digest/rerank.py` 只作为 Phase 2 证据的可复现载体保留。
-  ⚠ 数字出自守卫 v3 的回放；v4 修了「当日已冲高」这类误拦（1/30 天），结论不变。
-- **research 模式（ai_digest 默认，2026-11-03）= 模型自己查真实市场数据再判断**：
-  网关**支持 tool-calling**（实测 `finish_reason=tool_calls`）⇒ 工具箱
-  `ai_digest/research.py`（8 个：K线/实时报价/资金流/概念/板块热力图/市场概览/飙升榜/
-  系统历史）+ 循环 `ai_digest/agent.py::run_research`（≤8 轮/≤20 次调用）。
-  幻觉巡检的比对基准随之升级为**全部工具输出全文**。工具箱共 **11 个**（8 + 3）：
-  K线 / 实时报价 / 资金流快照 / 概念 / 板块热力图 / 市场概览 / 飙升榜 / 系统历史 /
-  **公告**（东财 `np-anotice-stock`，公司层面真实事件）/ **分时**（雪球 minute.json，日内节奏：
-  均价线、尾盘半小时量占比）/ **多日资金流趋势**（东财 fflow `klt=101`，121 个交易日的
-  主力/超大单净额合计与净流入天数）/ **龙虎榜**（东财 `RPT_DAILYBILLBOARD_DETAILSNEW`，
-  含 D1/D2/D5/D10 后续涨幅）。三个坑（都实测踩过）：
-  ① **必须流式**（非流式被上游 CDN 以 524 掐断 100s，流式 5s）；② **SSE 必须显式 UTF-8
-  解码**（requests 对无 charset 的 text/* 默认 ISO-8859-1 ⇒ 整篇 mojibake）；
-  ③ **工具输出必须给人读单位**（元→万/亿、量→万股），否则模型自己换算的数字会被巡检
-  判成编造。工具的列名/字段名**必须实测**（`daily_kline.percent` 不是 `pct`；
-  `appearances` 无 category/score/excluded；东财是 `main_net`/`super_net`/`turnover`）——
-  猜错会 OperationalError ⇒ 工具**静默失效**。
-  ④ **东财 fflow `klt=101` 是日频不是分时**（121 个交易日；`klt=1` 本环境取不到 0 点）⇒
-  工具名为 `get_fund_flow_trend`；东财公告的 `columns` 是**字符串列表**（不是 dict 列表）。
+- **AI 排序已下线**：CLI 入口勿恢复；`ai_digest/rerank.py` 只作 Phase 2 证据载体（数据见 HISTORY）。
+- **research 模式（ai_digest 默认）= 模型自己查真实市场数据再判断**：工具箱 `ai_digest/research.py`
+  共 11 个（K线/实时报价/资金流/概念/板块热力图/市场概览/飙升榜/系统历史/公告/分时/多日资金流趋势/龙虎榜），
+  循环 `agent.py::run_research`（≤8 轮/≤20 次调用）；幻觉巡检基准 = 全部工具输出全文。
+  四个踩坑：①**必须流式**（非流式被 CDN 掐断）；②**SSE 显式 UTF-8 解码**；③**工具输出给人读单位**
+  （元→万/亿、量→万股），否则模型换算会被巡检判编造；④字段/列名**必须实测**（猜错 ⇒ 工具静默失效）。
+  东财 fflow `klt=101` 是日频不是分时；公告 `columns` 是字符串列表。细节见 `research.py` docstring / HISTORY。
 - **ai_digest 的幻觉巡检基准必须 == 模型实际收到的提示词**（2026-11-11）：两处各自拼一份
   就会漂移，实测放过 `ff_pct`/`price`/`first_time` 等模型从未见到的数字。单源 = `agent.build_research_prompt`。
 
 - **ai_digest 工具并行执行的前提**（2026-11-11）：`sqlite3` 连接**不能跨线程**
   ⇒ 子线程走 `ResearchContext.conn_for_thread()` 各开只读连接；`:memory:` 反查不到路径则退回串行。
 
-- **幻觉巡检**不豁免「模型自己做的算术」**（2026-11-11 实测）：认下 721（前四项和）
-  需 0.1% 容差，而该容差下真编造数字**误放率 53.8%** ⇒ 宁可偶尔误报，闸门不焊死。
+- **幻觉巡检不豁免模型自己的算术**：容差放到能认下求和时，真编造数字误放率过半 ⇒ 宁可偶尔误报，闸门不焊死（数字见 HISTORY）。
 
-- **push_gate「削减 88%」口径已作废**（测量总体错了：recommendations 原始行含 pool_pick，
-  生产卡片到不了）；真实削减量未知，需用真实卡片总体重测。
-- **pool_pick 退池后三处不能跟着删**（存量 988 行仍在 DB）：`view/assemble.py` 的
-  `main_recs` 排除条件（删了 pool_pick 会混进 v1 主表）；`_stg_map`/`CAT_LABEL` 标签映射
-  （供存量行解析）；注册表条目。
-- **榜外段「反复进前十」粉名/🔥 标识已整体删除**（2026-10-16 用户决策），守卫为反向
-  （`test_offboard_subtitle_has_no_repeat_marker`）；`top_hits`/`gate_hits` 列保留作研究原料。
-- **B/C 段量比是「去偏值」**（2026-11-05）：上报量比 ÷ 全市场量能前置系数 k(m)
-  （`scanner/volume_bias.py`）；**A 段仍是上报原值** ⇒ 两处尺度不同，别混用/别互相引用。
-  落库 `vol_ratio`=决策值、`vol_ratio_raw`=上报原值、`vol_bias_k`=当轮 k，分析侧读 `coalesce(前,后)`。
-- **`offboard_rejections` 复盘只用 `first_*` 列**（m026，2026-11-12）：`percent`/`vol_ratio`/
-  `main_pct`/`reason` 是**最新一轮覆盖**，与 `offboard_launch_log` 的**冻结列不同锚** ⇒
-  跨表 join 会拼出两个时刻的状态（实测 `SZ300063`：launch +2.05 vs rej −1.83）。
-  聚合按 `reason_code`（门 ID），别按 `reason`（含当轮数值，数万条碎片）。
+- **push_gate「削减 88%」口径已作废**，勿引用；真实削减量未知，需用真实卡片总体重测。
+- **pool_pick 退池后三处不能跟着删**（存量行仍在 DB）：`view/assemble.py` 的 `main_recs` 排除条件、
+  `_stg_map`/`CAT_LABEL` 标签映射、注册表条目。
+- **榜外段「反复进前十」粉名/🔥 标识已删**，守卫为反向（`test_offboard_subtitle_has_no_repeat_marker`）；`top_hits`/`gate_hits` 列保留作研究原料。
+- **B/C 段量比是「去偏值」**（`volume_bias.py`）；**A 段仍是上报原值** ⇒ 别混用。落库 `vol_ratio`=决策值、`vol_ratio_raw`=上报原值、`vol_bias_k`=当轮 k。
+- **`offboard_rejections` 复盘只用 `first_*` 列**：其余列是最新一轮覆盖、与 `launch_log` 冻结列**不同锚** ⇒ 跨表 join 会拼出两个时刻。聚合按 `reason_code`，别按 `reason`。
 
 ### 横截面异动观察层（`scanner/crosssection.py`，m027）
 并列观察层，与飙升榜解耦（榜空轮照记），只写 `crosssection_signal`、**不进 B 段冻结表/回测口径**。`RTS_CROSSSECTION=0` 一键关，`python -m scanner.crosssection --health` 离线核对；60s/轮·预热 6 轮·`≡` 段·限频注意等细节见 COMMANDS.md。⚠ 画像「主力资金」单源=东财 f62（`market_extra_cache`），**勿用**雪球 screener 的 `main_net_inflows`（非 f62 口径，42% 符号相反）。
@@ -267,6 +228,8 @@ scanner/
   ths_api.py                # THS official finance API (K-line fallback)
   database.py               # SQLite CRUD: recommendations, appearances, daily_kline
   config.py                 # ALL thresholds, weights re-exports, env flags (single source)
+  config_core.py / config_scoring.py / config_categories.py / config_risk.py / config_tactics.py /
+  config_sources.py / config_historical.py / config_crosssection.py  # 各域真源，由 config.py re-export
   config_push.py            # 飞书过滤门阈值（A/B 档边界、兜底、节流）
   config_hot_watch.py       # 飙升三段阈值（含改动依据 docstring）
   categories.py             # CATEGORY_REGISTRY: single truth for label/color/priority/suggest
@@ -284,6 +247,8 @@ scanner/
   offboard_watch.py         # 榜外异动段（launch_log 写侧、实时覆盖、标签回填）
   offboard_flow.py          # B 段 N 日主力累计净流入（历史资金流序列，零新增请求）
   crosssection.py           # 创业板全集横截面观察层（≡ 段；并列层，见上节）
+  crosssection_view.py      # ≡ 段纯渲染/排序投影（画像/分节/列/两道展示闸，三出口共用）
+  crosssection_store.py     # ≡ 段落库/次日标签/离线读（不持进程内状态）
   announcement_cache.py     # 公告缓存单源（m025）：读侧无前视 + 水位；替掉按票冻结的 12MB JSON
   announcement_prefetch.py  # 候选票公告预取（m025 写侧·主循环旁路）：daemon 线程 + 按票/整批节流
   onboard_anomaly.py        # 榜内异动段（标签回填同款三防呆）
@@ -316,6 +281,11 @@ scanner/
   ranking_snapshot.py       # Ranking snapshot persistence
   patterns.py               # Candlestick patterns
   fundamentals.py           # Fundamentals filtering (pywencai)
+  danger.py / limit_rules.py / nextday_rule.py / signals.py / label_registry.py  # 风控与标签真源
+  matcher.py / pool.py / intraday_tactics.py / trend_beauty.py  # 选股与盘中战术
+  display_gates.py / panel_reporter.py / panel_serialize.py / local_view_cache.py  # 展示层门与面板序列化
+  tasks_server.py / local_panel_server.py  # 动作面（RTS_TASKS）与面板反代；单源见各自 docstring
+  single_instance.py        # 单实例锁（TOCTOU/PID 重用已防）
   ai_digest/                # B 段 AI 分析（手动触发；material/guard/source）
     rerank.py               # Phase 2 证据的可复现载体（无 CLI 入口）
     panel.py                # 股票池.md 面板原文 → 结构化两区行（research 默认输入）

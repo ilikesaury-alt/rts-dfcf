@@ -51,6 +51,7 @@ import time
 import uuid
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import BaseServer
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -579,17 +580,23 @@ class TasksHTTPServer(ThreadingHTTPServer):
         return
 
 
+def _server_port(server: BaseServer) -> int:
+    """server_address 的静态类型很宽（tuple | str | Buffer）；HTTPServer 实为 (host, port)。"""
+    addr = server.server_address
+    return int(addr[1]) if isinstance(addr, tuple) else 0
+
+
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "RTSTasks/1.0"
 
     @property
     def supervisor(self) -> TaskSupervisor:
-        return getattr(self.server, "supervisor")  # type: ignore[attr-defined]
+        return self.server.supervisor  # type: ignore[attr-defined]
 
     @property
     def _token(self) -> str:
-        return getattr(self.server, "token")  # type: ignore[attr-defined]
+        return self.server.token  # type: ignore[attr-defined]
 
     def log_message(self, fmt: str, *args: Any) -> None:
         return  # 静音默认 stderr
@@ -600,7 +607,7 @@ class _Handler(BaseHTTPRequestHandler):
         """四层校验。`bootstrap` = `/api/tasks/health` 下发一次性 token 的那一次请求：
         Host/Origin/Content-Type 仍全查，唯独 token 豁免（否则 token 永远拿不到）。
         """
-        port = int(self.server.server_address[1])  # type: ignore[attr-defined]
+        port = _server_port(self.server)
         allowed = _allowed_hosts(port) | {f"{BIND_HOST}:{port}"}
         # 代理覆写的原始值优先；直连时两头都缺省 ⇒ 退回 HTTP 自带的 Host/Origin。
         host = (self.headers.get(_ORIGINAL_HOST_HEADER) or self.headers.get("Host") or "").strip()
@@ -657,10 +664,7 @@ class _Handler(BaseHTTPRequestHandler):
             query = parse_qs(split.query)
             bootstrap = method == "GET" and path == "/api/tasks/health"
             self._guard(bootstrap=bootstrap)
-            if method == "GET":
-                result = self._get(path, query)
-            else:
-                result = self._post(path, query)
+            result = self._get(path, query) if method == "GET" else self._post(path, query)
             self._send_json(result, 200, token_header=bootstrap)
         except _HttpError as e:
             self._send_json(_err(e.code, e.message), e.status)
@@ -685,7 +689,7 @@ class _Handler(BaseHTTPRequestHandler):
             return _ok(
                 {
                     "alive": True,
-                    "port": self.server.server_address[1],  # type: ignore[attr-defined]
+                    "port": _server_port(self.server),
                     "token": self._token,
                 }
             )

@@ -29,7 +29,8 @@ def test_tasks_disabled_by_default(monkeypatch):
 
 def test_module_not_imported_when_disabled():
     """只读服务在开关关时不该在模块级 import tasks_server（只在反代函数内部）。"""
-    src = open(local_panel_server.__file__, encoding="utf-8").read()
+    with open(local_panel_server.__file__, encoding="utf-8") as f:
+        src = f.read()
     assert 'TASKS_ENABLED = (os.environ.get("RTS_TASKS")' in src
     assert "if not TASKS_ENABLED:" in src
     assert "from scanner import tasks_server" in src
@@ -147,7 +148,8 @@ def test_single_slot_serial_and_exit_code(monkeypatch, tmp_path):
     b = sup.submit("ai_materials", confirm=False)
     deadline = time.time() + 4
     while time.time() < deadline:
-        sa = sup.status(a["id"]); sb = sup.status(b["id"])
+        sa = sup.status(a["id"])
+        sb = sup.status(b["id"])
         if sa["state"] in ("ok", "failed") and sb["state"] in ("ok", "failed", "cancelled"):
             break
         time.sleep(0.02)
@@ -166,7 +168,9 @@ def test_cancel_queued_task(tmp_path):
         class P:
             returncode = 0
             pid = 1
-            def wait(self, timeout=None): gate.wait(2); return 0
+            def wait(self, timeout=None):
+                gate.wait(2)
+                return 0
             def terminate(self): gate.set()
             def kill(self): pass
             def poll(self): return None

@@ -8,7 +8,26 @@
     python -m pytest tests/ --run-smoke   # 含真实库/外网依赖的集成测试
 """
 
+import importlib.util
+import sys
+import types
+
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _stub_optional_pywencai(request, monkeypatch):
+    """问财是可选重依赖：普通单测用空壳替身，保留 monkeypatch 用例的覆盖。
+
+    真模块存在或 smoke 用例不介入；未安装语义由 `__import__` 拦截用例单独覆盖。
+    """
+    if request.module.__name__ != "tests.test_fundamentals" or "smoke" in request.keywords:
+        return
+    if importlib.util.find_spec("pywencai") is not None:
+        return
+    stub = types.ModuleType("pywencai")
+    stub.get = lambda *a, **k: None  # 真实调用一律被用例 monkeypatch
+    monkeypatch.setitem(sys.modules, "pywencai", stub)
 
 
 @pytest.fixture(autouse=True)

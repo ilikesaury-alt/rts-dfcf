@@ -920,8 +920,8 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
             try:
                 from scanner import tasks_server
                 tasks_server.stop_server()
-            except Exception:
-                pass
+            except Exception as e:
+                _log_exception("停止任务服务失败", e)
         try:
             conn.close()
         except sqlite3.Error:

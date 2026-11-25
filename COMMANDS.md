@@ -12,9 +12,11 @@
 ```bash
 python unified_scanner.py                 # 跑扫描器（60s 一轮，按 c 复制两区完整原文）
 python scripts/buy_priority_report.py     # 盘中买入优先级反馈报告（独立脚本，~8s，见 §2.1）
+python scripts/db_retention.py           # 快照表/备份分级保留（默认 dry-run；--apply --yes 才删）
 python pick.py --clipboard                # 把剪贴板里的两区表格（自动抽码）丢给 AI 调研 → 出报告
 python stock_report.py 300319             # 单只票深报（代码或名字都行）
 python -m pytest tests/ -q                # 全量测试
+python scripts/check_all.py               # 提交前一条命令：ruff → mypy → 全量测试（--smoke 含真库/外网）
 ```
 
 ---
@@ -391,6 +393,8 @@ ruff format .           # 格式化
 mypy scanner/           # 类型
 python -m pytest tests/ -q
 ```
+
+也可以直接 `python scripts/check_all.py`（等价于上面三条，失败即停；加 `--smoke` 含真库/外网用例）。
 
 按改动范围再加：
 

@@ -124,16 +124,35 @@ def test_offboard_subtitle_keeps_both_tier_glossary_and_sort_text() -> None:
 
 
 def test_crosssection_flow_gate_note_reaches_web_verbatim() -> None:
-    """资金闸说明由 Python 单源生成并下发，网页版只能原样渲染（不在 TS 里重拼）。"""
+    """资金/涨幅闸说明由 Python 单源生成并下发，网页版只能原样渲染（不在 TS 里重拼）。"""
     app = _read("App.tsx")
     for field in ("display_flow_note", "hidden_flow", "hidden_mid", "display_pct_note", "hidden_pct"):
         assert f"cs.{field}" in app, f"网页版未消费面板载荷字段 {field}（与终端 ≡ 块不一致）"
     for rel in ("api/types.ts",):
-        assert "display_flow_note?: string;" in _read(rel), f"{rel} 缺字段声明"
-        assert "display_pct_note?: string;" in _read(rel), f"{rel} 缺涨幅闸字段声明"
+        text = _read(rel)
+        for decl in (
+            "display_flow_note?: string;", "display_pct_note?: string;",
+            "display_flow_min?: number;", "display_pct_max?: number;",
+        ):
+            assert decl in text, f"{rel} 缺字段声明 {decl}"
     worker = WEB_SRC.parent.parent / "worker" / "src" / "serialize.ts"
-    assert "display_flow_note?: string;" in worker.read_text(encoding="utf-8")
-    assert "display_pct_note?: string;" in worker.read_text(encoding="utf-8")
+    worker_src = worker.read_text(encoding="utf-8")
+    for decl in (
+        "display_flow_note?: string;", "display_pct_note?: string;",
+        "display_flow_min?: number;", "display_pct_max?: number;",
+    ):
+        assert decl in worker_src, f"worker 载荷类型缺字段声明 {decl}"
+
+
+def test_crosssection_gate_values_come_from_python_only() -> None:
+    """两道展示闸的数值由 Python 从 config 生成；前端只渲染文案，不得另写阈值。"""
+    from scanner.config_crosssection import CS_DISPLAY_MAX_PERCENT, CS_DISPLAY_MIN_MAIN_NET
+
+    assert f"{CS_DISPLAY_MIN_MAIN_NET / 1e4:g}万" in crosssection._flow_gate_note(0)
+    assert f"{CS_DISPLAY_MAX_PERCENT:g}%" in crosssection._pct_gate_note(0)
+    code = _code_only(_read("App.tsx"))
+    assert str(int(CS_DISPLAY_MIN_MAIN_NET)) not in code, "前端硬编码了资金闸数值"
+    assert f"{CS_DISPLAY_MAX_PERCENT:g}%" not in code, "前端硬编码了涨幅闸数值"
 
 
 def test_region_titles_match_terminal_wording() -> None:

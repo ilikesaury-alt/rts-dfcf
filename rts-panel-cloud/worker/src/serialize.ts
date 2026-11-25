@@ -71,6 +71,7 @@ export type CrossSection = {
   top_persist?: number;
   top_new?: number;
   display_flow_min?: number;
+  display_pct_max?: number;
   hidden_mid?: number;
   hidden_flow?: number;
   hidden_pct?: number;

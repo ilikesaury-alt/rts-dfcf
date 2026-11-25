@@ -16,6 +16,8 @@ from datetime import timedelta as _td
 import pytest
 
 import scanner.crosssection as cs
+import scanner.crosssection_store as cs_store
+import scanner.crosssection_view as cs_view
 import scanner.market_extra as me
 from scanner.config import BEIJING_TZ, now_beijing
 from scanner.db.migrations import run_migrations
@@ -267,7 +269,7 @@ class TestWarmup:
 class TestPersistence:
     def test_keep_days_prunes_old_dates(self, monkeypatch, db):
         """淘汰按**天**保留（2026-11-19 从「50 轮」改）：整日轮次全留，跨日历史不再截断。"""
-        monkeypatch.setattr(cs, "CS_KEEP_DAYS", 1)
+        monkeypatch.setattr(cs_store, "CS_KEEP_DAYS", 1)  # 写侧已拆到 store 模块
         feed = _Feed()
         _install_feed(monkeypatch, feed)
         _run_rounds(monkeypatch, db, feed, 8)  # 第 6/7/8 轮各产出一轮信号（同一天）
@@ -349,7 +351,7 @@ class TestPersistence:
         语义同源：写侧「本轮进 p95+ 算一次」≡ 行数 COUNT(DISTINCT round_seq)，
         故整日轮次落库（m028/CS_KEEP_DAYS）是恢复的前提。
         """
-        monkeypatch.setattr(cs, "CS_DISPLAY_MAX_PERCENT", 100.0)  # 样本随轮次涨到 +19%，与涨幅闸无关
+        monkeypatch.setattr(cs_view, "CS_DISPLAY_MAX_PERCENT", 100.0)  # 展示闸已拆到 view 模块
         feed = _Feed()
         _install_feed(monkeypatch, feed)
         _run_rounds(monkeypatch, db, feed, 10)  # 6~10 轮产出信号 ⇒ persist=5
@@ -583,7 +585,7 @@ class TestTerminalBlockShowsJudgement:
     """`≡` 段**直接展示**层内判据（用户要求：不用另跑命令）。"""
 
     def test_block_contains_judgement_columns(self, monkeypatch, db):
-        monkeypatch.setattr(cs, "CS_DISPLAY_MAX_PERCENT", 100.0)  # 样本随轮次涨到 +19%，与本测无关
+        monkeypatch.setattr(cs_view, "CS_DISPLAY_MAX_PERCENT", 100.0)  # 展示闸已拆到 view 模块
         feed = _Feed()
         _install_feed(monkeypatch, feed)
         # 12 轮：预热 6 轮后 ROCKET 持续入选 ⇒ persist 达 7 轮，落「持续」组（会展示）。
@@ -672,7 +674,7 @@ class TestSignalRanking:
         assert cs.signal_sort_key(lower_pct) < cs.signal_sort_key(less_persist)
 
     def test_block_shows_sort_legend_and_observe_sorts(self, monkeypatch, db):
-        monkeypatch.setattr(cs, "CS_DISPLAY_MAX_PERCENT", 100.0)  # 样本随轮次涨到 +19%，与本测无关
+        monkeypatch.setattr(cs_view, "CS_DISPLAY_MAX_PERCENT", 100.0)  # 展示闸已拆到 view 模块
         feed = _Feed()
         _install_feed(monkeypatch, feed)
         _run_rounds(monkeypatch, db, feed, 12)

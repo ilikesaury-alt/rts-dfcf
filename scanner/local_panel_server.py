@@ -249,7 +249,6 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
         finally:
             conn.close()
-        return None
 
     # ── 路由 ──────────────────────────────────────────────────────────────
 

@@ -30,15 +30,15 @@ from pathlib import Path
 DECISION_NODES = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.ExceptHandler, ast.IfExp)
 
 # 评分/决策核心模块（常量面统计范围）
-# 2026-09-21：final_pick / decision 两项随终选参考区与决策层整体删除而移除
-# （此前 parse() 对缺失文件返回 None 并 continue，属于"静默漏统计"，不如删掉）。
+# 2026-09-21：final_pick / decision 随终选参考区与决策层删除而移除；
+# 2026-11-25：nextday_prob 随概率子系统归档 legacy/ 移除 —— 缺失文件必须从这里删，
+# 否则 report_constants() 会 FileNotFoundError 把整份审计打断（此前 parse() 静默漏统计）。
 CORE_MODULES = (
     "enhancer",
     "analysis",
     "ranking",
     "validator",
     "candidates",
-    "nextday_prob",
     "pool",
     "danger",
     "matcher",
