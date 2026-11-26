@@ -12,10 +12,13 @@ from typing import Any, Mapping
 from scanner.config import (
     CS_DISPLAY_MAX_PERCENT,
     CS_DISPLAY_MIN_MAIN_NET,
+    CS_PCT_BAND_MID,
+    CS_PCT_BAND_TOP,
     CS_PERSIST_MIN,
     CS_POS_ACCEL,
     CS_POS_HIGH,
     CS_POS_LAUNCH,
+    CS_STRONG_PERSIST,
 )
 
 
@@ -53,8 +56,8 @@ def _volume_price(amount_surge: float | None, speed_1: float | None) -> str:
         return "配合"
     return "—"
 
-#: 画像分节的展示顺序（描述性归类，非档位推荐；单源 `_section`，只进展示）。
-#: 背离放最后：它是负向提示，不是候选。
+#: 旧描述性分节的展示顺序（2026-11-19；档位分组上线后不进主展示，保留供兼容）。
+#: 背离放最后：它是负向提示，不是候选。≡ 区现按 `PCT_BAND_ORDER` 分档。
 SECTION_ORDER: tuple[str, ...] = ("低位·资金强", "持续走强", "高位加速", "量价背离")
 
 def _pos_tier(percent: float | None) -> str:
@@ -95,17 +98,40 @@ def _motion(consistency: str | None, volume_price: str | None) -> str:
         return "反复放量"
     return "动向不明"
 
+def _fmt_money(value: float | None) -> str:
+    """金额（元）→ 带符号的万/亿短语（`+4213万` / `-2.1亿` / `持平` / `—`）。
+
+    净额与增量共用同一套单位换算，避免两处各写一份漂移（与 ai_digest 工具同纪律）。
+    """
+    if not isinstance(value, (int, float)) or not math.isfinite(value):
+        return "—"
+    if value == 0:
+        return "持平"
+    sign = "+" if value > 0 else "-"
+    mag = abs(value)
+    if mag >= 1e8:
+        return f"{sign}{mag / 1e8:.1f}亿"
+    return f"{sign}{mag / 1e4:.0f}万"
+
 def _fmt_main_net(main_net: float | None) -> str:
-    """主力净流入（元）→ 人类可读短语（万/亿；与 ai_digest 工具同纪律：给人读单位）。"""
+    """主力净流入（元）→ 人类可读短语（万/亿；缺值 `资金—`）。"""
     if not isinstance(main_net, (int, float)) or not math.isfinite(main_net):
         return "资金—"
-    if main_net == 0:
-        return "主力持平"
-    sign = "+" if main_net > 0 else "-"
-    mag = abs(main_net)
-    if mag >= 1e8:
-        return f"主力{sign}{mag / 1e8:.1f}亿"
-    return f"主力{sign}{mag / 1e4:.0f}万"
+    return f"主力{_fmt_money(main_net)}"
+
+def _fmt_main_delta(delta: float | None, rounds: int | None) -> str:
+    """近 N 轮新增主力净额 → 画像可选尾段（`·近5轮+1800万`）；缺值返回空串。
+
+    轮距随增量一起传（基准回退时不是固定 5），缺轮距则整段不显示 —— 不硬凑。
+    """
+    if (
+        not isinstance(delta, (int, float))
+        or not math.isfinite(delta)
+        or not isinstance(rounds, (int, float))
+        or not math.isfinite(rounds)
+    ):
+        return ""
+    return f"·近{int(rounds)}轮{_fmt_money(delta)}"
 
 def _fmt_flow_threshold(value: float) -> str:
     """展示资金闸阈值 → 人读单位（元/万/亿；与 `_fmt_main_net` 同纪律，别打 5000000 元）。"""
@@ -147,10 +173,12 @@ def _fmt_main_pct(main_net: Any, amount: Any) -> str:
 def profile_text(s: Mapping[str, Any]) -> str:
     """单条信号 → **中文画像串**（终端 `≡` 行、面板 `画像` 列、AI 素材三出口同源）。
 
-    格式：`位置·持续N轮·动向·主力资金(占额X%)`，如
-    `启动·持续8轮·量价齐升·主力+4213万(占额6.8%)`。
+    格式：`位置·持续N轮·动向·主力资金(占额X%)·近K轮新增净额`，如
+    `启动·持续8轮·量价齐升·主力+4213万(占额6.8%)·近5轮+1800万`。
+    尾段是可选的（增量或实际轮距缺失时不追加），保留旧四段画像的兼容性。
     全部由本层自算/快照自带字段派生（零新增请求、不读其它区域），改口径只改这里
-    与 `_pos_tier`/`_motion`/`_fmt_main_net`/`_fmt_main_pct` —— 不在终端/前端/提示词里重拼。
+    与 `_pos_tier`/`_motion`/`_fmt_main_net`/`_fmt_main_pct`/`_fmt_main_delta`
+    —— 不在终端/前端/提示词里重拼。
     """
     persist = int(s.get("persist") or 1)
     return (
@@ -158,6 +186,7 @@ def profile_text(s: Mapping[str, Any]) -> str:
         f"·{_motion(s.get('consistency'), s.get('volume_price'))}"
         f"·{_fmt_main_net(s.get('main_net'))}"
         f"{_fmt_main_pct(s.get('main_net'), s.get('amount'))}"
+        f"{_fmt_main_delta(s.get('main_delta'), s.get('main_delta_rounds'))}"
     )
 
 def _section(s: Mapping[str, Any]) -> str:
@@ -184,6 +213,44 @@ def _section(s: Mapping[str, Any]) -> str:
     if s.get("volume_price") == "背离":
         return "量价背离"
     return "持续走强"
+
+#: 分位档位（持续组内子分组），显示顺序：顶部 → 中部 → 边缘。
+#: 阈值单源 `CS_PCT_BAND_*`（实测档位，见 config_crosssection docstring）。
+PCT_BAND_ORDER: tuple[str, ...] = ("顶部", "中部", "边缘")
+
+
+def _pct_band(s: Mapping[str, Any]) -> str:
+    """当轮复合分位 → 档位名（顶部≥0.99 / 中部≥0.97 / 边缘）。
+
+    数据依据：在持续组内 pct 仍有单调边际（顶部 hit 7.97% / 中部 6.14% / 边缘
+    3.15%，去最强日），但**低 persist 时 pct 无区分度** ⇒ 只在持续组内分组，
+    不另立展示组（不造第二结论源）。缺值归「边缘」（不可判 ≠ 很强）。
+    """
+    p = s.get("pct_rank")
+    if not isinstance(p, (int, float)) or not math.isfinite(p):
+        return "边缘"
+    if p >= CS_PCT_BAND_TOP:
+        return "顶部"
+    if p >= CS_PCT_BAND_MID:
+        return "中部"
+    return "边缘"
+
+
+def _quality_rank(s: Mapping[str, Any]) -> int:
+    """持续组内的双维度质量序：**persist × pct 档**，越大越靠前。
+
+    档位映射（实测命中序，见 config docstring）：
+      双强(persist≥13 且 顶部) > 强持续(persist≥13) > 顶部 > 中部 > 边缘。
+    只在持续组内生效（新进组 persist≤1，无持续维度，档位仅作顶部/中部/边缘）。
+    """
+    band = _pct_band(s)
+    strong = int(s.get("persist") or 0) >= CS_STRONG_PERSIST
+    if strong and band == "顶部":
+        return 4
+    if strong:
+        return 3
+    return {"顶部": 2, "中部": 1, "边缘": 0}[band]
+
 
 def _rank_tier(s: Mapping[str, Any]) -> int:
     """展示质量层：全正·配合 > 全正·— > 全正·背离/混合·配合 > 其余。
@@ -267,6 +334,7 @@ def signal_sort_key(s: Mapping[str, Any]) -> tuple[float, ...]:
     """
     return (
         -float(_display_group(s)),
+        -float(_quality_rank(s)),
         -float(_rank_tier(s)),
         -float(s.get("persist") or 0),
         -float(s.get("pct_rank") or 0.0),
@@ -291,7 +359,9 @@ COLS_CS: tuple = (
     ("涨幅", 8, "r"),
     ("轮次", 6, "r"),
     ("分节", 12, "l"),
-    ("画像", 34, "l"),
+    # 画像含可选「近K轮新增」尾段（2026-11-25）：实测最长 59ch（蓄势/持续12轮/亿级/
+    # 两位数轮距），旧 34ch 会挤掉尾段。前端按 `spec.width}ch` 设 minWidth，单位即可见宽度。
+    ("画像", 64, "l"),
 )
 
 def _signal_row(s: Mapping[str, Any]) -> dict[str, Any]:
@@ -307,5 +377,5 @@ def _signal_row(s: Mapping[str, Any]) -> dict[str, Any]:
         "percent": s.get("percent"),
         "persist": int(s.get("persist") or 1),
         "profile": profile_text(s),
-        "section": _section(s),
+        "section": _pct_band(s),
     }

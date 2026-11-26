@@ -81,10 +81,17 @@
   已从取数映射中剔除，勿再加回。展示拼成 `主力+4213万(占额6.8%)`/`主力-2.1亿(占额-3.2%)`
   ——净额给体量、占成交额比例给可比强度（`main_net / amount`，两者都是当日累计）。
   f62 缺失时显「资金—」、不带占额，展示资金闸 fail-open。
+- **资金持续性**（2026-11-25）：画像可选尾段「近 K 轮新增主力净额」。f62 是**当日
+  累计**净额，单看它分不清「早盘一笔大单撑着」还是「最近还在持续流入」；用本层
+  ring 里已有快照相减即得区间新增（零新增请求）。窗口 `CS_FLOW_DELTA_ROUNDS=5`
+  与 speed_5 对齐；基准轮缺值时向前回退，K 用**实际轮距**（不谎称 5 轮）。
+  只进画像，不进排序/落库/判定，缺失整段不显示（fail-open）。
 
-持续组内再按**分节**归堆（描述性归类，不是档位推荐）：
-`低位·资金强 → 持续走强 → 高位加速 → 量价背离`（单源 `_section()`）；
-新进组压成一行摘要（无逐行）。三条边界不变：零新增请求、不给结论、不改落库口径。
+持续组内按**分位档**归堆（2026-11-26 实测定稿：persist 做准入、pct 做组内质量分层）：
+`顶部(≥0.99) → 中部(0.97~0.99) → 边缘(<0.97)`（单源 `_pct_band()`，阈值在 config）；
+档内按 `signal_sort_key`（双强>强持续>质量→轮次→额涌→量比）。旧描述性分节
+（`_section()`）仍可用但不进主展示。新进组压成一行摘要（无逐行）。
+三条边界不变：零新增请求、不给结论、不改落库口径。
 
 **展示涨幅闸（2026-11-23，同日 10→12%）**：`percent > CS_DISPLAY_MAX_PERCENT`（默认 12%）
 的票不占展示位；与资金闸同款 —— 只过滤展示，不改信号/落库/排序，缺值 fail-open。
@@ -125,6 +132,7 @@ from scanner.config import (
     CS_DISPLAY_MIN_MAIN_NET,
     CS_DIVERGENCE_TOL,
     CS_ENABLED,
+    CS_FLOW_DELTA_ROUNDS,
     CS_LIMIT_UP_NEAR,
     CS_LIMIT_UP_PCT,
     CS_MIN_AMOUNT,
@@ -158,7 +166,7 @@ from scanner.crosssection_view import (  # noqa: F401 - 同上
     _GROUP_NEW,
     _GROUP_PERSIST,
     COLS_CS,
-    SECTION_ORDER,
+    PCT_BAND_ORDER,
     _consistency,
     _display_flow_ok,
     _display_group,
@@ -166,6 +174,7 @@ from scanner.crosssection_view import (  # noqa: F401 - 同上
     _flow_gate_note,
     _fmt_main_net,
     _fmt_num,
+    _pct_band,
     _pct_gate_note,
     _section,
     _signal_row,
@@ -434,6 +443,39 @@ def _merge_main_net_f62(conn: sqlite3.Connection, symbols: dict[str, dict[str, A
             row["main_net"] = net
             filled += 1
     return filled
+
+
+def _main_net_delta(
+    rounds: list[dict[str, Any]], back: int = CS_FLOW_DELTA_ROUNDS
+) -> dict[str, tuple[float, int] | None]:
+    """近 N 轮新增主力净额（当日累计 f62 的快照差分）→ `{symbol: (增量, 实际轮距)}`。
+
+    为什么是差分：`main_net` 是当日**累计**净额，单看它分不清「早盘一笔大单撑着」
+    和「最近还在持续流入」。用本层 ring 已有快照相减即得区间新增，零新增请求。
+
+    基准选择：**优先 back 轮前**；该票在那轮没 f62（如每交易日首轮缓存尚未落库）
+    则向前回退到最近有值的轮次，返回真实轮距供画像如实标注 —— 不谎称「近5轮」。
+    当前轮缺 f62 ⇒ None（fail-open，画像不追加该段）。跨日 ring 已 clear，不跨日。
+    `back <= 0` 时整段关闭（配置回滚，等价改动前行为）。
+    """
+    out: dict[str, tuple[float, int] | None] = {}
+    if back <= 0 or not rounds:
+        return out
+    current = rounds[-1]["symbols"]
+    for sym, row in current.items():
+        cur = to_float(row.get("main_net"), None)
+        out[sym] = None
+        if cur is None:
+            continue
+        for i in range(back, 0, -1):
+            if len(rounds) <= i:
+                continue
+            base_row = rounds[-(i + 1)]["symbols"].get(sym) or {}
+            base = to_float(base_row.get("main_net"), None)
+            if base is not None:
+                out[sym] = (cur - base, i)
+                break
+    return out
 
 
 def _speed_pct(cur: float, then: float, elapsed: float, rounds_n: int) -> float | None:
@@ -742,6 +784,8 @@ def observe(conn: sqlite3.Connection, board_items: list[dict] | None = None) -> 
     warm = has_native or depth >= CS_WARMUP_ROUNDS
     if warm and not stale:
         cur_round = rounds[-1]["symbols"]
+        # 资金持续性：只从本轮 ring 快照差分，零新增请求；不进排序/落库/判定。
+        deltas = _main_net_delta(rounds)
 
         # elapsed 一律取**相邻快照实际墙钟差**（不假定 60s）；N 轮窗口 = 当前与
         # N 轮前快照的差值，等价于逐轮经过秒数累加。
@@ -791,6 +835,7 @@ def observe(conn: sqlite3.Connection, board_items: list[dict] | None = None) -> 
                 # 复合分仍能顶到 p95 以上 ⇒ 纯噪音）。剔除以计数留痕，不静默。
                 sealed_skipped += 1
                 continue
+            d_pair = deltas.get(sym)
             signals.append(
                 {
                     "symbol": sym,
@@ -807,6 +852,9 @@ def observe(conn: sqlite3.Connection, board_items: list[dict] | None = None) -> 
                     "pct_rank": pcts[sym],
                     "on_board": False,
                     "main_net": row.get("main_net"),
+                    # 近 N 轮新增主力净额 + 实际轮距（基准回退时非固定 5）；只进画像。
+                    "main_delta": d_pair[0] if d_pair else None,
+                    "main_delta_rounds": d_pair[1] if d_pair else None,
                     # 层内一致性判据（2026-11-16）：全部由本层自算字段得出，
                     # 不引入任何外部区域数据。供终端 `≡` 段直接展示。
                     "consistency": _consistency(speeds1.get(sym), speeds3.get(sym), speeds5.get(sym)),
@@ -1020,13 +1068,15 @@ def format_terminal_block() -> str:
     top = (persist_rows + new_rows)[:CS_TOP_N]
     if top:
         # 图例（画像串是层内自算字段的中文压缩，单源 `profile_text`；
-        # 分节是描述性归类不是推荐档位，单源 `_section`，顺序见 `SECTION_ORDER`）：
+        # 档位是实测的组内质量分层，单源 `_pct_band`，顺序见 `PCT_BAND_ORDER`）：
         lines.append(
             "  画像：位置(蓄势<3/启动3~7/加速7~12/高位≥12%)·持续N轮·动向(量价齐升/稳步走强/"
             "反复放量/放量滞涨/一致回落/动向不明)·主力资金(净额万/亿+占额%，—=源未给)"
+            "·资金持续性(近K轮新增净额，基准缺失按实际轮距标注，不可判则省略)"
         )
         lines.append(
-            "  排序：持续 > 新进；持续组内分节(" + "→".join(SECTION_ORDER) + ")，节内 质量 → 轮次 → 分位 → 额涌 → 量比"
+            "  排序：持续 > 新进；持续组内按分位档(" + "→".join(PCT_BAND_ORDER) + ")，"
+            "档内 双强>强持续>质量 → 轮次 → 额涌 → 量比"
         )
         lines.append("  " + _flow_gate_note(hidden_flow))
         lines.append("  " + _pct_gate_note(hidden_pct))
@@ -1036,21 +1086,23 @@ def format_terminal_block() -> str:
         # 画像由 `profile_text` 单源拼 —— 前端/素材不重拼。
         return f"  {i}. {s['symbol']} {s['name']} {s['price']:.2f} {s['percent']:+.2f}% | {profile_text(s)}"
 
-    # 组标题/分节行是**普通续行**：不以 `◆`/`—` 起头（那会污染 `ai_digest/panel.py` 切块），
+    # 组标题/档位行是**普通续行**：不以 `◆`/`—` 起头（那会污染 `ai_digest/panel.py` 切块），
     # 也不匹配 `panel._CROSSSECTION_ROW_RE`（无 `序号.` 前缀）⇒ 解析器跳过组标题，
     # 但 `_CROSSSECTION_SECTION_RE` / `_CROSSSECTION_NEW_RE` 会读它们。
     idx = 0
     if persist_rows:
         lines.append(f"  持续（当日 ≥{CS_PERSIST_MIN} 轮 · {len(persist_rows)} 只，先看这组）")
-        # 持续组内按分节归堆：先算每节行数，再按 SECTION_ORDER 顺序出节。
-        by_sec: dict[str, list[Mapping[str, Any]]] = {}
+        # 持续组内按 pct 档位归堆（2026-11-26 实测定稿）：persist 做准入、
+        # pct 档做组内质量分层。档位单源 `crosssection_view._pct_band`，
+        # 与面板/AI 素材同函数；档内顺序仍由 signal_sort_key 给出。
+        by_band: dict[str, list[Mapping[str, Any]]] = {}
         for s in persist_rows:
-            by_sec.setdefault(_section(s), []).append(s)
-        for sec in SECTION_ORDER:
-            rows = by_sec.get(sec)
+            by_band.setdefault(_pct_band(s), []).append(s)
+        for band in PCT_BAND_ORDER:
+            rows = by_band.get(band)
             if not rows:
                 continue
-            lines.append(f"  · {sec}（{len(rows)} 只）")
+            lines.append(f"  · {band}分位（{len(rows)} 只）")
             for s in rows:
                 idx += 1
                 lines.append(_row(idx, s))

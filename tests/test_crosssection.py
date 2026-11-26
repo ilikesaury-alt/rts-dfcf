@@ -637,7 +637,11 @@ class TestSignalRanking:
         assert cs.signal_sort_key(steady_meh) < cs.signal_sort_key(fresh_good)
 
     def test_within_persist_group_quality_still_first(self):
-        """同组内质量闸不变：5 轮 全正·配合 排在 6 轮 混合·— 之前。"""
+        """同组内、同分位档内质量闸不变：5 轮 全正·配合 排在 6 轮 混合·— 之前。
+
+        2026-11-26 档位插入后，跨档比较由分位档决定（见下一条测试），
+        本条把两票放在同一档（都 0.95 边缘），确保质量层仍然生效。
+        """
         good = {
             "symbol": "SZ300001",
             "persist": 5,
@@ -650,7 +654,7 @@ class TestSignalRanking:
         meh = {
             "symbol": "SZ300002",
             "persist": 6,
-            "pct_rank": 0.999,
+            "pct_rank": 0.96,
             "amount_surge": 3.0,
             "vol_ratio": 5.0,
             "consistency": "混合",
@@ -658,7 +662,35 @@ class TestSignalRanking:
         }
         assert cs.signal_sort_key(good) < cs.signal_sort_key(meh)
 
+    def test_pct_band_beats_persist_and_quality_within_group(self):
+        """持续组内分位档优先于质量/轮次（2026-11-26 实测定稿）：
+
+        实测 persist≥13×顶部 hit 7.97% > 强持续 6.14% > 顶部 3.55%（去最强日），
+        故 0.96 顶部的弱质量票也排在 0.95 边缘的全正·配合票之前。
+        """
+        edge_strong_quality = {
+            "symbol": "SZ300001",
+            "persist": 9,
+            "pct_rank": 0.95,
+            "amount_surge": 1.2,
+            "vol_ratio": 1.0,
+            "consistency": "全正",
+            "volume_price": "配合",
+        }
+        top_weak_quality = {**edge_strong_quality, "symbol": "SZ300002", "pct_rank": 0.995,
+                            "consistency": "混合", "volume_price": "—"}
+        assert cs.signal_sort_key(top_weak_quality) < cs.signal_sort_key(edge_strong_quality)
+
+    def test_double_strong_beats_strong_persist_beats_top(self):
+        """档内质量序：双强(persist≥13×顶部) > 强持续(persist≥13) > 顶部。"""
+        base = {"symbol": "SZ300001", "persist": 12, "pct_rank": 0.999}
+        double = {**base, "symbol": "SZ300002", "persist": 13}
+        strong = {**base, "symbol": "SZ300003", "persist": 13, "pct_rank": 0.98}
+        assert cs.signal_sort_key(double) < cs.signal_sort_key(strong)
+        assert cs.signal_sort_key(strong) < cs.signal_sort_key(base)
+
     def test_within_same_tier_persist_then_pct(self):
+        """同档内仍按 轮次 → pct → 额涌 → 量比 排（档位插在最前，档内旧序不变）。"""
         base = {
             "symbol": "SZ300001",
             "persist": 4,
@@ -671,7 +703,8 @@ class TestSignalRanking:
         less_persist = {**base, "symbol": "SZ300002", "persist": 3, "pct_rank": 0.999}
         lower_pct = {**base, "symbol": "SZ300003", "persist": 4, "pct_rank": 0.98}
         assert cs.signal_sort_key(base) < cs.signal_sort_key(lower_pct)
-        assert cs.signal_sort_key(lower_pct) < cs.signal_sort_key(less_persist)
+        # 档位优先：顶部(0.999, 3轮) 仍排在 中部(0.98, 4轮) 之前。
+        assert cs.signal_sort_key(less_persist) < cs.signal_sort_key(lower_pct)
 
     def test_block_shows_sort_legend_and_observe_sorts(self, monkeypatch, db):
         monkeypatch.setattr(cs_view, "CS_DISPLAY_MAX_PERCENT", 100.0)  # 展示闸已拆到 view 模块
@@ -680,7 +713,8 @@ class TestSignalRanking:
         _run_rounds(monkeypatch, db, feed, 12)
         block = cs.format_terminal_block()
         assert "排序：持续 > 新进" in block
-        assert "分节" in block
+        assert "分位档" in block
+        assert "双强>强持续>质量" in block
         with cs._lock:
             sigs = list(cs._state["last_signals"])
         assert sigs == sorted(sigs, key=cs.signal_sort_key)
@@ -739,6 +773,22 @@ class TestDisplayGrouping:
         assert "  1. SZ300002" in block
         assert "2. SZ300001" not in block
         assert "SZ300001" in block[i_new:]
+
+    def test_persist_group_splits_into_pct_bands(self):
+        """持续组内按 pct 档位切三段（2026-11-26）：顶部 → 中部 → 边缘，段名中文。"""
+        block = self._render(
+            [
+                self._sig("SZ300101", persist=9, rank=0.995),  # 顶部
+                self._sig("SZ300102", persist=8, rank=0.980),  # 中部
+                self._sig("SZ300103", persist=7, rank=0.955),  # 边缘
+            ]
+        )
+        i_top = block.index("顶部分位（1 只）")
+        i_mid = block.index("中部分位（1 只）")
+        i_edge = block.index("边缘分位（1 只）")
+        assert i_top < i_mid < i_edge
+        assert block.index("  1. SZ300101") < block.index("  2. SZ300102")
+        assert block.index("  2. SZ300102") < block.index("  3. SZ300103")
 
     def test_mid_band_is_not_displayed_but_counted(self):
         block = self._render([self._sig("SZ300003", persist=3)])
@@ -1091,3 +1141,60 @@ class TestIsLimitUpSealed:
         """字段缺失 fail-open（放行），绝不因算不出就误剔。"""
         assert cs._is_limit_up_sealed({"price": None, "percent": 10}) is False
         assert cs._is_limit_up_sealed({}) is False
+
+
+# ── 资金持续性（2026-11-25）──
+
+
+class TestFlowDelta:
+    """画像尾段「近 K 轮新增主力净额」：ring 快照差分，零请求、不进排序/落库。"""
+
+    def test_prefers_back_window_and_reports_actual_rounds_when_base_missing(self):
+        def _r(net):
+            return {"symbols": {"SZ300001": {"main_net": net}, "SZ300002": {"main_net": net}}}
+
+        rounds = [
+            _r(None),    # 6 轮前：首轮 f62 尚未落库
+            _r(1.0e7),   # 5 轮前：有值 ⇒ 应为基准
+            _r(1.2e7),
+            _r(1.3e7),
+            _r(1.4e7),
+            _r(1.5e7),
+            {"symbols": {"SZ300001": {"main_net": 2.0e7}, "SZ300002": {"main_net": None}}},
+        ]
+        d = cs._main_net_delta(rounds, back=5)
+        assert d["SZ300001"] == pytest.approx((1.0e7, 5))
+        assert d["SZ300002"] is None, "当前轮缺 f62 ⇒ 不判（fail-open）"
+
+        # 5 轮前缺失 ⇒ 回退到最近有值轮次，K 用真实轮距（2），不谎称「近5轮」
+        back2 = [_r(None), _r(9.0e6), _r(1.0e7), _r(1.8e7)]
+        assert cs._main_net_delta(back2, back=5)["SZ300001"] == pytest.approx((0.9e7, 2))
+
+    def test_delta_off_when_back_non_positive(self):
+        assert cs._main_net_delta([{"symbols": {"SZ300001": {"main_net": 2.0e7}}}], back=0) == {}
+        assert cs._main_net_delta([], back=5) == {}
+
+    def test_observe_carries_delta_into_signal_only(self, monkeypatch, db):
+        """递增的当日累计 f62 ⇒ 近 5 轮正增量；只进画像字段，不落库。"""
+        _advance(monkeypatch, 0)
+        feed = _Feed()
+
+        def _rising(*, force: bool = False):
+            payload = feed.next()
+            net = 1.0e7 * feed.round_no
+            for row in payload.values():
+                row["main_net"] = net
+            return payload
+
+        monkeypatch.setattr(cs, "fetch_crosssection_snapshot", _rising)
+        for i in range(6):
+            _advance(monkeypatch, i)
+            cs.observe(db, [])
+
+        sig = next(s for s in cs._state["last_signals"] if s["symbol"] == "SZ" + ROCKET)
+        assert sig["main_delta"] == pytest.approx(5.0e7)
+        assert sig["main_delta_rounds"] == 5
+        assert "近5轮+5000万" in cs.profile_text(sig)
+        # 只进画像：落库表没有这两个字段（不造新口径）
+        cols = {r[1] for r in db.execute("PRAGMA table_info(crosssection_signal)").fetchall()}
+        assert "main_delta" not in cols and "main_delta_rounds" not in cols

@@ -57,8 +57,8 @@ def test_profile_text_is_same_string_as_terminal_block():
         }
     )
     assert row["profile"] == "启动·持续9轮·量价齐升·主力+4213万(占额6.8%)"
-    # 分节单源：低位（<启动上限）+ 主力净流入 + 全正·配合
-    assert row["section"] == "低位·资金强"
+    # 分节列已改为 pct 档位单源（2026-11-26）：无 pct_rank ⇒ 归「边缘」（不可判 ≠ 很强）
+    assert row["section"] == "边缘"
 
 
 def test_signal_row_tolerates_missing_fields():
@@ -67,7 +67,7 @@ def test_signal_row_tolerates_missing_fields():
     assert row["symbol"] == "SZ300001"
     assert row["persist"] == 1
     assert row["profile"] == "—·持续1轮·动向不明·资金—"
-    assert row["section"] == "持续走强"
+    assert row["section"] == "边缘"
 
 
 def test_profile_omits_share_when_denominator_unusable() -> None:
@@ -168,3 +168,34 @@ def test_snapshot_payload_is_disabled_by_default():
     if payload.get("enabled"):
         pytest.skip("本机进程已观测过横截面状态（模块级状态非测试隔离），跳过默认态断言")
     assert payload == {"enabled": False}
+
+
+def test_profile_flow_delta_is_optional_and_uses_actual_rounds() -> None:
+    """资金持续性尾段：增量 + 真实轮距（基准回退时非 5）；缺值回退旧四段。"""
+    base = {
+        "percent": 4.2, "consistency": "全正", "volume_price": "配合", "persist": 9,
+        "main_net": 4.213e7, "amount": 6.2e8,
+        "main_delta": 1.8e7, "main_delta_rounds": 5,
+    }
+    assert crosssection.profile_text(base).endswith("·近5轮+1800万")
+    assert crosssection.profile_text({**base, "main_delta_rounds": 2}).endswith("·近2轮+1800万")
+    assert crosssection.profile_text({**base, "main_delta": -2.1e8}).endswith("·近5轮-2.1亿")
+    assert crosssection.profile_text({**base, "main_delta": 0.0}).endswith("·近5轮持平")
+    # 缺增量 / 缺轮距 ⇒ 整段省略（不硬凑「近0轮—」）
+    assert "·近" not in crosssection.profile_text({**base, "main_delta": None})
+    assert "·近" not in crosssection.profile_text({**base, "main_delta_rounds": None})
+    assert "·近" not in crosssection.profile_text({**base, "main_delta": float("nan")})
+
+
+def test_ai_panel_row_regex_accepts_flow_delta_and_old_four_segments() -> None:
+    """面板素材解析：新五段行拆出增量，旧四段行仍可解析（不静默丢行）。"""
+    from scanner.ai_digest.panel import _CROSSSECTION_ROW_RE
+
+    new = "  1. SZ300001 火箭 10.55 +5.50% | 启动·持续9轮·量价齐升·主力+4213万(占额6.8%)·近5轮+1800万"
+    old = "  2. SZ300002 稳A 10.00 +0.30% | 蓄势·持续6轮·稳步走强·资金—"
+    m = _CROSSSECTION_ROW_RE.match(new)
+    assert m is not None
+    assert m.group("delta") == "+1800万" and m.group("delta_rounds") == "5"
+    m2 = _CROSSSECTION_ROW_RE.match(old)
+    assert m2 is not None
+    assert m2.group("delta") is None

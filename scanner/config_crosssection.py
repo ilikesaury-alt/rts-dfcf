@@ -59,12 +59,29 @@ CS_PERSIST_MIN = 5
 CS_TOP_PERSIST = 8
 CS_TOP_NEW = CS_TOP_N - CS_TOP_PERSIST
 
+# ── 持续 × 分位 双维度档位（2026-11-26 实测定稿）──
+# 离线 5370 个 (date,symbol) 对、5 个交易日（去最强日验证）：
+#   persist≥13 × pct≥0.99 ⇒ 次日 hit≥7% 7.97%（基准 1.85%）；
+#   persist<5  × pct<0.97 ⇒ 0.61%。persist 是准入维度（早盘首现 hit 是尾盘 5.6 倍），
+#   pct 是**持续组内的质量维度**（低 persist 时高 pct 无区分度）。
+# 只进展示分组/排序（`crosssection_view._pct_band` / `_quality_rank`），不改落库、
+# 不改信号集合、不给方向 —— 与资金闸/涨幅闸同纪律。
+CS_STRONG_PERSIST = 13
+CS_PCT_BAND_TOP = 0.99
+CS_PCT_BAND_MID = 0.97
+
 # 展示层资金闸（2026-11-20 用户决策，11-24 下调至 300 万）：主力净流入 <=300 万的票
 # 不再占终端/面板展示位，「当日跌但主力净流入」的票保留 —— 只看资金、不看涨跌。
 # 严格大于才放行：正好 300 万不算「超过」。只过滤展示，不改信号、落库或排序
 # （`crosssection.signal_sort_key` 不变）。快照没给 main_net 时无法判资金，
 # fail-open 照常展示（东财回退路径可能缺该字段）。
 CS_DISPLAY_MIN_MAIN_NET = 3_000_000.0
+
+# 资金持续性（2026-11-25）：画像追加「近 N 轮新增主力净额」= 当日累计 f62 的快照差分。
+# 窗口 5 轮与 speed_5 / CS_PERSIST_MIN 对齐；基准轮缺值时向前回退到最近有值的轮次，
+# 实际轮距在画像里如实标注（不谎称「近5轮」）。设 0 关闭该段。
+# 只进画像（终端/面板同源），不进排序、不改落库口径、不给方向。
+CS_FLOW_DELTA_ROUNDS = 5
 
 # 展示层涨幅上限（2026-11-23 用户决策，同日 12% 上调）：当日涨幅 > 12% 的票不占
 # 终端/面板展示位。与位置档 CS_POS_HIGH（≥12% 判「高位」）对齐 —— 旧值 10% 会让
@@ -176,7 +193,11 @@ __all__ = [
     "CS_P95",
     "CS_TOP_N",
     "CS_PERSIST_MIN",
+    "CS_STRONG_PERSIST",
+    "CS_PCT_BAND_TOP",
+    "CS_PCT_BAND_MID",
     "CS_DISPLAY_MIN_MAIN_NET",
+    "CS_FLOW_DELTA_ROUNDS",
     "CS_DISPLAY_MAX_PERCENT",
     "CS_TOP_PERSIST",
     "CS_TOP_NEW",

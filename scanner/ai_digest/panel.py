@@ -89,18 +89,21 @@ _TRAILING_MARKS = ("先强资弱", "稳", "妖", "⚡", "▼", "★", "⚠")
 # ⚠ 它**已经**在 `股票池.md` 里（终端每轮整份覆盖写入 ⇒ 横截面块被一并写进去），
 #   只是解析器此前不认 `≡` ⇒ 整块被**静默丢弃**。这��修。
 _CROSSSECTION_REGION_RE = re.compile(r"^\s*≡\s*横截面异动(?:\s|$)(.*)$")
-#: 数据行（2026-11-19 画像版）：`序号. 代码 名称 现价 涨幅% | 位置·持续N轮·动向·主力资金`
+#: 数据行（2026-11-19 画像版）：`序号. 代码 名称 现价 涨幅% | 位置·持续N轮·动向·主力资金[·近K轮新增]`
 #: 画像串由 `crosssection.profile_text` 单源拼，这里只拆段不重拼。
 #: 缺值一律 `—`，所以取值用 `\S+?` 而不是数字类。
+#: 尾段「近K轮新增」是可选的（增量缺值时画像不追加），旧四段行仍须解析。
 _CROSSSECTION_ROW_RE = re.compile(
     r"^\s{1,6}(?P<idx>\d{1,3})\.\s+"
     r"(?P<symbol>[A-Z]{2}\d{6})\s+"
     r"(?P<name>\S+)\s+"
     r"(?P<price>[\d.]+)\s+"
     r"(?P<percent>[+-]?[\d.]+)%\s*\|\s*"
-    r"(?P<pos>[^·|\s]+)·持续(?P<persist>\d+)轮·(?P<motion>[^·|\s]+)·(?P<flow>[^·|\s]+)\s*$"
+    r"(?P<pos>[^·|\s]+)·持续(?P<persist>\d+)轮·(?P<motion>[^·|\s]+)·(?P<flow>[^·|\s]+)"
+    r"(?:·近(?P<delta_rounds>\d+)轮(?P<delta>[^·|\s]+))?\s*$"
 )
-#: 持续组内的分节行：`  · 低位·资金强（2 只）`（`crosssection.SECTION_ORDER` 单源出节）。
+#: 持续组内的分档行：`  · 顶部分位（2 只）`（2026-11-26 起；`crosssection.PCT_BAND_ORDER`
+#: 单源出档，旧描述性分节 `  · 低位·资金强（2 只）` 同格式兼容）。
 _CROSSSECTION_SECTION_RE = re.compile(r"^\s{1,6}·\s*(?P<section>\S+?)（(?P<cnt>\d+) 只）\s*$")
 #: 新进组的一行摘要：`  新进（本轮首现 · N 只，…）：SZ300xxx 名 10.00 +1.00% / …`
 _CROSSSECTION_NEW_RE = re.compile(r"^\s{1,6}新进（.*?）：(?P<tail>.*)$")
@@ -373,7 +376,8 @@ def parse_panel_text(text: str) -> PanelSnapshot | None:
                     "位置": g["pos"],
                     "动向": g["motion"],
                     "资金": g["flow"],
-                    "画像": f"{g['pos']}·持续{g['persist']}轮·{g['motion']}·{g['flow']}",
+                    "画像": f"{g['pos']}·持续{g['persist']}轮·{g['motion']}·{g['flow']}"
+                    + (f"·近{g['delta_rounds']}轮{g['delta']}" if g["delta"] else ""),
                 }
             )
             continue
