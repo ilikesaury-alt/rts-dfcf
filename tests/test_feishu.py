@@ -31,7 +31,9 @@ from typing import Any, cast
 from scanner.config import PUSH_MIN_INTERVAL
 from scanner.feishu import (
     PushState,
+    _crosssection_symbols,
     build_feishu_card,
+    crosssection_has_content,
     push_feishu,
     should_push,
 )
@@ -807,3 +809,85 @@ def test_row_percent_uses_the_same_fallback_chain_as_terminal():
         "_candidate": cand,
     }
     assert _row_percent(live0) == 0.0
+
+
+# ── 2026-11-27：飞书只推横截面 ≡ 区 ──
+
+
+def _cs_payload(*, persist=None, new=None, enabled=True, time="10:00:00"):
+    return {
+        "enabled": enabled,
+        "state": "ok",
+        "time": time,
+        "valid_rows": 100,
+        "signals": 2,
+        "divergence": 0.12,
+        "divergence_ok": True,
+        "persist_min": 3,
+        "hidden_mid": 1,
+        "display_flow_note": "展示资金闸：主力净流入 > 300万 才占位（本轮剔 1 只）",
+        "display_pct_note": "展示涨幅闸：当日涨幅 ≤ 12% 才占位（本轮剔 0 只）",
+        "groups": {"persist": persist or [], "new": new or []},
+    }
+
+
+def _cs_row(symbol="SZ300001", *, section="顶部", persist=8):
+    return {
+        "symbol": symbol,
+        "name": "甲",
+        "price": 12.34,
+        "percent": 5.67,
+        "persist": persist,
+        "profile": "启动·持续8轮·量价齐升·主力+4213万",
+        "section": section,
+    }
+
+
+def test_crosssection_card_ignores_view_and_renders_only_cs_region():
+    """传 cs_payload 时卡片只画 ≡ 区：旧四区的票/标题一律不得出现。"""
+    payload = _cs_payload(
+        persist=[_cs_row()],
+        new=[_cs_row("SZ300002", section="中部", persist=1)],
+    )
+    card = build_feishu_card(_fake_view({"SZ999999", "SZ888888"}), 100, cs_payload=payload)
+    text = str(card)
+
+    assert "横截面简报" in text
+    assert "≡ 横截面异动" in text
+    assert "顶部分位" in text and "SZ300001" in text
+    assert "新进（本轮首现" in text and "SZ300002" in text
+    for banned in ("SZ999999", "SZ888888", "v1 池选", "v1 回捞", "沪深飙升", "榜外异动", "优选"):
+        assert banned not in text, f"飞书卡片不应再含旧区内容：{banned}"
+
+
+def test_crosssection_has_content_and_dedup_key():
+    """判空/去重都只看横截面展示行；头部时间变化不制造假变化。"""
+    payload = _cs_payload(persist=[_cs_row()])
+    assert crosssection_has_content(payload) is True
+    assert crosssection_has_content({"enabled": False}) is False
+    assert crosssection_has_content(_cs_payload()) is False
+
+    expected = {"SZ300001:8:顶部"}
+    assert _crosssection_symbols(payload) == expected
+    assert _crosssection_symbols(_cs_payload(persist=[_cs_row()], time="11:22:33")) == expected
+
+
+def test_push_feishu_crosssection_posts_even_when_view_is_none(monkeypatch):
+    """无推荐时段（view=None）横截面照推；空 payload 则不推空卡。"""
+    monkeypatch.setattr("scanner.feishu.FEISHU_WEBHOOK", "https://example.com/hook")
+    posted = []
+
+    def _fake_post(card):
+        posted.append(card)
+        return True, None
+
+    monkeypatch.setattr("scanner.feishu._post_card", _fake_post)
+    payload = _cs_payload(persist=[_cs_row()])
+    state = PushState()
+
+    assert push_feishu(None, 10, state=state, cs_payload=payload) is True
+    assert posted and "SZ300001" in str(posted[0])
+    assert state.last_symbols == {"SZ300001:8:顶部"}
+
+    assert push_feishu(_fake_view({"SZ999999"}), 10, state=PushState(), cs_payload={"enabled": False}) is False
+    assert len(posted) == 1

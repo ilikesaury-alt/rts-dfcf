@@ -63,7 +63,7 @@ from scanner.database import (
     save_recommendations,
 )
 from scanner.display import display
-from scanner.feishu import push_feishu, view_has_content
+from scanner.feishu import crosssection_has_content, push_feishu
 from scanner.historical_watch import run_historical_watch
 from scanner.hot_watch import run_hot_watch
 from scanner.log_utils import log_results
@@ -807,13 +807,17 @@ def run_scanner(interval: int, no_feishu: bool, no_panel: bool = False) -> None:
 
                 log_results(new_faces, momentum + rebound_list + short_term_list)
                 if not no_feishu:
-                    pushed = push_feishu(view, len(all_gem), filtered_large_cap=filtered_large_cap)
-                    # 「有没有内容」的唯一判据 = feishu.view_has_content（与 build_feishu_card 的
-                    # 区块条件同源）。2026-09-15 收口：此前本处自持一份 `bool(view.main_rows)`，
-                    # 既不认终选参考区、也不认飙升区 —— 与卡片实际画了什么无关，属第三处定义。
-                    # 注意与「去重键」`_view_symbols`（只含主线票）不是同一个问题：
-                    # 推送判定用前者、节流判定用后者，详见 scanner/feishu.py 的 should_push。
-                    has_rows = view is not None and view_has_content(view)
+                    # 2026-11-27：飞书改为**只推横截面 ≡ 区**。snapshot_payload 与终端块同读
+                    # crosssection 进程内状态；此处取一次传给推送层，判空/去重/渲染全以它为准，
+                    # ScanView 仅保留兼容参数，不再参与卡片内容（无推荐时段横截面照推）。
+                    cs_payload = crosssection.snapshot_payload() if crosssection.CS_ENABLED else {"enabled": False}
+                    pushed = push_feishu(
+                        view,
+                        len(all_gem),
+                        filtered_large_cap=filtered_large_cap,
+                        cs_payload=cs_payload,
+                    )
+                    has_rows = crosssection_has_content(cs_payload)
                     if not pushed and has_rows:
                         print("\r  📤 飞书推送跳过（冷却中/无变化）", end="", flush=True)
 

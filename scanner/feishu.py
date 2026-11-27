@@ -6,10 +6,15 @@
   # ── 卡片渲染 ──   _fmt_row / build_feishu_card（纯函数，不触碰 I/O）
   # ── 传输与编排 ── _post_card（HTTP + 退避重试）/ push_feishu（取状态→决策→渲染→发送→回写）
 
-与终端同源：卡片与终端共用同一个 ScanView（由 display.build_scan_view 供数），
+与终端同源：旧 view 路径与终端共用同一个 ScanView（由 display.build_scan_view 供数），
 共用同一套信号语义（scanner.signals fund_flow_signal / split_risk_flags，阈值集中在
 config.py）。依赖方向收紧为：feishu → display(数据契约 ScanView) + signals(信号语义)，
 不再「推送依赖终端渲染」。
+
+2026-11-27 用户决策：生产推送改为**只推横截面 ≡ 区**。`unified_scanner` 把
+`crosssection.snapshot_payload()` 传给 `push_feishu(cs_payload=...)`，判空/去重/渲染
+全以该 payload 为准（view 可为 None，无推荐时段横截面照推）。旧 view 路径仅保留给
+单测/离线回放，不再参与生产卡片内容。
 
 2026-08 重构：拆出 should_push/RowSnapshot/_post_card，节流状态收进 PushState
 （模块级 _DEFAULT_STATE 单例），消除原有 _last_push_time/_last_push_symbols 两个
@@ -19,6 +24,7 @@ config.py）。依赖方向收紧为：feishu → display(数据契约 ScanView)
 import hashlib
 import time
 from dataclasses import dataclass, field
+from typing import Any, Mapping
 
 import requests
 
@@ -41,6 +47,7 @@ from scanner.config import (
 #   _fmt_hot_amount / _fmt_hot_volume_hand —— 飙升区单位格式化；此前 render 与本模块各持一份，
 #            本模块那份的 docstring 自承「与 render._fmt_hot_amount 同口径」= 本仓禁忌的复制，
 #            现改为单源引用（两处口径不可能再漂移）。
+from scanner.crosssection_view import PCT_BAND_ORDER
 from scanner.display import ScanView, _fmt_hot_amount, _fmt_hot_volume_hand, _pad, _trunc
 
 # 「读法」图例（scanner/label_registry.legend_line）2026-09-28 按用户决策**双端整体移除**，
@@ -518,7 +525,138 @@ def _repeat_tail_card(c) -> str:
     return ""
 
 
-def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 0, top_n: int = FEISHU_TOP_N) -> dict:
+# ═══════════════════════════════════════════════════════════════════════════
+# ── 横截面 ≡ 区（2026-11-27：飞书改为只推本区）──
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _fmt_cs_price(v: Any) -> str:
+    return f"{float(v):.2f}" if isinstance(v, (int, float)) else "—"
+
+
+def _fmt_cs_pct(v: Any) -> str:
+    return f"{float(v):+.2f}%" if isinstance(v, (int, float)) else "—"
+
+
+def _crosssection_symbols(payload: Mapping[str, Any]) -> set[str]:
+    """横截面去重键 = 展示行身份（代码 + 轮次 + 分位档）。
+
+    不把 `time`/`valid_rows` 这类每轮都变的头部数字计入，否则 `has_change` 恒 True，
+    节流就只剩时间闸；轮次/档位变化则代表这条信号本身变了，应当重推。
+    """
+    groups = payload.get("groups") or {}
+    out: set[str] = set()
+    for rows in groups.values():
+        for row in rows or []:
+            symbol = row.get("symbol")
+            if symbol:
+                out.add(f"{symbol}:{row.get('persist')}:{row.get('section')}")
+    return out
+
+
+def crosssection_has_content(payload: Mapping[str, Any] | None) -> bool:
+    """横截面 payload 是否画得出行（判空单源；关闭/预热无行时不推空卡）。"""
+    if not payload or not payload.get("enabled"):
+        return False
+    groups = payload.get("groups") or {}
+    return bool(groups.get("persist") or groups.get("new"))
+
+
+def _build_crosssection_card(payload: Mapping[str, Any]) -> dict:
+    """横截面 payload → 飞书卡片（唯一展示区，2026-11-27 用户决策）。
+
+    纯投影：行来自 `crosssection.snapshot_payload().groups`，`profile` / `section`
+    由 `crosssection_view` 预拼好，本函数只排版不重算口径，也不读 ScanView。
+    """
+    groups = payload.get("groups") or {}
+    persist = list(groups.get("persist") or [])
+    new = list(groups.get("new") or [])
+
+    div = payload.get("divergence")
+    div_txt = "跨源价差 未校验" if div is None else f"跨源价差 {float(div):.2f}%"
+    if payload.get("divergence_ok") is False:
+        div_txt += " ⚠超容忍"
+    valid = payload.get("valid_rows")
+    valid_txt = f" | 有效 {valid} 只" if isinstance(valid, int) and valid > 0 else ""
+    header = (
+        f"**{now_beijing().strftime('%H:%M')}** | ≡ 横截面异动 · {payload.get('time') or ''}{valid_txt}"
+        f" | 信号 {payload.get('signals', 0)} | {div_txt}"
+    )
+    sealed = int(payload.get("sealed_skipped") or 0)
+    if sealed:
+        header += f" | 已剔封板 {sealed}"
+    elements: list[dict] = [{"tag": "div", "text": {"tag": "lark_md", "content": header}}]
+
+    lines: list[str] = []
+    state = payload.get("state")
+    if state == "throttled":
+        lines.append("本轮快照节流（沿用上一轮结果，未重新取数）")
+    elif state == "no_data":
+        lines.append("无有效快照（东财取数失败或全市场停牌）")
+    elif state == "stale":
+        lines.append(f"陈旧轮：上游快照与上轮相同，本轮不产出（累计 {payload.get('stale_rounds', 0)} 轮）")
+    elif payload.get("warmup"):
+        lines.append(f"预热中 {payload.get('buffer_depth', 0)}/{payload.get('buffer_rounds', 0)}（60s 一轮）")
+
+    persist_min = payload.get("persist_min", 3)
+    if persist:
+        lines.append(f"持续（当日 ≥{persist_min} 轮 · {len(persist)} 只，先看这组）")
+        by_band: dict[str, list[Mapping[str, Any]]] = {}
+        for row in persist:
+            by_band.setdefault(str(row.get("section") or "边缘"), []).append(row)
+        for band in PCT_BAND_ORDER:
+            rows = by_band.get(band)
+            if not rows:
+                continue
+            lines.append(f"· {band}分位（{len(rows)} 只）")
+            for i, row in enumerate(rows, 1):
+                lines.append(
+                    f"{i}. `{row.get('symbol')}` {row.get('name')} "
+                    f"{_fmt_cs_price(row.get('price'))} {_fmt_cs_pct(row.get('percent'))} | {row.get('profile')}"
+                )
+    else:
+        lines.append(f"（本轮无 ≥{persist_min} 轮持续票）")
+
+    if new:
+        entries = " / ".join(
+            f"{r.get('symbol')} {r.get('name')} {_fmt_cs_price(r.get('price'))} {_fmt_cs_pct(r.get('percent'))}"
+            for r in new
+        )
+        lines.append(f"新进（本轮首现 · {len(new)} 只，单轮噪声高发）：{entries}")
+
+    lines.append("画像：位置·持续N轮·动向·主力资金·近K轮新增；档位按实测分位")
+    lines.append("排序：持续 > 新进；持续组内按分位档(" + "→".join(PCT_BAND_ORDER) + ")")
+    if payload.get("display_flow_note"):
+        lines.append(str(payload["display_flow_note"]))
+    if payload.get("display_pct_note"):
+        lines.append(str(payload["display_pct_note"]))
+    hidden_mid = int(payload.get("hidden_mid") or 0)
+    if hidden_mid:
+        lines.append(f"中间组 {hidden_mid} 只尚未证明持续性，不展示（仍落库）")
+
+    if lines:
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}})
+        elements.append({"tag": "hr"})
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"🧧 {FEISHU_KEYWORD} 横截面简报"},
+            "template": "indigo",
+        },
+        "elements": elements,
+    }
+
+
+def build_feishu_card(
+    view: ScanView,
+    gem_total: int,
+    filtered_large_cap: int = 0,
+    top_n: int = FEISHU_TOP_N,
+    *,
+    cs_payload: Mapping[str, Any] | None = None,
+) -> dict:
     """从 ScanView 构建飞书卡片（与终端共用同一份选择）。
 
     2026-08-29：此前 _build_card 读「本轮候选桶」（new_faces/momentum/...），终端
@@ -538,7 +676,13 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
     注意不要把「画得出」与「参与去重」混为一谈 —— 飙升区画得出但不参与去重（见 `_view_symbols`）。
 
     top_n 默认 FEISHU_TOP_N，与 _view_symbols 共用同一常量，去重集合与展示条数永不同源漂移。
+
+    2026-11-27：传入 `cs_payload` 时走**横截面专线** —— 卡片只画 ≡ 区，不再读 ScanView。
+    不传时保留旧 view 路径（单测/离线回放用），生产 `push_feishu` 一律传 payload。
     """
+    if cs_payload is not None:
+        return _build_crosssection_card(cs_payload)
+
     now = now_beijing().strftime("%H:%M")
     # 严格过滤门（2026-09-28）：卡片只画**通过门**的行。与终端**故意分叉** ——
     # 终端是全量信息面，飞书是精选推送面（用户 2026-09-28 决策：飞书信息量过大）。
@@ -661,7 +805,7 @@ def build_feishu_card(view: ScanView, gem_total: int, filtered_large_cap: int = 
     }
 
 
-def _view_symbols(view: ScanView) -> set[str]:
+def _view_symbols(view: ScanView, *, cs_payload: Mapping[str, Any] | None = None) -> set[str]:
     """推送**去重键**：卡片里「内容稳定」的那部分票集 == **严格过滤门通过集**。
 
     ⚠ 2026-09-28 改口径：原先取 `main_rows[:FEISHU_TOP_N]`，实测是推送量的**真正
@@ -685,11 +829,15 @@ def _view_symbols(view: ScanView) -> set[str]:
 
     ⚠ 本函数只回答「内容变没变」，**不回答「有没有内容」** —— 后者是
     `gate_has_content`（过滤后）。两者是不同的门。
+
+    2026-11-27：传 `cs_payload` 时改为横截面展示行身份集合（跨区票集不再参与去重）。
     """
+    if cs_payload is not None:
+        return _crosssection_symbols(cs_payload)
     return apply_push_gate(view).symbols()
 
 
-def view_has_content(view: ScanView) -> bool:
+def view_has_content(view: ScanView, *, cs_payload: Mapping[str, Any] | None = None) -> bool:
     """卡片此刻**是否画得出任何区块**（判「空卡片」的唯一判据）。
 
     必须与 build_feishu_card 的区块条件逐条对齐，否则会出现「明明有内容却不推」
@@ -719,7 +867,11 @@ def view_has_content(view: ScanView) -> bool:
     的空主线短路分支）。三段全空时仍返回 None，保持不推空卡的行为。
 
     getattr 兜底：轻量 view 桩（测试/回放）可能只实现部分字段，缺字段按「该区块为空」处理。
+
+    2026-11-27：传 `cs_payload` 时答「横截面有没有行」，与旧 view 来源无关。
     """
+    if cs_payload is not None:
+        return crosssection_has_content(cs_payload)
     if view.main_rows[:FEISHU_TOP_N]:
         return True
     if getattr(view, "hist_rows", None):
@@ -729,7 +881,7 @@ def view_has_content(view: ScanView) -> bool:
     return bool(getattr(view, "hot_rows", None))
 
 
-def gate_has_content(view: ScanView) -> bool:
+def gate_has_content(view: ScanView, *, cs_payload: Mapping[str, Any] | None = None) -> bool:
     """**过滤门之后**卡片是否还有内容（判空的新单源，2026-09-28）。
 
     与 `view_has_content` 的区别：后者答「视��里有没有内容」（终端口径），
@@ -739,7 +891,11 @@ def gate_has_content(view: ScanView) -> bool:
 
     门关闭（`RTS_PUSH_GATE=0`）时 `apply_push_gate` 原样放行 ⇒ 本函数退化为
     `view_has_content`，旧行为逐字恢复。
+
+    2026-11-27：传 `cs_payload` 时横截面展示行就是门后结果，判空同 `crosssection_has_content`。
     """
+    if cs_payload is not None:
+        return crosssection_has_content(cs_payload) and len(_crosssection_symbols(cs_payload)) >= PUSH_MIN_ROWS
     return apply_push_gate(view).passed_total >= PUSH_MIN_ROWS
 
 
@@ -803,8 +959,13 @@ def push_feishu(
     gem_total: int,
     filtered_large_cap: int = 0,
     state: PushState | None = None,
+    *,
+    cs_payload: Mapping[str, Any] | None = None,
 ) -> bool:
-    """推送飞书卡片。view 为 None（无 conn / 今日无推荐）时不推送。
+    """推送飞书卡片。
+
+    2026-11-27 起生产链路只推横截面：传 `cs_payload` 时 `view` 可为 None（无推荐
+    时段横截面照推），判空/去重/渲染全以 payload 为准；不传时保留旧 view 路径。
 
     编排：取状态 → should_push 决策 → build 渲染 → _post_card 发送 →
     成功回写状态。state 默认走模块级 _DEFAULT_STATE（调用点零改动）；
@@ -813,19 +974,31 @@ def push_feishu(
     if state is None:
         state = _DEFAULT_STATE
 
-    if view is None:
+    if cs_payload is not None and not crosssection_has_content(cs_payload):
+        return False
+    if cs_payload is None and view is None:
         return False
 
     now = time.time()
-    current_symbols = _view_symbols(view)
     # has_content 与 symbols 是两个问题：前者「过滤后卡片还有没有东西可画」
     # （决定空卡片是否推），后者「内容变了没」（决定多久推一次）。
-    decision = should_push(state, current_symbols, now, has_content=gate_has_content(view))
+    if cs_payload is not None:
+        current_symbols = _crosssection_symbols(cs_payload)
+        has_content = True  # 上方已判非空
+    else:
+        assert view is not None
+        current_symbols = _view_symbols(view)
+        has_content = gate_has_content(view)
+    decision = should_push(state, current_symbols, now, has_content=has_content)
     if not decision.push:
         return False
 
     try:
-        card = build_feishu_card(view, gem_total, filtered_large_cap)
+        if cs_payload is not None:
+            card = _build_crosssection_card(cs_payload)
+        else:
+            assert view is not None
+            card = build_feishu_card(view, gem_total, filtered_large_cap)
         ok, err = _post_card(card)
         if not ok:
             print(f"\n  [!] 飞书推送失败: {err}")
