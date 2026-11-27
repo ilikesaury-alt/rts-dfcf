@@ -120,9 +120,9 @@ def is_st(name: str) -> bool:
     **漏掉了最大的一类**——实测 2026-06-29 天龙退（创业板退市整理期）曾以
     rank 11 上榜且未被拦截（当时因其下跌未进入推荐，属潜伏泄漏而非已发损害）。
 
-    影响面（改动前已核对）：本函数是 ST/退市判定的唯一真源，生产侧仅两处调用
-    ——主線 filter_gem_stocks（candidates.py:177）与 hot_watch 独立区
-    （hot_watch.py:160/315）。误判风险极低：正常 A 股简称不会以「退」结尾。
+    影响面：本函数是 ST/退市判定的唯一真源，生产侧多处调用（主线候选池、
+    hot_watch 独立区、crosssection 横截面层、onboard/offboard 观察段等）。
+    误判风险极低：正常 A 股简称不会以「退」结尾。
     """
     n = (name or "").strip()
     return n.startswith("*ST") or n.startswith("ST") or "退市" in n or n.startswith("退") or n.endswith("退")

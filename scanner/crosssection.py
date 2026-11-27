@@ -185,7 +185,7 @@ from scanner.crosssection_view import (  # noqa: F401 - 同上
 from scanner.data_source import ak_to_xq
 from scanner.db.queries import get_market_extra_snapshot
 from scanner.trading_session import is_trading_time
-from scanner.utils import to_float
+from scanner.utils import is_st, to_float
 
 logger = logging.getLogger(__name__)
 
@@ -389,10 +389,14 @@ def _valid_snapshot(payload: dict[str, dict]) -> dict[str, dict[str, Any]]:
 
     量纲字段（price/volume/amount）挡 `<=0`：0 值 = 停牌 / 未发行 / 无成交，
     既不该参与横截面分位，也不该当标准差的分母。
+    ST/*ST/退市整理期票同样在入口剔除（`utils.is_st` 单源，与主线/飙升区同口径）：
+    不进环形缓冲、不占分位分母、不落库、不展示。两条取数路径都汇入这里。
     """
     out: dict[str, dict[str, Any]] = {}
     for code, row in payload.items():
         if not isinstance(row, dict):
+            continue
+        if is_st(str(row.get("name") or "")):
             continue
         price = to_float(row.get("price"), None)
         volume = to_float(row.get("volume"), None)

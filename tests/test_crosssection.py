@@ -182,6 +182,35 @@ class TestSpeedAndPercentile:
         symbols = {r[0] for r in _rows(db)}
         assert not symbols & {"SZ300901", "SZ300902", "SZ300903"}
 
+    def test_st_rows_are_excluded(self, monkeypatch, db):
+        feed = _Feed()
+
+        def _fake(*, force: bool = False):
+            p = feed.next()
+            for code, name in (
+                ("300904", "ST华测"),
+                ("300905", "*ST凯撒"),
+                ("300906", "天龙退"),
+            ):
+                p[code] = {
+                    "price": 12.0,
+                    "percent": 9.0,
+                    "volume": 9e6,
+                    "amount": 9e8,
+                    "vol_ratio": 9.0,
+                    "name": name,
+                }
+            return p
+
+        monkeypatch.setattr(me, "fetch_fund_flow_rank", _fake)
+        h = _run_rounds(monkeypatch, db, feed, 6)
+
+        assert h["valid_rows"] == 20, "ST/*ST/退市票不算有效行，也不占分位分母"
+        assert h["signals"] == 1
+        symbols = {r[0] for r in _rows(db)}
+        assert not symbols & {"SZ300904", "SZ300905", "SZ300906"}
+        assert all(s["name"] != "ST华测" for s in cs._state["last_signals"])
+
 
 # ── 2. 榜内排除 + 跨源价差 ──
 
